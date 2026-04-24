@@ -198,9 +198,11 @@ to repeat the runbook. If you're cleaning up:
 3. Delete the downloaded `.pem` file. Do not let it linger.
 
 Do **not** move the downloaded `.pem` into `spikes/github_app/fixtures/` —
-even in a gitignored state, that's the wrong home for a real key. The
-throwaway key at `fixtures/test_private_key.pem` is for JWT primitive
-demos only; real App keys belong in your secrets manager.
+even in a gitignored state, that's the wrong home for a real key.
+`fixtures/.gitignore` blocks `*.pem` as belt-and-suspenders against exactly
+this mistake. The Q1 JWT demo generates its own RSA key in memory per run
+(see `demos/demo_q1_jwt_app_auth.py`) — there's no on-disk test key to
+confuse with a real one. Real App keys belong in your secrets manager.
 
 ---
 

@@ -31,10 +31,10 @@ from githubkit.webhooks import parse, verify
 
 WEBHOOK_SECRET_ENV = "OUTRIDER_SPIKE_WEBHOOK_SECRET"
 # When this is set to an existing directory, every accepted delivery's raw
-# body is written to <dir>/<delivery_id>.json. Runbook step 7 reads from
-# there to diff real payloads against the octokit fixtures. Unset = no
-# capture — the demos run with TestClient under no env var, so the capture
-# path is a no-op in the offline test path.
+# body is written to <dir>/<correlation_id>.json. Runbook step 7 reads from
+# there to diff real payloads against the octokit fixtures. Q5 sets this to
+# a tempdir and asserts a captured file is byte-identical to the sent body,
+# so a regression in the capture primitive fails the offline run first.
 CAPTURE_DIR_ENV = "OUTRIDER_SPIKE_CAPTURE_DIR"
 
 # Emit a visible shape-summary record on every accepted delivery. Use the
