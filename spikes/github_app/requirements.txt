@@ -1,0 +1,10 @@
+# GitHub App + smee.io spike — pinned versions.
+#
+# Python: 3.13.13 (see ../../.python-version at spike time).
+# These pins match pyproject.toml so spike findings apply to V1 as-built.
+# If V1 later upgrades any pin, rerun run_all.py before trusting NOTES.md.
+
+fastapi==0.135.3
+httpx==0.28.1
+pyjwt[crypto]==2.12.1
+githubkit==0.15.3

@@ -1,0 +1,5 @@
+# Belt-and-suspenders: never track any .pem file under fixtures, even if someone
+# accidentally drops a real GitHub App private key here. The throwaway spike key
+# stays out of git; if lost, regenerate it — the spike demos don't depend on its
+# identity.
+*.pem
