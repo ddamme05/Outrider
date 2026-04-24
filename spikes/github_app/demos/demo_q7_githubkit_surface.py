@@ -11,10 +11,23 @@ first place to check for breaking changes.
 
 from __future__ import annotations
 
+import importlib.metadata
 import inspect
+
+PINNED_VERSION = "0.15.3"  # must match pyproject.toml and requirements.txt
 
 
 def main() -> None:
+    # Pinned version assertion: a spike finding only holds at the version
+    # it was captured under. If the installed wheel drifts from the pin,
+    # the rest of the surface checks below apply to a different SDK than
+    # NOTES.md documents.
+    installed = importlib.metadata.version("githubkit")
+    assert installed == PINNED_VERSION, (
+        f"Q7 FAIL: githubkit {installed!r} installed but spike pinned to "
+        f"{PINNED_VERSION!r}. Either update requirements.txt + rerun the "
+        "spike, or revert the environment to the pinned version."
+    )
     # Auth strategies — confirmed present per aegis-docs::githubkit/usage/
     # getting-started/authentication.md.
     import githubkit
@@ -76,14 +89,14 @@ def main() -> None:
         "payload",
     ], f"parse signature changed: {inspect.signature(parse)}"
 
-    # Version module — confirms we resolved the pinned wheel, not a different
-    # on-PATH install.
+    # Version module — confirms the generated-client tree is present.
     assert hasattr(githubkit, "versions"), "githubkit.versions missing"
 
     print(
-        "Q7 OK: all imports resolve (auth strategies, webhook verbs, raw "
-        "request escape hatch); verify/sign/parse signatures match what "
-        "receiver.py + demo_q3 + demo_q4 assume."
+        f"Q7 OK: githubkit=={installed} (pinned); all imports resolve "
+        "(auth strategies, webhook verbs, raw request escape hatch); "
+        "verify/sign/parse signatures match what receiver.py + demo_q3 "
+        "+ demo_q4 assume."
     )
 
 

@@ -20,6 +20,7 @@ full dispatcher seam is Month 2 work.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from typing import Any
@@ -28,6 +29,12 @@ from fastapi import FastAPI, HTTPException, Request, status
 from githubkit.webhooks import parse, verify
 
 WEBHOOK_SECRET_ENV = "OUTRIDER_SPIKE_WEBHOOK_SECRET"
+
+# Emit a visible shape-summary record on every accepted delivery. Runbook
+# step 7 captures these log lines to diff real payloads against the octokit
+# fixtures. Use the stdlib logger rather than structlog so the spike has
+# no dependency we don't already control in pyproject.toml.
+logger = logging.getLogger("outrider.spike.github_app.receiver")
 
 
 def _get_secret() -> str:
@@ -118,6 +125,12 @@ def create_app() -> FastAPI:
                 }
             )
 
+        # Emit the shape summary at INFO so the runbook can capture it by
+        # following uvicorn's log output, without any extra configuration.
+        # structlog-style key=value pairs keep the line machine-greppable.
+        logger.info("webhook_received " + " ".join(
+            f"{k}={v!r}" for k, v in summary.items()
+        ))
         return summary
 
     @app.get("/healthz")

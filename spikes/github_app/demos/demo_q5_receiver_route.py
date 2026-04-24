@@ -140,9 +140,50 @@ async def run_q5() -> None:
             "(should 400, not 500 — parse errors are client errors here)"
         )
 
+        # Case 5: missing X-GitHub-Event header (signature valid, header
+        # absent). Receiver rejects before parse work.
+        resp = await client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": sig,
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 400, (
+            f"Q5 FAIL: missing X-GitHub-Event → {resp.status_code} "
+            "(should 400 before any parse work)"
+        )
+
+        # Case 6: installation.created event drives the installation branch
+        # of the receiver. Q4 parsed the payload; Q5 proves the route wires
+        # parsing → summary correctly for the second event type we care about.
+        inst_body = (FIXTURES / "sample_installation_created.json").read_bytes()
+        inst_sig = gh_sign(SECRET, inst_body, method="sha256")
+        resp = await client.post(
+            "/webhooks/github",
+            content=inst_body,
+            headers={
+                "X-Hub-Signature-256": inst_sig,
+                "X-GitHub-Event": "installation",
+                "X-GitHub-Delivery": "test-inst-001",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 202, (
+            f"Q5 FAIL: installation.created → {resp.status_code}, {resp.text!r}"
+        )
+        inst_payload = resp.json()
+        assert inst_payload["event"] == "installation"
+        assert inst_payload["action"] == "created"
+        assert isinstance(inst_payload["installation_id"], int)
+        assert isinstance(inst_payload["app_slug"], str) and inst_payload["app_slug"]
+        assert "account_login" in inst_payload
+
     print(
         f"Q5 OK: /webhooks/github — good=202 ({elapsed_good*1000:.1f} ms), "
-        "wrong-sig=401, no-sig=401, bad-event=400."
+        "wrong-sig=401, no-sig=401, bad-event=400, no-event-header=400, "
+        f"installation.created=202 (installation_id={inst_payload['installation_id']})."
     )
 
 

@@ -9,7 +9,11 @@ on them.
 | `sample_pull_request_opened.json` | Real `pull_request.opened` webhook payload. Feeds Q4 (payload shape) and Q5 (receiver route). | [octokit/webhooks `main/payload-examples/api.github.com/pull_request/opened.payload.json`](https://raw.githubusercontent.com/octokit/webhooks/main/payload-examples/api.github.com/pull_request/opened.payload.json) |
 | `sample_pull_request_synchronize.json` | Real `pull_request.synchronize` payload (force-push / new commit). | Same repo, `synchronize.payload.json`. |
 | `sample_installation_created.json` | Real `installation.created` payload, patched with `app_slug: "outrider-spike-test"` — the upstream octokit sample is stale and githubkit 0.15.3's 2026-03-10 schema requires that field. | Same repo, `installation/created.payload.json`, patched. |
-| `test_private_key.pem` | Throwaway 2048-bit RSA key for JWT demos only. **Not a real GitHub App private key.** Generated at spike-scaffold time via `cryptography.hazmat`. Gitignored locally via `fixtures/.gitignore`. |
+
+RSA keys used by the JWT demos are **generated in-memory per run** inside
+`demos/demo_q1_jwt_app_auth.py`. There is no on-disk key fixture. The
+adjacent `fixtures/.gitignore` keeps `*.pem` out of git as belt-and-
+suspenders against a real GitHub App key accidentally being dropped here.
 
 ## Why real payloads instead of constructed ones
 

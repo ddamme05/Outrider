@@ -11,22 +11,39 @@ and confirm the resulting GitHub client constructs without error. We do
 NOT make a live API call here — Q2 (live runbook) covers that. The
 offline check is: does the SDK accept the key shape we'll generate from
 pydantic-settings in V1?
+
+The RSA key is generated in-memory each run. No on-disk fixture, no
+gitignored secret to lose. If Q1a/b pass, the same key shape works on any
+fresh checkout — the spike's offline reproduction contract is self-contained.
 """
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from githubkit import AppAuthStrategy, GitHub
 
-FIXTURES = Path(__file__).parent.parent / "fixtures"
-PRIVATE_KEY = (FIXTURES / "test_private_key.pem").read_bytes()
 TEST_APP_ID = "123456"  # numeric GitHub App ID as string
 
 
-def q1a_primitive() -> None:
+def make_throwaway_rsa_pem() -> bytes:
+    """Generate a 2048-bit RSA private key in PEM PKCS#8.
+
+    Not a real GitHub App key. Generated per-run so the spike has no
+    on-disk secret and no dependency on a gitignored fixture.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+def q1a_primitive(private_pem: bytes) -> None:
     now = int(time.time())
     # GitHub App JWT claims per docs:
     # https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
@@ -38,16 +55,14 @@ def q1a_primitive() -> None:
         "exp": now + 9 * 60,  # 9 min, under the 10-min hard cap
         "iss": TEST_APP_ID,
     }
-    token = jwt.encode(payload, PRIVATE_KEY, algorithm="RS256")
+    token = jwt.encode(payload, private_pem, algorithm="RS256")
     assert isinstance(token, str) and token.count(".") == 2, (
         "Q1a FAIL: RS256 JWT should be three dot-separated segments, got "
         f"{token!r}"
     )
 
     # Derive public key from the private key and decode.
-    from cryptography.hazmat.primitives import serialization
-
-    private_key = serialization.load_pem_private_key(PRIVATE_KEY, password=None)
+    private_key = serialization.load_pem_private_key(private_pem, password=None)
     public_pem = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -75,11 +90,11 @@ def q1a_primitive() -> None:
     )
 
 
-def q1b_canonical() -> None:
+def q1b_canonical(private_pem: bytes) -> None:
     # AppAuthStrategy constructs a GitHub client that signs JWTs internally
     # on each request. We don't fire a request (no real App) — we only
     # check the construction path accepts the key shape.
-    strategy = AppAuthStrategy(TEST_APP_ID, PRIVATE_KEY.decode("utf-8"))
+    strategy = AppAuthStrategy(TEST_APP_ID, private_pem.decode("utf-8"))
     github = GitHub(strategy)
     assert github is not None, "Q1b FAIL: GitHub() returned None"
     # Also check the installation-context derivation path compiles.
@@ -97,8 +112,9 @@ def q1b_canonical() -> None:
 
 
 def main() -> None:
-    q1a_primitive()
-    q1b_canonical()
+    private_pem = make_throwaway_rsa_pem()
+    q1a_primitive(private_pem)
+    q1b_canonical(private_pem)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,60 @@ questions (Q2 installation-token minting, Q6 smee.io tunnel setup) require
 live GitHub access and are documented in `runbook.md` rather than demo'd —
 see "Live runbook split" below.
 
-**Status.** `.venv/bin/python run_all.py` → **5/5 demos pass**.
+**Status.** `.venv/bin/python run_all.py` → **5/5 demos pass**. Live
+artifacts (installation_id, real-payload diff) are **pending a runbook
+walk** — see "Live artifacts pending" below.
+
+---
+
+## Post-closeout review pass (2026-04-23)
+
+Codex audit of the initial commit caught four genuine findings. Calibrated
+response rather than reopening the spike:
+
+Applied in-place:
+
+- **Q1 no longer depends on a gitignored fixture.** The RSA key is now
+  generated in-memory per run via `cryptography.hazmat.rsa.generate_private_key`.
+  `fixtures/test_private_key.pem` is deleted. Offline reproduction now
+  works on a fresh checkout without setup — the spike's advertised
+  `python run_all.py` contract holds.
+- **Receiver emits structured logs.** `receiver.py` uses
+  `logging.getLogger("outrider.spike.github_app.receiver")` at INFO. The
+  runbook's "receiver's structured logs" reference now has a real target.
+  Log line is `key=value`-shaped so `grep webhook_received` during the
+  runbook walk captures every shape summary.
+- **Q5 coverage expanded.** Two additional route cases:
+  (1) `installation.created` drives the installation branch of the
+  receiver (previously untested — Q4 parsed the payload but Q5 never
+  drove the route); (2) missing `X-GitHub-Event` header returns 400
+  (receiver had the check but no test exercised it).
+- **Q7 asserts the pinned `githubkit` version.** `importlib.metadata.version("githubkit") == "0.15.3"`.
+  Prior version check was `hasattr(githubkit, "versions")` — a generic
+  "does the SDK exist" check, not the pin assertion the audit expected.
+
+Deferred, reasoning noted:
+
+- **Live installation_id and payload diff remain pending a runbook walk.**
+  `DECISIONS.md#006`'s contract names "the installation ID" as a spike
+  deliverable. Producing it requires registering a GitHub App on a test
+  repo, which needs credentials this session didn't have. `runbook.md`
+  step 7 captures the ID and the real-vs-fixture payload diff into
+  NOTES.md when walked. The offline surface is complete; the live surface
+  is procedurally ready but not yet walked. This is an honest split, not
+  a reframing of the contract — the spike is complete-modulo-runbook-walk.
+- **`installation.deleted` route coverage.** Spec §6.2 requires both
+  `created` and `deleted` action handling in production. The spike tests
+  `created`; `deleted` has the same payload shape minus `repositories`,
+  so the receiver's `installation` branch handles both without changes.
+  Testing `deleted` in the spike would validate the same code path
+  against a fixture that differs only in one field — Month 1's
+  `api/webhooks/router.py` tests cover `deleted` against a real payload.
+
+Why not reopen the spike for the live walk: spike's role is to retire
+unknowns and hand findings to Month 1. The runbook is the handoff
+artifact for the live portion; walking it is a separate session's work
+because it depends on credentials.
 
 ---
 
@@ -35,6 +88,26 @@ octokit fixtures and what a real webhook actually delivers.
 
 Without the split, every rerun of the spike would require App registration
 and the offline primitives would be unverifiable historically.
+
+### Live artifacts pending
+
+`DECISIONS.md#006` names "the installation ID" as a spike deliverable.
+**That artifact is pending a runbook walk.** What's here now:
+
+- Offline: 5/5 mechanical demos pass; SDK surface audited; `githubkit`
+  method names that will be used are confirmed (`AppAuthStrategy`,
+  `AppInstallationAuthStrategy`, `with_auth(as_installation(...))`,
+  `webhooks.verify`, `webhooks.parse`, `arequest(...)` escape hatch).
+- Offline: webhook event shapes documented against real octokit samples
+  (three events: `pull_request.opened`, `pull_request.synchronize`,
+  `installation.created`).
+- Pending: the actual installation_id observed on a real test App, plus
+  any structural diff between the octokit samples and real deliveries.
+  `runbook.md` step 7 captures these into this file when walked.
+
+When the runbook is walked, the Q2 and Q4 sections below gain addenda
+with concrete numbers. Until then, treat them as "shape confirmed, live
+round-trip pending."
 
 ---
 
@@ -281,6 +354,7 @@ choice.
 - **PR size limits (spec §6.10).** Diff-size preflight belongs in `api/webhooks/router.py`, not here.
 - **Production secrets handling.** Throwaway RSA key; gitignored `.pem` under `fixtures/`. Production reads from `pydantic-settings`.
 - **Installation event side effects.** Spec §6.2 says we persist the installation_id on `installation.created`. The spike parses and logs it; persistence is `db/` work.
+- **`installation.deleted` route coverage.** Spec §6.2 requires both `created` and `deleted`. The spike's route case covers `created` only; `deleted` has the same payload shape minus `repositories`, so the receiver's `installation` branch handles both without code changes. Proper `deleted` coverage lives in `api/webhooks/router.py` tests in Month 1.
 - **Parse-without-name fallback.** `parse_without_name` exists but docs recommend against it (slower, may return wrong type). Production should always read `X-GitHub-Event`.
 - **Webhook delivery retries.** GitHub retries failed deliveries; idempotency + the dispatcher handle this. Spike doesn't simulate.
 
@@ -293,7 +367,11 @@ cd spikes/github_app
 /home/spinbot/projects/outrider/.venv/bin/python run_all.py
 ```
 
-Exits 0 iff every claim above reproduces on the pinned versions.
+Exits 0 iff every claim above reproduces on the pinned versions. The
+demos are self-contained — Q1 generates its own RSA key at runtime, so
+a fresh checkout passes without any setup beyond `uv sync`.
 
 For the live round-trip — registered App + smee.io + real webhook delivery
-— follow `runbook.md` with your own credentials.
+— follow `runbook.md` with your own credentials. The installation_id and
+real-payload diff captured there land back into this file as addenda to
+Q2 and Q4.
