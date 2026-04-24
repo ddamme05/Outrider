@@ -1,0 +1,70 @@
+# --- Local agent context (ignored now; track when public) ---
+CLAUDE.md
+AGENTS.md
+.claude/
+.agents/
+
+# --- Local docs (ignored now; track when public) ---
+docs/
+
+# --- Local operational tracking (stays local even when public) ---
+COMMIT_LOG.md
+ITERATION_LOG.md
+SESSION_RETRO.md
+specs/
+contents.md
+struct.md
+snapshot.md
+
+# --- Environment and secrets ---
+.env
+.env.private/
+.env.local
+*.pem
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+*.egg
+dist/
+build/
+wheels/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- uv ---
+# uv.lock IS tracked; the cache is not.
+.uv_cache/
+
+# --- Node (dashboard frontend) ---
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- Spikes (throwaway Month 0 code, optional to track) ---
+# Uncomment if you want spikes out of git entirely:
+# spikes/
+
+# --- Local Codex scratch ---
+.codex
+
+# Spikes are tracked in git (NOTES.md is kept), but spike output files aren't.
+spikes/**/__pycache__/
+spikes/

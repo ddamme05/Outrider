@@ -1,0 +1,56 @@
+# .pre-commit-config.yaml
+#
+# Install dependencies and hooks once per clone:
+#     uv sync --dev
+#     .venv/bin/pre-commit install
+#
+# Run manually against all files (useful after a rebase):
+#     .venv/bin/pre-commit run --all-files
+
+repos:
+  # --- Local project tooling ---
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: .venv/bin/ruff check --fix
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format
+        entry: .venv/bin/ruff format
+        language: system
+        types_or: [python, pyi]
+
+      - id: invariants-in-sync
+        name: invariants.md is in sync with spec.md
+        entry: .venv/bin/python scripts/extract_invariants.py --check
+        language: system
+        pass_filenames: false
+        files: ^(docs/(spec|invariants)\.md|scripts/extract_invariants\.py)$
+
+      - id: extractor-tests-pass
+        name: extract_invariants.py smoke tests pass
+        entry: .venv/bin/python scripts/test_extract_invariants.py
+        language: system
+        pass_filenames: false
+        files: ^scripts/(extract_invariants|test_extract_invariants)\.py$
+
+      # Guards DECISIONS.md cross-reference integrity: every (see #NNN) /
+      # Supersedes #NNN / Superseded by #NNN reference must resolve to a
+      # real ## NNN. entry, and entry numbers must be unique. Fires only
+      # when DECISIONS.md or the checker script changes.
+      - id: decision-refs-resolve
+        name: DECISIONS.md cross-references resolve
+        entry: .venv/bin/python scripts/check_decision_refs.py
+        language: system
+        pass_filenames: false
+        files: ^(DECISIONS\.md|scripts/check_decision_refs\.py)$
+
+      - id: decision-refs-tests-pass
+        name: check_decision_refs.py smoke tests pass
+        entry: .venv/bin/python scripts/test_check_decision_refs.py
+        language: system
+        pass_filenames: false
+        files: ^scripts/(check_decision_refs|test_check_decision_refs)\.py$

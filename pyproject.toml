@@ -1,0 +1,84 @@
+[project]
+name = "outrider"
+version = "0.1.0"
+description = "Agentic PR review — structure-aware, HITL-gated, append-only audit"
+requires-python = ">=3.13"
+dependencies = [
+    # Web / API
+    "fastapi==0.135.3",
+    "uvicorn[standard]==0.45.0",
+    "httpx==0.28.1",
+
+    # Agent / LLM
+    "langgraph==1.1.6",
+    "langgraph-checkpoint-postgres==3.0.5",
+    "anthropic==0.96.0",
+
+    # Schema / validation / settings
+    "pydantic==2.12.5",
+    "pydantic-settings==2.13.1",
+
+    # Database — single driver (psycopg3) for both SQLAlchemy and LangGraph
+    # See DECISIONS.md #001 (supersedes spec §14.1 two-driver pattern)
+    "sqlalchemy[asyncio]==2.0.49",
+    "alembic==1.18.4",
+    "psycopg[binary]==3.3.3",
+
+    # GitHub
+    "githubkit==0.15.3",
+    "pyjwt[crypto]==2.12.1",
+
+    # Tree-sitter
+    "tree-sitter==0.25.2",
+    "tree-sitter-python==0.25.0",
+
+    # Diff parsing
+    "unidiff==0.7.5",
+
+    # Logging
+    "structlog==25.5.0",
+
+    # ── V2 (Celery task queue + Redis broker — not active in V1) ────────────
+    # "celery==5.6.3",
+    # "redis==7.4.0",
+    # ────────────────────────────────────────────────────────────────────────
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "mypy==1.20.2",
+    "ruff==0.15.11",
+    "pre-commit==4.5.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/outrider"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "TCH", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]       # assert is fine in tests
+"scripts/test_*.py" = ["S603"]   # smoke tests run trusted local scripts
+"spikes/**/*.py" = ["S", "N"]   # throwaway — relax security and naming, keep bugbear
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
