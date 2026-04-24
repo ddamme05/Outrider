@@ -397,3 +397,33 @@ Specific default TTL values (reviews, audit events, installation grace window) a
 - The user-facing privacy statement (item 6) ships in `README.md` and `docs/deployment.md` at the public flip. Any change to the egress field list (item 1) or the retention terms (item 3) requires a supersession decision, not an in-place edit of this entry.
 
 **Referenced from.** `llm/anthropic_provider.py` (when written), `llm/base.py` (when written), `audit/events.py` (when written), `README.md`, `docs/deployment.md`.
+
+---
+
+## 014. Audit events are metadata-only; content purge targets `reviews` and `findings`
+
+**Status:** Accepted, 2026-04-23. Narrows #012 by constraining the purge target.
+
+**Context.** #012 specifies a purge job that runs on `installation.deleted` and hard-deletes `audit_events` rows, violating the live `audit-events-append-only` invariant (docs/invariants.md, Source §8.6: "Audit events are corrected by appending superseding events, never by update or delete"). Reading spec §8.2's V1 event types alongside §7.3's `ReviewFinding` resolves the conflict: the spec already split finding metadata from finding content. `FindingEvent` carries `finding_id`, `finding_type`, `severity`, `file_path`, `line_range`, `dimension`, `finding_content_hash`, `evidence_tier`, `query_match_id`, `policy_version` — all identifiers, hashes, paths, and enum values. The actual finding content (`title`, `description`, `evidence`, `suggested_fix`) lives on the `ReviewFinding` Pydantic model and, by the same architectural logic, in a separate `findings` table. #012's original framing was wrong about the purge target; it should have been `reviews` and `findings`, not `audit_events`.
+
+**Decision.** #012's retention/purge mechanism targets `reviews` and `findings` (content tables), not `audit_events` (metadata rows):
+
+1. **`audit_events` stays append-only forever.** No TTL, no purge path, no privileged-role bypass of the trigger. The `audit-events-append-only` invariant is preserved literally. Every event in spec §8.2 is metadata-only by design — audit rows carry identifiers, hashes, counts, paths, and enum values, not user code or prompt/completion content.
+2. **Purge targets are content tables.** `reviews`, `findings`, and any V1.5+ content tables carry configurable TTLs and are hard-deleted under #012's retention + grace-window mechanism on `installation.deleted`. `purge_audit` (from #012) logs each purge against its content-table target.
+3. **`FindingEvent.finding_id` may reference a purged `findings` row.** Designed property, not a bug: the audit trail says "at time T, a finding with this ID was emitted in this phase." The content is gone per retention; the fact of emission is permanent. Dashboard renders a dangling `finding_id` as "content redacted per retention policy (purged YYYY-MM-DD via installation.deleted)." Stronger audit story than "we kept the whole finding forever" — retention actually deletes user content while preserving the claim that every finding was audited.
+4. **Replay equivalence has two modes: full replay and metadata-only replay.** Full replay (content still within retention): reconstructs `ReviewState` including all `ReviewFinding` objects with their content. Metadata-only replay (content purged per retention): reconstructs the event sequence from `audit_events` alone, with `ReviewFinding` reconstructed as stubs carrying only the fields `FindingEvent` records (finding_id, finding_type, severity, file_path, line_range, dimension, finding_content_hash, evidence_tier, query_match_id, policy_version). The replay tool indicates which mode applied and refuses to silently produce a hybrid. Eval scenarios in `tests/eval/scenarios/replay/` cover both modes explicitly — this is what spec §8.7 "replay equivalence" now promises under retention.
+5. **Borderline fields on audit events are metadata, not content, by convention.** `LLMCallEvent.context_summary` carries `(file_path, scope_unit_name, line_start, line_end)` per spec §8.3 — manifest, not content. `FileExaminationEvent.file_path` — structural identifier. `TraceDecisionEvent.reason` and `HITLDecisionEvent.per_finding_decisions[*].reason` are free-text fields that must carry structural descriptions, not code snippets; specific length bounds and content guards are implementation-level (schema validators).
+6. **No spec or invariant edit is required.** `audit-events-append-only` stands as written. `docs/trust-boundaries.md` section 7 stands as written. #012's retention story narrows to content tables; the spec §8 audit story is untouched.
+
+**Consequences.**
+
+- #012's "privileged purge role that can bypass the append-only trigger" mechanism is removed. The trigger is absolute: no role DELETEs or UPDATEs on `audit_events`.
+- Alembic migration #1 defines `audit_events` with the append-only trigger unchanged; `reviews` and `findings` are separate tables with a `retention_expires_at` column populated at insert time.
+- `sweep/purge_expired.py` queries `reviews` and `findings` for rows past `retention_expires_at`; `audit_events` is never in the query.
+- The `installation.deleted` handler marks content rows for deletion; grace window, hard-delete at expiry, and `purge_audit` logging behave per #012 — but the target rows are `reviews` and `findings`, not `audit_events`.
+- Dashboard gains a rendering rule: a `FindingEvent` whose `finding_id` no longer resolves in `findings` renders as "content redacted per retention" with the purge date from `purge_audit`.
+- The replay tool distinguishes full-replay from metadata-only-replay modes and refuses hybrid output. `tests/eval/scenarios/replay/full_replay/` and `.../metadata_only_replay/` scenarios cover both modes.
+- #012's specific default TTL numbers (in local ITERATION_LOG) apply to the content tables. `audit_events` has no TTL.
+- `FindingEvent.finding_id` is stored on audit rows as a plain UUID, not a foreign key — an FK with ON DELETE CASCADE would violate the append-only guarantee, and ON DELETE SET NULL would mutate audit rows. Plain UUID lets the content purge proceed without touching audit_events.
+
+**Referenced from.** `docs/trust-boundaries.md` section 7 (no edit required; narrow by implication), `sweep/purge_expired.py` (when written), `db/models/reviews.py` (when written; carries `retention_expires_at`), `db/models/findings.py` (when written; same), `db/models/audit_events.py` (when written; no retention column), `api/webhooks/router.py` (when written), dashboard finding-detail renderer (when written), `tests/eval/scenarios/replay/` (when written).
