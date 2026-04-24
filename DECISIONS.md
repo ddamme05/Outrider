@@ -461,3 +461,42 @@ Retention terms also corrected: Anthropic's standard retention is **30 days** fo
 - HIPAA-readiness scenarios are explicitly refused by the user-facing privacy statement and deferred to a future decision — a V1 deployment that needs HIPAA has to arrange it separately and will require its own decision entry covering the three gap categories in point 7.
 
 **Referenced from.** `llm/anthropic_provider.py` (when written), `llm/base.py` (when written), `README.md`, `docs/deployment.md`.
+
+---
+
+## 016. LLM exchanges stored locally under retention; logs stay metadata-only
+
+**Status:** Accepted, 2026-04-23. Amends #013 point 5. Extends #014's metadata-vs-content pattern with a new content table.
+
+**Context.** #013 point 5 mandated that prompt and completion content never appear on the audit row, with the rationale "if debugging requires the content, retrieve it by replay from `PRContext` + scope extraction." That guard targeted a threat that doesn't exist under #011: there is no third party gaining access to user content from local database storage. The operator already has the user's code on their own infrastructure; storing the LLM exchange about that code in the same database adds no new exposure surface. The replay story improves materially — within the retention window, every LLM call's full input and output is reconstructable, which is what "every decision is auditable" should actually deliver. The original #013 framing was a SaaS-shaped rule applied to a self-hosted V1; #016 corrects it.
+
+The two surfaces (logs vs database) need different rules: logs flow to stdout, log aggregators, and possibly third-party SIEMs that the operator may not fully control; the database is local and operator-administered. Storing content in the database is acceptable under self-hosted; logging content exposes it to surfaces we don't control. Different surfaces, different rules.
+
+**Decision.**
+
+1. **New content table `llm_call_content`.** Stores prompt and completion text for every LLM call. Keyed by `event_id` (matching the corresponding `LLMCallEvent` audit row). Schema:
+   - `event_id UUID PK` — references `audit_events.event_id` as a plain UUID (not a FK with CASCADE; same dangling-reference pattern as #014 point 3 for purged content).
+   - `prompt TEXT NOT NULL` — the full rendered prompt sent to the provider.
+   - `completion TEXT NOT NULL` — the full response text.
+   - `retention_expires_at TIMESTAMPTZ NOT NULL` — populated at insert per #012's TTL.
+   - `installation_id BIGINT NOT NULL` — denormalized for purge scoping (same pattern as `reviews` and `findings` per #014).
+   - `created_at TIMESTAMPTZ NOT NULL`.
+   - `is_eval BOOLEAN NOT NULL`.
+2. **`LLMCallEvent` audit row stays metadata-only per #014.** Unchanged: token counts, model, cost, latency_ms, prompt_hash, cache_hit, context_summary, prompt_template_version, system_prompt_hash, degraded_mode. The audit row records the *fact* of the LLM call and its costed metadata; the content lives separately. The `prompt_hash` on the audit row remains useful even after the content is purged — it lets a replay verify, against the surviving audit metadata alone, that the prompt structure matched what the template would have produced at that policy version.
+3. **Retention and purge follow #012 + #014.** `llm_call_content` rows carry `retention_expires_at` populated at insert, are queried by `sweep/purge_expired.py` for expiry-based deletion, and are purged on `installation.deleted` via the grace-window mechanism. `purge_audit` logs the deletion against `llm_call_content` as the target table. Default TTL matches `findings` (per ITERATION_LOG initial defaults); the specific number lives in operator configuration, not in this decision.
+4. **Logs stay metadata-only.** The structured logger emits LLMCallEvent's metadata fields only — never the prompt or completion text. Defense in depth: a log filter rejects records containing prompt or completion fields (first line); the logger schema itself omits content fields (belt). The two layers are independently sufficient: if a future code path constructs an ad-hoc log line bypassing the schema, the filter still catches it; if the filter is misconfigured, the schema's omission still prevents it. This rule is unchanged from #013 point 5's original spirit, just narrowed: it applies to log records, not to database storage. The user-facing privacy statement (point 6) names the surface distinction explicitly.
+5. **Replay equivalence per #014 point 4 expands.** Full-replay mode (within retention, content present) now reconstructs LLM exchanges with full prompt and completion text from `llm_call_content`, in addition to the existing full-finding reconstruction. Metadata-only-replay mode (post-purge) reconstructs from audit metadata alone — token counts, prompt_hash for structure-verification, system_prompt_hash, context_summary — no content text. The replay tool's mode-distinguishing behavior from #014 applies to LLM content the same way it applies to finding content: the tool refuses to silently produce a hybrid.
+6. **User-facing privacy statement (revised from #015 point 5) gains a stored-content clause.** The statement in README and deployment docs becomes: "Outrider stores LLM request and response content in your local database under configured retention TTL (default values in operator configuration; purged on `installation.deleted` along with reviews and findings, per DECISIONS.md #012 + #014). Outrider does not transmit stored LLM content to any third party other than the configured LLM provider at request time per #013/#015's egress rules." Any change to this text — egress phrasing, retention framing, scope of "stored content" — requires a supersession decision, not an in-place README edit.
+
+**Consequences.**
+
+- **Single-transaction insert is required, not optional.** The `LLMCallEvent` audit row insert and the `llm_call_content` row insert happen in a single database transaction. If the transaction fails, neither row exists. This is required for the replay tool's mode distinction (point 5) to work correctly — a missing content row paired with a present audit row would be ambiguous between "purged per retention" (correct mode-distinction signal) and "insert failed" (a third state the dashboard cannot distinguish from the first). Implementations that put the two writes in separate transactions reintroduce that ambiguity and violate this decision.
+- New Alembic migration step: create `llm_call_content` table with `retention_expires_at` and `installation_id` columns, indexed for the sweep job's expiry query and the installation-scoped purge query.
+- `audit/events.py::LLMCallEvent` schema is unchanged — metadata-only per #014 stands. Content does not move into the audit row.
+- Logging filter from #013 point 5 stays in place. The filter is now the *only* defense for logs; the schema-level omission on `LLMCallEvent` doesn't help logs because logs construct their own field set.
+- Dashboard's review-detail view renders LLM exchanges within retention. After retention, content is rendered as "content redacted per retention" with the purge date from `purge_audit` — same UX pattern as #014 point 3 for findings.
+- Eval scenarios at `tests/eval/scenarios/replay/` cover full-replay (with `llm_call_content` populated) and metadata-only-replay (with `llm_call_content` purged). A retention-boundary scenario (some calls within retention, some past) tests that the replay tool refuses hybrid output and signals which calls are reconstructable in full.
+- `README.md` privacy paragraph ships the revised statement (point 6) in the same commit as this decision per the coupling rule established at #015. `docs/deployment.md` carries the same statement at public flip.
+- The "guard against third-party content exposure" rationale from #013 point 5 is removed; under #011 it never applied. If V1.5+ adopts SaaS, the LLM-content storage decision is revisited as part of that supersession, alongside everything else under "users own their data" — likely either removing local content storage entirely or adding tenant-scoped encryption-at-rest.
+
+**Referenced from.** `llm/anthropic_provider.py` (when written), `audit/events.py` (when written; LLMCallEvent stays metadata-only), `db/models/llm_call_content.py` (when written; new content table per this decision), `db/models/reviews.py` (when written; same content-table pattern), `README.md`, `docs/deployment.md`, `tests/eval/scenarios/replay/` (when written).
