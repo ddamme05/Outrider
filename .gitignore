@@ -67,4 +67,3 @@ frontend/.vite/
 
 # Spikes are tracked in git (NOTES.md is kept), but spike output files aren't.
 spikes/**/__pycache__/
-spikes/
