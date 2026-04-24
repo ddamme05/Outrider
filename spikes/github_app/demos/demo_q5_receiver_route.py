@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -30,7 +31,9 @@ SECRET = "outrider-spike-webhook-secret"
 
 async def run_q5() -> None:
     os.environ["OUTRIDER_SPIKE_WEBHOOK_SECRET"] = SECRET
-    # Import after env var is set — receiver reads it lazily at request
+    capture_dir = Path(tempfile.mkdtemp(prefix="outrider-spike-capture-"))
+    os.environ["OUTRIDER_SPIKE_CAPTURE_DIR"] = str(capture_dir)
+    # Import after env vars are set — receiver reads them lazily at request
     # time, but importing under a hermetic env keeps the dependency explicit.
     from receiver import app  # type: ignore[import-not-found]
 
@@ -180,10 +183,29 @@ async def run_q5() -> None:
         assert isinstance(inst_payload["app_slug"], str) and inst_payload["app_slug"]
         assert "account_login" in inst_payload
 
+    # Case 7: raw-body capture. The receiver should have written the two
+    # accepted bodies (warmup + good + installation.created = 3 deliveries)
+    # to capture_dir, keyed by correlation_id. This is the runbook's
+    # payload-diff primitive — if it doesn't work, runbook step 7's
+    # json.tool diff can't work either.
+    captured = list(capture_dir.glob("*.json"))
+    assert len(captured) >= 3, (
+        f"Q5 FAIL: expected >=3 captured payloads, got {len(captured)} in "
+        f"{capture_dir}. OUTRIDER_SPIKE_CAPTURE_DIR write path broken."
+    )
+    # Verify one captured file is byte-for-byte identical to what we sent.
+    pr_body_sent = (FIXTURES / "sample_pull_request_opened.json").read_bytes()
+    matches_pr = [p for p in captured if p.read_bytes() == pr_body_sent]
+    assert matches_pr, (
+        "Q5 FAIL: none of the captured files match the sent pull_request body "
+        "byte-for-byte. Capture path is mangling the body."
+    )
+
     print(
         f"Q5 OK: /webhooks/github — good=202 ({elapsed_good*1000:.1f} ms), "
         "wrong-sig=401, no-sig=401, bad-event=400, no-event-header=400, "
-        f"installation.created=202 (installation_id={inst_payload['installation_id']})."
+        f"installation.created=202 (installation_id={inst_payload['installation_id']}); "
+        f"captured {len(captured)} raw bodies to {capture_dir}."
     )
 
 

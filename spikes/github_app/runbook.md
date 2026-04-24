@@ -107,11 +107,17 @@ In another terminal, from the repo root:
 
 ```bash
 export OUTRIDER_SPIKE_WEBHOOK_SECRET='<the-secret-from-step-2>'
+export OUTRIDER_SPIKE_CAPTURE_DIR="$(mktemp -d -t outrider-spike-payloads-XXXXXX)"
+echo "Captured payloads will land in: $OUTRIDER_SPIKE_CAPTURE_DIR"
 cd spikes/github_app
 ../../.venv/bin/python -m uvicorn receiver:app --host 127.0.0.1 --port 8000 --log-level info
 ```
 
 You should see uvicorn startup logs. Leave it running.
+
+The `OUTRIDER_SPIKE_CAPTURE_DIR` env var makes the receiver write each
+accepted webhook's raw body to `<dir>/<correlation_id>.json`. Step 7 uses
+those files for the real-vs-fixture diff.
 
 Smoke test: in a third terminal:
 ```bash
@@ -149,15 +155,24 @@ Append to the Q2 section:
 
 ### Payload diff
 
-Compare the real delivery against our recorded fixture. Easiest way: save
-the real body from the smee.io UI (or from the receiver's structured
-logs) as `/tmp/real_pr_opened.json`, then:
+Compare the real delivery against our recorded fixture. The receiver wrote
+each accepted body to `$OUTRIDER_SPIKE_CAPTURE_DIR` keyed by
+correlation_id (see step 5). Pick the most recent capture of the
+`pull_request.opened` delivery and diff it:
 
 ```bash
-diff <(.venv/bin/python -m json.tool /tmp/real_pr_opened.json) \
+# From the repo root. The capture_dir path is in step 5's terminal.
+LATEST=$(ls -t "$OUTRIDER_SPIKE_CAPTURE_DIR"/*.json | head -1)
+echo "Latest captured payload: $LATEST"
+
+diff <(.venv/bin/python -m json.tool "$LATEST") \
      <(.venv/bin/python -m json.tool spikes/github_app/fixtures/sample_pull_request_opened.json) \
      | head -200
 ```
+
+If multiple deliveries landed (e.g., `installation.created` + `pull_request.opened`),
+the receiver's INFO log lines name each correlation_id alongside the event
+so you can pick the one you want: `grep "webhook_received event='pull_request'" receiver.log`.
 
 Most differences will be trivial (timestamps, IDs, URL hosts). Append any
 **structural** differences to NOTES.md's Q4 section:

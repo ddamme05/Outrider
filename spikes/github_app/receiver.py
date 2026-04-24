@@ -23,17 +23,23 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
 from githubkit.webhooks import parse, verify
 
 WEBHOOK_SECRET_ENV = "OUTRIDER_SPIKE_WEBHOOK_SECRET"
+# When this is set to an existing directory, every accepted delivery's raw
+# body is written to <dir>/<delivery_id>.json. Runbook step 7 reads from
+# there to diff real payloads against the octokit fixtures. Unset = no
+# capture — the demos run with TestClient under no env var, so the capture
+# path is a no-op in the offline test path.
+CAPTURE_DIR_ENV = "OUTRIDER_SPIKE_CAPTURE_DIR"
 
-# Emit a visible shape-summary record on every accepted delivery. Runbook
-# step 7 captures these log lines to diff real payloads against the octokit
-# fixtures. Use the stdlib logger rather than structlog so the spike has
-# no dependency we don't already control in pyproject.toml.
+# Emit a visible shape-summary record on every accepted delivery. Use the
+# stdlib logger rather than structlog so the spike has no dependency we
+# don't already control in pyproject.toml.
 logger = logging.getLogger("outrider.spike.github_app.receiver")
 
 
@@ -131,6 +137,27 @@ def create_app() -> FastAPI:
         logger.info("webhook_received " + " ".join(
             f"{k}={v!r}" for k, v in summary.items()
         ))
+
+        # If a capture directory is configured, persist the raw body. The
+        # filename uses correlation_id (always unique) rather than
+        # delivery_id (may be "unknown") so two back-to-back deliveries can
+        # never collide and overwrite. The runbook's json.tool diff reads
+        # from this file.
+        capture_dir = os.environ.get(CAPTURE_DIR_ENV)
+        if capture_dir:
+            out_dir = Path(capture_dir)
+            if out_dir.is_dir():
+                (out_dir / f"{correlation_id}.json").write_bytes(body_bytes)
+                logger.info(
+                    f"payload_captured path={out_dir / f'{correlation_id}.json'} "
+                    f"bytes={len(body_bytes)}"
+                )
+            else:
+                logger.warning(
+                    f"{CAPTURE_DIR_ENV}={capture_dir!r} is not a directory; "
+                    "skipping payload capture for this delivery"
+                )
+
         return summary
 
     @app.get("/healthz")
