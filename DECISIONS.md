@@ -314,3 +314,86 @@ Trail of Bits' `differential-review` and `audit-context-building` skills are ins
 - If Codex is removed from the workflow in the future, this decision gets superseded rather than amended. A new entry would document the revised setup (likely: delete `AGENTS.md`, delete the reviewer skill, reactivate #003's framing).
 
 **Referenced from:** `AGENTS.md` (once rewritten), the Outrider reviewer skill (once authored), `.gitignore` (public-flip checklist), `docs/workflow.md` (reviewer-role description, to be added when the public-flip doc update happens), `README.md` or `docs/reviewer-setup.md` (ToB install command, same timing).
+
+---
+
+## 011. Self-hosted is canonical V1; SaaS is V1.5+
+
+**Status:** Accepted, 2026-04-23.
+
+**Context.** User-data ownership is a first-class project requirement. Two deployment shapes are possible for an agentic PR reviewer: self-hosted (the user runs Outrider in their own infrastructure) and SaaS (we host, user code flows through our servers). The ownership claim is technically enforceable under self-hosted: code never leaves the user's infra except for the LLM API call (see #013). Under SaaS the same claim becomes a trust commitment rather than a technical property, and would require tenant isolation, public data-handling commitments, and potentially BYOK/enclave architecture before it could be made credibly. None of that is feasible inside V1's build budget (spec §15) without displacing load-bearing feature work.
+
+**Decision.** V1 ships as a self-hostable application. Canonical deployment is: the user runs Outrider in their own infrastructure, connects it to their GitHub App installed on their repos, and points it at Anthropic (or, V1.5+, an alternate provider behind the `LLMProvider` Protocol). The only third-party egress is the LLM API call. V1 does not support multi-tenant SaaS operation. SaaS is deferred to V1.5-or-later and, if adopted, requires a supersession decision covering tenant isolation, data-handling commitments, and operator access controls.
+
+**Consequences.**
+
+- **Explicit egress exception.** Code content does reach one third party by design: Anthropic (or, V1.5+, an alternate `LLMProvider`). The LLM call is where review reasoning happens; there is no self-hosted alternative in V1. DECISIONS.md #013 defines the exact data-handling contract for that egress. "Users own their data" under self-hosted V1 means "your code stays in your infra, modulo the specific LLM egress documented in #013." Anywhere the claim is reproduced in user-facing documentation, the Anthropic qualifier must be present.
+- Single-tenant architecture. `reviews`, `audit_events`, and `installations` tables do not carry a `tenant_id`; the deployment *is* the tenant.
+- Authentication: `ADMIN_API_KEY` plus the GitHub App installation. No per-user auth in the dashboard.
+- Documentation ships self-hosting as the primary path — Docker compose or similar, env-var configuration, secrets-manager integration notes. The README leads with "run this in your infra," not with a sign-up flow.
+- SaaS-only features (per-tenant dashboards, org-level billing, cross-installation analytics) are out of scope for V1.
+- Retention and uninstall-purge are under user control per DECISIONS.md #012.
+- V1 privacy statement becomes: "Outrider runs in your infrastructure. Outrider maintainers do not have access to your code or review data. The only third-party egress is the LLM provider you configure (see DECISIONS.md #013 for the exact data-handling contract)." This is a verifiable claim because we do not run any hosted component.
+- The SaaS migration decision, when it happens, must explicitly address every gap category flagged in the 2026-04-23 Codex security audit (tenant isolation, data-handling commitments, operator access controls, BYOK feasibility).
+
+**Referenced from.** `README.md`, `docs/deployment.md`, `docs/architecture.md`.
+
+---
+
+## 012. Data retention: TTLs configurable, purge on installation.deleted
+
+**Status:** Accepted, 2026-04-23.
+
+**Context.** Spec §8 defines `audit_events` as append-only by database trigger — correct for integrity and replay equivalence. Unbounded retention creates a privacy problem under #011: the operator is the user, and users have legitimate retention rights over their review data. GitHub's `installation.deleted` webhook is the canonical "this user has uninstalled Outrider" signal and must trigger a real retention decision rather than silent indefinite retention.
+
+**Decision.** Retention policy for V1:
+
+- Every review, finding, audit event, and installation row has a retention TTL, set in configuration and operator-overridable via `pydantic-settings`.
+- On the `installation.deleted` webhook, all reviews / findings / audit events scoped to the installation are marked for deletion. A grace period begins (reinstalling the App within the window restores the tombstone); after expiry, the rows are hard-deleted.
+- `installation.suspend` and `installation.unsuspend` do NOT trigger purge. Suspension is reversible on GitHub's side; treat as pause-only.
+- Raw webhook payloads are not stored at rest. Only shape-parsed fields persist on audit events.
+- The purge job runs as a privileged Postgres role that can bypass the append-only trigger for this one narrow case. Its operations are logged to a separate `purge_audit` table, which records installation_id, rows_affected, timestamp, and the role that performed the purge — no payload content, so the table stays size-bounded.
+- Operators who need longer retention (compliance, forensics) can raise the TTLs or disable the purge entirely via configuration. Default is purge-on because the default must favor less-data-held outcomes.
+
+Specific default TTL values (reviews, audit events, installation grace window) are initial defaults, not firm commitments — they live in code configuration and are captured in local ITERATION_LOG rather than embedded in this decision. The retention-policy *shape* (TTLs exist; purge on uninstall with grace window; raw payloads not stored) is the stable anchor; specific numbers may shift in minor updates without requiring supersession.
+
+**Consequences.**
+
+- Spec §8's "append-only by database policy" claim becomes "append-only within retention window, with a privileged purge role for expiry." Requires a docs-only update to `docs/trust-boundaries.md` section 7 at public flip.
+- New module `sweep/purge_expired.py` runs on the same APScheduler cadence as the existing sweep jobs (spec §9.4). Uses advisory locks per the `sweep-jobs-use-advisory-locks` invariant.
+- New table `purge_audit` records every deletion with installation_id, rows_affected, timestamp, and the role that performed it. Append-only forever; not itself subject to retention TTL, because purge records are the forensic trail operators rely on when investigating accidental data loss.
+- `api/webhooks/router.py::installation_deleted_handler` enqueues the purge. Immediate delete risks accidental-uninstall data loss without the grace window.
+- Replay equivalence (spec §8) holds within the retention window: any review not yet purged can be replayed under its original policy version.
+- Users get a clear retention commitment when deciding whether to install Outrider on sensitive repos. The specific default numbers are visible in configuration and can be raised for compliance use cases.
+
+**Referenced from.** `docs/deployment.md`, `docs/trust-boundaries.md`, `sweep/purge_expired.py` (when written), `db/triggers/audit_append_only.sql` (when written), `api/webhooks/router.py` (when written), `db/models/purge_audit.py` (when written).
+
+---
+
+## 013. LLM/privacy contract: Anthropic egress, retention, ZDR
+
+**Status:** Accepted, 2026-04-23.
+
+**Context.** Under #011 (self-hosted canonical V1), user code stays in user infra *except* for the LLM call to Anthropic. Users deciding whether to install Outrider need a clear statement of what leaves their infrastructure, what Anthropic does with it, and what configuration controls exist. Anthropic's standard API contract (per privacy.anthropic.com as of 2026-04-23): inputs/outputs are not used for training without permission; 30-day retention for abuse detection; zero-data-retention available by separate arrangement. Prompt caching is ZDR-compatible with short-lived cache entries.
+
+**Decision.** The LLM privacy contract Outrider commits to, in V1:
+
+1. **Egress include list.** API calls to the LLM provider include: file contents of changed files, PR title, PR body, commit messages, branch names, author login, scope unit text (extracted via `ast_facts`), and evidence-span snippets for findings. That is the minimum set needed for structure-aware review per spec §5.
+2. **Egress exclude list.** API calls do NOT include: GitHub App private key, webhook secret, installation tokens, webhook signatures, operator env vars, or any secret material. If a future code path would send any excluded item, that's a bug *and* a #013 supersession.
+3. **Anthropic retention.** 30 days for abuse detection by default; inputs not used for training; zero-data-retention available by customer arrangement. Outrider does not enable ZDR by default — ZDR requires a separate agreement with Anthropic and is not universally available. Operators who have arranged ZDR opt in via `ANTHROPIC_ZDR_ENABLED=true`, which causes `AnthropicProvider` to send the appropriate request header and restrict model selection to ZDR-supported variants.
+4. **Prompt caching.** Enabled by default per the existing `prompt-caching-always-on` convention. Prompt cache entries are short-lived (TTL set by Anthropic, currently ~5 minutes as of 2026-04-23) and ZDR-compatible. The TTL is Anthropic-controlled and may change; this decision commits to *using* caching with whatever TTL Anthropic provides, not to a specific duration.
+5. **Logs never contain prompt or completion content.** Structured log fields on `LLMCallEvent` are: `review_id`, `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `elapsed_ms`, `finish_reason`. Never the prompt text. Never the completion text. If debugging requires the content, retrieve it by replay from `PRContext` + scope extraction — the audit row intentionally does not carry it. Defense in depth: a logging filter rejects records containing prompt/completion payloads (first line); the `LLMCallEvent` schema itself omits content fields (belt).
+6. **User-facing privacy statement.** "Outrider sends the following to your configured LLM provider: [egress include list above]. Under Anthropic's default API terms, inputs are retained for 30 days for abuse detection and not used for training. If you need zero-data-retention, arrange it with Anthropic and set `ANTHROPIC_ZDR_ENABLED=true`. Outrider itself adds no retention beyond the retention TTLs configured under DECISIONS.md #012."
+7. **Mandatory ZDR-disabled startup notice.** On startup, if `ANTHROPIC_ZDR_ENABLED` is not true, Outrider emits a structured log line at INFO level naming the retention commitment: "privacy_notice anthropic_retention=30d zdr=disabled; set ANTHROPIC_ZDR_ENABLED=true if you have arranged zero-data-retention with Anthropic." The line is emitted at INFO not DEBUG so deployment reviewers cannot miss it, and carries a `privacy_notice` structured field so log-aggregation rules can route it to a visible surface. This closes the silent-default failure mode where an operator deploys Outrider without reading configuration docs, user code flows to Anthropic's 30-day retention, and affected users never find out. The README and deployment docs explicitly reference this notice behavior.
+
+**Consequences.**
+
+- `llm/anthropic_provider.py` reads `ANTHROPIC_ZDR_ENABLED`, sends the appropriate header when set, and fails fast at startup if ZDR is enabled against a model variant that does not support it.
+- `llm/anthropic_provider.py` emits the mandatory startup notice on construction when ZDR is disabled.
+- `audit/events.py::LLMCallEvent` schema: metadata fields only. No `prompt` or `completion` field.
+- Logging configuration includes a filter that drops log records whose values contain prompt/completion payloads. First line of defense; the schema itself is the belt.
+- V1.5's `OpenAIProvider` (and any other `LLMProvider` implementation) must publish equivalent retention commitments at wrapper-construction time or Outrider refuses to construct the provider. Each provider is responsible for its own #013-class statement; this entry covers Anthropic.
+- Prompt caching stays on by default per existing convention. Documentation explicitly notes the Anthropic-controlled TTL and ZDR compatibility.
+- The user-facing privacy statement (item 6) ships in `README.md` and `docs/deployment.md` at the public flip. Any change to the egress field list (item 1) or the retention terms (item 3) requires a supersession decision, not an in-place edit of this entry.
+
+**Referenced from.** `llm/anthropic_provider.py` (when written), `llm/base.py` (when written), `audit/events.py` (when written), `README.md`, `docs/deployment.md`.

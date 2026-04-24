@@ -2,6 +2,8 @@
 
 Outrider is an agentic pull request review tool: a FastAPI webhook receives a GitHub PR event, dispatches a 7-node LangGraph review flow, uses tree-sitter structure to focus analysis, gates high-severity findings through HITL approval, and records every meaningful step in an append-only Postgres audit trail.
 
+V1 is self-hostable: you run Outrider in your own infrastructure, connect it to a GitHub App installed on your repos, and point it at your LLM provider. Code and PR text reach one third party — the LLM provider (Anthropic in V1) — and Outrider itself adds no retention beyond the TTLs you configure. See [`DECISIONS.md#011`](DECISIONS.md#011-self-hosted-is-canonical-v1-saas-is-v15) for the deployment-model commitment and [`DECISIONS.md#013`](DECISIONS.md#013-llmprivacy-contract-anthropic-egress-retention-zdr) for the full LLM privacy contract. Retention and uninstall-purge behavior are documented at [`DECISIONS.md#012`](DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted).
+
 ## Setup
 
 ```bash
@@ -34,3 +36,4 @@ Run `uv sync --dev` before `pre-commit install`; the hooks call tools from `.ven
 - `docs/trust-boundaries.md` captures the rules that protect the security and replay story.
 - `docs/invariants.md` is generated from tags in `docs/spec.md`; do not edit it by hand.
 - `.claude/skills/outrider-navigator/SKILL.md` is the Claude Code skill that surfaces applicable invariants before Outrider code work.
+- `DECISIONS.md` is the public record of architectural choices. Code and comments cite entries by slug (e.g., `# See DECISIONS.md#011-self-hosted-is-canonical-v1`).
