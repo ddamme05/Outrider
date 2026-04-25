@@ -3,6 +3,8 @@ CLAUDE.md
 AGENTS.md
 .claude/
 .agents/
+generators/
+generated/
 
 # --- Local docs (ignored now; track when public) ---
 docs/
@@ -11,6 +13,7 @@ docs/
 COMMIT_LOG.md
 ITERATION_LOG.md
 SESSION_RETRO.md
+AUDIT_LOG.md
 specs/
 contents.md
 struct.md
