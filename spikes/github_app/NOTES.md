@@ -314,6 +314,20 @@ with it in `api/webhooks/schemas.py` → `PRContext` — the recommended
 default below uses `pull_request.head.sha` because it's the same field
 regardless of event action.
 
+### Octokit fixture permissions are NOT Outrider's permission spec
+
+`fixtures/sample_installation_created.json` carries the broad permission set
+from octokit's published sample (write access to many resources). That is
+*not* Outrider's minimum-viable permission set, which is `contents: read` +
+`pull_requests: write` only per `docs/deployment.md` and `runbook.md`
+step 2. Q4 validates the *shape* of the `installation.created` payload, not
+the permission contents. If a future test needs to assert the
+minimum-permission story, it must inspect the App's actual installed
+permissions via the GitHub API at install time, not the fixture's
+`installation.permissions` field. Treat the fixture's permissions as
+arbitrary — they're whatever the octokit sample author wrote, and they
+will not match real Outrider installs.
+
 ### Vendor-SDK import is in-spike by design
 
 The spike formally violates `vendor-sdks-only-in-wrappers` (demos import
@@ -332,7 +346,7 @@ choice.
 
 | Question | Recommended default |
 |---|---|
-| App JWT shape | `pyjwt.encode({"iat": now-10, "exp": now+9*60, "iss": app_id}, private_key, "RS256")` — or just let `AppAuthStrategy` sign internally. |
+| App JWT shape | `pyjwt.encode({"iat": now-60, "exp": now+9*60, "iss": app_id}, private_key, "RS256")` — 60s `iat` backdate per current GitHub docs (corrected from 10s after audit 2026-04-26); or just let `AppAuthStrategy` sign internally. |
 | Installation-scoped client | `github.with_auth(github.auth.as_installation(installation_id))`. Tokens auto-minted and cached. |
 | Webhook signature verification | `githubkit.webhooks.verify(secret, raw_body, header)`. Wraps `hmac.compare_digest`. |
 | Webhook parsing | `githubkit.webhooks.parse(event_name, raw_body)`. One call per request. |

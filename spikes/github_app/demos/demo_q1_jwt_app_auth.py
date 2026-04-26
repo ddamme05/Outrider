@@ -47,11 +47,13 @@ def q1a_primitive(private_pem: bytes) -> None:
     now = int(time.time())
     # GitHub App JWT claims per docs:
     # https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
-    # - iat: issued-at (int unix seconds; GitHub tolerates 60s of drift)
+    # - iat: issued-at (int unix seconds; GitHub recommends backdating 60s to
+    #   tolerate clock skew between issuer and GitHub's servers)
     # - exp: expiration (max 10 min after iat; GitHub's server-side clamp)
     # - iss: app ID (numeric) OR client ID (string starting with Iv or Iv1.)
     payload = {
-        "iat": now - 10,  # small backdate to tolerate clock skew, per docs
+        "iat": now - 60,  # 60s backdate per current GitHub docs (was 10s
+                          # in original draft; corrected per audit 2026-04-26)
         "exp": now + 9 * 60,  # 9 min, under the 10-min hard cap
         "iss": TEST_APP_ID,
     }
