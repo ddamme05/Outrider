@@ -142,16 +142,68 @@ If everything lines up, the round trip works.
 
 ---
 
-## Step 7 — Capture the two live findings into NOTES.md
+## Step 7 — Verify installation token mint (Q2)
 
-After the webhook lands, edit `NOTES.md` with:
+The offline spike never crossed the network. `DECISIONS.md#006` required
+minting an installation access token; this step closes the audit finding
+that flagged Q2 as un-spiked.
 
-### Installation ID
+Run `spikes/github_app/verify_installation_token.py` with the App ID,
+private key path, and installation_id from earlier steps. From repo root:
+
+```bash
+export GITHUB_APP_ID=<numeric ID from step 2>
+export GITHUB_APP_PRIVATE_KEY_PATH=/path/to/the.pem
+export GITHUB_INSTALLATION_ID=<number from step 3 install URL>
+export TEST_REPO=<your-account>/<test-repo>   # optional, recommended
+
+../../.venv/bin/python spikes/github_app/verify_installation_token.py
+```
+
+The script:
+
+1. Constructs `AppAuthStrategy(app_id, private_key)` — signs a JWT.
+2. Switches to installation context via
+   `github.with_auth(github.auth.as_installation(installation_id))`.
+3. Makes one API call. With `TEST_REPO` set:
+   `github.rest.repos.async_get(owner, repo)`. Without `TEST_REPO`:
+   `github.rest.apps.async_get_authenticated()`.
+
+Expected output is a single line beginning with `q2_verified
+installation_id=...`. This is Q2's evidence: the SDK auth chain works
+end-to-end against real GitHub, and the installation token actually
+authenticates the call.
+
+If the script errors on `401`, the most common cause is clock skew on
+the issuing machine — the JWT's `iat` is backdated 60 seconds in
+production code (`AppAuthStrategy` handles this internally), but a
+machine more than 60 seconds out of sync will still fail. Run `date -u`
+and confirm against `https://time.gov` if 401 persists.
+
+If the script errors on `404` with `TEST_REPO` set, the App probably
+isn't installed on that repo — go back to step 3 and install on the
+correct repo.
+
+---
+
+## Step 8 — Capture the live findings into NOTES.md
+
+After the webhook lands and Step 7 confirms token-mint works, edit
+`NOTES.md` with:
+
+### Installation ID and token-mint verification
 
 Append to the Q2 section:
 
 > **Live installation_id on test repo:** `<number from step 3>`.
-> Minted on `YYYY-MM-DD`.
+> First seen on `YYYY-MM-DD` via `installation.created` webhook.
+>
+> **Q2 token-mint verification (`verify_installation_token.py` output):**
+> ```
+> q2_verified installation_id=<n> repo='owner/name' repo_id=<id> ...
+> ```
+> Confirms `AppAuthStrategy` + `with_auth(as_installation(id))` mints
+> a valid installation token against real GitHub on `YYYY-MM-DD`.
 
 ### Payload diff
 
@@ -187,7 +239,7 @@ will need to account for.
 
 ---
 
-## Step 8 — Tear down
+## Step 9 — Tear down
 
 The App, key, and smee.io channel can all persist indefinitely if you want
 to repeat the runbook. If you're cleaning up:
