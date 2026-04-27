@@ -2,11 +2,10 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-from alembic import context
 
 # Alembic Config object, which provides access to the values within
 # the .ini file in use.
@@ -36,12 +35,13 @@ if not db_url:
     )
 config.set_main_option("sqlalchemy.url", db_url)
 
-# target_metadata is wired in the next commit when ORM models land.
-# For now, alembic init / current / upgrade run as no-ops against an empty
-# versions/ directory. When src/outrider/db/models/ is created, change to:
-#   from outrider.db.models import Base
-#   target_metadata = Base.metadata
-target_metadata = None
+# Wired up to the ORM models' MetaData so `alembic revision --autogenerate`
+# can compare ORM declarations against the live DB. The package init imports
+# every model module so registering them on Base.metadata is a side effect of
+# the import.
+from outrider.db.models import Base  # noqa: E402
+
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

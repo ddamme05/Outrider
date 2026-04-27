@@ -1,0 +1,56 @@
+"""ANOMALIES.
+
+Forensic-tier table populated by `anomaly/scanner.py` (when written) reading the
+audit stream. Anomalies are not retention-bound — they keep their value
+indefinitely as the operations record of "did the agent behave correctly?"
+
+`review_id → reviews.id` ON DELETE SET NULL (column is nullable). When a review
+purges through retention, anomalies survive as a forensic trail with the FK set
+to NULL, marked logically as "associated with a since-purged review." This is
+acceptable for anomalies because they don't carry the every-event-has-review-id
+invariant that audit_events does — the anomaly is keyed off a `rule_name` which
+gives it standalone meaning.
+
+`status` uses the `anomaly_status_enum` PG-native ENUM type (open, acknowledged,
+resolved). Distinct from `review_status_enum` per docs/schema.md "Two distinct
+PG ENUM types" — both happen to use a column named `status` but the value sets
+don't overlap.
+"""
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import ForeignKey, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import Boolean, DateTime, Uuid
+
+from outrider.db.models._base import Base, anomaly_status_enum
+
+
+class Anomaly(Base):
+    __tablename__ = "anomalies"
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    review_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("reviews.id", ondelete="SET NULL"), nullable=True
+    )
+    rule_name: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(anomaly_status_enum, nullable=False)
+    is_eval: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
