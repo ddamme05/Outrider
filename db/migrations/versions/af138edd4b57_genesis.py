@@ -18,11 +18,17 @@ It also performs three things autogenerate does NOT produce:
      CREATE rather than CREATE IF NOT EXISTS — PostgreSQL's
      CREATE TRIGGER syntax does not support IF NOT EXISTS.
 
-  2. Severity policies seed row for version "1.0.0" per the schema-layer
-     spec. Without this row, the RESTRICT FK from findings.policy_version
-     would block every finding insert against a fresh DB. The policy
-     JSON itself is a placeholder ({}) at this stage; policy/severity.py
-     (when written) is the canonical source of the actual mapping.
+  2. Severity policies seed row for version "1.0.0" carrying the
+     canonical SEVERITY_POLICY mapping from spec §7.4 verbatim
+     (`severity-set-by-policy`). Without this row, the RESTRICT FK from
+     findings.policy_version blocks every finding insert against a fresh
+     DB; without the canonical content, baseline severity assignment
+     would resolve to nothing. Policy versions are immutable per
+     `severity-policy-versioned-for-replay`: when the mapping changes
+     (e.g., upgrading MISSING_INPUT_VALIDATION from MEDIUM to HIGH), the
+     change ships as a new migration that inserts v1.0.1, not as an
+     UPDATE to v1.0.0. Historical reviews replay under their original
+     policy_version regardless.
 
   3. (Implicit) ENUM type creation rides on column declarations. The two
      metadata-scoped ENUMs (review_status_enum, anomaly_status_enum) are
@@ -412,14 +418,34 @@ def upgrade() -> None:
     )
 
     # Severity policies seed row — non-negotiable for FK validity per the
-    # schema-layer spec. The policy JSON is a placeholder; the actual
-    # mapping is owned by policy/severity.py (when written), which can
-    # update v1.0.0 in place or seed a v1.0.1 with the canonical mapping.
-    # Without this row, any findings insert FK-fails on a fresh DB.
+    # schema-layer spec, and load-bearing for `severity-set-by-policy`:
+    # baseline severity always comes from this mapping keyed by finding
+    # type, never from model output. The mapping below is the canonical
+    # spec §7.4 SEVERITY_POLICY content for v1.0.0; if it ever needs to
+    # change, a new migration creates v1.0.1 (or whatever the next semver)
+    # — `severity-policy-versioned-for-replay` forbids in-place edits to a
+    # policy version because historical reviews must replay under the
+    # policy that classified them.
     op.execute(
         """
         INSERT INTO severity_policies (version, policy)
-        VALUES ('1.0.0', '{}'::jsonb);
+        VALUES (
+            '1.0.0',
+            '{
+                "sql_injection": "critical",
+                "auth_bypass": "critical",
+                "hardcoded_secret": "high",
+                "xss": "high",
+                "path_traversal": "high",
+                "missing_input_validation": "medium",
+                "n_plus_one_query": "medium",
+                "blocking_call_in_async": "medium",
+                "missing_error_handling": "low",
+                "missing_test": "low",
+                "unused_import": "info",
+                "deprecated_api": "info"
+            }'::jsonb
+        );
         """
     )
 
