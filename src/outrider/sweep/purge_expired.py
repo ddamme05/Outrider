@@ -147,20 +147,36 @@ async def purge_installation(
 ) -> dict[str, int]:
     """Installation lifecycle hard-delete.
 
-    Deletes all content rows scoped to this installation in strict
-    order, writes per-table purge_audit rows, then deletes the
-    installations row itself. installation_repositories cascades
-    automatically via the FK action declared in migration 0001.
-    purge_audit rows survive the installation hard-delete (loose
-    reference, no FK).
+    Acquires the same SWEEP_LOCK_ID as purge_expired so the two sweep
+    paths cannot race with each other. Returns an empty dict (without
+    touching any data) if the lock is held by another sweep — the
+    caller can retry on the next scheduled tick.
 
-    Caller manages the transaction boundary. The same advisory lock
-    that purge_expired uses should also be held during this call so
-    the two sweep steps cannot race with each other.
+    Note on idempotency: ``pg_try_advisory_xact_lock`` succeeds if the
+    same transaction already holds the lock (transaction-scoped locks
+    are reentrant within the holding session). So if the caller already
+    acquired the lock via purge_expired earlier in the same transaction,
+    this call's acquisition is a no-op success — the documented "single
+    advisory-locked transaction" pattern from the schema-layer spec
+    composes cleanly.
+
+    Deletes all content rows scoped to this installation in strict
+    order (llm_call_content → findings → reviews), writes per-table
+    purge_audit rows, then deletes the installations row itself.
+    installation_repositories cascades automatically via the FK action
+    declared in migration 0001. purge_audit rows survive the
+    installation hard-delete (loose reference, no FK).
 
     Returns rows_per_table for content tables (does not include the
     installations row itself, which is by definition deleted).
     """
+    if not await _try_acquire_lock(conn):
+        logger.info(
+            "install_purge_skipped: advisory lock held by another sweep (installation_id=%s)",
+            installation_id,
+        )
+        return {}
+
     rows_per_table: dict[str, int] = {}
 
     for table in _RETENTION_TABLES:
