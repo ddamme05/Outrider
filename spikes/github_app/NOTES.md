@@ -210,6 +210,54 @@ where `githubkit` doesn't expose a generated method. For Q2's specific
 flow, the auto-mint via `with_auth(as_installation(...))` is the
 canonical path and is now live-verified.
 
+### What the live token signifies (closeout framing, 2026-04-26)
+
+Reviewer's framing of what the runbook walk actually proved, recorded
+here so the spike's *significance* is retrievable alongside its
+*findings*:
+
+The chain that now works end-to-end:
+
+1. GitHub App exists and is installed on a target account/repo.
+2. The App private key can authenticate as the App (via JWT).
+3. The saved `installation_id` points to a real installation.
+4. GitHub accepts an installation-scoped auth flow (JWT → installation
+   access token).
+5. A real webhook traveled GitHub → smee.io → local receiver.
+6. The receiver verified the HMAC signature and accepted the payload.
+7. The captured real payload matches the fixture assumptions on every
+   `PRContext`-relevant field.
+
+A GitHub App has two identity layers — **App identity** (proven by
+signing a short-lived JWT with the App private key) and **installation
+identity** (proven by exchanging that App authentication + an
+`installation_id` for an installation access token). The installation
+token is the actual bearer credential Outrider will use for
+per-installation API calls.
+
+What the verified token signifies:
+
+- GitHub recognizes the App's private key and App ID.
+- `installation_id=127368814` is valid and pinned to a real installation.
+- The App is installed on the target account/repo.
+- The App can act with only the permissions granted at install time
+  (Outrider's spec calls for `contents: read` + `pull_requests: write`).
+- `githubkit` can mint and use the token through the flow production
+  code will rely on.
+
+What it does NOT mean:
+
+- Not broad account access. Not a user token. Not permanent. Scoped
+  strictly to the App's configured permissions. Expires after about
+  an hour; `githubkit` refreshes transparently.
+
+**Practical meaning: the core GitHub App risk is retired.** Outrider
+can authenticate as the App, operate as an installation, receive
+signed webhooks, and parse real payloads. The Month 1
+`api/webhooks/router.py` and `src/outrider/github/` build can proceed
+against the spike's recommended-defaults table without re-litigating
+the auth or transport mechanics.
+
 ---
 
 ## Q3 — webhook signature verification
