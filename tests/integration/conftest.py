@@ -6,6 +6,19 @@ the schema-layer spec — sharing a DB across tests would re-introduce
 ordering coupling, and tests like test_severity_policies_seeded depend on
 a fresh post-migration state.
 
+**Test isolation is enforced at two layers** (see docs/testing.md
+"Two-container model" for the full rationale):
+
+  1. *Process-level.* Tests connect to ``TEST_DATABASE_URL`` exclusively
+     — a separate ``postgres-test`` container on port 5433 with
+     ephemeral tmpfs data. The dev ``outrider`` DB on port 5432 is
+     never touched by the automated test suite.
+  2. *Fail-loud URL guard.* The ``fresh_db`` fixture asserts the URL
+     matches the expected pattern (port 5433, "test" in the database
+     name) before any DDL. A misconfigured ``.env`` that points the
+     fixture at the dev DB by mistake is caught at fixture setup with
+     a clear error, not silently swallowed.
+
 Two fixtures cover the integration-test surface:
 
   - ``fresh_db``     — yields a URL to an empty Postgres database. The
@@ -53,6 +66,42 @@ ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 # find script_location.
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
+# Defense-in-depth URL pattern guard. The integration suite must connect
+# to the dedicated postgres-test container (port 5433, db name containing
+# "test"), never to the dev DB. If TEST_DATABASE_URL is missing or
+# misconfigured (e.g., copy-pasted from DATABASE_URL), the fixture refuses
+# to run rather than silently issuing CREATE/DROP DATABASE against the
+# dev container. Same posture as docker-compose.yml's `:?` requirement on
+# TEST_POSTGRES_*: fail loud at the entrypoint, not somewhere downstream.
+_EXPECTED_TEST_PORT = "5433"
+_EXPECTED_TEST_DB_NAME_FRAGMENT = "test"
+
+
+def _assert_test_url_is_isolated(url: str) -> None:
+    """Refuse to run if TEST_DATABASE_URL doesn't point at the test container.
+
+    Two checks: the host:port segment must end in :5433, and the database
+    name must contain the literal "test". Both are properties of the
+    postgres-test container's intended configuration. A URL that fails
+    either check is almost certainly a misconfigured .env that points
+    the test fixture at the dev DB.
+    """
+    if f":{_EXPECTED_TEST_PORT}" not in url:
+        raise RuntimeError(
+            f"TEST_DATABASE_URL must target port {_EXPECTED_TEST_PORT} "
+            f"(the postgres-test container); got: {url!r}. "
+            "Refusing to run integration tests against an unexpected URL — "
+            "see docs/testing.md 'Two-container model' for the rationale."
+        )
+    db_segment = url.rsplit("/", 1)[-1]
+    if _EXPECTED_TEST_DB_NAME_FRAGMENT not in db_segment.lower():
+        raise RuntimeError(
+            f"TEST_DATABASE_URL database name must contain '"
+            f"{_EXPECTED_TEST_DB_NAME_FRAGMENT}' (canonical: outrider_test); "
+            f"got database segment: {db_segment!r}. "
+            "Refusing to run integration tests against an unexpected DB."
+        )
+
 
 def _replace_db(url: str, new_db: str) -> str:
     """Swap the database name in a postgresql+psycopg:// URL.
@@ -95,10 +144,23 @@ async def _run_alembic_action(action: str, target: str, db_url: str) -> None:
 async def fresh_db() -> AsyncGenerator[str]:
     """Yield a URL to a brand-new empty Postgres database.
 
-    The DB is created at fixture setup and force-dropped at teardown
-    (any leftover backend connections are terminated before DROP).
+    The DB is created at fixture setup against the postgres-test container
+    (port 5433, ephemeral tmpfs data) and force-dropped at teardown. The
+    URL pattern guard runs first; a misconfigured TEST_DATABASE_URL fails
+    loud before any DDL.
     """
-    main_url = os.environ["DATABASE_URL"]
+    try:
+        main_url = os.environ["TEST_DATABASE_URL"]
+    except KeyError as exc:
+        raise RuntimeError(
+            "TEST_DATABASE_URL is not set. Run `set -a && source .env && set +a` "
+            "before pytest, and confirm .env has the TEST_ block (see "
+            ".env.example). Integration tests require the postgres-test "
+            "container, not the dev postgres container."
+        ) from exc
+
+    _assert_test_url_is_isolated(main_url)
+
     test_db_name = f"outrider_test_{uuid4().hex[:8]}"
     test_url = _replace_db(main_url, test_db_name)
 
