@@ -21,8 +21,10 @@ live GitHub access and are documented in `runbook.md` rather than demo'd —
 see "Live runbook split" below.
 
 **Status.** `.venv/bin/python run_all.py` → **5/5 demos pass**. Live
-artifacts (installation_id, real-payload diff) are **pending a runbook
-walk** — see "Live artifacts pending" below.
+runbook walk completed 2026-04-26 — installation_id captured, Q2 token
+mint verified end-to-end against real GitHub, real-payload diff
+recorded. Spike is complete. See "Live artifacts captured" below for
+the runbook-walk evidence.
 
 ---
 
@@ -89,25 +91,45 @@ octokit fixtures and what a real webhook actually delivers.
 Without the split, every rerun of the spike would require App registration
 and the offline primitives would be unverifiable historically.
 
-### Live artifacts pending
+### Live artifacts captured (runbook walk 2026-04-26)
 
 `DECISIONS.md#006` names "the installation ID" as a spike deliverable.
-**That artifact is pending a runbook walk.** What's here now:
+The runbook walk on 2026-04-26 produced:
 
-- Offline: 5/5 mechanical demos pass; SDK surface audited; `githubkit`
-  method names that will be used are confirmed (`AppAuthStrategy`,
-  `AppInstallationAuthStrategy`, `with_auth(as_installation(...))`,
-  `webhooks.verify`, `webhooks.parse`, `arequest(...)` escape hatch).
-- Offline: webhook event shapes documented against real octokit samples
-  (three events: `pull_request.opened`, `pull_request.synchronize`,
-  `installation.created`).
-- Pending: the actual installation_id observed on a real test App, plus
-  any structural diff between the octokit samples and real deliveries.
-  `runbook.md` step 7 captures these into this file when walked.
+- **Live installation_id:** `127368814` on `ddamme05/outrider-spike-test`.
+  First seen via `installation.created` webhook in the smee.io UI when
+  the App was installed (pre-receiver, so the body is in smee's UI but
+  not in the receiver's capture dir — acceptable, NOTES.md captures the
+  ID itself).
+- **Q2 token-mint round-trip verified:** `verify_installation_token.py`
+  output:
+  ```
+  q2_verified installation_id=127368814 app_authenticated_as='outrider-spike-ddamme' app_id=3514536
+  ```
+  Confirms `AppAuthStrategy` + `with_auth(as_installation(id))` mints a
+  valid installation token against real GitHub. Without `TEST_REPO` set
+  the script fell back to `apps.async_get_authenticated`; with
+  `TEST_REPO=ddamme05/outrider-spike-test` set it would also exercise
+  `repos.async_get` (same token, different endpoint — both prove the
+  installation-scoped client authenticates).
+- **End-to-end webhook flow:** smee.io → smee-client → uvicorn
+  receiver → 202 Accepted, two `pull_request` deliveries observed
+  (`opened` and `review_requested`). Receiver returned 202 on every
+  delivery; capture-dir wrote raw bodies as expected.
+- **Real-vs-fixture payload diff (structural findings):** Real
+  deliveries on 2026-04-26 carry `"user_view_type": "public"` on user
+  objects (sender, pull_request.user, etc.); the octokit fixture does
+  not. New field added by GitHub since the octokit sample was last
+  refreshed. Otherwise the diff is value-level (timestamps, IDs, URLs,
+  login names, body content) — no structural drift that would break
+  `githubkit.webhooks.parse` or `PRContext` construction. The
+  `user_view_type` field is informational and does not affect Q4's
+  finding that all `PRContext`-relevant fields are present and typed.
 
-When the runbook is walked, the Q2 and Q4 sections below gain addenda
-with concrete numbers. Until then, treat them as "shape confirmed, live
-round-trip pending."
+Spike contract from `DECISIONS.md#006` is now complete-complete:
+JWT signing (Q1), installation token mint (Q2 + verify script), webhook
+signature verification (Q3), payload shapes (Q4 + real-payload diff),
+FastAPI route (Q5), smee tunnel (Q6), githubkit surface (Q7).
 
 ---
 
@@ -115,8 +137,10 @@ round-trip pending."
 
 **Q1a (primitive).** `pyjwt[crypto]==2.12.1` signs and verifies an RS256 JWT
 round-trip against a 2048-bit RSA key. Canonical claims per [GitHub App JWT docs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app):
-- `iat`: issued-at, unix seconds. Small backdate (10s) is safe and GitHub
-  documents a 60s tolerance for clock skew.
+- `iat`: issued-at, unix seconds. Backdate **60 seconds** per current
+  GitHub docs (the demo originally used 10s; corrected after the
+  2026-04-26 audit). 60s gives the recommended clock-skew tolerance
+  margin between the issuing machine and GitHub's servers.
 - `exp`: issued-at + up to **10 minutes** (hard cap on GitHub's side).
 - `iss`: the numeric App ID **or** the client ID string.
 
@@ -139,11 +163,27 @@ JWT claims in production code unless `githubkit` stops being viable.
 
 ## Q2 — installation access token minting
 
-**Deferred to live runbook.** `githubkit` handles installation-token minting
-automatically when you call any API through a client authenticated with
-`AppInstallationAuthStrategy` or `GitHub.with_auth(github.auth.as_installation(id))`.
-There's no documented method like `async_create_installation_access_token`
-that an offline demo can verify against real credentials.
+**Verified live 2026-04-26.** `githubkit` handles installation-token
+minting automatically when you call any API through a client
+authenticated with `AppInstallationAuthStrategy` or
+`GitHub.with_auth(github.auth.as_installation(id))`. There's no
+documented method like `async_create_installation_access_token` —
+`githubkit` mints the token transparently on the first API call from
+the installation-scoped client.
+
+**Live evidence (`verify_installation_token.py` output, 2026-04-26):**
+
+```
+q2_verified installation_id=127368814 app_authenticated_as='outrider-spike-ddamme' app_id=3514536
+```
+
+Run from repo root with the App ID, private-key path, and installation_id
+in env vars (see `runbook.md` Step 7). The script constructs an
+`AppAuthStrategy(app_id, private_key)` client, switches context via
+`with_auth(github.auth.as_installation(installation_id))`, and makes
+one real GitHub API call (`apps.async_get_authenticated` without
+`TEST_REPO`, or `repos.async_get` with). The successful response
+confirms the token round-trip works against production GitHub.
 
 **Docs-confirmed call shape** (from `aegis-docs::githubkit/pr-review-bot.md`):
 
@@ -165,8 +205,10 @@ resp = await github.arequest(
 )
 ```
 
-Q7's demo confirms `github.arequest` exists and is callable. The
-`runbook.md` step 5 produces the actual installation_id.
+Q7's demo confirms `github.arequest` exists and is callable for cases
+where `githubkit` doesn't expose a generated method. For Q2's specific
+flow, the auto-mint via `with_auth(as_installation(...))` is the
+canonical path and is now live-verified.
 
 ---
 
@@ -222,6 +264,20 @@ from real octokit sample payloads:
 One patch applied: added `installation.app_slug` to the `installation.created`
 sample because the octokit version is stale (missing a field githubkit's
 `2026-03-10` schema requires). Real deliveries will have this field.
+
+**Real-payload diff finding (2026-04-26 runbook walk).** A live
+`pull_request` delivery against `ddamme05/outrider-spike-test` was
+captured and diffed against `sample_pull_request_opened.json`. The
+structural finding: real payloads carry **`"user_view_type": "public"`**
+on every user object (sender, pull_request.user, assignees[*],
+pull_request.assignees[*], etc.); the octokit fixture does not. This
+is a new field GitHub added since the octokit sample was last refreshed.
+It is informational and does not affect any field `PRContext`
+construction reads, but `api/webhooks/schemas.py` may want to capture
+or ignore it explicitly when written. All other diff lines were
+value-level (timestamps, IDs, URLs, login names, body text) — no other
+structural drift, no missing fields, no type changes on the fields
+Q4 enumerates above.
 
 **Demo.** `demos/demo_q4_payload_shapes.py`.
 

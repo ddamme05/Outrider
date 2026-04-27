@@ -40,7 +40,21 @@ CAPTURE_DIR_ENV = "OUTRIDER_SPIKE_CAPTURE_DIR"
 # Emit a visible shape-summary record on every accepted delivery. Use the
 # stdlib logger rather than structlog so the spike has no dependency we
 # don't already control in pyproject.toml.
+#
+# Uvicorn configures its own loggers (uvicorn, uvicorn.access) but does NOT
+# configure custom loggers, so attach a stderr handler ourselves. Without
+# this, the INFO calls below silently drop and the runbook walker never
+# sees the webhook_received / payload_captured lines. Discovered during
+# the 2026-04-26 runbook walk.
 logger = logging.getLogger("outrider.spike.github_app.receiver")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+    )
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def _get_secret() -> str:
