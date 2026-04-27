@@ -59,12 +59,8 @@ class LLMCallContent(Base):
     )
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     completion: Mapped[str] = mapped_column(Text, nullable=False)
-    is_eval: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), nullable=False
-    )
+    is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
-    retention_expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

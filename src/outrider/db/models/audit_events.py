@@ -36,9 +36,7 @@ class AuditEvent(Base):
     __table_args__ = (
         # UNIQUE(review_id, sequence_number) produces an implicit unique index
         # which covers replay-traversal queries; no separate Index needed for it.
-        UniqueConstraint(
-            "review_id", "sequence_number", name="uq_audit_review_sequence"
-        ),
+        UniqueConstraint("review_id", "sequence_number", name="uq_audit_review_sequence"),
         # Dashboard time-range queries: events between X and Y for a review.
         Index("ix_audit_events_review_timestamp", "review_id", "timestamp"),
         # V1.5 forward-compat: parallel-analyze branch grouping per review.
@@ -56,10 +54,6 @@ class AuditEvent(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
-    sequence_number: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=False), nullable=False
-    )
-    is_eval: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), nullable=False
-    )
+    sequence_number: Mapped[int] = mapped_column(BigInteger, Identity(always=False), nullable=False)
+    is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

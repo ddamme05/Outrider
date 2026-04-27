@@ -44,8 +44,7 @@ def main() -> None:
     pygoat = FIXTURES / "pygoat_introduction_views.py"
     tree, errors = parse(pygoat)
     assert not tree.root_node.has_error, (
-        f"Q1a FAIL: {pygoat.name} has parse errors "
-        f"({len(errors)} ERROR/MISSING nodes)"
+        f"Q1a FAIL: {pygoat.name} has parse errors ({len(errors)} ERROR/MISSING nodes)"
     )
     print(f"Q1a OK: {pygoat.name} parsed clean, no ERROR/MISSING.")
 

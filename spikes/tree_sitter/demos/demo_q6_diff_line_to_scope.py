@@ -51,9 +51,7 @@ def qualified_name(node, source: bytes) -> str:
         if cur.type in NAMED_SCOPES:
             name_field = cur.child_by_field_name("name")
             if name_field is not None:
-                parts.append(
-                    source[name_field.start_byte : name_field.end_byte].decode("utf-8")
-                )
+                parts.append(source[name_field.start_byte : name_field.end_byte].decode("utf-8"))
         cur = cur.parent
     return ".".join(reversed(parts))
 
@@ -137,15 +135,12 @@ def main() -> None:
         line = find_line(source_text, marker)
         got = scope_for_line(scopes, line)
         assert got == expected, (
-            f"Q6 FAIL ({desc}): line {line} marker {marker!r} → "
-            f"{got!r}, expected {expected!r}"
+            f"Q6 FAIL ({desc}): line {line} marker {marker!r} → {got!r}, expected {expected!r}"
         )
 
     # Out-of-range line.
     huge = 10_000
-    assert scope_for_line(scopes, huge) is None, (
-        "Q6 FAIL: line past EOF should return None"
-    )
+    assert scope_for_line(scopes, huge) is None, "Q6 FAIL: line past EOF should return None"
 
     print(
         f"Q6 OK: innermost-scope picker resolves {len(cases)} edge cases "

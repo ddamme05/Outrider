@@ -41,8 +41,7 @@ def main() -> None:
     inside = (FIXTURES / "syntax_error_inside_scope.py").read_bytes()
     funcs, tree = functions_with_error_status(inside)
     assert tree.root_node.has_error, (
-        "Q7 pre-req FAIL: root_node.has_error should be True for "
-        "syntax_error_inside_scope.py"
+        "Q7 pre-req FAIL: root_node.has_error should be True for syntax_error_inside_scope.py"
     )
     assert funcs == {
         "good_function": False,
@@ -59,8 +58,7 @@ def main() -> None:
     outside = (FIXTURES / "syntax_error_outside_scope.py").read_bytes()
     funcs, tree = functions_with_error_status(outside)
     assert tree.root_node.has_error, (
-        "Q7 pre-req FAIL: root_node.has_error should be True for "
-        "syntax_error_outside_scope.py"
+        "Q7 pre-req FAIL: root_node.has_error should be True for syntax_error_outside_scope.py"
     )
     assert all(not v for v in funcs.values()), (
         f"Q7 FAIL (case 2): module-level error leaked into a function scope. "

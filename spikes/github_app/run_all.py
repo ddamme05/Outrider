@@ -44,8 +44,7 @@ def main() -> int:
         )
         if result.returncode != 0:
             print(
-                f"\nrun_all.py: FAILED at {demo.name} "
-                f"(exit {result.returncode}). Stopping.",
+                f"\nrun_all.py: FAILED at {demo.name} (exit {result.returncode}). Stopping.",
                 file=sys.stderr,
             )
             return result.returncode

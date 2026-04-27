@@ -77,9 +77,7 @@ async def main() -> None:
     # Step 2: switch to installation-scoped auth. githubkit mints an
     # installation token under the hood on the next API call (per
     # aegis-docs::githubkit/pr-review-bot.md and the Q2 docs in NOTES.md).
-    installation_github = app_github.with_auth(
-        app_github.auth.as_installation(installation_id)
-    )
+    installation_github = app_github.with_auth(app_github.auth.as_installation(installation_id))
 
     # Step 3: make a real API call to force token minting + verify the
     # token is accepted by GitHub.

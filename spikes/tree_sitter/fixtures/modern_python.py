@@ -3,7 +3,6 @@
 
 from typing import Any
 
-
 # PEP 695: generic type alias.
 type Vector[T] = list[T]
 

@@ -64,12 +64,10 @@ def main() -> None:
     # stable documented fallback."
     gh = GitHub()
     assert hasattr(gh, "arequest") and callable(gh.arequest), (
-        "Q7 FAIL: GitHub.arequest missing — wrapper cannot fall back to raw "
-        "async REST"
+        "Q7 FAIL: GitHub.arequest missing — wrapper cannot fall back to raw async REST"
     )
     assert hasattr(gh, "request") and callable(gh.request), (
-        "Q7 FAIL: GitHub.request missing — wrapper cannot fall back to raw "
-        "sync REST"
+        "Q7 FAIL: GitHub.request missing — wrapper cannot fall back to raw sync REST"
     )
 
     # Signatures for the three verbs the webhook path uses. If these shift,

@@ -43,25 +43,17 @@ from outrider.db.models._base import Base, review_status_enum
 class Review(Base):
     __tablename__ = "reviews"
     __table_args__ = (
-        UniqueConstraint(
-            "repo_id", "pr_number", "head_sha", name="uq_review_natural_key"
-        ),
+        UniqueConstraint("repo_id", "pr_number", "head_sha", name="uq_review_natural_key"),
         CheckConstraint("files_examined >= 0", name="ck_reviews_files_examined_nonneg"),
         CheckConstraint(
             "files_traced_beyond_diff >= 0",
             name="ck_reviews_files_traced_beyond_diff_nonneg",
         ),
         CheckConstraint("llm_calls_made >= 0", name="ck_reviews_llm_calls_made_nonneg"),
-        CheckConstraint(
-            "total_input_tokens >= 0", name="ck_reviews_total_input_tokens_nonneg"
-        ),
-        CheckConstraint(
-            "total_output_tokens >= 0", name="ck_reviews_total_output_tokens_nonneg"
-        ),
+        CheckConstraint("total_input_tokens >= 0", name="ck_reviews_total_input_tokens_nonneg"),
+        CheckConstraint("total_output_tokens >= 0", name="ck_reviews_total_output_tokens_nonneg"),
         CheckConstraint("total_cost_usd >= 0", name="ck_reviews_total_cost_usd_nonneg"),
-        CheckConstraint(
-            "wall_clock_seconds >= 0", name="ck_reviews_wall_clock_seconds_nonneg"
-        ),
+        CheckConstraint("wall_clock_seconds >= 0", name="ck_reviews_wall_clock_seconds_nonneg"),
         # Retention sweep: rows whose retention_expires_at has passed.
         Index("ix_reviews_retention_expires_at", "retention_expires_at"),
         # Installation purge / scoped query: all reviews for an installation_id.
@@ -97,18 +89,12 @@ class Review(Base):
     total_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     total_cost_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     wall_clock_seconds: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
-    is_eval: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), nullable=False
-    )
+    is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    retention_expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -35,9 +35,7 @@ def qualified_name(node, source: bytes) -> str:
         if cur.type in NAMED_SCOPES:
             name_field = cur.child_by_field_name("name")
             if name_field is not None:
-                parts.append(
-                    source[name_field.start_byte : name_field.end_byte].decode("utf-8")
-                )
+                parts.append(source[name_field.start_byte : name_field.end_byte].decode("utf-8"))
         cur = cur.parent
     return ".".join(reversed(parts))
 

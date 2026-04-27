@@ -56,17 +56,14 @@ def main() -> None:
     # Cross-check with githubkit.webhooks.sign: same wire format.
     sdk_sig = gh_sign(SECRET, body, method="sha256")
     assert hmac.compare_digest(sdk_sig, expected), (
-        f"Q3 FAIL: githubkit.sign differs from primitive\n"
-        f"  sdk:  {sdk_sig}\n  prim: {expected}"
+        f"Q3 FAIL: githubkit.sign differs from primitive\n  sdk:  {sdk_sig}\n  prim: {expected}"
     )
 
     # Cross-check with githubkit.webhooks.verify: agrees on good and bad.
     assert gh_verify(SECRET, body, expected) is True, (
         "Q3 FAIL: gh_verify rejected a signature we just computed"
     )
-    assert gh_verify(SECRET, body, wrong) is False, (
-        "Q3 FAIL: gh_verify accepted a wrong signature"
-    )
+    assert gh_verify(SECRET, body, wrong) is False, "Q3 FAIL: gh_verify accepted a wrong signature"
     assert gh_verify(SECRET, body, "sha256=notevenhex") is False, (
         "Q3 FAIL: gh_verify accepted a malformed signature"
     )

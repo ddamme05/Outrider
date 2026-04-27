@@ -47,19 +47,13 @@ class Installation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
-    tombstoned_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    purge_after_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    purge_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class InstallationRepository(Base):
     __tablename__ = "installation_repositories"
-    __table_args__ = (
-        UniqueConstraint("installation_id", "repo_id", name="uq_installation_repo"),
-    )
+    __table_args__ = (UniqueConstraint("installation_id", "repo_id", name="uq_installation_repo"),)
 
     id: Mapped[UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("gen_random_uuid()")
@@ -72,6 +66,4 @@ class InstallationRepository(Base):
     repo_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     repo_full_name: Mapped[str] = mapped_column(Text, nullable=False)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    removed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -38,9 +38,7 @@ async def run_q5() -> None:
     from receiver import app  # type: ignore[import-not-found]
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://spike"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://spike") as client:
         body = (FIXTURES / "sample_pull_request_opened.json").read_bytes()
         sig = gh_sign(SECRET, body, method="sha256")
 
@@ -58,9 +56,7 @@ async def run_q5() -> None:
                 "Content-Type": "application/json",
             },
         )
-        assert warmup.status_code == 202, (
-            f"Q5 FAIL: warmup request → {warmup.status_code}"
-        )
+        assert warmup.status_code == 202, f"Q5 FAIL: warmup request → {warmup.status_code}"
 
         # Case 1: good signature (warm path).
         t0 = time.perf_counter()
@@ -77,8 +73,7 @@ async def run_q5() -> None:
         elapsed_good = time.perf_counter() - t0
 
         assert resp.status_code == 202, (
-            f"Q5 FAIL: good-signature request → {resp.status_code}, "
-            f"body={resp.text!r}"
+            f"Q5 FAIL: good-signature request → {resp.status_code}, body={resp.text!r}"
         )
         payload = resp.json()
         assert payload["event"] == "pull_request"
@@ -110,9 +105,7 @@ async def run_q5() -> None:
                 "Content-Type": "application/json",
             },
         )
-        assert resp.status_code == 401, (
-            f"Q5 FAIL: wrong-signature request → {resp.status_code}"
-        )
+        assert resp.status_code == 401, f"Q5 FAIL: wrong-signature request → {resp.status_code}"
 
         # Case 3: no signature header at all.
         resp = await client.post(
@@ -124,8 +117,7 @@ async def run_q5() -> None:
             },
         )
         assert resp.status_code == 401, (
-            f"Q5 FAIL: no-signature request → {resp.status_code} "
-            "(should 401 before any parse work)"
+            f"Q5 FAIL: no-signature request → {resp.status_code} (should 401 before any parse work)"
         )
 
         # Case 4: unknown event name (signature valid; event name invalid).
@@ -202,7 +194,7 @@ async def run_q5() -> None:
     )
 
     print(
-        f"Q5 OK: /webhooks/github — good=202 ({elapsed_good*1000:.1f} ms), "
+        f"Q5 OK: /webhooks/github — good=202 ({elapsed_good * 1000:.1f} ms), "
         "wrong-sig=401, no-sig=401, bad-event=400, no-event-header=400, "
         f"installation.created=202 (installation_id={inst_payload['installation_id']}); "
         f"captured {len(captured)} raw bodies to {capture_dir}."

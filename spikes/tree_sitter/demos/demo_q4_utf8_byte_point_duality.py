@@ -87,9 +87,7 @@ def main() -> None:
     for _pat, caps in QueryCursor(class_q).matches(tree.root_node):
         n = caps["n"][0]
         class_names.append(source[n.start_byte : n.end_byte].decode("utf-8"))
-    assert "Привет" in class_names, (
-        f"Q4 FAIL: expected Cyrillic class 'Привет' in {class_names}"
-    )
+    assert "Привет" in class_names, f"Q4 FAIL: expected Cyrillic class 'Привет' in {class_names}"
 
     print(
         f"Q4 OK: byte-slice and point-slice agree across {len(matches)} "

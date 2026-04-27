@@ -53,14 +53,13 @@ def q1a_primitive(private_pem: bytes) -> None:
     # - iss: app ID (numeric) OR client ID (string starting with Iv or Iv1.)
     payload = {
         "iat": now - 60,  # 60s backdate per current GitHub docs (was 10s
-                          # in original draft; corrected per audit 2026-04-26)
+        # in original draft; corrected per audit 2026-04-26)
         "exp": now + 9 * 60,  # 9 min, under the 10-min hard cap
         "iss": TEST_APP_ID,
     }
     token = jwt.encode(payload, private_pem, algorithm="RS256")
     assert isinstance(token, str) and token.count(".") == 2, (
-        "Q1a FAIL: RS256 JWT should be three dot-separated segments, got "
-        f"{token!r}"
+        f"Q1a FAIL: RS256 JWT should be three dot-separated segments, got {token!r}"
     )
 
     # Derive public key from the private key and decode.
@@ -70,9 +69,7 @@ def q1a_primitive(private_pem: bytes) -> None:
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     decoded = jwt.decode(token, public_pem, algorithms=["RS256"])
-    assert decoded["iss"] == TEST_APP_ID, (
-        f"Q1a FAIL: iss round-trip got {decoded['iss']!r}"
-    )
+    assert decoded["iss"] == TEST_APP_ID, f"Q1a FAIL: iss round-trip got {decoded['iss']!r}"
     assert decoded["exp"] - decoded["iat"] <= 10 * 60, (
         "Q1a FAIL: GitHub enforces exp <= iat + 10min; our payload exceeded it"
     )
@@ -100,9 +97,7 @@ def q1b_canonical(private_pem: bytes) -> None:
     github = GitHub(strategy)
     assert github is not None, "Q1b FAIL: GitHub() returned None"
     # Also check the installation-context derivation path compiles.
-    installation_client = github.with_auth(
-        github.auth.as_installation(installation_id=1)
-    )
+    installation_client = github.with_auth(github.auth.as_installation(installation_id=1))
     assert installation_client is not None, (
         "Q1b FAIL: with_auth(as_installation(...)) returned None"
     )

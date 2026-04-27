@@ -60,8 +60,7 @@ def main() -> None:
     # decorated_definition.start_point is the first decorator line,
     # function_definition.start_point is the def line.
     assert parent.start_point[0] < greet_func.start_point[0], (
-        "Q2 FAIL: decorated_definition.start_point should precede "
-        "function_definition.start_point"
+        "Q2 FAIL: decorated_definition.start_point should precede function_definition.start_point"
     )
 
     # Un-decorated function 'top_level' should have a plain 'module' ancestor,

@@ -54,9 +54,7 @@ class Finding(Base):
     __tablename__ = "findings"
     __table_args__ = (
         CheckConstraint("line_start >= 1", name="ck_findings_line_start_gte_1"),
-        CheckConstraint(
-            "line_end >= line_start", name="ck_findings_line_end_gte_line_start"
-        ),
+        CheckConstraint("line_end >= line_start", name="ck_findings_line_end_gte_line_start"),
         # Retention sweep query.
         Index("ix_findings_retention_expires_at", "retention_expires_at"),
         # Installation-scoped purge query.
@@ -99,12 +97,8 @@ class Finding(Base):
     overrider_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
     publish_destination: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    is_eval: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), nullable=False
-    )
+    is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
-    retention_expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

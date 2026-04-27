@@ -49,9 +49,7 @@ CAPTURE_DIR_ENV = "OUTRIDER_SPIKE_CAPTURE_DIR"
 logger = logging.getLogger("outrider.spike.github_app.receiver")
 if not logger.handlers:
     _handler = logging.StreamHandler()
-    _handler.setFormatter(
-        logging.Formatter("%(levelname)s:%(name)s:%(message)s")
-    )
+    _handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
     logger.propagate = False
@@ -129,9 +127,7 @@ def create_app() -> FastAPI:
                     "pr_base_sha": pr.base.sha,
                     "repo_full_name": event.repository.full_name,
                     "repo_id": event.repository.id,
-                    "installation_id": (
-                        event.installation.id if event.installation else None
-                    ),
+                    "installation_id": (event.installation.id if event.installation else None),
                 }
             )
         elif event_name == "installation":
@@ -148,9 +144,7 @@ def create_app() -> FastAPI:
         # Emit the shape summary at INFO so the runbook can capture it by
         # following uvicorn's log output, without any extra configuration.
         # structlog-style key=value pairs keep the line machine-greppable.
-        logger.info("webhook_received " + " ".join(
-            f"{k}={v!r}" for k, v in summary.items()
-        ))
+        logger.info("webhook_received " + " ".join(f"{k}={v!r}" for k, v in summary.items()))
 
         # If a capture directory is configured, persist the raw body. The
         # filename uses correlation_id (always unique) rather than
