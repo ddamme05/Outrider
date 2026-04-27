@@ -52,7 +52,7 @@ Fill in:
 | Webhook URL | the smee.io channel URL from step 1 |
 | Webhook secret | generate a random string, e.g. `openssl rand -hex 32`. Save this. |
 | **Repository permissions** | `Contents: Read-only`, `Pull requests: Read and write`. **Nothing else.** (per `docs/deployment.md` + the `github-token-scope-minimum-viable` invariant) |
-| Subscribe to events | Check: `Pull request` and `Installation`. |
+| Subscribe to events | Check **`Pull request` only**. The `installation` event family (`created`, `deleted`, `suspend`, `unsuspend`, `new_permissions_accepted`) and `installation_repositories` are delivered automatically to GitHub Apps without subscription — they fire on App install/uninstall lifecycle, not on repo activity, so they don't appear as opt-in checkboxes. The events page's "Installation target" entry is unrelated (App-target renames only). Don't tick `Push`, `Pull request review`, etc. — they generate noise without testing anything the spike needs. |
 | Where can this GitHub App be installed? | `Only on this account` |
 
 Click **Create GitHub App**. On the resulting page:
