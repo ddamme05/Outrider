@@ -84,6 +84,15 @@ async def test_purge_expired_deletes_all_three_tables(migrated_db: str) -> None:
     try:
         await _seed_expired_content(engine)
 
+        # Capture audit_events count BEFORE the sweep. The append-only
+        # contract requires unchanged-after-sweep, so a pre/post compare
+        # catches both deletes (the obvious bug) and accidental inserts
+        # (the subtle bug a hardcoded `== 1` would miss).
+        async with engine.connect() as conn:
+            audit_count_before = (
+                await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            ).scalar_one()
+
         async with engine.begin() as conn:
             rows_per_table = await purge_expired(conn, purge_role="test")
 
@@ -100,9 +109,12 @@ async def test_purge_expired_deletes_all_three_tables(migrated_db: str) -> None:
                 )
                 assert count.scalar_one() == 0, f"{table} should be empty post-sweep"
 
-            audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
-            assert audit_count.scalar_one() == 1, (
-                "audit_events is append-only; sweep must not touch it"
+            audit_count_after = (
+                await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            ).scalar_one()
+            assert audit_count_after == audit_count_before, (
+                "audit_events is append-only; sweep must not touch it "
+                f"(before={audit_count_before}, after={audit_count_after})"
             )
 
             purge_rows = await conn.execute(

@@ -47,6 +47,7 @@ local Postgres is fast).
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
@@ -76,6 +77,15 @@ PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 _EXPECTED_TEST_PORT = "5433"
 _EXPECTED_TEST_DB_NAME_FRAGMENT = "test"
 
+# Mask the password segment of a postgres URL before surfacing it in error
+# messages. A misconfigured TEST_DATABASE_URL pointing at the dev or prod
+# DB would otherwise spill its password into CI logs and exception traces.
+_PASSWORD_REDACTION = re.compile(r"(://[^:/@\s]+:)([^@]+)(@)")
+
+
+def _redact_url_password(url: str) -> str:
+    return _PASSWORD_REDACTION.sub(r"\1***\3", url)
+
 
 def _assert_test_url_is_isolated(url: str) -> None:
     """Refuse to run if TEST_DATABASE_URL doesn't point at the test container.
@@ -85,11 +95,15 @@ def _assert_test_url_is_isolated(url: str) -> None:
     postgres-test container's intended configuration. A URL that fails
     either check is almost certainly a misconfigured .env that points
     the test fixture at the dev DB.
+
+    The error message redacts any password component so a copy-pasted
+    dev/prod URL doesn't leak credentials into CI logs.
     """
+    safe_url = _redact_url_password(url)
     if f":{_EXPECTED_TEST_PORT}" not in url:
         raise RuntimeError(
             f"TEST_DATABASE_URL must target port {_EXPECTED_TEST_PORT} "
-            f"(the postgres-test container); got: {url!r}. "
+            f"(the postgres-test container); got: {safe_url!r}. "
             "Refusing to run integration tests against an unexpected URL — "
             "see docs/testing.md 'Two-container model' for the rationale."
         )

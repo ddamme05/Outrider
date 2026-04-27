@@ -39,6 +39,25 @@ EXPECTED_TRIGGERS = {
     "trg_audit_events_append_only",
     "trg_purge_audit_append_only",
 }
+# Mirrors the explicit op.create_index(...) calls in the genesis migration.
+# Indexes are part of post-upgrade structural state; if a future migration
+# accidentally drops one (or fails to create one), this set diverges and
+# the genesis test fails loud rather than silently.
+EXPECTED_OUTRIDER_INDEXES = {
+    "ix_audit_events_review_phase_key",
+    "ix_audit_events_review_timestamp",
+    "ix_installations_tombstoned_at",
+    "ix_purge_audit_installation_timestamp",
+    "ix_llm_call_content_installation_id",
+    "ix_llm_call_content_retention_expires_at",
+    "ix_reviews_active_status",
+    "ix_reviews_installation_id",
+    "ix_reviews_retention_expires_at",
+    "ix_anomalies_severity_created_at",
+    "ix_findings_content_hash",
+    "ix_findings_installation_id",
+    "ix_findings_retention_expires_at",
+}
 GENESIS_REVISION = "af138edd4b57"
 
 
@@ -85,6 +104,18 @@ async def test_genesis_upgrade_creates_full_schema(
                 {"names": list(EXPECTED_TRIGGERS)},
             )
             assert {row[0] for row in triggers_result} == EXPECTED_TRIGGERS
+
+            indexes_result = await conn.execute(
+                text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE schemaname = 'public' AND indexname = ANY(:names)"
+                ),
+                {"names": list(EXPECTED_OUTRIDER_INDEXES)},
+            )
+            indexes = {row[0] for row in indexes_result}
+            assert indexes == EXPECTED_OUTRIDER_INDEXES, (
+                f"missing indexes: {EXPECTED_OUTRIDER_INDEXES - indexes}"
+            )
 
             seed_result = await conn.execute(text("SELECT version FROM severity_policies"))
             assert [row[0] for row in seed_result] == ["1.0.0"]
@@ -144,6 +175,16 @@ async def test_genesis_downgrade_round_trips_clean(
             )
             leftover_triggers = {row[0] for row in triggers_result}
             assert leftover_triggers == set(), f"leftover triggers: {leftover_triggers}"
+
+            indexes_result = await conn.execute(
+                text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE schemaname = 'public' AND indexname = ANY(:names)"
+                ),
+                {"names": list(EXPECTED_OUTRIDER_INDEXES)},
+            )
+            leftover_indexes = {row[0] for row in indexes_result}
+            assert leftover_indexes == set(), f"leftover indexes: {leftover_indexes}"
 
             revision_count = await conn.execute(text("SELECT COUNT(*) FROM alembic_version"))
             assert revision_count.scalar_one() == 0

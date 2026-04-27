@@ -16,9 +16,46 @@ per the schema-layer spec.
 """
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from outrider.sweep.purge_expired import purge_expired, purge_installation
+
+_INSTALLATION_ID = 12345
+
+
+async def _seed_expired_review_for_tombstoned_install(engine: AsyncEngine) -> None:
+    """Tombstoned installation with one expired review.
+
+    Lets the compose test exercise both sweep entrypoints against real
+    data: purge_expired sweeps the expired review, purge_installation
+    then hard-deletes the installation row.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO installations "
+                "(installation_id, app_slug, account_id, account_login, "
+                " account_type, permissions_at_install, tombstoned_at, "
+                " purge_after_at) "
+                "VALUES (:id, 'test-app', 1, 'octocat', 'User', '{}'::jsonb, "
+                " NOW() - INTERVAL '7 days', NOW() - INTERVAL '1 day')"
+            ),
+            {"id": _INSTALLATION_ID},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO reviews ("
+                "  installation_id, repo_id, pr_number, head_sha, status, "
+                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
+                "  total_input_tokens, total_output_tokens, total_cost_usd, "
+                "  wall_clock_seconds, retention_expires_at"
+                ") VALUES ("
+                "  :id, 100, 1, 'sha1', 'completed', 0, 0, 0, 0, 0, 0, 0, "
+                "  NOW() - INTERVAL '1 day'"
+                ")"
+            ),
+            {"id": _INSTALLATION_ID},
+        )
 
 
 async def test_concurrent_sweeps_serialize_via_advisory_lock(migrated_db: str) -> None:
@@ -131,6 +168,60 @@ async def test_purge_expired_and_purge_installation_compose_in_one_transaction(
             assert result == {}, (
                 "purge_installation against non-existent install should "
                 "return empty dict, not be blocked by lock acquisition"
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_compose_sweeps_purge_real_data_in_one_transaction(
+    migrated_db: str,
+) -> None:
+    """Reentrant compose actually purges real data in one transaction.
+
+    Stronger counterpart to the previous test. Seeds an expired review
+    on a tombstoned installation, then runs purge_expired followed by
+    purge_installation in the same advisory-locked transaction.
+
+    Asserts both sweeps did real work (not just lock acquisition):
+      - purge_expired returns the expired-content row count
+      - purge_installation returns empty (content already purged) AND
+        the installations row is gone after commit
+      - per-table purge_audit row is written by purge_expired
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        await _seed_expired_review_for_tombstoned_install(engine)
+
+        async with engine.begin() as conn:
+            expired_rows = await purge_expired(conn, purge_role="step-1")
+            install_rows = await purge_installation(conn, _INSTALLATION_ID, purge_role="step-2")
+
+        assert expired_rows == {"reviews": 1}, (
+            f"purge_expired should report the expired review; got {expired_rows}"
+        )
+        assert install_rows == {}, (
+            "content was already swept by purge_expired; purge_installation "
+            f"should report no further content rows; got {install_rows}"
+        )
+
+        async with engine.connect() as conn:
+            review_count = await conn.execute(text("SELECT COUNT(*) FROM reviews"))
+            assert review_count.scalar_one() == 0, "expired review must be gone"
+
+            install_count = await conn.execute(
+                text("SELECT COUNT(*) FROM installations WHERE installation_id = :id"),
+                {"id": _INSTALLATION_ID},
+            )
+            assert install_count.scalar_one() == 0, (
+                "purge_installation must hard-delete the installations row"
+            )
+
+            purge_rows = await conn.execute(
+                text("SELECT target_table, purge_role FROM purge_audit ORDER BY target_table")
+            )
+            rows = list(purge_rows)
+            assert rows == [("reviews", "step-1")], (
+                f"expected one purge_audit row from step-1; got {rows}"
             )
     finally:
         await engine.dispose()

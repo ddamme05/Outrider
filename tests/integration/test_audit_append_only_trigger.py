@@ -88,16 +88,21 @@ _INSERT_PURGE_AUDIT = text(
 
 
 @pytest.mark.parametrize(
-    ("table", "insert_stmt", "id_column", "operation"),
+    ("table", "insert_stmt", "id_column", "update_column", "operation"),
     [
-        ("audit_events", _INSERT_AUDIT, "event_id", "UPDATE"),
-        ("audit_events", _INSERT_AUDIT, "event_id", "DELETE"),
-        ("purge_audit", _INSERT_PURGE_AUDIT, "id", "UPDATE"),
-        ("purge_audit", _INSERT_PURGE_AUDIT, "id", "DELETE"),
+        ("audit_events", _INSERT_AUDIT, "event_id", "event_type", "UPDATE"),
+        ("audit_events", _INSERT_AUDIT, "event_id", "event_type", "DELETE"),
+        ("purge_audit", _INSERT_PURGE_AUDIT, "id", "purge_role", "UPDATE"),
+        ("purge_audit", _INSERT_PURGE_AUDIT, "id", "purge_role", "DELETE"),
     ],
 )
 async def test_append_only_trigger_blocks_mutation(
-    migrated_db: str, table: str, insert_stmt, id_column: str, operation: str
+    migrated_db: str,
+    table: str,
+    insert_stmt,
+    id_column: str,
+    update_column: str,
+    operation: str,
 ) -> None:
     """UPDATE and DELETE on an append-only table raise via the trigger.
 
@@ -106,6 +111,10 @@ async def test_append_only_trigger_blocks_mutation(
     `RaiseException` and SQLAlchemy maps that to ProgrammingError. The
     `match` pattern keys on the trigger function's literal output so the
     assertion can't be satisfied by an unrelated DB error.
+
+    ``update_column`` is unused for the DELETE cases; carrying it on every
+    parametrize tuple keeps the SQL construction below uniform across the
+    two operations.
     """
     engine = create_async_engine(migrated_db)
     try:
@@ -117,10 +126,7 @@ async def test_append_only_trigger_blocks_mutation(
         # Step 2: mutation raises via the trigger's RAISE EXCEPTION.
         if operation == "UPDATE":
             mutation_stmt = text(
-                f"UPDATE {table} SET purge_role = 'overwritten' "  # noqa: S608
-                f"WHERE {id_column} = :id"
-                if table == "purge_audit"
-                else f"UPDATE {table} SET event_type = 'overwritten' "  # noqa: S608
+                f"UPDATE {table} SET {update_column} = 'overwritten' "  # noqa: S608
                 f"WHERE {id_column} = :id"
             )
         else:
