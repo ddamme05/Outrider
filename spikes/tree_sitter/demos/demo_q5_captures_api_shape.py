@@ -50,14 +50,10 @@ def main() -> None:
 
     # --- Assertion 1: captures[key] is list[Node], not bare Node.
     matches = list(QueryCursor(SINGLE_CAPTURE_QUERY).matches(tree.root_node))
-    assert len(matches) == 3, (
-        f"Q5 FAIL: expected 3 function matches, got {len(matches)}"
-    )
+    assert len(matches) == 3, f"Q5 FAIL: expected 3 function matches, got {len(matches)}"
 
-    for pat_idx, caps in matches:
-        assert isinstance(caps, dict), (
-            f"Q5 FAIL: caps is {type(caps).__name__}, expected dict"
-        )
+    for _pat_idx, caps in matches:
+        assert isinstance(caps, dict), f"Q5 FAIL: caps is {type(caps).__name__}, expected dict"
         name_val = caps["name"]
         assert isinstance(name_val, list), (
             f"Q5 FAIL: captures['name'] is {type(name_val).__name__}, "
@@ -70,8 +66,7 @@ def main() -> None:
             "elements, expected exactly 1 per match"
         )
         assert isinstance(name_val[0], Node), (
-            f"Q5 FAIL: captures['name'][0] is {type(name_val[0]).__name__}, "
-            "expected Node"
+            f"Q5 FAIL: captures['name'][0] is {type(name_val[0]).__name__}, expected Node"
         )
 
     # --- Assertion 2: treating the raw capture value as a Node raises.
