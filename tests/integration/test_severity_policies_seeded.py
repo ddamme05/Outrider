@@ -32,7 +32,24 @@ EXPECTED_V1_POLICY = {
 
 
 async def test_v1_0_0_seeded_with_canonical_mapping(migrated_db: str) -> None:
-    """severity_policies has exactly v1.0.0, with the canonical 12-key mapping."""
+    """v1.0.0 exists with the canonical mapping from spec §7.4.
+
+    The invariant under test is "policy versions are immutable and
+    replayable" (severity-policy-versioned-for-replay), NOT "only one
+    version exists forever." A future migration MAY insert v1.0.1 (or a
+    Git-SHA version) when the policy changes — that's the supported way
+    to update the policy. So the assertion is about v1.0.0's content,
+    not about it being the only row in the table.
+
+    What this test catches: in-place edits to v1.0.0 (the violation
+    pattern named in the invariant). If a developer accidentally lands
+    an UPDATE statement against version='1.0.0' in a future migration,
+    the policy check below will fail.
+
+    What this test does NOT catch (and shouldn't): the addition of new
+    versions. Asserting versions == ["1.0.0"] would block legitimate
+    forward migrations.
+    """
     engine = create_async_engine(migrated_db)
     try:
         async with engine.connect() as conn:
@@ -40,8 +57,8 @@ async def test_v1_0_0_seeded_with_canonical_mapping(migrated_db: str) -> None:
                 text("SELECT version FROM severity_policies ORDER BY version")
             )
             versions = [row[0] for row in versions_result]
-            assert versions == ["1.0.0"], (
-                f"Expected only v1.0.0 seeded by genesis; found: {versions}"
+            assert "1.0.0" in versions, (
+                f"v1.0.0 must always exist (genesis seed); found versions: {versions}"
             )
 
             policy_result = await conn.execute(
