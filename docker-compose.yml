@@ -134,6 +134,106 @@ services:
         reservations:
           memory: 256M
 
+  # ─────────────────────────────────────────────────────────────────────
+  # Integration-test database — separate Postgres instance from the dev
+  # one above, with ephemeral tmpfs data so every container restart wipes
+  # state. Tests connect here exclusively (TEST_DATABASE_URL); the dev
+  # DB above is never touched by the automated test suite.
+  #
+  # Why this isolation matters: the integration test fixture creates and
+  # drops per-test databases via `CREATE DATABASE`/`DROP DATABASE`, which
+  # requires admin privileges on the Postgres instance. Running those
+  # against the dev container would mean a buggy fixture could (in
+  # principle) DROP the dev `outrider` DB. With a separate container
+  # whose data lives only in tmpfs, the worst-case blast radius is
+  # "test container needs a restart" — dev data is untouchable because
+  # it lives in a different process the tests cannot reach.
+  #
+  # The container shares everything else with the dev one: same image,
+  # same hardening, same auth method, same network. Only differences:
+  # tmpfs data, port 5433, separate credentials env vars (TEST_*).
+  # ─────────────────────────────────────────────────────────────────────
+  postgres-test:
+    <<: *security-hardened
+    image: postgres:18-bookworm
+    container_name: outrider-postgres-test
+    restart: unless-stopped
+
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+
+    # tmpfs for the entire postgres data parent — every container start
+    # initdbs from scratch. No named volume; nothing persists. This is
+    # the heart of the isolation: there is no state to corrupt across
+    # test runs, and the container can be recreated freely.
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/lib/postgresql:size=512m
+      - /tmp
+      - /var/run/postgresql
+
+    environment:
+      POSTGRES_USER: ${TEST_POSTGRES_USER:?TEST_POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:?TEST_POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${TEST_POSTGRES_DB:?TEST_POSTGRES_DB must be set in .env}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+
+    ports:
+      - "127.0.0.1:${TEST_POSTGRES_PORT:-5433}:5432"
+
+    networks:
+      - outrider-net
+
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_statement=ddl
+      - -c
+      - log_min_duration_statement=500
+      # fsync off and synchronous_commit off are safe ONLY because the
+      # data directory is tmpfs — there's nothing on disk to lose. Worth
+      # an order-of-magnitude faster CREATE/DROP DATABASE per test.
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+
+    shm_size: 256mb
+
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    logging: *default-logging
+
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+        reservations:
+          memory: 256M
+
 # Future services (FastAPI app, dashboard, redis V2) attach to this network
 # and inherit *security-hardened by anchor merge. Volumes follow the
 # `<service>-<purpose>` naming convention.
