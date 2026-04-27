@@ -470,6 +470,8 @@ Retention terms also corrected: Anthropic's standard retention is **30 days** fo
 
 **Amended 2026-04-26:** point 3's wording corrected. The original "Default TTL matches `findings`" phrasing was internally inconsistent with the plan-level numbers (`llm_call_content` 90d ≤ `findings` 180d). Architectural intent was always "shorter than findings — sensitivity hierarchy, most-sensitive content has shortest TTL"; the wording is now aligned. No change to architectural shape or to any other point in this decision.
 
+**Amended 2026-04-27:** point 1's wording on `event_id` corrected. The original "plain UUID (not a FK with CASCADE)" framing over-applied #014's parent→child dangling-reference pattern in the wrong direction. `llm_call_content.event_id → audit_events.event_id` is child→parent, with the parent append-only forever per #014, so the correct shape is a real FK with `ON DELETE NO ACTION` — which is what the migration shipped and what `docs/schema.md` "Content-table foreign-key semantics" describes. Only the citation drifted. No change to architectural shape or to any other point in this decision.
+
 **Context.** #013 point 5 mandated that prompt and completion content never appear on the audit row, with the rationale "if debugging requires the content, retrieve it by replay from `PRContext` + scope extraction." That guard targeted a threat that doesn't exist under #011: there is no third party gaining access to user content from local database storage. The operator already has the user's code on their own infrastructure; storing the LLM exchange about that code in the same database adds no new exposure surface. The replay story improves materially — within the retention window, every LLM call's full input and output is reconstructable, which is what "every decision is auditable" should actually deliver. The original #013 framing was a SaaS-shaped rule applied to a self-hosted V1; #016 corrects it.
 
 The two surfaces (logs vs database) need different rules: logs flow to stdout, log aggregators, and possibly third-party SIEMs that the operator may not fully control; the database is local and operator-administered. Storing content in the database is acceptable under self-hosted; logging content exposes it to surfaces we don't control. Different surfaces, different rules.
@@ -477,7 +479,7 @@ The two surfaces (logs vs database) need different rules: logs flow to stdout, l
 **Decision.**
 
 1. **New content table `llm_call_content`.** Stores prompt and completion text for every LLM call. Keyed by `event_id` (matching the corresponding `LLMCallEvent` audit row). Schema:
-   - `event_id UUID PK` — references `audit_events.event_id` as a plain UUID (not a FK with CASCADE; same dangling-reference pattern as #014 point 3 for purged content).
+   - `event_id UUID PK` — real FK to `audit_events.event_id` with `ON DELETE NO ACTION`. The FK direction is reversed from `audit_events.review_id`: this content row is the child, and the parent audit row is append-only forever per #014. Normal operation never deletes the parent; if a parent-delete path is introduced accidentally, the FK fails loud rather than cascading or nulling content. See `docs/schema.md` "Content-table foreign-key semantics" for the full reasoning.
    - `prompt TEXT NOT NULL` — the full rendered prompt sent to the provider.
    - `completion TEXT NOT NULL` — the full response text.
    - `retention_expires_at TIMESTAMPTZ NOT NULL` — populated at insert per #012's TTL.
