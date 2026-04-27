@@ -2,10 +2,16 @@
 #
 # Install dependencies and hooks once per clone:
 #     uv sync --dev
-#     .venv/bin/pre-commit install
+#     .venv/bin/pre-commit install --install-hooks
+#
+# default_install_hook_types below makes the single `install` command wire
+# up both pre-commit (per-commit) and pre-push (per-push) hooks at once.
 #
 # Run manually against all files (useful after a rebase):
 #     .venv/bin/pre-commit run --all-files
+#     .venv/bin/pre-commit run --all-files --hook-stage pre-push
+
+default_install_hook_types: [pre-commit, pre-push]
 
 repos:
   # --- Local project tooling ---
@@ -22,6 +28,20 @@ repos:
         entry: .venv/bin/ruff format
         language: system
         types_or: [python, pyi]
+
+      # Mypy is gated on push, not commit: --strict over the whole src/ tree
+      # is slow enough to make per-commit feedback painful, but commits that
+      # land type errors should never reach the remote. files: scopes it to
+      # src/ so spikes and tests don't trigger it; pass_filenames: false so
+      # mypy gets the directory and resolves imports correctly across the
+      # tree rather than checking files in isolation.
+      - id: mypy
+        name: mypy --strict (src/)
+        entry: .venv/bin/mypy src
+        language: system
+        pass_filenames: false
+        files: ^src/.*\.py$
+        stages: [pre-push]
 
       - id: invariants-in-sync
         name: invariants.md is in sync with spec.md
