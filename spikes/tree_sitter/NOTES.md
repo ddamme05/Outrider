@@ -105,17 +105,22 @@ If a future coordinate check ever uses `point.column` it still works, because
 
 ## Q5 — S-expression query mechanics
 
-**Answered by docs.** See
+**Query syntax answered by docs.** See
 `aegis-docs::tree-sitter/python-source-analysis.md` §"Complete Runnable Example"
 and `tree-sitter/using-parsers/queries/1-syntax.md` for the full reference:
 field names (`name:`, `body:`, `parameters:`), negated fields (`!return_type`),
 wildcard `(_)`, `(ERROR)` and `(MISSING)` matching, supertype `(expression)`.
+Every other demo exercises these constructs, so a regression in syntax
+behavior would surface elsewhere.
 
-No Q5 demo — every other demo uses the query machinery and would fail if it
-didn't behave as documented.
+**Captures API shape: demoed.** The one exception to "docs-only" is the
+`captures[key]` shape, which the docs example gets wrong on the pinned
+versions (see the "captures API" gotcha below). `demo_q5_captures_api_shape.py`
+isolates the assumption every other demo depends on — if a future
+tree-sitter release flips the shape either way, Q5 fails first with a clear
+error instead of every other demo failing mysteriously.
 
-**One real finding that came out of Q2/Q7.** See the "captures API" gotcha
-below.
+**Demo.** `demos/demo_q5_captures_api_shape.py`.
 
 ---
 
@@ -229,23 +234,60 @@ trying first.
 
 ## What the spike did NOT cover — deferred to the real build
 
-- **Non-UTF-8 source encodings.** Q4 covered multi-byte UTF-8 but not Latin-1
-  or Windows-1252. `source[...].decode("utf-8")` will raise `UnicodeDecodeError`
-  on non-UTF-8 files. `ast_facts/` needs either an encoding-detection fallback
-  (e.g., `chardet`) or a policy — the natural one being *decode error → emit
-  `parse_failed` event, file degrades to JUDGED* per spec §5.5.
-- **Performance.** No benchmark on 10K-line files or batch-parsing a real PR.
-  `ast_facts/` can measure this in-situ; the parse API is fast enough on the
-  fixtures here (sub-millisecond for 200-line files).
-- **Cross-file import resolution.** Per `DECISIONS.md#006`, that folds into
-  the real `ast_facts/` build with same-file-only as the fallback.
-- **Coordinate translation.** Stays in `coordinates/` per the trust boundary.
-  The spike only confirmed the byte/point primitives are consistent.
+Items are tagged by the module that owns the follow-up, so anyone reading
+the close-out knows which build picks up which gap. Month 1 starts with
+`ast_facts/` and `coordinates/`; the structural test tier lands during that
+same window per `docs/testing.md`.
+
+**Owned by `ast_facts/python_adapter.py`:**
+
+- **Scope dedupe on stable `Node.id`, not wrapper `id()`.** The spike's
+  `demo_q6` uses `id(inner)` for dedupe, which operates on the Python
+  wrapper — `child_by_field_name(...)` can return a fresh wrapper for the
+  same underlying C node, so `id()` is not reliable per-node. The demo
+  happens to pass because duplicated scopes share the same qualified name
+  and the linear-width sort picks the right one anyway; production code
+  can't rely on that. `ast_facts/` should dedupe by `Node.id` and include
+  a test that asserts decorated functions produce exactly one `ScopeUnit`.
+- **Decorated class coverage (`@dataclass class X`).** Same
+  `decorated_definition` wrapping shape as functions; no new spike
+  information would come from adding a fixture. `ast_facts/` tests should
+  cover decorated classes alongside decorated functions as the same
+  invariant — if one breaks, both should.
+- **Non-UTF-8 source encodings.** Q4 covered multi-byte UTF-8 but not
+  Latin-1 or Windows-1252. `source[...].decode("utf-8")` raises
+  `UnicodeDecodeError` on those. This is a production requirement, not an
+  optional spike add: `ast_facts/` must implement the policy *decode error
+  → emit `parse_failed` event, file degrades to JUDGED* per spec §5.5.
+  Needs the actual `parse_failed` event path, which lives in `audit/`.
+
+**Owned by `coordinates/` + integration tier:**
+
+- **Real unified-diff demo (`unidiff` + `line.target_line_no`).** Q6
+  validated "line number → scope" on a raw source file — a subset of
+  "diff-line → scope" with the patch-parsing layer stripped out. The
+  unified-diff path (hunk headers, target-side line numbers, deleted and
+  renamed files, binary-file stubs) is squarely a `coordinates/`
+  responsibility and not a tree-sitter concern. Add a small integration
+  test in `tests/integration/` or a structural scenario in
+  `tests/eval/scenarios/structural/` that exercises the end-to-end path
+  across `ast_facts/` + `coordinates/` once both modules exist. Deferring
+  this wholly to Month 1 is the right call; adding `unidiff` here would
+  have pulled `coordinates/` responsibilities into the spike.
+
+**Out of V1 scope entirely:**
+
+- **Performance.** No benchmark on 10K-line files or batch-parsing a real
+  PR. `ast_facts/` can measure this in-situ; the parse API is fast enough
+  on the fixtures here (sub-millisecond for 200-line files).
+- **Cross-file import resolution.** Per `DECISIONS.md#006`, folds into the
+  real `ast_facts/` build with same-file-only as the fallback.
 - **Incremental reparsing.** `tree.edit()` + `changed_ranges()` from
   `using-parsers/3-advanced-parsing.md` — not on the V1 hot path.
-- **Structural tests in `tests/eval/scenarios/structural/`.** That's the real
-  correctness tier per `docs/testing.md` and remains required before
-  `ast_facts/` ships.
+- **Structural tests in `tests/eval/scenarios/structural/`.** That's the
+  real correctness tier per `docs/testing.md` and remains required before
+  `ast_facts/` ships. The spike's role was to retire tree-sitter
+  mechanics unknowns; ast_facts completeness comes from that tier.
 
 ## Reproducing
 

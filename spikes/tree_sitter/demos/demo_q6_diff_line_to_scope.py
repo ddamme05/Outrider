@@ -122,8 +122,8 @@ def main() -> None:
             "top_level.nested_one.nested_two",
         ),
         (
-            "line of a class-body comment (no method)",
-            "class Inner",
+            "line of a class-body comment between two methods",
+            "# a class-body comment",
             "Outer.Inner",
         ),
         (

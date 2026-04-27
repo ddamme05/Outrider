@@ -38,6 +38,7 @@ class Outer:
 
             return _clean(name)
 
+        # a class-body comment, not inside any method
         @retry(times=3)
         def fetch(self, url: str) -> bytes:
             raise NotImplementedError
