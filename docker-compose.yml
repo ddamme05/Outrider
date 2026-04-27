@@ -1,0 +1,148 @@
+# Outrider local development infrastructure.
+#
+# Single service today (Postgres 18 per the project stack). Structured for
+# expansion: shared anchors at the top let new services inherit the same
+# security defaults; the user-defined network slot is in place; named-volume
+# convention is established.
+#
+# Security posture (defense-in-depth, dev-grade):
+#   - Image pinned to postgres:18-bookworm (debian, not alpine — avoids musl
+#     locale edge cases for tree-sitter / pg_trgm later).
+#   - read_only root filesystem; tmpfs for /tmp and /var/run/postgresql;
+#     state lives only in the named volume mount.
+#   - cap_drop: ALL with explicit cap_add for the five caps the official
+#     entrypoint needs during initdb (CHOWN, DAC_OVERRIDE, FOWNER, SETGID,
+#     SETUID for gosu's root → postgres drop).
+#   - no-new-privileges flag prevents setuid escalation.
+#   - SCRAM-SHA-256 forced for both host and local auth via initdb args
+#     (overrides the image default which still permits md5 fallback).
+#   - Port bound to 127.0.0.1 only — not exposed to the LAN.
+#   - shm_size raised so postgres has parallel-query buffer headroom without
+#     having to grant SYS_ADMIN for shared-memory mounts.
+#   - Resource limits cap memory and CPU so a runaway query in dev can't
+#     starve the host.
+#   - JSON log driver with size + rotation caps so audit logs don't fill disk.
+#
+# Production deployment uses a different mechanism (managed Postgres or a
+# hardened k8s manifest); this file is dev/test only. The .env file it reads
+# from is gitignored — secrets never enter version control.
+
+x-security-hardened: &security-hardened
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  cap_drop:
+    - ALL
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    <<: *security-hardened
+    image: postgres:18-bookworm
+    container_name: outrider-postgres
+    restart: unless-stopped
+
+    # Capabilities the official postgres image needs ONLY during init:
+    #   CHOWN, FOWNER, DAC_OVERRIDE — chown the data dir + config files
+    #   SETGID, SETUID                — gosu drops root → postgres user
+    # Once the postgres process is running, none of these are exercised.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+
+    # State that must persist across container restarts: the postgres data
+    # parent directory. PG18 stores data in a major-version subdirectory
+    # (/var/lib/postgresql/18/docker/) so that pg_upgrade --link can move
+    # across major versions without mount-point boundary issues. Mount the
+    # PARENT, not /var/lib/postgresql/data — that's the pre-PG18 convention
+    # and PG18's entrypoint refuses to init against it. See
+    # https://github.com/docker-library/postgres/pull/1259
+    # State that is regenerable: socket dir, /tmp. Tmpfs covers the latter so
+    # read_only root filesystem doesn't break socket creation.
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+
+    # Required env. Compose's `:?` syntax fails fast if .env is missing the var
+    # rather than starting Postgres with a default password.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+      # Force SCRAM-SHA-256 for both connection types. The image default
+      # accepts md5 as a fallback; this closes that.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+
+    # 127.0.0.1 binding: reachable from the host (uv-run pytest, alembic CLI),
+    # not advertised on the LAN. Do not change to 0.0.0.0 in this dev compose.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+    networks:
+      - outrider-net
+
+    # Runtime-tunable Postgres settings. log_statement=ddl catches accidental
+    # schema mutations during dev; log_min_duration_statement surfaces slow
+    # queries early; the rest is connection-audit hygiene.
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_statement=ddl
+      - -c
+      - log_min_duration_statement=500
+
+    # Shared-memory headroom for parallel queries. Default Docker shm is 64M
+    # which can be tight for postgres; 256M is comfortable for V1 traffic
+    # without granting SYS_ADMIN for shared-memory ops.
+    shm_size: 256mb
+
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    logging: *default-logging
+
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+        reservations:
+          memory: 256M
+
+# Future services (FastAPI app, dashboard, redis V2) attach to this network
+# and inherit *security-hardened by anchor merge. Volumes follow the
+# `<service>-<purpose>` naming convention.
+volumes:
+  postgres-data:
+    name: outrider-postgres-data
+    driver: local
+
+networks:
+  outrider-net:
+    name: outrider-net
+    driver: bridge
