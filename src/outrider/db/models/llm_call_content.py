@@ -31,7 +31,7 @@ gates this.
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, ForeignKey, Text, text
+from sqlalchemy import BigInteger, ForeignKey, Index, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Boolean, DateTime, Uuid
 
@@ -40,6 +40,12 @@ from outrider.db.models._base import Base
 
 class LLMCallContent(Base):
     __tablename__ = "llm_call_content"
+    __table_args__ = (
+        # Retention sweep query.
+        Index("ix_llm_call_content_retention_expires_at", "retention_expires_at"),
+        # Installation-scoped purge query.
+        Index("ix_llm_call_content_installation_id", "installation_id"),
+    )
 
     event_id: Mapped[UUID] = mapped_column(
         Uuid,

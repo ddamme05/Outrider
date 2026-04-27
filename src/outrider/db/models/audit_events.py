@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Identity, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Identity, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Boolean, DateTime, Uuid
@@ -34,9 +34,15 @@ from outrider.db.models._base import Base
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = (
+        # UNIQUE(review_id, sequence_number) produces an implicit unique index
+        # which covers replay-traversal queries; no separate Index needed for it.
         UniqueConstraint(
             "review_id", "sequence_number", name="uq_audit_review_sequence"
         ),
+        # Dashboard time-range queries: events between X and Y for a review.
+        Index("ix_audit_events_review_timestamp", "review_id", "timestamp"),
+        # V1.5 forward-compat: parallel-analyze branch grouping per review.
+        Index("ix_audit_events_review_phase_key", "review_id", "phase_key"),
     )
 
     event_id: Mapped[UUID] = mapped_column(

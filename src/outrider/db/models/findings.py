@@ -38,6 +38,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Index,
     Integer,
     Text,
     text,
@@ -56,6 +57,12 @@ class Finding(Base):
         CheckConstraint(
             "line_end >= line_start", name="ck_findings_line_end_gte_line_start"
         ),
+        # Retention sweep query.
+        Index("ix_findings_retention_expires_at", "retention_expires_at"),
+        # Installation-scoped purge query.
+        Index("ix_findings_installation_id", "installation_id"),
+        # Dedup-on-emit per spec §8.5 — find duplicate findings by hash.
+        Index("ix_findings_content_hash", "content_hash"),
     )
 
     finding_id: Mapped[UUID] = mapped_column(

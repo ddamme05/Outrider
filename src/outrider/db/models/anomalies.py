@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Text, text
+from sqlalchemy import ForeignKey, Index, Text, desc, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Boolean, DateTime, Uuid
@@ -31,6 +31,15 @@ from outrider.db.models._base import Base, anomaly_status_enum
 
 class Anomaly(Base):
     __tablename__ = "anomalies"
+    __table_args__ = (
+        # Anomaly-queue ordering per spec §9.9: operations dashboard surfaces
+        # highest-severity unresolved anomalies first, newest within each tier.
+        Index(
+            "ix_anomalies_severity_created_at",
+            "severity",
+            desc("created_at"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("gen_random_uuid()")

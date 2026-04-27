@@ -25,7 +25,7 @@ stronger grouping.
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, Integer, Text, text
+from sqlalchemy import BigInteger, CheckConstraint, Index, Integer, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime, Uuid
 
@@ -36,6 +36,9 @@ class PurgeAudit(Base):
     __tablename__ = "purge_audit"
     __table_args__ = (
         CheckConstraint("rows_affected >= 0", name="ck_purge_audit_rows_affected_nonneg"),
+        # Purge-history queries: "show purges for installation X" or
+        # "purges in the last week."
+        Index("ix_purge_audit_installation_timestamp", "installation_id", "timestamp"),
     )
 
     id: Mapped[UUID] = mapped_column(

@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, ForeignKey, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime, Uuid
@@ -28,6 +28,12 @@ from outrider.db.models._base import Base
 
 class Installation(Base):
     __tablename__ = "installations"
+    __table_args__ = (
+        # Sweep grace-window query: tombstoned_at IS NOT NULL AND purge_after_at < NOW().
+        # installation_id is already covered by the column-level unique=True (which
+        # produces an implicit UNIQUE INDEX) so it's not declared again here.
+        Index("ix_installations_tombstoned_at", "tombstoned_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("gen_random_uuid()")

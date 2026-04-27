@@ -26,6 +26,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     Text,
@@ -60,6 +61,18 @@ class Review(Base):
         CheckConstraint("total_cost_usd >= 0", name="ck_reviews_total_cost_usd_nonneg"),
         CheckConstraint(
             "wall_clock_seconds >= 0", name="ck_reviews_wall_clock_seconds_nonneg"
+        ),
+        # Retention sweep: rows whose retention_expires_at has passed.
+        Index("ix_reviews_retention_expires_at", "retention_expires_at"),
+        # Installation purge / scoped query: all reviews for an installation_id.
+        Index("ix_reviews_installation_id", "installation_id"),
+        # Partial index for the active-review states the sweep job watches
+        # (stuck-running detection + HITL-expiry detection per spec §9.9).
+        # Partial keeps the index small — terminal-state rows do not bloat it.
+        Index(
+            "ix_reviews_active_status",
+            "status",
+            postgresql_where=text("status IN ('running', 'awaiting_approval')"),
         ),
     )
 
