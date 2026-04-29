@@ -15,13 +15,21 @@ from outrider.policy.severity import (
     FindingType,
     lookup_severity,
 )
+from outrider.policy.versions import (
+    PolicyVersionShapeError,
+    UnknownPolicyVersionError,
+    load_policy_for_version,
+)
 
 __all__ = [
     "SEVERITY_POLICY",
     "EvidenceTier",
     "FindingSeverity",
     "FindingType",
+    "PolicyVersionShapeError",
     "ProofBoundaryViolationError",
+    "UnknownPolicyVersionError",
     "enforce_proof_boundary",
+    "load_policy_for_version",
     "lookup_severity",
 ]
