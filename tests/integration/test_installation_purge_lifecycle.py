@@ -71,7 +71,7 @@ async def _seed_full_installation_state(engine: AsyncEngine) -> None:
                 "  retention_expires_at"
                 ") VALUES ("
                 "  :review_id, :installation_id, '1.0.0', 'sql_injection', "
-                "  'security', 'critical', 'OBSERVED', 'foo.py', 1, 1, 't', 'd', "
+                "  'security', 'critical', 'observed', 'foo.py', 1, 1, 't', 'd', "
                 "  'e', 'h', NOW() + INTERVAL '180 days'"
                 ")"
             ),

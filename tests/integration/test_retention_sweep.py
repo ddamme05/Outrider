@@ -52,7 +52,7 @@ async def _seed_expired_content(engine: AsyncEngine) -> None:
                 "  retention_expires_at"
                 ") VALUES ("
                 "  :review_id, :installation_id, '1.0.0', 'sql_injection', "
-                "  'security', 'critical', 'OBSERVED', 'foo.py', 1, 1, 't', 'd', "
+                "  'security', 'critical', 'observed', 'foo.py', 1, 1, 't', 'd', "
                 "  'e', 'h', NOW() - INTERVAL '1 day'"
                 ")"
             ),

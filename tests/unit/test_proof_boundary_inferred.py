@@ -27,7 +27,7 @@ def test_inferred_with_trace_path_admits() -> None:
 
 def test_inferred_without_trace_path_raises() -> None:
     """INFERRED + None trace_path raises ProofBoundaryViolationError."""
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty trace_path"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.INFERRED,
             query_match_id=None,
@@ -50,7 +50,7 @@ def test_inferred_with_empty_trace_path_raises() -> None:
     flagged the deferral as a real correctness gap — the empty list
     case is the boundary's job, not the model field's.)
     """
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty trace_path"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.INFERRED,
             query_match_id=None,
@@ -65,3 +65,35 @@ def test_inferred_admits_even_with_extraneous_query_match_id() -> None:
         query_match_id="py.security.placeholder",
         trace_path=["scope_a", "scope_b"],
     )
+
+
+def test_inferred_with_string_trace_path_raises() -> None:
+    """INFERRED + string-typed trace_path raises (type-tightening fix).
+
+    Strings are Sequences, so a `Sequence[Any]` type hint with a
+    truthy-only check would admit a non-empty string as a "trace path."
+    The runtime isinstance(list) gate catches this. Audit-driven: a
+    direct caller that bypasses Pydantic's type validation could pass
+    "abc" (truthy, sequence, not a list); the isinstance check is the
+    structural-shape gate.
+    """
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
+        enforce_proof_boundary(
+            evidence_tier=EvidenceTier.INFERRED,
+            query_match_id=None,
+            trace_path="abc",  # type: ignore[arg-type]
+        )
+
+
+def test_inferred_with_tuple_trace_path_raises() -> None:
+    """INFERRED + tuple-typed trace_path raises.
+
+    Same shape: tuples are Sequences but not lists. The boundary's spec
+    type is list[str] | None; the validator enforces list specifically.
+    """
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
+        enforce_proof_boundary(
+            evidence_tier=EvidenceTier.INFERRED,
+            query_match_id=None,
+            trace_path=("scope_a", "scope_b"),  # type: ignore[arg-type]
+        )

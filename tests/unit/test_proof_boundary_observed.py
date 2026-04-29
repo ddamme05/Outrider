@@ -27,7 +27,7 @@ def test_observed_with_query_match_id_admits() -> None:
 
 def test_observed_without_query_match_id_raises() -> None:
     """OBSERVED + None query_match_id raises ProofBoundaryViolationError."""
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty query_match_id"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty str query_match_id"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.OBSERVED,
             query_match_id=None,
@@ -44,7 +44,7 @@ def test_observed_with_empty_string_query_match_id_raises() -> None:
     commit 131f8d6 flagged this gap. An empty-string admission would
     let the LLM claim OBSERVED tier with no actual proof artifact.
     """
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty query_match_id"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty str query_match_id"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.OBSERVED,
             query_match_id="",
@@ -64,6 +64,23 @@ def test_observed_admits_even_with_extraneous_trace_path() -> None:
         query_match_id="py.security.sql_injection.string_concat",
         trace_path=["module", "function", "call_site"],
     )
+
+
+def test_observed_with_non_string_query_match_id_raises() -> None:
+    """OBSERVED + non-str query_match_id raises (type-tightening fix).
+
+    A truthy non-string value (e.g., an int 42) would pass a truthy-only
+    check; the runtime isinstance(str) gate catches it. Audit-driven:
+    the validator is exposed publicly, so any caller can invoke it; the
+    isinstance check is the structural-shape gate that complements
+    Pydantic's type validation at the model layer.
+    """
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty str query_match_id"):
+        enforce_proof_boundary(
+            evidence_tier=EvidenceTier.OBSERVED,
+            query_match_id=42,  # type: ignore[arg-type]
+            trace_path=None,
+        )
 
 
 def test_proof_boundary_violation_is_value_error_subclass() -> None:

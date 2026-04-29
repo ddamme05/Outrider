@@ -23,9 +23,7 @@ the stored evidence span) is application-layer work in
 covers the admission gate; replay covers the integrity gate.
 """
 
-from collections.abc import Sequence
 from enum import StrEnum
-from typing import Any
 
 
 class EvidenceTier(StrEnum):
@@ -38,11 +36,15 @@ class EvidenceTier(StrEnum):
               traversal path is recorded.
     JUDGED:   model interpretation only. No structural evidence is
               claimed. Lower confidence by construction.
+
+    Values are lowercase per docs/spec.md §7.3, matching the convention
+    of FindingType and FindingSeverity. The Python member names are
+    uppercase (PEP 8); only the serialized string values are lowercase.
     """
 
-    OBSERVED = "OBSERVED"
-    INFERRED = "INFERRED"
-    JUDGED = "JUDGED"
+    OBSERVED = "observed"
+    INFERRED = "inferred"
+    JUDGED = "judged"
 
 
 class ProofBoundaryViolationError(ValueError):
@@ -58,41 +60,51 @@ class ProofBoundaryViolationError(ValueError):
 def enforce_proof_boundary(
     evidence_tier: EvidenceTier,
     query_match_id: str | None,
-    trace_path: Sequence[Any] | None,
+    trace_path: list[str] | None,
 ) -> None:
     """Validate that ``evidence_tier`` admits given the supplied proof artifacts.
 
-    Raises ``ProofBoundaryViolationError`` with the missing field named
-    if the tier requires a proof artifact that's None. JUDGED admits
-    regardless — it's the explicit no-structural-claim path.
+    Raises ``ProofBoundaryViolationError`` with the failing condition
+    named if the tier's proof artifact is missing, empty, or the wrong
+    shape. JUDGED admits regardless — it's the explicit no-structural-
+    claim path.
 
-    Per docs/trust-boundaries.md §1: this is the schema-layer gate. The
-    LLM cannot claim structural evidence it didn't produce; if the model
-    returns OBSERVED for a finding where no tree-sitter query fired, the
-    analyze node tries to construct a ReviewFinding and Pydantic raises
-    via this validator. The tier is not self-reported in any
-    consequential way — the proof boundary disposes of model claims that
-    don't meet it.
+    Per docs/trust-boundaries.md §1 + spec §7.3: OBSERVED requires a
+    non-empty `str` query_match_id pointing into the queries registry;
+    INFERRED requires a non-empty `list[str]` trace_path listing the
+    scope units walked. The runtime ``isinstance`` checks matter
+    because the validator is exposed publicly (any caller, not just
+    Pydantic via ReviewFinding, can invoke it). A truthy non-string
+    query_match_id (e.g., an int) or a truthy non-list trace_path (e.g.,
+    a string — strings are sequences, which would have passed an
+    earlier ``Sequence[Any]`` type) would slip through a truthy-only
+    check. The validator is the boundary; admitting unstructured proof
+    artifacts is the same class of bug as admitting empty ones.
     """
-    if evidence_tier == EvidenceTier.OBSERVED and not query_match_id:
+    if evidence_tier == EvidenceTier.OBSERVED and (
+        not isinstance(query_match_id, str) or not query_match_id
+    ):
         raise ProofBoundaryViolationError(
-            f"OBSERVED finding must carry a non-empty query_match_id; "
-            f"got {query_match_id!r}. OBSERVED is the structural tier — "
-            "it requires a tree-sitter query match identifier in the "
-            "queries registry. None or an empty string fails the boundary; "
+            f"OBSERVED finding must carry a non-empty str query_match_id; "
+            f"got {query_match_id!r} (type={type(query_match_id).__name__}). "
+            "OBSERVED is the structural tier — it requires a tree-sitter "
+            "query match identifier in the queries registry. None, an "
+            "empty string, or a non-string value all fail the boundary; "
             "if the LLM produced OBSERVED without a real query_match_id, "
             "the right path is to downgrade the tier to JUDGED, not to "
             "admit the finding."
         )
-    if evidence_tier == EvidenceTier.INFERRED and not trace_path:
+    if evidence_tier == EvidenceTier.INFERRED and (
+        not isinstance(trace_path, list) or not trace_path
+    ):
         raise ProofBoundaryViolationError(
-            f"INFERRED finding must carry a non-empty trace_path; "
-            f"got {trace_path!r}. INFERRED is the structural-by-reference "
-            "tier — it requires a recorded traversal through ast_facts "
-            "that lists the scope units walked. None or an empty list "
-            "fails the boundary (an empty list lists no scope units); "
-            "if the LLM produced INFERRED without a real trace, the right "
-            "path is to downgrade the tier to JUDGED, not to admit the "
-            "finding."
+            f"INFERRED finding must carry a non-empty list trace_path; "
+            f"got {trace_path!r} (type={type(trace_path).__name__}). "
+            "INFERRED is the structural-by-reference tier — it requires "
+            "a recorded traversal through ast_facts that lists the scope "
+            "units walked. None, an empty list, or a non-list value (a "
+            "string, a tuple, etc.) all fail the boundary; if the LLM "
+            "produced INFERRED without a real trace, the right path is "
+            "to downgrade the tier to JUDGED, not to admit the finding."
         )
     # JUDGED admits with neither, by design.

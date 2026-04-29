@@ -51,7 +51,7 @@ _INSERT_FINDING = text(
     "  description, evidence, content_hash, retention_expires_at"
     ") VALUES ("
     "  :review_id, :installation_id, :policy_version, 'sql_injection', "
-    "  'security', 'critical', 'OBSERVED', 'foo.py', 1, 1, 'title', "
+    "  'security', 'critical', 'observed', 'foo.py', 1, 1, 'title', "
     "  'description', 'evidence', 'hash', NOW() + INTERVAL '180 days'"
     ")"
 )
