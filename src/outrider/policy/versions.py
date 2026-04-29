@@ -105,4 +105,24 @@ async def load_policy_for_version(
             ) from exc
         typed_policy[finding_type] = severity
 
+    # Completeness check: every FindingType MUST have a severity assignment.
+    # A missing entry would silently fall through to the MEDIUM fallback in
+    # lookup_severity at classification time, breaking severity-set-by-policy
+    # for that finding type. The boundary is "policy is the source of
+    # severity"; an incomplete policy is not a source. Fail loud at load
+    # time rather than allow a partial policy to poison classification.
+    missing_types = set(FindingType) - set(typed_policy.keys())
+    if missing_types:
+        missing_values = sorted(t.value for t in missing_types)
+        raise PolicyVersionShapeError(
+            f"Policy for version {version!r} is missing entries for: "
+            f"{missing_values}. Every FindingType must have a severity "
+            "assignment for the policy to be admissible — otherwise "
+            "classification silently falls through to the MEDIUM fallback "
+            "for the missing types, breaking severity-set-by-policy. "
+            "If the gap is intentional (e.g., a future policy version "
+            "deprecates a FindingType), the right path is to deprecate "
+            "the enum value first, not to ship a partial policy row."
+        )
+
     return typed_policy

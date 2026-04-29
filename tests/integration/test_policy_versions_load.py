@@ -124,3 +124,39 @@ async def test_load_malformed_severity_value_raises_shape_error(
                 await load_policy_for_version("9.9.9-bad-severity", conn)
     finally:
         await engine.dispose()
+
+
+async def test_load_incomplete_policy_raises_shape_error(migrated_db: str) -> None:
+    """A policy with valid entries but missing FindingTypes raises PolicyVersionShapeError.
+
+    Inserts a policy that has 11 of 12 FindingType keys (every value is
+    valid; just one type is missing). The loader must refuse to return a
+    partial policy — silently returning it would let classification fall
+    through to lookup_severity's MEDIUM fallback for the missing type at
+    runtime, breaking severity-set-by-policy.
+
+    Closes Codex high-confidence audit finding on commit 9efb008.
+    """
+    # Build an 11-of-12 policy: drop UNUSED_IMPORT.
+    canonical = dict(EXPECTED_V1_POLICY)
+    del canonical[FindingType.UNUSED_IMPORT]
+    incomplete_json = (
+        "{" + ",".join(f'"{k.value}": "{v.value}"' for k, v in canonical.items()) + "}"
+    )
+
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO severity_policies (version, policy) "
+                    "VALUES (:version, CAST(:policy AS jsonb))"
+                ),
+                {"version": "9.9.9-incomplete", "policy": incomplete_json},
+            )
+
+        async with engine.connect() as conn:
+            with pytest.raises(PolicyVersionShapeError, match="missing entries for"):
+                await load_policy_for_version("9.9.9-incomplete", conn)
+    finally:
+        await engine.dispose()
