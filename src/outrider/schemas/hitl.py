@@ -24,13 +24,12 @@ PerFindingDecision.enforce_override_fields covers THREE spec §7.4 rules:
 (3) any non-APPROVE outcome requires a non-empty reason (lines 284-285).
 APPROVE callers pass reason="" to keep the decision-record shape uniform.
 
-HITL artifact list fields use tuple[..., ...] rather than list[...] for
-true immutability: Pydantic frozen=True only blocks attribute reassignment,
-not in-place container mutation, so a list field can still be .append()'d
-after construction. tuple delivers what frozen=True is meant to deliver.
-This tightens the spec.md §6.4 / §7.4 sketches' casual list[UUID] /
-list[PerFindingDecision] to the canonical Python idiom for an immutable
-sequence; the field names and roles match the spec verbatim.
+HITL artifact container fields use tuple[..., ...] for true immutability:
+Pydantic frozen=True only blocks attribute reassignment, not in-place
+container mutation, so a list field can still be .append()'d after
+construction. tuple delivers what frozen=True is meant to deliver. The
+spec.md §6.4 / §7.4 sketches now also use tuple[..., ...]; field names
+and roles match the spec verbatim.
 """
 
 from enum import StrEnum
@@ -105,9 +104,10 @@ class HITLDecision(BaseModel):
     """Reviewer's full decision set for a HITL gate, final at submission.
 
     Frozen: the decision is the audit record at submit time. Per spec §7.4
-    line 290 the field is `decisions: list[PerFindingDecision]` (NOT
-    `per_finding_decisions`); the dashboard endpoint constructs this from
-    reviewer input and the graph resumes with Command(resume=hitl_decision).
+    line 290 the field is `decisions: tuple[PerFindingDecision, ...]` (NOT
+    `per_finding_decisions`; tuple-not-list for true immutability — see
+    module docstring); the dashboard endpoint constructs this from reviewer
+    input and the graph resumes with Command(resume=hitl_decision).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
