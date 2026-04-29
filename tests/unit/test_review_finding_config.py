@@ -1,15 +1,18 @@
-"""ReviewFinding model configuration: extra='forbid', NOT frozen, line/enum gates.
+"""ReviewFinding model configuration: extra='forbid', NOT frozen, validate_assignment.
 
-Three rule families covered here:
+Four rule families covered here:
   - Pydantic config: extra='forbid' rejects unknown fields; frozen is
     deliberately OFF (multi-stage lifecycle — see review_finding.py
-    module docstring).
-  - Enum gates: invalid string values raise. Pydantic V2 coerces VALID
-    string values to enum members (that's fine; the resulting field is
-    still an enum instance, so `severity-set-by-policy` and
-    `finding-type-enum-constrained` still hold). The gate that matters
-    is rejection of invalid values.
+    module docstring); validate_assignment=True so post-construction
+    writes re-run model_validators + Field constraints + enum typing.
+  - Enum gates: invalid string values raise (at construction AND on
+    assignment). Pydantic V2 coerces VALID string values to enum members
+    (that's fine; the resulting field is still an enum instance, so
+    `severity-set-by-policy` and `finding-type-enum-constrained` still
+    hold). The gate that matters is rejection of invalid values.
   - Line constraints: line_start ≥ 1, line_end ≥ line_start.
+  - Validate-on-assignment: lifecycle setters cannot bypass the proof
+    boundary, the line constraint, or the enum gates.
 """
 
 from typing import Any
@@ -99,3 +102,43 @@ def test_review_finding_line_end_equal_line_start_admits() -> None:
     finding = _build_finding(line_start=42, line_end=42)
     assert finding.line_start == 42
     assert finding.line_end == 42
+
+
+def test_review_finding_validate_assignment_blocks_invalid_severity_string() -> None:
+    """Post-construction, assigning an invalid string to .severity raises.
+
+    Without validate_assignment=True, `finding.severity = "garbage"` would
+    silently admit because Pydantic does not revalidate by default. With
+    it, the assignment runs the same enum-coercion check as construction.
+    """
+    finding = _build_finding()
+    with pytest.raises(ValidationError):
+        finding.severity = "catastrophic"  # type: ignore[assignment]
+
+
+def test_review_finding_validate_assignment_blocks_invalid_publish_destination() -> None:
+    """Lifecycle assignment of publish_destination revalidates the enum."""
+    finding = _build_finding()
+    with pytest.raises(ValidationError):
+        finding.publish_destination = "broadcast"  # type: ignore[assignment]
+
+
+def test_review_finding_validate_assignment_runs_proof_boundary() -> None:
+    """Stripping query_match_id from an OBSERVED finding post-construction raises.
+
+    The proof-boundary model_validator runs on assignment, so the lifecycle
+    cannot wash out the OBSERVED → query_match_id requirement after the fact.
+    """
+    finding = _build_finding(
+        evidence_tier=EvidenceTier.OBSERVED,
+        query_match_id="py.security.placeholder",
+    )
+    with pytest.raises(ValidationError, match="non-empty str query_match_id"):
+        finding.query_match_id = None
+
+
+def test_review_finding_validate_assignment_runs_line_constraint() -> None:
+    """Setting line_end below line_start post-construction raises."""
+    finding = _build_finding(line_start=10, line_end=20)
+    with pytest.raises(ValidationError, match="line_end"):
+        finding.line_end = 5

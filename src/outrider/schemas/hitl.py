@@ -15,11 +15,22 @@ envelope at the moment it interrupts the graph (reviewer state mutates
 HITLDecision, not HITLRequest). Contrast ReviewFinding (NOT frozen) — see
 schemas/review_finding.py module docstring for the lifecycle rationale.
 
-PerFindingDecision.enforce_override_fields covers BOTH spec §7.4 rules:
+PerFindingDecision.enforce_override_fields covers THREE spec §7.4 rules:
 (1) SEVERITY_OVERRIDE requires both override_severity and original_severity
-    (lines 277-283), and
-(2) any non-APPROVE outcome requires a non-empty reason (lines 284-285).
+    (lines 277-283),
+(2) APPROVE / REJECT / SUPPRESS must NOT carry override_severity or
+    original_severity — those fields are SEVERITY_OVERRIDE-specific per the
+    field docstrings ("Only set when outcome == SEVERITY_OVERRIDE"), and
+(3) any non-APPROVE outcome requires a non-empty reason (lines 284-285).
 APPROVE callers pass reason="" to keep the decision-record shape uniform.
+
+HITL artifact list fields use tuple[..., ...] rather than list[...] for
+true immutability: Pydantic frozen=True only blocks attribute reassignment,
+not in-place container mutation, so a list field can still be .append()'d
+after construction. tuple delivers what frozen=True is meant to deliver.
+This tightens the spec.md §6.4 / §7.4 sketches' casual list[UUID] /
+list[PerFindingDecision] to the canonical Python idiom for an immutable
+sequence; the field names and roles match the spec verbatim.
 """
 
 from enum import StrEnum
@@ -57,11 +68,18 @@ class PerFindingDecision(BaseModel):
 
     @model_validator(mode="after")
     def enforce_override_fields(self) -> Self:
-        """Spec §7.4: SEVERITY_OVERRIDE needs both severities; non-APPROVE needs reason."""
+        """Spec §7.4: bidirectional override-fields gate + non-APPROVE needs reason."""
         if self.outcome == PerFindingOutcome.SEVERITY_OVERRIDE and (
             not self.override_severity or not self.original_severity
         ):
             raise ValueError("severity_override requires override_severity and original_severity")
+        if self.outcome != PerFindingOutcome.SEVERITY_OVERRIDE and (
+            self.override_severity is not None or self.original_severity is not None
+        ):
+            raise ValueError(
+                f"{self.outcome.value} must not carry override_severity or original_severity "
+                "(those fields are severity_override-specific)"
+            )
         if self.outcome != PerFindingOutcome.APPROVE and not self.reason:
             raise ValueError(f"{self.outcome.value} requires a reason")
         return self
@@ -77,8 +95,8 @@ class HITLRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    findings_requiring_approval: list[UUID]
-    auto_post_findings: list[UUID]
+    findings_requiring_approval: tuple[UUID, ...]
+    auto_post_findings: tuple[UUID, ...]
     created_at: AwareDatetime
     expires_at: AwareDatetime
 
@@ -95,7 +113,7 @@ class HITLDecision(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     reviewer_id: str
-    decisions: list[PerFindingDecision]
+    decisions: tuple[PerFindingDecision, ...]
     annotation: str | None = None
     decided_at: AwareDatetime
 

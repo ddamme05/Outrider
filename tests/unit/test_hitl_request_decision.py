@@ -67,7 +67,7 @@ def test_hitl_decision_decisions_field_required() -> None:
         annotation=None,
         decided_at=datetime.now(UTC),
     )
-    assert empty_decisions.decisions == []
+    assert empty_decisions.decisions == ()
 
     with pytest.raises(ValidationError):
         HITLDecision(  # type: ignore[call-arg]
@@ -109,6 +109,32 @@ def test_hitl_decision_extra_forbid() -> None:
             annotation=None,
             decided_at=datetime.now(UTC),
             unknown_field="oops",  # type: ignore[call-arg]
+        )
+
+
+def test_hitl_request_list_fields_are_immutable_tuples() -> None:
+    """Pydantic frozen=True only blocks attribute reassignment; list fields can
+    still be .append()'d in place. The field type is `tuple[UUID, ...]` so the
+    underlying container is a tuple at runtime — true immutability.
+    """
+    request = _build_request()
+    assert isinstance(request.findings_requiring_approval, tuple)
+    assert isinstance(request.auto_post_findings, tuple)
+    with pytest.raises(AttributeError):
+        request.findings_requiring_approval.append(uuid4())  # type: ignore[attr-defined]
+
+
+def test_hitl_decision_decisions_field_is_immutable_tuple() -> None:
+    """HITLDecision.decisions is `tuple[PerFindingDecision, ...]` — true immutability."""
+    decision = _build_decision()
+    assert isinstance(decision.decisions, tuple)
+    with pytest.raises(AttributeError):
+        decision.decisions.append(  # type: ignore[attr-defined]
+            PerFindingDecision(
+                finding_id=uuid4(),
+                outcome=PerFindingOutcome.APPROVE,
+                reason="",
+            )
         )
 
 

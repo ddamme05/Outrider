@@ -1,7 +1,11 @@
-"""PerFindingDecision: enforce_override_fields covers two spec §7.4 rules.
+"""PerFindingDecision: enforce_override_fields covers three spec §7.4 rules.
 
 Rule 1: SEVERITY_OVERRIDE requires both override_severity and original_severity.
-Rule 2: any non-APPROVE outcome requires a non-empty reason.
+Rule 2: APPROVE / REJECT / SUPPRESS must NOT carry override_severity or
+        original_severity — those fields are SEVERITY_OVERRIDE-specific per
+        the field docstrings.
+Rule 3: any non-APPROVE outcome requires a non-empty reason.
+
 APPROVE is the only outcome where reason="" admits — the field itself is
 required (no default), so APPROVE callers pass reason="" to keep the
 decision-record shape uniform across outcomes.
@@ -124,6 +128,54 @@ def test_approve_does_not_require_override_severity_fields() -> None:
         outcome=PerFindingOutcome.SUPPRESS,
         reason="known false positive on this codebase",
     )
+
+
+def test_approve_with_override_severity_raises() -> None:
+    """APPROVE must NOT carry override_severity (field is SEVERITY_OVERRIDE-specific)."""
+    with pytest.raises(ValidationError, match="must not carry override_severity"):
+        PerFindingDecision(
+            finding_id=uuid4(),
+            outcome=PerFindingOutcome.APPROVE,
+            reason="",
+            override_severity=FindingSeverity.HIGH,
+            original_severity=None,
+        )
+
+
+def test_approve_with_original_severity_raises() -> None:
+    """APPROVE must NOT carry original_severity either."""
+    with pytest.raises(ValidationError, match="must not carry override_severity"):
+        PerFindingDecision(
+            finding_id=uuid4(),
+            outcome=PerFindingOutcome.APPROVE,
+            reason="",
+            override_severity=None,
+            original_severity=FindingSeverity.HIGH,
+        )
+
+
+def test_reject_with_override_severity_raises() -> None:
+    """REJECT must NOT carry override_severity (field is SEVERITY_OVERRIDE-specific)."""
+    with pytest.raises(ValidationError, match="must not carry override_severity"):
+        PerFindingDecision(
+            finding_id=uuid4(),
+            outcome=PerFindingOutcome.REJECT,
+            reason="duplicate of finding XYZ",
+            override_severity=FindingSeverity.LOW,
+            original_severity=FindingSeverity.HIGH,
+        )
+
+
+def test_suppress_with_original_severity_raises() -> None:
+    """SUPPRESS must NOT carry original_severity (field is SEVERITY_OVERRIDE-specific)."""
+    with pytest.raises(ValidationError, match="must not carry override_severity"):
+        PerFindingDecision(
+            finding_id=uuid4(),
+            outcome=PerFindingOutcome.SUPPRESS,
+            reason="known false positive on this codebase",
+            override_severity=None,
+            original_severity=FindingSeverity.MEDIUM,
+        )
 
 
 def test_per_finding_decision_is_frozen() -> None:

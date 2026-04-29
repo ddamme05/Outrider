@@ -78,7 +78,13 @@ class ReviewFinding(BaseModel):
     """
 
     # Not frozen: multi-stage lifecycle. See module docstring.
-    model_config = ConfigDict(extra="forbid")
+    # validate_assignment=True: lifecycle writes (publish_destination,
+    # override fields) re-run model_validators + Field constraints + enum
+    # typing on every assignment, so post-construction mutations cannot
+    # bypass the proof boundary, the line constraint, or the typed-enum
+    # gates. Without this, `finding.severity = "garbage"` would silently
+    # admit; with it, the assignment raises.
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     finding_id: UUID = Field(default_factory=uuid4)
     review_id: UUID
