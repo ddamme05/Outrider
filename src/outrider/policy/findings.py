@@ -74,20 +74,25 @@ def enforce_proof_boundary(
     consequential way — the proof boundary disposes of model claims that
     don't meet it.
     """
-    if evidence_tier == EvidenceTier.OBSERVED and query_match_id is None:
+    if evidence_tier == EvidenceTier.OBSERVED and not query_match_id:
         raise ProofBoundaryViolationError(
-            "OBSERVED finding must carry a query_match_id; got None. "
-            "OBSERVED is the structural tier — it requires a tree-sitter "
-            "query match in the queries registry. If the LLM produced "
-            "OBSERVED without a query_match_id, the right path is to "
-            "downgrade the tier to JUDGED, not to admit the finding."
+            f"OBSERVED finding must carry a non-empty query_match_id; "
+            f"got {query_match_id!r}. OBSERVED is the structural tier — "
+            "it requires a tree-sitter query match identifier in the "
+            "queries registry. None or an empty string fails the boundary; "
+            "if the LLM produced OBSERVED without a real query_match_id, "
+            "the right path is to downgrade the tier to JUDGED, not to "
+            "admit the finding."
         )
-    if evidence_tier == EvidenceTier.INFERRED and trace_path is None:
+    if evidence_tier == EvidenceTier.INFERRED and not trace_path:
         raise ProofBoundaryViolationError(
-            "INFERRED finding must carry a trace_path; got None. "
-            "INFERRED is the structural-by-reference tier — it requires "
-            "a recorded trace through ast_facts. If the LLM produced "
-            "INFERRED without a trace_path, the right path is to "
-            "downgrade the tier to JUDGED, not to admit the finding."
+            f"INFERRED finding must carry a non-empty trace_path; "
+            f"got {trace_path!r}. INFERRED is the structural-by-reference "
+            "tier — it requires a recorded traversal through ast_facts "
+            "that lists the scope units walked. None or an empty list "
+            "fails the boundary (an empty list lists no scope units); "
+            "if the LLM produced INFERRED without a real trace, the right "
+            "path is to downgrade the tier to JUDGED, not to admit the "
+            "finding."
         )
     # JUDGED admits with neither, by design.
