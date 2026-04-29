@@ -57,6 +57,21 @@ class ProofBoundaryViolationError(ValueError):
     """
 
 
+def _trace_path_is_valid(trace_path: object) -> bool:
+    """A trace_path is valid iff it's a non-empty list of non-empty strs.
+
+    The list-ness check rejects strings (which are sequences but not
+    lists) and tuples; the non-empty check rejects lists with no
+    walked-scope-unit identifiers; the per-element check rejects
+    `[42]`, `[None]`, `[""]`, etc. — anything that isn't a real scope-unit
+    identifier string. Each gate is necessary; no single gate is
+    sufficient.
+    """
+    if not isinstance(trace_path, list) or not trace_path:
+        return False
+    return all(isinstance(item, str) and item for item in trace_path)
+
+
 def enforce_proof_boundary(
     evidence_tier: EvidenceTier,
     query_match_id: str | None,
@@ -65,22 +80,34 @@ def enforce_proof_boundary(
     """Validate that ``evidence_tier`` admits given the supplied proof artifacts.
 
     Raises ``ProofBoundaryViolationError`` with the failing condition
-    named if the tier's proof artifact is missing, empty, or the wrong
-    shape. JUDGED admits regardless — it's the explicit no-structural-
-    claim path.
+    named. JUDGED admits regardless — it's the explicit no-structural-
+    claim path. Invalid tiers (anything not in the EvidenceTier enum)
+    raise; the previous "implicit admission for unrecognized values"
+    behavior was a real correctness gap surfaced by the audit pass on
+    commit c632a53.
 
-    Per docs/trust-boundaries.md §1 + spec §7.3: OBSERVED requires a
-    non-empty `str` query_match_id pointing into the queries registry;
-    INFERRED requires a non-empty `list[str]` trace_path listing the
-    scope units walked. The runtime ``isinstance`` checks matter
-    because the validator is exposed publicly (any caller, not just
-    Pydantic via ReviewFinding, can invoke it). A truthy non-string
-    query_match_id (e.g., an int) or a truthy non-list trace_path (e.g.,
-    a string — strings are sequences, which would have passed an
-    earlier ``Sequence[Any]`` type) would slip through a truthy-only
-    check. The validator is the boundary; admitting unstructured proof
-    artifacts is the same class of bug as admitting empty ones.
+    Per docs/trust-boundaries.md §1 + spec §7.3:
+      - evidence_tier MUST be an EvidenceTier member.
+      - OBSERVED requires a non-empty `str` query_match_id pointing
+        into the queries registry.
+      - INFERRED requires a non-empty `list[str]` trace_path where
+        every element is a non-empty str (a scope-unit identifier).
+      - JUDGED admits without either artifact; the tier itself signals
+        that no structural claim is made.
+
+    The runtime checks matter because the validator is exposed publicly
+    (any caller, not just Pydantic via ReviewFinding, can invoke it).
+    Type hints alone don't enforce at runtime; the validator must
+    defend itself.
     """
+    if not isinstance(evidence_tier, EvidenceTier):
+        raise ProofBoundaryViolationError(
+            f"evidence_tier must be an EvidenceTier member; got "
+            f"{evidence_tier!r} (type={type(evidence_tier).__name__}). "
+            "Valid values are EvidenceTier.OBSERVED, .INFERRED, .JUDGED. "
+            "Unrecognized tiers must not slip through to a default-admit "
+            "path; the boundary's gate is closed by default."
+        )
     if evidence_tier == EvidenceTier.OBSERVED and (
         not isinstance(query_match_id, str) or not query_match_id
     ):
@@ -94,17 +121,19 @@ def enforce_proof_boundary(
             "the right path is to downgrade the tier to JUDGED, not to "
             "admit the finding."
         )
-    if evidence_tier == EvidenceTier.INFERRED and (
-        not isinstance(trace_path, list) or not trace_path
-    ):
+    if evidence_tier == EvidenceTier.INFERRED and not _trace_path_is_valid(trace_path):
         raise ProofBoundaryViolationError(
-            f"INFERRED finding must carry a non-empty list trace_path; "
-            f"got {trace_path!r} (type={type(trace_path).__name__}). "
-            "INFERRED is the structural-by-reference tier — it requires "
-            "a recorded traversal through ast_facts that lists the scope "
-            "units walked. None, an empty list, or a non-list value (a "
-            "string, a tuple, etc.) all fail the boundary; if the LLM "
-            "produced INFERRED without a real trace, the right path is "
-            "to downgrade the tier to JUDGED, not to admit the finding."
+            f"INFERRED finding must carry a non-empty list[str] trace_path "
+            f"with non-empty string elements; got {trace_path!r} "
+            f"(type={type(trace_path).__name__}). INFERRED is the "
+            "structural-by-reference tier — it requires a recorded "
+            "traversal through ast_facts that lists the scope units "
+            "walked. None, an empty list, a non-list value (string, "
+            "tuple, etc.), or a list containing non-string / empty-string "
+            "elements all fail the boundary; if the LLM produced "
+            "INFERRED without a real trace, the right path is to "
+            "downgrade the tier to JUDGED, not to admit the finding."
         )
-    # JUDGED admits with neither, by design.
+    # JUDGED admits with neither artifact; isinstance check above
+    # already gated on tier validity, so falling through here means
+    # the tier is JUDGED specifically, not an unrecognized value.

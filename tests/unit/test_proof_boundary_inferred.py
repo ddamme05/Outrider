@@ -27,7 +27,7 @@ def test_inferred_with_trace_path_admits() -> None:
 
 def test_inferred_without_trace_path_raises() -> None:
     """INFERRED + None trace_path raises ProofBoundaryViolationError."""
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.INFERRED,
             query_match_id=None,
@@ -50,7 +50,7 @@ def test_inferred_with_empty_trace_path_raises() -> None:
     flagged the deferral as a real correctness gap — the empty list
     case is the boundary's job, not the model field's.)
     """
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.INFERRED,
             query_match_id=None,
@@ -77,7 +77,7 @@ def test_inferred_with_string_trace_path_raises() -> None:
     "abc" (truthy, sequence, not a list); the isinstance check is the
     structural-shape gate.
     """
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.INFERRED,
             query_match_id=None,
@@ -91,9 +91,49 @@ def test_inferred_with_tuple_trace_path_raises() -> None:
     Same shape: tuples are Sequences but not lists. The boundary's spec
     type is list[str] | None; the validator enforces list specifically.
     """
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty list trace_path"):
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
         enforce_proof_boundary(
             evidence_tier=EvidenceTier.INFERRED,
             query_match_id=None,
             trace_path=("scope_a", "scope_b"),  # type: ignore[arg-type]
+        )
+
+
+def test_inferred_with_non_string_element_in_trace_path_raises() -> None:
+    """INFERRED + list with non-str element raises (element-shape fix).
+
+    Audit-driven: a list like [42] or [object()] would have passed the
+    isinstance(list)+truthy check. The element-shape validation rejects
+    any non-string / empty-string element so a "trace path" must
+    actually list scope-unit identifier strings.
+    """
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
+        enforce_proof_boundary(
+            evidence_tier=EvidenceTier.INFERRED,
+            query_match_id=None,
+            trace_path=[42],  # type: ignore[list-item]
+        )
+
+
+def test_inferred_with_empty_string_element_in_trace_path_raises() -> None:
+    """INFERRED + list containing an empty-string element raises.
+
+    Same class of issue: ``[""]`` is a one-element list with no actual
+    identifier. Rejecting parallels the empty-list-as-no-trace rule.
+    """
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
+        enforce_proof_boundary(
+            evidence_tier=EvidenceTier.INFERRED,
+            query_match_id=None,
+            trace_path=["scope_a", "", "scope_b"],
+        )
+
+
+def test_inferred_with_mixed_types_in_trace_path_raises() -> None:
+    """INFERRED + list with one bad element raises even if others are valid."""
+    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
+        enforce_proof_boundary(
+            evidence_tier=EvidenceTier.INFERRED,
+            query_match_id=None,
+            trace_path=["scope_a", None, "scope_b"],  # type: ignore[list-item]
         )
