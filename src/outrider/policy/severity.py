@@ -1,0 +1,90 @@
+# Severity policy per docs/trust-boundaries.md §2 (severity-set-by-policy)
+"""FindingType + FindingSeverity enums + SEVERITY_POLICY dict.
+
+The LLM identifies a FindingType from a constrained enum; SEVERITY_POLICY
+(a static dict keyed by FindingType) assigns severity. Reviewers can
+override via PerFindingDecision.outcome = SEVERITY_OVERRIDE with a
+required reason. Model output does NOT determine severity anywhere in
+the pipeline — every read of severity goes through SEVERITY_POLICY (or
+the override path), never through model JSON.
+
+Policy versions are stored in the severity_policies table keyed by
+version string per `severity-policy-versioned-for-replay`; replay at
+time T uses the version in effect at T, not the current one. The
+versioned loader lives in `policy/versions.py`. Mutating SEVERITY_POLICY
+in place would invalidate every historical review's replay; mapping
+changes ship as new policy versions seeded by new migrations.
+"""
+
+from enum import StrEnum
+
+
+class FindingType(StrEnum):
+    """The constrained enum the LLM classifies findings under.
+
+    The retry/normalize/anomaly path that turns a model-produced string
+    into a FindingType enum value (or anomalies if no safe match) is the
+    analyze node's responsibility per `finding-type-enum-constrained`.
+    This enum is the type system; the analyze node is what bridges from
+    untrusted model output to it.
+    """
+
+    SQL_INJECTION = "sql_injection"
+    XSS = "xss"
+    HARDCODED_SECRET = "hardcoded_secret"  # noqa: S105 (finding-type label, not a password)
+    AUTH_BYPASS = "auth_bypass"
+    PATH_TRAVERSAL = "path_traversal"
+    MISSING_INPUT_VALIDATION = "missing_input_validation"
+    N_PLUS_ONE_QUERY = "n_plus_one_query"
+    BLOCKING_CALL_IN_ASYNC = "blocking_call_in_async"
+    UNUSED_IMPORT = "unused_import"
+    MISSING_ERROR_HANDLING = "missing_error_handling"
+    MISSING_TEST = "missing_test"
+    DEPRECATED_API = "deprecated_api"
+
+
+class FindingSeverity(StrEnum):
+    """Severity tier assigned by SEVERITY_POLICY, never by the model."""
+
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INFO = "info"
+
+
+SEVERITY_POLICY: dict[FindingType, FindingSeverity] = {
+    FindingType.SQL_INJECTION: FindingSeverity.CRITICAL,
+    FindingType.AUTH_BYPASS: FindingSeverity.CRITICAL,
+    FindingType.HARDCODED_SECRET: FindingSeverity.HIGH,
+    FindingType.XSS: FindingSeverity.HIGH,
+    FindingType.PATH_TRAVERSAL: FindingSeverity.HIGH,
+    FindingType.MISSING_INPUT_VALIDATION: FindingSeverity.MEDIUM,
+    FindingType.N_PLUS_ONE_QUERY: FindingSeverity.MEDIUM,
+    FindingType.BLOCKING_CALL_IN_ASYNC: FindingSeverity.MEDIUM,
+    FindingType.MISSING_ERROR_HANDLING: FindingSeverity.LOW,
+    FindingType.MISSING_TEST: FindingSeverity.LOW,
+    FindingType.UNUSED_IMPORT: FindingSeverity.INFO,
+    FindingType.DEPRECATED_API: FindingSeverity.INFO,
+}
+
+
+_DEFAULT_SEVERITY: FindingSeverity = FindingSeverity.MEDIUM
+
+
+def lookup_severity(finding_type: FindingType) -> FindingSeverity:
+    """Return the policy-assigned severity for a finding type.
+
+    Returns FindingSeverity.MEDIUM as the documented fallback for an
+    unmapped FindingType per spec §7.4. The fallback is a defense-in-depth
+    safety net for the case where a future FindingType value is added
+    without a corresponding SEVERITY_POLICY entry — a developer bug.
+    The unit tests catch that condition (test_severity_policy_dict
+    asserts no FindingType is missing); this fallback is the runtime
+    behavior if the unit test is ever bypassed.
+
+    Per spec §7.4: "Unknown finding types default to MEDIUM — not
+    CRITICAL like an incident response system would, because a code
+    review false positive is annoying, not dangerous."
+    """
+    return SEVERITY_POLICY.get(finding_type, _DEFAULT_SEVERITY)
