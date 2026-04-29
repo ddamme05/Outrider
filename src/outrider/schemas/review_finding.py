@@ -102,7 +102,10 @@ class ReviewFinding(BaseModel):
     evidence: str
     suggested_fix: str | None = None
     query_match_id: str | None = None
-    trace_path: list[str] | None = None
+    # tuple, not list: post-construction `.append()` / `.clear()` on a list
+    # would bypass validate_assignment (which only fires on attribute
+    # rebinding, not in-place mutation). Tuple delivers true immutability.
+    trace_path: tuple[str, ...] | None = None
     # Lifecycle / HITL-set fields (None at analyze-time):
     original_severity: FindingSeverity | None = None
     override_reason: str | None = None

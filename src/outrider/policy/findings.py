@@ -58,16 +58,21 @@ class ProofBoundaryViolationError(ValueError):
 
 
 def _trace_path_is_valid(trace_path: object) -> bool:
-    """A trace_path is valid iff it's a non-empty list of non-empty strs.
+    """A trace_path is valid iff it's a non-empty list-or-tuple of non-empty strs.
 
-    The list-ness check rejects strings (which are sequences but not
-    lists) and tuples; the non-empty check rejects lists with no
-    walked-scope-unit identifiers; the per-element check rejects
-    `[42]`, `[None]`, `[""]`, etc. — anything that isn't a real scope-unit
-    identifier string. Each gate is necessary; no single gate is
-    sufficient.
+    The list-or-tuple check rejects strings (sequences but neither list
+    nor tuple) and other sequence-likes (dict, set, etc.); the non-empty
+    check rejects sequences with no walked-scope-unit identifiers; the
+    per-element check rejects `[42]`, `[None]`, `[""]`, etc. — anything
+    that isn't a real scope-unit identifier string. Each gate is
+    necessary; no single gate is sufficient.
+
+    Accepting both list and tuple matches the schemas-layer canonical
+    type for ReviewFinding.trace_path (`tuple[str, ...] | None` for
+    true post-construction immutability) while preserving back-compat
+    with direct callers passing `list[str]`.
     """
-    if not isinstance(trace_path, list) or not trace_path:
+    if not isinstance(trace_path, (list, tuple)) or not trace_path:
         return False
     return all(isinstance(item, str) and item for item in trace_path)
 
@@ -75,7 +80,7 @@ def _trace_path_is_valid(trace_path: object) -> bool:
 def enforce_proof_boundary(
     evidence_tier: EvidenceTier,
     query_match_id: str | None,
-    trace_path: list[str] | None,
+    trace_path: list[str] | tuple[str, ...] | None,
 ) -> None:
     """Validate that ``evidence_tier`` admits given the supplied proof artifacts.
 
@@ -90,8 +95,11 @@ def enforce_proof_boundary(
       - evidence_tier MUST be an EvidenceTier member.
       - OBSERVED requires a non-empty `str` query_match_id pointing
         into the queries registry.
-      - INFERRED requires a non-empty `list[str]` trace_path where
-        every element is a non-empty str (a scope-unit identifier).
+      - INFERRED requires a non-empty `list[str]` or `tuple[str, ...]`
+        trace_path where every element is a non-empty str (a scope-unit
+        identifier). Tuple admits because schemas-layer ReviewFinding
+        types the field as `tuple[str, ...] | None` for true immutability;
+        direct callers passing `list[str]` continue to work.
       - JUDGED admits without either artifact; the tier itself signals
         that no structural claim is made.
 
@@ -123,16 +131,17 @@ def enforce_proof_boundary(
         )
     if evidence_tier == EvidenceTier.INFERRED and not _trace_path_is_valid(trace_path):
         raise ProofBoundaryViolationError(
-            f"INFERRED finding must carry a non-empty list[str] trace_path "
-            f"with non-empty string elements; got {trace_path!r} "
-            f"(type={type(trace_path).__name__}). INFERRED is the "
-            "structural-by-reference tier — it requires a recorded "
-            "traversal through ast_facts that lists the scope units "
-            "walked. None, an empty list, a non-list value (string, "
-            "tuple, etc.), or a list containing non-string / empty-string "
-            "elements all fail the boundary; if the LLM produced "
-            "INFERRED without a real trace, the right path is to "
-            "downgrade the tier to JUDGED, not to admit the finding."
+            f"INFERRED finding must carry a non-empty list[str] or "
+            f"tuple[str, ...] trace_path with non-empty string elements; "
+            f"got {trace_path!r} (type={type(trace_path).__name__}). "
+            "INFERRED is the structural-by-reference tier — it requires "
+            "a recorded traversal through ast_facts that lists the scope "
+            "units walked. None, an empty sequence, a non-list/non-tuple "
+            "value (string, dict, set, etc.), or a sequence containing "
+            "non-string / empty-string elements all fail the boundary; "
+            "if the LLM produced INFERRED without a real trace, the "
+            "right path is to downgrade the tier to JUDGED, not to admit "
+            "the finding."
         )
     # JUDGED admits with neither artifact; isinstance check above
     # already gated on tier validity, so falling through here means

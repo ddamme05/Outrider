@@ -85,18 +85,21 @@ def test_inferred_with_string_trace_path_raises() -> None:
         )
 
 
-def test_inferred_with_tuple_trace_path_raises() -> None:
-    """INFERRED + tuple-typed trace_path raises.
+def test_inferred_with_tuple_trace_path_admits() -> None:
+    """INFERRED + non-empty tuple trace_path admits.
 
-    Same shape: tuples are Sequences but not lists. The boundary's spec
-    type is list[str] | None; the validator enforces list specifically.
+    Tuple admits because schemas-layer `ReviewFinding.trace_path` is typed
+    `tuple[str, ...] | None` for true post-construction immutability
+    (Pydantic frozen=True + validate_assignment do not block in-place
+    list mutation; tuple does). The validator accepts both list and
+    tuple, with the str-exclusion still in force (a string is a Sequence
+    but neither list nor tuple).
     """
-    with pytest.raises(ProofBoundaryViolationError, match="non-empty list"):
-        enforce_proof_boundary(
-            evidence_tier=EvidenceTier.INFERRED,
-            query_match_id=None,
-            trace_path=("scope_a", "scope_b"),  # type: ignore[arg-type]
-        )
+    enforce_proof_boundary(
+        evidence_tier=EvidenceTier.INFERRED,
+        query_match_id=None,
+        trace_path=("scope_a", "scope_b"),
+    )
 
 
 def test_inferred_with_non_string_element_in_trace_path_raises() -> None:
