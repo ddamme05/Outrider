@@ -17,8 +17,10 @@ analyze-node spec when the LLM Protocol + provider wrappers exist.
 Each metric carries:
   - `value: float` in `[0.0, 1.0]` for ratio metrics, or non-negative for
     cost/latency.
-  - `numerator: int | None` and `denominator: int | None` for ratios so
-    the dashboard can render "12 of 15" alongside the percentage.
+  - `numerator: int` and `denominator: int` (both `ge=0`) for ratios so
+    the dashboard can render "12 of 15" alongside the percentage. Both
+    required, not optional — for "of N findings, how many ..." shapes,
+    both N and the count are well-defined integers by definition.
   - Unit-bearing absolute metrics (`CostPerReview.usd`,
     `LatencyPerReview.seconds`) carry the unit in the field name to make
     the dashboard rendering unambiguous.
