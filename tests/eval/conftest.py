@@ -1,29 +1,35 @@
 """Eval-harness conftest per spec §11.2 + DECISIONS.md#008 Amended 2026-04-30.
 
-Three responsibilities:
+Two responsibilities:
 
 1. **`--is-eval` CLI option.** Sets `OUTRIDER_IS_EVAL=1` so the rest of the
    pipeline can detect eval mode if it cares to (see `docs/testing.md`).
-2. **`eval_db` fixture.** Fresh-DB-per-test pattern with the URL-pattern
-   guard from `_assert_test_url_is_isolated`, mirroring the integration-tier
-   `migrated_db` fixture. Created at fixture setup, dropped at teardown.
-3. **`is_eval_injection` autouse fixture.** Loud-failure integrity gate per
-   the eval-harness spec: at test teardown, if the test used `eval_db`,
-   queries `reviews` + `audit_events` for rows where `is_eval = FALSE` and
-   raises if any are found. Does NOT auto-coerce — that would mask the
-   exact bug class the gate exists to catch (factories that forget the
-   flag). Setting `is_eval=True` is the factory's responsibility (see
-   `tests/eval/fixtures/factories.py`); this fixture is the after-the-fact
+2. **`eval_db` fixture with bundled integrity gate.** Fresh-DB-per-test
+   pattern with the URL-pattern guard from `_assert_test_url_is_isolated`,
+   mirroring the integration-tier `migrated_db` fixture. Created at fixture
+   setup, integrity-gate query at the start of teardown, dropped at the
+   end of teardown. The integrity gate is loud-failure: it queries every
+   `is_eval`-bearing table (`reviews`, `audit_events`, `findings`,
+   `llm_call_content`, `anomalies` per `docs/schema.md` "Eval isolation")
+   for rows with `is_eval = FALSE` and raises `AssertionError` if any are
+   found. Does NOT auto-coerce — that would mask the exact bug class the
+   gate exists to catch (factories that forget the flag). Setting
+   `is_eval=True` is the factory's responsibility (see
+   `tests/eval/fixtures/factories.py`); this gate is the after-the-fact
    check. Pattern matches the project's loud-failure discipline
    (`PerFindingDecision.reason` required-no-default,
    `candidates_considered` required-no-default,
    `FindingEvent.finding_content_hash` equality verifier).
 
-Note on conftest scope: this file ONLY applies to tests under `tests/eval/`.
-The harness-internal integration test at
-`tests/integration/test_eval_harness_is_eval_flag.py` does NOT consume the
-autouse fixture (different conftest tree); it tests the propagation
-contract directly via explicit assertions.
+   Earlier drafts split this into a separate `is_eval_injection` autouse
+   fixture; folded into `eval_db`'s teardown to make the order
+   deterministic (autouse fixtures of the same scope can set up before
+   explicit fixtures, putting the autouse's post-yield query AFTER
+   `eval_db`'s drop — querying a dropped DB).
+
+Conftest scope: this file applies to tests under `tests/eval/`. The
+harness-internal tests at `tests/eval/test_*.py` (not under
+`tests/eval/scenarios/`) consume `eval_db` directly when they need a DB.
 
 Helper functions duplicated from `tests/integration/conftest.py` rather
 than imported (tests/ is not a package and conftest.py is pytest-special;
@@ -72,9 +78,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Honor --is-eval by setting the env var early."""
-    if config.getoption("--is-eval"):
-        os.environ["OUTRIDER_IS_EVAL"] = "1"
+    """Honor --is-eval by setting the env var; refuse to run without it.
+
+    Fail-loud rationale: this conftest only loads when pytest collects tests
+    under `tests/eval/`, so reaching this hook means eval tests are in scope.
+    Today's row-level isolation comes from factories setting `is_eval=True`
+    plus the `eval_db` teardown integrity gate; the `--is-eval` flag is the
+    entry-point declaration that future graph code (LLM provider wrappers,
+    dispatchers, sweep jobs) reads via `OUTRIDER_IS_EVAL=1` to alter behavior.
+    Failing loud here keeps `docs/testing.md`'s "do not run eval without
+    --is-eval" claim true today AND when the future readers land — soft
+    convention rots the moment a graph node starts branching on the env var.
+    """
+    if not config.getoption("--is-eval"):
+        raise pytest.UsageError(
+            "tests/eval/ requires the --is-eval flag. Run: pytest tests/eval --is-eval"
+        )
+    os.environ["OUTRIDER_IS_EVAL"] = "1"
 
 
 def _redact_url_password(url: str) -> str:
