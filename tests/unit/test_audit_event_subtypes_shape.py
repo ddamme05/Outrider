@@ -87,7 +87,7 @@ def _finding_kwargs() -> dict[str, Any]:
         "line_start": 10,
         "line_end": 12,
         "dimension": ReviewDimension.SECURITY,
-        "finding_content_hash": "sha256-h",
+        "finding_content_hash": "a" * 64,
         "evidence_tier": EvidenceTier.JUDGED,
         "policy_version": "1.0.0",
     }

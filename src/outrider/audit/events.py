@@ -61,6 +61,13 @@ from outrider.schemas import (
     ReviewDimension,
 )
 
+# SHA-256 hashes are 256 bits = 64 hex characters per spec §8.5
+# (FindingEvent.finding_content_hash = SHA-256(file_path + line_start +
+# line_end + finding_type)). Lowercase-hex is the canonical encoding;
+# enforce at the schema layer so the audit log's deduplication contract
+# can rely on a deterministic format.
+_SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
+
 
 class AuditEventBase(BaseModel):
     """Shared fields for every audit event.
@@ -98,13 +105,22 @@ class ContextManifestEntry(BaseModel):
 
     file_path: str
     scope_unit_name: str
-    line_start: int
-    line_end: int
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
     inclusion_reason: Literal[
         "changed_scope",
         "same_file_context",
         "trace_expansion",
     ]
+
+    @model_validator(mode="after")
+    def _enforce_line_constraint(self) -> Self:
+        """line_end must be >= line_start (1-indexed per coordinates/)."""
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
 
 
 class AgentTransitionEvent(AuditEventBase):
@@ -113,7 +129,7 @@ class AgentTransitionEvent(AuditEventBase):
     event_type: Literal["agent_transition"] = "agent_transition"
     from_node: str
     to_node: str
-    latency_ms: int
+    latency_ms: int = Field(ge=0)
 
 
 class ReviewPhaseEvent(AuditEventBase):
@@ -133,16 +149,21 @@ class ReviewPhaseEvent(AuditEventBase):
 
 
 class LLMCallEvent(AuditEventBase):
-    """Metadata for one LLM call. Content lives in `llm_call_content` per #016."""
+    """Metadata for one LLM call. Content lives in `llm_call_content` per #016.
+
+    Token / cost / latency fields carry `ge=0` constraints so the cost-budget
+    anomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't
+    be poisoned by a malformed negative-cost event understating review cost.
+    """
 
     event_type: Literal["llm_call"] = "llm_call"
     model: str
     node_id: str
-    input_tokens: int
-    output_tokens: int
-    cached_tokens: int
-    cost_usd: float
-    latency_ms: int
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+    cost_usd: float = Field(ge=0)
+    latency_ms: int = Field(ge=0)
     prompt_hash: str
     cache_hit: bool
     context_summary: tuple[ContextManifestEntry, ...]
@@ -174,10 +195,11 @@ class FindingEvent(AuditEventBase):
     finding_type: FindingType
     severity: FindingSeverity
     file_path: str
-    line_start: int
-    line_end: int
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
     dimension: ReviewDimension
-    finding_content_hash: str
+    # SHA-256 hex per spec §8.5: SHA-256(file_path + line_start + line_end + finding_type)
+    finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     evidence_tier: EvidenceTier
     query_match_id: str | None = None
     trace_path: tuple[str, ...] | None = None
@@ -191,6 +213,15 @@ class FindingEvent(AuditEventBase):
             query_match_id=self.query_match_id,
             trace_path=self.trace_path,
         )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_line_constraint(self) -> Self:
+        """line_end must be >= line_start (1-indexed per coordinates/)."""
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
         return self
 
 
@@ -254,15 +285,15 @@ class HITLDecisionEvent(AuditEventBase):
     event_type: Literal["hitl_decision"] = "hitl_decision"
     reviewer_id: str
     decisions: tuple[PerFindingDecision, ...]
-    decision_latency_seconds: float
+    decision_latency_seconds: float = Field(ge=0)
 
 
 class PublishEvent(AuditEventBase):
     """Records the GitHub publish operation outcome."""
 
     event_type: Literal["publish"] = "publish"
-    github_review_id: int
-    comments_posted: int
+    github_review_id: int = Field(ge=1)  # GitHub review IDs are positive integers
+    comments_posted: int = Field(ge=0)
     review_status: str
 
 

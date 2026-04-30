@@ -66,7 +66,7 @@ def _build_finding(
         line_start=10,
         line_end=12,
         dimension=ReviewDimension.SECURITY,
-        finding_content_hash="sha256-h",
+        finding_content_hash="a" * 64,
         evidence_tier=evidence_tier,
         query_match_id=query_match_id,
         trace_path=trace_path,

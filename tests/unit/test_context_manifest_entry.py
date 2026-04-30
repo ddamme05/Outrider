@@ -55,3 +55,15 @@ def test_context_manifest_entry_inclusion_reason_rejects_other_values() -> None:
     """Anything outside the deterministic vocabulary raises."""
     with pytest.raises(ValidationError):
         _build_entry(inclusion_reason="manual")
+
+
+def test_context_manifest_entry_line_start_ge_1() -> None:
+    """line_start = 0 raises (1-indexed per coordinates/)."""
+    with pytest.raises(ValidationError):
+        _build_entry(line_start=0, line_end=10)
+
+
+def test_context_manifest_entry_line_end_ge_line_start() -> None:
+    """line_end < line_start raises via the model_validator."""
+    with pytest.raises(ValidationError, match="line_end"):
+        _build_entry(line_start=10, line_end=5)

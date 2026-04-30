@@ -28,7 +28,7 @@ def _build_event(**overrides: Any) -> FindingEvent:
         "line_start": 10,
         "line_end": 12,
         "dimension": ReviewDimension.SECURITY,
-        "finding_content_hash": "sha256-h",
+        "finding_content_hash": "a" * 64,
         "evidence_tier": EvidenceTier.JUDGED,
         "policy_version": "1.0.0",
     }
@@ -47,7 +47,7 @@ def test_finding_event_carries_evidence_tier() -> None:
         "line_start": 10,
         "line_end": 12,
         "dimension": ReviewDimension.SECURITY,
-        "finding_content_hash": "sha256-h",
+        "finding_content_hash": "a" * 64,
         "policy_version": "1.0.0",
     }
     with pytest.raises(ValidationError):
@@ -114,3 +114,42 @@ def test_finding_event_judged_admits_without_artifacts() -> None:
         trace_path=None,
     )
     assert event.evidence_tier == EvidenceTier.JUDGED
+
+
+def test_finding_event_finding_content_hash_format() -> None:
+    """finding_content_hash must be 64 lowercase hex chars per spec §8.5.
+
+    SHA-256 produces 256 bits = 64 hex chars; the canonical encoding is
+    lowercase hex without prefix. Audit-log deduplication depends on a
+    deterministic format.
+    """
+    valid_hash = "0123456789abcdef" * 4
+    event = _build_event(finding_content_hash=valid_hash)
+    assert event.finding_content_hash == valid_hash
+
+    with pytest.raises(ValidationError):
+        _build_event(finding_content_hash="sha256-h")
+    with pytest.raises(ValidationError):
+        _build_event(finding_content_hash="A" * 64)
+    with pytest.raises(ValidationError):
+        _build_event(finding_content_hash="g" * 64)
+    with pytest.raises(ValidationError):
+        _build_event(finding_content_hash="a" * 63)
+
+
+def test_finding_event_line_start_ge_1() -> None:
+    """line_start = 0 raises (1-indexed per coordinates/)."""
+    with pytest.raises(ValidationError):
+        _build_event(line_start=0, line_end=5)
+
+
+def test_finding_event_line_end_ge_line_start() -> None:
+    """line_end < line_start raises via the model_validator."""
+    with pytest.raises(ValidationError, match="line_end"):
+        _build_event(line_start=10, line_end=5)
+
+
+def test_finding_event_line_end_equal_line_start_admits() -> None:
+    """Single-line findings (line_start == line_end) admit."""
+    event = _build_event(line_start=42, line_end=42)
+    assert event.line_start == event.line_end == 42
