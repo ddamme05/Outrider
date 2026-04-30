@@ -110,10 +110,21 @@ jobs:
     name: integration (postgres-test container)
     runs-on: ubuntu-latest
     # Job-level env block per the eval-harness spec: all steps in this
-    # job (compose up, readiness wait, pytest) need the same TEST_* values.
+    # job (compose up, readiness wait, pytest) need the same values.
     # These are ephemeral container creds for a tmpfs DB destroyed at job
     # end — not secrets. Mirror .env.example's TEST_* block.
+    #
+    # `docker-compose.yml` defines the dev `postgres` service with
+    # `${POSTGRES_*:?}` required-env-var checks. Compose loads the WHOLE
+    # compose file before bringing up any single service, so even
+    # `docker compose up postgres-test` fails at file-parse time if those
+    # required vars are unset. Setting POSTGRES_* alongside TEST_POSTGRES_*
+    # satisfies the parser; the dev service itself is never started in CI.
     env:
+      POSTGRES_USER: outrider
+      POSTGRES_PASSWORD: ci-ephemeral-dev-password-not-a-secret
+      POSTGRES_DB: outrider
+      POSTGRES_PORT: 5432
       TEST_POSTGRES_USER: outrider
       TEST_POSTGRES_PASSWORD: ci-ephemeral-test-password-not-a-secret
       TEST_POSTGRES_DB: outrider_test

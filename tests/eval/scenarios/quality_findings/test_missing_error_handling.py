@@ -9,13 +9,16 @@ V1: scaffolded; assertions wire up when analyze node lands.
 
 import pytest
 
-from outrider.policy import FindingType
+from outrider.policy import FindingType, lookup_severity
 
 pytestmark = pytest.mark.skip(reason="requires analyze node")
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.MISSING_ERROR_HANDLING,
-    # severity: SEVERITY_POLICY[MISSING_ERROR_HANDLING]; pinned at flip time
+    # Severity from policy lookup per `severity-set-by-policy`; tracks the
+    # canonical mapping rather than hard-coding a constant (which would
+    # drift if the policy table changes for this finding type).
+    "severity": lookup_severity(FindingType.MISSING_ERROR_HANDLING),
 }
 
 

@@ -30,7 +30,7 @@ from outrider.audit.events import (
     HITLRequestEvent,
     TraceDecisionEvent,
 )
-from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy import EvidenceTier, FindingType, lookup_severity
 from outrider.schemas import PerFindingDecision, ReviewFinding
 
 
@@ -69,12 +69,17 @@ def test_finding_factory_recomputes_hash_on_field_overrides() -> None:
 
 
 def test_finding_event_factory_produces_finding_event_with_is_eval_true() -> None:
-    """FindingEventFactory.create() returns a FindingEvent with is_eval=True."""
+    """FindingEventFactory.create() returns a FindingEvent with is_eval=True.
+
+    Severity comes from `SEVERITY_POLICY[finding_type]` via `lookup_severity`,
+    NOT a hard-coded constant — encoding the policy rule rather than today's
+    policy value, so the test catches policy drift.
+    """
     event = FindingEventFactory.create()
     assert isinstance(event, FindingEvent)
     assert event.is_eval is True
     assert len(event.finding_content_hash) == 64
-    assert event.severity == FindingSeverity.CRITICAL
+    assert event.severity == lookup_severity(event.finding_type)
 
 
 def test_finding_event_factory_validator_runs_on_construction() -> None:

@@ -56,6 +56,14 @@ from outrider.schemas import (
     ReviewFinding,
 )
 
+# Synthetic installation_id outside any plausible GitHub installation range
+# per `docs/schema.md` "Eval isolation" rule. GitHub installation IDs are
+# positive integers; using a negative value makes eval rows clearly
+# distinguishable in any installation-scoped query and prevents collision
+# with real installations the schema can't otherwise distinguish (the FK
+# is `bigint`, no SQL-expressible "real vs synthetic" gate).
+_EVAL_SYNTHETIC_INSTALLATION_ID = -1
+
 
 class ReviewFactory:
     """Factory for `db.models.Review`-shaped row dicts.
@@ -70,7 +78,7 @@ class ReviewFactory:
         now = datetime.now(UTC)
         defaults: dict[str, Any] = {
             "id": uuid4(),
-            "installation_id": 12345,
+            "installation_id": _EVAL_SYNTHETIC_INSTALLATION_ID,
             "repo_id": 67890,
             "pr_number": 1,
             "head_sha": "a" * 40,
@@ -124,7 +132,7 @@ class FindingFactory:
 
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
-            "installation_id": 12345,
+            "installation_id": _EVAL_SYNTHETIC_INSTALLATION_ID,
             "policy_version": "1.0.0",
             "finding_type": finding_type,
             "dimension": ReviewDimension.SECURITY,

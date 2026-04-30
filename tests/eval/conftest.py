@@ -162,10 +162,15 @@ async def eval_db() -> AsyncGenerator[str]:
         yield test_url
 
         # Integrity gate: query the live DB BEFORE the drop. Loud-failure
-        # pattern — every reviews / audit_events row must have is_eval=True;
+        # pattern — every row in any table that carries `is_eval` (per
+        # `docs/schema.md` "Eval isolation") must have is_eval=True;
         # factories own setting the flag; this gate catches bugs where a
         # factory or direct insertion forgot to set it. Pure-Pydantic tests
         # that don't use eval_db never reach this code.
+        # Tables checked: reviews, audit_events, findings, llm_call_content,
+        # anomalies — all five carry the is_eval column per the schema-layer
+        # migration. Adding a new is_eval-bearing table requires extending
+        # this UNION.
         check_engine = create_async_engine(test_url)
         try:
             async with check_engine.connect() as conn:
@@ -176,7 +181,17 @@ async def eval_db() -> AsyncGenerator[str]:
                         "UNION ALL "
                         "SELECT 'audit_events' AS table_name, "
                         "event_id::text AS row_id "
-                        "FROM audit_events WHERE is_eval = FALSE"
+                        "FROM audit_events WHERE is_eval = FALSE "
+                        "UNION ALL "
+                        "SELECT 'findings' AS table_name, id::text AS row_id "
+                        "FROM findings WHERE is_eval = FALSE "
+                        "UNION ALL "
+                        "SELECT 'llm_call_content' AS table_name, "
+                        "event_id::text AS row_id "
+                        "FROM llm_call_content WHERE is_eval = FALSE "
+                        "UNION ALL "
+                        "SELECT 'anomalies' AS table_name, id::text AS row_id "
+                        "FROM anomalies WHERE is_eval = FALSE"
                     )
                 )
                 violations = result.all()
