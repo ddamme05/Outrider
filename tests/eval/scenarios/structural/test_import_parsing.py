@@ -38,3 +38,6 @@ def test_import_forms_all_parse_to_well_formed_imports() -> None:
     for actual, expected in zip(imports, EXPECTED_IMPORTS, strict=True):
         assert actual.module == expected["module"]
         assert tuple(actual.names) == expected["names"]
+        assert actual.is_relative == expected["is_relative"]
+        if "alias" in expected:
+            assert actual.alias == expected["alias"]

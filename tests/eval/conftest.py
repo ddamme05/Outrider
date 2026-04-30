@@ -176,9 +176,17 @@ async def eval_db() -> AsyncGenerator[str]:
     finally:
         await admin_engine.dispose()
 
-    await _run_alembic_upgrade_head(test_url)
-
+    # DB exists at this point. Wrap alembic + yield + integrity gate in
+    # a single try/finally so the DROP cleanup runs on ANY failure path
+    # after CREATE — including a migration error. Earlier draft put
+    # `await _run_alembic_upgrade_head(test_url)` outside the try block,
+    # which leaked outrider_eval_* DBs on postgres-test whenever migrations
+    # failed (the function exited before reaching the yield's try/finally).
+    # The "fresh-DB-per-test" pattern the spec invokes only holds if the
+    # cleanup is unconditional — fix surfaces the implicit cleanup contract
+    # the spec assumed but didn't enumerate.
     try:
+        await _run_alembic_upgrade_head(test_url)
         yield test_url
 
         # Integrity gate: query the live DB BEFORE the drop. Loud-failure
