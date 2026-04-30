@@ -1,0 +1,161 @@
+# CI workflow per `DECISIONS.md#008` Amended 2026-04-29.
+#
+# Runs the tracked-file-safe subset of pre-commit hooks + pytest as a
+# secondary gate. Pre-commit (local) is the primary drift gate; CI catches
+# drift at PR time when contributors skip `pre-commit install`.
+#
+# Excluded from CI: `invariants-in-sync` — the hook runs
+# `extract_invariants.py --check`, which defaults to `docs/spec.md` /
+# `docs/invariants.md` (both gitignored per `.gitignore` `docs/`). Those
+# paths don't exist in a CI checkout, so the hook would fail. Local-side
+# discipline gates that hook; future hooks that depend on gitignored paths
+# join the same excluded list.
+#
+# Six jobs:
+#   1. lint          — ruff check + ruff format --check
+#   2. types         — mypy --strict src
+#   3. unit          — pytest tests/unit
+#   4. integration   — pytest tests/integration against postgres-test brought
+#                       up via `docker compose up -d --wait postgres-test`
+#                       (NOT GitHub Actions native services: — that doesn't
+#                       support tmpfs / arbitrary Postgres args)
+#   5. structural-eval (SCAFFOLDED, not gating yet) — pytest
+#                       tests/eval/scenarios/structural --is-eval; all 8
+#                       scenarios pytest.mark.skip("requires ast_facts") on
+#                       day one. Job reports "pass" because pytest treats
+#                       skip as non-failure (skipped != failed). Becomes a
+#                       real gate when ast_facts ships and flips the skip
+#                       markers.
+#   6. pre-commit-tracked-only — runs the subset of pre-commit hooks that
+#                       depend ONLY on tracked files: ruff, ruff-format,
+#                       decision-refs-resolve, decision-refs-tests-pass,
+#                       extractor-tests-pass.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: ruff check
+        run: uv run ruff check
+      - name: ruff format --check
+        run: uv run ruff format --check
+
+  types:
+    name: types (mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: mypy --strict
+        run: uv run mypy src
+
+  unit:
+    name: unit (pytest tests/unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: pytest tests/unit
+        run: uv run pytest tests/unit
+
+  integration:
+    name: integration (postgres-test container)
+    runs-on: ubuntu-latest
+    # Job-level env block per the eval-harness spec: all steps in this
+    # job (compose up, readiness wait, pytest) need the same TEST_* values.
+    # These are ephemeral container creds for a tmpfs DB destroyed at job
+    # end — not secrets. Mirror .env.example's TEST_* block.
+    env:
+      TEST_POSTGRES_USER: outrider
+      TEST_POSTGRES_PASSWORD: ci-ephemeral-test-password-not-a-secret
+      TEST_POSTGRES_DB: outrider_test
+      TEST_POSTGRES_PORT: 5433
+      TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
+        # `docker compose up -d --wait` blocks until the service's
+        # compose-defined healthcheck reports healthy, eliminating the
+        # readiness race a bare `up -d` would have. Uses the same
+        # docker-compose.yml config the dev container uses — fsync=off,
+        # tmpfs, port mapping all preserved by definition.
+        run: docker compose up -d --wait postgres-test
+      - name: pytest tests/integration
+        run: uv run pytest tests/integration
+
+  structural-eval:
+    name: structural-eval (SCAFFOLDED, not gating yet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: pytest tests/eval/scenarios/structural --is-eval
+        # All 8 scenarios pytest.mark.skip("requires ast_facts") on day one;
+        # job reports "pass" because pytest treats skip as non-failure.
+        # The ast_facts spec PR flips skip markers and gates CI on the
+        # structural category from that point. Job exists in the workflow
+        # to avoid future YAML edits at flip time.
+        run: uv run pytest tests/eval/scenarios/structural --is-eval
+
+  pre-commit-tracked-only:
+    name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-29)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev
+      # Run only the hooks that depend on tracked files. invariants-in-sync
+      # is excluded because extract_invariants.py --check defaults to
+      # docs/spec.md / docs/invariants.md (gitignored). Per DECISIONS#008
+      # Amended 2026-04-29, this is the canonical CI scope.
+      - name: ruff (pre-commit hook)
+        run: uv run pre-commit run ruff --all-files
+      - name: ruff-format (pre-commit hook)
+        run: uv run pre-commit run ruff-format --all-files
+      - name: decision-refs-resolve (pre-commit hook)
+        run: uv run pre-commit run decision-refs-resolve --all-files
+      - name: decision-refs-tests-pass (pre-commit hook)
+        run: uv run pre-commit run decision-refs-tests-pass --all-files
+      - name: extractor-tests-pass (pre-commit hook)
+        run: uv run pre-commit run extractor-tests-pass --all-files
