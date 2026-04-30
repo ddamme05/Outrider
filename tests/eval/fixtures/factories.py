@@ -120,12 +120,12 @@ class FindingFactory:
 
     @classmethod
     def create(cls, **overrides: Any) -> ReviewFinding:
+        finding_type = _normalize_finding_type(overrides)
         file_path = overrides.get("file_path", "src/foo.py")
         line_start = overrides.get("line_start", 10)
         line_end = overrides.get("line_end", 12)
-        finding_type = overrides.get("finding_type", FindingType.SQL_INJECTION)
 
-        if "content_hash" not in overrides and isinstance(finding_type, FindingType):
+        if "content_hash" not in overrides:
             overrides["content_hash"] = compute_finding_content_hash(
                 file_path=file_path,
                 line_start=line_start,
@@ -138,7 +138,7 @@ class FindingFactory:
         # the policy table changes; deriving via lookup_severity tracks
         # the canonical mapping. Explicit `severity=...` override still
         # wins (tests of severity-override paths need this).
-        if "severity" not in overrides and isinstance(finding_type, FindingType):
+        if "severity" not in overrides:
             overrides["severity"] = lookup_severity(finding_type)
 
         defaults: dict[str, Any] = {
@@ -170,12 +170,12 @@ class FindingEventFactory:
     @classmethod
     def create(cls, **overrides: Any) -> FindingEvent:
         _reject_is_eval_false(overrides)
+        finding_type = _normalize_finding_type(overrides)
         file_path = overrides.get("file_path", "src/foo.py")
         line_start = overrides.get("line_start", 10)
         line_end = overrides.get("line_end", 12)
-        finding_type = overrides.get("finding_type", FindingType.SQL_INJECTION)
 
-        if "finding_content_hash" not in overrides and isinstance(finding_type, FindingType):
+        if "finding_content_hash" not in overrides:
             overrides["finding_content_hash"] = compute_finding_content_hash(
                 file_path=file_path,
                 line_start=line_start,
@@ -185,7 +185,7 @@ class FindingEventFactory:
 
         # Severity from SEVERITY_POLICY[finding_type] per
         # `severity-set-by-policy`; explicit override still wins.
-        if "severity" not in overrides and isinstance(finding_type, FindingType):
+        if "severity" not in overrides:
             overrides["severity"] = lookup_severity(finding_type)
 
         defaults: dict[str, Any] = {
@@ -269,6 +269,40 @@ class HITLDecisionEventFactory:
             "decision_latency_seconds": 42.5,
         }
         return HITLDecisionEvent(**{**defaults, **overrides})
+
+
+def _normalize_finding_type(overrides: dict[str, Any]) -> FindingType:
+    """Coerce `finding_type` override to a `FindingType` enum, defaulting to SQL_INJECTION.
+
+    Default is `FindingType.SQL_INJECTION` (when absent from overrides). Caller
+    may pass either the enum (`FindingType.SQL_INJECTION`) or a valid str-enum
+    value (`"sql_injection"`); both are accepted and normalized to the enum
+    form. Anything else raises `ValueError` at the factory call site (loud-
+    failure, naming the bad value).
+
+    Without this normalization, the str-input path silently broke the
+    factory's `compute_finding_content_hash()` and `lookup_severity()`
+    derivations (both gated on `isinstance(..., FindingType)`), leaving
+    `content_hash` at the placeholder `"0"*64` and `severity` unset —
+    Pydantic would then either coerce the str to enum and raise a confusing
+    "missing severity" ValidationError, or accept the placeholder hash and
+    fail downstream at the audit-event equality verifier.
+
+    Mutates `overrides` in place (sets the normalized enum value back) so
+    the model construction below sees the canonical type.
+    """
+    finding_type = overrides.get("finding_type", FindingType.SQL_INJECTION)
+    if not isinstance(finding_type, FindingType):
+        try:
+            finding_type = FindingType(finding_type)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Factory received finding_type={finding_type!r} which is "
+                f"not a valid FindingType. Pass the enum "
+                f"(e.g., FindingType.SQL_INJECTION) or a valid str-enum value."
+            ) from exc
+        overrides["finding_type"] = finding_type
+    return finding_type
 
 
 def _reject_is_eval_false(overrides: dict[str, Any]) -> None:
