@@ -10,13 +10,16 @@ V1: scaffolded; assertions wire up when analyze node lands.
 
 import pytest
 
-from outrider.policy import FindingSeverity, FindingType
+from outrider.policy import FindingType, lookup_severity
 
 pytestmark = pytest.mark.skip(reason="requires analyze node")
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.N_PLUS_ONE_QUERY,
-    "severity": FindingSeverity.MEDIUM,  # SEVERITY_POLICY[N_PLUS_ONE_QUERY] = MEDIUM
+    # Severity from policy lookup per `severity-set-by-policy`; tracks the
+    # canonical mapping rather than hard-coding MEDIUM (would drift if the
+    # policy table changes for this finding type).
+    "severity": lookup_severity(FindingType.N_PLUS_ONE_QUERY),
 }
 
 

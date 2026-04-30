@@ -8,13 +8,14 @@ V1: scaffolded; assertions wire up when analyze node lands per §15.3.
 
 import pytest
 
-from outrider.policy import FindingSeverity, FindingType
+from outrider.policy import FindingType, lookup_severity
 
 pytestmark = pytest.mark.skip(reason="requires analyze node")
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.AUTH_BYPASS,
-    "severity": FindingSeverity.CRITICAL,  # SEVERITY_POLICY[AUTH_BYPASS] = CRITICAL
+    # Severity from policy lookup per `severity-set-by-policy`.
+    "severity": lookup_severity(FindingType.AUTH_BYPASS),
     # tier: per the actual finding shape (OBSERVED if a tree-sitter query matched,
     # INFERRED if trace-walked, JUDGED if model-only). Eval ground truth pins this
     # at flip time when the analyze node + queries registry are real.

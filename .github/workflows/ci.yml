@@ -30,6 +30,15 @@
 #                       depend ONLY on tracked files: ruff, ruff-format,
 #                       decision-refs-resolve, decision-refs-tests-pass,
 #                       extractor-tests-pass.
+#
+# Action versions:
+#   - actions/checkout@v6.0.2 — pinned to exact patch for reproducibility.
+#   - astral-sh/setup-uv@v8.1.0 — modern features used: built-in
+#     `python-version` reads from pyproject.toml's `requires-python`;
+#     dependency caching enabled by default in v6+; `cache-dependency-glob`
+#     keys cache on uv.lock so dependency changes invalidate cleanly.
+#     `activate-environment: true` avoids the `uv run` prefix on every
+#     command (uv installs into a project-local venv that's auto-activated).
 
 name: CI
 
@@ -39,50 +48,63 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel in-progress runs for the same ref when a new commit is pushed —
+# saves runner minutes on rapid pushes (uses GH Actions concurrency primitive).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v8.1.0
         with:
+          # python-version unset reads requires-python from pyproject.toml.
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --dev
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
       - name: ruff check
-        run: uv run ruff check
+        run: ruff check
       - name: ruff format --check
-        run: uv run ruff format --check
+        run: ruff format --check
 
   types:
     name: types (mypy --strict)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --dev
-      - name: mypy --strict
-        run: uv run mypy src
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      - name: mypy --strict src
+        run: mypy src
 
   unit:
     name: unit (pytest tests/unit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --dev
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
       - name: pytest tests/unit
-        run: uv run pytest tests/unit
+        run: pytest tests/unit
 
   integration:
     name: integration (postgres-test container)
@@ -98,13 +120,15 @@ jobs:
       TEST_POSTGRES_PORT: 5433
       TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --dev
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
       - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
         # `docker compose up -d --wait` blocks until the service's
         # compose-defined healthcheck reports healthy, eliminating the
@@ -113,49 +137,53 @@ jobs:
         # tmpfs, port mapping all preserved by definition.
         run: docker compose up -d --wait postgres-test
       - name: pytest tests/integration
-        run: uv run pytest tests/integration
+        run: pytest tests/integration
 
   structural-eval:
     name: structural-eval (SCAFFOLDED, not gating yet)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --dev
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
       - name: pytest tests/eval/scenarios/structural --is-eval
         # All 8 scenarios pytest.mark.skip("requires ast_facts") on day one;
         # job reports "pass" because pytest treats skip as non-failure.
         # The ast_facts spec PR flips skip markers and gates CI on the
         # structural category from that point. Job exists in the workflow
         # to avoid future YAML edits at flip time.
-        run: uv run pytest tests/eval/scenarios/structural --is-eval
+        run: pytest tests/eval/scenarios/structural --is-eval
 
   pre-commit-tracked-only:
     name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-30)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - name: Install dependencies
-        run: uv sync --dev
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
       # Run only the hooks that depend on tracked files. invariants-in-sync
       # is excluded because extract_invariants.py --check defaults to
       # docs/spec.md / docs/invariants.md (gitignored). Per DECISIONS#008
       # Amended 2026-04-30, this is the canonical CI scope.
       - name: ruff (pre-commit hook)
-        run: uv run pre-commit run ruff --all-files
+        run: pre-commit run ruff --all-files
       - name: ruff-format (pre-commit hook)
-        run: uv run pre-commit run ruff-format --all-files
+        run: pre-commit run ruff-format --all-files
       - name: decision-refs-resolve (pre-commit hook)
-        run: uv run pre-commit run decision-refs-resolve --all-files
+        run: pre-commit run decision-refs-resolve --all-files
       - name: decision-refs-tests-pass (pre-commit hook)
-        run: uv run pre-commit run decision-refs-tests-pass --all-files
+        run: pre-commit run decision-refs-tests-pass --all-files
       - name: extractor-tests-pass (pre-commit hook)
-        run: uv run pre-commit run extractor-tests-pass --all-files
+        run: pre-commit run extractor-tests-pass --all-files

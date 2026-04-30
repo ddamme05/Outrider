@@ -13,14 +13,17 @@ canonical for that naming convention.
 
 import pytest
 
-from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy import EvidenceTier, FindingType, lookup_severity
 
 pytestmark = pytest.mark.skip(reason="requires analyze node + queries registry")
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.SQL_INJECTION,
     "evidence_tier": EvidenceTier.OBSERVED,
-    "severity": FindingSeverity.CRITICAL,  # SEVERITY_POLICY[SQL_INJECTION] = CRITICAL
+    # Severity derived via lookup_severity() per `severity-set-by-policy`.
+    # Hard-coding the constant would drift if the policy table changes;
+    # the canonical mapping is the single source of truth.
+    "severity": lookup_severity(FindingType.SQL_INJECTION),
     # query_match_id: matches a real entry in queries/python/*.scm; specific
     # string pinned when the queries spec lands.
 }

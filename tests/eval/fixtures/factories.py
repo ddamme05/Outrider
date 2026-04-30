@@ -44,7 +44,11 @@ from outrider.audit.events import (
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
-from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy import (
+    EvidenceTier,
+    FindingType,
+    lookup_severity,
+)
 from outrider.schemas import (
     PerFindingDecision,
     PerFindingOutcome,
@@ -110,13 +114,20 @@ class FindingFactory:
                 finding_type=finding_type,
             )
 
+        # Severity comes from SEVERITY_POLICY[finding_type] per
+        # `severity-set-by-policy`. Hard-coding a default would drift if
+        # the policy table changes; deriving via lookup_severity tracks
+        # the canonical mapping. Explicit `severity=...` override still
+        # wins (tests of severity-override paths need this).
+        if "severity" not in overrides and isinstance(finding_type, FindingType):
+            overrides["severity"] = lookup_severity(finding_type)
+
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
             "installation_id": 12345,
             "policy_version": "1.0.0",
             "finding_type": finding_type,
             "dimension": ReviewDimension.SECURITY,
-            "severity": FindingSeverity.CRITICAL,
             "evidence_tier": EvidenceTier.JUDGED,
             "file_path": file_path,
             "line_start": line_start,
@@ -152,12 +163,16 @@ class FindingEventFactory:
                 finding_type=finding_type,
             )
 
+        # Severity from SEVERITY_POLICY[finding_type] per
+        # `severity-set-by-policy`; explicit override still wins.
+        if "severity" not in overrides and isinstance(finding_type, FindingType):
+            overrides["severity"] = lookup_severity(finding_type)
+
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
             "is_eval": True,
             "finding_id": uuid4(),
             "finding_type": finding_type,
-            "severity": FindingSeverity.CRITICAL,
             "file_path": file_path,
             "line_start": line_start,
             "line_end": line_end,

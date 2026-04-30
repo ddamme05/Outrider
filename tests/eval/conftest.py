@@ -127,6 +127,14 @@ async def eval_db() -> AsyncGenerator[str]:
     Yields a URL to a brand-new postgres-test database, alembic-upgraded to
     head. The URL pattern guard runs first — a misconfigured
     TEST_DATABASE_URL fails loud before any DDL.
+
+    **Integrity gate runs in this fixture's own teardown** (not via a
+    separate autouse fixture). Pytest fixture teardown is reverse-setup
+    order, so a separate autouse fixture's post-yield query could race
+    against the eval_db post-yield drop (autouse fixtures of the same
+    scope can set up before explicit fixtures, putting eval_db drop
+    BEFORE the autouse query). Baking the check into eval_db's own
+    finalizer makes the order deterministic: query, THEN drop.
     """
     try:
         main_url = os.environ["TEST_DATABASE_URL"]
@@ -152,6 +160,39 @@ async def eval_db() -> AsyncGenerator[str]:
 
     try:
         yield test_url
+
+        # Integrity gate: query the live DB BEFORE the drop. Loud-failure
+        # pattern — every reviews / audit_events row must have is_eval=True;
+        # factories own setting the flag; this gate catches bugs where a
+        # factory or direct insertion forgot to set it. Pure-Pydantic tests
+        # that don't use eval_db never reach this code.
+        check_engine = create_async_engine(test_url)
+        try:
+            async with check_engine.connect() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT 'reviews' AS table_name, id::text AS row_id "
+                        "FROM reviews WHERE is_eval = FALSE "
+                        "UNION ALL "
+                        "SELECT 'audit_events' AS table_name, "
+                        "event_id::text AS row_id "
+                        "FROM audit_events WHERE is_eval = FALSE"
+                    )
+                )
+                violations = result.all()
+                if violations:
+                    raise AssertionError(
+                        f"is_eval discipline violation: {len(violations)} "
+                        "row(s) with is_eval=False in eval-test DB. "
+                        "Factories MUST set is_eval=True; this gate is the "
+                        "loud-failure check (per `PerFindingDecision.reason` "
+                        "no-default + `candidates_considered` no-default + "
+                        "`FindingEvent.finding_content_hash` equality "
+                        "verifier discipline). Violations: "
+                        f"{[(v.table_name, v.row_id) for v in violations]}"
+                    )
+        finally:
+            await check_engine.dispose()
     finally:
         admin_engine = create_async_engine(main_url, isolation_level="AUTOCOMMIT")
         try:
@@ -167,48 +208,3 @@ async def eval_db() -> AsyncGenerator[str]:
                 await conn.execute(text(f'DROP DATABASE IF EXISTS "{test_db_name}"'))
         finally:
             await admin_engine.dispose()
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def is_eval_injection(request: pytest.FixtureRequest) -> AsyncGenerator[None]:
-    """Loud-failure integrity gate for the is_eval discipline.
-
-    Yields (test runs); at teardown, if the test used `eval_db`, queries
-    `reviews` + `audit_events` for any row with `is_eval = FALSE` and
-    raises. Tests that don't use `eval_db` (pure-Pydantic factory tests,
-    metrics-shape tests) are no-ops — there's nothing to query.
-
-    Runs BEFORE eval_db's teardown drops the database (autouse fixtures
-    teardown in reverse-setup order; if the test requested eval_db, this
-    fixture's post-yield code runs first while the DB is still alive).
-    """
-    yield
-
-    if "eval_db" not in request.fixturenames:
-        return
-
-    db_url: str = request.getfixturevalue("eval_db")
-    engine = create_async_engine(db_url)
-    try:
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text(
-                    "SELECT 'reviews' AS table_name, id::text AS row_id "
-                    "FROM reviews WHERE is_eval = FALSE "
-                    "UNION ALL "
-                    "SELECT 'audit_events' AS table_name, "
-                    "event_id::text AS row_id "
-                    "FROM audit_events WHERE is_eval = FALSE"
-                )
-            )
-            violations = result.all()
-            if violations:
-                raise AssertionError(
-                    f"is_eval discipline violation: "
-                    f"{len(violations)} row(s) with is_eval=False in eval-test DB. "
-                    "Factories MUST set is_eval=True; the autouse integrity "
-                    "gate is the loud-failure check. Violations: "
-                    f"{[(v.table_name, v.row_id) for v in violations]}"
-                )
-    finally:
-        await engine.dispose()
