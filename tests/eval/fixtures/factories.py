@@ -86,7 +86,13 @@ class ReviewFactory:
             "installation_id": _EVAL_SYNTHETIC_INSTALLATION_ID,
             "repo_id": 67890,
             "pr_number": 1,
-            "head_sha": "a" * 40,
+            # Unique-per-call to avoid colliding with the
+            # uq_review_natural_key UNIQUE constraint on
+            # (repo_id, pr_number, head_sha) when a test inserts
+            # multiple default-shaped reviews into the same DB.
+            # Real git SHA-1 is 40 hex chars; uuid4().hex is 32, so
+            # double-and-truncate gives a SHA-shaped 40-char string.
+            "head_sha": (uuid4().hex + uuid4().hex)[:40],
             "status": "completed",
             "hitl_request": None,
             "hitl_decision": None,
