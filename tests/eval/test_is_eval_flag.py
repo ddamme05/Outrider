@@ -12,6 +12,7 @@ both checks fire — the explicit assertions in this test and the gate's
 UNION-over-5-tables. Belt + suspenders.
 """
 
+import json
 from typing import Any
 
 import pytest_asyncio
@@ -109,7 +110,7 @@ async def test_finding_event_factory_inserts_with_is_eval_true(
             "event_type": event.event_type,
             "timestamp": event.timestamp,
             "is_eval": event.is_eval,
-            "payload": __import__("json").dumps(payload),
+            "payload": json.dumps(payload),
         },
     )
     await session.commit()

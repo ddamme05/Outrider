@@ -38,6 +38,8 @@ def test_changed_line_resolves_to_owning_function() -> None:
     """Line 3 of SOURCE resolves to the nested_helper ScopeUnit, not outer_function."""
     from outrider.ast_facts import resolve_line_to_scope  # type: ignore[import-not-found]
 
-    scope = resolve_line_to_scope(SOURCE, DIFF_LINE)
+    result = resolve_line_to_scope(SOURCE, DIFF_LINE)
+    assert result.degraded is False
+    scope = result.scope
     assert scope.qualified_name == EXPECTED_SCOPE["qualified_name"]
     assert scope.kind == EXPECTED_SCOPE["kind"]

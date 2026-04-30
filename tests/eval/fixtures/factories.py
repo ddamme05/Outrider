@@ -79,6 +79,7 @@ class ReviewFactory:
 
     @classmethod
     def create(cls, **overrides: Any) -> dict[str, Any]:
+        _reject_is_eval_false(overrides)
         now = datetime.now(UTC)
         defaults: dict[str, Any] = {
             "id": uuid4(),
@@ -162,6 +163,7 @@ class FindingEventFactory:
 
     @classmethod
     def create(cls, **overrides: Any) -> FindingEvent:
+        _reject_is_eval_false(overrides)
         file_path = overrides.get("file_path", "src/foo.py")
         line_start = overrides.get("line_start", 10)
         line_end = overrides.get("line_end", 12)
@@ -206,6 +208,7 @@ class TraceDecisionEventFactory:
 
     @classmethod
     def create(cls, **overrides: Any) -> TraceDecisionEvent:
+        _reject_is_eval_false(overrides)
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
             "is_eval": True,
@@ -223,6 +226,7 @@ class HITLRequestEventFactory:
 
     @classmethod
     def create(cls, **overrides: Any) -> HITLRequestEvent:
+        _reject_is_eval_false(overrides)
         now = datetime.now(UTC)
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
@@ -243,6 +247,7 @@ class HITLDecisionEventFactory:
 
     @classmethod
     def create(cls, **overrides: Any) -> HITLDecisionEvent:
+        _reject_is_eval_false(overrides)
         if "decisions" not in overrides:
             overrides["decisions"] = (
                 PerFindingDecision(
@@ -258,6 +263,24 @@ class HITLDecisionEventFactory:
             "decision_latency_seconds": 42.5,
         }
         return HITLDecisionEvent(**{**defaults, **overrides})
+
+
+def _reject_is_eval_false(overrides: dict[str, Any]) -> None:
+    """Reject `is_eval=False` overrides at construction time.
+
+    The `eval_db` teardown integrity gate catches violations after the fact
+    (UNION ALL across 5 tables); this helper catches them at construction so
+    the error names the factory + caller, not just the row id at teardown.
+    Loud-failure pattern matches `PerFindingDecision.reason` no-default and
+    `candidates_considered` no-default — fail where the bug is, not later.
+    """
+    if overrides.get("is_eval") is False:
+        raise ValueError(
+            "Eval-harness factory cannot construct a record with is_eval=False. "
+            "Per docs/testing.md, every factory output must carry is_eval=True. "
+            "If you genuinely need a non-eval record in a test, construct the "
+            "type directly (not via the factory)."
+        )
 
 
 __all__ = [
