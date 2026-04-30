@@ -1,4 +1,4 @@
-# CI workflow per `DECISIONS.md#008` Amended 2026-04-29.
+# CI workflow per `DECISIONS.md#008` Amended 2026-04-30.
 #
 # Runs the tracked-file-safe subset of pre-commit hooks + pytest as a
 # secondary gate. Pre-commit (local) is the primary drift gate; CI catches
@@ -135,7 +135,7 @@ jobs:
         run: uv run pytest tests/eval/scenarios/structural --is-eval
 
   pre-commit-tracked-only:
-    name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-29)
+    name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-30)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -148,7 +148,7 @@ jobs:
       # Run only the hooks that depend on tracked files. invariants-in-sync
       # is excluded because extract_invariants.py --check defaults to
       # docs/spec.md / docs/invariants.md (gitignored). Per DECISIONS#008
-      # Amended 2026-04-29, this is the canonical CI scope.
+      # Amended 2026-04-30, this is the canonical CI scope.
       - name: ruff (pre-commit hook)
         run: uv run pre-commit run ruff --all-files
       - name: ruff-format (pre-commit hook)

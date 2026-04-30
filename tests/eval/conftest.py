@@ -1,4 +1,4 @@
-"""Eval-harness conftest per spec §11.2 + DECISIONS.md#008 Amended 2026-04-29.
+"""Eval-harness conftest per spec §11.2 + DECISIONS.md#008 Amended 2026-04-30.
 
 Three responsibilities:
 
