@@ -25,6 +25,7 @@ from outrider.audit.events import (
     PublishRoutingEvent,
     ReviewPhaseEvent,
     TraceDecisionEvent,
+    compute_finding_content_hash,
 )
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import (
@@ -87,7 +88,12 @@ def _finding_kwargs() -> dict[str, Any]:
         "line_start": 10,
         "line_end": 12,
         "dimension": ReviewDimension.SECURITY,
-        "finding_content_hash": "a" * 64,
+        "finding_content_hash": compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
         "evidence_tier": EvidenceTier.JUDGED,
         "policy_version": "1.0.0",
     }

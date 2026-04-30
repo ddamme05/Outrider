@@ -36,6 +36,8 @@ into the payload before validating; the emitter dumps with
 `mode="json", exclude={"sequence_number"}` per the row-vs-payload split.
 """
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
 from uuid import UUID, uuid4
@@ -67,6 +69,37 @@ from outrider.schemas import (
 # enforce at the schema layer so the audit log's deduplication contract
 # can rely on a deterministic format.
 _SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
+
+
+def compute_finding_content_hash(
+    file_path: str,
+    line_start: int,
+    line_end: int,
+    finding_type: FindingType,
+) -> str:
+    """Canonical SHA-256 hash of a finding's identity tuple per spec §8.5.
+
+    Encoding: compact JSON of `[file_path, line_start, line_end, finding_type.value]`,
+    UTF-8 bytes, SHA-256 hex digest (lowercase). JSON encoding handles
+    file paths with special characters deterministically; compact separators
+    `(",", ":")` produce a single canonical byte sequence per input tuple.
+
+    Both the emitter (when constructing `FindingEvent`) and the
+    `_verify_content_hash` model_validator on `FindingEvent` use this
+    helper. The validator verifies the supplied hash equals the helper's
+    output — silent emitter bugs (wrong inputs, different encoding) raise
+    at event-construction time rather than producing dedup false-negatives
+    at audit-query time.
+
+    Spec §8.5 originally said "SHA-256(file_path + line_start + line_end +
+    finding_type)" with informal `+` notation; this helper pins down the
+    encoding choice so type and event agree.
+    """
+    payload = json.dumps(
+        [file_path, line_start, line_end, finding_type.value],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 class AuditEventBase(BaseModel):
@@ -221,6 +254,32 @@ class FindingEvent(AuditEventBase):
         if self.line_end < self.line_start:
             raise ValueError(
                 f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_content_hash(self) -> Self:
+        """Spec §8.5: finding_content_hash MUST equal the canonical computation.
+
+        Format gating alone (the Field pattern) accepts any 64-hex string for
+        any input tuple, so an emitter bug producing a mis-computed hash
+        would still pass and create dedup false-negatives at audit-query
+        time. This validator computes the canonical hash and rejects mismatch.
+        """
+        expected = compute_finding_content_hash(
+            file_path=self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.finding_type,
+        )
+        if self.finding_content_hash != expected:
+            raise ValueError(
+                f"finding_content_hash mismatch: spec §8.5 requires "
+                f"SHA-256 of canonical input tuple "
+                f"(file_path, line_start, line_end, finding_type); got "
+                f"{self.finding_content_hash!r}, expected {expected!r}. "
+                "Use audit.events.compute_finding_content_hash() to compute "
+                "the value at the call site."
             )
         return self
 

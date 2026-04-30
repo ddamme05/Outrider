@@ -19,6 +19,7 @@ from outrider.audit.events import (
     ContextManifestEntry,
     FindingEvent,
     LLMCallEvent,
+    compute_finding_content_hash,
 )
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
@@ -57,16 +58,25 @@ def _build_finding(
     query_match_id: str | None = "py.security.placeholder",
     trace_path: tuple[str, ...] | None = None,
 ) -> FindingEvent:
+    file_path = "src/foo.py"
+    line_start = 10
+    line_end = 12
+    finding_type = FindingType.SQL_INJECTION
     return FindingEvent(
         review_id=uuid4(),
         finding_id=uuid4(),
-        finding_type=FindingType.SQL_INJECTION,
+        finding_type=finding_type,
         severity=FindingSeverity.CRITICAL,
-        file_path="src/foo.py",
-        line_start=10,
-        line_end=12,
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_end,
         dimension=ReviewDimension.SECURITY,
-        finding_content_hash="a" * 64,
+        finding_content_hash=compute_finding_content_hash(
+            file_path=file_path,
+            line_start=line_start,
+            line_end=line_end,
+            finding_type=finding_type,
+        ),
         evidence_tier=evidence_tier,
         query_match_id=query_match_id,
         trace_path=trace_path,

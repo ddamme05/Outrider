@@ -13,22 +13,41 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from outrider.audit.events import FindingEvent
+from outrider.audit.events import FindingEvent, compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
 
 
 def _build_event(**overrides: Any) -> FindingEvent:
+    file_path = overrides.get("file_path", "src/foo.py")
+    line_start = overrides.get("line_start", 10)
+    line_end = overrides.get("line_end", 12)
+    finding_type = overrides.get("finding_type", FindingType.SQL_INJECTION)
+
+    # Compute canonical hash only when finding_type is a real FindingType.
+    # Tests that pass invalid finding_type (bare string) hit the enum gate
+    # at field-validation time before _verify_content_hash runs, so a
+    # placeholder hash is fine here.
+    if isinstance(finding_type, FindingType):
+        content_hash = compute_finding_content_hash(
+            file_path=file_path,
+            line_start=line_start,
+            line_end=line_end,
+            finding_type=finding_type,
+        )
+    else:
+        content_hash = "a" * 64
+
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "finding_id": uuid4(),
-        "finding_type": FindingType.SQL_INJECTION,
+        "finding_type": finding_type,
         "severity": FindingSeverity.CRITICAL,
-        "file_path": "src/foo.py",
-        "line_start": 10,
-        "line_end": 12,
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
         "dimension": ReviewDimension.SECURITY,
-        "finding_content_hash": "a" * 64,
+        "finding_content_hash": content_hash,
         "evidence_tier": EvidenceTier.JUDGED,
         "policy_version": "1.0.0",
     }
@@ -47,7 +66,12 @@ def test_finding_event_carries_evidence_tier() -> None:
         "line_start": 10,
         "line_end": 12,
         "dimension": ReviewDimension.SECURITY,
-        "finding_content_hash": "a" * 64,
+        "finding_content_hash": compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
         "policy_version": "1.0.0",
     }
     with pytest.raises(ValidationError):
@@ -117,16 +141,12 @@ def test_finding_event_judged_admits_without_artifacts() -> None:
 
 
 def test_finding_event_finding_content_hash_format() -> None:
-    """finding_content_hash must be 64 lowercase hex chars per spec §8.5.
+    """finding_content_hash format gate per spec §8.5: 64 lowercase hex chars.
 
-    SHA-256 produces 256 bits = 64 hex chars; the canonical encoding is
-    lowercase hex without prefix. Audit-log deduplication depends on a
-    deterministic format.
+    Format-only failures (wrong prefix, uppercase, non-hex chars, wrong
+    length) all raise via the Field pattern before the canonical-hash
+    verifier even runs.
     """
-    valid_hash = "0123456789abcdef" * 4
-    event = _build_event(finding_content_hash=valid_hash)
-    assert event.finding_content_hash == valid_hash
-
     with pytest.raises(ValidationError):
         _build_event(finding_content_hash="sha256-h")
     with pytest.raises(ValidationError):
@@ -135,6 +155,52 @@ def test_finding_event_finding_content_hash_format() -> None:
         _build_event(finding_content_hash="g" * 64)
     with pytest.raises(ValidationError):
         _build_event(finding_content_hash="a" * 63)
+
+
+def test_finding_event_finding_content_hash_must_equal_canonical() -> None:
+    """Spec §8.5: hash MUST equal SHA-256 of canonical input tuple.
+
+    Format-only gating accepts any 64-hex string for any input; this
+    test verifies the canonical-equality validator catches an emitter
+    that supplies a format-valid but non-canonical hash.
+    """
+    # A format-valid hash that doesn't match the canonical computation.
+    bogus_but_format_valid = "a" * 64
+    with pytest.raises(ValidationError, match="finding_content_hash mismatch"):
+        _build_event(finding_content_hash=bogus_but_format_valid)
+
+
+def test_compute_finding_content_hash_is_deterministic() -> None:
+    """Same input tuple → same hash; different inputs → different hashes."""
+    h1 = compute_finding_content_hash(
+        file_path="src/foo.py",
+        line_start=10,
+        line_end=12,
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    h2 = compute_finding_content_hash(
+        file_path="src/foo.py",
+        line_start=10,
+        line_end=12,
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    assert h1 == h2
+
+    h3 = compute_finding_content_hash(
+        file_path="src/foo.py",
+        line_start=10,
+        line_end=13,  # different line_end
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    assert h1 != h3
+
+    h4 = compute_finding_content_hash(
+        file_path="src/foo.py",
+        line_start=10,
+        line_end=12,
+        finding_type=FindingType.AUTH_BYPASS,  # different finding_type
+    )
+    assert h1 != h4
 
 
 def test_finding_event_line_start_ge_1() -> None:
