@@ -28,15 +28,6 @@
 #                       depend ONLY on tracked files: ruff, ruff-format,
 #                       decision-refs-resolve, decision-refs-tests-pass,
 #                       extractor-tests-pass.
-#
-# Action versions:
-#   - actions/checkout@v6.0.2 — pinned to exact patch for reproducibility.
-#   - astral-sh/setup-uv@v8.1.0 — modern features used: built-in
-#     `python-version` reads from pyproject.toml's `requires-python`;
-#     dependency caching enabled by default in v6+; `cache-dependency-glob`
-#     keys cache on uv.lock so dependency changes invalidate cleanly.
-#     `activate-environment: true` avoids the `uv run` prefix on every
-#     command (uv installs into a project-local venv that's auto-activated).
 
 name: CI
 
@@ -57,9 +48,9 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           # python-version unset reads requires-python from pyproject.toml.
           enable-cache: true
@@ -76,9 +67,9 @@ jobs:
     name: types (mypy --strict)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -96,9 +87,9 @@ jobs:
     name: unit (pytest tests/unit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -133,9 +124,9 @@ jobs:
       TEST_POSTGRES_PORT: 5433
       TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -171,9 +162,9 @@ jobs:
       TEST_POSTGRES_PORT: 5433
       TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -197,9 +188,9 @@ jobs:
     name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-30)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"

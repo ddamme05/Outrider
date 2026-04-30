@@ -272,20 +272,29 @@ class HITLDecisionEventFactory:
 
 
 def _reject_is_eval_false(overrides: dict[str, Any]) -> None:
-    """Reject `is_eval=False` overrides at construction time.
+    """Reject any `is_eval` override that isn't exactly `True`.
 
     The `eval_db` teardown integrity gate catches violations after the fact
     (UNION ALL across 5 tables); this helper catches them at construction so
     the error names the factory + caller, not just the row id at teardown.
     Loud-failure pattern matches `PerFindingDecision.reason` no-default and
     `candidates_considered` no-default — fail where the bug is, not later.
+
+    The check is `is not True` (not `is False`) because Pydantic V2 will
+    coerce truthy/falsy values like `0`, `""`, `"false"` to `False` in
+    lenient mode, which would slip past a strict-False check and land a
+    non-eval record. Three legal states:
+      - `is_eval` not in overrides → factory default `True` applies
+      - `is_eval=True` explicit → permitted (no-op vs default)
+      - anything else → rejected here
     """
-    if overrides.get("is_eval") is False:
+    if "is_eval" in overrides and overrides["is_eval"] is not True:
         raise ValueError(
-            "Eval-harness factory cannot construct a record with is_eval=False. "
-            "Per docs/testing.md, every factory output must carry is_eval=True. "
-            "If you genuinely need a non-eval record in a test, construct the "
-            "type directly (not via the factory)."
+            f"Eval-harness factory cannot construct a record with "
+            f"is_eval={overrides['is_eval']!r}. Per docs/testing.md, every "
+            "factory output must carry is_eval=True. If you genuinely need "
+            "a non-eval record in a test, construct the type directly (not "
+            "via the factory)."
         )
 
 
