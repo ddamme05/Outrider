@@ -1,0 +1,326 @@
+# Audit event hierarchy per docs/spec.md §7.2.1 + §8.2.
+# Append-only contract per docs/trust-boundaries.md §7.
+"""Audit event class hierarchy + discriminated union.
+
+`AuditEventBase` is the shared base; the ten V1 subtypes per spec §8.2 each
+declare their own `event_type: Literal[...]` discriminator value. The
+`AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
+reconstruct concrete events from `audit_events.payload` JSONB at read time:
+
+    TypeAdapter(AuditEvent).validate_python({**payload, "sequence_number": row.sequence_number})
+
+Every event uses `ConfigDict(frozen=True, extra="forbid")` per
+`audit-events-frozen-extra-forbid`. Tuple-typed sequence fields
+(`context_summary`, `trace_path`, the HITL containers, `candidates_considered`)
+deliver true immutability — Pydantic `frozen=True` only blocks attribute
+reassignment, not in-place container mutation. Nested Pydantic payload
+classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
+because the outer model's frozen-ness does not propagate.
+
+Three event types carry validators:
+
+  - `FindingEvent` runs `policy/findings.enforce_proof_boundary` so the
+    proof boundary holds at the audit-event layer, not just on
+    `ReviewFinding`. Backs `evidence-tier-schema-enforced`.
+  - `TraceDecisionEvent` enforces the three-rule resolution invariant
+    per `DECISIONS.md#017` (Amended same-day, two clauses):
+    (a) resolved ↔ non-None target_file;
+    (b) unresolved/ambiguous ↔ target_file is None;
+    (c) when resolved, target_file in candidates_considered.
+  - `PerFindingDecision` (referenced via `HITLDecisionEvent.decisions`)
+    carries its own validator per `schemas/hitl.py`; the wrapping event
+    inherits that gate.
+
+Replay merges the row-level `sequence_number` (DB-assigned BIGSERIAL)
+into the payload before validating; the emitter dumps with
+`mode="json", exclude={"sequence_number"}` per the row-vs-payload split.
+"""
+
+from datetime import UTC, datetime
+from typing import Annotated, Literal, Self
+from uuid import UUID, uuid4
+
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    model_validator,
+)
+
+from outrider.policy import (
+    EvidenceTier,
+    FindingSeverity,
+    FindingType,
+    enforce_proof_boundary,
+)
+from outrider.schemas import (
+    PerFindingDecision,
+    PublishDestination,
+    ReviewDimension,
+)
+
+
+class AuditEventBase(BaseModel):
+    """Shared fields for every audit event.
+
+    Subclasses MUST declare an `event_type: Literal[...]` field with a
+    default value matching their discriminator key (e.g.,
+    `event_type: Literal["llm_call"] = "llm_call"`); the `AuditEvent`
+    union below uses that field as the discriminator.
+
+    `sequence_number` is nullable on the base because it is assigned by
+    Postgres BIGSERIAL at INSERT time. The construct-then-insert path
+    has `None`; the read-then-reconstruct path has the assigned int.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    event_id: UUID = Field(default_factory=uuid4)
+    review_id: UUID
+    event_type: str
+    timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    sequence_number: int | None = None
+    is_eval: bool = False
+
+
+class ContextManifestEntry(BaseModel):
+    """One scope-unit entry inside `LLMCallEvent.context_summary`.
+
+    Frozen + extra=forbid because the outer event's `frozen=True` does
+    not propagate to nested Pydantic models. Without this, an entry
+    could be mutated post-construction (`entry.file_path = "..."`) even
+    when the containing event is frozen and the tuple is immutable.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    file_path: str
+    scope_unit_name: str
+    line_start: int
+    line_end: int
+    inclusion_reason: Literal[
+        "changed_scope",
+        "same_file_context",
+        "trace_expansion",
+    ]
+
+
+class AgentTransitionEvent(AuditEventBase):
+    """Node-to-node transition in the LangGraph state machine."""
+
+    event_type: Literal["agent_transition"] = "agent_transition"
+    from_node: str
+    to_node: str
+    latency_ms: int
+
+
+class ReviewPhaseEvent(AuditEventBase):
+    """Phase boundary marker; start/end pairs scope per-node work.
+
+    Per `phase-events-bound-work`, replay groups events between matching
+    start/end markers as belonging to one phase. `phase_key` is V1.5
+    forward-compat: parallel-analyze workers in V1.5 emit per-file
+    phase pairs keyed by file path.
+    """
+
+    event_type: Literal["review_phase"] = "review_phase"
+    phase_id: str
+    node_id: str
+    marker: Literal["start", "end"]
+    phase_key: str | None = None
+
+
+class LLMCallEvent(AuditEventBase):
+    """Metadata for one LLM call. Content lives in `llm_call_content` per #016."""
+
+    event_type: Literal["llm_call"] = "llm_call"
+    model: str
+    node_id: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    cost_usd: float
+    latency_ms: int
+    prompt_hash: str
+    cache_hit: bool
+    context_summary: tuple[ContextManifestEntry, ...]
+    prompt_template_version: str
+    system_prompt_hash: str
+    degraded_mode: bool
+
+
+class FileExaminationEvent(AuditEventBase):
+    """Records that a file was examined (parse status + node)."""
+
+    event_type: Literal["file_examination"] = "file_examination"
+    file_path: str
+    examination_type: str
+    node_id: str
+    parse_status: Literal["clean", "degraded", "failed", "skipped"]
+
+
+class FindingEvent(AuditEventBase):
+    """Metadata for one finding. Proof artifacts are validated here.
+
+    `enforce_proof_boundary` runs as a model_validator so the boundary
+    holds at the audit-event layer too, not just at `ReviewFinding`.
+    Backs `evidence-tier-schema-enforced`.
+    """
+
+    event_type: Literal["finding"] = "finding"
+    finding_id: UUID
+    finding_type: FindingType
+    severity: FindingSeverity
+    file_path: str
+    line_start: int
+    line_end: int
+    dimension: ReviewDimension
+    finding_content_hash: str
+    evidence_tier: EvidenceTier
+    query_match_id: str | None = None
+    trace_path: tuple[str, ...] | None = None
+    policy_version: str
+
+    @model_validator(mode="after")
+    def _enforce_proof_boundary(self) -> Self:
+        """Wire policy/findings.enforce_proof_boundary into Pydantic validation."""
+        enforce_proof_boundary(
+            evidence_tier=self.evidence_tier,
+            query_match_id=self.query_match_id,
+            trace_path=self.trace_path,
+        )
+        return self
+
+
+class TraceDecisionEvent(AuditEventBase):
+    """One aggregate trace decision per source_finding_id (per DECISIONS.md#017).
+
+    Three-rule cross-field validator per #017 (Amended same-day, two clauses):
+    (a) resolved ↔ non-None target_file
+    (b) unresolved / ambiguous ↔ target_file is None
+    (c) when resolved, target_file in candidates_considered
+
+    `candidates_considered` is the LLM-proposed candidate list (any
+    cardinality); `resolution_status` describes how many resolved
+    through ast_facts (zero / exactly one / multiple). Required field
+    (no default) per #017 — defaults would silently absorb emitter bugs
+    and undermine §8.7 replay equivalence; callers pass `()` explicitly
+    for the zero-candidate case.
+    """
+
+    event_type: Literal["trace_decision"] = "trace_decision"
+    source_finding_id: UUID
+    target_file: str | None
+    reason: str = Field(max_length=500)
+    resolution_status: Literal["resolved", "unresolved", "ambiguous"]
+    candidates_considered: tuple[str, ...]
+    trace_path: tuple[str, ...] | None = None
+
+    @model_validator(mode="after")
+    def _enforce_resolution_invariants(self) -> Self:
+        """Three rules per DECISIONS.md#017 (Amended same-day)."""
+        if self.resolution_status == "resolved":
+            if self.target_file is None:
+                raise ValueError("resolved TraceDecisionEvent requires non-None target_file")
+            if self.target_file not in self.candidates_considered:
+                raise ValueError("resolved target_file must be a member of candidates_considered")
+        else:
+            if self.target_file is not None:
+                raise ValueError(
+                    f"{self.resolution_status} TraceDecisionEvent requires target_file is None"
+                )
+        return self
+
+
+class HITLRequestEvent(AuditEventBase):
+    """Records the HITL gate envelope at interrupt time."""
+
+    event_type: Literal["hitl_request"] = "hitl_request"
+    findings_requiring_approval: tuple[UUID, ...]
+    auto_post_findings: tuple[UUID, ...]
+    expires_at: AwareDatetime
+
+
+class HITLDecisionEvent(AuditEventBase):
+    """Records the reviewer's HITL submission.
+
+    Field name `decisions` (not `per_finding_decisions`) matches the
+    cross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`
+    Amended 2026-04-29.
+    """
+
+    event_type: Literal["hitl_decision"] = "hitl_decision"
+    reviewer_id: str
+    decisions: tuple[PerFindingDecision, ...]
+    decision_latency_seconds: float
+
+
+class PublishEvent(AuditEventBase):
+    """Records the GitHub publish operation outcome."""
+
+    event_type: Literal["publish"] = "publish"
+    github_review_id: int
+    comments_posted: int
+    review_status: str
+
+
+class PublishRoutingEvent(AuditEventBase):
+    """Records the per-finding routing decision; backs publish-routes-through-coordinates."""
+
+    event_type: Literal["publish_routing"] = "publish_routing"
+    finding_id: UUID
+    destination: PublishDestination
+    reason: Literal["reviewable_diff_line", "unchanged_region", "non_diffed_file"]
+
+
+# Discriminated union for replay: TypeAdapter(AuditEvent).validate_python({...})
+# selects the right concrete subtype using the event_type field.
+AuditEvent = Annotated[
+    AgentTransitionEvent
+    | ReviewPhaseEvent
+    | LLMCallEvent
+    | FileExaminationEvent
+    | FindingEvent
+    | TraceDecisionEvent
+    | HITLRequestEvent
+    | HITLDecisionEvent
+    | PublishEvent
+    | PublishRoutingEvent,
+    Field(discriminator="event_type"),
+]
+
+# Module-level TypeAdapter so callers don't have to construct one each time
+# (TypeAdapter construction is comparatively expensive; reuse is the documented
+# Pydantic V2 pattern).
+AuditEventAdapter: TypeAdapter[
+    AgentTransitionEvent
+    | ReviewPhaseEvent
+    | LLMCallEvent
+    | FileExaminationEvent
+    | FindingEvent
+    | TraceDecisionEvent
+    | HITLRequestEvent
+    | HITLDecisionEvent
+    | PublishEvent
+    | PublishRoutingEvent
+] = TypeAdapter(AuditEvent)
+
+
+__all__ = [
+    "AgentTransitionEvent",
+    "AuditEvent",
+    "AuditEventAdapter",
+    "AuditEventBase",
+    "ContextManifestEntry",
+    "FileExaminationEvent",
+    "FindingEvent",
+    "HITLDecisionEvent",
+    "HITLRequestEvent",
+    "LLMCallEvent",
+    "PublishEvent",
+    "PublishRoutingEvent",
+    "ReviewPhaseEvent",
+    "TraceDecisionEvent",
+]
