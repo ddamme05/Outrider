@@ -52,7 +52,11 @@ jobs:
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
-          # python-version unset reads requires-python from pyproject.toml.
+          # python-version unset: the action does not pre-install a Python
+          # interpreter, so uv resolves Python at `uv sync` time from
+          # pyproject.toml's `requires-python` (or .python-version if present).
+          # Setting python-version here would override that by setting UV_PYTHON
+          # for the action — we want uv's project-driven resolution instead.
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
