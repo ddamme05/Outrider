@@ -6,7 +6,7 @@ schema-valid instance of its target type with `is_eval=True` set
 by the `is_eval_injection` autouse gate in `tests/eval/conftest.py`).
 """
 
-from tests.eval.fixtures.factories import (
+from .factories import (
     FindingEventFactory,
     FindingFactory,
     HITLDecisionEventFactory,

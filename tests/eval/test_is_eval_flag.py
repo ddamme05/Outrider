@@ -2,13 +2,14 @@
 
 Verifies that values constructed by the eval-harness factories propagate
 end-to-end to actual `reviews` and `audit_events` rows in Postgres. Crosses
-the DB/audit boundary, so it lives in the integration tier per
-`docs/conventions.md`'s "integration if the feature crosses subsystems"
-rule.
+the DB/audit boundary; lives under tests/eval/ alongside the harness
+infrastructure it tests so cross-tier imports aren't needed (the
+production/test boundary stays at `pythonpath = ["src"]` per
+`docs/conventions.md`).
 
-Note: this test does NOT consume the `is_eval_injection` autouse fixture
-from `tests/eval/conftest.py` — different conftest tree. It tests the
-propagation contract directly via explicit SELECTs after insert.
+The eval_db fixture's teardown integrity gate ALSO runs after this test;
+both checks fire — the explicit assertions in this test and the gate's
+UNION-over-5-tables. Belt + suspenders.
 """
 
 from typing import Any
@@ -16,13 +17,18 @@ from typing import Any
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from tests.eval.fixtures import FindingEventFactory, ReviewFactory
+
+from .fixtures import FindingEventFactory, ReviewFactory
 
 
 @pytest_asyncio.fixture
-async def session(migrated_db: str) -> Any:
-    """Async session scoped to a single migrated test DB."""
-    engine = create_async_engine(migrated_db)
+async def session(eval_db: str) -> Any:
+    """Async session scoped to a single fresh eval DB.
+
+    Uses `eval_db` from `tests/eval/conftest.py` — alembic-upgraded fresh
+    DB with the integrity-gate teardown baked in.
+    """
+    engine = create_async_engine(eval_db)
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     async with sessionmaker() as s:
         yield s

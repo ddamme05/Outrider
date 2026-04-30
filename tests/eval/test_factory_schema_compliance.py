@@ -15,15 +15,6 @@ Input boundary held item in the eval-harness spec.
 
 from uuid import UUID
 
-from tests.eval.fixtures import (
-    FindingEventFactory,
-    FindingFactory,
-    HITLDecisionEventFactory,
-    HITLRequestEventFactory,
-    ReviewFactory,
-    TraceDecisionEventFactory,
-)
-
 from outrider.audit.events import (
     FindingEvent,
     HITLDecisionEvent,
@@ -32,6 +23,15 @@ from outrider.audit.events import (
 )
 from outrider.policy import EvidenceTier, FindingType, lookup_severity
 from outrider.schemas import PerFindingDecision, ReviewFinding
+
+from .fixtures import (
+    FindingEventFactory,
+    FindingFactory,
+    HITLDecisionEventFactory,
+    HITLRequestEventFactory,
+    ReviewFactory,
+    TraceDecisionEventFactory,
+)
 
 
 def test_review_factory_produces_dict_with_is_eval_true() -> None:

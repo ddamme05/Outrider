@@ -10,7 +10,8 @@ spec.
 
 import pytest
 from pydantic import ValidationError
-from tests.eval.metrics import (
+
+from .metrics import (
     CostPerReview,
     FalsePositiveRate,
     FindingPrecision,

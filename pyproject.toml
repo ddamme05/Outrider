@@ -61,12 +61,12 @@ build-backend = "hatchling.build"
 packages = ["src/outrider"]
 
 [tool.pytest.ini_options]
-# `src` lets tests `import outrider.*`. `.` lets tests/eval/* + tests/unit/*
-# + tests/integration/* import from sibling test packages (e.g.,
-# `from tests.eval.fixtures import ReviewFactory`) — needed by the
-# eval-harness's harness-internal tests that consume factory output.
-# tests/ remains non-importable from src/ (separate concern; conventions.md).
-pythonpath = ["src", "."]
+# `pythonpath = ["src"]` only — `tests/` is NOT importable from `src/` per
+# `docs/conventions.md`. Cross-tier test imports (e.g., harness-internal
+# tests consuming eval-harness factories) live inside `tests/eval/` itself
+# and use relative imports (`from .fixtures import ...`); no widening of
+# the production/test boundary needed.
+pythonpath = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 

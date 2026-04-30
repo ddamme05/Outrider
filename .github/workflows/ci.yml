@@ -19,13 +19,11 @@
 #                       up via `docker compose up -d --wait postgres-test`
 #                       (NOT GitHub Actions native services: — that doesn't
 #                       support tmpfs / arbitrary Postgres args)
-#   5. structural-eval (SCAFFOLDED, not gating yet) — pytest
-#                       tests/eval/scenarios/structural --is-eval; all 8
-#                       scenarios pytest.mark.skip("requires ast_facts") on
-#                       day one. Job reports "pass" because pytest treats
-#                       skip as non-failure (skipped != failed). Becomes a
-#                       real gate when ast_facts ships and flips the skip
-#                       markers.
+#   5. eval — pytest tests/eval --is-eval against postgres-test (the
+#                       eval-harness integration-tier test uses the eval_db
+#                       fixture). Runs harness-internal tests today; the
+#                       17 scaffolded scenarios are skip-marked on day one
+#                       and become real gates as their dependencies land.
 #   6. pre-commit-tracked-only — runs the subset of pre-commit hooks that
 #                       depend ONLY on tracked files: ruff, ruff-format,
 #                       decision-refs-resolve, decision-refs-tests-pass,
@@ -150,9 +148,24 @@ jobs:
       - name: pytest tests/integration
         run: pytest tests/integration
 
-  structural-eval:
-    name: structural-eval (SCAFFOLDED, not gating yet)
+  eval:
+    name: eval (harness-internal + scaffolded scenarios)
     runs-on: ubuntu-latest
+    # Same env block as the integration job — this job runs the eval-harness
+    # integration-tier test (test_is_eval_flag.py) which uses eval_db
+    # against postgres-test. Compose validates the whole compose file at
+    # parse time, so POSTGRES_* dev-service vars are required even though
+    # only postgres-test is brought up.
+    env:
+      POSTGRES_USER: outrider
+      POSTGRES_PASSWORD: ci-ephemeral-dev-password-not-a-secret
+      POSTGRES_DB: outrider
+      POSTGRES_PORT: 5432
+      TEST_POSTGRES_USER: outrider
+      TEST_POSTGRES_PASSWORD: ci-ephemeral-test-password-not-a-secret
+      TEST_POSTGRES_DB: outrider_test
+      TEST_POSTGRES_PORT: 5433
+      TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
     steps:
       - uses: actions/checkout@v6.0.2
       - name: Install uv + Python
@@ -163,13 +176,18 @@ jobs:
           activate-environment: true
       - name: uv sync --frozen
         run: uv sync --dev --frozen
-      - name: pytest tests/eval/scenarios/structural --is-eval
-        # All 8 scenarios pytest.mark.skip("requires ast_facts") on day one;
-        # job reports "pass" because pytest treats skip as non-failure.
-        # The ast_facts spec PR flips skip markers and gates CI on the
-        # structural category from that point. Job exists in the workflow
-        # to avoid future YAML edits at flip time.
-        run: pytest tests/eval/scenarios/structural --is-eval
+      - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
+        run: docker compose up -d --wait postgres-test
+      - name: pytest tests/eval --is-eval
+        # Runs harness-internal tests (test_factory_schema_compliance,
+        # test_metrics_framework, test_is_eval_flag) AND the 17 scaffolded
+        # scenarios. On day one all 19 scenarios are
+        # `pytest.mark.skip("requires <module>")`; pytest treats skip as
+        # non-failure, so the job reports "pass" from skip output. As each
+        # scenario's dependency lands (ast_facts, analyze node, trace
+        # node, hitl + audit/replay), its skip marker flips and assertions
+        # begin gating. No CI YAML edits needed at flip time.
+        run: pytest tests/eval --is-eval
 
   pre-commit-tracked-only:
     name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-30)
