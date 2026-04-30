@@ -20,6 +20,7 @@ from outrider.audit.events import (
     HITLDecisionEvent,
     HITLRequestEvent,
     TraceDecisionEvent,
+    compute_finding_content_hash,
 )
 from outrider.policy import EvidenceTier, FindingType, lookup_severity
 from outrider.schemas import PerFindingDecision, ReviewFinding
@@ -52,13 +53,28 @@ def test_review_factory_overrides_replace_defaults() -> None:
 
 
 def test_finding_factory_produces_review_finding() -> None:
-    """FindingFactory returns a ReviewFinding with the canonical content_hash."""
+    """FindingFactory returns a ReviewFinding with the canonical content_hash.
+
+    `ReviewFinding` has no construction-time validator on `content_hash` —
+    unlike `FindingEvent`, whose validator enforces hash-equality on
+    construction (see `test_finding_event_factory_validator_runs_on_construction`).
+    That makes the factory's hash logic the ONLY place the canonical-SHA-256
+    contract per spec §8.5 is enforced for `ReviewFinding`. Asserting equality
+    against a recomputed hash (not just length) guards against a factory
+    hash-logic bug that would otherwise slip through.
+    """
     finding = FindingFactory.create()
     assert isinstance(finding, ReviewFinding)
     assert finding.finding_type == FindingType.SQL_INJECTION
     assert finding.evidence_tier == EvidenceTier.JUDGED
-    # 64-char lowercase hex per spec §8.5
-    assert len(finding.content_hash) == 64
+    expected_hash = compute_finding_content_hash(
+        file_path=finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        finding_type=finding.finding_type,
+    )
+    assert finding.content_hash == expected_hash
+    assert len(finding.content_hash) == 64  # belt + suspenders for spec §8.5 length
 
 
 def test_finding_factory_recomputes_hash_on_field_overrides() -> None:
