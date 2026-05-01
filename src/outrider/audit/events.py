@@ -51,6 +51,7 @@ from pydantic import (
     model_validator,
 )
 
+from outrider.ast_facts.models import SkipReason
 from outrider.policy import (
     EvidenceTier,
     FindingSeverity,
@@ -206,13 +207,39 @@ class LLMCallEvent(AuditEventBase):
 
 
 class FileExaminationEvent(AuditEventBase):
-    """Records that a file was examined (parse status + node)."""
+    """Records that a file was examined (parse status + node).
+
+    `skip_reason` per `DECISIONS.md#018`: non-None iff
+    `parse_status == "skipped"`. The cross-field validator below
+    enforces the bidirectional rule. Same shape as
+    `TraceDecisionEvent`'s `(target_file, resolution_status)` validator
+    per #017 — one event, one related-but-nullable field, one
+    cross-rule, deterministic on replay.
+    """
 
     event_type: Literal["file_examination"] = "file_examination"
     file_path: str
     examination_type: str
     node_id: str
     parse_status: Literal["clean", "degraded", "failed", "skipped"]
+    skip_reason: SkipReason | None = None
+
+    @model_validator(mode="after")
+    def _enforce_skip_reason_outcome(self) -> Self:
+        """Per DECISIONS.md#018: skip_reason non-None iff parse_status='skipped'."""
+        skipped = self.parse_status == "skipped"
+        has_reason = self.skip_reason is not None
+        if skipped and not has_reason:
+            raise ValueError(
+                "FileExaminationEvent: parse_status='skipped' requires a non-None skip_reason"
+            )
+        if has_reason and not skipped:
+            raise ValueError(
+                f"FileExaminationEvent: skip_reason={self.skip_reason!r} "
+                f"requires parse_status='skipped' "
+                f"(got {self.parse_status!r})"
+            )
+        return self
 
 
 class FindingEvent(AuditEventBase):

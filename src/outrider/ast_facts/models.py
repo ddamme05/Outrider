@@ -1,0 +1,333 @@
+# AST-facts domain models per docs/spec.md §5.4 + specs/2026-04-30-ast-facts-module.md.
+# AST firewall per docs/trust-boundaries.md §4.
+"""Domain models for the AST-facts module.
+
+This file is the **single source of truth for typed shapes** in the
+ast_facts/ surface. All Pydantic models, Literal types, and the str-enum
+live here; pure logic lives in `parser_outcome.py` and adapter code in
+`python_adapter.py`. Audit code (`outrider/audit/events.py`) imports
+`SkipReason` from this module per `DECISIONS.md#018` point 6 — this
+module must therefore stay import-light (no `tree_sitter`, no adapter
+code), and `outrider/ast_facts/__init__.py` lazy-loads `parse_python` so
+that `from outrider.ast_facts.models import SkipReason` doesn't pull
+the adapter into audit's module graph.
+
+Field validators are added on three new types only (`ParseResult`,
+`ImportResolution`, `QueryMatchSpan`/`QueryCaptureSpan` and
+`ExclusionRule`) where load-bearing for replay correctness or where
+canonical contradictions would otherwise silently produce wrong
+results. The §5.4 canonical types (`ScopeUnit`, `ImportRef`, `CallSite`,
+`AssignmentSite`, `ChangedRegion`, `SymbolCandidate`) carry no
+validators beyond their typing — per spec-fidelity discipline, a
+canonical type is shipped verbatim unless `DECISIONS.md` amends it.
+"""
+
+import hashlib
+from enum import StrEnum
+from typing import Literal, Self
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def compute_unit_id(file_path: str, kind: str, qualified_name: str) -> str:
+    """Stable hash of (file_path, kind, qualified_name) per Internal contracts.
+
+    Used as the dict key for `ParseResult.has_error` and as the
+    `enclosing_scope_id` reference target for `CallSite` / `AssignmentSite`.
+    Determinism is load-bearing for replay correctness — same source bytes
+    produce the same `unit_id` across adapter invocations.
+    """
+    payload = f"{file_path}\x00{kind}\x00{qualified_name}".encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Literal types and the SkipReason enum
+# ---------------------------------------------------------------------------
+
+ParserOutcome = Literal["clean", "failed", "skipped"]
+"""File-level adapter verdict. Three values; deliberately distinct from the
+canonical four-value `FileExaminationEvent.parse_status` (which adds
+`degraded`, computed downstream by the consuming node)."""
+
+ComputedParserOutcome = Literal["clean", "failed"]
+"""Strictly narrower than `ParserOutcome` — the return type of the
+`compute_parser_outcome` Protocol method, which is only invoked AFTER
+`parse_python` has resolved skip-classification. Makes "compute_parser_outcome
+never returns skipped" type-checkable, not just prose-checkable."""
+
+ResolutionStatus = Literal["resolved", "ambiguous", "unresolved"]
+"""Outcome of simple-direct-import resolution. Carried by `ImportResolution.status`
+and consumed by the trace node per `DECISIONS.md#017`."""
+
+
+class SkipReason(StrEnum):
+    """V1 exclusion rule taxonomy. One value per `SkipReason` — see
+    `parser_outcome.EXCLUSION_RULES` for the actual rule tuple
+    (multiple rules may share a reason; e.g., five vendored prefixes).
+    Imported by `outrider/audit/events.py` per `DECISIONS.md#018`."""
+
+    OVERSIZED = "OVERSIZED"
+    VENDORED = "VENDORED"
+    GENERATED_FILENAME = "GENERATED_FILENAME"
+    MINIFIED = "MINIFIED"
+    GENERATED_BANNER = "GENERATED_BANNER"
+
+
+# ---------------------------------------------------------------------------
+# Canonical §5.4 domain models — verbatim per spec-fidelity discipline
+# ---------------------------------------------------------------------------
+
+
+class ScopeUnit(BaseModel):
+    """A function, method, or class definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    kind: Literal["function", "method", "class"]
+    name: str
+    qualified_name: str
+    file_path: str
+    line_start: int
+    line_end: int
+    byte_start: int
+    byte_end: int
+    decorators: tuple[str, ...] = ()
+    parent_scope_id: str | None = None
+
+
+class ImportRef(BaseModel):
+    """A single import statement, parsed into its parts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str
+    line: int
+    import_kind: Literal["direct", "from", "relative", "star"]
+    module: str
+    names: tuple[str, ...] = ()
+    is_simple_direct: bool
+
+
+class CallSite(BaseModel):
+    """A function or method invocation inside an extracted ScopeUnit.
+
+    Module-level calls are not extracted in V1 (per non-goal —
+    `enclosing_scope_id: str` forbids None and amending the §5.4 kind enum
+    to add a synthetic "module" scope is a `DECISIONS.md` change, not a
+    silent fold).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str
+    line: int
+    callee_name: str
+    enclosing_scope_id: str
+
+
+class AssignmentSite(BaseModel):
+    """A variable assignment within a scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str
+    line: int
+    target_name: str
+    enclosing_scope_id: str
+
+
+class SymbolCandidate(BaseModel):
+    """A name that could refer to a local, parameter, or import.
+
+    Defined here per canonical §5.4 and re-exported from `__init__.py`;
+    only the producer (the trace-node symbol-enumeration walker) is
+    deferred to the trace-node spec.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    candidates: tuple[Literal["local", "parameter", "import", "unknown"], ...]
+
+
+class ChangedRegion(BaseModel):
+    """A diff hunk mapped to its owning scope units."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str
+    patch_line_start: int
+    patch_line_end: int
+    head_line_start: int
+    head_line_end: int
+    base_line_start: int | None = None
+    base_line_end: int | None = None
+    owning_scope_ids: tuple[str, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# New types added by this spec
+# ---------------------------------------------------------------------------
+
+
+class QueryCaptureSpan(BaseModel):
+    """One named capture from a tree-sitter query match.
+
+    Field validators enforce well-formedness because malformed input
+    would silently produce wrong replay results downstream.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    byte_start: int = Field(ge=0)
+    byte_end: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _enforce_byte_range(self) -> Self:
+        if self.byte_end < self.byte_start:
+            raise ValueError(
+                f"byte_end ({self.byte_end}) must be >= byte_start ({self.byte_start})"
+            )
+        return self
+
+
+class QueryMatchSpan(BaseModel):
+    """One match from `queries.match(...)`. byte_start/byte_end are the
+    envelope of all captures (min capture start, max capture end) per
+    Internal contracts. Constructing with an envelope inconsistent with
+    captures, or with empty captures (envelope undefined), raises.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    byte_start: int = Field(ge=0)
+    byte_end: int = Field(ge=0)
+    captures: tuple[QueryCaptureSpan, ...]
+
+    @model_validator(mode="after")
+    def _enforce_byte_range(self) -> Self:
+        if self.byte_end < self.byte_start:
+            raise ValueError(
+                f"byte_end ({self.byte_end}) must be >= byte_start ({self.byte_start})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_envelope_consistency(self) -> Self:
+        if not self.captures:
+            raise ValueError(
+                "QueryMatchSpan.captures must be non-empty (envelope is "
+                "undefined for empty captures); registered queries must "
+                "produce at least one capture per match per Internal contracts"
+            )
+        expected_start = min(c.byte_start for c in self.captures)
+        expected_end = max(c.byte_end for c in self.captures)
+        if (self.byte_start, self.byte_end) != (expected_start, expected_end):
+            raise ValueError(
+                f"QueryMatchSpan envelope ({self.byte_start}, {self.byte_end}) "
+                f"does not match the captures envelope "
+                f"({expected_start}, {expected_end})"
+            )
+        return self
+
+
+class ImportResolution(BaseModel):
+    """Result of `resolve_simple_direct_import`. `target_path` is non-None
+    iff `status == "resolved"`; the trace node copies `target_path` to
+    `TraceDecision.target_file` per `DECISIONS.md#017`. Cross-field
+    validator matches #017 point 3 (a) and (b)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: ResolutionStatus
+    target_path: str | None = None
+
+    @model_validator(mode="after")
+    def _enforce_status_target_path(self) -> Self:
+        if self.status == "resolved" and self.target_path is None:
+            raise ValueError("ImportResolution: status='resolved' requires a non-None target_path")
+        if self.status in ("ambiguous", "unresolved") and self.target_path is not None:
+            raise ValueError(
+                f"ImportResolution: status={self.status!r} requires "
+                f"target_path is None (got {self.target_path!r})"
+            )
+        return self
+
+
+class ParseResult(BaseModel):
+    """The bundled return value of `parse_python(...)`. Empty-tuples shape
+    on the failed and skipped paths; full population on the clean path.
+    `skip_reason` non-None iff `parser_outcome == "skipped"`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parser_outcome: ParserOutcome
+    skip_reason: SkipReason | None = None
+    scope_units: tuple[ScopeUnit, ...] = ()
+    imports: tuple[ImportRef, ...] = ()
+    call_sites: tuple[CallSite, ...] = ()
+    assignment_sites: tuple[AssignmentSite, ...] = ()
+    has_error: dict[str, bool] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _enforce_skip_reason_outcome(self) -> Self:
+        skipped = self.parser_outcome == "skipped"
+        has_reason = self.skip_reason is not None
+        if skipped and not has_reason:
+            raise ValueError(
+                "ParseResult: parser_outcome='skipped' requires a non-None skip_reason"
+            )
+        if has_reason and not skipped:
+            raise ValueError(
+                f"ParseResult: skip_reason={self.skip_reason!r} requires "
+                f"parser_outcome='skipped' (got {self.parser_outcome!r})"
+            )
+        return self
+
+
+class ExclusionRule(BaseModel):
+    """One rule in `EXCLUSION_RULES` (defined in `parser_outcome.py`).
+    Cross-field validator enforces `kind`/`pattern` runtime-type agreement.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: SkipReason
+    kind: Literal["size", "path_prefix", "filename_suffix", "banner"]
+    pattern: str | bytes | int
+
+    @model_validator(mode="after")
+    def _enforce_kind_pattern_type(self) -> Self:
+        kind = self.kind
+        pattern = self.pattern
+        # bool is a subclass of int — reject explicitly to avoid surprise
+        if kind == "size":
+            if isinstance(pattern, bool) or not isinstance(pattern, int):
+                raise ValueError(
+                    f"ExclusionRule kind='size' requires pattern: int "
+                    f"(got {type(pattern).__name__})"
+                )
+        elif kind == "banner":
+            if not isinstance(pattern, bytes):
+                raise ValueError(
+                    f"ExclusionRule kind='banner' requires pattern: bytes "
+                    f"(got {type(pattern).__name__})"
+                )
+        elif kind in ("path_prefix", "filename_suffix") and not isinstance(pattern, str):
+            raise ValueError(
+                f"ExclusionRule kind={kind!r} requires pattern: str (got {type(pattern).__name__})"
+            )
+        return self
