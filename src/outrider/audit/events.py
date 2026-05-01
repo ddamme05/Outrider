@@ -17,7 +17,7 @@ reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
 because the outer model's frozen-ness does not propagate.
 
-Three event types carry validators:
+Four event types carry validators:
 
   - `FindingEvent` runs `policy/findings.enforce_proof_boundary` so the
     proof boundary holds at the audit-event layer, not just on
@@ -27,6 +27,9 @@ Three event types carry validators:
     (a) resolved ↔ non-None target_file;
     (b) unresolved/ambiguous ↔ target_file is None;
     (c) when resolved, target_file in candidates_considered.
+  - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
+    per `DECISIONS.md#018`: `skip_reason is not None` ↔
+    `parse_status == "skipped"`.
   - `PerFindingDecision` (referenced via `HITLDecisionEvent.decisions`)
     carries its own validator per `schemas/hitl.py`; the wrapping event
     inherits that gate.

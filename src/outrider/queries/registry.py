@@ -11,11 +11,13 @@ Owns:
       - `match(id, source) -> tuple[QueryMatchSpan, ...]` for replay
         and analyze-node use; returns fully domain-modeled results so
         no `tree_sitter.Query`/`Node`/`QueryCursor` ever leaves
-        `queries/` per `DECISIONS.md#018` point 6.
+        `queries/` per `docs/trust-boundaries.md` §4 (AST firewall).
 
-Captureless-query rejection runs at module-load time per Internal
-contracts: a registered pattern with zero `@` captures has an
-undefined envelope and raises `ValueError` at import, not at runtime.
+Mandatory-capture rejection runs at module-load time per Internal
+contracts: a registered pattern with zero `@` captures, or with all
+captures quantified as optional (`?`/`*`), has an undefined envelope
+and raises `ValueError` at import, not at runtime. The check requires
+at least one MANDATORY capture (quantifier `''` or `'+'`) per pattern.
 
 Sort order per Internal contracts:
   * Within a match, captures are flattened sorted by
@@ -90,10 +92,11 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, Query]]:
 
 
 def _compile_and_validate(query_id: str, body: str, source: str | None = None) -> Query:
-    """Compile a query body and reject any pattern with zero captures.
+    """Compile a query body and reject any pattern lacking a mandatory capture.
 
     Per Internal contracts: every registered pattern MUST produce at
-    least one capture per match (envelope rule). A captureless pattern
+    least one capture per match (envelope rule). A pattern with zero
+    captures, or with all captures quantified as optional (`?`/`*`),
     has an undefined envelope and would crash `match(...)` at runtime
     when `min()` sees empty captures.
 
@@ -138,8 +141,8 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
             raise ValueError(
                 f"Query {query_id!r}{where} pattern {p} has no "
                 f"mandatory captures (all captures are optional/star "
-                f"quantified). The envelope rule per "
-                f"DECISIONS.md#018 / Internal contracts requires every "
+                f"quantified). The envelope rule per Internal contracts "
+                f"(specs/2026-04-30-ast-facts-module.md) requires every "
                 f"registered pattern to produce at least one capture "
                 f"per match; optional-only patterns might fire with "
                 f"empty captures at runtime."
