@@ -1,0 +1,218 @@
+# CI workflow per `DECISIONS.md#008` Amended 2026-04-30.
+#
+# Runs the tracked-file-safe subset of pre-commit hooks + pytest as a
+# secondary gate. Pre-commit (local) is the primary drift gate; CI catches
+# drift at PR time when contributors skip `pre-commit install`.
+#
+# Excluded from CI: `invariants-in-sync` — the hook runs
+# `extract_invariants.py --check`, which defaults to `docs/spec.md` /
+# `docs/invariants.md` (both gitignored per `.gitignore` `docs/`). Those
+# paths don't exist in a CI checkout, so the hook would fail. Local-side
+# discipline gates that hook; future hooks that depend on gitignored paths
+# join the same excluded list.
+#
+# Six jobs:
+#   1. lint          — ruff check + ruff format --check
+#   2. types         — mypy --strict src
+#   3. unit          — pytest tests/unit
+#   4. integration   — pytest tests/integration against postgres-test brought
+#                       up via `docker compose up -d --wait postgres-test`
+#                       (NOT GitHub Actions native services: — that doesn't
+#                       support tmpfs / arbitrary Postgres args)
+#   5. eval — pytest tests/eval --is-eval against postgres-test (the
+#                       eval-harness integration-tier test uses the eval_db
+#                       fixture). Runs harness-internal tests today; the
+#                       17 scaffolded scenarios are skip-marked on day one
+#                       and become real gates as their dependencies land.
+#   6. pre-commit-tracked-only — runs the subset of pre-commit hooks that
+#                       depend ONLY on tracked files: ruff, ruff-format,
+#                       decision-refs-resolve, decision-refs-tests-pass,
+#                       extractor-tests-pass.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same ref when a new commit is pushed —
+# saves runner minutes on rapid pushes (uses GH Actions concurrency primitive).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          # python-version unset: leaving this empty avoids forcing UV_PYTHON
+          # (which setup-uv would set if python-version were specified) and
+          # lets uv use its normal project/Python discovery. The exact
+          # resolution path is uv's concern, not the action's.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      - name: ruff check
+        run: ruff check
+      - name: ruff format --check
+        run: ruff format --check
+
+  types:
+    name: types (mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      - name: mypy --strict src
+        # `--strict` is redundant with pyproject.toml's `[tool.mypy] strict = true`
+        # but explicit at the call site so the YAML is self-describing AND matches
+        # the eval-harness spec's Implementation Sketch ("Job 2 `types`: `mypy
+        # --strict src`"). Defense: survives any future refactor of the
+        # pyproject.toml mypy block. (Section ref, not line number — line
+        # numbers in the spec shift as Actual Outcome items get added.)
+        run: mypy --strict src
+
+  unit:
+    name: unit (pytest tests/unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      - name: pytest tests/unit
+        run: pytest tests/unit
+
+  integration:
+    name: integration (postgres-test container)
+    runs-on: ubuntu-latest
+    # Job-level env block per the eval-harness spec: all steps in this
+    # job (compose up, readiness wait, pytest) need the same values.
+    # These are ephemeral container creds for a tmpfs DB destroyed at job
+    # end — not secrets. Mirror .env.example's TEST_* block.
+    #
+    # `docker-compose.yml` defines the dev `postgres` service with
+    # `${POSTGRES_*:?}` required-env-var checks. Compose loads the WHOLE
+    # compose file before bringing up any single service, so even
+    # `docker compose up postgres-test` fails at file-parse time if those
+    # required vars are unset. Setting POSTGRES_* alongside TEST_POSTGRES_*
+    # satisfies the parser; the dev service itself is never started in CI.
+    env:
+      POSTGRES_USER: outrider
+      POSTGRES_PASSWORD: ci-ephemeral-dev-password-not-a-secret
+      POSTGRES_DB: outrider
+      POSTGRES_PORT: 5432
+      TEST_POSTGRES_USER: outrider
+      TEST_POSTGRES_PASSWORD: ci-ephemeral-test-password-not-a-secret
+      TEST_POSTGRES_DB: outrider_test
+      TEST_POSTGRES_PORT: 5433
+      TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
+        # `docker compose up -d --wait` blocks until the service's
+        # compose-defined healthcheck reports healthy, eliminating the
+        # readiness race a bare `up -d` would have. Uses the same
+        # docker-compose.yml config the dev container uses — fsync=off,
+        # tmpfs, port mapping all preserved by definition.
+        run: docker compose up -d --wait postgres-test
+      - name: pytest tests/integration
+        run: pytest tests/integration
+
+  eval:
+    name: eval (harness-internal + scaffolded scenarios)
+    runs-on: ubuntu-latest
+    # Same env block as the integration job — this job runs the eval-harness
+    # integration-tier test (test_is_eval_flag.py) which uses eval_db
+    # against postgres-test. Compose validates the whole compose file at
+    # parse time, so POSTGRES_* dev-service vars are required even though
+    # only postgres-test is brought up.
+    env:
+      POSTGRES_USER: outrider
+      POSTGRES_PASSWORD: ci-ephemeral-dev-password-not-a-secret
+      POSTGRES_DB: outrider
+      POSTGRES_PORT: 5432
+      TEST_POSTGRES_USER: outrider
+      TEST_POSTGRES_PASSWORD: ci-ephemeral-test-password-not-a-secret
+      TEST_POSTGRES_DB: outrider_test
+      TEST_POSTGRES_PORT: 5433
+      TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
+        run: docker compose up -d --wait postgres-test
+      - name: pytest tests/eval --is-eval
+        # Runs harness-internal tests (test_factory_schema_compliance,
+        # test_metrics_framework, test_is_eval_flag) AND the 17 scaffolded
+        # scenarios. On day one all 19 scenarios are
+        # `pytest.mark.skip("requires <module>")`; pytest treats skip as
+        # non-failure, so the job reports "pass" from skip output. As each
+        # scenario's dependency lands (ast_facts, analyze node, trace
+        # node, hitl + audit/replay), its skip marker flips and assertions
+        # begin gating. No CI YAML edits needed at flip time.
+        run: pytest tests/eval --is-eval
+
+  pre-commit-tracked-only:
+    name: pre-commit-tracked-only (per DECISIONS#008 Amended 2026-04-30)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      # Run only the hooks that depend on tracked files. invariants-in-sync
+      # is excluded because extract_invariants.py --check defaults to
+      # docs/spec.md / docs/invariants.md (gitignored). Per DECISIONS#008
+      # Amended 2026-04-30, this is the canonical CI scope.
+      - name: ruff (pre-commit hook)
+        run: pre-commit run ruff --all-files
+      - name: ruff-format (pre-commit hook)
+        run: pre-commit run ruff-format --all-files
+      - name: decision-refs-resolve (pre-commit hook)
+        run: pre-commit run decision-refs-resolve --all-files
+      - name: decision-refs-tests-pass (pre-commit hook)
+        run: pre-commit run decision-refs-tests-pass --all-files
+      - name: extractor-tests-pass (pre-commit hook)
+        run: pre-commit run extractor-tests-pass --all-files
