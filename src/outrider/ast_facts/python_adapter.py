@@ -116,7 +116,9 @@ class PythonAdapter:
     # ------------------------------------------------------------------
 
     def extract_scopes(self, source: bytes, file_path: str) -> tuple[ScopeUnit, ...]:
-        tree = self._parse(source)
+        return self._extract_scopes_from_tree(self._parse(source), file_path)
+
+    def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
         scopes: list[ScopeUnit] = []
         self._walk_for_scopes(
             tree.root_node,
@@ -235,7 +237,9 @@ class PythonAdapter:
     # ------------------------------------------------------------------
 
     def extract_imports(self, source: bytes, file_path: str) -> tuple[ImportRef, ...]:
-        tree = self._parse(source)
+        return self._extract_imports_from_tree(self._parse(source), file_path)
+
+    def _extract_imports_from_tree(self, tree: Tree, file_path: str) -> tuple[ImportRef, ...]:
         imports: list[ImportRef] = []
         for node in self._walk(tree.root_node):
             if node.type == "import_statement":
@@ -352,7 +356,14 @@ class PythonAdapter:
         """Calls inside extracted ScopeUnits + call-form decorators on
         an extracted scope. Module-level calls are skipped per non-goal.
         """
-        tree = self._parse(source)
+        return self._extract_call_sites_from_tree(self._parse(source), file_path, scope_units)
+
+    def _extract_call_sites_from_tree(
+        self,
+        tree: Tree,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[CallSite, ...]:
         # Pre-sort scopes by byte_start ASC, byte_end DESC so the most
         # tightly-enclosing scope is found first by linear search.
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
@@ -387,7 +398,14 @@ class PythonAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[AssignmentSite, ...]:
-        tree = self._parse(source)
+        return self._extract_assignments_from_tree(self._parse(source), file_path, scope_units)
+
+    def _extract_assignments_from_tree(
+        self,
+        tree: Tree,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[AssignmentSite, ...]:
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
         sites: list[AssignmentSite] = []
         for node in self._walk(tree.root_node):
@@ -474,7 +492,13 @@ class PythonAdapter:
         policy requires a `DECISIONS.md` entry per spec-fidelity
         discipline.
         """
-        tree = self._parse(source)
+        return self._compute_parser_outcome_from_tree(self._parse(source), scope_units)
+
+    def _compute_parser_outcome_from_tree(
+        self,
+        tree: Tree,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
         # Map each ScopeUnit to its tree-sitter node by byte range.
         # ScopeUnit byte ranges include decorators when wrapped; the
         # underlying function/class node has a possibly-narrower span.
@@ -523,12 +547,20 @@ def _innermost_scope_containing(
     sorted_scopes: list[ScopeUnit], byte_start: int, byte_end: int
 ) -> ScopeUnit | None:
     """Return the smallest scope whose byte range contains the given range,
-    or None if no scope contains it (module-level)."""
-    candidates = [s for s in sorted_scopes if s.byte_start <= byte_start and byte_end <= s.byte_end]
-    if not candidates:
-        return None
-    # Smallest = largest byte_start (innermost containment).
-    return max(candidates, key=lambda s: s.byte_start)
+    or None if no scope contains it (module-level).
+
+    Single-pass: smallest enclosing = largest byte_start among containing
+    scopes. Avoids allocating an intermediate candidate list per call.
+    """
+    best: ScopeUnit | None = None
+    for scope in sorted_scopes:
+        if (
+            scope.byte_start <= byte_start
+            and byte_end <= scope.byte_end
+            and (best is None or scope.byte_start > best.byte_start)
+        ):
+            best = scope
+    return best
 
 
 def _find_node_by_span(root: Node, byte_start: int, byte_end: int) -> Node | None:
@@ -621,13 +653,19 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
         source.decode("utf-8")
     except UnicodeDecodeError:
         return ParseResult(parser_outcome="failed")
-    # Step 3+: parse and extract.
+    # Step 3+: parse once, then extract via the from-tree helpers per
+    # Internal contracts. The Protocol-public methods each parse
+    # internally, but the orchestrator avoids the 5x parse overhead
+    # by sharing the Tree across extraction passes. (Reaching into
+    # private adapter methods is fine here — `parse_python` is the
+    # ast_facts-internal orchestrator, not an external consumer.)
     adapter = PythonAdapter(resolver=resolver)
-    scope_units = adapter.extract_scopes(source, file_path)
-    imports = adapter.extract_imports(source, file_path)
-    call_sites = adapter.extract_call_sites(source, file_path, scope_units)
-    assignment_sites = adapter.extract_assignments(source, file_path, scope_units)
-    outcome, has_error = adapter.compute_parser_outcome(source, file_path, scope_units)
+    tree = adapter._parse(source)
+    scope_units = adapter._extract_scopes_from_tree(tree, file_path)
+    imports = adapter._extract_imports_from_tree(tree, file_path)
+    call_sites = adapter._extract_call_sites_from_tree(tree, file_path, scope_units)
+    assignment_sites = adapter._extract_assignments_from_tree(tree, file_path, scope_units)
+    outcome, has_error = adapter._compute_parser_outcome_from_tree(tree, scope_units)
     if outcome == "failed":
         # Discard extracted tuples per Internal contracts: the failed-path
         # ParseResult carries the empty-tuples shape regardless of which

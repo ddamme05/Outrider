@@ -90,5 +90,8 @@ def __getattr__(name: str) -> object:
     if name == "parse_python":
         from outrider.ast_facts.python_adapter import parse_python
 
+        # Cache so subsequent lookups are direct, preserving import-light:
+        # tree_sitter is only loaded on first access, not on every access.
+        globals()["parse_python"] = parse_python
         return parse_python
     raise AttributeError(f"module 'outrider.ast_facts' has no attribute {name!r}")
