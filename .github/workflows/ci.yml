@@ -82,8 +82,10 @@ jobs:
       - name: mypy --strict src
         # `--strict` is redundant with pyproject.toml's `[tool.mypy] strict = true`
         # but explicit at the call site so the YAML is self-describing AND matches
-        # the spec text (line 88: "Job 2 types: mypy --strict src"). Defense:
-        # survives any future refactor of the pyproject.toml mypy block.
+        # the eval-harness spec's Implementation Sketch ("Job 2 `types`: `mypy
+        # --strict src`"). Defense: survives any future refactor of the
+        # pyproject.toml mypy block. (Section ref, not line number — line
+        # numbers in the spec shift as Actual Outcome items get added.)
         run: mypy --strict src
 
   unit:

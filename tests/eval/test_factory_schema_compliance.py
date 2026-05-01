@@ -93,10 +93,25 @@ def test_finding_event_factory_produces_finding_event_with_is_eval_true() -> Non
     Severity comes from `SEVERITY_POLICY[finding_type]` via `lookup_severity`,
     NOT a hard-coded constant — encoding the policy rule rather than today's
     policy value, so the test catches policy drift.
+
+    Note on hash assertion: FindingEvent has a construction-time validator
+    that enforces `finding_content_hash` equality with the canonical helper,
+    so a wrong-hash factory would fail at `FindingEventFactory.create()`
+    before reaching the test body. Asserting equality here anyway for
+    self-documentation parity with the FindingFactory test (round 7) and
+    so a future change that loosens the validator doesn't silently weaken
+    this test's guarantees.
     """
     event = FindingEventFactory.create()
     assert isinstance(event, FindingEvent)
     assert event.is_eval is True
+    expected_hash = compute_finding_content_hash(
+        file_path=event.file_path,
+        line_start=event.line_start,
+        line_end=event.line_end,
+        finding_type=event.finding_type,
+    )
+    assert event.finding_content_hash == expected_hash
     assert len(event.finding_content_hash) == 64
     assert event.severity == lookup_severity(event.finding_type)
 
@@ -182,6 +197,13 @@ def test_hitl_decision_event_factory_admits_decision_overrides() -> None:
 #     the narrower `is False` check would let those slip past the gate.
 
 
+_FINDING_TYPE_FACTORIES = [
+    pytest.param(FindingFactory, id="FindingFactory"),
+    pytest.param(FindingEventFactory, id="FindingEventFactory"),
+]
+
+
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
 @pytest.mark.parametrize(
     "input_value,expected_enum",
     [
@@ -189,37 +211,40 @@ def test_hitl_decision_event_factory_admits_decision_overrides() -> None:
         (FindingType.SQL_INJECTION, FindingType.SQL_INJECTION),
     ],
 )
-def test_finding_factory_normalizes_finding_type_str_or_enum(
-    input_value: str | FindingType, expected_enum: FindingType
+def test_factory_normalizes_finding_type_str_or_enum(
+    factory: Any, input_value: str | FindingType, expected_enum: FindingType
 ) -> None:
-    """FindingFactory accepts str-enum value or enum; both normalize to enum."""
-    finding = FindingFactory.create(finding_type=input_value)
-    assert finding.finding_type == expected_enum
+    """Both finding_type-carrying factories accept str-enum value or enum.
+
+    Cross-product over (factory × input form) — guards both
+    `_normalize_finding_type()` call sites symmetrically. If a future change
+    drops the helper from either factory, this test catches it.
+    """
+    result = factory.create(finding_type=input_value)
+    assert result.finding_type == expected_enum
 
 
-def test_finding_factory_rejects_invalid_finding_type_string() -> None:
-    """An invalid finding_type string raises ValueError at the factory call site.
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
+def test_factory_rejects_invalid_finding_type_string(factory: Any) -> None:
+    """Both factories raise ValueError at the call site for an invalid string.
 
     Loud-failure pattern: error names the bad value, not a confusing
     downstream Pydantic ValidationError or a placeholder content_hash.
     """
     with pytest.raises(ValueError, match="not a valid FindingType"):
-        FindingFactory.create(finding_type="not_a_real_type")
+        factory.create(finding_type="not_a_real_type")
 
 
-def test_finding_event_factory_normalizes_string_finding_type() -> None:
-    """FindingEventFactory shares the same normalization path (preemptive audit)."""
-    event = FindingEventFactory.create(finding_type="sql_injection")
-    assert event.finding_type == FindingType.SQL_INJECTION
-
-
-def test_string_finding_type_triggers_severity_and_hash_derivations() -> None:
-    """The original bug fix: string finding_type must trigger both derivations.
+def test_finding_factory_string_input_triggers_severity_and_hash_derivations() -> None:
+    """The original Item 11 bug fix: string finding_type must trigger both derivations.
 
     Before round 7, the isinstance gate skipped both `lookup_severity()` and
     `compute_finding_content_hash()` when `finding_type` arrived as a string.
     Verifies that severity is derived from policy AND content_hash is the
-    canonical recomputed value, not the placeholder.
+    canonical recomputed value, not the placeholder. FindingFactory-specific
+    because the field name is `content_hash` (vs `finding_content_hash` on
+    FindingEventFactory) and only ReviewFinding lacks a hash validator that
+    would otherwise catch a placeholder hash on construction.
     """
     finding = FindingFactory.create(finding_type="sql_injection")
     assert finding.severity == lookup_severity(FindingType.SQL_INJECTION)
@@ -230,6 +255,23 @@ def test_string_finding_type_triggers_severity_and_hash_derivations() -> None:
         finding_type=finding.finding_type,
     )
     assert finding.content_hash == expected_hash
+
+
+def test_review_factory_head_sha_unique_per_call() -> None:
+    """Item 9 regression: ReviewFactory.create() produces unique head_sha per call.
+
+    Guards against a future regression that hard-codes head_sha (or any other
+    component of the `uq_review_natural_key` UNIQUE(repo_id, pr_number,
+    head_sha) triple) back to a constant default. Five calls; five distinct
+    head_shas. Also asserts the SHA-1 shape (40 hex chars) per the field's
+    documented contract.
+    """
+    rows = [ReviewFactory.create() for _ in range(5)]
+    head_shas = {row["head_sha"] for row in rows}
+    assert len(head_shas) == 5  # all distinct
+    for sha in head_shas:
+        assert len(sha) == 40
+        assert all(c in "0123456789abcdef" for c in sha)
 
 
 @pytest.mark.parametrize(
@@ -270,7 +312,31 @@ def test_every_is_eval_carrying_factory_rejects_non_true_override(
         factory.create(is_eval=bad_value)
 
 
-def test_review_factory_permits_explicit_true_is_eval() -> None:
-    """is_eval=True explicit override is permitted (no-op vs default)."""
-    row = ReviewFactory.create(is_eval=True)
-    assert row["is_eval"] is True
+def _is_eval_value(factory_result: Any) -> bool:
+    """Read is_eval from a factory result whether it's a dict or a Pydantic model."""
+    if isinstance(factory_result, dict):
+        return factory_result["is_eval"]
+    return factory_result.is_eval
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(ReviewFactory, id="ReviewFactory"),
+        pytest.param(FindingEventFactory, id="FindingEventFactory"),
+        pytest.param(TraceDecisionEventFactory, id="TraceDecisionEventFactory"),
+        pytest.param(HITLRequestEventFactory, id="HITLRequestEventFactory"),
+        pytest.param(HITLDecisionEventFactory, id="HITLDecisionEventFactory"),
+    ],
+)
+def test_every_is_eval_carrying_factory_permits_explicit_true(factory: Any) -> None:
+    """Every factory accepts the explicit `is_eval=True` override (no-op vs default).
+
+    Symmetric with `test_every_is_eval_carrying_factory_rejects_non_true_override`
+    — same 5 factories, positive case. Without this, a future change that
+    accidentally rejected `is_eval=True` (e.g., a mistyped `is True` check)
+    would only surface when a test explicitly passed True, not in the default
+    happy path.
+    """
+    result = factory.create(is_eval=True)
+    assert _is_eval_value(result) is True
