@@ -14,10 +14,13 @@ COMMIT_LOG.md
 ITERATION_LOG.md
 SESSION_RETRO.md
 AUDIT_LOG.md
+SKILLS_TRIAL.md
 specs/
+specs_arch/
 contents.md
 struct.md
 snapshot.md
+dashboard_design.md
 
 # --- Environment and secrets ---
 .env
