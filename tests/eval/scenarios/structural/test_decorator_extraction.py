@@ -3,7 +3,8 @@
 Per spec §11.2: `@app.route` (Flask) and `@router.get` (FastAPI) decorators
 are extracted on the `ScopeUnit` for the decorated function.
 
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
+V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
+directly and gates current ast_facts behavior for decorator extraction.
 """
 
 from unittest.mock import MagicMock

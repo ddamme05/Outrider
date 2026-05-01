@@ -13,20 +13,30 @@ per `nodes-receive-deps-via-closure`.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from outrider.ast_facts.python_adapter import PythonAdapter
 
-# Maps file extension (with leading dot) → adapter class.
-# Adding JS/TS in V1.5 means registering `.js` / `.ts` here without
-# changing any caller's interface.
-_LANGUAGE_ADAPTERS: Final[dict[str, type[PythonAdapter]]] = {
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from outrider.ast_facts.base import ImportPathResolver, LanguageAdapter
+
+# Maps file extension (with leading dot) → adapter factory.
+# An "adapter factory" is any callable taking an `ImportPathResolver`
+# and returning a `LanguageAdapter`-shaped instance — typed against the
+# Protocol (not the concrete `PythonAdapter`) so V1.5 can register
+# `.js` / `.ts` adapters here without rewriting this type or the
+# `get_adapter_factory` signature.
+_LANGUAGE_ADAPTERS: Final[dict[str, Callable[[ImportPathResolver], LanguageAdapter]]] = {
     ".py": PythonAdapter,
 }
 
 
-def get_adapter_factory(extension: str) -> type[PythonAdapter] | None:
-    """Return the adapter class for a given file extension, or None
+def get_adapter_factory(
+    extension: str,
+) -> Callable[[ImportPathResolver], LanguageAdapter] | None:
+    """Return the adapter factory for a given file extension, or None
     if no adapter is registered. Caller constructs with their resolver.
     """
     return _LANGUAGE_ADAPTERS.get(extension)

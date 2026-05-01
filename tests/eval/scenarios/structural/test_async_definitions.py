@@ -10,7 +10,8 @@ line 480) — async-ness is semantic, not structural. This test asserts
 existing fields handle async syntax without breaking; it does NOT
 assert any async-specific field.
 
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
+V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
+directly and gates current ast_facts behavior for async definitions.
 """
 
 from unittest.mock import MagicMock

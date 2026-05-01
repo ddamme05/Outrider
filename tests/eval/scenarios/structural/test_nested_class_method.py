@@ -3,7 +3,8 @@
 Per spec §11.2: methods inside nested classes resolve to the right
 `ScopeUnit` qualified-name path.
 
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
+V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
+directly and gates current ast_facts behavior for nested-class qualified names.
 """
 
 from unittest.mock import MagicMock

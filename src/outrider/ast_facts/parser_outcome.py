@@ -78,9 +78,15 @@ def should_skip(file_path: str, source: bytes) -> SkipReason | None:
     content-pattern (raw-byte check on first 200 bytes — no UTF-8
     decode, so this stays cheap on non-UTF-8 source).
     """
-    # Use PurePosixPath so the suffix/prefix checks are platform-independent.
-    # `file_path` is repo-relative per trust-boundary #5 — `coordinates/`
-    # validated and normalized it before it reached us.
+    # `file_path` is POSIX repo-relative per trust-boundary #5 — `coordinates/`
+    # validated and normalized it before it reached us, so `path_prefix`
+    # checks against literal POSIX prefixes (`vendor/`, `node_modules/`,
+    # ...) work on `file_path` directly via `str.startswith`. Outrider
+    # runs on Linux only in V1; cross-platform path normalization is the
+    # input boundary's job, not ast_facts/'s. PurePosixPath here is used
+    # only to extract the trailing filename component for suffix matching;
+    # it does not (and cannot) convert backslashes that should not appear
+    # at this layer in the first place.
     relative = PurePosixPath(file_path)
     name = relative.name
 
