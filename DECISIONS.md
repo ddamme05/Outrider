@@ -560,8 +560,8 @@ The two surfaces (logs vs database) need different rules: logs flow to stdout, l
 
 **Consequences.**
 
-- `spec.md` §8.2's `FileExaminationEvent` field list extends to `file_path, examination_type, node_id, parse_status, skip_reason`. Documentation update to §8.2's table ships in the same commit as this entry.
-- `spec.md` §5.5's "file_skipped event with the reason" wording is amended to read `FileExaminationEvent` rather than `file_skipped event` in the same commit — a wording fix, not a behavioral change.
+- `spec.md` §8.2's `FileExaminationEvent` field list extends to `file_path, examination_type, node_id, parse_status, skip_reason`. Documentation update to §8.2's table is reflected in local `docs/spec.md`.
+- `spec.md` §5.5 wording is amended locally to read `FileExaminationEvent` rather than `file_skipped event` — a wording fix, not a behavioral change.
 - `spec.md` §5.5's exclusion-pattern enumeration is also amended to include the oversized rule alongside vendored / generated / minified (the V1 ast_facts/ spec adds `SkipReason.OVERSIZED`/`MAX_PARSE_BYTES` as a fifth exclusion category; §5.5 currently lists only the original three categories from before the DoS-posture work).
 - `audit/events.py` adds `skip_reason: SkipReason | None = None` to `FileExaminationEvent` plus the cross-field validator. Imports `SkipReason` from `ast_facts.models`. (`audit/events.py` already exists as Status:Complete per `specs/2026-04-29-audit-events-module.md`; the field addition is sequenced after `outrider/ast_facts/models.py` lands so the `SkipReason` import is satisfiable.)
 - `audit/replay.py` (when written) replay is unchanged for clean/failed/degraded events; for skipped events, replay can additionally assert the stored `skip_reason` is one of the five canonical enum values.
