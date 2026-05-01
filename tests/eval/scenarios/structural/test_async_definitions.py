@@ -13,9 +13,9 @@ assert any async-specific field.
 V1: scaffolded; assertion runs at `ast_facts/` flip time.
 """
 
-import pytest
+from unittest.mock import MagicMock
 
-pytestmark = pytest.mark.skip(reason="requires ast_facts")
+from outrider.ast_facts import parse_python
 
 SOURCE = """\
 import asyncio
@@ -36,19 +36,15 @@ EXPECTED_SCOPE_NAMES = ("fetch_data", "stream_lines")
 
 def test_async_def_parses_into_function_kind_scope_unit() -> None:
     """async def fn() produces ScopeUnit with kind='function' (no async-specific field)."""
-    from outrider.ast_facts import extract_scopes  # type: ignore[import-not-found]
-
-    scopes = extract_scopes(SOURCE)
-    names = tuple(s.name for s in scopes if s.kind == "function")
+    result = parse_python(SOURCE.encode(), "test.py", MagicMock())
+    names = tuple(s.name for s in result.scope_units if s.kind == "function")
     for expected in EXPECTED_SCOPE_NAMES:
         assert expected in names
 
 
 def test_async_def_line_spans_include_async_keyword() -> None:
     """ScopeUnit's line_start covers the line with the `async` keyword, not the body."""
-    from outrider.ast_facts import extract_scopes  # type: ignore[import-not-found]
-
-    scopes = extract_scopes(SOURCE)
-    fetch_data = next(s for s in scopes if s.name == "fetch_data")
+    result = parse_python(SOURCE.encode(), "test.py", MagicMock())
+    fetch_data = next(s for s in result.scope_units if s.name == "fetch_data")
     # The `async def fetch_data(...)` line is line 4 (1-indexed) in SOURCE.
     assert fetch_data.line_start == 4

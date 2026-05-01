@@ -6,9 +6,9 @@ Per spec §11.2: methods inside nested classes resolve to the right
 V1: scaffolded; assertion runs at `ast_facts/` flip time.
 """
 
-import pytest
+from unittest.mock import MagicMock
 
-pytestmark = pytest.mark.skip(reason="requires ast_facts")
+from outrider.ast_facts import parse_python
 
 SOURCE = """\
 class Outer:
@@ -28,9 +28,7 @@ EXPECTED_QUALIFIED_NAMES = (
 
 def test_nested_class_method_qualified_names() -> None:
     """deep_method qualifies under Outer.Inner; shallow_method under Outer."""
-    from outrider.ast_facts import extract_scopes  # type: ignore[import-not-found]
-
-    scopes = extract_scopes(SOURCE)
-    method_names = tuple(s.qualified_name for s in scopes if s.kind == "method")
+    result = parse_python(SOURCE.encode(), "test.py", MagicMock())
+    method_names = tuple(s.qualified_name for s in result.scope_units if s.kind == "method")
     for expected in EXPECTED_QUALIFIED_NAMES:
         assert expected in method_names
