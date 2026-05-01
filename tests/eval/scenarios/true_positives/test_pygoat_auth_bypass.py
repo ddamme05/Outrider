@@ -23,7 +23,7 @@ EXPECTED_FINDING = {
 
 
 def test_pygoat_auth_bypass_detected_with_correct_severity() -> None:
-    """Agent produces AUTH_BYPASS + CRITICAL severity from policy."""
+    """Agent produces AUTH_BYPASS + severity from policy."""
     from outrider.agent import run_review  # type: ignore[import-not-found]
 
     findings = run_review("tests/eval/fixtures/mock_github/pygoat_auth_bypass.json")

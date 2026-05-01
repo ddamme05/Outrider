@@ -30,7 +30,7 @@ EXPECTED_FINDING = {
 
 
 def test_pygoat_sql_injection_detected_with_observed_tier() -> None:
-    """Agent produces SQL_INJECTION + OBSERVED + valid query_match_id + CRITICAL severity."""
+    """Agent produces SQL_INJECTION + OBSERVED + valid query_match_id + policy severity."""
     from outrider.agent import run_review  # type: ignore[import-not-found]
 
     findings = run_review("tests/eval/fixtures/mock_github/pygoat_sql_injection.json")
