@@ -232,33 +232,45 @@ def test_string_finding_type_triggers_severity_and_hash_derivations() -> None:
     assert finding.content_hash == expected_hash
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        ReviewFactory,
+        FindingEventFactory,
+        TraceDecisionEventFactory,
+        HITLRequestEventFactory,
+        HITLDecisionEventFactory,
+    ],
+    ids=[
+        "ReviewFactory",
+        "FindingEventFactory",
+        "TraceDecisionEventFactory",
+        "HITLRequestEventFactory",
+        "HITLDecisionEventFactory",
+    ],
+)
 @pytest.mark.parametrize("bad_value", [False, 0, "false", "False", None, ""])
-def test_review_factory_rejects_non_true_is_eval(bad_value: Any) -> None:
-    """ReviewFactory raises on any non-True is_eval override (round 6 tightening).
+def test_every_is_eval_carrying_factory_rejects_non_true_override(
+    factory: Any, bad_value: Any
+) -> None:
+    """All 5 `is_eval`-carrying factories reject any non-True override.
 
-    Strict `is not True` — covers the Pydantic V2 lenient-coercion vector
-    (0, "", "false" all coerce to False). Without the strict check, those
-    would slip past the construction gate and rely on the teardown integrity
-    gate to catch them.
+    Cross-product test (5 factories × 6 bad values = 30 cases) — guards
+    against a future regression that drops the `_reject_is_eval_false()`
+    call from any one of the five factory `create()` methods. `FindingFactory`
+    is not in this list because `ReviewFinding` (cross-boundary type) has no
+    `is_eval` field; the eval-isolation flag lives on the corresponding
+    `findings` row, not on the type.
+
+    Strict `is not True` (round-6 tightening) covers the Pydantic V2
+    lenient-coercion vector — `0`, `""`, `"false"` all coerce to `False`
+    on bool fields, and would slip past a narrower `is False` check.
     """
     with pytest.raises(ValueError, match="cannot construct a record with is_eval"):
-        ReviewFactory.create(is_eval=bad_value)
-
-
-@pytest.mark.parametrize("bad_value", [False, 0, "false", None])
-def test_finding_event_factory_rejects_non_true_is_eval(bad_value: Any) -> None:
-    """FindingEventFactory shares the same is_eval rejection guard."""
-    with pytest.raises(ValueError, match="cannot construct a record with is_eval"):
-        FindingEventFactory.create(is_eval=bad_value)
+        factory.create(is_eval=bad_value)
 
 
 def test_review_factory_permits_explicit_true_is_eval() -> None:
     """is_eval=True explicit override is permitted (no-op vs default)."""
     row = ReviewFactory.create(is_eval=True)
-    assert row["is_eval"] is True
-
-
-def test_review_factory_default_is_eval_when_no_override() -> None:
-    """No override → factory default is_eval=True applies."""
-    row = ReviewFactory.create()
     assert row["is_eval"] is True
