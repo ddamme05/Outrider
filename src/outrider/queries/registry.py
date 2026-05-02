@@ -72,8 +72,9 @@ _DEPRECATED_QUERY_ID_TO_BODY: Final[dict[str, str]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Module-load: read .scm files, compile queries, run captureless-query
-# rejection per Internal contracts.
+# Module-load: read .scm files, compile queries, run mandatory-capture
+# rejection per Internal contracts (every pattern must have at least one
+# capture quantified `''` or `'+'`; optional-only `?`/`*` patterns reject).
 # ---------------------------------------------------------------------------
 
 
