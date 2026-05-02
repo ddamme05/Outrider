@@ -253,10 +253,20 @@ def test_extract_assignments_returns_canonical_shape() -> None:
 
 # ---------------------------------------------------------------------------
 # resolve_simple_direct_import
+#
+# These tests are FOCUSED RESOLVER UNIT TESTS, not extractor-to-resolver
+# contract tests. The `ImportPathResolver` Protocol is mocked, decoupling
+# the resolver's behavior from the extractor's actual output. The
+# `ImportRef` instances are hand-built to represent plausible Python
+# source shapes (e.g., `from foo.bar import bar`) — they are NOT
+# necessarily what `PythonAdapter.extract_imports(...)` would emit for
+# any given source string. The contract-level test that exercises
+# extractor→resolver end-to-end lives in the integration suite.
 # ---------------------------------------------------------------------------
 
 
 def test_resolved_import_returns_target_path(tmp_path: Path) -> None:
+    # Hand-built ImportRef represents `from foo.bar import bar`.
     # Place a real file the resolver will return.
     (tmp_path / "foo").mkdir()
     (tmp_path / "foo" / "bar.py").write_text("x = 1")
