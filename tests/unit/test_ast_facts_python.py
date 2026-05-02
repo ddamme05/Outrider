@@ -467,25 +467,36 @@ def test_outer_scope_has_error_not_attributed_from_nested_clean_scope() -> None:
 
 
 def test_per_scope_has_error_isolated_to_offending_scope() -> None:
-    """Scope A clean, scope B has a syntax error inside;
-    `has_error` flags only B per Month 0 spike's per-scope reliability finding."""
+    """Scope A clean, scope B has a syntax error inside its body;
+    `has_error` flags only B per Month 0 spike's per-scope reliability finding.
+
+    Fixture shape is load-bearing: `def scope_b()` must parse SUCCESSFULLY
+    as a function_definition (so extract_scopes produces a ScopeUnit for
+    it), but the body must contain an ERROR node so has_error fires.
+    A malformed def header (e.g., missing colon on the `def` line) would
+    skip extracting scope_b entirely — tree-sitter treats it as an
+    unrelated ERROR node, and the test would pass vacuously.
+    """
     adapter = PythonAdapter(resolver=MagicMock())
-    # Scope A is clean; scope B has a missing `:` inside.
+    # scope_a is clean; scope_b's def line parses but the body has an
+    # invalid expression (triple-equals) producing an inner ERROR node.
     src = b"""
 def scope_a():
     return 1
 
-def scope_b()
-    return 2
+def scope_b():
+    x ===
 """
     scopes = adapter.extract_scopes(src, "f.py")
     _, has_error = adapter.compute_parser_outcome(src, "f.py", scopes)
     by_qname = {s.qualified_name: s for s in scopes}
-    if "scope_a" in by_qname:
-        assert has_error[by_qname["scope_a"].unit_id] is False
-    # scope_b should have its has_error flag set
-    if "scope_b" in by_qname:
-        assert has_error[by_qname["scope_b"].unit_id] is True
+    # Fail loud if the fixture stops producing both scopes — without this
+    # assertion the test could pass vacuously after a scope-extraction
+    # regression because both has_error assertions would be skipped.
+    missing = {"scope_a", "scope_b"} - by_qname.keys()
+    assert not missing, f"fixture must produce scope_a + scope_b; missing: {sorted(missing)}"
+    assert has_error[by_qname["scope_a"].unit_id] is False
+    assert has_error[by_qname["scope_b"].unit_id] is True
 
 
 # ---------------------------------------------------------------------------
