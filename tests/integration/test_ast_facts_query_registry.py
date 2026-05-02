@@ -7,6 +7,7 @@ lives under `tests/integration/`. No DB required.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -217,6 +218,13 @@ def test_import_light_subprocess_isolated() -> None:
     transitively load `tree_sitter`. Run in a subprocess so the
     assertion is stable regardless of what other tests in this
     pytest session have imported.
+
+    The subprocess inherits PYTHONPATH with `<repo>/src` prepended so
+    the test passes whether the project is installed into the venv or
+    only available on `pytest.ini_options.pythonpath = ["src"]` from a
+    source checkout. Without this, `from outrider.ast_facts.models ...`
+    fails to resolve and the test would report a false positive for
+    the import-light contract.
     """
     cmd = [
         sys.executable,
@@ -229,12 +237,19 @@ def test_import_light_subprocess_isolated() -> None:
             "f'{sorted(m for m in sys.modules if \"tree\" in m)}'"
         ),
     ]
+    repo_src = Path(__file__).parent.parent.parent / "src"
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    env = {
+        **os.environ,
+        "PYTHONPATH": f"{repo_src}{os.pathsep}{existing_pythonpath}",
+    }
     # cmd is built from `sys.executable` + literal string args; no user input.
     result = subprocess.run(  # noqa: S603
         cmd,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     assert result.returncode == 0, (
         f"import-light subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"

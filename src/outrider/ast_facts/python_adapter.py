@@ -501,10 +501,13 @@ class PythonAdapter:
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
         # Map each ScopeUnit to its tree-sitter node by byte range.
         # ScopeUnit byte ranges include decorators when wrapped; the
-        # underlying function/class node has a possibly-narrower span.
-        # We match by the inner span: walk and find the
-        # function/class with start_byte equal to the scope's
-        # decorator-stripped start (or matching span when no decorators).
+        # underlying function/class node may have a narrower span.
+        # We pass the full ScopeUnit span (via `_inner_span`) to
+        # `_find_node_by_span`, which uses containment-based lookup —
+        # smallest start_byte / largest end_byte tiebreaker — to locate
+        # the OUTERMOST scope-defining node enclosed by the ScopeUnit.
+        # `decorated_definition` is in target_types so a decorator-region
+        # syntax error propagates to the wrapping scope's `has_error`.
         has_error: dict[str, bool] = {}
         for scope in scope_units:
             inner_start, inner_end = self._inner_span(scope)
@@ -514,15 +517,16 @@ class PythonAdapter:
 
     @staticmethod
     def _inner_span(scope: ScopeUnit) -> tuple[int, int]:
-        """ScopeUnit byte range minus the decorator prefix.
+        """Return the `ScopeUnit` byte range as the conservative match bound
+        for `_find_node_by_span`'s containment lookup.
 
         For decorated scopes, `byte_start` includes `@decorator`s; the
         underlying `function_definition` / `class_definition` node has
-        a narrower start. We can't recover the exact inner-start from
-        ScopeUnit alone, so the ScopeUnit-to-node match in
-        `compute_parser_outcome` searches for any function/class node
-        whose span is contained within the ScopeUnit's span. The full
-        outer span is the conservative bound.
+        a narrower start. We can't recover the exact inner span from
+        `ScopeUnit` alone, so the ScopeUnit-to-node match in
+        `compute_parser_outcome` uses the full stored ScopeUnit span as
+        the conservative bound and lets `_find_node_by_span` pick the
+        outermost contained scope-defining node from within it.
         """
         return scope.byte_start, scope.byte_end
 
@@ -532,7 +536,13 @@ class PythonAdapter:
 
     @staticmethod
     def _walk(node: Node) -> Iterator[Node]:
-        """Pre-order traversal of named nodes."""
+        """Pre-order traversal of `node` and all descendants.
+
+        Iterates via `node.children` (NOT `node.named_children`), so
+        unnamed tree-sitter nodes — punctuation, keywords — are yielded
+        too. Callers filter by `node.type` for the kinds they care about
+        (`call`, `assignment`, `import_statement`, etc.).
+        """
         yield node
         for child in node.children:
             yield from PythonAdapter._walk(child)
