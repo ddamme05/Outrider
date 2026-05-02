@@ -66,6 +66,13 @@ _QUERY_ID_PATTERN = re.compile(r"^[a-z]+(?:\.[a-z][a-z0-9_]*)+$")
 
 def test_every_query_id_matches_format() -> None:
     """`<language>.<purpose>` per Internal contracts; lowercase + dots."""
+    # Defensive non-empty check: without this the test passes vacuously
+    # if the registry ever becomes empty. `test_registry_loads_at_module_import`
+    # also asserts non-empty, but keeping the guard local makes this test
+    # self-contained — same pattern Codex's tier-list reviewer flagged for
+    # `if expected in results: assert ...`-shaped tests where existence is
+    # part of the contract.
+    assert _QUERY_ID_TO_FILENAME, "registry must have at least one id"
     for query_id in _QUERY_ID_TO_FILENAME:
         assert _QUERY_ID_PATTERN.match(query_id), (
             f"query_match_id {query_id!r} does not match the <language>.<purpose> format"
