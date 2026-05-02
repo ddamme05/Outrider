@@ -2,13 +2,11 @@
 
 Per spec §11.2: `import x`, `from x import y`, `from .x import y`,
 `from x import *` all produce well-formed `ImportRef` objects.
-
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
 """
 
-import pytest
+from unittest.mock import MagicMock
 
-pytestmark = pytest.mark.skip(reason="requires ast_facts")
+from outrider.ast_facts import parse_python
 
 SOURCE = """\
 import os
@@ -19,25 +17,33 @@ from collections.abc import Sequence
 from outrider.policy import *
 """
 
+# (import_kind, module, names) per canonical §5.4 ImportRef.
+# - For `import x` / `import x as y`: import_kind="direct"; the
+#   adapter's V1 convention puts the alias (or nothing) in `names`.
+# - For `from x import y, z`: import_kind="from"; names is the tuple
+#   of imported names.
+# - For `from .x import y`: import_kind="relative".
+# - For `from x import *`: import_kind="star"; names is () (the star
+#   itself is not a name).
 EXPECTED_IMPORTS = (
-    {"module": "os", "names": (), "is_relative": False},
-    {"module": "sqlalchemy", "names": (), "alias": "sa", "is_relative": False},
-    {"module": "typing", "names": ("Any", "Optional"), "is_relative": False},
-    {"module": ".helpers", "names": ("normalize",), "is_relative": True},
-    {"module": "collections.abc", "names": ("Sequence",), "is_relative": False},
-    {"module": "outrider.policy", "names": ("*",), "is_relative": False},
+    {"import_kind": "direct", "module": "os", "names": ()},
+    {"import_kind": "direct", "module": "sqlalchemy", "names": ("sa",)},
+    {"import_kind": "from", "module": "typing", "names": ("Any", "Optional")},
+    {"import_kind": "relative", "module": ".helpers", "names": ("normalize",)},
+    {
+        "import_kind": "from",
+        "module": "collections.abc",
+        "names": ("Sequence",),
+    },
+    {"import_kind": "star", "module": "outrider.policy", "names": ()},
 )
 
 
 def test_import_forms_all_parse_to_well_formed_imports() -> None:
     """Six import forms in SOURCE produce six ImportRef objects with the expected shapes."""
-    from outrider.ast_facts import extract_imports  # type: ignore[import-not-found]
-
-    imports = extract_imports(SOURCE)
-    assert len(imports) == len(EXPECTED_IMPORTS)
-    for actual, expected in zip(imports, EXPECTED_IMPORTS, strict=True):
+    result = parse_python(SOURCE.encode(), "test.py", MagicMock())
+    assert len(result.imports) == len(EXPECTED_IMPORTS)
+    for actual, expected in zip(result.imports, EXPECTED_IMPORTS, strict=True):
+        assert actual.import_kind == expected["import_kind"]
         assert actual.module == expected["module"]
         assert tuple(actual.names) == expected["names"]
-        assert actual.is_relative == expected["is_relative"]
-        if "alias" in expected:
-            assert actual.alias == expected["alias"]

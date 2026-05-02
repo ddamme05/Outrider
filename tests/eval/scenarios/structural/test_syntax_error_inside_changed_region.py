@@ -5,12 +5,16 @@ error INSIDE the changed region triggers the parse-degraded fallback.
 Empty ScopeUnit set + a degraded marker; downstream findings produced
 under degraded mode get downgraded to JUDGED tier (per the invariant).
 
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
+V1: still skipped after the ast_facts/ landing. ast_facts/ ships the
+per-scope `has_error` map, but the `degraded` derivation combines that
+map with `coordinates/`'s changed-region-to-scope mapping in the
+analyze node. This scenario flips when `coordinates/` and the
+analyze-node spec land.
 """
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires ast_facts")
+pytestmark = pytest.mark.skip(reason="requires coordinates + analyze-node degraded derivation")
 
 # Syntax error is inside the changed region; the diff line itself lies
 # in unparseable code.

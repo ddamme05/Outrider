@@ -3,12 +3,13 @@
 Per spec §11.2: `@app.route` (Flask) and `@router.get` (FastAPI) decorators
 are extracted on the `ScopeUnit` for the decorated function.
 
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
+V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
+directly and gates current ast_facts behavior for decorator extraction.
 """
 
-import pytest
+from unittest.mock import MagicMock
 
-pytestmark = pytest.mark.skip(reason="requires ast_facts")
+from outrider.ast_facts import parse_python
 
 FLASK_SOURCE = """\
 from flask import Flask
@@ -34,17 +35,13 @@ EXPECTED_FASTAPI_DECORATORS = ('router.get("/items/{item_id}")',)
 
 def test_flask_route_decorator_extracted() -> None:
     """Flask @app.route decorator captured on the get_user ScopeUnit."""
-    from outrider.ast_facts import extract_scopes  # type: ignore[import-not-found]
-
-    scopes = extract_scopes(FLASK_SOURCE)
-    get_user = next(s for s in scopes if s.name == "get_user")
+    result = parse_python(FLASK_SOURCE.encode(), "test.py", MagicMock())
+    get_user = next(s for s in result.scope_units if s.name == "get_user")
     assert tuple(get_user.decorators) == EXPECTED_FLASK_DECORATORS
 
 
 def test_fastapi_route_decorator_extracted() -> None:
     """FastAPI @router.get decorator captured on the read_item ScopeUnit."""
-    from outrider.ast_facts import extract_scopes  # type: ignore[import-not-found]
-
-    scopes = extract_scopes(FASTAPI_SOURCE)
-    read_item = next(s for s in scopes if s.name == "read_item")
+    result = parse_python(FASTAPI_SOURCE.encode(), "test.py", MagicMock())
+    read_item = next(s for s in result.scope_units if s.name == "read_item")
     assert tuple(read_item.decorators) == EXPECTED_FASTAPI_DECORATORS

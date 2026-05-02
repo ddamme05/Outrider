@@ -4,12 +4,16 @@ Per spec §11.2 + `parse-errors-degrade-to-judged`: a file with a syntax
 error OUTSIDE the changed region degrades gracefully — `ast_facts/`
 returns `ScopeUnit` objects for the parseable region, not an empty set.
 
-V1: scaffolded; assertion runs at `ast_facts/` flip time.
+V1: still skipped after the ast_facts/ landing. ast_facts/ ships the
+per-scope `has_error` map, but the "graceful degradation" outcome
+combines that map with `coordinates/`'s changed-region-to-scope mapping
+in the analyze node. This scenario flips when `coordinates/` and the
+analyze-node spec land.
 """
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires ast_facts")
+pytestmark = pytest.mark.skip(reason="requires coordinates + analyze-node degraded derivation")
 
 # The syntax error is at the bottom of the file (unmatched paren); the
 # diff hunk lies in the parseable region above.
