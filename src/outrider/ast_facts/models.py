@@ -12,14 +12,14 @@ code), and `outrider/ast_facts/__init__.py` lazy-loads `parse_python` so
 that `from outrider.ast_facts.models import SkipReason` doesn't pull
 the adapter into audit's module graph.
 
-Field validators are added on three new types only (`ParseResult`,
-`ImportResolution`, `QueryMatchSpan`/`QueryCaptureSpan` and
-`ExclusionRule`) where load-bearing for replay correctness or where
-canonical contradictions would otherwise silently produce wrong
-results. The §5.4 canonical types (`ScopeUnit`, `ImportRef`, `CallSite`,
-`AssignmentSite`, `ChangedRegion`, `SymbolCandidate`) carry no
-validators beyond their typing — per spec-fidelity discipline, a
-canonical type is shipped verbatim unless `DECISIONS.md` amends it.
+Field validators are added only on `ParseResult`, `ImportResolution`,
+`QueryMatchSpan`/`QueryCaptureSpan`, and `ExclusionRule`, where
+load-bearing for replay correctness or where canonical contradictions
+would otherwise silently produce wrong results. The §5.4 canonical
+types (`ScopeUnit`, `ImportRef`, `CallSite`, `AssignmentSite`,
+`ChangedRegion`, `SymbolCandidate`) carry no validators beyond their
+typing — per spec-fidelity discipline, a canonical type is shipped
+verbatim unless `DECISIONS.md` amends it.
 """
 
 import hashlib

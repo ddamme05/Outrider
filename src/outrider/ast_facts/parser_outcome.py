@@ -17,9 +17,8 @@ Module-level exports:
     classification function called by `parse_python` before any
     parser/decode work.
 
-Imports `ParserOutcome`, `ComputedParserOutcome`, `SkipReason`,
-`ExclusionRule` from `models.py` (the single source of truth for
-typed shapes per project convention).
+Imports `SkipReason` and `ExclusionRule` from `models.py` (the single
+source of truth for typed shapes per project convention).
 """
 
 from __future__ import annotations

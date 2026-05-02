@@ -330,11 +330,11 @@ class PythonAdapter:
     def _collect_from_imported_names(self, node: Node) -> tuple[str, ...]:
         """Imported names from `import_from_statement.name` field(s).
 
-        Each `name` field child is a `dotted_name` or `aliased_import`;
-        this collector returns the bound local names (alias if aliased,
-        else the dotted name's last segment for the bound symbol — but
-        for V1 we keep the full `dotted_name` text since the trace node
-        cares about identity, not aliasing).
+        Each `name` field child is a `dotted_name` or `aliased_import`.
+        For `aliased_import`, return the alias text; otherwise, keep
+        the full `dotted_name` text. This matches the V1 trace-node
+        behavior, which preserves import identity rather than reducing
+        names to their final segment.
         """
         names: list[str] = []
         for child in node.children_by_field_name("name"):
