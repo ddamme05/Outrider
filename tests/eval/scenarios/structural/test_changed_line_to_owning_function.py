@@ -27,7 +27,9 @@ def outer_function():
 DIFF_LINE = 3  # line number of the change inside SOURCE
 
 # Expected: line 3 resolves to `nested_helper` (the inner function),
-# not to `outer_function`. Raw dict shape; typed ScopeUnit at flip time.
+# not to `outer_function`. Raw dict shape; the `coordinates/` spec PR
+# reshapes this into the canonical typed `ScopeUnit` when the scenario
+# flips live.
 EXPECTED_SCOPE = {
     "kind": "function",
     "name": "nested_helper",

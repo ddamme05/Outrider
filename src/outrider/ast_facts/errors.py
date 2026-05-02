@@ -5,10 +5,10 @@ Per `docs/conventions.md`: "Functions that can fail with meaningful
 variants raise typed exceptions. No `raise Exception(...)` and no
 returning `None` for 'didn't work.'"
 
-`UnknownQueryMatchId` is raised by `queries/registry.py` per
-`DECISIONS.md#018` point 6 — defined here (not in `queries/errors.py`)
-so callers across `ast_facts/`, `queries/`, and `audit/` import a single
-error module.
+`UnknownQueryMatchId` is raised by `queries/registry.py` per the V1
+ast_facts/ spec's Implementation Sketch — defined here (not in
+`queries/errors.py`) so callers across `ast_facts/`, `queries/`, and
+`audit/` import a single error module.
 """
 
 
@@ -38,13 +38,13 @@ class TraceResolutionError(AstFactsError):
     """
 
 
-class UnknownQueryMatchId(AstFactsError):  # noqa: N818  # name pinned by DECISIONS.md#018
+class UnknownQueryMatchId(AstFactsError):  # noqa: N818  # name pinned by V1 ast_facts/ spec
     """Raised by `queries/registry.py` when called with an id that is
     not present in the current registry or the deprecation ledger.
 
     Distinct from "registered query, zero matches" which returns the
     empty tuple from `match(...)`. The two outcomes are caller-
     distinguishable so `audit/replay.py` can tell registry drift apart
-    from genuine zero-match results — see `DECISIONS.md#018` and the
-    V1 ast_facts/ spec's Internal contracts.
+    from genuine zero-match results — per the V1 ast_facts/ spec's
+    Internal contracts (the Unknown-id behavior bullet).
     """

@@ -5,10 +5,13 @@
 V1: single entry `.py` → `PythonAdapter`. The seam V1.5 will extend
 when JS/TS support arrives.
 
-The registry is a factory of adapter constructors, not adapter
-instances — each call to `get_adapter_factory(extension)` returns the
-class so the caller can construct it with their own `ImportPathResolver`
-per `nodes-receive-deps-via-closure`.
+`get_adapter_factory(extension)` returns an adapter factory — typed as
+`Callable[[ImportPathResolver], LanguageAdapter]` — not an adapter
+instance. The caller constructs the adapter with their own
+`ImportPathResolver` per `nodes-receive-deps-via-closure`. For V1 the
+factory is the `PythonAdapter` class itself (a class is callable);
+V1.5's JS/TS adapter classes register the same way as long as they
+accept an `ImportPathResolver` in the constructor.
 """
 
 from __future__ import annotations
