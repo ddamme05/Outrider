@@ -238,11 +238,15 @@ def test_import_light_subprocess_isolated() -> None:
         ),
     ]
     repo_src = Path(__file__).parent.parent.parent / "src"
-    existing_pythonpath = os.environ.get("PYTHONPATH", "")
-    env = {
-        **os.environ,
-        "PYTHONPATH": f"{repo_src}{os.pathsep}{existing_pythonpath}",
-    }
+    # Avoid a trailing `os.pathsep` when `PYTHONPATH` is unset — Python
+    # parses an empty path entry as CWD, which would silently add the
+    # working directory to the subprocess's import search and muddy the
+    # import-light isolation we're testing for.
+    pythonpath_entries = [str(repo_src)]
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_entries)}
     # cmd is built from `sys.executable` + literal string args; no user input.
     result = subprocess.run(  # noqa: S603
         cmd,
