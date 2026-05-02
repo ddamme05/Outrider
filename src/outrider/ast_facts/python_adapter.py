@@ -140,97 +140,100 @@ class PythonAdapter:
         parent_unit_id: str | None,
         out: list[ScopeUnit],
     ) -> None:
-        node_type = node.type
+        """Iterative pre-order scope walk with state carried per frame.
 
-        if node_type == "function_definition":
-            name_node = node.child_by_field_name("name")
-            if name_node is None:
-                return
-            name = self._node_text(name_node)
-            kind = "method" if in_class else "function"
-            qualified_name = ".".join(qual_path + (name,))
-            byte_start, byte_end = self._scope_byte_range(node)
-            line_start, line_end = self._scope_line_range(node)
-            unit_id = compute_unit_id(file_path, kind, qualified_name)
-            out.append(
-                ScopeUnit(
-                    unit_id=unit_id,
-                    kind=kind,
-                    name=name,
-                    qualified_name=qualified_name,
-                    file_path=file_path,
-                    line_start=line_start,
-                    line_end=line_end,
-                    byte_start=byte_start,
-                    byte_end=byte_end,
-                    decorators=self._decorator_strings(node),
-                    parent_scope_id=parent_unit_id,
-                )
-            )
-            # Recurse into body for nested scopes; nested functions/classes
-            # carry the dotted qual path. Methods inside nested functions
-            # follow the same rule.
-            body = node.child_by_field_name("body")
-            if body is not None:
-                self._walk_for_scopes(
-                    body,
-                    file_path=file_path,
-                    qual_path=qual_path + (name,),
-                    in_class=False,
-                    parent_unit_id=unit_id,
-                    out=out,
-                )
-            return
+        Each stack frame is a `(node, qual_path, in_class, parent_unit_id)`
+        tuple — the four pieces of state the recursive form carried.
+        Iterative (not recursive) so adversarially deep parse trees
+        can't exhaust Python's recursion limit; tree depth is
+        independent of the `MAX_PARSE_BYTES` size cap, so a small file
+        with thousands of nested expressions could otherwise blow the
+        stack here.
 
-        if node_type == "class_definition":
-            name_node = node.child_by_field_name("name")
-            if name_node is None:
-                return
-            name = self._node_text(name_node)
-            kind = "class"
-            qualified_name = ".".join(qual_path + (name,))
-            byte_start, byte_end = self._scope_byte_range(node)
-            line_start, line_end = self._scope_line_range(node)
-            unit_id = compute_unit_id(file_path, kind, qualified_name)
-            out.append(
-                ScopeUnit(
-                    unit_id=unit_id,
-                    kind=kind,
-                    name=name,
-                    qualified_name=qualified_name,
-                    file_path=file_path,
-                    line_start=line_start,
-                    line_end=line_end,
-                    byte_start=byte_start,
-                    byte_end=byte_end,
-                    decorators=self._decorator_strings(node),
-                    parent_scope_id=parent_unit_id,
-                )
-            )
-            body = node.child_by_field_name("body")
-            if body is not None:
-                self._walk_for_scopes(
-                    body,
-                    file_path=file_path,
-                    qual_path=qual_path + (name,),
-                    in_class=True,
-                    parent_unit_id=unit_id,
-                    out=out,
-                )
-            return
+        For function/class nodes: emit the `ScopeUnit`, then push only
+        the body frame with updated `qual_path` / `in_class` /
+        `parent_unit_id` (siblings of the body are not scope-bearing for
+        these node types).
 
-        # decorated_definition: descend, but skip the wrapper itself; the
-        # inner function/class node handles decorator-span detection via
-        # _scope_byte_range / _decorator_strings.
-        for child in node.children:
-            self._walk_for_scopes(
-                child,
-                file_path=file_path,
-                qual_path=qual_path,
-                in_class=in_class,
-                parent_unit_id=parent_unit_id,
-                out=out,
-            )
+        For other nodes (including the `decorated_definition` wrapper):
+        push every child with the inherited frame state. Children are
+        pushed in reverse so leftmost is popped first, preserving the
+        pre-order traversal of the recursive form. `decorated_definition`
+        wrappers don't emit a `ScopeUnit` themselves — the inner
+        function/class node handles decorator-span detection via
+        `_scope_byte_range` / `_decorator_strings`.
+        """
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [
+            (node, qual_path, in_class, parent_unit_id)
+        ]
+        while stack:
+            cur_node, cur_qual_path, cur_in_class, cur_parent_unit_id = stack.pop()
+            node_type = cur_node.type
+
+            if node_type == "function_definition":
+                name_node = cur_node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = self._node_text(name_node)
+                kind = "method" if cur_in_class else "function"
+                qualified_name = ".".join(cur_qual_path + (name,))
+                byte_start, byte_end = self._scope_byte_range(cur_node)
+                line_start, line_end = self._scope_line_range(cur_node)
+                unit_id = compute_unit_id(file_path, kind, qualified_name)
+                out.append(
+                    ScopeUnit(
+                        unit_id=unit_id,
+                        kind=kind,
+                        name=name,
+                        qualified_name=qualified_name,
+                        file_path=file_path,
+                        line_start=line_start,
+                        line_end=line_end,
+                        byte_start=byte_start,
+                        byte_end=byte_end,
+                        decorators=self._decorator_strings(cur_node),
+                        parent_scope_id=cur_parent_unit_id,
+                    )
+                )
+                body = cur_node.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, cur_qual_path + (name,), False, unit_id))
+                continue
+
+            if node_type == "class_definition":
+                name_node = cur_node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = self._node_text(name_node)
+                qualified_name = ".".join(cur_qual_path + (name,))
+                byte_start, byte_end = self._scope_byte_range(cur_node)
+                line_start, line_end = self._scope_line_range(cur_node)
+                unit_id = compute_unit_id(file_path, "class", qualified_name)
+                out.append(
+                    ScopeUnit(
+                        unit_id=unit_id,
+                        kind="class",
+                        name=name,
+                        qualified_name=qualified_name,
+                        file_path=file_path,
+                        line_start=line_start,
+                        line_end=line_end,
+                        byte_start=byte_start,
+                        byte_end=byte_end,
+                        decorators=self._decorator_strings(cur_node),
+                        parent_scope_id=cur_parent_unit_id,
+                    )
+                )
+                body = cur_node.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, cur_qual_path + (name,), True, unit_id))
+                continue
+
+            # Other node (including `decorated_definition` wrapper): push
+            # all children carrying the inherited frame state. Reversed
+            # so leftmost is popped first → preserves pre-order.
+            for child in reversed(cur_node.children):
+                stack.append((child, cur_qual_path, cur_in_class, cur_parent_unit_id))
 
     # ------------------------------------------------------------------
     # extract_imports
@@ -542,10 +545,19 @@ class PythonAdapter:
         unnamed tree-sitter nodes — punctuation, keywords — are yielded
         too. Callers filter by `node.type` for the kinds they care about
         (`call`, `assignment`, `import_statement`, etc.).
+
+        Implemented iteratively with an explicit stack so adversarially
+        deep parse trees can't exhaust Python's recursion limit. Tree
+        depth is independent of the `MAX_PARSE_BYTES` size cap — a
+        small file with thousands of nested expressions could otherwise
+        blow the stack here. Pre-order is preserved by pushing children
+        in reverse so the leftmost is popped first.
         """
-        yield node
-        for child in node.children:
-            yield from PythonAdapter._walk(child)
+        stack: list[Node] = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            stack.extend(reversed(current.children))
 
 
 # ---------------------------------------------------------------------------

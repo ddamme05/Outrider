@@ -7,6 +7,7 @@ outcome supersession note for the audit-events module.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -16,8 +17,13 @@ from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import FileExaminationEvent
 
 
-def _base_kwargs() -> dict[str, object]:
-    """Common required fields for FileExaminationEvent construction."""
+def _base_kwargs() -> dict[str, Any]:
+    """Common required fields for FileExaminationEvent construction.
+
+    `Any` (not `object`) so callers can `**kwargs` into the constructor
+    without `# type: ignore[arg-type]` per call site — the test file
+    has many such constructions and `object` widens every value.
+    """
     return {
         "review_id": uuid4(),
         "timestamp": datetime.now(UTC),
@@ -38,7 +44,7 @@ def test_file_examination_event_parse_status_admits_four_canonical_values(
     kwargs["parse_status"] = parse_status
     if parse_status == "skipped":
         kwargs["skip_reason"] = SkipReason.VENDORED
-    event = FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+    event = FileExaminationEvent(**kwargs)
     assert event.parse_status == parse_status
 
 
@@ -46,7 +52,7 @@ def test_file_examination_event_parse_status_rejects_other_values() -> None:
     kwargs = _base_kwargs()
     kwargs["parse_status"] = "pending"  # not a canonical value
     with pytest.raises(ValidationError):
-        FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+        FileExaminationEvent(**kwargs)
 
 
 @pytest.mark.parametrize(
@@ -59,7 +65,7 @@ def test_file_examination_event_skipped_admits_with_skip_reason(
     kwargs = _base_kwargs()
     kwargs["parse_status"] = "skipped"
     kwargs["skip_reason"] = reason
-    event = FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+    event = FileExaminationEvent(**kwargs)
     assert event.skip_reason == reason
 
 
@@ -72,7 +78,7 @@ def test_file_examination_event_non_skipped_admits_without_skip_reason(
 ) -> None:
     kwargs = _base_kwargs()
     kwargs["parse_status"] = parse_status
-    event = FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+    event = FileExaminationEvent(**kwargs)
     assert event.skip_reason is None
 
 
@@ -81,7 +87,7 @@ def test_file_examination_event_skipped_without_skip_reason_raises() -> None:
     kwargs["parse_status"] = "skipped"
     # skip_reason omitted -> defaults to None -> validator rejects
     with pytest.raises(ValidationError):
-        FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+        FileExaminationEvent(**kwargs)
 
 
 @pytest.mark.parametrize(
@@ -95,7 +101,7 @@ def test_file_examination_event_non_skipped_with_skip_reason_raises(
     kwargs["parse_status"] = parse_status
     kwargs["skip_reason"] = SkipReason.OVERSIZED
     with pytest.raises(ValidationError):
-        FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+        FileExaminationEvent(**kwargs)
 
 
 def test_file_examination_event_round_trips_skipped_with_reason() -> None:
@@ -105,7 +111,7 @@ def test_file_examination_event_round_trips_skipped_with_reason() -> None:
     kwargs = _base_kwargs()
     kwargs["parse_status"] = "skipped"
     kwargs["skip_reason"] = SkipReason.OVERSIZED
-    original = FileExaminationEvent(**kwargs)  # type: ignore[arg-type]
+    original = FileExaminationEvent(**kwargs)
     payload = original.model_dump(mode="json")
     rehydrated = FileExaminationEvent.model_validate(payload)
     assert rehydrated.parse_status == "skipped"
