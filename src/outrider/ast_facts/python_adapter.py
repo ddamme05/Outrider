@@ -381,57 +381,24 @@ class PythonAdapter:
             function_node = node.child_by_field_name("function")
             if function_node is None:
                 continue
+            # `callee_name` is RAW SOURCE TEXT per canonical spec.md §5.4
+            # ("raw text; resolution is a separate concern"). For `obj.method()`
+            # this is `"obj.method"`; for multi-line `(\n  chain\n  .step\n)()`
+            # it preserves embedded newlines and parens. The trace-node spec
+            # (when written) is responsible for normalizing this text when
+            # matching against `ImportRef.names` — the field stays raw on the
+            # `ast_facts/` side per spec-fidelity discipline. Changing this
+            # contract requires a `DECISIONS.md` entry that supersedes §5.4,
+            # not a silent shape change here.
             calls.append(
                 CallSite(
                     file_path=file_path,
                     line=node.start_point[0] + 1,
-                    callee_name=self._callee_name(function_node),
+                    callee_name=self._node_text(function_node),
                     enclosing_scope_id=enclosing.unit_id,
                 )
             )
         return tuple(calls)
-
-    @staticmethod
-    def _callee_name(function_node: Node) -> str:
-        """Final identifier of the callable, normalized for trace-node matching.
-
-        For `obj.method(...)` we return `"method"`; for `(\\n  chain\\n  .step\\n)()`
-        we return `"step"`. Returning raw `_node_text` would embed parentheses,
-        whitespace, and newlines for non-trivial callables — silently breaking
-        name-keyed matching against `ImportRef.names` in the trace node.
-
-        Resolution rule: descend through `attribute` (right side) and
-        `parenthesized_expression` until we hit an `identifier`; if no
-        identifier is found, fall back to the raw text so audit doesn't
-        lose signal entirely.
-        """
-        node = function_node
-        # Bounded descent so a pathologically deep grammar doesn't loop.
-        for _ in range(64):
-            if node.type == "identifier":
-                text = node.text
-                return text.decode("utf-8") if text is not None else ""
-            if node.type == "attribute":
-                # The `attribute` of `obj.method` has the bound name as the
-                # `attribute` field child; descend into it.
-                inner = node.child_by_field_name("attribute")
-                if inner is None:
-                    break
-                node = inner
-                continue
-            if node.type == "parenthesized_expression":
-                # Strip the wrapping parens; descend into the inner expression.
-                # Children include `(`, the expression, `)` — pick the named child.
-                named = [c for c in node.children if c.is_named]
-                if not named:
-                    break
-                node = named[0]
-                continue
-            # Other node types (subscript, call, etc.) fall through.
-            break
-        # Fallback: raw text (preserves audit signal even when the heuristic
-        # can't find an identifier).
-        return PythonAdapter._node_text(node)
 
     # ------------------------------------------------------------------
     # extract_assignments

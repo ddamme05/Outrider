@@ -213,11 +213,12 @@ def hello():
     calls = adapter.extract_call_sites(src, "f.py", scopes)
     # Module-level call at line 4 must be skipped.
     assert all(c.line != 4 for c in calls)
-    # The in-scope `os.path.join` call should be present. `callee_name` is
-    # the FINAL segment of the call expression (so trace-node import
-    # matching against `ImportRef.names` works); for `os.path.join(...)`
-    # that's `"join"`.
-    assert any(c.callee_name == "join" and c.line == 7 for c in calls)
+    # The in-scope call should be present. `callee_name` is RAW SOURCE TEXT
+    # per canonical spec.md §5.4 ("raw text; resolution is a separate
+    # concern") — for `os.path.join(...)` the field is `"os.path.join"`,
+    # not the final segment. Trace-node normalization is the consumer's
+    # job, not this adapter's.
+    assert any(c.callee_name == "os.path.join" and c.line == 7 for c in calls)
 
 
 def test_call_form_decorator_produces_call_site() -> None:
@@ -237,30 +238,19 @@ def test_bare_name_decorator_produces_no_call_site() -> None:
     assert calls == ()
 
 
-def test_attribute_call_extracts_final_segment_as_callee_name() -> None:
-    """`obj.method()` should produce `callee_name="method"`, not `"obj.method"`.
-
-    Trace-node import matching against `ImportRef.names` is name-keyed; raw
-    multi-segment text would silently miss for any non-trivial callable.
+def test_attribute_call_callee_name_is_raw_text_per_canonical() -> None:
+    """`obj.method()` produces `callee_name="obj.method"` per canonical
+    spec.md §5.4 ("raw text; resolution is a separate concern"). Trace-node
+    normalization is the consumer's job. Pinned here so a future contributor
+    "improving" the field by extracting the final segment knows to amend
+    the spec via DECISIONS first.
     """
     adapter = PythonAdapter(resolver=MagicMock())
     src = b"def f():\n    obj.method()\n"
     scopes = adapter.extract_scopes(src, "f.py")
     calls = adapter.extract_call_sites(src, "f.py", scopes)
     callees = {c.callee_name for c in calls}
-    assert "method" in callees
-    assert "obj.method" not in callees
-
-
-def test_chained_attribute_call_extracts_final_segment() -> None:
-    """`a.b.c()` should produce `callee_name="c"`."""
-    adapter = PythonAdapter(resolver=MagicMock())
-    src = b"def f():\n    a.b.c()\n"
-    scopes = adapter.extract_scopes(src, "f.py")
-    calls = adapter.extract_call_sites(src, "f.py", scopes)
-    callees = {c.callee_name for c in calls}
-    assert "c" in callees
-    assert "a.b.c" not in callees
+    assert "obj.method" in callees
 
 
 def test_innermost_scope_picks_inner_when_byte_starts_tie() -> None:
@@ -306,20 +296,6 @@ def test_innermost_scope_picks_inner_when_byte_starts_tie() -> None:
         "tiebreaker on byte_start ties must pick the smaller span (inner scope), "
         "not the first scope encountered in sort order"
     )
-
-
-def test_multiline_chain_call_strips_whitespace_and_parens() -> None:
-    """A multi-line `(\\n    chain\\n    .step\\n)()` should produce
-    `callee_name="step"` — no embedded newlines or parens."""
-    adapter = PythonAdapter(resolver=MagicMock())
-    src = b"def f():\n    (\n        chain\n        .step\n    )()\n"
-    scopes = adapter.extract_scopes(src, "f.py")
-    calls = adapter.extract_call_sites(src, "f.py", scopes)
-    callees = {c.callee_name for c in calls}
-    assert "step" in callees
-    # Specifically: no callee_name should contain newlines or parens
-    assert all("\n" not in c.callee_name for c in calls)
-    assert all("(" not in c.callee_name and ")" not in c.callee_name for c in calls)
 
 
 # ---------------------------------------------------------------------------

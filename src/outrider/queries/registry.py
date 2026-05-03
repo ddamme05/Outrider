@@ -126,9 +126,11 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
     # non-empty-match guarantee depends on mandatory captures. A pattern
     # whose captures are ALL optional fails registration here rather
     # than crashing at first match. `capture_quantifier(p, c)` raises
-    # (SystemError or similar) when capture c isn't in pattern p; the
-    # broad Exception catch handles tree-sitter binding variation
-    # without rejecting otherwise-valid queries.
+    # one of `(IndexError, ValueError, SystemError)` when capture c
+    # isn't part of pattern p — the by-design negative case the narrow
+    # `except` below handles. Anything outside that set propagates so
+    # legitimate registry bugs (memory errors, future binding-version
+    # surprises) aren't swallowed.
     for p in range(pattern_count):
         pattern_mandatory_count = 0
         for c in range(capture_count):
