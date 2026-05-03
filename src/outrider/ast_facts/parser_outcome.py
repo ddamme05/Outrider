@@ -77,15 +77,24 @@ def should_skip(file_path: str, source: bytes) -> SkipReason | None:
     content-pattern (raw-byte check on first 200 bytes — no UTF-8
     decode, so this stays cheap on non-UTF-8 source).
     """
-    # `file_path` is POSIX repo-relative per trust-boundary #5 — `coordinates/`
-    # validated and normalized it before it reached us, so `path_prefix`
-    # checks against literal POSIX prefixes (`vendor/`, `node_modules/`,
-    # ...) work on `file_path` directly via `str.startswith`. Outrider
-    # runs on Linux only in V1; cross-platform path normalization is the
-    # input boundary's job, not ast_facts/'s. PurePosixPath here is used
-    # only to extract the trailing filename component for suffix matching;
-    # it does not (and cannot) convert backslashes that should not appear
-    # at this layer in the first place.
+    # Defensive contract check: `file_path` MUST be POSIX repo-relative per
+    # trust-boundary #5 (`coordinates/` validated and normalized it before
+    # it reached us). The path_prefix exclusions below match against
+    # literal POSIX prefixes (`vendor/`, `node_modules/`, ...) via
+    # `str.startswith` — an absolute path or backslash path would silently
+    # bypass the exclusions, so fail loudly instead. Test fixtures and
+    # REPL callers that violate the contract get an actionable error
+    # rather than a silent miss.
+    if file_path.startswith("/") or "\\" in file_path:
+        msg = (
+            f"file_path must be POSIX repo-relative per trust-boundary #5; "
+            f"got {file_path!r}. `coordinates/` is responsible for normalization "
+            f"before paths reach `ast_facts/`."
+        )
+        raise ValueError(msg)
+    # PurePosixPath here is used only to extract the trailing filename
+    # component for suffix matching; the prefix check above guards the
+    # `path_prefix` rule's literal-startswith semantics.
     relative = PurePosixPath(file_path)
     name = relative.name
 

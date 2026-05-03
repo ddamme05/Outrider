@@ -41,8 +41,18 @@ def get_adapter_factory(
 ) -> Callable[[ImportPathResolver], LanguageAdapter] | None:
     """Return the adapter factory for a given file extension, or None
     if no adapter is registered. Caller constructs with their resolver.
+
+    Extension matching is case-insensitive: `.py`, `.PY`, `.Py` all
+    resolve to the same adapter. Without normalization, a caller passing
+    `Path(file).suffix` for a file named `Foo.PY` (legal on
+    case-insensitive filesystems and across some ingest paths) would
+    silently get `None` and skip analyzing the file. Empty string or
+    extensions without a leading dot return `None` (consistent with the
+    "unsupported language" semantics).
     """
-    return _LANGUAGE_ADAPTERS.get(extension)
+    if not extension:
+        return None
+    return _LANGUAGE_ADAPTERS.get(extension.lower())
 
 
 def supported_extensions() -> tuple[str, ...]:

@@ -213,8 +213,11 @@ def hello():
     calls = adapter.extract_call_sites(src, "f.py", scopes)
     # Module-level call at line 4 must be skipped.
     assert all(c.line != 4 for c in calls)
-    # The in-scope call should be present.
-    assert any(c.callee_name == "os.path.join" and c.line == 7 for c in calls)
+    # The in-scope `os.path.join` call should be present. `callee_name` is
+    # the FINAL segment of the call expression (so trace-node import
+    # matching against `ImportRef.names` works); for `os.path.join(...)`
+    # that's `"join"`.
+    assert any(c.callee_name == "join" and c.line == 7 for c in calls)
 
 
 def test_call_form_decorator_produces_call_site() -> None:
@@ -232,6 +235,91 @@ def test_bare_name_decorator_produces_no_call_site() -> None:
     scopes = adapter.extract_scopes(src, "f.py")
     calls = adapter.extract_call_sites(src, "f.py", scopes)
     assert calls == ()
+
+
+def test_attribute_call_extracts_final_segment_as_callee_name() -> None:
+    """`obj.method()` should produce `callee_name="method"`, not `"obj.method"`.
+
+    Trace-node import matching against `ImportRef.names` is name-keyed; raw
+    multi-segment text would silently miss for any non-trivial callable.
+    """
+    adapter = PythonAdapter(resolver=MagicMock())
+    src = b"def f():\n    obj.method()\n"
+    scopes = adapter.extract_scopes(src, "f.py")
+    calls = adapter.extract_call_sites(src, "f.py", scopes)
+    callees = {c.callee_name for c in calls}
+    assert "method" in callees
+    assert "obj.method" not in callees
+
+
+def test_chained_attribute_call_extracts_final_segment() -> None:
+    """`a.b.c()` should produce `callee_name="c"`."""
+    adapter = PythonAdapter(resolver=MagicMock())
+    src = b"def f():\n    a.b.c()\n"
+    scopes = adapter.extract_scopes(src, "f.py")
+    calls = adapter.extract_call_sites(src, "f.py", scopes)
+    callees = {c.callee_name for c in calls}
+    assert "c" in callees
+    assert "a.b.c" not in callees
+
+
+def test_innermost_scope_picks_inner_when_byte_starts_tie() -> None:
+    """Regression: when an outer and inner scope share `byte_start` (which
+    can happen after `_scope_byte_range` adjusts a decorated function's
+    span to its parent's), `_innermost_scope_containing` must pick the
+    inner (smaller-span) scope. A strict `byte_start >` tiebreaker would
+    let the outer win, mis-attributing the call site.
+    """
+    from outrider.ast_facts.models import ScopeUnit, compute_unit_id
+    from outrider.ast_facts.python_adapter import _innermost_scope_containing
+
+    # Both scopes share byte_start=0; outer ends at 100, inner ends at 50.
+    # The inner is strictly smaller and should win.
+    outer = ScopeUnit(
+        unit_id=compute_unit_id("f.py", "function", "outer"),
+        kind="function",
+        name="outer",
+        qualified_name="outer",
+        file_path="f.py",
+        line_start=1,
+        line_end=10,
+        byte_start=0,
+        byte_end=100,
+    )
+    inner = ScopeUnit(
+        unit_id=compute_unit_id("f.py", "function", "outer.inner"),
+        kind="function",
+        name="inner",
+        qualified_name="outer.inner",
+        file_path="f.py",
+        line_start=1,
+        line_end=5,
+        byte_start=0,
+        byte_end=50,
+    )
+    # Sort matches what extract_call_sites/extract_assignments do.
+    sorted_scopes = sorted([outer, inner], key=lambda s: (s.byte_start, -s.byte_end))
+    # Query a span well inside both.
+    result = _innermost_scope_containing(sorted_scopes, byte_start=10, byte_end=20)
+    assert result is not None
+    assert result.qualified_name == "outer.inner", (
+        "tiebreaker on byte_start ties must pick the smaller span (inner scope), "
+        "not the first scope encountered in sort order"
+    )
+
+
+def test_multiline_chain_call_strips_whitespace_and_parens() -> None:
+    """A multi-line `(\\n    chain\\n    .step\\n)()` should produce
+    `callee_name="step"` — no embedded newlines or parens."""
+    adapter = PythonAdapter(resolver=MagicMock())
+    src = b"def f():\n    (\n        chain\n        .step\n    )()\n"
+    scopes = adapter.extract_scopes(src, "f.py")
+    calls = adapter.extract_call_sites(src, "f.py", scopes)
+    callees = {c.callee_name for c in calls}
+    assert "step" in callees
+    # Specifically: no callee_name should contain newlines or parens
+    assert all("\n" not in c.callee_name for c in calls)
+    assert all("(" not in c.callee_name and ")" not in c.callee_name for c in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +504,11 @@ def test_compute_parser_outcome_clean_with_has_error_map() -> None:
     adapter = PythonAdapter(resolver=MagicMock())
     src = b"def good():\n    return 1\n"
     scopes = adapter.extract_scopes(src, "f.py")
+    # Fail-loud guard: without this, both `all(...)` quantifiers below pass
+    # vacuously if extract_scopes regresses to empty, and the test would
+    # claim to pin per-scope has_error reliability while testing nothing.
+    # Same anti-pattern as test_per_scope_has_error_isolated_to_offending_scope.
+    assert scopes, "fixture must produce the `good` scope; extract_scopes regression suspected"
     outcome, has_error = adapter.compute_parser_outcome(src, "f.py", scopes)
     assert outcome == "clean"
     assert all(scope.unit_id in has_error for scope in scopes)
@@ -666,6 +759,42 @@ def test_parse_python_failed_path_non_utf8() -> None:
     assert result.has_error == {}
 
 
+def test_parse_python_failed_outcome_discards_extracted_tuples() -> None:
+    """Pins the contract that `parser_outcome == "failed"` carries the
+    empty-tuples shape regardless of which pipeline stage decided the
+    file is unrecoverable.
+
+    `compute_parser_outcome` always returns `"clean"` in V1 (per its
+    docstring), so the discard branch in `parse_python` is dead code
+    today. This test pins the contract so a future contributor tightening
+    `compute_parser_outcome` to ever return `"failed"` (an obvious-looking
+    refinement) doesn't silently activate the discard without
+    acknowledging that extracted scope context is being thrown away.
+
+    Strategy: monkeypatch `_compute_parser_outcome_from_tree` to return
+    `("failed", {})` despite the upstream extraction having succeeded.
+    Verify the orchestrator discards everything per the empty-tuples
+    contract.
+    """
+    from unittest.mock import patch
+
+    src = b"def good():\n    return 1\n"
+    with patch.object(
+        PythonAdapter,
+        "_compute_parser_outcome_from_tree",
+        return_value=("failed", {}),
+    ):
+        result = parse_python(src, "f.py", MagicMock())
+
+    assert result.parser_outcome == "failed"
+    assert result.scope_units == ()
+    assert result.imports == ()
+    assert result.call_sites == ()
+    assert result.assignment_sites == ()
+    assert result.has_error == {}
+    assert result.skip_reason is None
+
+
 def test_parse_python_skipped_path_oversized() -> None:
     big = b"# pad\n" * (MAX_PARSE_BYTES // 6 + 1)
     result = parse_python(big, "big.py", MagicMock())
@@ -709,6 +838,25 @@ def test_should_skip_size_boundary_is_strict() -> None:
     # One byte over the threshold is OVERSIZED
     one_over = b"a" * (MAX_PARSE_BYTES + 1)
     assert should_skip("foo.py", one_over) == SkipReason.OVERSIZED
+
+
+def test_should_skip_rejects_absolute_path() -> None:
+    """Defensive contract check per trust-boundary #5: file_path MUST be
+    POSIX repo-relative when it reaches ast_facts/. An absolute path
+    would silently bypass `path_prefix` exclusions (`/abs/vendor/x.py`
+    doesn't startswith `vendor/`), so we fail loudly instead.
+    """
+    with pytest.raises(ValueError, match="POSIX repo-relative"):
+        should_skip("/abs/path/foo.py", b"x = 1")
+
+
+def test_should_skip_rejects_backslash_path() -> None:
+    """Defensive contract check per trust-boundary #5: backslash paths
+    are not the contract surface. Outrider runs on Linux only in V1;
+    cross-platform path normalization is the input boundary's job.
+    """
+    with pytest.raises(ValueError, match="POSIX repo-relative"):
+        should_skip("vendor\\foo.py", b"x = 1")
 
 
 def test_compute_parser_outcome_v1_always_returns_clean() -> None:
@@ -793,3 +941,43 @@ def test_assignment_site_construction() -> None:
         enclosing_scope_id="abc",
     )
     assert as_.target_name == "x"
+
+
+# ---------------------------------------------------------------------------
+# LanguageAdapter registry (case-insensitivity, missing-extension)
+# ---------------------------------------------------------------------------
+
+
+def test_get_adapter_factory_canonical_lowercase_extension() -> None:
+    from outrider.ast_facts.registry import get_adapter_factory
+
+    factory = get_adapter_factory(".py")
+    assert factory is not None
+    assert factory is PythonAdapter
+
+
+def test_get_adapter_factory_uppercase_extension_resolves_to_same_adapter() -> None:
+    """`.PY` (legal on case-insensitive filesystems, observed via `Path(file).suffix`)
+    must resolve to the same adapter as `.py`. Pre-fix, `_LANGUAGE_ADAPTERS.get(".PY")`
+    returned None — silently skipping analysis on case-variant filenames.
+    """
+    from outrider.ast_facts.registry import get_adapter_factory
+
+    factory_lower = get_adapter_factory(".py")
+    factory_upper = get_adapter_factory(".PY")
+    factory_mixed = get_adapter_factory(".Py")
+    assert factory_upper is factory_lower
+    assert factory_mixed is factory_lower
+
+
+def test_get_adapter_factory_unregistered_returns_none() -> None:
+    from outrider.ast_facts.registry import get_adapter_factory
+
+    assert get_adapter_factory(".rs") is None
+    assert get_adapter_factory(".js") is None  # V1.5 surface, not yet registered
+
+
+def test_get_adapter_factory_empty_extension_returns_none() -> None:
+    from outrider.ast_facts.registry import get_adapter_factory
+
+    assert get_adapter_factory("") is None

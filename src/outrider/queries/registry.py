@@ -134,7 +134,12 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
         for c in range(capture_count):
             try:
                 quantifier = query.capture_quantifier(p, c)
-            except Exception:  # noqa: BLE001, S112 - tree-sitter raises various types; the negative case is by-design (capture not in pattern), not an error to log
+            except (IndexError, ValueError, SystemError):
+                # Narrow set: tree-sitter's binding raises one of these
+                # when capture `c` isn't part of pattern `p` — the
+                # by-design negative case, not an error to log.
+                # Catching `Exception` would swallow legitimate registry
+                # bugs (memory errors, future binding-version surprises).
                 continue
             if quantifier in _MANDATORY_QUANTIFIERS:
                 pattern_mandatory_count += 1

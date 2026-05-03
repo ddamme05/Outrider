@@ -48,6 +48,10 @@ def test_every_registered_id_matches_canonical_fixture(
 ) -> None:
     """Each registered query produces ≥1 match against the canonical
     fixture — the determinism check that `audit/replay.py` will rely on."""
+    # Defensive non-empty check (consistent with sibling tests in this
+    # file). Without this guard the loop body never fires when the
+    # registry is empty, and the test passes vacuously.
+    assert _QUERY_ID_TO_FILENAME, "registry must have at least one id"
     for query_id in _QUERY_ID_TO_FILENAME:
         spans = match(query_id, canonical_python_source)
         assert spans, (

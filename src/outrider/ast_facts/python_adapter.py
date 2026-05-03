@@ -385,11 +385,53 @@ class PythonAdapter:
                 CallSite(
                     file_path=file_path,
                     line=node.start_point[0] + 1,
-                    callee_name=self._node_text(function_node),
+                    callee_name=self._callee_name(function_node),
                     enclosing_scope_id=enclosing.unit_id,
                 )
             )
         return tuple(calls)
+
+    @staticmethod
+    def _callee_name(function_node: Node) -> str:
+        """Final identifier of the callable, normalized for trace-node matching.
+
+        For `obj.method(...)` we return `"method"`; for `(\\n  chain\\n  .step\\n)()`
+        we return `"step"`. Returning raw `_node_text` would embed parentheses,
+        whitespace, and newlines for non-trivial callables — silently breaking
+        name-keyed matching against `ImportRef.names` in the trace node.
+
+        Resolution rule: descend through `attribute` (right side) and
+        `parenthesized_expression` until we hit an `identifier`; if no
+        identifier is found, fall back to the raw text so audit doesn't
+        lose signal entirely.
+        """
+        node = function_node
+        # Bounded descent so a pathologically deep grammar doesn't loop.
+        for _ in range(64):
+            if node.type == "identifier":
+                text = node.text
+                return text.decode("utf-8") if text is not None else ""
+            if node.type == "attribute":
+                # The `attribute` of `obj.method` has the bound name as the
+                # `attribute` field child; descend into it.
+                inner = node.child_by_field_name("attribute")
+                if inner is None:
+                    break
+                node = inner
+                continue
+            if node.type == "parenthesized_expression":
+                # Strip the wrapping parens; descend into the inner expression.
+                # Children include `(`, the expression, `)` — pick the named child.
+                named = [c for c in node.children if c.is_named]
+                if not named:
+                    break
+                node = named[0]
+                continue
+            # Other node types (subscript, call, etc.) fall through.
+            break
+        # Fallback: raw text (preserves audit signal even when the heuristic
+        # can't find an identifier).
+        return PythonAdapter._node_text(node)
 
     # ------------------------------------------------------------------
     # extract_assignments
@@ -440,10 +482,16 @@ class PythonAdapter:
         Tuple/subscript/attribute targets (`a, b = ...`, `obj.x = ...`,
         `arr[0] = ...`) return None — the trace node's V1 backward-tracing
         is name-keyed, and complex targets need richer modeling.
+
+        Uses `_node_text` for consistency with the rest of the file (rather
+        than reading `Node.text` directly). Returns None for identifier
+        nodes whose text is empty/missing — that's a degenerate parse
+        result, not a valid target.
         """
-        if left.type == "identifier":
-            return left.text.decode("utf-8") if left.text else None
-        return None
+        if left.type != "identifier":
+            return None
+        text = PythonAdapter._node_text(left)
+        return text or None
 
     # ------------------------------------------------------------------
     # resolve_simple_direct_import
@@ -571,17 +619,22 @@ def _innermost_scope_containing(
     """Return the smallest scope whose byte range contains the given range,
     or None if no scope contains it (module-level).
 
-    Single-pass: smallest enclosing = largest byte_start among containing
-    scopes. Avoids allocating an intermediate candidate list per call.
+    "Smallest" = smallest enclosing span. Single-pass over sorted scopes,
+    tracking the best so far. We compare by `(byte_end - byte_start)`
+    rather than by `byte_start` alone because two scopes can share
+    `byte_start` after `_scope_byte_range` adjusts a decorated function's
+    span to its parent's; a strict `byte_start >` tiebreaker would let
+    the outer (wider) scope win in that case, mis-attributing nested
+    call sites and assignments.
     """
     best: ScopeUnit | None = None
+    best_span: int | None = None
     for scope in sorted_scopes:
-        if (
-            scope.byte_start <= byte_start
-            and byte_end <= scope.byte_end
-            and (best is None or scope.byte_start > best.byte_start)
-        ):
-            best = scope
+        if scope.byte_start <= byte_start and byte_end <= scope.byte_end:
+            span = scope.byte_end - scope.byte_start
+            if best_span is None or span < best_span:
+                best = scope
+                best_span = span
     return best
 
 
