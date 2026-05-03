@@ -50,5 +50,13 @@ def test_hitl_resume_idempotent_under_checkpoint_replay() -> None:
     )
 
     assert len(final_state.analysis_rounds) == EXPECTED_FINAL_STATE["analysis_rounds_count"]
-    expected = EXPECTED_FINAL_STATE["replay_equivalent"]
-    assert assert_replay_equivalent(final_state.review_id) is expected
+    # `assert_replay_equivalent` is assertion-style: raises on mismatch,
+    # returns None on success (per the audit/replay module's eventual
+    # API). The previous shape `assert ... is expected` (where
+    # `expected = True`) would always evaluate to `None is True == False`,
+    # masking real failures behind a permanently-failing test. The
+    # un-skip PR for this scenario should verify the function's actual
+    # signature and adjust here accordingly; until then, calling it
+    # directly is the right shape.
+    if EXPECTED_FINAL_STATE["replay_equivalent"]:
+        assert_replay_equivalent(final_state.review_id)
