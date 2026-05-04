@@ -54,9 +54,12 @@ def test_hitl_resume_idempotent_under_checkpoint_replay() -> None:
     # returns None on success (per the audit/replay module's eventual
     # API). The previous shape `assert ... is expected` (where
     # `expected = True`) would always evaluate to `None is True == False`,
-    # masking real failures behind a permanently-failing test. The
-    # un-skip PR for this scenario should verify the function's actual
-    # signature and adjust here accordingly; until then, calling it
-    # directly is the right shape.
-    if EXPECTED_FINAL_STATE["replay_equivalent"]:
-        assert_replay_equivalent(final_state.review_id)
+    # masking real failures behind a permanently-failing test. Pin the
+    # constant as a contract: this test is wired exclusively for the
+    # replay-equivalent expectation. Repurposing it for a non-equivalent
+    # scenario requires a rename, not a constant flip.
+    assert EXPECTED_FINAL_STATE["replay_equivalent"] is True, (
+        "this test is wired for the replay-equivalent expectation only; "
+        "flipping the constant would silently skip the equivalence check"
+    )
+    assert_replay_equivalent(final_state.review_id)

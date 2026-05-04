@@ -152,6 +152,7 @@ def test_unit_id_is_byte_stable_across_invocations() -> None:
     src = b"def process():\n    return 1\n"
     a1 = adapter.extract_scopes(src, "f.py")
     a2 = adapter.extract_scopes(src, "f.py")
+    assert a1, "fixture must produce at least one scope; otherwise byte-stability is vacuous"
     assert tuple(s.unit_id for s in a1) == tuple(s.unit_id for s in a2)
 
 
