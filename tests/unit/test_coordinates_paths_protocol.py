@@ -73,11 +73,10 @@ def test_consecutive_dots_returns_empty_list(tmp_path: Path) -> None:
     assert resolve_candidate_paths("foo..bar", tmp_path) == []
 
 
-def test_explicit_double_dot_part_returns_empty_list(tmp_path: Path) -> None:
-    """`"..foo.bar"` (parsed parts include `..`) → empty list. Defensive even
-    though the leading-dot check catches this first."""
-    # Construct to test the .. check directly: parts after split include ".."
-    # would happen with "foo...bar" (split → ["foo", "", "", "bar"]).
+def test_triple_dots_return_empty_list(tmp_path: Path) -> None:
+    """`"foo...bar"` → empty list (multiple consecutive dots produce empty
+    interior parts; rejected by the not-all-parts check, since `.split(".")`
+    can never produce a literal `".."` part)."""
     assert resolve_candidate_paths("foo...bar", tmp_path) == []
 
 
@@ -165,6 +164,28 @@ def test_symlink_pointing_outside_import_root_omitted(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------------
 # Symlink-component rejection — ancestor component
 # ----------------------------------------------------------------------------
+
+
+def test_symlinked_import_root_returns_empty(tmp_path: Path) -> None:
+    """If `import_root` itself is a symlink, return [] regardless of the
+    import string.
+
+    The Protocol contract reads "no path component (final or any ancestor
+    up to `import_root`) is a symlink" as INCLUSIVE of root. Without this
+    guard, the per-candidate ancestor walk stops one level before root,
+    and `python_adapter.resolve_simple_direct_import`'s
+    `is_file(follow_symlinks=False)` only protects the FINAL component —
+    so a symlinked root would silently be followed at stat time.
+    """
+    real_root = tmp_path / "real_root"
+    real_root.mkdir()
+    (real_root / "foo.py").write_text("# real")
+
+    symlinked_root = tmp_path / "symlinked_root"
+    symlinked_root.symlink_to(real_root)
+
+    assert resolve_candidate_paths("foo", symlinked_root) == []
+    assert resolve_candidate_paths("foo.bar", symlinked_root) == []
 
 
 def test_ancestor_directory_symlink_omits_candidate(tmp_path: Path) -> None:

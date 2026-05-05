@@ -86,15 +86,20 @@ def resolve_candidate_paths(
       import string itself
     - prefix-validated against `import_root` (after resolving symlinks,
       the candidate must still lie under `import_root`)
-    - no path component is a symlink — final or any ancestor up to
-      `import_root` (exclusive)
+    - no path component is a symlink — final, any ancestor, AND
+      `import_root` itself. Per the Protocol's "any ancestor up to
+      `import_root`" rule (read as inclusive), a symlinked root is
+      rejected up-front because `python_adapter.resolve_simple_direct_import`
+      calls `is_file(follow_symlinks=False)` which only guards the FINAL
+      component — ancestor symlinks (including root) would otherwise be
+      followed at stat time.
 
     Candidates that cannot be guaranteed symlink-free, fail prefix-validation,
     or hit any filesystem error during the safety walk are omitted from the
     returned list per the ast_facts spec contract — `ast_facts/` treats
     omitted paths as "did not exist." Returns an empty list for malformed
-    import strings (empty, leading/trailing dot, empty interior part,
-    explicit `..` part, or any rejected character).
+    import strings (empty, leading/trailing dot, empty interior part, or any
+    rejected character).
     """
     if not import_string:
         return []
@@ -106,8 +111,6 @@ def resolve_candidate_paths(
     parts = import_string.split(".")
     if not all(parts):
         return []
-    if any(p == ".." for p in parts):
-        return []
 
     # Two candidates: foo/bar.py and foo/bar/__init__.py
     base = PurePosixPath(*parts)
@@ -115,6 +118,8 @@ def resolve_candidate_paths(
     package_relative = Path(base / "__init__.py")
 
     try:
+        if import_root.is_symlink():
+            return []
         root_resolved = import_root.resolve(strict=False)
     except (OSError, RuntimeError):
         return []
