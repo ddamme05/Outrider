@@ -121,13 +121,19 @@ def tree_sitter_to_github(
 def _validate_byte_span(byte_start: int, byte_end: int, head_byte_length: int) -> None:
     """Reject out-of-bounds or inverted byte spans with a CoordinateError.
 
-    `byte_start == head_byte_length` is in-bounds (point at EOF); strictly-greater
-    is out-of-bounds. Convention: half-open intervals — start inclusive, end
-    exclusive — matching tree-sitter's `Node.start_byte` / `Node.end_byte`.
+    Both `byte_start == head_byte_length` and `byte_end == head_byte_length`
+    are in-bounds (half-open interval — start inclusive, end exclusive — and
+    EOF is the canonical "one past the last reviewable byte"). Strictly-
+    greater on either end is out-of-bounds. Convention matches tree-sitter's
+    `Node.start_byte` / `Node.end_byte`.
     """
     if byte_start < 0 or byte_start > head_byte_length:
         raise CoordinateError(
             f"byte_start {byte_start} out of bounds for head_content ({head_byte_length} bytes)"
+        )
+    if byte_end > head_byte_length:
+        raise CoordinateError(
+            f"byte_end {byte_end} out of bounds for head_content ({head_byte_length} bytes)"
         )
     if byte_end < byte_start:
         raise CoordinateError(

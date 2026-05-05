@@ -433,11 +433,30 @@ def test_byte_end_at_head_byte_length_in_hunk_succeeds() -> None:
 def test_byte_start_out_of_bounds_raises() -> None:
     """byte_start > len(head_bytes.encode('utf-8')) → CoordinateError, not IndexError."""
     head_byte_length = len(SIMPLE_HEAD.encode("utf-8"))
-    with pytest.raises(CoordinateError, match="out of bounds"):
+    with pytest.raises(CoordinateError, match="byte_start.*out of bounds"):
         tree_sitter_to_github(
             file_path=SIMPLE_FILE_PATH,
             byte_start=head_byte_length + 1,
             byte_end=head_byte_length + 5,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
+def test_byte_end_out_of_bounds_raises() -> None:
+    """byte_end > len(head_bytes.encode('utf-8')) → CoordinateError, not IndexError.
+
+    A byte_start that is in-bounds with a byte_end that overshoots EOF is
+    still a contract violation — the span extends past reviewable content.
+    Catches the bug where byte_start passes validation but the span as a
+    whole is unbounded.
+    """
+    head_byte_length = len(SIMPLE_HEAD.encode("utf-8"))
+    with pytest.raises(CoordinateError, match="byte_end.*out of bounds"):
+        tree_sitter_to_github(
+            file_path=SIMPLE_FILE_PATH,
+            byte_start=0,  # in-bounds
+            byte_end=head_byte_length + 1,  # over-bounds
             head_content=SIMPLE_HEAD,
             patch=SIMPLE_PATCH,
         )
