@@ -228,6 +228,47 @@ def test_dot_prefix_in_patch_path_matches_validated_path() -> None:
     assert file_in_patch("foo.py", patch_with_dot) is True
 
 
+def test_caller_dot_prefix_path_matches_canonical_patch_path() -> None:
+    """`file_in_patch("./foo.py", patch)` matches a patch whose unidiff path
+    is `"foo.py"` — caller-side `./` is canonicalized via `validate_diff_path`
+    before comparison. The previous impl normalized only the unidiff side
+    and compared against the raw caller `file_path`, silently missing this
+    case (Copilot review on `feat/coordinates-module`).
+    """
+    assert file_in_patch("./foo.py", SIMPLE_PATCH) is False  # SIMPLE_PATCH is for src/foo.py
+    # Use a patch whose target IS `./foo.py` after canonicalization on both sides.
+    canonical_patch = (
+        "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1,1 +1,2 @@\n orig\n+added\n"
+    )
+    assert file_in_patch("./foo.py", canonical_patch) is True
+
+
+def test_caller_double_slash_path_matches_canonical_patch_path() -> None:
+    """`file_in_patch("a//b.py", patch)` matches a patch whose unidiff path
+    is `"a/b.py"` — caller-side `//` is canonicalized to `/` via
+    `validate_diff_path` (`PurePosixPath` collapses double slashes).
+    """
+    canonical_patch = (
+        "diff --git a/a/b.py b/a/b.py\n--- a/a/b.py\n+++ b/a/b.py\n@@ -1,1 +1,2 @@\n orig\n+added\n"
+    )
+    assert file_in_patch("a//b.py", canonical_patch) is True
+
+
+def test_caller_invalid_path_returns_false() -> None:
+    """`file_in_patch` returns False (not raises) when the caller's
+    `file_path` fails `validate_diff_path` (e.g., contains `..`, is
+    absolute, or has shell metacharacters). Boolean-helper policy:
+    membership queries answer the routing question "is this path in the
+    patch?" with False for malformed input — `tree_sitter_to_github` is
+    the surface that raises on bad path shape.
+    """
+    # Various malformed paths — each should return False, not raise.
+    assert file_in_patch("../etc/passwd", SIMPLE_PATCH) is False
+    assert file_in_patch("/absolute/path.py", SIMPLE_PATCH) is False
+    assert file_in_patch("foo;rm.py", SIMPLE_PATCH) is False
+    assert file_in_patch("foo\\bar.py", SIMPLE_PATCH) is False
+
+
 # ----------------------------------------------------------------------------
 # Duplicate-path detection — webhook-attacker reject
 # ----------------------------------------------------------------------------

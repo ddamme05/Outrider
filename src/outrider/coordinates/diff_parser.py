@@ -237,21 +237,29 @@ def validate_diff_path(file_path: str) -> str:
 def file_in_patch(file_path: str, patch: str) -> bool:
     """True if `file_path` matches any hunk's normalized target path in `patch`.
 
-    Comparison uses `unidiff.PatchedFile.path` (target path with `a/`/`b/`
-    prefix stripped) normalized via `PurePosixPath(...).as_posix()` — same
-    normalization `validate_diff_path` applies on its side, so surface forms
-    like `./foo.py` and `foo.py` match consistently with `_find_patched_file`
-    in translator.py. Per `unidiff/patch.py`'s `path` property, rename hunks
-    return the target (head-side) path, additions return the target,
-    deletions return the source — matching the "match `to_file` only"
-    commitment for renames.
+    Both sides of the comparison are normalized: `file_path` runs through
+    `validate_diff_path` (canonicalizing `./foo.py` → `foo.py`, `a//b.py` →
+    `a/b.py`), and `unidiff.PatchedFile.path` runs through
+    `PurePosixPath(...).as_posix()`. Per `unidiff/patch.py`'s `path`
+    property, rename hunks return the target (head-side) path, additions
+    return the target, deletions return the source — matching the "match
+    `to_file` only" commitment for renames.
 
-    Returns False for empty patches (`patch == ""`) and for paths absent
-    from the diff. Raises `CoordinateError` on malformed patch input
-    (any underlying `unidiff` parse exception is wrapped, never leaked) and
-    on patches containing duplicate file entries (webhook-attacker input
-    per trust boundary #5; a duplicate is ambiguous routing input that
-    deterministic systems reject).
+    Boolean-helper policy: returns `False` for empty patches (`patch == ""`),
+    for paths absent from the diff, AND for paths that fail
+    `validate_diff_path` (caller passed `..`, an absolute path, shell
+    metachars, etc.). The publisher's "in-patch vs not-in-patch" distinction
+    routes a malformed caller path the same way it routes an absent file —
+    to the `non_diffed_file` / `DASHBOARD_ONLY` tier — without coupling
+    `file_in_patch` to a security gate it isn't responsible for.
+    `tree_sitter_to_github` is the path-shape-validation gate (raises);
+    `file_in_patch` is the membership query (returns bool).
+
+    Raises `CoordinateError` on malformed patch input (any underlying
+    `unidiff` parse exception is wrapped, never leaked) and on patches
+    containing duplicate file entries (webhook-attacker input per trust
+    boundary #5; a duplicate is ambiguous routing input that deterministic
+    systems reject).
 
     Backs the `publish-routes-through-coordinates` invariant: the
     publisher uses this to distinguish `unchanged_region` (in-patch) from
@@ -261,11 +269,20 @@ def file_in_patch(file_path: str, patch: str) -> bool:
     if not patch:
         return False
     try:
+        normalized_file_path = validate_diff_path(file_path)
+    except CoordinateError:
+        # Boolean-helper policy: malformed caller path → not-in-patch.
+        # `tree_sitter_to_github` is the surface that raises on bad shape;
+        # routing-membership queries return False.
+        return False
+    try:
         patchset = PatchSet(patch)
     except UnidiffParseError as e:
         raise CoordinateError(f"malformed patch input: {e}") from e
 
-    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == file_path]
+    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
     if len(matches) > 1:
-        raise CoordinateError(f"patch contains {len(matches)} duplicate entries for {file_path!r}")
+        raise CoordinateError(
+            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}"
+        )
     return bool(matches)
