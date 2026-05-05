@@ -48,7 +48,7 @@ def test_double_slash_collapses() -> None:
     assert validate_diff_path("a//b.py") == "a/b.py"
 
 
-def test_path_with_unicode_pass() -> None:
+def test_path_with_unicode_passes() -> None:
     """Non-ASCII filenames (e.g., `α.py`) are valid — Unicode is allowed."""
     assert validate_diff_path("src/α.py") == "src/α.py"
 

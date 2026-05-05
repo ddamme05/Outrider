@@ -199,8 +199,9 @@ def test_utf8_multibyte_byte_offset_resolves_correct_line() -> None:
     """PEP 3131 identifier `α` (2 bytes UTF-8) — line counting must use bytes,
     not codepoints.
 
-    "def α():\\n    return 42\\n" → 24 codepoints, 25 bytes.
-    Byte 10 (start of "    return 42") is on line 2; codepoint 9 is also on
+    "def α():\\n    return 42\\n" → 23 codepoints, 24 bytes.
+    Byte 10 (start of "    return 42") is on line 2; codepoint 9 (the codepoint
+    at the same logical position after the multibyte expansion) is also on
     line 2, but an implementation that mistakenly indexed into `head_content`
     by bytes would land at codepoint 10 ("r"), still line 2. To distinguish
     the bug, byte 5 (the second byte of `α`) must NOT be a valid line
@@ -439,6 +440,41 @@ def test_byte_start_out_of_bounds_raises() -> None:
             byte_start=head_byte_length + 1,
             byte_end=head_byte_length + 5,
             head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
+def test_byte_start_at_eof_rejected() -> None:
+    """byte_start == head_byte_length → CoordinateError (start at EOF rejected).
+
+    Half-open interval: `byte_start ∈ [0, head_byte_length)`. A start at EOF
+    has no reviewable byte and would otherwise map to a ghost line past the
+    last real line on newline-terminated files. Catches the implementation
+    that uses `byte_start > head_byte_length` and silently accepts EOF starts.
+    """
+    head_byte_length = len(SIMPLE_HEAD.encode("utf-8"))
+    with pytest.raises(CoordinateError, match="byte_start.*out of bounds"):
+        tree_sitter_to_github(
+            file_path=SIMPLE_FILE_PATH,
+            byte_start=head_byte_length,
+            byte_end=head_byte_length,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
+def test_empty_head_content_rejects_any_span() -> None:
+    """Empty `head_content` (`head_byte_length == 0`) → every span rejected.
+
+    No reviewable bytes means no reviewable lines; the `byte_start >= head_byte_length`
+    rule rejects byte_start=0 when head is empty.
+    """
+    with pytest.raises(CoordinateError, match="byte_start.*out of bounds"):
+        tree_sitter_to_github(
+            file_path=SIMPLE_FILE_PATH,
+            byte_start=0,
+            byte_end=0,
+            head_content="",
             patch=SIMPLE_PATCH,
         )
 
