@@ -12,6 +12,9 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from unidiff import PatchSet
+from unidiff.errors import UnidiffParseError
+
 from outrider.coordinates.errors import CoordinateError
 
 if TYPE_CHECKING:
@@ -210,12 +213,25 @@ def file_in_patch(file_path: str, patch: str) -> bool:
     """True if `file_path` matches any hunk's normalized target path in `patch`.
 
     Comparison uses `unidiff.PatchedFile.path` (target path with `a/`/`b/`
-    prefix stripped); not raw `+++` header text. For rename hunks
-    (`from_file != to_file`), matches the target (head-side) path only.
+    prefix stripped); not raw `+++` header text. Per `unidiff/patch.py`'s
+    `path` property, rename hunks return the target (head-side) path,
+    additions return the target, deletions return the source — matching
+    the "match `to_file` only" commitment for renames.
 
     Returns False for empty patches (`patch == ""`) and for paths absent
-    from the diff. Raises `CoordinateError` on malformed patch input.
+    from the diff. Raises `CoordinateError` on malformed patch input
+    (any underlying `unidiff` parse exception is wrapped, never leaked).
+
+    Backs the `publish-routes-through-coordinates` invariant: the
+    publisher uses this to distinguish `unchanged_region` (in-patch) from
+    `non_diffed_file` (absent) routing reasons WITHOUT inlining patch-
+    membership math, which would violate trust boundary #3.
     """
-    raise NotImplementedError(
-        "file_in_patch lands in a later commit per the implementation sequence"
-    )
+    if not patch:
+        return False
+    try:
+        patchset = PatchSet(patch)
+    except UnidiffParseError as e:
+        raise CoordinateError(f"malformed patch input: {e}") from e
+
+    return any(pf.path == file_path for pf in patchset)
