@@ -68,9 +68,10 @@ def resolve_candidate_paths(
 def validate_diff_path(file_path: str) -> str:
     """Diff-side path validation surface — publisher-facing.
 
-    Validates a repository-relative file path before it reaches the GitHub
-    comment API per docs/spec.md §10.1 / docs/trust-boundaries.md §5.3,
-    backing the `paths-validated-before-use` invariant (security-critical).
+    The **string-level** surface of the two-surface path-validation rule
+    in docs/spec.md §10.1 / docs/trust-boundaries.md §5.3 (the other being
+    `resolve_candidate_paths` for filesystem use). Backs the
+    `paths-validated-before-use` invariant (security-critical).
 
     Rejects, with `CoordinateError`:
     - empty strings
@@ -80,12 +81,12 @@ def validate_diff_path(file_path: str) -> str:
     - shell metacharacters (`;`, `&`, `|`, `` ` ``, `$`, `(`, `)`, `<`, `>`,
       `\\n`, `\\r`, NUL, `*`, `?`, `~`, `[`, `]`, `{`, `}`, `'`, `"`)
 
-    Returns the validated path in repo-relative POSIX form (str). The full
-    canonical "construct via `pathlib.Path` with `.resolve()` and prefix
-    validation" rule applies to the resolver-with-root case (the
-    `ImportPathResolver` Protocol implementation, where `import_root` is the
-    prefix); this surface is purely string-level since the GitHub comment API
-    consumes string paths and there's no host filesystem to resolve against.
+    Returns the validated path in repo-relative POSIX form (str). No
+    `.resolve()` and no prefix-validation here — those apply to the
+    root-aware surface (`resolve_candidate_paths`), per the amended
+    canonical's two-surface split. The GitHub comment API consumes string
+    paths, and there is no host filesystem to resolve against in this
+    surface.
     """
     if not file_path:
         raise CoordinateError("file_path is empty")
