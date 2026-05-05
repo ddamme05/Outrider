@@ -37,15 +37,31 @@ def diff_line_to_scope(
     """Find the scope unit containing a given diff line.
 
     Returns None for top-level changes (module-level code outside any function),
-    for diff_line outside the file's line range, and for scopes belonging to a
-    different file. Innermost-scope rule: when nested scopes contain the same
-    line, return the deepest match.
+    for `diff_line` outside any scope's line range, and for scopes belonging to
+    a different file. Innermost-scope rule: when nested scopes contain the same
+    line, return the deepest match (smallest line span wins).
 
-    Per docs/spec.md §5.6.
+    Per docs/spec.md §5.6. The six edge cases enumerated in the Month 0 spike
+    `spikes/tree_sitter/demos/demo_q6_diff_line_to_scope.py` form the unit-test
+    surface; see DECISIONS.md#006-two-month-0-spikes-not-five for the
+    "exhaustive unit tests" discipline this implementation honors.
+
+    Multi-file safety: `scope_units` may contain scopes for multiple files;
+    only scopes where `ScopeUnit.file_path == file_path` are eligible. A
+    `diff_line` that would otherwise map to a scope in a different file
+    returns None.
     """
-    raise NotImplementedError(
-        "diff_line_to_scope lands in a later commit per the implementation sequence"
-    )
+    candidates = [
+        unit
+        for unit in scope_units
+        if unit.file_path == file_path and unit.line_start <= diff_line <= unit.line_end
+    ]
+    if not candidates:
+        return None
+    # Innermost = smallest enclosing line span. Matches ast_facts'
+    # `_innermost_scope_containing` pattern (byte-span there; line-span here
+    # because the input is a diff line, not a byte offset).
+    return min(candidates, key=lambda unit: unit.line_end - unit.line_start)
 
 
 def resolve_candidate_paths(
