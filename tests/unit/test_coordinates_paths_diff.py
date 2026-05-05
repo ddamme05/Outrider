@@ -123,6 +123,52 @@ def test_windows_absolute_rejected_via_backslash() -> None:
 
 
 # ----------------------------------------------------------------------------
+# Rejections — Windows drive-letter prefix (forward-slash form)
+# ----------------------------------------------------------------------------
+
+
+def test_windows_drive_forward_slash_rejected() -> None:
+    """`C:/Users/file.py` → CoordinateError. `PurePosixPath("C:/...").is_absolute()`
+    is False (POSIX considers absolute = leading `/`), so the standard
+    `is_absolute()` check would silently let drive-prefixed paths reach
+    the GitHub comment API. The explicit drive-prefix rejection closes
+    that gap.
+    """
+    with pytest.raises(CoordinateError, match="drive-letter prefix"):
+        validate_diff_path("C:/Users/file.py")
+
+
+def test_windows_drive_lowercase_rejected() -> None:
+    """`d:/foo.py` (lowercase drive letter) → CoordinateError."""
+    with pytest.raises(CoordinateError, match="drive-letter prefix"):
+        validate_diff_path("d:/foo.py")
+
+
+def test_windows_drive_relative_rejected() -> None:
+    """`C:foo.py` (drive-relative, no separator after colon) → CoordinateError.
+    Drive-relative paths inherit the current directory of the named drive
+    on Windows; treating them as repo-relative would be wrong.
+    """
+    with pytest.raises(CoordinateError, match="drive-letter prefix"):
+        validate_diff_path("C:foo.py")
+
+
+def test_colon_mid_path_not_drive_treated_as_metachar() -> None:
+    """A colon NOT in drive-letter position is caught as a shell metacharacter
+    if the colon falls in the metachar reject set, or otherwise must not
+    be confused for a drive prefix. `foo:bar.py` is shell-suspicious; the
+    drive-prefix regex anchors on the start of the string, so the colon
+    here is evaluated by the shell-metachar gate (today: passes; if the
+    metachar set ever includes `:`, it's caught there). Either way, this
+    is NOT a drive-prefix rejection — confirms the regex is anchored.
+    """
+    # Today: `:` is not in the shell-metachar reject set, so this passes.
+    # The test pins that the drive-prefix regex doesn't false-positive on
+    # mid-path colons.
+    assert validate_diff_path("foo:bar.py") == "foo:bar.py"
+
+
+# ----------------------------------------------------------------------------
 # Rejections — shell metacharacters
 # ----------------------------------------------------------------------------
 

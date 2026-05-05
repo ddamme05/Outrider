@@ -35,12 +35,14 @@ both that ast_facts extension and the analyze-node spec land.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
-from outrider.ast_facts import parse_python
-from outrider.coordinates import diff_line_to_scope
+# `parse_python` and `diff_line_to_scope` imports moved into the test body
+# below — `outrider.ast_facts.__getattr__` lazy-loads tree_sitter on first
+# attribute access, and a top-level import here triggers that load during
+# pytest collection even though the module is skipped. Keeping heavy
+# imports behind the skipmark preserves the import-light contract for
+# skipped scenarios.
 
 pytestmark = pytest.mark.skip(
     reason="requires analyze-node degraded derivation + ast_facts tree-level error signal"
@@ -77,6 +79,11 @@ def test_syntax_error_inside_diff_triggers_parse_degraded_fallback() -> None:
     Deriving it requires a tree-level error-overlap signal not yet in
     ast_facts' public surface — see module docstring.
     """
+    from unittest.mock import MagicMock
+
+    from outrider.ast_facts import parse_python
+    from outrider.coordinates import diff_line_to_scope
+
     parse_result = parse_python(
         source=SOURCE.encode("utf-8"),
         file_path="test.py",

@@ -30,6 +30,13 @@ if TYPE_CHECKING:
 # downstream consumers.
 _SHELL_METACHARS_RE = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 
+# Windows drive-letter prefix (e.g., `C:/`, `D:\\`, even `C:foo` for
+# drive-relative). `PurePosixPath("C:/Users/file.py").is_absolute()` returns
+# False (POSIX considers absolute = leading `/`), so a drive-prefixed path
+# slips through the standard `pp.is_absolute()` check. Reject it explicitly
+# so absolute Windows paths can't reach the GitHub comment API surface.
+_WINDOWS_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
+
 
 def diff_line_to_scope(
     file_path: str,
@@ -206,6 +213,8 @@ def validate_diff_path(file_path: str) -> str:
     Rejects, with `CoordinateError`:
     - empty strings
     - absolute paths (`is_absolute()` on a `PurePosixPath`)
+    - Windows drive-letter prefixes (`C:/`, `C:\\`, `C:foo`) — `PurePosixPath`
+      treats these as relative, so they need a separate rejection
     - `..` traversal in any path component
     - backslash characters (Windows separators; GitHub paths are POSIX)
     - shell metacharacters (`;`, `&`, `|`, `` ` ``, `$`, `(`, `)`, `<`, `>`,
@@ -226,6 +235,11 @@ def validate_diff_path(file_path: str) -> str:
         )
     if _SHELL_METACHARS_RE.search(file_path):
         raise CoordinateError(f"file_path {file_path!r} contains shell metacharacters")
+    if _WINDOWS_DRIVE_PREFIX_RE.match(file_path):
+        raise CoordinateError(
+            f"file_path {file_path!r} has a Windows drive-letter prefix; "
+            "must be repo-relative POSIX"
+        )
     pp = PurePosixPath(file_path)
     if pp.is_absolute():
         raise CoordinateError(f"file_path {file_path!r} is absolute; must be repo-relative")

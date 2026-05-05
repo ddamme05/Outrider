@@ -15,12 +15,14 @@ node — this scenario flips when the analyze-node spec lands.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
-from outrider.ast_facts import parse_python
-from outrider.coordinates import diff_line_to_scope
+# `parse_python` and `diff_line_to_scope` imports moved into the test body
+# below — `outrider.ast_facts.__getattr__` lazy-loads tree_sitter on first
+# attribute access, and a top-level import here triggers that load during
+# pytest collection even though the module is skipped. Keeping heavy
+# imports behind the skipmark preserves the import-light contract for
+# skipped scenarios.
 
 pytestmark = pytest.mark.skip(reason="requires analyze-node degraded derivation")
 
@@ -45,6 +47,11 @@ def test_syntax_error_outside_diff_degrades_gracefully() -> None:
     """Diff line in parseable region → ScopeUnit returned; eventual analyze-node
     degraded=False because the diff line itself is parseable.
     """
+    from unittest.mock import MagicMock
+
+    from outrider.ast_facts import parse_python
+    from outrider.coordinates import diff_line_to_scope
+
     parse_result = parse_python(
         source=SOURCE.encode("utf-8"),
         file_path="test.py",
