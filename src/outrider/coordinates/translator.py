@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from unidiff import PatchSet
+from unidiff.errors import UnidiffParseError
 
 if TYPE_CHECKING:
     from unidiff.patch import PatchedFile
@@ -166,7 +167,7 @@ def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
     """
     try:
         patchset = PatchSet(patch)
-    except Exception as e:  # noqa: BLE001 — wrapping any unidiff-side parser error
+    except UnidiffParseError as e:
         raise CoordinateError(f"malformed patch input: {e}") from e
 
     for pf in patchset:

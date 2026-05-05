@@ -325,20 +325,47 @@ def test_multifile_patch_rejects_raw_header_path() -> None:
 # ----------------------------------------------------------------------------
 
 
-def test_malformed_patch_raises_coordinate_error() -> None:
-    """Malformed patch → CoordinateError, never an underlying parser exception.
+def test_lenient_garbage_patch_raises_coordinate_error() -> None:
+    """Garbage that unidiff parses leniently → CoordinateError via the
+    file-not-found path.
 
-    `unidiff` is lenient and silently returns an empty PatchSet for many
-    garbage inputs; in that case, the file-not-found path raises. Either way,
-    the public failure mode is `CoordinateError`.
+    `unidiff` returns an empty PatchSet for free-text input rather than
+    raising; we still surface CoordinateError because the file isn't in
+    the (empty) patch.
     """
-    with pytest.raises(CoordinateError):
+    with pytest.raises(CoordinateError, match="not present in the patch"):
         tree_sitter_to_github(
             file_path=SIMPLE_FILE_PATH,
             byte_start=0,
             byte_end=8,
             head_content=SIMPLE_HEAD,
             patch="not a real diff at all just garbage\nand more garbage",
+        )
+
+
+def test_malformed_hunk_raises_coordinate_error_via_unidiff_parse_error() -> None:
+    """Hunk shorter than declared → unidiff raises UnidiffParseError;
+    coordinates wraps it as CoordinateError without leaking the underlying type.
+
+    Per `unidiff/patch.py` (aegis-docs), `UnidiffParseError` is raised when
+    the hunk falls short of its declared line count ("Hunk is shorter than
+    expected"). Construct a patch declaring 5 source / 5 target lines but
+    providing only 1 context line.
+    """
+    malformed_patch = (
+        "diff --git a/x.py b/x.py\n"
+        "--- a/x.py\n"
+        "+++ b/x.py\n"
+        "@@ -1,5 +1,5 @@\n"
+        " only_one_line_provided_but_five_declared\n"
+    )
+    with pytest.raises(CoordinateError, match="malformed patch input"):
+        tree_sitter_to_github(
+            file_path="x.py",
+            byte_start=0,
+            byte_end=8,
+            head_content="only_one_line_provided_but_five_declared\n",
+            patch=malformed_patch,
         )
 
 
