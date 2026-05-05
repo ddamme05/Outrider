@@ -9,14 +9,12 @@ Protocol implemented here is canonical at src/outrider/ast_facts/base.py.
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from outrider.coordinates.errors import CoordinateError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from outrider.ast_facts.models import ScopeUnit
 
 
@@ -68,17 +66,105 @@ def resolve_candidate_paths(
     import_string: str,
     import_root: Path,
 ) -> list[Path]:
-    """ImportPathResolver Protocol implementation per ast_facts/base.py.
+    """ImportPathResolver Protocol implementation per `src/outrider/ast_facts/base.py`.
 
-    Returns repo-relative `Path` candidates validated as: relative-only, no
-    `..` traversal, no shell metacharacters, prefix-validated against
-    `import_root`, and free of symlink components — final or any ancestor up
-    to `import_root`. Candidates that cannot be guaranteed symlink-free are
-    omitted from the returned list per the ast_facts spec contract.
+    The **root-aware** surface of the two-surface path-validation rule in
+    `docs/spec.md` §10.1 / `docs/trust-boundaries.md` §5.3 (the other being
+    `validate_diff_path` for the GitHub API path).
+
+    Translates a dotted Python import string (e.g., `"foo.bar"`) into the
+    two repo-relative candidate paths Python's import machinery would
+    consider: the module file (`foo/bar.py`) and the package init
+    (`foo/bar/__init__.py`). Each candidate is validated against the full
+    Protocol contract before being returned:
+
+    - relative-only, no `..` traversal in any component
+    - no shell metacharacters or backslashes / forward-slashes in the
+      import string itself
+    - prefix-validated against `import_root` (after resolving symlinks,
+      the candidate must still lie under `import_root`)
+    - no path component is a symlink — final or any ancestor up to
+      `import_root` (exclusive)
+
+    Candidates that cannot be guaranteed symlink-free, fail prefix-validation,
+    or hit any filesystem error during the safety walk are omitted from the
+    returned list per the ast_facts spec contract — `ast_facts/` treats
+    omitted paths as "did not exist." Returns an empty list for malformed
+    import strings (empty, leading/trailing dot, empty interior part,
+    explicit `..` part, or any rejected character).
     """
-    raise NotImplementedError(
-        "resolve_candidate_paths lands in a later commit per the implementation sequence"
-    )
+    if not import_string:
+        return []
+    if "\\" in import_string or "/" in import_string:
+        return []
+    if _SHELL_METACHARS_RE.search(import_string):
+        return []
+
+    parts = import_string.split(".")
+    if not all(parts):
+        return []
+    if any(p == ".." for p in parts):
+        return []
+
+    # Two candidates: foo/bar.py and foo/bar/__init__.py
+    base = PurePosixPath(*parts)
+    module_relative = Path(base.with_suffix(".py"))
+    package_relative = Path(base / "__init__.py")
+
+    try:
+        root_resolved = import_root.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return []
+
+    safe_candidates: list[Path] = []
+    for candidate in (module_relative, package_relative):
+        # Defensive — construction guarantees these, but check anyway.
+        if candidate.is_absolute() or ".." in candidate.parts:
+            continue
+
+        absolute = import_root / candidate
+        try:
+            resolved = absolute.resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
+
+        # Prefix-validation: resolved path must lie under import_root.
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError:
+            continue
+
+        # Symlink-component check: walk from the candidate's full path up to
+        # (but not including) `import_root`, checking is_symlink() at each
+        # level. Per the ast_facts spec contract, ANY symlink component
+        # disqualifies the candidate.
+        if _has_symlink_component(absolute, import_root):
+            continue
+
+        safe_candidates.append(candidate)
+
+    return safe_candidates
+
+
+def _has_symlink_component(absolute: Path, root: Path) -> bool:
+    """True if `absolute` or any ancestor up to (but not including) `root` is
+    a symlink. Returns True on any filesystem error (treats unstat-able
+    components as unsafe). Returns True if the walk reaches the filesystem
+    root without ever hitting `root` (i.e., `absolute` is not actually under
+    `root`).
+    """
+    current = absolute
+    while current != root:
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+        if current.parent == current:
+            # Walked off the top of the filesystem without hitting `root`.
+            return True
+        current = current.parent
+    return False
 
 
 def validate_diff_path(file_path: str) -> str:
