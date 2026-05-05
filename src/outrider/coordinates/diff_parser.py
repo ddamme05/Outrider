@@ -8,6 +8,7 @@ Protocol implemented here is canonical at src/outrider/ast_facts/base.py.
 
 from __future__ import annotations
 
+import keyword
 import re
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -47,11 +48,22 @@ def diff_line_to_scope(
     surface; see DECISIONS.md#006-two-month-0-spikes-not-five for the
     "exhaustive unit tests" discipline this implementation honors.
 
+    Raises `CoordinateError` for `diff_line < 1`. Source lines are 1-indexed
+    per git-diff convention; a 0 or negative value signals caller
+    kind-confusion (e.g., a tree-sitter `Node.start_point[0]` row, which is
+    0-indexed, accidentally passed instead of being converted). Surfacing
+    the error explicitly keeps the silent-`None` failure mode reserved for
+    the legitimate "no enclosing scope" case.
+
     Multi-file safety: `scope_units` may contain scopes for multiple files;
     only scopes where `ScopeUnit.file_path == file_path` are eligible. A
     `diff_line` that would otherwise map to a scope in a different file
-    returns None.
+    returns None. Both `file_path` and each `ScopeUnit.file_path` are
+    expected in canonical POSIX form (the form `validate_diff_path` returns);
+    divergent surface forms compare unequal and silently miss matches.
     """
+    if diff_line < 1:
+        raise CoordinateError(f"diff_line {diff_line} is not a valid 1-indexed source line")
     candidates = [
         unit
         for unit in scope_units
@@ -98,8 +110,9 @@ def resolve_candidate_paths(
     or hit any filesystem error during the safety walk are omitted from the
     returned list per the ast_facts spec contract — `ast_facts/` treats
     omitted paths as "did not exist." Returns an empty list for malformed
-    import strings (empty, leading/trailing dot, empty interior part, or any
-    rejected character).
+    import strings (empty, leading/trailing dot, empty interior part, any
+    rejected character, or any part that is not a valid Python identifier —
+    e.g., numeric prefix `123abc`, a Python keyword like `class`).
     """
     if not import_string:
         return []
@@ -110,6 +123,13 @@ def resolve_candidate_paths(
 
     parts = import_string.split(".")
     if not all(parts):
+        return []
+    # Each part must be a valid Python identifier (and not a reserved keyword).
+    # Dunders like `__init__`, `__pycache__` ARE valid identifiers and pass.
+    # Numeric prefixes (`123abc`), keywords (`class`, `for`), and other
+    # non-identifier strings are rejected — `ast_facts/` would never produce
+    # them, but we narrow the LLM-influenced trace surface defensively.
+    if not all(p.isidentifier() and not keyword.iskeyword(p) for p in parts):
         return []
 
     # Two candidates: foo/bar.py and foo/bar/__init__.py
@@ -218,14 +238,20 @@ def file_in_patch(file_path: str, patch: str) -> bool:
     """True if `file_path` matches any hunk's normalized target path in `patch`.
 
     Comparison uses `unidiff.PatchedFile.path` (target path with `a/`/`b/`
-    prefix stripped); not raw `+++` header text. Per `unidiff/patch.py`'s
-    `path` property, rename hunks return the target (head-side) path,
-    additions return the target, deletions return the source — matching
-    the "match `to_file` only" commitment for renames.
+    prefix stripped) normalized via `PurePosixPath(...).as_posix()` — same
+    normalization `validate_diff_path` applies on its side, so surface forms
+    like `./foo.py` and `foo.py` match consistently with `_find_patched_file`
+    in translator.py. Per `unidiff/patch.py`'s `path` property, rename hunks
+    return the target (head-side) path, additions return the target,
+    deletions return the source — matching the "match `to_file` only"
+    commitment for renames.
 
     Returns False for empty patches (`patch == ""`) and for paths absent
     from the diff. Raises `CoordinateError` on malformed patch input
-    (any underlying `unidiff` parse exception is wrapped, never leaked).
+    (any underlying `unidiff` parse exception is wrapped, never leaked) and
+    on patches containing duplicate file entries (webhook-attacker input
+    per trust boundary #5; a duplicate is ambiguous routing input that
+    deterministic systems reject).
 
     Backs the `publish-routes-through-coordinates` invariant: the
     publisher uses this to distinguish `unchanged_region` (in-patch) from
@@ -239,4 +265,7 @@ def file_in_patch(file_path: str, patch: str) -> bool:
     except UnidiffParseError as e:
         raise CoordinateError(f"malformed patch input: {e}") from e
 
-    return any(pf.path == file_path for pf in patchset)
+    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == file_path]
+    if len(matches) > 1:
+        raise CoordinateError(f"patch contains {len(matches)} duplicate entries for {file_path!r}")
+    return bool(matches)

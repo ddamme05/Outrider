@@ -116,6 +116,48 @@ def test_nul_byte_in_import_returns_empty(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------
+# Identifier validation per part — defensive narrowing of LLM-influenced surface
+# ----------------------------------------------------------------------------
+
+
+def test_numeric_prefix_part_returns_empty(tmp_path: Path) -> None:
+    """`"foo.123abc"` → empty list. `123abc` is not a valid Python identifier."""
+    assert resolve_candidate_paths("foo.123abc", tmp_path) == []
+
+
+def test_pure_numeric_part_returns_empty(tmp_path: Path) -> None:
+    """`"foo.42"` → empty list."""
+    assert resolve_candidate_paths("foo.42", tmp_path) == []
+
+
+def test_keyword_part_returns_empty(tmp_path: Path) -> None:
+    """`"foo.class"` → empty list. `class` is a Python keyword, not a module name."""
+    assert resolve_candidate_paths("foo.class", tmp_path) == []
+
+
+def test_dunder_parts_accepted(tmp_path: Path) -> None:
+    """`"foo.__init__"` → both candidates returned. Dunders are valid identifiers
+    and are common in Python imports (e.g., explicit package init imports)."""
+    result = resolve_candidate_paths("foo.__init__", tmp_path)
+    assert Path("foo/__init__.py") in result
+
+
+def test_pycache_part_accepted_but_resolves_normally(tmp_path: Path) -> None:
+    """`"foo.__pycache__"` → both candidates returned. The string is a valid
+    identifier sequence (`__pycache__` is just an identifier); ast_facts'
+    existence check is the gate that prevents `__pycache__` directories from
+    being treated as Python modules in practice. The resolver narrows the
+    string-validity bar but doesn't impose a Python-import-policy bar."""
+    result = resolve_candidate_paths("foo.__pycache__", tmp_path)
+    assert Path("foo/__pycache__.py") in result
+
+
+def test_hyphen_in_part_returns_empty(tmp_path: Path) -> None:
+    """`"foo.bar-baz"` → empty list. Hyphens aren't allowed in identifiers."""
+    assert resolve_candidate_paths("foo.bar-baz", tmp_path) == []
+
+
+# ----------------------------------------------------------------------------
 # Symlink-component rejection — final component
 # ----------------------------------------------------------------------------
 

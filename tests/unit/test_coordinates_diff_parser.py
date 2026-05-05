@@ -13,8 +13,10 @@ from __future__ import annotations
 
 from typing import Literal
 
+import pytest
+
 from outrider.ast_facts.models import ScopeUnit
-from outrider.coordinates import diff_line_to_scope
+from outrider.coordinates import CoordinateError, diff_line_to_scope
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -256,8 +258,12 @@ def test_line_far_past_file_end_returns_none_deterministically() -> None:
     assert result is None
 
 
-def test_line_zero_returns_none() -> None:
-    """diff_line=0 (degenerate, before any 1-indexed scope) → None."""
+def test_line_zero_raises_coordinate_error() -> None:
+    """`diff_line=0` raises CoordinateError — surfaces caller kind-confusion
+    (e.g., a 0-indexed tree-sitter row passed without conversion) instead of
+    silently returning None (which would conflate the kind error with the
+    legitimate "no enclosing scope" answer).
+    """
     scope_units = [
         _make_scope(
             unit_id="f",
@@ -268,8 +274,24 @@ def test_line_zero_returns_none() -> None:
             line_end=10,
         ),
     ]
-    result = diff_line_to_scope(file_path="x.py", diff_line=0, scope_units=scope_units)
-    assert result is None
+    with pytest.raises(CoordinateError, match="not a valid 1-indexed source line"):
+        diff_line_to_scope(file_path="x.py", diff_line=0, scope_units=scope_units)
+
+
+def test_negative_diff_line_raises_coordinate_error() -> None:
+    """Negative `diff_line` raises CoordinateError — same kind-confusion guard."""
+    scope_units = [
+        _make_scope(
+            unit_id="f",
+            kind="function",
+            name="func",
+            file_path="x.py",
+            line_start=1,
+            line_end=10,
+        ),
+    ]
+    with pytest.raises(CoordinateError, match="not a valid 1-indexed source line"):
+        diff_line_to_scope(file_path="x.py", diff_line=-1, scope_units=scope_units)
 
 
 # ----------------------------------------------------------------------------

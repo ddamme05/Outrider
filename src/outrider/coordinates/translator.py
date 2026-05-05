@@ -10,6 +10,7 @@ by exhaustive boundary tests on this file's surface, not by spike work.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -54,16 +55,26 @@ class GitHubCommentLocation(BaseModel):
             raise ValueError(
                 "GitHubCommentLocation: start_line and start_side must both be set or both be None"
             )
-        # When both set, the multi-line range points upward to `line`.
-        if self.start_line is not None and self.start_line > self.line:
-            raise ValueError(
-                f"GitHubCommentLocation: start_line ({self.start_line}) must "
-                f"be <= line ({self.line})"
-            )
+        if self.start_line is not None:
+            # Multi-line range points upward to `line`.
+            if self.start_line > self.line:
+                raise ValueError(
+                    f"GitHubCommentLocation: start_line ({self.start_line}) must "
+                    f"be <= line ({self.line})"
+                )
+            # Multi-line range stays on a single side. GitHub's review API rejects
+            # mixed-side multi-line comments with an opaque 422; catching it here
+            # makes the failure local to model construction.
+            if self.start_side != self.side:
+                raise ValueError(
+                    f"GitHubCommentLocation: start_side ({self.start_side!r}) must "
+                    f"equal side ({self.side!r}) for multi-line comments"
+                )
         return self
 
 
 def tree_sitter_to_github(
+    *,
     file_path: str,
     byte_start: int,
     byte_end: int,
@@ -151,42 +162,40 @@ def _validate_byte_span(byte_start: int, byte_end: int, head_byte_length: int) -
 def _byte_offset_to_line(head_bytes: bytes, byte_offset: int) -> int:
     """Return the 1-indexed line number containing `byte_offset` in `head_bytes`.
 
-    Uses `bytes.splitlines()` semantics (universal newlines: `\\n`, `\\r\\n`,
-    lone `\\r` all count as one line terminator). UTF-8 byte offsets land on
-    character boundaries per tree-sitter's invariant, so the byte slice is
-    safe to splitlines() directly.
+    Uses git-diff line semantics: a line is delimited by `\\n` (LF). `\\r\\n`
+    is treated as `\\n` (the `\\r` is just data preceding the LF). Lone `\\r`
+    mid-content is NOT a line terminator — git diff agrees, so this function
+    aligns with `unidiff.Hunk.target_start`'s line numbering.
+
+    UTF-8 byte offsets land on character boundaries per tree-sitter's invariant,
+    so the byte slice is safe.
     """
-    if byte_offset == 0:
-        return 1
-    prefix = head_bytes[:byte_offset]
-    lines_with_ends = prefix.splitlines(keepends=True)
-    if not lines_with_ends:
-        return 1
-    last = lines_with_ends[-1]
-    # If the last "line" ends with a terminator, byte_offset is on the next line.
-    # If not, byte_offset is mid-line on the last seen line.
-    if last.endswith((b"\n", b"\r")):
-        return len(lines_with_ends) + 1
-    return len(lines_with_ends)
+    return head_bytes[:byte_offset].count(b"\n") + 1
 
 
 def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
     """Parse `patch` and find the `PatchedFile` matching `file_path`.
 
     Comparison uses `unidiff.PatchedFile.path` (target path with `a/`/`b/`
-    prefix stripped); not raw `+++` header text. Raises `CoordinateError`
-    for malformed patches (any underlying `unidiff` exception is wrapped)
-    and for patches that don't contain `file_path`.
+    prefix stripped) normalized via `PurePosixPath(...).as_posix()` so
+    surface forms like `./foo.py` and `foo.py` match — `validate_diff_path`
+    applies the same normalization on its side, and the two halves must
+    agree. Raises `CoordinateError` for malformed patches (any underlying
+    `unidiff` exception is wrapped), for patches that don't contain
+    `file_path`, and for patches that contain duplicate file entries with
+    the same normalized path (webhook-attacker input per trust boundary #5;
+    deterministic systems reject ambiguous routing input).
     """
     try:
         patchset = PatchSet(patch)
     except UnidiffParseError as e:
         raise CoordinateError(f"malformed patch input: {e}") from e
 
-    for pf in patchset:
-        if pf.path == file_path:
-            return pf
-
-    raise CoordinateError(
-        f"file_path {file_path!r} is not present in the patch ({len(patchset)} files in patch)"
-    )
+    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == file_path]
+    if len(matches) > 1:
+        raise CoordinateError(f"patch contains {len(matches)} duplicate entries for {file_path!r}")
+    if not matches:
+        raise CoordinateError(
+            f"file_path {file_path!r} is not present in the patch ({len(patchset)} files in patch)"
+        )
+    return matches[0]

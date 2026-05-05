@@ -571,16 +571,22 @@ def test_crlf_line_endings_count_correctly() -> None:
     assert loc.line == 2
 
 
-def test_lone_cr_line_endings_count_correctly() -> None:
-    """Classic-Mac lone `\\r` line endings — one line terminator each.
+def test_lone_cr_treated_as_data_per_git_semantics() -> None:
+    """Lone `\\r` mid-content is NOT a line terminator — git diff convention
+    counts only `\\n` (LF). Catches the prior `bytes.splitlines()` impl
+    (which DOES split on lone `\\r`) and would have shifted line numbers
+    relative to `unidiff.Hunk.target_start`'s `\\n`-only line numbering.
 
-    Rare in modern code but `str.splitlines()` semantics handle them; this
-    test locks the convention so a future regression doesn't slip through.
+    Source `b"a\\rb\\rc\\n"`: git considers this one line terminated by `\\n`.
+    Bytes 0-4 (`a`, `\\r`, `b`, `\\r`, `c`) all map to L1src=1. The patch's
+    hunk reflects the same view: one line (`target_length=1`).
     """
-    head = "a\rb\rc\r"
-    # head_bytes: "a"=0, "\r"=1, "b"=2, "\r"=3, "c"=4, "\r"=5
-    # byte 2 = "b" (start of line 2)
-    patch = "diff --git a/cr.py b/cr.py\n--- a/cr.py\n+++ b/cr.py\n@@ -1,2 +1,3 @@\n a\n+b\n c\n"
+    head = "a\rb\rc\n"
+    # head_bytes: a=0, \r=1, b=2, \r=3, c=4, \n=5
+    patch = (
+        "diff --git a/cr.py b/cr.py\n--- a/cr.py\n+++ b/cr.py\n@@ -1,1 +1,1 @@\n-old\n+a\rb\rc\n"
+    )
+    # byte 2 ("b") and byte 4 ("c") are both on line 1 per git semantics.
     loc = tree_sitter_to_github(
         file_path="cr.py",
         byte_start=2,
@@ -588,7 +594,7 @@ def test_lone_cr_line_endings_count_correctly() -> None:
         head_content=head,
         patch=patch,
     )
-    assert loc.line == 2
+    assert loc.line == 1
 
 
 # ----------------------------------------------------------------------------
@@ -656,3 +662,132 @@ def test_return_value_is_github_comment_location_instance() -> None:
         patch=SIMPLE_PATCH,
     )
     assert isinstance(loc, GitHubCommentLocation)
+
+
+# ----------------------------------------------------------------------------
+# Misuse-resistance: keyword-only arguments
+# ----------------------------------------------------------------------------
+
+
+def test_translator_rejects_positional_args() -> None:
+    """`tree_sitter_to_github` is keyword-only — five same-type positional
+    parameters (`file_path`/`head_content`/`patch` are all `str`,
+    `byte_start`/`byte_end` are both `int`) make accidental swaps invisible.
+    Keyword-only forces explicit parameter naming at the call site.
+    """
+    with pytest.raises(TypeError, match="positional"):
+        tree_sitter_to_github(  # type: ignore[misc]
+            SIMPLE_FILE_PATH,
+            9,
+            19,
+            SIMPLE_HEAD,
+            SIMPLE_PATCH,
+        )
+
+
+# ----------------------------------------------------------------------------
+# Path-normalization symmetry: validated `./foo.py` matches unidiff path
+# ----------------------------------------------------------------------------
+
+
+def test_validated_path_matches_unidiff_normalized_path() -> None:
+    """`validate_diff_path("./foo.py")` collapses to `"foo.py"`. The translator
+    normalizes `unidiff.PatchedFile.path` symmetrically (via
+    `PurePosixPath(...).as_posix()`) before comparison, so both halves of
+    the path-equality use the same canonical form.
+
+    Catches the implementation that compares the validated path against
+    `pf.path` raw — which would silently miss a match when unidiff's
+    parsed path retains a `./` prefix from a synthetic patch header.
+    """
+    # Synthetic patch header with `b/./foo.py`: unidiff's `pf.path` keeps
+    # the `./` after stripping `b/`. Without symmetric normalization the
+    # match against validated `"foo.py"` would fail.
+    patch_with_dot = (
+        "diff --git a/foo.py b/./foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/./foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " orig\n"
+        "+added\n"
+    )
+    head = "orig\nadded\n"
+    loc = tree_sitter_to_github(
+        file_path="foo.py",
+        byte_start=5,  # start of "added"
+        byte_end=10,
+        head_content=head,
+        patch=patch_with_dot,
+    )
+    assert loc.file_path == "foo.py"
+    assert loc.line == 2
+
+
+# ----------------------------------------------------------------------------
+# Duplicate-path detection: webhook-attacker reject
+# ----------------------------------------------------------------------------
+
+
+def test_duplicate_patched_file_entries_rejected() -> None:
+    """Two `+++ b/foo.py` blocks in one patch → `CoordinateError` instead of
+    silently first-matching. unidiff allows duplicate `PatchedFile.path`
+    entries; the translator rejects them as ambiguous routing input
+    (webhook-attacker reachable per trust boundary #5).
+    """
+    patch_with_dups = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " a\n"
+        "+b\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -10,1 +10,2 @@\n"
+        " x\n"
+        "+y\n"
+    )
+    head = "a\nb\nc\nd\ne\nf\ng\nh\ni\nx\ny\n"
+    with pytest.raises(CoordinateError, match="duplicate entries"):
+        tree_sitter_to_github(
+            file_path="foo.py",
+            byte_start=0,
+            byte_end=1,
+            head_content=head,
+            patch=patch_with_dups,
+        )
+
+
+# ----------------------------------------------------------------------------
+# GitHubCommentLocation: side / start_side cross-field validator
+# ----------------------------------------------------------------------------
+
+
+def test_github_comment_location_mixed_side_multiline_rejected() -> None:
+    """Multi-line comment with `start_side != side` raises ValidationError.
+    GitHub's review API rejects mixed-side multi-line with an opaque 422;
+    catching it at model construction makes the failure local.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="start_side.*must.*equal side"):
+        GitHubCommentLocation(
+            file_path="foo.py",
+            line=10,
+            side="RIGHT",
+            start_line=5,
+            start_side="LEFT",
+        )
+
+
+def test_github_comment_location_same_side_multiline_accepted() -> None:
+    """Multi-line comment with matching sides constructs successfully."""
+    loc = GitHubCommentLocation(
+        file_path="foo.py",
+        line=10,
+        side="RIGHT",
+        start_line=5,
+        start_side="RIGHT",
+    )
+    assert loc.start_side == loc.side == "RIGHT"

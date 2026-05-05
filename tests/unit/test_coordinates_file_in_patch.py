@@ -202,3 +202,57 @@ def test_repeated_calls_idempotent_for_absent() -> None:
 def test_empty_file_path_returns_false() -> None:
     """Empty file_path → False (no PatchedFile.path is empty)."""
     assert file_in_patch("", SIMPLE_PATCH) is False
+
+
+# ----------------------------------------------------------------------------
+# Symmetric path normalization — `./foo.py` matches the validated `foo.py`
+# ----------------------------------------------------------------------------
+
+
+def test_dot_prefix_in_patch_path_matches_validated_path() -> None:
+    """A patch with `+++ b/./foo.py` (unidiff parses path as `./foo.py`)
+    matches a validated `file_path` of `"foo.py"` after symmetric
+    `PurePosixPath(...).as_posix()` normalization on the unidiff side.
+
+    Without symmetric normalization, the comparison would be `"foo.py" ==
+    "./foo.py"` and `file_in_patch` would silently miss the match.
+    """
+    patch_with_dot = (
+        "diff --git a/foo.py b/./foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/./foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " orig\n"
+        "+added\n"
+    )
+    assert file_in_patch("foo.py", patch_with_dot) is True
+
+
+# ----------------------------------------------------------------------------
+# Duplicate-path detection — webhook-attacker reject
+# ----------------------------------------------------------------------------
+
+
+def test_duplicate_patched_file_entries_raise() -> None:
+    """Two `+++ b/foo.py` blocks → CoordinateError (ambiguous routing input).
+
+    Mirrors the same rejection in `_find_patched_file` (translator.py); both
+    halves of coordinates' file-membership API agree on rejecting duplicates
+    rather than silently first-matching.
+    """
+    patch_with_dups = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " a\n"
+        "+b\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -10,1 +10,2 @@\n"
+        " x\n"
+        "+y\n"
+    )
+    with pytest.raises(CoordinateError, match="duplicate entries"):
+        file_in_patch("foo.py", patch_with_dups)
