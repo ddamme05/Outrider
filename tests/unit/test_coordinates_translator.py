@@ -723,6 +723,56 @@ def test_validated_path_matches_unidiff_normalized_path() -> None:
     assert loc.line == 2
 
 
+def test_caller_dot_prefix_normalized_to_canonical() -> None:
+    """`tree_sitter_to_github(file_path="./foo.py", ...)` against a patch
+    whose `pf.path` is already canonical `"foo.py"` matches via
+    `validate_diff_path`'s caller-side normalization. Returned
+    `GitHubCommentLocation.file_path` is the canonical form `"foo.py"`,
+    not the input form `"./foo.py"`.
+
+    Locks the composition, not just the helper: the prior commit's bug
+    in `file_in_patch` (raw caller path compared to normalized unidiff
+    path) didn't reach `_find_patched_file` because `tree_sitter_to_github`
+    canonicalizes via `validate_diff_path` BEFORE handing off. This test
+    pins that composition so a future refactor can't accidentally bypass
+    the canonicalization step.
+    """
+    canonical_patch = (
+        "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1,1 +1,2 @@\n orig\n+added\n"
+    )
+    head = "orig\nadded\n"
+    loc = tree_sitter_to_github(
+        file_path="./foo.py",
+        byte_start=5,
+        byte_end=10,
+        head_content=head,
+        patch=canonical_patch,
+    )
+    assert loc.file_path == "foo.py"
+    assert loc.line == 2
+
+
+def test_caller_double_slash_normalized_to_canonical() -> None:
+    """`tree_sitter_to_github(file_path="a//b.py", ...)` matches a patch
+    whose `pf.path` is `"a/b.py"` — `validate_diff_path` collapses the
+    double slash via `PurePosixPath`. Returned location carries the
+    canonical form.
+    """
+    canonical_patch = (
+        "diff --git a/a/b.py b/a/b.py\n--- a/a/b.py\n+++ b/a/b.py\n@@ -1,1 +1,2 @@\n orig\n+added\n"
+    )
+    head = "orig\nadded\n"
+    loc = tree_sitter_to_github(
+        file_path="a//b.py",
+        byte_start=5,
+        byte_end=10,
+        head_content=head,
+        patch=canonical_patch,
+    )
+    assert loc.file_path == "a/b.py"
+    assert loc.line == 2
+
+
 # ----------------------------------------------------------------------------
 # Duplicate-path detection: webhook-attacker reject
 # ----------------------------------------------------------------------------
