@@ -8,12 +8,25 @@ Protocol implemented here is canonical at src/outrider/ast_facts/base.py.
 
 from __future__ import annotations
 
+import re
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
+
+from outrider.coordinates.errors import CoordinateError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from outrider.ast_facts.models import ScopeUnit
+
+
+# Shell metacharacters per `docs/spec.md` §10.1 + `docs/trust-boundaries.md` §5.3.
+# Conservative reject set: any character that has special meaning in POSIX shells,
+# could be used for command injection if the path ever flows to a subprocess, or
+# breaks GitHub API path semantics. Newline / NUL prevent header-injection and
+# null-byte attacks; glob characters prevent unintended pattern expansion at
+# downstream consumers.
+_SHELL_METACHARS_RE = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 
 
 def diff_line_to_scope(
@@ -56,13 +69,38 @@ def validate_diff_path(file_path: str) -> str:
     """Diff-side path validation surface — publisher-facing.
 
     Validates a repository-relative file path before it reaches the GitHub
-    comment API. Canonical construction is `pathlib.Path` with `.resolve()`
-    and prefix validation per docs/spec.md §10.1 / docs/trust-boundaries.md
-    §5.3. Returns the validated repo-relative POSIX form (str).
+    comment API per docs/spec.md §10.1 / docs/trust-boundaries.md §5.3,
+    backing the `paths-validated-before-use` invariant (security-critical).
+
+    Rejects, with `CoordinateError`:
+    - empty strings
+    - absolute paths (`is_absolute()` on a `PurePosixPath`)
+    - `..` traversal in any path component
+    - backslash characters (Windows separators; GitHub paths are POSIX)
+    - shell metacharacters (`;`, `&`, `|`, `` ` ``, `$`, `(`, `)`, `<`, `>`,
+      `\\n`, `\\r`, NUL, `*`, `?`, `~`, `[`, `]`, `{`, `}`, `'`, `"`)
+
+    Returns the validated path in repo-relative POSIX form (str). The full
+    canonical "construct via `pathlib.Path` with `.resolve()` and prefix
+    validation" rule applies to the resolver-with-root case (the
+    `ImportPathResolver` Protocol implementation, where `import_root` is the
+    prefix); this surface is purely string-level since the GitHub comment API
+    consumes string paths and there's no host filesystem to resolve against.
     """
-    raise NotImplementedError(
-        "validate_diff_path lands in a later commit per the implementation sequence"
-    )
+    if not file_path:
+        raise CoordinateError("file_path is empty")
+    if "\\" in file_path:
+        raise CoordinateError(
+            f"file_path {file_path!r} contains a backslash (POSIX separators only)"
+        )
+    if _SHELL_METACHARS_RE.search(file_path):
+        raise CoordinateError(f"file_path {file_path!r} contains shell metacharacters")
+    pp = PurePosixPath(file_path)
+    if pp.is_absolute():
+        raise CoordinateError(f"file_path {file_path!r} is absolute; must be repo-relative")
+    if ".." in pp.parts:
+        raise CoordinateError(f"file_path {file_path!r} contains '..' traversal")
+    return pp.as_posix()
 
 
 def file_in_patch(file_path: str, patch: str) -> bool:

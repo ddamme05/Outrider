@@ -556,6 +556,56 @@ def test_lone_cr_line_endings_count_correctly() -> None:
 
 
 # ----------------------------------------------------------------------------
+# Path validation gate — paths-validated-before-use [security-critical]
+# ----------------------------------------------------------------------------
+
+
+def test_invalid_file_path_rejected_before_any_other_work() -> None:
+    """tree_sitter_to_github calls validate_diff_path() on file_path FIRST.
+
+    Per the `paths-validated-before-use` invariant (docs/spec.md §10.1),
+    coordinates enforces validation before any path reaches the GitHub
+    comment API or is stored in a returned `GitHubCommentLocation`. An
+    absolute path is rejected with CoordinateError mentioning 'absolute',
+    matching `validate_diff_path`'s rejection message — the rejection
+    fires from the path validator, not from a later byte-bounds or
+    patch-membership check.
+    """
+    with pytest.raises(CoordinateError, match="absolute"):
+        tree_sitter_to_github(
+            file_path="/etc/passwd",
+            byte_start=0,
+            byte_end=8,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
+def test_traversal_in_file_path_rejected() -> None:
+    """`..` traversal in file_path → CoordinateError from validate_diff_path."""
+    with pytest.raises(CoordinateError, match=r"'\.\.'"):
+        tree_sitter_to_github(
+            file_path="../../etc/passwd",
+            byte_start=0,
+            byte_end=8,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
+def test_shell_metachar_in_file_path_rejected() -> None:
+    """Shell metacharacter in file_path → CoordinateError from validate_diff_path."""
+    with pytest.raises(CoordinateError, match="shell metacharacters"):
+        tree_sitter_to_github(
+            file_path="foo;rm.py",
+            byte_start=0,
+            byte_end=8,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
+# ----------------------------------------------------------------------------
 # Return type is a GitHubCommentLocation (not a tuple, dict, etc.)
 # ----------------------------------------------------------------------------
 

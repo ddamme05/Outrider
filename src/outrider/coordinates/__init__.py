@@ -32,8 +32,8 @@ from outrider.coordinates.diff_parser import (
     resolve_candidate_paths,
     validate_diff_path,
 )
+from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.translator import (
-    CoordinateError,
     GitHubCommentLocation,
     tree_sitter_to_github,
 )

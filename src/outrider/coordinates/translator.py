@@ -16,18 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from outrider.coordinates.diff_parser import validate_diff_path
+from outrider.coordinates.errors import CoordinateError
+
 if TYPE_CHECKING:
     from unidiff.patch import PatchedFile
-
-
-class CoordinateError(Exception):
-    """Raised when coordinate translation cannot produce a reviewable location.
-
-    Single failure mode for the coordinates module per docs/spec.md §5.6.
-    Coordinates' contract: any patch-parse failure, span-out-of-hunk, or
-    span-out-of-bounds surfaces as `CoordinateError`, never as an underlying
-    `unidiff` parse exception or `IndexError` leak.
-    """
 
 
 class GitHubCommentLocation(BaseModel):
@@ -90,25 +83,31 @@ def tree_sitter_to_github(
 
     Per docs/spec.md §5.6 — V1 returns single-line locations only;
     multi-line spans collapse to the line containing `byte_start`.
+
+    `file_path` is validated via `validate_diff_path()` BEFORE any path
+    reaches the GitHub comment API or is stored in the returned
+    `GitHubCommentLocation`, per the `paths-validated-before-use`
+    invariant (docs/spec.md §10.1, security-critical).
     """
+    validated_path = validate_diff_path(file_path)
     head_bytes = head_content.encode("utf-8")
     _validate_byte_span(byte_start, byte_end, len(head_bytes))
 
     head_line = _byte_offset_to_line(head_bytes, byte_start)
-    matched_file = _find_patched_file(patch, file_path)
+    matched_file = _find_patched_file(patch, validated_path)
 
     for hunk in matched_file:
         # target_start / target_length give the 1-indexed head-side line range
         # (added + context lines; deletions don't count toward target_length).
         if hunk.target_start <= head_line < hunk.target_start + hunk.target_length:
             return GitHubCommentLocation(
-                file_path=file_path,
+                file_path=validated_path,
                 line=head_line,
                 side="RIGHT",
             )
 
     raise CoordinateError(
-        f"head line {head_line} for file {file_path!r} is not in any hunk's "
+        f"head line {head_line} for file {validated_path!r} is not in any hunk's "
         f"reviewable range (span is in unchanged code within a diffed file)"
     )
 
