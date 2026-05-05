@@ -1,19 +1,28 @@
 """Structural eval scenario: graceful degradation on syntax error outside diff.
 
-Per spec §11.2 + `parse-errors-degrade-to-judged`: a file with a syntax
-error OUTSIDE the changed region degrades gracefully — `ast_facts/`
-returns `ScopeUnit` objects for the parseable region, not an empty set.
+Per docs/spec.md §11.2 + the `parse-errors-degrade-to-judged` invariant:
+a file with a syntax error OUTSIDE the changed region degrades gracefully
+— the analyze node reports degraded=False because the diff line itself
+lies in parseable code, even though the file as a whole has errors.
 
-V1: still skipped after the ast_facts/ landing. ast_facts/ ships the
-per-scope `has_error` map, but the "graceful degradation" outcome
-combines that map with `coordinates/`'s changed-region-to-scope mapping
-in the analyze node. This scenario flips when `coordinates/` and the
-analyze-node spec land.
+V1: still skipped after coordinates lands. ast_facts ships the parse
+result (with whatever `scope_units` tree-sitter recovers from the
+parseable region); coordinates ships `diff_line_to_scope` (maps a
+parseable-region diff line to its scope). The "graceful" derivation
+that combines both into a degraded=False marker lives in the analyze
+node — this scenario flips when the analyze-node spec lands.
 """
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires coordinates + analyze-node degraded derivation")
+from outrider.ast_facts import parse_python
+from outrider.coordinates import diff_line_to_scope
+
+pytestmark = pytest.mark.skip(reason="requires analyze-node degraded derivation")
 
 # The syntax error is at the bottom of the file (unmatched paren); the
 # diff hunk lies in the parseable region above.
@@ -33,9 +42,29 @@ EXPECTED_RESOLVED_NAME = "changed_function"
 
 
 def test_syntax_error_outside_diff_degrades_gracefully() -> None:
-    """ast_facts returns ScopeUnits for the parseable region; degraded marker is False."""
-    from outrider.ast_facts import resolve_line_to_scope  # type: ignore[import-not-found]
+    """Diff line in parseable region → ScopeUnit returned; eventual analyze-node
+    degraded=False because the diff line itself is parseable.
+    """
+    parse_result = parse_python(
+        source=SOURCE.encode("utf-8"),
+        file_path="test.py",
+        resolver=MagicMock(),
+    )
 
-    result = resolve_line_to_scope(SOURCE, DIFF_LINE)
-    assert result.scope.name == EXPECTED_RESOLVED_NAME
-    assert result.degraded is EXPECTED_DEGRADED_MARKER
+    # The eventual analyze-node assertion: even though parser_outcome may
+    # report "failed" for the whole file, the diff-line region is parseable
+    # and `diff_line_to_scope` finds the scope.
+    scope = diff_line_to_scope(
+        file_path="test.py",
+        diff_line=DIFF_LINE,
+        scope_units=list(parse_result.scope_units),
+    )
+
+    # When this scenario un-skips, the analyze node combines parse_result with
+    # the per-line lookup to derive a per-finding degraded marker. The exact
+    # parser_outcome for partially-broken files depends on tree-sitter's
+    # recovery; the analyze-node spec pins the combination rule.
+    # assert scope is not None
+    # assert scope.name == EXPECTED_RESOLVED_NAME
+    # assert analyze_node_derive_degraded(parse_result, DIFF_LINE) is EXPECTED_DEGRADED_MARKER
+    _ = scope  # silence the unused-variable warning while skipped

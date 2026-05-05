@@ -1,20 +1,29 @@
 """Structural eval scenario: parse-degraded fallback on syntax error inside diff.
 
-Per spec §11.2 + `parse-errors-degrade-to-judged`: a file with a syntax
-error INSIDE the changed region triggers the parse-degraded fallback.
-Empty ScopeUnit set + a degraded marker; downstream findings produced
-under degraded mode get downgraded to JUDGED tier (per the invariant).
+Per docs/spec.md §11.2 + the `parse-errors-degrade-to-judged` invariant:
+a file with a syntax error INSIDE the changed region triggers the
+parse-degraded fallback. Empty `ScopeUnit` set + a degraded marker
+derived by the analyze node; downstream findings produced under degraded
+mode get downgraded to JUDGED tier per the invariant.
 
-V1: still skipped after the ast_facts/ landing. ast_facts/ ships the
-per-scope `has_error` map, but the `degraded` derivation combines that
-map with `coordinates/`'s changed-region-to-scope mapping in the
-analyze node. This scenario flips when `coordinates/` and the
-analyze-node spec land.
+V1: still skipped after coordinates lands. ast_facts ships the parse
+result (`parser_outcome="failed"` + empty `scope_units` for an unparseable
+file); coordinates ships `diff_line_to_scope` (returns None for any line
+when `scope_units` is empty). The "degraded" derivation that combines
+both into a single per-finding marker lives in the analyze node — this
+scenario flips when the analyze-node spec lands.
 """
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires coordinates + analyze-node degraded derivation")
+from outrider.ast_facts import parse_python
+from outrider.coordinates import diff_line_to_scope
+
+pytestmark = pytest.mark.skip(reason="requires analyze-node degraded derivation")
 
 # Syntax error is inside the changed region; the diff line itself lies
 # in unparseable code.
@@ -30,13 +39,31 @@ def broken_function(  # diff hunk lives here, line 5 — parser fails on this re
 DIFF_LINE = 5
 
 EXPECTED_DEGRADED_MARKER = True
-EXPECTED_SCOPE_UNITS = ()  # empty set — parser can't resolve anything in the broken region
 
 
 def test_syntax_error_inside_diff_triggers_parse_degraded_fallback() -> None:
-    """ast_facts returns empty ScopeUnit set + degraded=True for unparseable diff region."""
-    from outrider.ast_facts import resolve_line_to_scope  # type: ignore[import-not-found]
+    """Whole-file unparseable → parser_outcome=failed, empty scope_units;
+    diff_line_to_scope returns None; eventual analyze-node degraded=True.
+    """
+    parse_result = parse_python(
+        source=SOURCE.encode("utf-8"),
+        file_path="test.py",
+        resolver=MagicMock(),
+    )
 
-    result = resolve_line_to_scope(SOURCE, DIFF_LINE)
-    assert result.degraded is EXPECTED_DEGRADED_MARKER
-    assert tuple(result.scopes) == EXPECTED_SCOPE_UNITS
+    # ast_facts contract: failed parse → empty scope_units.
+    assert parse_result.parser_outcome == "failed"
+    assert parse_result.scope_units == ()
+
+    # coordinates contract: empty scope_units → None for any diff_line.
+    scope = diff_line_to_scope(
+        file_path="test.py",
+        diff_line=DIFF_LINE,
+        scope_units=list(parse_result.scope_units),
+    )
+    assert scope is None
+
+    # Pending analyze-node: combines parse_outcome="failed" with diff-line
+    # mapping to derive degraded=True; this assertion lands when the
+    # analyze-node spec ships.
+    # assert analyze_node_derive_degraded(parse_result, DIFF_LINE) is EXPECTED_DEGRADED_MARKER
