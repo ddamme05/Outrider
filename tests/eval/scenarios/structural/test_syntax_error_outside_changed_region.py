@@ -51,20 +51,18 @@ def test_syntax_error_outside_diff_degrades_gracefully() -> None:
         resolver=MagicMock(),
     )
 
-    # The eventual analyze-node assertion: even though parser_outcome may
-    # report "failed" for the whole file, the diff-line region is parseable
-    # and `diff_line_to_scope` finds the scope.
+    # ast_facts contract: tree-sitter recovers from the trailing syntax
+    # error and extracts the parseable region's scopes. The diff line
+    # itself maps to a real ScopeUnit via diff_line_to_scope.
     scope = diff_line_to_scope(
         file_path="test.py",
         diff_line=DIFF_LINE,
         scope_units=list(parse_result.scope_units),
     )
+    assert scope is not None
+    assert scope.name == EXPECTED_RESOLVED_NAME
 
-    # When this scenario un-skips, the analyze node combines parse_result with
-    # the per-line lookup to derive a per-finding degraded marker. The exact
-    # parser_outcome for partially-broken files depends on tree-sitter's
-    # recovery; the analyze-node spec pins the combination rule.
-    # assert scope is not None
-    # assert scope.name == EXPECTED_RESOLVED_NAME
+    # Pending analyze-node: combines parse_result + diff-line mapping to
+    # derive degraded=False (the diff line is parseable even though the
+    # whole-file parse may report errors elsewhere).
     # assert analyze_node_derive_degraded(parse_result, DIFF_LINE) is EXPECTED_DEGRADED_MARKER
-    _ = scope  # silence the unused-variable warning while skipped
