@@ -2,13 +2,21 @@
 
 Per docs/spec.md §5.6 (the two §5.6 functions and the failure-mode contract)
 and docs/spec.md §7.2 (the GitHubCommentLocation canonical shape).
+
+See DECISIONS.md#006-two-month-0-spikes-not-five for the off-by-one test
+discipline this translator honors — coordinate math correctness is enforced
+by exhaustive boundary tests on this file's surface, not by spike work.
 """
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from unidiff import PatchSet
+
+if TYPE_CHECKING:
+    from unidiff.patch import PatchedFile
 
 
 class CoordinateError(Exception):
@@ -70,13 +78,101 @@ def tree_sitter_to_github(
 ) -> GitHubCommentLocation:
     """Convert a tree-sitter byte span to a GitHub review comment location.
 
-    Returns the line number and side (LEFT/RIGHT) for posting.
-    Raises CoordinateError if the span does not map to a reviewable line
-    (e.g., the span is in unchanged code outside any hunk).
+    Returns the line number and `side="RIGHT"` for posting (V1 produces
+    head-side comments only; LEFT-side commenting on deleted base-only
+    content is out of V1 scope per the §5.6 signature, which accepts only
+    `head_content`).
+
+    Raises `CoordinateError` if the span does not map to a reviewable line
+    (e.g., the span is in unchanged code outside any hunk, the file is not
+    present in the patch, or the byte offsets are out of bounds).
 
     Per docs/spec.md §5.6 — V1 returns single-line locations only;
     multi-line spans collapse to the line containing `byte_start`.
     """
-    raise NotImplementedError(
-        "tree_sitter_to_github lands in the next commit per the implementation sequence"
+    head_bytes = head_content.encode("utf-8")
+    _validate_byte_span(byte_start, byte_end, len(head_bytes))
+
+    head_line = _byte_offset_to_line(head_bytes, byte_start)
+    matched_file = _find_patched_file(patch, file_path)
+
+    for hunk in matched_file:
+        # target_start / target_length give the 1-indexed head-side line range
+        # (added + context lines; deletions don't count toward target_length).
+        if hunk.target_start <= head_line < hunk.target_start + hunk.target_length:
+            return GitHubCommentLocation(
+                file_path=file_path,
+                line=head_line,
+                side="RIGHT",
+            )
+
+    raise CoordinateError(
+        f"head line {head_line} for file {file_path!r} is not in any hunk's "
+        f"reviewable range (span is in unchanged code within a diffed file)"
+    )
+
+
+# ----------------------------------------------------------------------------
+# Internal helpers — package-private, no boundary surface
+# ----------------------------------------------------------------------------
+
+
+def _validate_byte_span(byte_start: int, byte_end: int, head_byte_length: int) -> None:
+    """Reject out-of-bounds or inverted byte spans with a CoordinateError.
+
+    `byte_start == head_byte_length` is in-bounds (point at EOF); strictly-greater
+    is out-of-bounds. Convention: half-open intervals — start inclusive, end
+    exclusive — matching tree-sitter's `Node.start_byte` / `Node.end_byte`.
+    """
+    if byte_start < 0 or byte_start > head_byte_length:
+        raise CoordinateError(
+            f"byte_start {byte_start} out of bounds for head_content ({head_byte_length} bytes)"
+        )
+    if byte_end < byte_start:
+        raise CoordinateError(
+            f"byte_end {byte_end} must be >= byte_start {byte_start} (half-open interval)"
+        )
+
+
+def _byte_offset_to_line(head_bytes: bytes, byte_offset: int) -> int:
+    """Return the 1-indexed line number containing `byte_offset` in `head_bytes`.
+
+    Uses `bytes.splitlines()` semantics (universal newlines: `\\n`, `\\r\\n`,
+    lone `\\r` all count as one line terminator). UTF-8 byte offsets land on
+    character boundaries per tree-sitter's invariant, so the byte slice is
+    safe to splitlines() directly.
+    """
+    if byte_offset == 0:
+        return 1
+    prefix = head_bytes[:byte_offset]
+    lines_with_ends = prefix.splitlines(keepends=True)
+    if not lines_with_ends:
+        return 1
+    last = lines_with_ends[-1]
+    # If the last "line" ends with a terminator, byte_offset is on the next line.
+    # If not, byte_offset is mid-line on the last seen line.
+    if last.endswith((b"\n", b"\r")):
+        return len(lines_with_ends) + 1
+    return len(lines_with_ends)
+
+
+def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
+    """Parse `patch` and find the `PatchedFile` matching `file_path`.
+
+    Comparison uses `unidiff.PatchedFile.path` (target path with `a/`/`b/`
+    prefix stripped); not raw `+++` header text. Raises `CoordinateError`
+    for malformed patches (any underlying `unidiff` exception is wrapped)
+    and for patches that don't contain `file_path`.
+    """
+    try:
+        patchset = PatchSet(patch)
+    except Exception as e:  # noqa: BLE001 — wrapping any unidiff-side parser error
+        raise CoordinateError(f"malformed patch input: {e}") from e
+
+    for pf in patchset:
+        if pf.path == file_path:
+            return pf
+
+    raise CoordinateError(
+        f"file_path {file_path!r} is not present in the patch ({len(patchset)} files in patch)"
     )
