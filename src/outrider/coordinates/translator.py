@@ -176,14 +176,17 @@ def _byte_offset_to_line(head_bytes: bytes, byte_offset: int) -> int:
 def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
     """Parse `patch` and find the `PatchedFile` matching `file_path`.
 
-    Comparison uses `unidiff.PatchedFile.path` (target path with `a/`/`b/`
-    prefix stripped) normalized via `PurePosixPath(...).as_posix()` so
-    surface forms like `./foo.py` and `foo.py` match — `validate_diff_path`
-    applies the same normalization on its side, and the two halves must
-    agree. Raises `CoordinateError` for malformed patches (any underlying
-    `unidiff` exception is wrapped), for patches that don't contain
-    `file_path`, and for patches that contain duplicate file entries with
-    the same normalized path (webhook-attacker input per trust boundary #5;
+    Comparison uses `unidiff.PatchedFile.path` — the operation-dependent
+    canonical path with `a/`/`b/` prefix stripped: additions,
+    modifications, and renames return the **target** (head-side) path;
+    deletions return the **source** path because the target is `/dev/null`.
+    Normalized via `PurePosixPath(...).as_posix()` so surface forms like
+    `./foo.py` and `foo.py` match — `validate_diff_path` applies the same
+    normalization on its side, and the two halves must agree. Raises
+    `CoordinateError` for malformed patches (any underlying `unidiff`
+    exception is wrapped), for patches that don't contain `file_path`,
+    and for patches that contain duplicate file entries with the same
+    normalized path (webhook-attacker input per trust boundary #5;
     deterministic systems reject ambiguous routing input).
     """
     try:

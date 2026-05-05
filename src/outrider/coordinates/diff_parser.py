@@ -249,15 +249,17 @@ def validate_diff_path(file_path: str) -> str:
 
 
 def file_in_patch(file_path: str, patch: str) -> bool:
-    """True if `file_path` matches any hunk's normalized target path in `patch`.
+    """True if `file_path` matches any normalized `unidiff.PatchedFile.path` in `patch`.
 
-    Both sides of the comparison are normalized: `file_path` runs through
-    `validate_diff_path` (canonicalizing `./foo.py` → `foo.py`, `a//b.py` →
-    `a/b.py`), and `unidiff.PatchedFile.path` runs through
-    `PurePosixPath(...).as_posix()`. Per `unidiff/patch.py`'s `path`
-    property, rename hunks return the target (head-side) path, additions
-    return the target, deletions return the source — matching the "match
-    `to_file` only" commitment for renames.
+    `PatchedFile.path` is the operation-dependent canonical path:
+    additions, modifications, and renames return the **target** (head-side)
+    path; deletions return the **source** path because the target is
+    `/dev/null`. Both sides of the comparison are normalized: `file_path`
+    runs through `validate_diff_path` (canonicalizing `./foo.py` → `foo.py`,
+    `a//b.py` → `a/b.py`), and `unidiff.PatchedFile.path` runs through
+    `PurePosixPath(...).as_posix()`. The rename commitment ("match
+    `to_file` only, not `from_file`") follows from the same rule because
+    `PatchedFile.path` returns `to_file` for renames.
 
     Boolean-helper policy: returns `False` for empty patches (`patch == ""`),
     for paths absent from the diff, AND for paths that fail

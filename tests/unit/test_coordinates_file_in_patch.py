@@ -148,6 +148,35 @@ def test_rename_hunk_does_not_match_source_path() -> None:
 
 
 # ----------------------------------------------------------------------------
+# Deletion hunks — match source (because target is /dev/null)
+# ----------------------------------------------------------------------------
+
+
+def test_deletion_hunk_matches_source_path() -> None:
+    """For a deletion hunk, the target is `/dev/null`, so
+    `unidiff.PatchedFile.path` falls back to the source path. The deleted
+    file IS a member of the patch under its source path — the publisher
+    needs this to route findings about deleted files (typically
+    DASHBOARD_ONLY since head-side has no line to comment on).
+
+    Locks the docstring claim that `PatchedFile.path` is operation-
+    dependent: target for additions/modifications/renames, source for
+    deletions.
+    """
+    deletion_patch = (
+        "diff --git a/deleted.py b/deleted.py\n"
+        "deleted file mode 100644\n"
+        "index abcdef0..0000000 100644\n"
+        "--- a/deleted.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-old_line_1\n"
+        "-old_line_2\n"
+    )
+    assert file_in_patch("deleted.py", deletion_patch) is True
+
+
+# ----------------------------------------------------------------------------
 # Malformed patch input — wrap UnidiffParseError as CoordinateError
 # ----------------------------------------------------------------------------
 
