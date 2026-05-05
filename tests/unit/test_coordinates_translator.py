@@ -647,6 +647,42 @@ def test_shell_metachar_in_file_path_rejected() -> None:
         )
 
 
+def test_windows_drive_path_rejected() -> None:
+    """Windows drive-qualified paths → CoordinateError from validate_diff_path's
+    drive-letter rejection. Pins the propagation: the validator's
+    Windows-drive rejection flows through to `tree_sitter_to_github`
+    BEFORE any byte-bounds or patch-membership work, matching the
+    "validate path first" contract of the security-critical
+    `paths-validated-before-use` invariant.
+    """
+    with pytest.raises(CoordinateError, match="drive-letter prefix"):
+        tree_sitter_to_github(
+            file_path="C:/Users/file.py",
+            byte_start=0,
+            byte_end=8,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+    with pytest.raises(CoordinateError, match="drive-letter prefix"):
+        tree_sitter_to_github(
+            file_path="C:relative.py",
+            byte_start=0,
+            byte_end=8,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+    # Backslash form is caught by the backslash rule (which fires before
+    # the drive-letter rule); same CoordinateError class, different message.
+    with pytest.raises(CoordinateError, match="backslash"):
+        tree_sitter_to_github(
+            file_path="C:\\Users\\file.py",
+            byte_start=0,
+            byte_end=8,
+            head_content=SIMPLE_HEAD,
+            patch=SIMPLE_PATCH,
+        )
+
+
 # ----------------------------------------------------------------------------
 # Return type is a GitHubCommentLocation (not a tuple, dict, etc.)
 # ----------------------------------------------------------------------------

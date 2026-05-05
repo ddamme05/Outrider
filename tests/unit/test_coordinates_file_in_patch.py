@@ -269,6 +269,21 @@ def test_caller_invalid_path_returns_false() -> None:
     assert file_in_patch("foo\\bar.py", SIMPLE_PATCH) is False
 
 
+def test_caller_windows_drive_path_returns_false() -> None:
+    """Drive-qualified Windows paths are caught by `validate_diff_path`'s
+    Windows-drive-letter rejection; per the boolean-helper policy
+    `file_in_patch` returns False rather than raising. Pins the
+    propagation: the validator's drive-prefix rejection flows through
+    to the membership helper without leaking a CoordinateError.
+    """
+    assert file_in_patch("C:/Users/file.py", SIMPLE_PATCH) is False
+    assert file_in_patch("c:/Users/file.py", SIMPLE_PATCH) is False
+    assert file_in_patch("C:relative.py", SIMPLE_PATCH) is False
+    # Backslash form is caught by the backslash rule in validate_diff_path
+    # (which fires before the drive-letter rule); same boolean result.
+    assert file_in_patch("C:\\Users\\file.py", SIMPLE_PATCH) is False
+
+
 # ----------------------------------------------------------------------------
 # Duplicate-path detection — webhook-attacker reject
 # ----------------------------------------------------------------------------
