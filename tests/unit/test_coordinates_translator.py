@@ -253,7 +253,7 @@ def test_multiline_span_collapses_to_byte_start_line() -> None:
 
 
 # ----------------------------------------------------------------------------
-# Multi-file patch disambiguation (F15 fold)
+# Multi-file patch disambiguation
 # ----------------------------------------------------------------------------
 
 

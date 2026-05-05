@@ -1,15 +1,15 @@
 """Unit tests for `coordinates.file_in_patch` — file-membership helper.
 
-Per docs/spec.md §4.1.7 and specs/2026-05-04-coordinates-module.md (judgment
-call 2): the publisher uses this helper to distinguish `unchanged_region`
-(file in patch but span outside any hunk) from `non_diffed_file` (file
-absent from patch entirely) WITHOUT inlining patch-membership math —
-keeps trust boundary #3 intact.
+Per docs/spec.md §4.1.7 (publish routing) and docs/trust-boundaries.md §3
+(coordinate translation): the publisher uses this helper to distinguish
+`unchanged_region` (file in patch but span outside any hunk) from
+`non_diffed_file` (file absent from patch entirely) WITHOUT inlining
+patch-membership math — keeps trust boundary #3 intact.
 
 Comparison via `unidiff.PatchedFile.path` (normalized — `a/` / `b/`
 prefix stripped). For rename hunks, `pf.path` returns the target
-(head-side) path per unidiff's source — matches the F8 fold commitment
-("match `to_file` only").
+(head-side) path per `unidiff/patch.py` (preferred over source when
+`is_rename` and target is not `/dev/null`).
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def test_raw_a_prefix_not_matched() -> None:
 
 
 # ----------------------------------------------------------------------------
-# Rename hunks: F8 fold — match target (head-side) only
+# Rename hunks — match target (head-side) only, never source
 # ----------------------------------------------------------------------------
 
 
@@ -129,7 +129,8 @@ def test_rename_hunk_does_not_match_source_path() -> None:
     file_in_patch returns False for it.
 
     V1 findings reference head-side paths per ast_facts conventions; from_file
-    membership is not part of the contract (per the F8 fold commitment).
+    membership is not part of the contract — `unidiff.PatchedFile.path`
+    returns the target side for renames.
     """
     rename_patch = (
         "diff --git a/old_name.py b/new_name.py\n"
