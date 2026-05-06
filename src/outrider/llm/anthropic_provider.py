@@ -78,6 +78,13 @@ _LOGGER = logging.getLogger("outrider.llm.anthropic_provider")
 _ZDR_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes"})
 _ZDR_FALSY: Final[frozenset[str]] = frozenset({"", "0", "false", "no"})
 
+# Round-17 fold per audit-agent finding M2: warn once per misconfigured
+# raw value per process. V1.5 parallel-analyze constructs N providers per
+# review — without this guard, a typo'd env var spams thousands of WARNING
+# records per day. The set is process-local so each worker still warns
+# once, which is the diagnostic signal we want without the spam.
+_WARNED_RAW_VALUES: set[str] = set()
+
 
 def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     """Read ZDR attestation per DECISIONS#015 — operator-attestation only,
@@ -91,6 +98,8 @@ def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     misconfiguration at construction time (round-16 sharp-edges M1
     fold — silent fail-closed-on-typo means the operator who *thought*
     they enabled ZDR ships with retention claims they didn't intend).
+    The warning fires once per distinct raw value per process to avoid
+    log spam under V1.5's parallel-analyze fanout (round-17 audit fold).
     """
     if zdr_enabled is not None:
         return zdr_enabled
@@ -99,17 +108,19 @@ def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
         return True
     if raw in _ZDR_FALSY:
         return False
-    # Unrecognized — fail closed AND warn loudly.
-    _PRIVACY_NOTICE_LOGGER.warning(
-        "anthropic_provider zdr-attestation env-var unrecognized; falling back to ZDR=False",
-        extra={
-            "privacy_notice": True,
-            "zdr_attested": False,
-            "anthropic_zdr_enabled_raw": raw,
-            "expected_truthy": sorted(_ZDR_TRUTHY),
-            "expected_falsy": sorted(_ZDR_FALSY),
-        },
-    )
+    # Unrecognized — fail closed AND warn (once per distinct raw value).
+    if raw not in _WARNED_RAW_VALUES:
+        _WARNED_RAW_VALUES.add(raw)
+        _PRIVACY_NOTICE_LOGGER.warning(
+            "anthropic_provider zdr-attestation env-var unrecognized; falling back to ZDR=False",
+            extra={
+                "privacy_notice": True,
+                "zdr_attested": False,
+                "anthropic_zdr_enabled_raw": raw,
+                "expected_truthy": sorted(_ZDR_TRUTHY),
+                "expected_falsy": sorted(_ZDR_FALSY),
+            },
+        )
     return False
 
 

@@ -80,8 +80,10 @@ _TIER_1_KEYS: Final[frozenset[str]] = frozenset(
 _TIER_2_KEYS: Final[frozenset[str]] = frozenset({"text", "content"})
 
 # Bound to prevent pathological self-referential structures from hanging
-# the filter. Records nesting deeper than this are rejected by walking
-# stops (returns False — not in active_keys, not LLM type — record passes).
+# the filter. Round-16 fold per Codex: records nesting deeper than this
+# are REJECTED (fail-closed) — defense-in-depth means we'd rather drop a
+# record than ship content from beyond the recursion bound. The earlier
+# fail-open behavior was the real bug.
 _RECURSION_DEPTH_LIMIT: Final[int] = 8
 
 _LLM_LOGGER_PREFIX: Final[str] = "outrider.llm"
@@ -203,7 +205,12 @@ def register_filter_on_all_handlers(
     # logging Manager keeps a flat dict of all loggers ever created via
     # `getLogger(name)`; we pick out our project's namespace only so we
     # don't accidentally addFilter to third-party handlers we don't own.
-    for name, logger_obj in logging.getLogger().manager.loggerDict.items():
+    # **Snapshot via `list(...)` first** (round-17 fold per audit-agent
+    # finding M3): walking the live dict races concurrent
+    # `getLogger(...)` calls (RuntimeError: dict changed size during
+    # iteration). V1.5's parallel-analyze workers will create child
+    # loggers on first use; the snapshot eliminates the race entirely.
+    for name, logger_obj in list(logging.getLogger().manager.loggerDict.items()):
         if name.startswith("outrider.") and isinstance(logger_obj, logging.Logger):
             loggers_to_walk.append(logger_obj)
 
