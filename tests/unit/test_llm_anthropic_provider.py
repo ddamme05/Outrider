@@ -32,6 +32,7 @@ from outrider.llm import (
     AnthropicProvider,
     LLMAuthError,
     LLMInvalidRequestError,
+    LLMInvalidResponseError,
     LLMMissingAPIKeyError,
     LLMPersisterError,
     LLMPersisterNotWiredError,
@@ -244,6 +245,62 @@ def test_constructor_zdr_env_truthy_attestation() -> None:
         if saved is None:
             os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
         else:
+            os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
+
+
+@pytest.mark.parametrize("raw", ["", "0", "false", "FALSE", "no", "No"])
+def test_constructor_zdr_env_falsy_attestation(raw: str) -> None:
+    """Round-16 sharp-edges M1 fold: falsy values resolve to False AND
+    do NOT emit a warning."""
+    saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+    try:
+        if raw:
+            os.environ["ANTHROPIC_ZDR_ENABLED"] = raw
+        provider = AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+        )
+        assert provider._zdr_enabled is False, f"failed for {raw!r}"  # noqa: SLF001
+    finally:
+        os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+        if saved is not None:
+            os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
+
+
+@pytest.mark.parametrize("raw", ["maybe", "trrue", "enabled", "kinda", "garbage"])
+def test_constructor_zdr_env_unrecognized_fails_closed_with_warning(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Round-16 sharp-edges M1 fold: unrecognized ZDR env values fail
+    CLOSED (no attestation) AND emit a WARNING on the privacy-notice
+    logger so the operator sees the misconfiguration. Silent fail-open
+    or silent fail-closed both fail the operator who *thought* they
+    enabled ZDR."""
+    saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+    try:
+        os.environ["ANTHROPIC_ZDR_ENABLED"] = raw
+        caplog.set_level(logging.WARNING, logger="outrider.llm.privacy_notice")
+        provider = AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+        )
+        # Fail closed
+        assert provider._zdr_enabled is False, f"failed-closed expected for {raw!r}"  # noqa: SLF001
+        # And warning emitted
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.name == "outrider.llm.privacy_notice" and r.levelno == logging.WARNING
+        ]
+        observed_raw = [str(getattr(r, "anthropic_zdr_enabled_raw", "")) for r in warning_records]
+        assert any(raw in seen for seen in observed_raw), (
+            f"expected WARNING with anthropic_zdr_enabled_raw={raw!r}; got: {observed_raw!r}"
+        )
+    finally:
+        os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+        if saved is not None:
             os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
 
 
@@ -511,6 +568,20 @@ def _fake_response(status_code: int = 500) -> httpx.Response:
         ),
         (
             lambda: anthropic.InternalServerError("5xx", response=_fake_response(500), body=None),
+            LLMUpstreamError,
+        ),
+        # Round-16 fold: previously-untested branches (coverage-audit M2).
+        (
+            lambda: anthropic.APIResponseValidationError(
+                response=_fake_response(200),
+                body=None,
+            ),
+            LLMInvalidResponseError,
+        ),
+        (
+            lambda: anthropic.APIConnectionError(
+                request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+            ),
             LLMUpstreamError,
         ),
     ],

@@ -125,11 +125,17 @@ class RejectLLMContentFilter(logging.Filter):
 def _walk(obj: Any, active_keys: frozenset[str], depth: int) -> bool:
     """Return True if `obj` contains a rejected element at any depth.
 
-    Recursion bound: `_RECURSION_DEPTH_LIMIT`. At the bound, return False
-    (don't recurse further; record passes if nothing found shallower).
+    Recursion bound: `_RECURSION_DEPTH_LIMIT`. **At the bound, return True
+    (REJECT).** Round-16 fold per Codex finding: returning False would
+    fail-open — content nested at exactly depth 8 would pass the filter
+    silently. The defense-in-depth role demands fail-closed at the bound,
+    so a record with deeply-nested rejected content (or a pathological
+    self-reference) is dropped, not leaked. The spec's test description
+    says deep nesting is "handled gracefully (rejected without hanging)";
+    rejection is the closed state.
     """
     if depth >= _RECURSION_DEPTH_LIMIT:
-        return False
+        return True
 
     # Tier 0 — type-based rejection.
     if isinstance(obj, LLM_CONTENT_BEARING_TYPES):
@@ -166,9 +172,18 @@ def register_filter_on_all_handlers(
 
     Filters MUST be attached to handlers, NOT to loggers — Python's
     logger-level filters only see records emitted directly on that logger;
-    propagated records bypass them. This helper walks `outrider` plus the
-    root logger, finds every handler reachable via propagation, and calls
+    propagated records bypass them. This helper walks the root logger plus
+    `outrider` AND every `outrider.*` descendant logger, finds every
+    handler reachable via propagation OR directly attached, and calls
     `handler.addFilter(...)` on each.
+
+    Round-16 fold per Codex finding: walking only root + `outrider` missed
+    handlers attached directly to `outrider.agent.*`, `outrider.llm.*`,
+    `outrider.audit.*` etc. when those loggers had `propagate=False` set
+    (test fixtures using `caplog`, third-party adapters, structlog).
+    Walking `manager.loggerDict` covers every logger that has been touched
+    by a `getLogger(...)` call — which in practice is every logger Outrider
+    code emits on, since they're all created at import time.
 
     Idempotent: handlers already carrying a `RejectLLMContentFilter`
     instance are left alone (no duplicate adds). Re-invocable after later
@@ -182,8 +197,17 @@ def register_filter_on_all_handlers(
         filter_instance = RejectLLMContentFilter()
 
     seen_handlers: set[int] = set()
-    for logger_name in ("", "outrider"):
-        logger = logging.getLogger(logger_name)
+    loggers_to_walk: list[logging.Logger] = [logging.getLogger()]  # root
+    loggers_to_walk.append(logging.getLogger("outrider"))
+    # Every logger registered under the `outrider.*` namespace. Python's
+    # logging Manager keeps a flat dict of all loggers ever created via
+    # `getLogger(name)`; we pick out our project's namespace only so we
+    # don't accidentally addFilter to third-party handlers we don't own.
+    for name, logger_obj in logging.getLogger().manager.loggerDict.items():
+        if name.startswith("outrider.") and isinstance(logger_obj, logging.Logger):
+            loggers_to_walk.append(logger_obj)
+
+    for logger in loggers_to_walk:
         for handler in logger.handlers:
             handler_id = id(handler)
             if handler_id in seen_handlers:
