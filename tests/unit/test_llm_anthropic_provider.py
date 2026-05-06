@@ -268,9 +268,65 @@ def test_constructor_zdr_env_falsy_attestation(raw: str) -> None:
             os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
 
 
-@pytest.mark.parametrize("raw", ["maybe", "trrue", "enabled", "kinda", "garbage"])
+@pytest.fixture
+def _reset_zdr_warned_set() -> Iterator[None]:
+    """Round-17: ZDR warning is rate-limited via a process-local
+    `_WARNED_RAW_VALUES` set. Reset between tests so once-per-process
+    behavior doesn't break test isolation when the same raw value
+    happens to be used twice."""
+    from outrider.llm.anthropic_provider import _WARNED_RAW_VALUES
+
+    saved = _WARNED_RAW_VALUES.copy()
+    _WARNED_RAW_VALUES.clear()
+    try:
+        yield
+    finally:
+        _WARNED_RAW_VALUES.clear()
+        _WARNED_RAW_VALUES.update(saved)
+
+
+def test_zdr_warning_fires_only_once_per_distinct_raw_value(
+    caplog: pytest.LogCaptureFixture,
+    _reset_zdr_warned_set: None,
+) -> None:
+    """Round-17 audit fold (M2): under V1.5 parallel-analyze, N providers
+    per review constructed with the same misconfigured env would spam
+    thousands of WARNINGs/day. Once-per-distinct-raw-value guard caps
+    the spam while preserving the diagnostic signal."""
+    saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+    try:
+        os.environ["ANTHROPIC_ZDR_ENABLED"] = "garbage"
+        caplog.set_level(logging.WARNING, logger="outrider.llm.privacy_notice")
+        # Construct 5 providers with the same misconfigured env
+        for _ in range(5):
+            AnthropicProvider(
+                api_key=_api_key(),
+                model_config=_model_config(),
+                persister=_RecordingPersister(),
+            )
+        # Expect exactly one WARNING (the others suppressed by the guard)
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.name == "outrider.llm.privacy_notice"
+            and r.levelno == logging.WARNING
+            and getattr(r, "anthropic_zdr_enabled_raw", "") == "garbage"
+        ]
+        assert len(warning_records) == 1, (
+            f"expected exactly 1 WARNING for repeated 'garbage' env value; "
+            f"got {len(warning_records)} (without the guard, would be 5)"
+        )
+    finally:
+        os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+        if saved is not None:
+            os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
+
+
+@pytest.mark.parametrize("raw", ["maybe", "trrue", "enabled", "kinda", "weird-value"])
 def test_constructor_zdr_env_unrecognized_fails_closed_with_warning(
-    raw: str, caplog: pytest.LogCaptureFixture
+    raw: str,
+    caplog: pytest.LogCaptureFixture,
+    _reset_zdr_warned_set: None,
 ) -> None:
     """Round-16 sharp-edges M1 fold: unrecognized ZDR env values fail
     CLOSED (no attestation) AND emit a WARNING on the privacy-notice
