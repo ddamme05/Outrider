@@ -1,11 +1,11 @@
 """LLM provider wrapper — public surface.
 
-Commit-1 export set per `specs/2026-05-05-llm-provider-wrapper.md`
-§Commit boundary. `AnthropicProvider` is NOT exported here yet
-(lands in commit 2 with `anthropic_provider.py`); commit 2 extends
-this list.
+Full export set per `specs/2026-05-05-llm-provider-wrapper.md`
+§Commit boundary (commit 2 extension: adds `AnthropicProvider` +
+pricing surfaces).
 """
 
+from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.base import (
     INCLUDE_TEXT_OPT_IN,
     LLMAuthError,
@@ -33,6 +33,12 @@ from outrider.llm.logging import (
     LLM_CONTENT_BEARING_TYPES,
     RejectLLMContentFilter,
     register_filter_on_all_handlers,
+)
+from outrider.llm.pricing import (
+    PRICING_VERSION,
+    RATE_TABLE,
+    ModelPricing,
+    compute_cost_usd,
 )
 
 __all__ = [
@@ -64,7 +70,12 @@ __all__ = [
     # Config
     "ModelConfig",
     # Filter
+    "PRICING_VERSION",
+    "RATE_TABLE",
+    "AnthropicProvider",
+    "ModelPricing",
     "RejectLLMContentFilter",
     "RetryLayer",
+    "compute_cost_usd",
     "register_filter_on_all_handlers",
 ]
