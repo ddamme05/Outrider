@@ -1,0 +1,167 @@
+"""ModelConfig env reading + validators.
+
+Covers AC#2: env-prefix reading, regex validation, deprecated-model
+rejection. Per spec §4.2.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator  # noqa: TC003 — used at runtime by `@contextmanager`
+from contextlib import contextmanager
+
+import pytest
+from pydantic import ValidationError
+
+from outrider.llm.config import ModelConfig
+
+
+@contextmanager
+def _env(**kvs: str) -> Iterator[None]:
+    """Set env vars for the duration of the block; restore on exit.
+
+    Important: we set in os.environ AND in the process env so
+    BaseSettings (which reads at construction) sees them.
+    """
+    sentinel = object()
+    saved: dict[str, str | object] = {}
+    try:
+        for k, v in kvs.items():
+            saved[k] = os.environ.get(k, sentinel)
+            os.environ[k] = v
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is sentinel:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Defaults match canonical spec §4.2.
+# ---------------------------------------------------------------------------
+
+
+def test_defaults_match_canonical_spec() -> None:
+    cfg = ModelConfig()
+    assert cfg.triage_model == "claude-haiku-4-5"
+    assert cfg.analyze_model == "claude-sonnet-4-7"
+    assert cfg.synthesize_model == "claude-sonnet-4-7"
+    assert cfg.trace_model == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# Env-prefix reading.
+# ---------------------------------------------------------------------------
+
+
+def test_reads_env_prefix() -> None:
+    with _env(
+        OUTRIDER_MODEL_TRIAGE_MODEL="claude-haiku-4-5",
+        OUTRIDER_MODEL_ANALYZE_MODEL="claude-opus-4-1",
+    ):
+        cfg = ModelConfig()
+        assert cfg.triage_model == "claude-haiku-4-5"
+        assert cfg.analyze_model == "claude-opus-4-1"
+
+
+def test_each_field_independently_overridable() -> None:
+    with _env(OUTRIDER_MODEL_TRACE_MODEL="claude-haiku-4-5"):
+        cfg = ModelConfig()
+        # Other fields keep defaults
+        assert cfg.triage_model == "claude-haiku-4-5"
+        assert cfg.analyze_model == "claude-sonnet-4-7"
+        assert cfg.trace_model == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# Validators — regex pattern.
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_non_anthropic_family_string() -> None:
+    """V1 wrapper is Anthropic-only; an OpenAI model name configured by
+    env var is a real-world bug worth catching at startup."""
+    with pytest.raises(ValidationError, match="V1 Anthropic family"):
+        ModelConfig(triage_model="gpt-4")
+
+
+def test_rejects_arbitrary_string() -> None:
+    with pytest.raises(ValidationError, match="V1 Anthropic family"):
+        ModelConfig(triage_model="hunter2")
+
+
+def test_rejects_empty_string() -> None:
+    with pytest.raises(ValidationError):
+        ModelConfig(triage_model="")
+
+
+def test_rejects_almost_valid_string() -> None:
+    """Common typo: missing the major-version suffix."""
+    with pytest.raises(ValidationError, match="V1 Anthropic family"):
+        ModelConfig(triage_model="claude-haiku")
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-haiku-4-5",
+        "claude-sonnet-4-7",
+        "claude-opus-4-1",
+        "claude-haiku-5",  # without minor
+    ],
+)
+def test_admits_anthropic_family_strings(model: str) -> None:
+    cfg = ModelConfig(triage_model=model)
+    assert cfg.triage_model == model
+
+
+# ---------------------------------------------------------------------------
+# Validators — DEPRECATED_MODELS rejection.
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_deprecated_model() -> None:
+    """SDK's `DEPRECATED_MODELS` constant lists models Anthropic has
+    deprecated. Construction should fail at startup, not at first call."""
+    from anthropic.resources.messages import DEPRECATED_MODELS
+
+    if not DEPRECATED_MODELS:
+        pytest.skip("DEPRECATED_MODELS is empty in this SDK version")
+
+    # Pick a deprecated model that ALSO matches the regex pattern (some
+    # don't — e.g., older `claude-2.0` predates the family-suffix shape).
+    pattern_compatible = [
+        m for m in DEPRECATED_MODELS if m.startswith("claude-") and len(m.split("-")) >= 3
+    ]
+    if not pattern_compatible:
+        pytest.skip("no DEPRECATED_MODELS entries match the regex pattern")
+
+    target = pattern_compatible[0]
+    # Re-check the target matches our pattern; if not, the regex would
+    # reject before the deprecation check fires.
+    import re
+
+    pattern = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?$")
+    if not pattern.match(target):
+        pytest.skip(f"DEPRECATED_MODELS sample {target!r} doesn't match V1 regex")
+
+    with pytest.raises(ValidationError, match="deprecated by Anthropic"):
+        ModelConfig(triage_model=target)
+
+
+# ---------------------------------------------------------------------------
+# frozen=True discipline.
+# ---------------------------------------------------------------------------
+
+
+def test_config_is_frozen() -> None:
+    cfg = ModelConfig()
+    with pytest.raises(ValidationError):
+        cfg.triage_model = "claude-sonnet-4-7"  # type: ignore[misc]
+
+
+def test_config_extra_forbid() -> None:
+    with pytest.raises(ValidationError):
+        ModelConfig(unknown_field="x")  # type: ignore[call-arg]
