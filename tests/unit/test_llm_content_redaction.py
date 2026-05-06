@@ -228,3 +228,32 @@ def test_response_attribute_access_unchanged() -> None:
     response = _build_response()
     assert response.text == SECRET
     assert response.model == "claude-sonnet-4-7"
+
+
+# ---------------------------------------------------------------------------
+# AC#22 paired source-scan: INCLUDE_TEXT_OPT_IN imported only by approved
+# modules. Any other import site is a bug — typed sentinel grep is the
+# audit hook (round-11 fold).
+# ---------------------------------------------------------------------------
+
+
+def test_include_text_opt_in_appears_only_in_approved_paths() -> None:
+    """Round-15+ AC#22 contract: the typed sentinel must be imported only
+    by `outrider.llm` (definition + first-party callers) and
+    `outrider.audit` (the persister). Any other import site is a bug."""
+    import pathlib
+
+    src_root = pathlib.Path(__file__).resolve().parents[2] / "src" / "outrider"
+    allowed_subpaths = ("llm", "audit")
+    leaks: list[str] = []
+    for py in src_root.rglob("*.py"):
+        rel = py.relative_to(src_root)
+        if rel.parts and rel.parts[0] in allowed_subpaths:
+            continue
+        if "INCLUDE_TEXT_OPT_IN" in py.read_text(encoding="utf-8"):
+            leaks.append(str(rel))
+    assert not leaks, (
+        f"INCLUDE_TEXT_OPT_IN leaked outside approved paths {allowed_subpaths!r}: "
+        f"{leaks}. Only the persister (in audit/) and llm/ itself should "
+        f"reference the sentinel."
+    )

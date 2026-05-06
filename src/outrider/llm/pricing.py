@@ -29,7 +29,9 @@ When rates change:
      so the digest-pinning test catches the change loud.
 """
 
+from collections.abc import Mapping
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Final, NamedTuple
 
 __all__ = [
@@ -73,7 +75,14 @@ class ModelPricing(NamedTuple):
 #   - claude-haiku-4-5: $1.00/MTok input, $5.00/MTok output,
 #     $0.10/MTok cache read, $1.25/MTok cache write.
 # Per-token = per-MTok / 1_000_000.
-RATE_TABLE: Final[dict[str, ModelPricing]] = {
+#
+# Wrapped in `MappingProxyType` so runtime mutation raises `TypeError`
+# (round-16 sharp-edges M2 fold). The `Final` annotation alone is a
+# type-checker hint; `MappingProxyType` enforces immutability at runtime.
+# A test fixture that does `RATE_TABLE["X"] = cheap_pricing` fails
+# loudly instead of silently mutating module state for the rest of the
+# pytest session.
+_RATE_TABLE_RAW: dict[str, ModelPricing] = {
     "claude-sonnet-4-7": ModelPricing(
         in_per_token=Decimal("0.000003"),  # 3.00/MTok
         cache_write_per_token=Decimal("0.00000375"),  # 3.75/MTok (1.25× input)
@@ -87,6 +96,7 @@ RATE_TABLE: Final[dict[str, ModelPricing]] = {
         out_per_token=Decimal("0.000005"),  # 5.00/MTok
     ),
 }
+RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(_RATE_TABLE_RAW)
 
 
 def compute_cost_usd(

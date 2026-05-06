@@ -336,20 +336,66 @@ def test_unrelated_pydantic_model_with_no_rejected_key_admits(
     assert filter_instance.filter(record) is True
 
 
+class _BrokenModel(BaseModel):
+    """Pydantic model whose `model_dump` raises — covers round-16 finding
+    (test-coverage agent #4): the filter must not crash when a model has
+    a broken serializer."""
+
+    foo: str
+
+    def model_dump(self, *args: object, **kwargs: object) -> dict[str, object]:  # type: ignore[override]
+        raise RuntimeError("intentional failure for filter robustness test")
+
+
+def test_filter_handles_broken_model_dump_without_crashing(
+    filter_instance: RejectLLMContentFilter,
+) -> None:
+    """If a third-party Pydantic model has a broken `model_dump`, the
+    filter must not crash. Defense-in-depth: a buggy log call shouldn't
+    take down logging entirely."""
+    import contextlib
+
+    broken = _BrokenModel(foo="bar")
+    record = _record("app.webhooks", extra={"obj": broken})
+    # Either the filter returns a verdict, or it raises a known exception
+    # (the broken model's RuntimeError); either way the call completes.
+    # The point is the filter didn't hang or bring down the logging system.
+    with contextlib.suppress(RuntimeError):
+        filter_instance.filter(record)
+
+
 # ---------------------------------------------------------------------------
 # Depth bound — no infinite recursion.
 # ---------------------------------------------------------------------------
 
 
-def test_depth_bound_does_not_hang(
+def test_depth_bound_does_not_hang_and_fails_closed(
     filter_instance: RejectLLMContentFilter,
 ) -> None:
-    """Self-referential dict is bounded at depth 8 — must not hang."""
+    """Self-referential dict is bounded at depth 8. Round-16 fold per
+    Codex finding: at the bound, the walk fails CLOSED (rejects), not
+    open. So a cyclic structure terminates AND rejects."""
     deep: dict[str, object] = {"safe_key": "value"}
     deep["self"] = deep  # cycle
     record = _record("app.webhooks", extra={"obj": deep})
-    # No assertion on accept/reject here — just that the call returns.
-    filter_instance.filter(record)
+    # Round-16: depth-bound now fail-closed (filter rejects).
+    assert filter_instance.filter(record) is False, (
+        "round-16: depth bound must fail-closed (reject), not fail-open"
+    )
+
+
+def test_deep_nesting_beyond_bound_fails_closed(
+    filter_instance: RejectLLMContentFilter,
+) -> None:
+    """Round-16 fix: content nested deeper than depth bound is rejected
+    rather than allowed to leak. Defense-in-depth would rather drop a
+    record than ship content from beyond the recursion bound."""
+    nested: dict[str, object] = {"safe_key": "value"}
+    # 12 layers of wrapping — exceeds the depth bound of 8
+    for _ in range(12):
+        nested = {"wrap": nested}
+    record = _record("app.webhooks", extra={"data": nested})
+    assert filter_instance.filter(record) is False
 
 
 def test_deeply_nested_rejected_key_is_caught_within_bound(

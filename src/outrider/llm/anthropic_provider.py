@@ -34,7 +34,7 @@ import os
 import time
 from datetime import UTC, datetime
 from decimal import Decimal  # noqa: TC003 — runtime use in step 8 cost computation
-from typing import Any
+from typing import Any, Final
 
 import anthropic
 import httpx
@@ -75,15 +75,42 @@ _PRIVACY_NOTICE_LOGGER = logging.getLogger("outrider.llm.privacy_notice")
 _LOGGER = logging.getLogger("outrider.llm.anthropic_provider")
 
 
+_ZDR_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes"})
+_ZDR_FALSY: Final[frozenset[str]] = frozenset({"", "0", "false", "no"})
+
+
 def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     """Read ZDR attestation per DECISIONS#015 — operator-attestation only,
     NEVER a per-request header. Constructor kwarg wins; falls back to
-    `ANTHROPIC_ZDR_ENABLED` env var (truthy values: "1", "true", "True").
+    `ANTHROPIC_ZDR_ENABLED` env var.
+
+    Truthy values (case-insensitive): `"1"`, `"true"`, `"yes"`.
+    Falsy values (case-insensitive): `""`, `"0"`, `"false"`, `"no"`.
+    Unrecognized values fail closed (no ZDR attestation) AND log a
+    WARNING on `outrider.llm.privacy_notice` so the operator sees the
+    misconfiguration at construction time (round-16 sharp-edges M1
+    fold — silent fail-closed-on-typo means the operator who *thought*
+    they enabled ZDR ships with retention claims they didn't intend).
     """
     if zdr_enabled is not None:
         return zdr_enabled
-    raw = os.environ.get("ANTHROPIC_ZDR_ENABLED", "")
-    return raw.strip().lower() in {"1", "true", "yes"}
+    raw = os.environ.get("ANTHROPIC_ZDR_ENABLED", "").strip().lower()
+    if raw in _ZDR_TRUTHY:
+        return True
+    if raw in _ZDR_FALSY:
+        return False
+    # Unrecognized — fail closed AND warn loudly.
+    _PRIVACY_NOTICE_LOGGER.warning(
+        "anthropic_provider zdr-attestation env-var unrecognized; falling back to ZDR=False",
+        extra={
+            "privacy_notice": True,
+            "zdr_attested": False,
+            "anthropic_zdr_enabled_raw": raw,
+            "expected_truthy": sorted(_ZDR_TRUTHY),
+            "expected_falsy": sorted(_ZDR_FALSY),
+        },
+    )
+    return False
 
 
 class AnthropicProvider:
