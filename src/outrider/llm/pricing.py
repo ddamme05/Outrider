@@ -117,11 +117,21 @@ def compute_cost_usd(
     on a missing model is intentional — `AnthropicProvider.__init__`'s
     eager pricing-coverage validation should make this unreachable
     in production (see AC#24).
+
+    **Round-18 fold (variant audit):** wraps in `decimal.localcontext()`
+    so the computation is self-contained against ambient
+    `decimal.getcontext().prec` mutations. A caller in the same thread
+    that sets `prec=5` before calling shouldn't silently truncate cost
+    arithmetic; the local context (default 28-digit precision) gives
+    deterministic results regardless of caller state.
     """
-    rates = RATE_TABLE[model]
-    return (
-        rates.in_per_token * input_tokens
-        + rates.cache_write_per_token * cache_write_tokens
-        + rates.cache_read_per_token * cache_read_tokens
-        + rates.out_per_token * output_tokens
-    )
+    import decimal
+
+    with decimal.localcontext():
+        rates = RATE_TABLE[model]
+        return (
+            rates.in_per_token * input_tokens
+            + rates.cache_write_per_token * cache_write_tokens
+            + rates.cache_read_per_token * cache_read_tokens
+            + rates.out_per_token * output_tokens
+        )

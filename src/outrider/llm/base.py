@@ -124,8 +124,19 @@ class LLMProviderError(Exception):
       (a) `__init__` type-guard: raises `TypeError` if instantiated as
           the base class itself. Allows subclasses through.
       (b) `__init_subclass__` enforcement at class-definition time:
-          presence — every subclass must set `retry_at_layer` ClassVar;
+          presence — every concrete subclass must set `retry_at_layer`
+          ClassVar in its OWN body (the check uses `cls.__dict__`, not
+          inheritance lookup);
           value — must be one of `RetryLayer`'s allowed literals.
+
+    Round-18 audit clarification: `cls.__dict__` is intentional and
+    stricter than `getattr(cls, ...)`. A sub-subclass like
+    `class TimeoutWithRetryAfter(LLMTimeoutError): pass` MUST also set
+    `retry_at_layer` in its own body, even though inheritance would
+    otherwise resolve. The strictness is a feature: every concrete
+    error class self-documents its retry layer in source. If a
+    sub-subclass legitimately wants to inherit, it can declare
+    `retry_at_layer = LLMTimeoutError.retry_at_layer` explicitly.
 
     `Exception.__new__` bypasses ABC's `__abstractmethods__` check, so
     `class Foo(Exception, ABC)` with or without `@abstractmethod` does NOT

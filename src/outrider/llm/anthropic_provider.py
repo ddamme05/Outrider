@@ -370,11 +370,20 @@ def _translate_anthropic_error(exc: anthropic.APIError) -> Exception:
     """Map an Anthropic SDK exception to the typed `LLMProviderError`
     subclass per the round-13 mapping table.
 
-    Order matters: more-specific subclasses must come before
-    APIStatusError fallback (e.g., `RateLimitError` before
-    `APIStatusError`). The fall-through is `LLMUnknownError` (per
-    round-13/14 abstract-base redesign — bare `LLMProviderError` is no
-    longer raisable).
+    **Order matters** — `isinstance` checks fall through to broader
+    parent classes. Two specific orderings are load-bearing:
+
+      - `APITimeoutError` ⊂ `APIConnectionError` in the SDK hierarchy
+        (timeouts ARE-A connection errors). The `APITimeoutError`
+        check MUST come before `APIConnectionError` or every timeout
+        silently routes to `LLMUpstreamError`.
+      - `RateLimitError` and other status-code subclasses both inherit
+        `APIStatusError` directly; their order among themselves
+        doesn't matter, but they must all precede any `APIStatusError`
+        fallback (none exists today, but flagged for future).
+
+    The fall-through is `LLMUnknownError` (per round-13/14 abstract-base
+    redesign — bare `LLMProviderError` is no longer raisable).
     """
     if isinstance(exc, anthropic.APITimeoutError):
         return LLMTimeoutError(str(exc))
