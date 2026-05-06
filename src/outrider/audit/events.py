@@ -191,6 +191,11 @@ class LLMCallEvent(AuditEventBase):
     Token / cost / latency fields carry `ge=0` constraints so the cost-budget
     anomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't
     be poisoned by a malformed negative-cost event understating review cost.
+
+    `pricing_version` records the `llm.pricing.PRICING_VERSION` value the
+    wrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended
+    2026-05-05. Replay reads this field directly so reconstruction never
+    depends on an external version-effective-range map.
     """
 
     event_type: Literal["llm_call"] = "llm_call"
@@ -200,6 +205,7 @@ class LLMCallEvent(AuditEventBase):
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
     cost_usd: float = Field(ge=0)
+    pricing_version: str
     latency_ms: int = Field(ge=0)
     prompt_hash: str
     cache_hit: bool

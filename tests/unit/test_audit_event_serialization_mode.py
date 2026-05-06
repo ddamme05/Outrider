@@ -36,6 +36,7 @@ def _build_llm_call() -> LLMCallEvent:
             ),
         ),
         prompt_template_version="analyze@1.0.0",
+        pricing_version="v1",
         system_prompt_hash="sha256-def",
         degraded_mode=False,
     )

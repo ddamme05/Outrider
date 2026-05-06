@@ -65,6 +65,7 @@ def _llm_call_kwargs() -> dict[str, Any]:
             ),
         ),
         "prompt_template_version": "analyze@1.0.0",
+        "pricing_version": "v1",
         "system_prompt_hash": "sha256-def",
         "degraded_mode": False,
     }
