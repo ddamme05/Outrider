@@ -163,7 +163,8 @@ class AnthropicProvider:
                 f"AnthropicProvider construction: configured model(s) "
                 f"{missing!r} have no entry in llm.pricing.RATE_TABLE. "
                 f"Update RATE_TABLE + bump PRICING_VERSION before using "
-                f"these models, or correct OUTRIDER_MODEL_* env vars."
+                f"these models, or correct OUTRIDER_MODEL_* env vars.",
+                missing_models=missing,
             )
 
         self._api_key = api_key
@@ -274,7 +275,8 @@ class AnthropicProvider:
             raise LLMPricingMissingError(
                 f"Model {request.model!r} not in RATE_TABLE at "
                 f"complete() step 8; constructor's eager validation "
-                f"should have caught this — pricing table mutation?"
+                f"should have caught this — pricing table mutation?",
+                missing_models=[request.model],
             ) from exc
 
         # Step 9: build LLMCallEvent + await persister.persist().
@@ -361,7 +363,8 @@ def _extract_single_text_block(message: Message) -> str:
             f"Anthropic response has {len(message.content)} content block(s) "
             f"of types {actual_types}; V1 wrapper expects exactly one TextBlock. "
             f"This may indicate extended-thinking or tool-use responses (not "
-            f"supported in V1) or an SDK shape change."
+            f"supported in V1) or an SDK shape change.",
+            actual_block_types=actual_types,
         )
     return message.content[0].text
 

@@ -197,3 +197,40 @@ def test_caller_can_isinstance_check_for_recoverability() -> None:
     assert err.retry_at_layer == "node"
     err_terminal = LLMAuthError("401 unauthorized")
     assert err_terminal.retry_at_layer == "none"
+
+
+# ---------------------------------------------------------------------------
+# Structured attrs — round-19 fold per Codex finding (low-confidence,
+# fixed for spec-vs-code parity). Spec promises kwargs that the previous
+# implementation didn't honor.
+# ---------------------------------------------------------------------------
+
+
+def test_pricing_missing_error_carries_structured_missing_models() -> None:
+    err = LLMPricingMissingError(
+        "two models missing",
+        missing_models=["claude-fake-1", "claude-fake-2"],
+    )
+    assert err.missing_models == ("claude-fake-1", "claude-fake-2")
+    assert isinstance(err.missing_models, tuple)
+
+
+def test_pricing_missing_error_default_missing_models_empty_tuple() -> None:
+    """Backward-compat: positional message still works; `missing_models`
+    defaults to an empty tuple."""
+    err = LLMPricingMissingError("simple message")
+    assert err.missing_models == ()
+
+
+def test_unexpected_content_blocks_error_carries_structured_block_types() -> None:
+    err = LLMUnexpectedContentBlocksError(
+        "got two blocks",
+        actual_block_types=["ThinkingBlock", "TextBlock"],
+    )
+    assert err.actual_block_types == ("ThinkingBlock", "TextBlock")
+    assert isinstance(err.actual_block_types, tuple)
+
+
+def test_unexpected_content_blocks_error_default_block_types_empty_tuple() -> None:
+    err = LLMUnexpectedContentBlocksError("simple message")
+    assert err.actual_block_types == ()
