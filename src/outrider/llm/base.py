@@ -220,9 +220,21 @@ class LLMInvalidResponseError(LLMProviderError):
 
 class LLMUnexpectedContentBlocksError(LLMProviderError):
     """Multi-block fail-loud: `response.content` has anything other than
-    exactly one `TextBlock` (V1 single-text-block assumption)."""
+    exactly one `TextBlock` (V1 single-text-block assumption).
+
+    Carries `actual_block_types: tuple[str, ...]` for structured caller
+    inspection (e.g., metrics on which extended-thinking shapes appeared).
+    """
 
     retry_at_layer: ClassVar[RetryLayer] = "none"
+
+    def __init__(
+        self,
+        *args: object,
+        actual_block_types: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        self.actual_block_types: tuple[str, ...] = tuple(actual_block_types or ())
+        super().__init__(*args)
 
 
 class LLMMissingAPIKeyError(LLMProviderError):
@@ -248,9 +260,22 @@ class LLMPersisterError(LLMProviderError):
 
 class LLMPricingMissingError(LLMProviderError):
     """Eager construction-time check: a configured model is not in
-    `llm.pricing.RATE_TABLE`."""
+    `llm.pricing.RATE_TABLE`.
+
+    Carries `missing_models: tuple[str, ...]` so callers can structurally
+    enumerate which model id(s) need a pricing-table entry, rather than
+    parsing the message string.
+    """
 
     retry_at_layer: ClassVar[RetryLayer] = "none"
+
+    def __init__(
+        self,
+        *args: object,
+        missing_models: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        self.missing_models: tuple[str, ...] = tuple(missing_models or ())
+        super().__init__(*args)
 
 
 # ---------------------------------------------------------------------------
