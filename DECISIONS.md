@@ -576,3 +576,31 @@ The two surfaces (logs vs database) need different rules: logs flow to stdout, l
 
 **Referenced from.** `spec.md` §5.5 (audit-records-the-reason wording, exclusion-pattern enumeration), `spec.md` §8.2 (`FileExaminationEvent` field list), `specs/2026-04-30-ast-facts-module.md` (Approval prerequisite, Audit Events Emitted note), `src/outrider/audit/events.py` (`FileExaminationEvent.skip_reason` field + `_enforce_skip_reason_outcome` validator + `SkipReason` import), `src/outrider/ast_facts/__init__.py` (module-level `__getattr__` lazy-load of `parse_python` + subprocess-isolated import-light regression test in `tests/integration/test_ast_facts_query_registry.py`), `src/outrider/ast_facts/models.py` (`SkipReason` enum + `ParseResult.skip_reason` field), `audit/replay.py` (when written — replay can additionally assert stored `skip_reason` is one of the canonical enum values).
 
+---
+
+## 019. `schemas/` is for owner-less cross-boundary models; owned protocol/event surfaces live with their owner
+
+**Status:** Accepted, 2026-05-05.
+
+**Context.** The `docs/conventions.md` "File organization" rule says: *"`schemas/` holds only Pydantic models that cross subsystem boundaries."* Read literally, this puts every cross-boundary Pydantic model in `schemas/` — including audit events (consumed by `audit/`, `dashboard/`, `anomaly/`, `replay/`, plus produced by `agent/`) and LLM provider call surfaces (`LLMRequest`/`LLMResponse`/`LLMMessage`, produced by `agent/` nodes and consumed by `llm/`). The audit-events module shipped with `LLMCallEvent` and the rest of the V1 audit event hierarchy in `audit/events.py`, not `schemas/` — establishing a pattern. The LLM-provider-wrapper spec then drafted `LLMRequest`/`LLMResponse`/`LLMMessage` in `llm/base.py` for the same reason. Both placements feel right but technically violate the literal convention. Repeated review cycles re-raise "shouldn't this be in `schemas/`?" — burning attention without changing the answer.
+
+The unstated convention the audit-events precedent established is: **a Pydantic model lives in the module that owns its lifecycle**. `LLMCallEvent` is owned by the audit subsystem (defined and validated by `audit/events.py`; consumers only import + read). `LLMRequest`/`LLMResponse`/`LLMMessage` are owned by the LLM-wrapper subsystem (defined and validated by `llm/base.py`; agent-node callers construct + pass; `llm/` consumes). Owned types stay with their owner; cross-boundary imports are routine and fine.
+
+`schemas/` keeps a real role: Pydantic models that genuinely cross subsystems with **no clear owner** — for example, `PRContext` (built by webhook handler, consumed by every node, audit, dashboard) has no single subsystem that "owns" it; it lives in `schemas/`. That's the case `schemas/` is for.
+
+**Decision.**
+
+1. **`schemas/` holds only Pydantic models with no clear owning subsystem.** Cross-boundary use alone does NOT require `schemas/` placement; it's a necessary but not sufficient condition.
+2. **Pydantic models with a clear owning subsystem live with their owner.** "Owning subsystem" means the subsystem that defines the model's invariants, runs its validators, and is the canonical reader for round-trip semantics — not just the producer of instances.
+3. **Cross-boundary imports of owned models are explicitly endorsed.** No code-organization gymnastics required (re-exports, intermediate facades, etc.) just to satisfy the literal letter of the previous wording. `from outrider.audit.events import LLMCallEvent` from `agent/nodes/analyze.py` is fine. `from outrider.llm import LLMRequest` from `agent/nodes/triage.py` is fine.
+4. **Existing precedent stays.** `LLMCallEvent` in `audit/events.py` (per audit-events module spec) and `LLMRequest`/`LLMResponse`/`LLMMessage` in `llm/base.py` (per LLM-provider-wrapper spec) both stay where they are. No file moves; this is a documentation-of-already-established-pattern entry.
+5. **`docs/conventions.md` "File organization"** is amended in the same working change (locally — `docs/` is currently gitignored per the workflow's local-vs-tracked split, so the amendment lives in the local working copy until `docs/` graduates to tracked per `FOLLOWUPS.md` FUP-004's exit rule). The amended wording: "`schemas/` holds Pydantic models that cross subsystem boundaries AND have no single owning subsystem; models with a clear owner live with their owner and are imported across subsystems as needed (precedent: `LLMCallEvent` in `audit/events.py`; `LLMRequest`/`LLMResponse`/`LLMMessage` in `llm/base.py`)." Once `docs/` is tracked, the conventions.md amendment ships in a follow-on commit; the inline-tag pipeline then carries the rule into `docs/spec.md` per the standard invariants-extraction flow.
+
+**Consequences.**
+
+- The literal convention narrows; the de facto convention is now documented and citable.
+- Future feature specs no longer relitigate the schema-location question for owned Pydantic surfaces.
+- `schemas/` does not become a god-folder of every cross-boundary model; it stays small and reserved for models without an owner.
+- New audit event types continue to land in `audit/events.py`. New provider call-surface types continue to land in `llm/base.py`. New non-owned cross-boundary models still go in `schemas/`.
+
+**Referenced from.** `docs/conventions.md` "File organization" (amended in the local working copy alongside this entry; `docs/` is currently gitignored, so the conventions amendment ships publicly when `docs/` graduates per `FOLLOWUPS.md` FUP-004), `src/outrider/audit/events.py` (existing precedent: `LLMCallEvent` and the V1 audit event hierarchy), `src/outrider/llm/base.py` (when written: `LLMRequest`/`LLMResponse`/`LLMMessage` per `specs/2026-05-05-llm-provider-wrapper.md`), `src/outrider/schemas/*.py` (existing models without an owning subsystem stay; e.g., `PRContext`).
