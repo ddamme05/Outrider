@@ -241,10 +241,16 @@ STUBS: list[Stub] = [
         "id": "prompt-caching-always-on",
         "note": (
             "Dropped as an invariant. Prompt caching is a performance "
-            "convention (violation is expensive, not incorrect). Moved to "
-            "`docs/conventions.md`."
+            "convention (violation is expensive, not incorrect). The "
+            "canonical record lives in `DECISIONS.md#013` point 4 "
+            '("Prompt caching. Enabled by default per the existing '
+            'prompt-caching-always-on convention.") and `docs/spec.md` '
+            "§9.5 (implementation: per-block `cache_control: "
+            '{"type": "ephemeral"}` on the system prompt and file '
+            "context blocks). Wrapper-side default: "
+            "`LLMRequest.cache_control: bool = True`."
         ),
-        "pointer": None,
+        "pointer": ("See `DECISIONS.md#013` point 4 and `docs/spec.md` §9.5."),
     },
 ]
 

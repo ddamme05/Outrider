@@ -4,7 +4,9 @@ Covers:
   - Direct instantiation of `LLMProviderError` raises (abstract-by-construction)
   - `__init_subclass__` enforces `retry_at_layer` presence at class-def
   - `__init_subclass__` enforces `retry_at_layer` value membership
-  - All 12 concrete subclasses have correct `retry_at_layer`
+  - All 13 concrete subclasses have correct `retry_at_layer`
+    (round-21 added `LLMConflictError` for 409, in the SDK's
+    default-retry set alongside 408/429/5xx)
   - `LLMUnknownError` exists for the Anthropic-fall-through path
   - Anthropic exception → Outrider mapping table is complete and well-typed
 """
@@ -168,6 +170,7 @@ def test_all_subclasses_inherit_from_provider_error() -> None:
         LLMUnknownError,
         LLMTimeoutError,
         LLMRateLimitError,
+        LLMConflictError,
         LLMUpstreamError,
         LLMAuthError,
         LLMInvalidRequestError,
