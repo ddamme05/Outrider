@@ -245,9 +245,15 @@ STUBS: list[Stub] = [
             "canonical record lives in `DECISIONS.md#013` point 4 "
             '("Prompt caching. Enabled by default per the existing '
             'prompt-caching-always-on convention.") and `docs/spec.md` '
-            "§9.5 (implementation: per-block `cache_control: "
-            '{"type": "ephemeral"}` on the system prompt and file '
-            "context blocks). Wrapper-side default: "
+            "§9.5. V1 ships single-cacheable-block packing: stable "
+            "content (prompt template + scope-unit file context reused "
+            "across the analyze ⇄ trace loop) goes in `system_prompt` "
+            "with `cache_control: ephemeral`; volatile content (the "
+            "diff under review, finding-generation instructions) goes "
+            "in `user_prompt` outside the cache boundary. V1.5+ "
+            "extends to multi-block messages with per-block "
+            "`cache_control` on stable file-context user blocks "
+            "(tracked as FUP-014). Wrapper-side default: "
             "`LLMRequest.cache_control: bool = True`."
         ),
         "pointer": ("See `DECISIONS.md#013` point 4 and `docs/spec.md` §9.5."),
