@@ -12,7 +12,7 @@ dependencies = [
     # Agent / LLM
     "langgraph==1.1.6",
     "langgraph-checkpoint-postgres==3.0.5",
-    "anthropic==0.96.0",
+    "anthropic==0.100.0",
 
     # Schema / validation / settings
     "pydantic==2.12.5",
