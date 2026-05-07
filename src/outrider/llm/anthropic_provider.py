@@ -38,12 +38,13 @@ from typing import Any, Final
 
 import anthropic
 import httpx
-from anthropic.types import Message, TextBlock
+from anthropic.types import Message, TextBlock, TextBlockParam
 from pydantic import SecretStr
 
 from outrider.audit.events import LLMCallEvent
 from outrider.llm.base import (
     LLMAuthError,
+    LLMConflictError,
     LLMExchangePersister,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
@@ -338,34 +339,42 @@ class AnthropicProvider:
 def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
     """Translate `LLMRequest` to Anthropic SDK `messages.create()` kwargs.
 
-    Key mappings (round 12 + 14 + 20 corrections):
+    Key mappings (round 12 + 14 + 21 corrections):
       - `request.system_prompt` → SDK kwarg `system` (NOT `system_prompt`)
       - `request.user_prompt` → single user-role message
-      - `request.cache_control=True` → top-level `cache_control` kwarg
-        (SDK 0.100's "Automatic Caching" surface — system applies the
-        breakpoint to the last cacheable block automatically). Per
-        Anthropic 0.100 docs: "Best for multi-turn conversations where
-        the growing message history should be cached automatically."
-        Round-20 fold per Codex finding: previous design used per-block
-        placement on the system prompt; the top-level kwarg is now the
-        documented preferred surface.
+      - `request.cache_control=True` → **per-block** `cache_control` on
+        the system block. Round-21 fold per Codex finding: round-20's
+        top-level "Automatic Caching" kwarg was a regression for V1's
+        single-turn shape. Per spec.md §1476-1478, the system prompt is
+        the cache boundary; the volatile user/diff content stays outside
+        the cache. Top-level automatic caching applies the breakpoint to
+        the LAST cacheable block — in V1's `system + [user]` shape that's
+        the user message, which changes per call. Per-block on system is
+        what produces measurable hits.
       - `stream` omitted → returns `Message`, not `AsyncStream`
       - `request.messages` is V1.5+; rejected at LLMRequest construction
         (validator); never reaches here in V1.
     """
-    sdk_kwargs: dict[str, Any] = {
+    if request.cache_control:
+        # Per-block ephemeral cache_control on the stable system block.
+        # Volatile user/diff content stays outside the cache boundary
+        # per spec.md §1476-1478.
+        system_param: str | list[TextBlockParam] = [
+            TextBlockParam(
+                type="text",
+                text=request.system_prompt,
+                cache_control={"type": "ephemeral"},
+            )
+        ]
+    else:
+        system_param = request.system_prompt
+    return {
         "model": request.model,
         "max_tokens": request.max_tokens,
         "temperature": request.temperature,
-        "system": request.system_prompt,
+        "system": system_param,
         "messages": [{"role": "user", "content": request.user_prompt}],
     }
-    if request.cache_control:
-        # SDK 0.100 "Automatic Caching": top-level ephemeral kwarg.
-        # The system applies the cache breakpoint to the last cacheable
-        # block automatically; no per-block work needed.
-        sdk_kwargs["cache_control"] = {"type": "ephemeral"}
-    return sdk_kwargs
 
 
 def _extract_single_text_block(message: Message) -> str:
@@ -413,22 +422,26 @@ def _translate_anthropic_error(exc: anthropic.APIError) -> Exception:
         return LLMRateLimitError(str(exc))
     if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
         return LLMAuthError(str(exc))
+    if isinstance(exc, anthropic.ConflictError):
+        # Round-21 fold per Codex finding: 409 is in Anthropic SDK's
+        # default-retry set (alongside 408/429/5xx), so the right
+        # taxonomy is `retry_at_layer="node"`, not terminal. Round-20
+        # incorrectly bucketed it with 404 as terminal.
+        return LLMConflictError(str(exc))
     if isinstance(
         exc,
         (
             anthropic.BadRequestError,
             anthropic.UnprocessableEntityError,
             anthropic.NotFoundError,
-            anthropic.ConflictError,
         ),
     ):
         # Round-20 fold per Codex finding: 404 (NotFoundError — e.g., a
         # configured model id that the Anthropic catalog doesn't know)
-        # and 409 (ConflictError) are documented terminal request/config
-        # errors. Mapping them to LLMInvalidRequestError gives them the
-        # right `retry_at_layer="none"` semantics; fall-through to
-        # LLMUnknownError would lose taxonomy and retry-eligibility
-        # information.
+        # is a documented terminal request/config error. 400/422 are
+        # also terminal (request shape errors). Mapping all three to
+        # LLMInvalidRequestError gives them the right
+        # `retry_at_layer="none"` semantics.
         return LLMInvalidRequestError(str(exc))
     if isinstance(exc, anthropic.APIResponseValidationError):
         return LLMInvalidResponseError(str(exc))

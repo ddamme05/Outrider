@@ -47,6 +47,7 @@ from outrider.audit.events import ContextManifestEntry, LLMCallEvent
 __all__ = [
     "INCLUDE_TEXT_OPT_IN",
     "LLMAuthError",
+    "LLMConflictError",
     "LLMExchangePersister",
     "LLMInvalidRequestError",
     "LLMInvalidResponseError",
@@ -186,6 +187,18 @@ class LLMTimeoutError(LLMProviderError):
 
 class LLMRateLimitError(LLMProviderError):
     """Rate limit (HTTP 429); translated from `anthropic.RateLimitError`."""
+
+    retry_at_layer: ClassVar[RetryLayer] = "node"
+
+
+class LLMConflictError(LLMProviderError):
+    """Resource conflict (HTTP 409); translated from `anthropic.ConflictError`.
+
+    Per Anthropic SDK 0.100 docs (round-21 fold): 409 is in the
+    SDK's default-retry set alongside 408/429/5xx. We disable SDK
+    retries (`max_retries=0`), so the calling node owns retry — same
+    layer as Timeout/RateLimit/Upstream.
+    """
 
     retry_at_layer: ClassVar[RetryLayer] = "node"
 

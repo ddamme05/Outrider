@@ -29,10 +29,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["ModelConfig"]
 
-# V1 Anthropic family pattern (claude-{haiku,sonnet,opus}-{major}[-{minor}]).
-# Spec §4.2 lists `claude-haiku-4-5` and `claude-sonnet-4-6`; the `-minor`
-# suffix is optional because Anthropic ships both `-N` and `-N-M` shapes.
-_VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?$")
+# V1 Anthropic family pattern.
+# Three accepted shapes per Anthropic SDK 0.100 model catalog:
+#   - `claude-{haiku,sonnet,opus}-{major}` (forward-compat with future
+#     major-only releases)
+#   - `claude-{haiku,sonnet,opus}-{major}-{minor}` (the canonical alias
+#     form, e.g., `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-opus-4-7`)
+#   - `claude-{haiku,sonnet,opus}-{major}-{minor}-{YYYYMMDD}` (the dated
+#     "exact pin" form, e.g., `claude-haiku-4-5-20251001`)
+# Round-21 fold per Codex finding: previous regex rejected the dated form
+# even though the SDK catalog publishes it as the precise model id.
+_VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
 
 
 class ModelConfig(BaseSettings):

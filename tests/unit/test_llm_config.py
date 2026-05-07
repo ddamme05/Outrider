@@ -108,13 +108,32 @@ def test_rejects_almost_valid_string() -> None:
     [
         "claude-haiku-4-5",
         "claude-sonnet-4-6",
-        "claude-opus-4-1",
+        "claude-opus-4-7",
         "claude-haiku-5",  # without minor
+        # Round-21 fold per Codex finding: SDK 0.100 catalog publishes
+        # dated "exact pin" forms (e.g., claude-haiku-4-5-20251001)
+        # alongside the undated alias. Regex must accept both shapes
+        # so operators pinning to a specific build via OUTRIDER_MODEL_*
+        # env vars don't get rejected at construction.
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6-20251015",
+        "claude-opus-4-7-20251020",
     ],
 )
 def test_admits_anthropic_family_strings(model: str) -> None:
     cfg = ModelConfig(triage_model=model)
     assert cfg.triage_model == model
+
+
+def test_rejects_dated_form_with_wrong_date_length() -> None:
+    """Dated form requires exactly 8 digits (YYYYMMDD); other digit
+    lengths are rejected so a typo like `-2025` (4 digits) is caught."""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="V1 Anthropic family"):
+        ModelConfig(triage_model="claude-haiku-4-5-2025")
+    with pytest.raises(pydantic.ValidationError, match="V1 Anthropic family"):
+        ModelConfig(triage_model="claude-haiku-4-5-202510")
 
 
 # ---------------------------------------------------------------------------
