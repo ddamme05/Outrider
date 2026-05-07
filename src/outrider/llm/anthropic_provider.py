@@ -38,7 +38,7 @@ from typing import Any, Final
 
 import anthropic
 import httpx
-from anthropic.types import Message, TextBlock, TextBlockParam
+from anthropic.types import Message, TextBlock
 from pydantic import SecretStr
 
 from outrider.audit.events import LLMCallEvent
@@ -184,19 +184,38 @@ class AnthropicProvider:
             ),
         )
 
-        # Privacy startup notice (DECISIONS#015 point 4).
-        # Operator-attestation only; never a per-request header.
+        # Privacy startup notice — canonical text per DECISIONS#015
+        # point 4. Operator-attestation only; never a per-request header.
+        # Round-20 audit fold per Codex: previous emit had only structured
+        # fields, missing the mandatory message text that names the
+        # 30-day default / 2-year content / 7-year classification
+        # retention exceptions and the contract-arrangement requirement.
+        if self._zdr_enabled:
+            notice_message = (
+                "privacy_notice anthropic_retention=zdr_attested; "
+                "ZDR arrangement assumed per operator attestation "
+                "(Outrider does not verify). Policy-violation retention "
+                "up to 2 years content / 7 years classification still "
+                "applies per Anthropic's ZDR terms."
+            )
+        else:
+            notice_message = (
+                "privacy_notice anthropic_retention=30d zdr=not_attested; "
+                "ZDR cannot be enabled by this flag alone — it requires "
+                "a contract arrangement with Anthropic (contact sales). "
+                "Set ANTHROPIC_ZDR_ENABLED=true if your organization has "
+                "ZDR arranged. Policy-violation retention up to 2 years "
+                "content / 7 years classification applies regardless."
+            )
         _PRIVACY_NOTICE_LOGGER.info(
-            "anthropic_provider startup",
+            notice_message,
             extra={
                 "privacy_notice": True,
                 "zdr_attested": self._zdr_enabled,
                 "egress_destination": "api.anthropic.com",
-                "retention_policy": (
-                    "anthropic_default_30_days"
-                    if not self._zdr_enabled
-                    else "operator_attested_zdr"
-                ),
+                "retention_default_days": 30,
+                "retention_policy_violation_content_years": 2,
+                "retention_policy_violation_classification_years": 7,
             },
         )
 
@@ -319,34 +338,34 @@ class AnthropicProvider:
 def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
     """Translate `LLMRequest` to Anthropic SDK `messages.create()` kwargs.
 
-    Key mappings (round 12 + 14 corrections):
+    Key mappings (round 12 + 14 + 20 corrections):
       - `request.system_prompt` → SDK kwarg `system` (NOT `system_prompt`)
       - `request.user_prompt` → single user-role message
-      - `request.cache_control=True` → ephemeral cache_control on system block
+      - `request.cache_control=True` → top-level `cache_control` kwarg
+        (SDK 0.100's "Automatic Caching" surface — system applies the
+        breakpoint to the last cacheable block automatically). Per
+        Anthropic 0.100 docs: "Best for multi-turn conversations where
+        the growing message history should be cached automatically."
+        Round-20 fold per Codex finding: previous design used per-block
+        placement on the system prompt; the top-level kwarg is now the
+        documented preferred surface.
       - `stream` omitted → returns `Message`, not `AsyncStream`
       - `request.messages` is V1.5+; rejected at LLMRequest construction
         (validator); never reaches here in V1.
     """
-    if request.cache_control:
-        # Per-block ephemeral cache_control on system prompt block.
-        # SDK has no boolean cache toggle; this is the documented surface.
-        system_param: str | list[TextBlockParam] = [
-            TextBlockParam(
-                type="text",
-                text=request.system_prompt,
-                cache_control={"type": "ephemeral"},
-            )
-        ]
-    else:
-        system_param = request.system_prompt
-
-    return {
+    sdk_kwargs: dict[str, Any] = {
         "model": request.model,
         "max_tokens": request.max_tokens,
         "temperature": request.temperature,
-        "system": system_param,
+        "system": request.system_prompt,
         "messages": [{"role": "user", "content": request.user_prompt}],
     }
+    if request.cache_control:
+        # SDK 0.100 "Automatic Caching": top-level ephemeral kwarg.
+        # The system applies the cache breakpoint to the last cacheable
+        # block automatically; no per-block work needed.
+        sdk_kwargs["cache_control"] = {"type": "ephemeral"}
+    return sdk_kwargs
 
 
 def _extract_single_text_block(message: Message) -> str:
@@ -394,7 +413,22 @@ def _translate_anthropic_error(exc: anthropic.APIError) -> Exception:
         return LLMRateLimitError(str(exc))
     if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
         return LLMAuthError(str(exc))
-    if isinstance(exc, (anthropic.BadRequestError, anthropic.UnprocessableEntityError)):
+    if isinstance(
+        exc,
+        (
+            anthropic.BadRequestError,
+            anthropic.UnprocessableEntityError,
+            anthropic.NotFoundError,
+            anthropic.ConflictError,
+        ),
+    ):
+        # Round-20 fold per Codex finding: 404 (NotFoundError — e.g., a
+        # configured model id that the Anthropic catalog doesn't know)
+        # and 409 (ConflictError) are documented terminal request/config
+        # errors. Mapping them to LLMInvalidRequestError gives them the
+        # right `retry_at_layer="none"` semantics; fall-through to
+        # LLMUnknownError would lose taxonomy and retry-eligibility
+        # information.
         return LLMInvalidRequestError(str(exc))
     if isinstance(exc, anthropic.APIResponseValidationError):
         return LLMInvalidResponseError(str(exc))

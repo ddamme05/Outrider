@@ -30,7 +30,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 __all__ = ["ModelConfig"]
 
 # V1 Anthropic family pattern (claude-{haiku,sonnet,opus}-{major}[-{minor}]).
-# Spec §4.2 lists `claude-haiku-4-5` and `claude-sonnet-4-7`; the `-minor`
+# Spec §4.2 lists `claude-haiku-4-5` and `claude-sonnet-4-6`; the `-minor`
 # suffix is optional because Anthropic ships both `-N` and `-N-M` shapes.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?$")
 
@@ -50,9 +50,13 @@ class ModelConfig(BaseSettings):
         frozen=True,
     )
 
+    # Round-20 fold per Codex finding: corrected to current Anthropic
+    # model family per SDK 0.100 docs. Previous defaults named
+    # `claude-sonnet-4-6` which doesn't exist in the SDK; current
+    # active models are Opus 4.7, Sonnet 4.6, Haiku 4.5.
     triage_model: str = "claude-haiku-4-5"
-    analyze_model: str = "claude-sonnet-4-7"
-    synthesize_model: str = "claude-sonnet-4-7"
+    analyze_model: str = "claude-sonnet-4-6"
+    synthesize_model: str = "claude-sonnet-4-6"
     trace_model: str = "claude-haiku-4-5"
 
     @field_validator(

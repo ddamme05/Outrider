@@ -45,7 +45,12 @@ __all__ = [
 # Bump on every rate-table change. The digest-pinning test in
 # `test_llm_pricing.py` fails if rates change without a version bump,
 # preventing silent replay drift.
-PRICING_VERSION: Final[str] = "v1"
+#
+# v1 (initial): claude-sonnet-4-7 + claude-haiku-4-5 (round-13)
+# v2 (round-20): replaced claude-sonnet-4-7 with claude-sonnet-4-6
+#   (the 4-7 model didn't exist in the Anthropic SDK 0.100 catalog;
+#   canonical model name correction)
+PRICING_VERSION: Final[str] = "v2"
 
 
 class ModelPricing(NamedTuple):
@@ -69,8 +74,9 @@ class ModelPricing(NamedTuple):
 
 
 # Anthropic per-token rates as of the V1 PRICING_VERSION bump.
-# Sources:
-#   - claude-sonnet-4-7: $3.00/MTok input, $15.00/MTok output,
+# Sources (round-20 update — corrected to current Anthropic 0.100 model
+# family per SDK docs; `claude-sonnet-4-7` doesn't exist):
+#   - claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output,
 #     $0.30/MTok cache read, $3.75/MTok cache write (1.25× input premium).
 #   - claude-haiku-4-5: $1.00/MTok input, $5.00/MTok output,
 #     $0.10/MTok cache read, $1.25/MTok cache write.
@@ -83,7 +89,7 @@ class ModelPricing(NamedTuple):
 # loudly instead of silently mutating module state for the rest of the
 # pytest session.
 _RATE_TABLE_RAW: dict[str, ModelPricing] = {
-    "claude-sonnet-4-7": ModelPricing(
+    "claude-sonnet-4-6": ModelPricing(
         in_per_token=Decimal("0.000003"),  # 3.00/MTok
         cache_write_per_token=Decimal("0.00000375"),  # 3.75/MTok (1.25× input)
         cache_read_per_token=Decimal("0.0000003"),  # 0.30/MTok (0.10× input)

@@ -71,7 +71,7 @@ def _entry() -> ContextManifestEntry:
 def _build_response() -> LLMResponse:
     return LLMResponse(
         text="SECRET",
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         input_tokens=10,
         output_tokens=10,
         cache_read_tokens=0,
@@ -85,7 +85,7 @@ def _build_request() -> LLMRequest:
     return LLMRequest(
         system_prompt="You are a code reviewer.",
         user_prompt="Review this PR.",
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=100,
         temperature=0.0,
         review_id=uuid4(),
@@ -99,7 +99,7 @@ def _build_request() -> LLMRequest:
 def _build_llm_call_event() -> LLMCallEvent:
     return LLMCallEvent(
         review_id=uuid4(),
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         node_id="analyze",
         input_tokens=10,
         output_tokens=10,
