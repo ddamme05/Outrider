@@ -15,6 +15,7 @@ import pytest
 
 from outrider.llm.base import (
     LLMAuthError,
+    LLMConflictError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMMissingAPIKeyError,
@@ -46,6 +47,7 @@ def test_concrete_subclasses_are_instantiable() -> None:
         LLMUnknownError,
         LLMTimeoutError,
         LLMRateLimitError,
+        LLMConflictError,
         LLMUpstreamError,
         LLMAuthError,
         LLMInvalidRequestError,
@@ -112,6 +114,7 @@ def test_subclass_with_wrong_case_retry_at_layer_value_raises() -> None:
         (LLMUnknownError, "none"),
         (LLMTimeoutError, "node"),
         (LLMRateLimitError, "node"),
+        (LLMConflictError, "node"),  # round-21: 409 in SDK retry set
         (LLMUpstreamError, "node"),
         (LLMAuthError, "none"),
         (LLMInvalidRequestError, "none"),
@@ -129,9 +132,10 @@ def test_retry_at_layer_per_subclass(cls: type[LLMProviderError], expected_layer
 
 
 def test_recoverable_subclasses_are_node_layer() -> None:
-    """Timeout/RateLimit/Upstream are the recoverable cases per spec; all
-    surface as `retry_at_layer="node"` (the calling node retries)."""
-    recoverable = {LLMTimeoutError, LLMRateLimitError, LLMUpstreamError}
+    """Timeout/RateLimit/Conflict/Upstream are the recoverable cases per
+    spec (round-21 fold for 409 ConflictError per SDK retry set);
+    all surface as `retry_at_layer="node"` (the calling node retries)."""
+    recoverable = {LLMTimeoutError, LLMRateLimitError, LLMConflictError, LLMUpstreamError}
     for cls in recoverable:
         assert cls.retry_at_layer == "node"
 

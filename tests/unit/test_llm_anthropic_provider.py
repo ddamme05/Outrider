@@ -31,6 +31,7 @@ from outrider.llm import (
     PRICING_VERSION,
     AnthropicProvider,
     LLMAuthError,
+    LLMConflictError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMMissingAPIKeyError,
@@ -540,11 +541,13 @@ async def test_complete_uses_request_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cache_control_true_uses_top_level_automatic_caching() -> None:
-    """Round-20 fold per Codex finding: SDK 0.100 prefers top-level
-    `cache_control={"type": "ephemeral"}` ("Automatic Caching") over
-    per-block placement. The system applies the breakpoint to the last
-    cacheable block automatically; no per-block work needed."""
+async def test_cache_control_true_attaches_ephemeral_to_system_block() -> None:
+    """Round-21 fold per Codex finding: V1 single-turn shape needs
+    per-block cache_control on the SYSTEM block (stable across calls).
+    Top-level "Automatic Caching" targets the last cacheable block,
+    which in V1's `system + [user]` shape is the volatile user message —
+    defeats the cache. Per spec.md §1476-1478 the system prompt is the
+    cache boundary; the volatile user/diff content stays outside."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -554,14 +557,19 @@ async def test_cache_control_true_uses_top_level_automatic_caching() -> None:
     with _patched_create() as mock_create:
         await provider.complete(_request(cache_control=True))
     sdk_kwargs = mock_create.call_args.kwargs
-    # Top-level kwarg present, ephemeral type
-    assert sdk_kwargs.get("cache_control") == {"type": "ephemeral"}
-    # System stays a bare string — no per-block work
-    assert isinstance(sdk_kwargs["system"], str)
+    # No top-level cache_control kwarg (round-21 reverted that).
+    assert "cache_control" not in sdk_kwargs
+    # System is a list with one TextBlockParam carrying ephemeral cache_control.
+    system = sdk_kwargs["system"]
+    assert isinstance(system, list)
+    assert len(system) == 1
+    block = system[0]
+    assert block["type"] == "text"
+    assert block["cache_control"] == {"type": "ephemeral"}
 
 
 @pytest.mark.asyncio
-async def test_cache_control_false_omits_cache_control_kwarg() -> None:
+async def test_cache_control_false_passes_system_as_bare_string() -> None:
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -571,9 +579,8 @@ async def test_cache_control_false_omits_cache_control_kwarg() -> None:
     with _patched_create() as mock_create:
         await provider.complete(_request(cache_control=False))
     sdk_kwargs = mock_create.call_args.kwargs
-    # No cache_control kwarg at all when disabled
+    # No top-level cache_control kwarg AND system is a bare string
     assert "cache_control" not in sdk_kwargs
-    # System stays a bare string
     assert isinstance(sdk_kwargs["system"], str)
 
 
@@ -591,7 +598,11 @@ async def test_cache_control_default_is_true() -> None:
     with _patched_create() as mock_create:
         await provider.complete(_request())
     sdk_kwargs = mock_create.call_args.kwargs
-    assert sdk_kwargs.get("cache_control") == {"type": "ephemeral"}
+    # Round-21: per-block placement on system, not top-level kwarg
+    assert "cache_control" not in sdk_kwargs
+    system = sdk_kwargs["system"]
+    assert isinstance(system, list)
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
 
 
 @pytest.mark.asyncio
@@ -718,16 +729,20 @@ def _fake_response(status_code: int = 500) -> httpx.Response:
             ),
             LLMUpstreamError,
         ),
-        # Round-20 fold per Codex finding: 404 + 409 documented terminal cases.
+        # Round-20 fold: 404 NotFoundError mapped to terminal LLMInvalidRequestError.
         (
             lambda: anthropic.NotFoundError(
                 "model not found", response=_fake_response(404), body=None
             ),
             LLMInvalidRequestError,
         ),
+        # Round-21 correction per Codex finding: 409 ConflictError is in
+        # the Anthropic SDK's default-retry set (alongside 408/429/5xx),
+        # so route to LLMConflictError with retry_at_layer="node" rather
+        # than terminal LLMInvalidRequestError.
         (
             lambda: anthropic.ConflictError("conflict", response=_fake_response(409), body=None),
-            LLMInvalidRequestError,
+            LLMConflictError,
         ),
     ],
 )

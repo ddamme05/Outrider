@@ -9,6 +9,7 @@ from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.base import (
     INCLUDE_TEXT_OPT_IN,
     LLMAuthError,
+    LLMConflictError,
     LLMExchangePersister,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
@@ -48,6 +49,7 @@ __all__ = [
     "LLM_CONTENT_BEARING_TYPES",
     # Exception hierarchy
     "LLMAuthError",
+    "LLMConflictError",
     "LLMInvalidRequestError",
     "LLMInvalidResponseError",
     "LLMMissingAPIKeyError",
