@@ -23,7 +23,15 @@ Constructor performs eager validation:
   5. Validate response shape: exactly one TextBlock or fail-loud.
   6. Construct LLMResponse + measure latency_ms.
   7. Compute prompt_hash + system_prompt_hash.
-  8. Compute cost_usd via pricing.compute_cost_usd().
+  7a. Round-22 diagnostic: if `cache_control=True` AND both
+      cache_creation_input_tokens=0 AND cache_read_input_tokens=0, log a
+      WARN once per (model, system_prompt_hash) per process — the SDK
+      silently rejected caching, typically because the prompt is below
+      the model's min-cacheable threshold (Sonnet 4.6: 2048 tokens;
+      Haiku 4.5: 4096 tokens). Diagnostic only; does not raise.
+  8. Compute cost_usd via pricing.compute_cost_usd() (uses
+     `normalize_to_pricing_key` so dated SDK-catalog model pins resolve
+     to their undated alias for RATE_TABLE lookup, per round-27).
   9. Build LLMCallEvent; await persister.persist(...); wrap failures as
      LLMPersisterError.
  10. Return LLMResponse.
