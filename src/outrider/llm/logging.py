@@ -181,7 +181,7 @@ def _walk(obj: Any, active_keys: frozenset[str], depth: int) -> bool:
 
 def register_filter_on_all_handlers(
     filter_instance: RejectLLMContentFilter | None = None,
-) -> RejectLLMContentFilter:
+) -> None:
     """Walk the logger chain and install the filter on every reachable handler.
 
     Filters MUST be attached to handlers, NOT to loggers — Python's
@@ -204,8 +204,14 @@ def register_filter_on_all_handlers(
     handler registration (e.g., FastAPI/uvicorn registering theirs at
     startup).
 
-    Returns the filter instance (newly created or the one passed in) so
-    tests can verify which instance is active.
+    Copilot follow-on fix: the previous signature returned
+    `RejectLLMContentFilter` so callers could "verify which instance is
+    active," but the conditional skip path (handler already had a
+    different `RejectLLMContentFilter`) made the returned object
+    potentially uninstalled — the misleading return-value pattern.
+    Returns `None` now; callers that want the active instance should
+    introspect a handler's `.filters` directly. Test surface confirmed
+    no caller needs the instance for substantive work.
     """
     if filter_instance is None:
         filter_instance = RejectLLMContentFilter()
@@ -235,5 +241,3 @@ def register_filter_on_all_handlers(
             already_present = any(isinstance(f, RejectLLMContentFilter) for f in handler.filters)
             if not already_present:
                 handler.addFilter(filter_instance)
-
-    return filter_instance
