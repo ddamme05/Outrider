@@ -67,7 +67,7 @@ def _request(**overrides: Any) -> LLMRequest:
     base: dict[str, Any] = {
         "system_prompt": "You are a code reviewer.",
         "user_prompt": "Review this PR.",
-        "model": "claude-sonnet-4-7",
+        "model": "claude-sonnet-4-6",
         "max_tokens": 100,
         "temperature": 0.0,
         "review_id": uuid4(),
@@ -83,7 +83,7 @@ def _request(**overrides: Any) -> LLMRequest:
 def _sdk_message(
     text: str = "model output",
     *,
-    model: str = "claude-sonnet-4-7",
+    model: str = "claude-sonnet-4-6",
     input_tokens: int = 100,
     output_tokens: int = 50,
     cache_read_input_tokens: int | None = None,
@@ -206,6 +206,63 @@ def test_constructor_emits_privacy_notice(caplog: pytest.LogCaptureFixture) -> N
     notice_records = [r for r in caplog.records if r.name == "outrider.llm.privacy_notice"]
     assert len(notice_records) >= 1
     assert any(getattr(r, "privacy_notice", False) is True for r in notice_records)
+
+
+def test_constructor_privacy_notice_text_zdr_not_attested(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Round-20 fold per Codex finding: DECISIONS#015 point 4 specifies
+    the EXACT message text. Without ZDR, the notice must name the
+    contract-arrangement requirement and the 2y/7y retention exceptions."""
+    saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+    try:
+        caplog.set_level(logging.INFO, logger="outrider.llm.privacy_notice")
+        AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+            zdr_enabled=False,
+        )
+        msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "outrider.llm.privacy_notice" and r.levelno == logging.INFO
+        ]
+        # Exactly one INFO with the no-ZDR shape
+        assert any("anthropic_retention=30d zdr=not_attested" in m for m in msgs)
+        assert any("contract arrangement" in m for m in msgs)
+        assert any("2 years content" in m and "7 years classification" in m for m in msgs)
+    finally:
+        if saved is not None:
+            os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
+
+
+def test_constructor_privacy_notice_text_zdr_attested(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Round-20 fold: ZDR-attested notice still names the policy-violation
+    retention exceptions per #015 point 4 ("ZDR narrows standard retention
+    ... but policy-violation retention still applies")."""
+    saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
+    try:
+        caplog.set_level(logging.INFO, logger="outrider.llm.privacy_notice")
+        AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+            zdr_enabled=True,
+        )
+        msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "outrider.llm.privacy_notice" and r.levelno == logging.INFO
+        ]
+        assert any("anthropic_retention=zdr_attested" in m for m in msgs)
+        assert any("operator attestation" in m for m in msgs)
+        assert any("2 years content" in m and "7 years classification" in m for m in msgs)
+    finally:
+        if saved is not None:
+            os.environ["ANTHROPIC_ZDR_ENABLED"] = saved
 
 
 def test_constructor_zdr_kwarg_overrides_env() -> None:
@@ -483,7 +540,11 @@ async def test_complete_uses_request_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cache_control_true_attaches_ephemeral_to_system_block() -> None:
+async def test_cache_control_true_uses_top_level_automatic_caching() -> None:
+    """Round-20 fold per Codex finding: SDK 0.100 prefers top-level
+    `cache_control={"type": "ephemeral"}` ("Automatic Caching") over
+    per-block placement. The system applies the breakpoint to the last
+    cacheable block automatically; no per-block work needed."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -492,17 +553,15 @@ async def test_cache_control_true_attaches_ephemeral_to_system_block() -> None:
     )
     with _patched_create() as mock_create:
         await provider.complete(_request(cache_control=True))
-    system = mock_create.call_args.kwargs["system"]
-    # When cache_control=True, system is a list of TextBlockParam-shaped dicts
-    assert isinstance(system, list)
-    assert len(system) == 1
-    block = system[0]
-    assert block["type"] == "text"
-    assert block["cache_control"] == {"type": "ephemeral"}
+    sdk_kwargs = mock_create.call_args.kwargs
+    # Top-level kwarg present, ephemeral type
+    assert sdk_kwargs.get("cache_control") == {"type": "ephemeral"}
+    # System stays a bare string — no per-block work
+    assert isinstance(sdk_kwargs["system"], str)
 
 
 @pytest.mark.asyncio
-async def test_cache_control_false_passes_system_as_string() -> None:
+async def test_cache_control_false_omits_cache_control_kwarg() -> None:
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -511,9 +570,28 @@ async def test_cache_control_false_passes_system_as_string() -> None:
     )
     with _patched_create() as mock_create:
         await provider.complete(_request(cache_control=False))
-    system = mock_create.call_args.kwargs["system"]
-    # When cache_control=False, system is the bare string
-    assert isinstance(system, str)
+    sdk_kwargs = mock_create.call_args.kwargs
+    # No cache_control kwarg at all when disabled
+    assert "cache_control" not in sdk_kwargs
+    # System stays a bare string
+    assert isinstance(sdk_kwargs["system"], str)
+
+
+@pytest.mark.asyncio
+async def test_cache_control_default_is_true() -> None:
+    """Round-20 fold per DECISIONS#013 point 4 + spec §9.5
+    "prompt-caching-always-on" — default must be True."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    # _request() doesn't pass cache_control — should default to True
+    with _patched_create() as mock_create:
+        await provider.complete(_request())
+    sdk_kwargs = mock_create.call_args.kwargs
+    assert sdk_kwargs.get("cache_control") == {"type": "ephemeral"}
 
 
 @pytest.mark.asyncio
@@ -640,6 +718,17 @@ def _fake_response(status_code: int = 500) -> httpx.Response:
             ),
             LLMUpstreamError,
         ),
+        # Round-20 fold per Codex finding: 404 + 409 documented terminal cases.
+        (
+            lambda: anthropic.NotFoundError(
+                "model not found", response=_fake_response(404), body=None
+            ),
+            LLMInvalidRequestError,
+        ),
+        (
+            lambda: anthropic.ConflictError("conflict", response=_fake_response(409), body=None),
+            LLMInvalidRequestError,
+        ),
     ],
 )
 async def test_anthropic_exception_translation(
@@ -710,10 +799,10 @@ async def test_persister_receives_complete_llm_call_event() -> None:
     from outrider.llm.pricing import RATE_TABLE
 
     expected_decimal = (
-        RATE_TABLE["claude-sonnet-4-7"].in_per_token * 1000
-        + RATE_TABLE["claude-sonnet-4-7"].cache_write_per_token * 100
-        + RATE_TABLE["claude-sonnet-4-7"].cache_read_per_token * 200
-        + RATE_TABLE["claude-sonnet-4-7"].out_per_token * 500
+        RATE_TABLE["claude-sonnet-4-6"].in_per_token * 1000
+        + RATE_TABLE["claude-sonnet-4-6"].cache_write_per_token * 100
+        + RATE_TABLE["claude-sonnet-4-6"].cache_read_per_token * 200
+        + RATE_TABLE["claude-sonnet-4-6"].out_per_token * 500
     )
     # Provider casts Decimal to float; allow tiny float-precision tolerance
     assert abs(event.cost_usd - float(expected_decimal)) < 1e-9

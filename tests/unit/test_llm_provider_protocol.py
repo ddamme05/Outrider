@@ -142,7 +142,7 @@ def test_llm_response_construction_with_severity_field_raises() -> None:
     with pytest.raises(ValidationError):
         LLMResponse(  # type: ignore[call-arg]
             text="x",
-            model="claude-sonnet-4-7",
+            model="claude-sonnet-4-6",
             input_tokens=1,
             output_tokens=1,
             cache_read_tokens=0,
@@ -270,7 +270,7 @@ def test_llm_request_minimal_well_formed_construction() -> None:
     assert req.is_eval is False
     assert req.context_summary == ()
     assert req.messages is None
-    assert req.cache_control is False
+    assert req.cache_control is True  # round-20 default per DECISIONS#013 point 4
 
 
 def test_llm_response_minimal_well_formed_construction() -> None:

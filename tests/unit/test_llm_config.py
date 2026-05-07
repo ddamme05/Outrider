@@ -46,8 +46,8 @@ def _env(**kvs: str) -> Iterator[None]:
 def test_defaults_match_canonical_spec() -> None:
     cfg = ModelConfig()
     assert cfg.triage_model == "claude-haiku-4-5"
-    assert cfg.analyze_model == "claude-sonnet-4-7"
-    assert cfg.synthesize_model == "claude-sonnet-4-7"
+    assert cfg.analyze_model == "claude-sonnet-4-6"
+    assert cfg.synthesize_model == "claude-sonnet-4-6"
     assert cfg.trace_model == "claude-haiku-4-5"
 
 
@@ -71,7 +71,7 @@ def test_each_field_independently_overridable() -> None:
         cfg = ModelConfig()
         # Other fields keep defaults
         assert cfg.triage_model == "claude-haiku-4-5"
-        assert cfg.analyze_model == "claude-sonnet-4-7"
+        assert cfg.analyze_model == "claude-sonnet-4-6"
         assert cfg.trace_model == "claude-haiku-4-5"
 
 
@@ -107,7 +107,7 @@ def test_rejects_almost_valid_string() -> None:
     "model",
     [
         "claude-haiku-4-5",
-        "claude-sonnet-4-7",
+        "claude-sonnet-4-6",
         "claude-opus-4-1",
         "claude-haiku-5",  # without minor
     ],
@@ -159,7 +159,7 @@ def test_rejects_deprecated_model() -> None:
 def test_config_is_frozen() -> None:
     cfg = ModelConfig()
     with pytest.raises(ValidationError):
-        cfg.triage_model = "claude-sonnet-4-7"  # type: ignore[misc]
+        cfg.triage_model = "claude-sonnet-4-6"  # type: ignore[misc]
 
 
 def test_config_extra_forbid() -> None:

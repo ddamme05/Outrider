@@ -95,7 +95,7 @@ def test_compute_cost_usd_four_class_sum() -> None:
     """All four token classes contribute to the total. Round-14 fold per
     Codex finding F2 — earlier designs missed cache-write tokens.
     """
-    model = "claude-sonnet-4-7"
+    model = "claude-sonnet-4-6"
     rates = RATE_TABLE[model]
     expected = (
         rates.in_per_token * 100
@@ -120,7 +120,7 @@ def test_compute_cost_usd_four_class_sum() -> None:
 def test_each_token_class_is_a_separate_term(field: str) -> None:
     """Set each class to zero in turn; cost should drop by exactly that
     class's contribution. Confirms each is a separate term, not folded."""
-    model = "claude-sonnet-4-7"
+    model = "claude-sonnet-4-6"
     base = compute_cost_usd(
         model=model,
         input_tokens=100,
@@ -155,7 +155,7 @@ def test_compute_cost_usd_returns_decimal() -> None:
 
 
 def test_compute_cost_usd_zero_tokens_is_zero() -> None:
-    cost = compute_cost_usd("claude-sonnet-4-7", 0, 0, 0, 0)
+    cost = compute_cost_usd("claude-sonnet-4-6", 0, 0, 0, 0)
     assert cost == Decimal(0)
 
 
@@ -184,7 +184,8 @@ def _compute_rate_table_digest() -> str:
 # Pinned digest for PRICING_VERSION="v1". When PRICING_VERSION bumps,
 # ALSO update this constant; the test below catches mismatched updates.
 EXPECTED_PRICING_DIGEST: dict[str, str] = {
-    "v1": "a7c01b52255f790e",
+    "v1": "a7c01b52255f790e",  # initial — claude-sonnet-4-7 + claude-haiku-4-5
+    "v2": "761941ec53c83be1",  # round-20 — replaced claude-sonnet-4-7 with claude-sonnet-4-6
 }
 
 

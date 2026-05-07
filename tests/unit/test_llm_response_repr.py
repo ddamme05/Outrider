@@ -29,7 +29,7 @@ def _entry() -> ContextManifestEntry:
 def _build_response() -> LLMResponse:
     return LLMResponse(
         text=SECRET,
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         input_tokens=100,
         output_tokens=200,
         cache_read_tokens=0,
@@ -43,7 +43,7 @@ def _build_request() -> LLMRequest:
     return LLMRequest(
         system_prompt=SECRET,
         user_prompt=SECRET,
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=1000,
         temperature=0.0,
         review_id=uuid4(),

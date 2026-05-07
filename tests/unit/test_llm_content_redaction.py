@@ -45,7 +45,7 @@ def _entry() -> ContextManifestEntry:
 def _build_response() -> LLMResponse:
     return LLMResponse(
         text=SECRET,
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         input_tokens=10,
         output_tokens=10,
         cache_read_tokens=0,
@@ -59,7 +59,7 @@ def _build_request() -> LLMRequest:
     return LLMRequest(
         system_prompt=SECRET,
         user_prompt=SECRET,
-        model="claude-sonnet-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=100,
         temperature=0.0,
         review_id=uuid4(),
@@ -227,7 +227,7 @@ def test_response_attribute_access_unchanged() -> None:
     """The redaction is serialization-only; attribute access is unaffected."""
     response = _build_response()
     assert response.text == SECRET
-    assert response.model == "claude-sonnet-4-7"
+    assert response.model == "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------

@@ -328,7 +328,11 @@ class LLMRequest(BaseModel):
     messages: list[LLMMessage] | None = None
     model: str
     max_tokens: int = Field(gt=0, le=8192)
-    cache_control: bool = False
+    # `cache_control` defaults to True per DECISIONS#013 point 4 + spec
+    # §9.5 ("prompt-caching-always-on" convention). Round-20 fold per
+    # Codex finding: previous default of False conflicted with the
+    # canonical commitment to use Anthropic prompt caching by default.
+    cache_control: bool = True
     temperature: float = Field(ge=0.0, le=1.0)
 
     # Audit-context fields (pass-through to LLMCallEvent)
