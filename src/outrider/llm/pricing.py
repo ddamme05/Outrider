@@ -114,26 +114,36 @@ class ModelPricing(NamedTuple):
 # Per-token = per-MTok / 1_000_000.
 #
 # Wrapped in `MappingProxyType` so runtime mutation raises `TypeError`
-# (round-16 sharp-edges M2 fold). The `Final` annotation alone is a
-# type-checker hint; `MappingProxyType` enforces immutability at runtime.
-# A test fixture that does `RATE_TABLE["X"] = cheap_pricing` fails
-# loudly instead of silently mutating module state for the rest of the
-# pytest session.
-_RATE_TABLE_RAW: dict[str, ModelPricing] = {
-    "claude-sonnet-4-6": ModelPricing(
-        in_per_token=Decimal("0.000003"),  # 3.00/MTok
-        cache_write_per_token=Decimal("0.00000375"),  # 3.75/MTok (1.25× input)
-        cache_read_per_token=Decimal("0.0000003"),  # 0.30/MTok (0.10× input)
-        out_per_token=Decimal("0.000015"),  # 15.00/MTok
-    ),
-    "claude-haiku-4-5": ModelPricing(
-        in_per_token=Decimal("0.000001"),  # 1.00/MTok
-        cache_write_per_token=Decimal("0.00000125"),  # 1.25/MTok
-        cache_read_per_token=Decimal("0.0000001"),  # 0.10/MTok
-        out_per_token=Decimal("0.000005"),  # 5.00/MTok
-    ),
-}
-RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(_RATE_TABLE_RAW)
+# (round-16 sharp-edges M2 fold + round-27 defense-in-depth tightening).
+# The `Final` annotation alone is a type-checker hint; `MappingProxyType`
+# enforces immutability at runtime. A test fixture that does
+# `RATE_TABLE["X"] = cheap_pricing` fails loudly instead of silently
+# mutating module state for the rest of the pytest session.
+#
+# Round-27 fold (sweep against round-27 patterns): the dict literal is
+# inlined directly into `MappingProxyType(...)` rather than bound to a
+# module-level `_RATE_TABLE_RAW` name. The underscore-prefix convention
+# alone doesn't prevent `from outrider.llm.pricing import _RATE_TABLE_RAW`
+# followed by `_RATE_TABLE_RAW["X"] = cheap_pricing` — same defense-in-
+# depth class as Copilot's logging-filter finding (a back-door that
+# bypasses the documented protection). The inlined literal has no
+# importable name, so the only surface is the immutable proxy.
+RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(
+    {
+        "claude-sonnet-4-6": ModelPricing(
+            in_per_token=Decimal("0.000003"),  # 3.00/MTok
+            cache_write_per_token=Decimal("0.00000375"),  # 3.75/MTok (1.25× input)
+            cache_read_per_token=Decimal("0.0000003"),  # 0.30/MTok (0.10× input)
+            out_per_token=Decimal("0.000015"),  # 15.00/MTok
+        ),
+        "claude-haiku-4-5": ModelPricing(
+            in_per_token=Decimal("0.000001"),  # 1.00/MTok
+            cache_write_per_token=Decimal("0.00000125"),  # 1.25/MTok
+            cache_read_per_token=Decimal("0.0000001"),  # 0.10/MTok
+            out_per_token=Decimal("0.000005"),  # 5.00/MTok
+        ),
+    }
+)
 
 
 def compute_cost_usd(

@@ -312,3 +312,35 @@ def test_compute_cost_usd_accepts_dated_model() -> None:
         output_tokens=50,
     )
     assert cost_dated == cost_undated
+
+
+# ---------------------------------------------------------------------------
+# Round-27 sweep — RATE_TABLE has no importable mutable backdoor.
+# ---------------------------------------------------------------------------
+
+
+def test_rate_table_raw_dict_not_importable() -> None:
+    """Round-27 sweep against round-27 patterns: the round-16 fold added
+    `MappingProxyType` so `RATE_TABLE['X'] = cheap_pricing` raises, but
+    the underlying `_RATE_TABLE_RAW` dict was a module-level mutable name
+    importable as `from outrider.llm.pricing import _RATE_TABLE_RAW` —
+    same defense-in-depth class as Copilot's logging-filter finding (a
+    back-door bypassing the documented protection). The literal is now
+    inlined; no `_RATE_TABLE_RAW` name exists at module scope."""
+    import outrider.llm.pricing as pricing_module
+
+    assert not hasattr(pricing_module, "_RATE_TABLE_RAW"), (
+        "_RATE_TABLE_RAW must not exist at module scope — the dict literal "
+        "is inlined into MappingProxyType so there's no mutable back-door "
+        "for `from outrider.llm.pricing import _RATE_TABLE_RAW`."
+    )
+    # Belt: the public surface still raises on mutation.
+    import pytest
+
+    with pytest.raises(TypeError):
+        RATE_TABLE["claude-fake"] = ModelPricing(  # type: ignore[index]
+            in_per_token=Decimal("0"),
+            cache_write_per_token=Decimal("0"),
+            cache_read_per_token=Decimal("0"),
+            out_per_token=Decimal("0"),
+        )
