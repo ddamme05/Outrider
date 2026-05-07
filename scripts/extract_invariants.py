@@ -253,8 +253,8 @@ STUBS: list[Stub] = [
             "in `user_prompt` outside the cache boundary. V1.5+ "
             "extends to multi-block messages with per-block "
             "`cache_control` on stable file-context user blocks "
-            "(tracked as FUP-014). Wrapper-side default: "
-            "`LLMRequest.cache_control: bool = True`."
+            "(deferred until `LLMRequest.messages` becomes supported). "
+            "Wrapper-side default: `LLMRequest.cache_control: bool = True`."
         ),
         "pointer": ("See `DECISIONS.md#013` point 4 and `docs/spec.md` §9.5."),
     },
