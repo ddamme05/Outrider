@@ -621,6 +621,195 @@ async def test_cache_read_tokens_recorded_on_response() -> None:
 
 
 # ---------------------------------------------------------------------------
+# complete() — round-22 prompt-caching silently-disabled diagnostic.
+# Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than the
+# model's min-cacheable threshold (Sonnet 4.6: 2048 tokens; Haiku 4.5:
+# 4096 tokens) are processed without caching with NO error. Detection:
+# cache_control=True request with both cache_creation_input_tokens=0
+# AND cache_read_input_tokens=0 in the response.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _reset_noncacheable_warned_set() -> Iterator[None]:
+    """Round-22: cache-silently-disabled warning is rate-limited via a
+    process-local `_WARNED_NONCACHEABLE` set keyed by (model,
+    system_prompt_hash). Reset between tests so once-per-key behavior
+    doesn't break test isolation when the same prompt happens to be
+    used twice."""
+    from outrider.llm.anthropic_provider import _WARNED_NONCACHEABLE
+
+    saved = _WARNED_NONCACHEABLE.copy()
+    _WARNED_NONCACHEABLE.clear()
+    try:
+        yield
+    finally:
+        _WARNED_NONCACHEABLE.clear()
+        _WARNED_NONCACHEABLE.update(saved)
+
+
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_warns_when_both_cache_token_fields_zero(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """Round-22 fold: when cache_control=True but the SDK reports zero
+    cache_creation AND zero cache_read tokens, the prompt was likely
+    below the model's min-cacheable threshold. Surface as WARNING so
+    the operator sees the misconfiguration without aggregating audit
+    events."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    with _patched_create(
+        return_value=_sdk_message(
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+    ):
+        await provider.complete(_request(cache_control=True))
+    warning_records = [
+        r
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider"
+        and r.levelno == logging.WARNING
+        and "min-cacheable threshold" in r.getMessage()
+    ]
+    assert len(warning_records) == 1
+    # Metadata-only — no prompt content in the extras
+    rec = warning_records[0]
+    assert rec.model == "claude-sonnet-4-6"  # type: ignore[attr-defined]
+    assert isinstance(rec.system_prompt_hash, str)  # type: ignore[attr-defined]
+    assert rec.node_id == "analyze"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_warns_only_once_per_model_and_prompt(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """Mirror of round-17's ZDR warn-once pattern: under V1.5 parallel-
+    analyze, N providers calling with the same too-short prompt would
+    spam thousands of WARNINGs/day. The (model, system_prompt_hash)
+    key bounds spam while preserving the diagnostic signal."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    with _patched_create(
+        return_value=_sdk_message(
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+    ):
+        for _ in range(5):
+            await provider.complete(_request(cache_control=True))
+    warning_records = [
+        r
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider"
+        and r.levelno == logging.WARNING
+        and "min-cacheable threshold" in r.getMessage()
+    ]
+    assert len(warning_records) == 1, (
+        f"expected exactly 1 WARNING for repeated calls with the same "
+        f"(model, system_prompt_hash); got {len(warning_records)} "
+        f"(without the guard, would be 5)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_does_not_warn_when_cache_engaged(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """When cache_creation_input_tokens > 0 (first-call cache write),
+    caching IS engaged — no diagnostic warning fires. Same for cache
+    eviction-and-rewrite cycles, which also produce non-zero
+    cache_creation."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    # First call: cache write, no read — caching engaged
+    with _patched_create(
+        return_value=_sdk_message(
+            cache_creation_input_tokens=2500,
+            cache_read_input_tokens=0,
+        )
+    ):
+        await provider.complete(_request(cache_control=True))
+    warning_records = [r for r in caplog.records if "min-cacheable threshold" in r.getMessage()]
+    assert warning_records == []
+
+
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_does_not_warn_when_cache_control_false(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """Diagnostic only fires when caching was OPTED INTO. cache_control=False
+    with both cache token fields at 0 is the expected no-cache case and
+    must not trip the warning."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    with _patched_create(
+        return_value=_sdk_message(
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+    ):
+        await provider.complete(_request(cache_control=False))
+    warning_records = [r for r in caplog.records if "min-cacheable threshold" in r.getMessage()]
+    assert warning_records == []
+
+
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_warns_separately_per_model(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """The (model, system_prompt_hash) key correctly distinguishes models —
+    same prompt at the threshold for one model may be below for another
+    (Sonnet 4.6: 2048 tokens; Haiku 4.5: 4096 tokens), so each model
+    deserves its own warn-once budget."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    with _patched_create(
+        return_value=_sdk_message(
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+    ):
+        await provider.complete(_request(cache_control=True, model="claude-sonnet-4-6"))
+        await provider.complete(_request(cache_control=True, model="claude-haiku-4-5"))
+    warning_records = [r for r in caplog.records if "min-cacheable threshold" in r.getMessage()]
+    assert len(warning_records) == 2
+    seen_models = {getattr(r, "model", None) for r in warning_records}
+    assert seen_models == {"claude-sonnet-4-6", "claude-haiku-4-5"}
+
+
+# ---------------------------------------------------------------------------
 # complete() — multi-block fail-loud (AC#10).
 # ---------------------------------------------------------------------------
 

@@ -86,6 +86,19 @@ _ZDR_FALSY: Final[frozenset[str]] = frozenset({"", "0", "false", "no"})
 # once, which is the diagnostic signal we want without the spam.
 _WARNED_RAW_VALUES: set[str] = set()
 
+# Round-22 fold per Anthropic SDK 0.100 prompt-caching docs: silently-
+# disabled-cache diagnostic. Per the docs, prompts shorter than the
+# model's min-cacheable threshold (Sonnet 4.6: 2048 tokens; Haiku 4.5:
+# 4096 tokens) are processed without caching, with NO error returned.
+# Detection: `cache_control=True` request with both
+# `cache_creation_input_tokens=0` AND `cache_read_input_tokens=0` in the
+# response. Without this signal, an operator who opted into caching sees
+# no cost reduction and has no way to discover the root cause without
+# aggregating across many events. Process-local set keyed by
+# (model, system_prompt_hash) bounds spam under V1.5 parallel-analyze
+# fanout (same shape as `_WARNED_RAW_VALUES` above).
+_WARNED_NONCACHEABLE: set[tuple[str, str]] = set()
+
 
 def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     """Read ZDR attestation per DECISIONS#015 — operator-attestation only,
@@ -277,6 +290,41 @@ class AnthropicProvider:
         # Step 7: hash the prompts.
         prompt_hash = _canonical_prompt_hash(request.system_prompt, request.user_prompt)
         system_prompt_hash = _canonical_system_prompt_hash(request.system_prompt)
+
+        # Round-22 fold: prompt-caching silently-disabled diagnostic.
+        # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than
+        # the model's min-cacheable threshold (Sonnet 4.6: 2048 tokens;
+        # Haiku 4.5: 4096 tokens) are processed without caching with NO
+        # error returned. The unambiguous signal is `cache_control=True`
+        # AND both cache_creation/read tokens at 0. The first-ever cache
+        # write has cache_creation > 0 (so doesn't trigger); cache eviction
+        # also rewrites with cache_creation > 0 (so doesn't trigger). Only
+        # the genuine "SDK refused to cache this prompt" condition matches.
+        # Warn once per (model, system_prompt_hash) per process.
+        if (
+            request.cache_control
+            and response.cache_read_tokens == 0
+            and response.cache_write_tokens == 0
+        ):
+            cache_warn_key = (request.model, system_prompt_hash)
+            if cache_warn_key not in _WARNED_NONCACHEABLE:
+                _WARNED_NONCACHEABLE.add(cache_warn_key)
+                _LOGGER.warning(
+                    "anthropic_provider cache_control=True but neither "
+                    "cache_creation_input_tokens nor cache_read_input_tokens "
+                    "fired; system prompt likely below the model's "
+                    "min-cacheable threshold (Sonnet 4.6: 2048 tokens; "
+                    "Haiku 4.5: 4096 tokens — see Anthropic prompt-caching "
+                    "docs). cache_control=True will produce no cost savings "
+                    "on this prompt until it grows past the threshold or "
+                    "cache_control is removed.",
+                    extra={
+                        "model": request.model,
+                        "system_prompt_hash": system_prompt_hash,
+                        "review_id": str(request.review_id),
+                        "node_id": request.node_id,
+                    },
+                )
 
         # Step 8: compute cost_usd from pricing table.
         # KeyError unreachable in production thanks to constructor's eager
