@@ -147,8 +147,20 @@ def _walk(obj: Any, active_keys: frozenset[str], depth: int) -> bool:
     # Spec note: NOT passing `INCLUDE_TEXT_OPT_IN` here; the filter mirrors
     # what would actually appear in a serialized record, which is the
     # default-redacted form.
+    #
+    # Round-27 fold (Copilot): a third-party model with a broken
+    # serializer (custom `__get_pydantic_core_schema__`, unsupported
+    # types in nested fields, etc.) could raise from `model_dump()`. A
+    # logging filter that raises during emission disrupts logging and
+    # can spam stderr depending on `logging.raiseExceptions`. Fail
+    # closed — reject the record on serialization failure rather than
+    # letting the exception propagate up through the logging stack.
     if isinstance(obj, BaseModel):
-        return _walk(obj.model_dump(), active_keys, depth + 1)
+        try:
+            dumped = obj.model_dump()
+        except Exception:
+            return True
+        return _walk(dumped, active_keys, depth + 1)
 
     # Dict — check keys + recurse into values.
     if isinstance(obj, dict):

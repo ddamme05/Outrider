@@ -52,6 +52,7 @@ from outrider.llm.base import (
     LLMPersisterError,
     LLMPersisterNotWiredError,
     LLMPricingMissingError,
+    LLMProviderError,
     LLMRateLimitError,
     LLMRequest,
     LLMResponse,
@@ -67,6 +68,7 @@ from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
     compute_cost_usd,
+    normalize_to_pricing_key,
 )
 
 __all__ = ["AnthropicProvider"]
@@ -165,17 +167,25 @@ class AnthropicProvider:
 
         # Eager pricing-coverage validation — eliminates step 8's
         # KeyError path between SDK success and persister write per AC#24.
+        # Round-27 fold (Copilot): dated model IDs (e.g.,
+        # `claude-haiku-4-5-20251001`) accepted by ModelConfig must
+        # normalize to their undated alias for pricing lookup; otherwise
+        # every dated env pin would fail this check despite RATE_TABLE
+        # carrying the correct alias.
         configured_models = {
             model_config.triage_model,
             model_config.analyze_model,
             model_config.synthesize_model,
             model_config.trace_model,
         }
-        missing = sorted(configured_models - set(RATE_TABLE.keys()))
+        missing = sorted(
+            m for m in configured_models if normalize_to_pricing_key(m) not in RATE_TABLE
+        )
         if missing:
             raise LLMPricingMissingError(
                 f"AnthropicProvider construction: configured model(s) "
-                f"{missing!r} have no entry in llm.pricing.RATE_TABLE. "
+                f"{missing!r} have no entry in llm.pricing.RATE_TABLE "
+                f"(checked after dated-suffix normalization). "
                 f"Update RATE_TABLE + bump PRICING_VERSION before using "
                 f"these models, or correct OUTRIDER_MODEL_* env vars.",
                 missing_models=missing,
@@ -445,7 +455,7 @@ def _extract_single_text_block(message: Message) -> str:
     return message.content[0].text
 
 
-def _translate_anthropic_error(exc: anthropic.APIError) -> Exception:
+def _translate_anthropic_error(exc: anthropic.APIError) -> LLMProviderError:
     """Map an Anthropic SDK exception to the typed `LLMProviderError`
     subclass per the round-13 mapping table.
 

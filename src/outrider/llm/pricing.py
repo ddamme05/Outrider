@@ -29,6 +29,7 @@ When rates change:
      so the digest-pinning test catches the change loud.
 """
 
+import re
 from collections.abc import Mapping
 from decimal import Decimal
 from types import MappingProxyType
@@ -39,7 +40,37 @@ __all__ = [
     "RATE_TABLE",
     "ModelPricing",
     "compute_cost_usd",
+    "normalize_to_pricing_key",
 ]
+
+
+# Round-27 fold (Copilot) — dated model IDs (e.g., `claude-haiku-4-5-20251001`)
+# are accepted by `ModelConfig`'s widened regex (round-21) but `RATE_TABLE` is
+# keyed only by undated aliases (`claude-haiku-4-5`). Without normalization,
+# `AnthropicProvider`'s eager pricing-coverage check would reject every dated
+# pin and step-8 cost computation would `KeyError`. The dated form is the SDK
+# catalog's exact-pin shape; pricing is identical to the alias.
+#
+# Pattern: trailing `-YYYYMMDD` (8 digits, anchored to end). Matches the
+# round-21 regex exactly. Does NOT match `-1` or `-2025` (wrong digit count).
+_DATED_SUFFIX_PATTERN: Final = re.compile(r"-\d{8}$")
+
+
+def normalize_to_pricing_key(model: str) -> str:
+    """Strip a trailing `-YYYYMMDD` date suffix so dated SDK-catalog pins
+    resolve to their undated pricing alias.
+
+    Idempotent: undated input is returned unchanged.
+
+    Examples:
+      `claude-haiku-4-5-20251001` → `claude-haiku-4-5`
+      `claude-haiku-4-5`          → `claude-haiku-4-5` (unchanged)
+      `claude-haiku-4-5-2025`     → `claude-haiku-4-5-2025` (wrong digit count, unchanged)
+
+    `LLMCallEvent.model` retains the full configured string per spec §8.3;
+    only the pricing-table lookup uses the normalized key.
+    """
+    return _DATED_SUFFIX_PATTERN.sub("", model)
 
 
 # Bump on every rate-table change. The digest-pinning test in
@@ -124,17 +155,21 @@ def compute_cost_usd(
     eager pricing-coverage validation should make this unreachable
     in production (see AC#24).
 
-    **Round-18 fold (variant audit):** wraps in `decimal.localcontext()`
-    so the computation is self-contained against ambient
-    `decimal.getcontext().prec` mutations. A caller in the same thread
-    that sets `prec=5` before calling shouldn't silently truncate cost
-    arithmetic; the local context (default 28-digit precision) gives
-    deterministic results regardless of caller state.
+    **Round-18 fold (variant audit) + round-27 correction (Copilot):**
+    wraps in `decimal.localcontext()` AND explicitly resets
+    `ctx.prec = 28` so the computation is self-contained against
+    ambient `decimal.getcontext().prec` mutations. Round-18 used a bare
+    `decimal.localcontext()` which copies the caller's thread context —
+    a caller that set `prec=5` before calling would still run cost
+    arithmetic at precision 5 and silently truncate. Resetting prec to
+    Python's documented default (28) inside the local context produces
+    deterministic 28-digit results regardless of caller state.
     """
     import decimal
 
-    with decimal.localcontext():
-        rates = RATE_TABLE[model]
+    with decimal.localcontext() as ctx:
+        ctx.prec = 28  # Python's documented default; insulates against caller mutations.
+        rates = RATE_TABLE[normalize_to_pricing_key(model)]
         return (
             rates.in_per_token * input_tokens
             + rates.cache_write_per_token * cache_write_tokens

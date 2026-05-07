@@ -196,6 +196,27 @@ def test_constructor_with_default_model_config_succeeds() -> None:
     assert provider is not None
 
 
+def test_constructor_accepts_dated_model_pin_via_pricing_normalization() -> None:
+    """Round-27 fold (Copilot): dated SDK-catalog pins (e.g.,
+    `claude-haiku-4-5-20251001`) accepted by ModelConfig must normalize
+    to their undated alias for pricing-coverage validation. Without
+    normalization, every dated env pin would fail this check despite
+    RATE_TABLE carrying the correct alias."""
+    cfg = ModelConfig(
+        triage_model="claude-haiku-4-5-20251001",
+        analyze_model="claude-sonnet-4-6-20251015",
+        synthesize_model="claude-sonnet-4-6-20251015",
+        trace_model="claude-haiku-4-5-20251001",
+    )
+    # Constructor must NOT raise — dated pins normalize for pricing lookup.
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=cfg,
+        persister=_RecordingPersister(),
+    )
+    assert provider is not None
+
+
 def test_constructor_emits_privacy_notice(caplog: pytest.LogCaptureFixture) -> None:
     """AC#3: startup notice on `outrider.llm.privacy_notice` logger."""
     caplog.set_level(logging.INFO, logger="outrider.llm.privacy_notice")
