@@ -335,7 +335,20 @@ class LLMRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # Transport fields
+    # Transport fields.
+    #
+    # V1 packing convention (round-24 fold per Codex finding on spec §9.5
+    # "system prompt AND file context blocks" wording): V1 has exactly
+    # ONE cacheable block — `system_prompt`. Calling nodes pack STABLE
+    # content (prompt template + scope-unit context that's reused across
+    # the analyze ⇄ trace loop on the same file) into `system_prompt`,
+    # and VOLATILE content (the diff under review, finding-generation
+    # instructions) into `user_prompt`. The wrapper marks `system_prompt`
+    # with `cache_control: ephemeral` (per round-21 per-block placement),
+    # so reusing the same `system_prompt` across calls produces cache
+    # hits; `user_prompt` stays outside the cache boundary by design.
+    # Spec §9.5's "system prompt AND file context blocks" plural wording
+    # is the V1.5+ multi-block target — see FUP-014.
     system_prompt: str = Field(min_length=1)
     user_prompt: str = Field(min_length=1)
     messages: list[LLMMessage] | None = None
