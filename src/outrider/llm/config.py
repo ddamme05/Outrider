@@ -11,8 +11,11 @@ so eval runs can swap models per-tier without code changes.
 
 Validators:
   - regex: model strings must match the V1 Anthropic family pattern
-    `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?$`. Catches typos at
-    construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`).
+    `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?(-\\d{8})?$`. Catches typos
+    at construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`). The
+    optional 8-digit `YYYYMMDD` suffix accepts dated SDK-catalog pins
+    (round-21); dated forms normalize to their undated alias for
+    pricing lookup (see `outrider.llm.pricing.normalize_to_pricing_key`).
   - deprecation: rejects any model string in
     `anthropic.resources.messages.DEPRECATED_MODELS` (a `dict[str, str]`
     of model id → deprecation date). The SDK would otherwise emit a
@@ -59,7 +62,7 @@ class ModelConfig(BaseSettings):
 
     # Round-20 fold per Codex finding: corrected to current Anthropic
     # model family per SDK 0.100 docs. Previous defaults named
-    # `claude-sonnet-4-6` which doesn't exist in the SDK; current
+    # `claude-sonnet-4-7` which doesn't exist in the SDK; current
     # active models are Opus 4.7, Sonnet 4.6, Haiku 4.5.
     triage_model: str = "claude-haiku-4-5"
     analyze_model: str = "claude-sonnet-4-6"

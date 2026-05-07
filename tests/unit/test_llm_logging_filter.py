@@ -350,18 +350,22 @@ class _BrokenModel(BaseModel):
 def test_filter_handles_broken_model_dump_without_crashing(
     filter_instance: RejectLLMContentFilter,
 ) -> None:
-    """If a third-party Pydantic model has a broken `model_dump`, the
-    filter must not crash. Defense-in-depth: a buggy log call shouldn't
-    take down logging entirely."""
-    import contextlib
-
+    """Round-27 fold (Copilot): tightened from "either-verdict-or-known-
+    exception" to "fail closed — return False (reject record), no
+    exception propagates." A logging filter that raises during emission
+    disrupts the logging stack and can spam stderr depending on
+    `logging.raiseExceptions`. The filter wraps `model_dump()` in
+    try/except and rejects the record on serialization failure."""
     broken = _BrokenModel(foo="bar")
     record = _record("app.webhooks", extra={"obj": broken})
-    # Either the filter returns a verdict, or it raises a known exception
-    # (the broken model's RuntimeError); either way the call completes.
-    # The point is the filter didn't hang or bring down the logging system.
-    with contextlib.suppress(RuntimeError):
-        filter_instance.filter(record)
+    # Filter must return False (reject) — and must NOT raise the underlying
+    # RuntimeError. Walk treats serialization failure as a rejected element
+    # (returns True), and `filter()` returns `not True` → False.
+    verdict = filter_instance.filter(record)
+    assert verdict is False, (
+        "filter must reject (return False) when a model_dump raises; "
+        "a propagating exception would disrupt the logging stack"
+    )
 
 
 # ---------------------------------------------------------------------------

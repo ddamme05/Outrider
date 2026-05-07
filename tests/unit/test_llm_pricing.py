@@ -206,3 +206,109 @@ def test_pricing_digest_matches_pricing_version() -> None:
         f"(unintentional drift). Per round-11 H4: the digest catches "
         f"silent rate changes that would skew historical replay."
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-27 fold (Copilot) — ambient decimal precision insulation.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_cost_usd_insulated_from_ambient_low_precision() -> None:
+    """Round-18's bare `decimal.localcontext()` copied the caller's thread
+    context, so a caller setting `getcontext().prec = 5` would have
+    silently truncated cost arithmetic. Round-27 (Copilot) explicitly
+    resets `ctx.prec = 28` inside the local context. This test verifies
+    the insulation: pre-set ambient prec=5, run a cost computation that
+    would lose digits at prec=5, assert exact-Decimal result anyway."""
+    import decimal
+
+    saved_prec = decimal.getcontext().prec
+    try:
+        decimal.getcontext().prec = 5
+        # Token counts chosen to make the four-term sum a long-precision
+        # value that prec=5 would round/truncate visibly.
+        cost = compute_cost_usd(
+            model="claude-sonnet-4-6",
+            input_tokens=123_456,
+            cache_write_tokens=78_901,
+            cache_read_tokens=234_567,
+            output_tokens=345_678,
+        )
+        rates = RATE_TABLE["claude-sonnet-4-6"]
+        expected = (
+            rates.in_per_token * 123_456
+            + rates.cache_write_per_token * 78_901
+            + rates.cache_read_per_token * 234_567
+            + rates.out_per_token * 345_678
+        )
+        # Recompute `expected` at prec=28 to match the function's local context.
+        with decimal.localcontext() as ctx:
+            ctx.prec = 28
+            expected_at_28 = (
+                rates.in_per_token * 123_456
+                + rates.cache_write_per_token * 78_901
+                + rates.cache_read_per_token * 234_567
+                + rates.out_per_token * 345_678
+            )
+        assert cost == expected_at_28, (
+            f"compute_cost_usd ran under ambient prec=5 instead of insulated "
+            f"prec=28: got {cost}, expected {expected_at_28} (and "
+            f"{expected} computed at the truncated ambient prec)"
+        )
+    finally:
+        decimal.getcontext().prec = saved_prec
+
+
+# ---------------------------------------------------------------------------
+# Round-27 fold (Copilot) — dated model ID normalization for pricing lookup.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_to_pricing_key_strips_dated_suffix() -> None:
+    """Dated SDK-catalog pins (e.g., `claude-haiku-4-5-20251001`) must
+    resolve to their undated alias for pricing lookup. The undated alias
+    is what `RATE_TABLE` keys on; the dated form is just a precise pin."""
+    from outrider.llm.pricing import normalize_to_pricing_key
+
+    assert normalize_to_pricing_key("claude-haiku-4-5-20251001") == "claude-haiku-4-5"
+    assert normalize_to_pricing_key("claude-sonnet-4-6-20251015") == "claude-sonnet-4-6"
+    assert normalize_to_pricing_key("claude-opus-4-7-20251020") == "claude-opus-4-7"
+
+
+def test_normalize_to_pricing_key_idempotent_on_undated() -> None:
+    """Undated input is returned unchanged."""
+    from outrider.llm.pricing import normalize_to_pricing_key
+
+    assert normalize_to_pricing_key("claude-haiku-4-5") == "claude-haiku-4-5"
+    assert normalize_to_pricing_key("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+
+def test_normalize_to_pricing_key_does_not_strip_wrong_digit_count() -> None:
+    """Only `-YYYYMMDD` (exactly 8 trailing digits) strips. Wrong-count
+    suffixes (typos like `-2025` or `-202510`) stay attached, which is
+    correct: they fail the regex validator at construction anyway."""
+    from outrider.llm.pricing import normalize_to_pricing_key
+
+    assert normalize_to_pricing_key("claude-haiku-4-5-2025") == "claude-haiku-4-5-2025"
+    assert normalize_to_pricing_key("claude-haiku-4-5-202510") == "claude-haiku-4-5-202510"
+
+
+def test_compute_cost_usd_accepts_dated_model() -> None:
+    """Step 8 cost computation must succeed for dated model IDs (which
+    `LLMResponse.model` may carry from the SDK response). Without
+    normalization, this would `KeyError` on RATE_TABLE lookup."""
+    cost_dated = compute_cost_usd(
+        model="claude-sonnet-4-6-20251015",
+        input_tokens=100,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        output_tokens=50,
+    )
+    cost_undated = compute_cost_usd(
+        model="claude-sonnet-4-6",
+        input_tokens=100,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        output_tokens=50,
+    )
+    assert cost_dated == cost_undated

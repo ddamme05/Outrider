@@ -5,8 +5,12 @@
 This module is the boundary between agent nodes and concrete LLM SDKs:
 - Agent nodes consume `LLMProvider` (Protocol), never the SDK directly.
 - Concrete providers (`AnthropicProvider`, in `anthropic_provider.py`)
-  implement the Protocol and are the only modules importing vendor SDKs
-  per `vendor-sdks-only-in-wrappers`.
+  implement the Protocol and import the vendor SDK at the call surface.
+  The `vendor-sdks-only-in-wrappers` invariant is folder-scoped (vendor
+  imports confined to `src/outrider/llm/`), not file-scoped — supporting
+  modules within `llm/` may legitimately import SDK metadata too (e.g.,
+  `config.py` imports `anthropic.resources.messages.DEPRECATED_MODELS`
+  for eager deprecation validation; round-27 cleanup per Copilot).
 
 Round 13 design + round 14/15 corrections; see spec for the full audit
 chain. Two abstract-base enforcement notes worth pinning here:
