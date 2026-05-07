@@ -1,5 +1,7 @@
 # AnthropicProvider — concrete LLMProvider implementation.
-# Sole `import anthropic` per `vendor-sdks-only-in-wrappers` invariant.
+# Owns the Anthropic transport surface; vendor SDK imports stay inside
+# `src/outrider/llm/` per the folder-scoped `vendor-sdks-only-in-wrappers`
+# invariant (sibling modules within `llm/` may import SDK metadata).
 # See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #013/#015/#016.
 """Anthropic concrete provider.
 
@@ -149,8 +151,17 @@ def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
 
 
 class AnthropicProvider:
-    """Concrete `LLMProvider` for Anthropic. Sole `import anthropic` site
-    in the codebase per `vendor-sdks-only-in-wrappers`.
+    """Concrete `LLMProvider` for Anthropic.
+
+    Owns the Anthropic transport (`messages.create` calls). The
+    `vendor-sdks-only-in-wrappers` invariant is folder-scoped: vendor
+    SDK imports are confined to `src/outrider/llm/`, not exclusive to
+    this file — sibling modules within the wrapper folder may
+    legitimately import SDK metadata too (e.g., `config.py` imports
+    `anthropic.resources.messages.DEPRECATED_MODELS` for eager
+    deprecation validation). Tests under `tests/unit/` import SDK types
+    for fixture construction, which is also outside the invariant's
+    folder scope but inside the test surface.
 
     Constructor enforces eager validation (api_key + pricing-coverage)
     and emits the DECISIONS#015 privacy notice on every construction.

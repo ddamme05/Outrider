@@ -482,9 +482,10 @@ def test_register_installs_on_root_handlers() -> None:
     handler = logging.NullHandler()
     root.addHandler(handler)
     try:
-        filter_instance = register_filter_on_all_handlers()
-        assert any(isinstance(f, RejectLLMContentFilter) for f in handler.filters)
-        assert filter_instance is not None
+        register_filter_on_all_handlers()
+        assert any(isinstance(f, RejectLLMContentFilter) for f in handler.filters), (
+            "expected RejectLLMContentFilter installed on the root handler"
+        )
     finally:
         root.removeHandler(handler)
 
