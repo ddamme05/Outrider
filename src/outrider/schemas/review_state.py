@@ -26,6 +26,20 @@ merges through reducers (per docs/conventions.md "LangGraph specifics").
 A frozen state would force every node to construct a fully-formed instance
 on every return, defeating the reducer contract.
 
+`validate_assignment=True` matches the project precedent established by
+`ReviewFinding` (review_finding.py module docstring): when `frozen=False`,
+construction-time validators (AwareDatetime, typed enums, nested-model
+construction) are bypassable via direct attribute assignment unless every
+assignment re-runs the validator chain. Without this flag,
+`state.received_at = datetime(...)  # naive` would silently admit, and
+`state.pr_context = some_dict` would coerce-or-bypass typed validation
+quietly. With it, the assignment raises. Note: under normal LangGraph
+operation nodes return dicts and the framework constructs a fresh
+`model_validate`d instance per super-step (which validates anyway); the
+flag's misuse-resistance value is the secondary defense against any code
+path that does `state.field = value` directly (which the conventions doc
+forbids but the type system doesn't structurally prevent).
+
 Per spec §7.1: the state object round-trips through Postgres JSON via
 langgraph-checkpoint-postgres. All field types must be JSON-serializable;
 runtime dependencies (DB sessions, HTTP clients) are NOT in state — they
@@ -47,7 +61,7 @@ class ReviewState(BaseModel):
     module docstring for the deferred slots and which spec each lands in.
     """
 
-    model_config = ConfigDict(frozen=False, extra="forbid")
+    model_config = ConfigDict(frozen=False, extra="forbid", validate_assignment=True)
 
     # Populated at webhook receipt
     review_id: UUID
