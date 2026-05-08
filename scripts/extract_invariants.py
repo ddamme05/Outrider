@@ -256,7 +256,7 @@ STUBS: list[Stub] = [
             "(deferred until `LLMRequest.messages` becomes supported). "
             "Wrapper-side default: `LLMRequest.cache_control: bool = True`."
         ),
-        "pointer": ("See `DECISIONS.md#013` point 4 and `docs/spec.md` §9.5."),
+        "pointer": "See `DECISIONS.md#013` point 4 and `docs/spec.md` §9.5.",
     },
 ]
 
