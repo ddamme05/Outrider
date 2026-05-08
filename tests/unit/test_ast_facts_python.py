@@ -39,7 +39,7 @@ from outrider.ast_facts.python_adapter import PythonAdapter
 
 def test_scope_unit_construction_admits_canonical_inputs() -> None:
     su = ScopeUnit(
-        unit_id=compute_unit_id("f.py", "function", "process"),
+        unit_id=compute_unit_id("f.py", kind="function", qualified_name="process"),
         kind="function",
         name="process",
         qualified_name="process",
@@ -267,7 +267,7 @@ def test_innermost_scope_picks_inner_when_byte_starts_tie() -> None:
     # Both scopes share byte_start=0; outer ends at 100, inner ends at 50.
     # The inner is strictly smaller and should win.
     outer = ScopeUnit(
-        unit_id=compute_unit_id("f.py", "function", "outer"),
+        unit_id=compute_unit_id("f.py", kind="function", qualified_name="outer"),
         kind="function",
         name="outer",
         qualified_name="outer",
@@ -278,7 +278,7 @@ def test_innermost_scope_picks_inner_when_byte_starts_tie() -> None:
         byte_end=100,
     )
     inner = ScopeUnit(
-        unit_id=compute_unit_id("f.py", "function", "outer.inner"),
+        unit_id=compute_unit_id("f.py", kind="function", qualified_name="outer.inner"),
         kind="function",
         name="inner",
         qualified_name="outer.inner",

@@ -38,8 +38,17 @@ from pydantic import (
 # ---------------------------------------------------------------------------
 
 
-def compute_unit_id(file_path: str, kind: str, qualified_name: str) -> str:
+def compute_unit_id(file_path: str, *, kind: str, qualified_name: str) -> str:
     """Stable hash of (file_path, kind, qualified_name) per Internal contracts.
+
+    `kind` and `qualified_name` are keyword-only — they're adjacent
+    same-typed `str` parameters, and a positional swap would silently
+    produce a different hash, which IS the dedup/index key for
+    `ParseResult.has_error` and the `enclosing_scope_id` ref target on
+    `CallSite` / `AssignmentSite`. Same misuse-resistance pattern as
+    `outrider.audit.events.compute_finding_content_hash` and
+    `outrider.llm.pricing.compute_cost_usd`. `file_path` stays
+    positional as the natural subject of the call.
 
     Used as the dict key for `ParseResult.has_error` and as the
     `enclosing_scope_id` reference target for `CallSite` / `AssignmentSite`.

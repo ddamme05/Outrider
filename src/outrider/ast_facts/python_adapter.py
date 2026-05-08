@@ -179,7 +179,7 @@ class PythonAdapter:
                 qualified_name = ".".join(cur_qual_path + (name,))
                 byte_start, byte_end = self._scope_byte_range(cur_node)
                 line_start, line_end = self._scope_line_range(cur_node)
-                unit_id = compute_unit_id(file_path, kind, qualified_name)
+                unit_id = compute_unit_id(file_path, kind=kind, qualified_name=qualified_name)
                 out.append(
                     ScopeUnit(
                         unit_id=unit_id,
@@ -208,7 +208,7 @@ class PythonAdapter:
                 qualified_name = ".".join(cur_qual_path + (name,))
                 byte_start, byte_end = self._scope_byte_range(cur_node)
                 line_start, line_end = self._scope_line_range(cur_node)
-                unit_id = compute_unit_id(file_path, "class", qualified_name)
+                unit_id = compute_unit_id(file_path, kind="class", qualified_name=qualified_name)
                 out.append(
                     ScopeUnit(
                         unit_id=unit_id,
