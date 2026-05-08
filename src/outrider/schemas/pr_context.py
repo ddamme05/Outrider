@@ -3,12 +3,18 @@
 
 PRContext is the typed envelope that crosses every subsystem boundary in the
 review pipeline. The webhook receiver constructs it from raw GitHub payload
-data (separate spec); intake fetches/populates ChangedFile content; triage
-classifies its files into ReviewTiers; analyze consumes the file content;
-publish references the original PR coordinates. The structured-field shape
-is the implementation of `docs/trust-boundaries.md` #5 sub-rule 2 — webhook
-payload strings (branch names, PR titles, commit messages) cross into LLM
-prompts as PRContext fields, never as f-string interpolation.
+data (separate spec); intake fetches/populates ChangedFile content using a
+short-lived API token minted from `installation_id`; triage classifies its
+files into ReviewTiers; analyze consumes the file content; publish references
+the original PR coordinates. The structured-field shape is the implementation
+of `docs/trust-boundaries.md` #5 sub-rule 2 — webhook payload strings (branch
+names, PR titles, commit messages) cross into LLM prompts as PRContext fields,
+never as f-string interpolation.
+
+The `installation_id` field was added 2026-05-08 to close a canonical-vs-impl
+drift: spec §15.2 build_graph snippet calls `state.pr_context.installation_id`
+(line 1440) but the canonical §7.2 PRContext shape did not include the field.
+Resolved by canonical amendment + implementation in this commit.
 
 Both models use frozen=True: PRContext round-trips through LangGraph state
 JSON on every checkpoint; immutability prevents mid-graph mutation by any
@@ -63,6 +69,7 @@ class PRContext(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    installation_id: int = Field(ge=1)
     owner: str
     repo: str
     pr_number: int = Field(ge=1)

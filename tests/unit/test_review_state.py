@@ -33,6 +33,7 @@ from outrider.schemas import (
 
 def _minimal_pr_context() -> PRContext:
     return PRContext(
+        installation_id=12345,
         owner="acme",
         repo="widget",
         pr_number=42,
