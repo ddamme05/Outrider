@@ -146,26 +146,32 @@ def test_rejects_deprecated_model() -> None:
     deprecated. Construction should fail at startup, not at first call."""
     from anthropic.resources.messages import DEPRECATED_MODELS
 
+    # Reuse `ModelConfig`'s own canonical regex for the filter so the
+    # test never drifts from what the validator actually accepts (Codex
+    # follow-on per Copilot review). The earlier inline regex omitted
+    # the optional dated `-YYYYMMDD` suffix that `_VALID_MODEL_PATTERN`
+    # accepts (round-21 widening), which would have caused this test to
+    # skip in SDK versions where Anthropic ships deprecated models only
+    # in dated form. Importing the underscore-prefixed module-level
+    # constant is a deliberate test-side breach of convention to lock
+    # the test to the validator's source of truth.
+    from outrider.llm.config import _VALID_MODEL_PATTERN
+
     if not DEPRECATED_MODELS:
         pytest.skip("DEPRECATED_MODELS is empty in this SDK version")
 
-    # Pick a deprecated model that ALSO matches the regex pattern (some
-    # don't — e.g., older `claude-2.0` predates the family-suffix shape).
-    pattern_compatible = [
-        m for m in DEPRECATED_MODELS if m.startswith("claude-") and len(m.split("-")) >= 3
-    ]
+    # Filter using the canonical regex itself. Older deprecated models
+    # like `claude-2.0` predate the family-suffix shape and won't match;
+    # this test fires only when at least one deprecated entry passes
+    # both gates (regex + DEPRECATED_MODELS membership).
+    pattern_compatible = [m for m in DEPRECATED_MODELS if _VALID_MODEL_PATTERN.match(m)]
     if not pattern_compatible:
-        pytest.skip("no DEPRECATED_MODELS entries match the regex pattern")
+        pytest.skip(
+            "no DEPRECATED_MODELS entries match _VALID_MODEL_PATTERN; "
+            "the deprecation-rejection path can't fire on this SDK"
+        )
 
     target = pattern_compatible[0]
-    # Re-check the target matches our pattern; if not, the regex would
-    # reject before the deprecation check fires.
-    import re
-
-    pattern = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?$")
-    if not pattern.match(target):
-        pytest.skip(f"DEPRECATED_MODELS sample {target!r} doesn't match V1 regex")
-
     with pytest.raises(ValidationError, match="deprecated by Anthropic"):
         ModelConfig(triage_model=target)
 
