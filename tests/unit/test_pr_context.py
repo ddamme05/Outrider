@@ -224,10 +224,32 @@ def test_pr_context_round_trip_preserves_changed_files() -> None:
 
 
 def test_pr_context_empty_changed_files_admits() -> None:
-    """Empty PR (no file changes) is valid at the schema level; size-cap policy
-    (separate spec) decides whether to skip the review entirely."""
+    """changed_files=() is the NORMAL webhook seed shape per DECISIONS.md#020:
+    GitHub pull_request webhook payloads do not include the per-file list, so
+    every webhook seed has changed_files=() until intake fetches the file list.
+    Real PRs reach intake with changed_files=() AND nonzero totals (the
+    payload's pull_request.additions / pull_request.deletions). This test
+    pins schema-level admittance of the seed shape; the size-cap policy gate
+    (separate spec) is what decides whether a review is skipped, NOT the
+    schema."""
     ctx = _minimal_pr_context(changed_files=[], total_additions=0, total_deletions=0)
     assert ctx.changed_files == ()
+
+
+def test_pr_context_seed_shape_with_nonzero_totals_admits() -> None:
+    """The realistic webhook-seed scenario per DECISIONS.md#020: changed_files
+    is empty (intake hasn't fetched yet) but total_additions / total_deletions
+    are nonzero (read directly from the webhook payload's pull_request.additions
+    / pull_request.deletions). The schema must admit this shape — it's what
+    every real PR looks like at graph start."""
+    ctx = _minimal_pr_context(
+        changed_files=[],
+        total_additions=152,
+        total_deletions=37,
+    )
+    assert ctx.changed_files == ()
+    assert ctx.total_additions == 152
+    assert ctx.total_deletions == 37
 
 
 def test_pr_context_changed_files_is_tuple_not_list() -> None:
