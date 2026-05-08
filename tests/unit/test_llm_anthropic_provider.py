@@ -806,10 +806,13 @@ async def test_cache_silently_disabled_warns_separately_per_model(
     caplog: pytest.LogCaptureFixture,
     _reset_noncacheable_warned_set: None,
 ) -> None:
-    """The (model, system_prompt_hash) key correctly distinguishes models —
-    same prompt at the threshold for one model may be below for another
-    (Sonnet 4.6: 2048 tokens; Haiku 4.5: 4096 tokens), so each model
-    deserves its own warn-once budget."""
+    """The (response.model, system_prompt_hash) key correctly distinguishes
+    models — same prompt at the threshold for one model may be below for
+    another (Sonnet 4.6: 2048 tokens; Haiku 4.5: 4096 tokens), so each
+    model deserves its own warn-once budget. The dedup key uses
+    `response.model` (the executed model, which determines the threshold),
+    not `request.model` — the SDK could substitute via alias resolution
+    or deprecation routing."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -817,18 +820,33 @@ async def test_cache_silently_disabled_warns_separately_per_model(
         persister=persister,
     )
     caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
-    with _patched_create(
-        return_value=_sdk_message(
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-        )
-    ):
+    # Each call must have a DIFFERENT response.model since the dedup key
+    # is keyed off response.model. Patch _patched_create twice with
+    # different sdk_message defaults — re-entering the patch context per
+    # call lets each call return a distinct fixture.
+    sonnet_msg = _sdk_message(
+        model="claude-sonnet-4-6",
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    with _patched_create(return_value=sonnet_msg):
         await provider.complete(_request(cache_control=True, model="claude-sonnet-4-6"))
+    haiku_msg = _sdk_message(
+        model="claude-haiku-4-5",
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    with _patched_create(return_value=haiku_msg):
         await provider.complete(_request(cache_control=True, model="claude-haiku-4-5"))
     warning_records = [r for r in caplog.records if "min-cacheable threshold" in r.getMessage()]
     assert len(warning_records) == 2
     seen_models = {getattr(r, "model", None) for r in warning_records}
     assert seen_models == {"claude-sonnet-4-6", "claude-haiku-4-5"}
+    # Each warning's `request_model` extra is also populated for
+    # operator debugging when SDK substitution makes response.model
+    # differ from request.model.
+    seen_request_models = {getattr(r, "request_model", None) for r in warning_records}
+    assert seen_request_models == {"claude-sonnet-4-6", "claude-haiku-4-5"}
 
 
 # ---------------------------------------------------------------------------
