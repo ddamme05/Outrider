@@ -5,7 +5,12 @@ file_tiers maps changed-file paths to ReviewTier; overall_risk is a RiskLevel;
 relevant_dimensions enumerates which review dimensions apply (pure CSS doesn't
 get a security review per §4.1.2 cost-control rationale); reasoning is the
 LLM's brief justification, capped at 500 chars.
+
+Round 24: file_tiers is wrapped in MappingProxyType post-construction so
+`triage.file_tiers["x"] = ...` raises TypeError. Closes FUP-018.
 """
+
+from collections.abc import Mapping
 
 import pytest
 from pydantic import ValidationError
@@ -162,9 +167,53 @@ def test_triage_result_relevant_dimensions_rejects_in_place_append() -> None:
 
 def test_triage_result_dict_round_trip() -> None:
     """LangGraph reducer merges receive partial-update dicts; model_dump() →
-    model_validate() must preserve all nested structure exactly."""
+    model_validate() must preserve all nested structure exactly. Round 24:
+    file_tiers' runtime type is now MappingProxyType (not dict) per FUP-018
+    closure, so the isinstance check widens to Mapping (its abstract supertype)."""
     result = _minimal_triage_result()
     rehydrated = TriageResult.model_validate(result.model_dump())
     assert rehydrated == result
     assert isinstance(rehydrated.relevant_dimensions, tuple)
-    assert isinstance(rehydrated.file_tiers, dict)
+    assert isinstance(rehydrated.file_tiers, Mapping)
+
+
+def test_triage_result_file_tiers_rejects_in_place_mutation() -> None:
+    """Round 24 closes FUP-018: TriageResult.file_tiers is wrapped in
+    MappingProxyType post-construction so any attempt to mutate the mapping
+    in-place raises TypeError. This pins the closure of the dict-mutation
+    gap that was deferred from Round 14 / Round 18 (the validator's name was
+    half-truthing this gap; now the gap itself is closed)."""
+    result = _minimal_triage_result()
+    with pytest.raises(TypeError):
+        result.file_tiers["src/sneaky.py"] = ReviewTier.DEEP  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del result.file_tiers["src/auth.py"]  # type: ignore[attr-defined]
+
+
+def test_triage_result_file_tiers_json_round_trip_preserves_mapping_semantics() -> None:
+    """Round 24 regression guard: MappingProxyType-wrapped file_tiers must
+    round-trip through model_dump_json() → model_validate_json() correctly.
+    The field_serializer dumps as a regular dict (StrEnum values become
+    strings); the field_validator on rehydration re-wraps in MappingProxyType.
+    Without the serializer, Pydantic might fail to JSON-encode MappingProxyType
+    or might emit a non-dict shape that breaks downstream consumers."""
+    result = _minimal_triage_result()
+    rehydrated = TriageResult.model_validate_json(result.model_dump_json())
+    assert rehydrated == result
+    # Rehydrated value is also MappingProxyType — same immutability gate fires.
+    assert isinstance(rehydrated.file_tiers, Mapping)
+    with pytest.raises(TypeError):
+        rehydrated.file_tiers["x"] = ReviewTier.SKIM  # type: ignore[index]
+
+
+def test_triage_result_file_tiers_input_dict_is_copied_not_aliased() -> None:
+    """Round 24 invariant: the input dict passed to TriageResult must be
+    COPIED before being wrapped in MappingProxyType. Otherwise, mutating
+    the original dict post-construction would leak through the proxy and
+    silently change file_tiers — defeating the immutability gate."""
+    input_dict = {"src/auth.py": ReviewTier.DEEP}
+    result = _minimal_triage_result(file_tiers=input_dict)
+    # Mutate the original dict.
+    input_dict["src/sneaky.py"] = ReviewTier.SKIM
+    # The proxy must NOT see the mutation.
+    assert "src/sneaky.py" not in result.file_tiers
