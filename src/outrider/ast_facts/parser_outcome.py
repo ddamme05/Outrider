@@ -32,7 +32,7 @@ from outrider.ast_facts.models import ExclusionRule, SkipReason
 # Public constants
 # ---------------------------------------------------------------------------
 
-MAX_PARSE_BYTES: int = 1_048_576  # 1 MiB; V1 DoS guard
+MAX_PARSE_BYTES: Final[int] = 1_048_576  # 1 MiB; V1 DoS guard
 
 # Ordered tuple per Internal contracts. Precedence is by index:
 # size -> path_prefix (vendored) -> filename_suffix (generated) ->
