@@ -121,15 +121,17 @@ def test_pr_context_minimal_construction_succeeds() -> None:
     assert len(ctx.changed_files) == 1
 
 
-def test_pr_context_installation_id_rejects_zero() -> None:
-    """GitHub App installation IDs are positive integers (Field(ge=1))."""
-    with pytest.raises(ValidationError):
-        _minimal_pr_context(installation_id=0)
-
-
-def test_pr_context_installation_id_rejects_negative() -> None:
-    with pytest.raises(ValidationError):
-        _minimal_pr_context(installation_id=-1)
+def test_pr_context_installation_id_admits_synthetic_eval_values() -> None:
+    """Round 7 reversal: installation_id is plain int (no Field(ge=1)) per
+    the eval-isolation convention. Eval factories use synthetic non-colliding
+    IDs (including negatives like -1 to signal 'not a real installation').
+    Production webhook validation enforces real GitHub IDs at the input
+    boundary; this shared schema supports both contexts. This test pins the
+    Round 7 reversal so a future re-tightening can't ship without the
+    accompanying eval-factory migration."""
+    for synthetic in (-1, 0, -999_999):
+        ctx = _minimal_pr_context(installation_id=synthetic)
+        assert ctx.installation_id == synthetic
 
 
 def test_pr_context_installation_id_required() -> None:
