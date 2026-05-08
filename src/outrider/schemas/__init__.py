@@ -10,18 +10,34 @@ from outrider.schemas.hitl import (
     PerFindingDecision,
     PerFindingOutcome,
 )
+from outrider.schemas.pr_context import (
+    ChangedFile,
+    PRContext,
+)
 from outrider.schemas.review_finding import (
     PublishDestination,
     ReviewDimension,
     ReviewFinding,
 )
+from outrider.schemas.review_state import ReviewState
+from outrider.schemas.triage_result import (
+    ReviewTier,
+    RiskLevel,
+    TriageResult,
+)
 
 __all__ = [
+    "ChangedFile",
     "HITLDecision",
     "HITLRequest",
     "PerFindingDecision",
     "PerFindingOutcome",
+    "PRContext",
     "PublishDestination",
     "ReviewDimension",
     "ReviewFinding",
+    "ReviewState",
+    "ReviewTier",
+    "RiskLevel",
+    "TriageResult",
 ]
