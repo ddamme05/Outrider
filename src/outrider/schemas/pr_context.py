@@ -121,6 +121,12 @@ class ChangedFile(BaseModel):
                     "status='renamed' requires previous_path (the pre-rename path); "
                     "GitHub's /pulls/{number}/files API returns this as `previous_filename`"
                 )
+            if self.previous_path == self.path:
+                raise ValueError(
+                    f"status='renamed' requires previous_path != path "
+                    f"(got {self.path!r} for both); a same-path rename "
+                    "is GitHub-impossible — that would be modified or no change"
+                )
         # Non-rename statuses must NOT carry previous_path
         if self.status != "renamed" and self.previous_path is not None:
             raise ValueError(
