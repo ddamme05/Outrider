@@ -25,6 +25,7 @@ def _minimal_changed_file(**overrides: object) -> ChangedFile:
 
 def _minimal_pr_context(**overrides: object) -> PRContext:
     base = dict(
+        installation_id=12345,
         owner="acme",
         repo="widget",
         pr_number=42,
@@ -116,7 +117,41 @@ def test_pr_context_minimal_construction_succeeds() -> None:
     ctx = _minimal_pr_context()
     assert ctx.owner == "acme"
     assert ctx.pr_number == 42
+    assert ctx.installation_id == 12345
     assert len(ctx.changed_files) == 1
+
+
+def test_pr_context_installation_id_rejects_zero() -> None:
+    """GitHub App installation IDs are positive integers (Field(ge=1))."""
+    with pytest.raises(ValidationError):
+        _minimal_pr_context(installation_id=0)
+
+
+def test_pr_context_installation_id_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        _minimal_pr_context(installation_id=-1)
+
+
+def test_pr_context_installation_id_required() -> None:
+    """installation_id has no default; omitting it raises ValidationError. The
+    canonical-shape gap (spec §15.2 used state.pr_context.installation_id but
+    canonical §7.2 didn't define it) was closed 2026-05-08; this test pins the
+    required-no-default behavior so the field can't silently regress to optional."""
+    with pytest.raises(ValidationError):
+        PRContext(  # type: ignore[call-arg]
+            owner="acme",
+            repo="widget",
+            pr_number=1,
+            pr_title="t",
+            pr_body="b",
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            author="alice",
+            changed_files=[],
+            total_additions=0,
+            total_deletions=0,
+            # installation_id intentionally omitted
+        )
 
 
 def test_pr_context_pr_number_rejects_zero() -> None:
@@ -142,6 +177,7 @@ def test_pr_context_total_deletions_rejects_negative() -> None:
 def test_pr_context_extra_forbid() -> None:
     with pytest.raises(ValidationError, match="extra"):
         PRContext(  # type: ignore[call-arg]
+            installation_id=12345,
             owner="acme",
             repo="widget",
             pr_number=1,
