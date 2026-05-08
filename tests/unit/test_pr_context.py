@@ -188,6 +188,61 @@ def test_changed_file_non_renamed_must_not_carry_previous_path() -> None:
         )
 
 
+def test_changed_file_patch_none_admits_per_github_binary_files() -> None:
+    """Round-22 fix: GitHub's `/pulls/{number}/files` API omits the `patch`
+    property for binary files and for diffs too large for the API to include
+    (per GitHub's commit/compare docs). The schema must accept `patch=None`
+    for any status — `patch` omission is not status-conditional, it's a
+    GitHub API characteristic of the file, not the change shape.
+
+    Pre-Round-22, ChangedFile required `patch: str` and DECISIONS#020
+    incorrectly claimed "every status produces a patch." Both were wrong;
+    Copilot + Codex caught the mismatch on the open PR."""
+    # Modified file with patch omitted (e.g., binary)
+    cf_modified = _minimal_changed_file(patch=None)
+    assert cf_modified.patch is None
+
+    # Added file with patch omitted (e.g., binary)
+    cf_added = _minimal_changed_file(
+        path="logo.png",
+        status="added",
+        deletions=0,
+        patch=None,
+        content_base=None,
+        content_head="\\x89PNG\\r\\n",
+    )
+    assert cf_added.patch is None
+
+    # Removed file with patch omitted
+    cf_removed = _minimal_changed_file(
+        path="old.png",
+        status="removed",
+        additions=0,
+        patch=None,
+        content_base="\\x89PNG\\r\\n",
+        content_head=None,
+    )
+    assert cf_removed.patch is None
+
+    # Renamed file with patch omitted
+    cf_renamed = _minimal_changed_file(
+        path="new.png",
+        status="renamed",
+        patch=None,
+        previous_path="old.png",
+    )
+    assert cf_renamed.patch is None
+
+
+def test_changed_file_patch_none_round_trip_json() -> None:
+    """Round-22 regression guard: `patch=None` must round-trip through JSON
+    serialization without becoming `""` or being silently dropped."""
+    cf = _minimal_changed_file(patch=None)
+    rehydrated = ChangedFile.model_validate_json(cf.model_dump_json())
+    assert rehydrated.patch is None
+    assert rehydrated == cf
+
+
 def test_changed_file_renamed_round_trip_json_preserves_previous_path() -> None:
     """Round-21 regression guard: JSON round-trip for status='renamed' must
     preserve `previous_path`. Pre-Round-21, the default round-trip tests
@@ -405,6 +460,24 @@ def test_pr_context_empty_changed_files_admits() -> None:
     schema."""
     ctx = _minimal_pr_context(changed_files=[], total_additions=0, total_deletions=0)
     assert ctx.changed_files == ()
+
+
+def test_pr_context_pr_body_none_admits_per_github_empty_descriptions() -> None:
+    """Round-22 sibling fix: GitHub's webhook payload `pull_request.body` is
+    `string | null` per their API docs — PRs created without a description
+    have `body: null`. Empty descriptions are common (e.g., one-line fix
+    PRs, automated bot PRs). The schema must accept `pr_body=None`.
+
+    Pre-Round-22, PRContext required `pr_body: str`. Caught during the
+    sibling sweep on the patch-contract finding (Copilot + Codex caught
+    `patch`; same lens applied to PRContext fields surfaced `pr_body`)."""
+    ctx = _minimal_pr_context(pr_body=None)
+    assert ctx.pr_body is None
+
+    # Round-trip preservation
+    rehydrated = PRContext.model_validate_json(ctx.model_dump_json())
+    assert rehydrated.pr_body is None
+    assert rehydrated == ctx
 
 
 def test_pr_context_seed_shape_with_nonzero_totals_admits() -> None:
