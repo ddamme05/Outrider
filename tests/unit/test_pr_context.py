@@ -203,6 +203,20 @@ def test_changed_file_renamed_with_full_shape_admits() -> None:
     assert cf.path == "new_name.py"
 
 
+def test_changed_file_renamed_rejects_same_old_and_new_path() -> None:
+    """Round-16 rename path-shape invariant: status='renamed' requires
+    previous_path != path. A same-path 'rename' is GitHub-impossible —
+    that would be status='modified' or no change. Admitting it would
+    let intake silently fan out base+head fetches against the same
+    path for a non-rename, hiding upstream-buggy data."""
+    with pytest.raises(ValidationError, match="status='renamed' requires previous_path != path"):
+        _minimal_changed_file(
+            path="same.py",
+            status="renamed",
+            previous_path="same.py",
+        )
+
+
 def test_changed_file_additions_rejects_negative() -> None:
     with pytest.raises(ValidationError):
         _minimal_changed_file(additions=-1)
