@@ -74,8 +74,13 @@ from outrider.schemas.triage_result import TriageResult
 class ReviewState(BaseModel):
     """LangGraph state object — V1 skeletal slice.
 
-    Currently carries only the intake- and triage-populated slots. See
-    module docstring for the deferred slots and which spec each lands in.
+    Currently carries only the slots that exist at webhook seed time per
+    DECISIONS.md#020 (`review_id`, `pr_context`, `received_at`) plus the
+    slot populated by triage (`triage_result`). Intake enriches
+    `pr_context.changed_files` in place by returning a fresh PRContext via
+    `{"pr_context": new_pr_context}`; it does not populate a new top-level
+    state slot. See module docstring for the deferred slots and which
+    spec each lands in.
     """
 
     model_config = ConfigDict(frozen=False, extra="forbid", validate_assignment=True)
