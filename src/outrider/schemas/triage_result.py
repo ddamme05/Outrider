@@ -29,17 +29,24 @@ nodes (analyze, trace, synthesize, publish) consume the value, never mutate
 it. `relevant_dimensions` is `tuple[ReviewDimension, ...]` not
 `list[ReviewDimension]` — same hitl/audit precedent as PRContext.changed_files
 (frozen=True is faux-immutable over in-place container mutation; tuple
-delivers true immutability). `file_tiers` stays as `dict[str, ReviewTier]`
-because there is no idiomatic frozen-mapping in Pydantic without
-MappingProxyType workarounds; the same in-place-mutation gap exists at the
-dict-value level and is mitigated by reviewer discipline at consumer sites.
-Spec.md §7.2 was amended same-day (2026-05-08) to match the tuple
-commitment for relevant_dimensions.
+delivers true immutability). `file_tiers` is `Mapping[str, ReviewTier]` with
+a `field_validator` that wraps the dict input in `MappingProxyType` so post-
+construction mutation (`triage.file_tiers["x"] = ...`) raises `TypeError`
+— closes FUP-018 in Round 24. JSON round-trip is preserved by a paired
+`field_serializer` that dumps the MappingProxyType as a regular dict (via
+`dict(value)`); StrEnum values serialize via Pydantic's default StrEnum
+handling. Spec.md §7.2 was amended same-day (2026-05-08) to widen the field
+type from `dict` to `Mapping` (the abstract supertype admits both `dict`
+input and `MappingProxyType` runtime — no contradiction with #020 or §7.2's
+intent; just a precision fix that lets the runtime type carry the
+immutability the carrier-level annotation can't enforce alone).
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from outrider.schemas.review_finding import ReviewDimension
 
@@ -89,10 +96,30 @@ class TriageResult(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    file_tiers: dict[str, ReviewTier]
+    file_tiers: Mapping[str, ReviewTier]
     overall_risk: RiskLevel
     relevant_dimensions: tuple[ReviewDimension, ...]
     reasoning: str = Field(max_length=500)
+
+    @field_validator("file_tiers", mode="after")
+    @classmethod
+    def _freeze_file_tiers(cls, value: Mapping[str, ReviewTier]) -> Mapping[str, ReviewTier]:
+        """Wrap file_tiers in MappingProxyType so post-construction mutation
+        (`triage.file_tiers["x"] = ...`) raises TypeError. Closes FUP-018.
+
+        `dict(value)` first to copy the input — without the copy, the proxy
+        would alias the caller's dict and mutations there would leak through
+        the proxy (defeats the immutability gate)."""
+        return MappingProxyType(dict(value))
+
+    @field_serializer("file_tiers")
+    def _serialize_file_tiers(self, value: Mapping[str, ReviewTier]) -> dict[str, ReviewTier]:
+        """Convert MappingProxyType to dict for JSON serialization. Pydantic's
+        default StrEnum handler dumps each ReviewTier as its string value
+        (e.g., "deep"); the dict shape round-trips cleanly back through
+        `model_validate_json` which re-applies `_freeze_file_tiers` to the
+        rehydrated dict."""
+        return dict(value)
 
 
 __all__ = [
