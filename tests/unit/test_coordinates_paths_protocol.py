@@ -43,6 +43,13 @@ def test_deeply_nested_import_returns_nested_candidates(tmp_path: Path) -> None:
 def test_returned_paths_are_relative(tmp_path: Path) -> None:
     """Per the Protocol contract, returned Path objects are repo-relative."""
     result = resolve_candidate_paths("foo.bar", tmp_path)
+    # Vacuous-pass guard: if `foo.bar` were ever rejected (returns empty
+    # list), the for-loop check would silently pass without testing the
+    # relativity contract. Lock that the input produces a meaningful
+    # result before checking relativity.
+    assert result, (
+        "expected non-empty result for 'foo.bar'; otherwise the relativity check below is vacuous"
+    )
     for candidate in result:
         assert not candidate.is_absolute()
 
@@ -294,6 +301,13 @@ def test_call_signature_matches_protocol(tmp_path: Path) -> None:
     # Calling positionally with the exact shape the Protocol mock uses.
     result = resolve_candidate_paths("foo.bar", tmp_path)
     assert isinstance(result, list)
+    # Vacuous-pass guard: `all(isinstance(...) for ...)` returns True
+    # for an empty iterable. Without this guard, an `foo.bar`-rejected
+    # future would silently pass the element-type assertion below.
+    assert result, (
+        "expected non-empty result for 'foo.bar'; otherwise the "
+        "all-Path check below is vacuous (all() on [] returns True)"
+    )
     assert all(isinstance(p, Path) for p in result)
 
 
@@ -303,6 +317,13 @@ def test_returned_list_can_be_consumed_by_iteration(tmp_path: Path) -> None:
     candidates: ...` consumption pattern.
     """
     result = resolve_candidate_paths("foo.bar", tmp_path)
+    # Vacuous-pass guard: same risk as the sibling test above. If result
+    # were empty, `seen == result` would compare [] to [] and pass
+    # without actually exercising iteration.
+    assert result, (
+        "expected non-empty result for 'foo.bar'; otherwise iteration "
+        "is vacuous and seen==result trivially holds"
+    )
     seen: list[Path] = []
     for candidate in result:
         seen.append(candidate)
