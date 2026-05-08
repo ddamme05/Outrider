@@ -328,7 +328,7 @@ class AnthropicProvider:
         prompt_hash = _canonical_prompt_hash(request.system_prompt, request.user_prompt)
         system_prompt_hash = _canonical_system_prompt_hash(request.system_prompt)
 
-        # Round-22 fold: prompt-caching silently-disabled diagnostic.
+        # Prompt-caching silently-disabled diagnostic.
         # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than
         # the model's min-cacheable threshold (Sonnet 4.6: 2048 tokens;
         # Haiku 4.5: 4096 tokens) are processed without caching with NO
@@ -337,13 +337,18 @@ class AnthropicProvider:
         # write has cache_creation > 0 (so doesn't trigger); cache eviction
         # also rewrites with cache_creation > 0 (so doesn't trigger). Only
         # the genuine "SDK refused to cache this prompt" condition matches.
-        # Warn once per (model, system_prompt_hash) per process.
+        # Warn once per (response.model, system_prompt_hash) per process —
+        # `response.model` is what actually executed and determines the
+        # cache threshold (alias resolution / deprecation routing can make
+        # response.model differ from request.model; the diagnostic should
+        # be anchored to the executing model). Same audit-fidelity rule
+        # as the cost-computation lookup at step 8.
         if (
             request.cache_control
             and response.cache_read_tokens == 0
             and response.cache_write_tokens == 0
         ):
-            cache_warn_key = (request.model, system_prompt_hash)
+            cache_warn_key = (response.model, system_prompt_hash)
             if cache_warn_key not in _WARNED_NONCACHEABLE:
                 _WARNED_NONCACHEABLE.add(cache_warn_key)
                 _LOGGER.warning(
@@ -356,7 +361,8 @@ class AnthropicProvider:
                     "on this prompt until it grows past the threshold or "
                     "cache_control is removed.",
                     extra={
-                        "model": request.model,
+                        "model": response.model,
+                        "request_model": request.model,
                         "system_prompt_hash": system_prompt_hash,
                         "review_id": str(request.review_id),
                         "node_id": request.node_id,

@@ -67,8 +67,11 @@ def normalize_to_pricing_key(model: str) -> str:
       `claude-haiku-4-5`          → `claude-haiku-4-5` (unchanged)
       `claude-haiku-4-5-2025`     → `claude-haiku-4-5-2025` (wrong digit count, unchanged)
 
-    `LLMCallEvent.model` retains the full configured string per spec §8.3;
-    only the pricing-table lookup uses the normalized key.
+    `LLMCallEvent.model` records the upstream-returned model identifier
+    (`response.model` from the SDK) for audit fidelity — which may be a
+    substituted and/or dated ID. Only the pricing-table lookup uses the
+    normalized key; the audit row preserves the literal SDK response
+    model so replay can reconstruct exactly what executed.
     """
     return _DATED_SUFFIX_PATTERN.sub("", model)
 
