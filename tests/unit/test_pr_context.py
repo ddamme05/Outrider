@@ -307,6 +307,12 @@ def test_changed_file_deletions_rejects_negative() -> None:
 
 
 def test_changed_file_extra_forbid() -> None:
+    """Round-25 isolation fix: add valid content_base/content_head so the
+    modified-status invariant is satisfied and `extra="forbid"` is the only
+    violation. Pre-Round-25 the test triggered TWO violations at once
+    (missing content sides + extra field), making the assertion imprecise —
+    a future regression that broke extra='forbid' could still pass if the
+    model_validator's error message mentioned 'extra' coincidentally."""
     with pytest.raises(ValidationError, match="extra"):
         ChangedFile(  # type: ignore[call-arg]
             path="src/foo.py",
@@ -314,6 +320,8 @@ def test_changed_file_extra_forbid() -> None:
             additions=0,
             deletions=0,
             patch="",
+            content_base="",
+            content_head="",
             unknown_field="oops",
         )
 
