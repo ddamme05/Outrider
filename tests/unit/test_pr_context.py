@@ -78,9 +78,10 @@ def test_changed_file_status_rejects_invalid_literal() -> None:
 
 
 def test_changed_file_status_accepts_each_of_four_canonical_values() -> None:
-    """Per Round 14 + Round 15 invariants, each status needs aligned content
-    fields AND aligned counts. This test pins that each canonical status
-    admits when the corresponding shape is provided."""
+    """Per Round 14 + Round 15 + Round 16 invariants, each status needs aligned
+    content fields AND aligned counts AND (for `renamed`) aligned previous_path
+    distinct from path. This test pins that each canonical status admits when
+    the corresponding shape is provided."""
     cf_added = _minimal_changed_file(
         path="new.py",
         status="added",
