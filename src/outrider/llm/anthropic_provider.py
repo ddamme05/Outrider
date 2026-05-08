@@ -360,9 +360,22 @@ class AnthropicProvider:
         # pricing-coverage check; the defensive try/except below catches
         # the case where RATE_TABLE mutates between construction and call
         # (shouldn't happen — module-level Final dict — but typed for safety).
+        #
+        # Audit-fidelity fix (deep self-audit): the cost lookup uses
+        # `response.model` rather than `request.model` so the rate-table
+        # key used to compute `cost_usd` matches the `LLMCallEvent.model`
+        # value that's persisted on the audit row (line below). Currently
+        # identical in practice — Anthropic SDK 0.100 echoes back the
+        # request model exactly — but if a future SDK ever substitutes
+        # (alias resolution, deprecation routing), audit replay would
+        # otherwise see `event.model = response.model` paired with a cost
+        # computed at `request.model`'s rate. The eager pricing-coverage
+        # check still validates configured models; if the SDK substitutes
+        # to an unknown model, the KeyError fallback below surfaces it
+        # loudly as `LLMPricingMissingError`.
         try:
             cost_decimal: Decimal = compute_cost_usd(
-                model=request.model,
+                model=response.model,
                 input_tokens=response.input_tokens,
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
@@ -370,10 +383,12 @@ class AnthropicProvider:
             )
         except KeyError as exc:
             raise LLMPricingMissingError(
-                f"Model {request.model!r} not in RATE_TABLE at "
-                f"complete() step 8; constructor's eager validation "
-                f"should have caught this — pricing table mutation?",
-                missing_models=[request.model],
+                f"Model {response.model!r} not in RATE_TABLE at "
+                f"complete() step 8 (request.model={request.model!r}); "
+                f"constructor's eager validation covers configured models "
+                f"only — this can fire if the SDK substitutes the model "
+                f"in its response (alias resolution, deprecation routing).",
+                missing_models=[response.model],
             ) from exc
 
         # Step 9: build LLMCallEvent + await persister.persist().

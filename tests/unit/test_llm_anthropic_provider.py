@@ -1049,6 +1049,52 @@ async def test_event_carries_pricing_version() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cost_computed_against_response_model_not_request_model() -> None:
+    """Audit-fidelity: when the SDK echoes back a different model than was
+    requested (alias resolution, deprecation routing), cost_usd must be
+    computed against `response.model` so the persisted `LLMCallEvent.model`
+    matches the rate-table key used to compute `LLMCallEvent.cost_usd`.
+    Otherwise replay reconstruction would see event.model paired with a
+    cost computed at a different model's rate."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    # Request claude-sonnet-4-6 (in pricing); SDK responds with
+    # claude-haiku-4-5 (also in pricing, different rates). Cost must
+    # match the haiku rate, not the sonnet rate.
+    sdk_msg = _sdk_message(
+        model="claude-haiku-4-5",
+        input_tokens=1000,
+        output_tokens=500,
+    )
+    with _patched_create(return_value=sdk_msg):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    event, _, response = persister.calls[0]
+    # event.model echoes response (haiku)
+    assert event.model == "claude-haiku-4-5"
+    assert response.model == "claude-haiku-4-5"
+    # cost computed at HAIKU rates, not SONNET rates
+    from outrider.llm.pricing import RATE_TABLE
+
+    haiku_rates = RATE_TABLE["claude-haiku-4-5"]
+    expected_haiku_cost = float(haiku_rates.in_per_token * 1000 + haiku_rates.out_per_token * 500)
+    assert abs(event.cost_usd - expected_haiku_cost) < 1e-9, (
+        f"cost should match response.model (haiku) rates, got {event.cost_usd}, "
+        f"expected {expected_haiku_cost}"
+    )
+    # Sanity: sonnet rates would have produced a meaningfully different cost
+    sonnet_rates = RATE_TABLE["claude-sonnet-4-6"]
+    sonnet_cost = float(sonnet_rates.in_per_token * 1000 + sonnet_rates.out_per_token * 500)
+    assert abs(event.cost_usd - sonnet_cost) > 1e-6, (
+        "test fixture invariant: haiku and sonnet rates must differ enough "
+        "for the assertion above to be meaningful"
+    )
+
+
+@pytest.mark.asyncio
 async def test_audit_context_fields_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
     """AC#20: provider passes audit-context fields through unchanged."""
     persister = _RecordingPersister()
