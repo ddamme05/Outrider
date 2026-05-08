@@ -24,8 +24,10 @@ serialized string values per spec §4.1.7, same convention as
 EvidenceTier / FindingType / FindingSeverity.
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Self
+from types import MappingProxyType
+from typing import Final, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
@@ -61,11 +63,20 @@ class PublishDestination(StrEnum):
     DASHBOARD_ONLY = "dashboard_only"
 
 
-_CONFIDENCE_BY_TIER: dict[EvidenceTier, float] = {
-    EvidenceTier.OBSERVED: 0.9,
-    EvidenceTier.INFERRED: 0.75,
-    EvidenceTier.JUDGED: 0.5,
-}
+# Module-level constant: confidence values per evidence tier. Wrapped
+# in MappingProxyType so runtime mutation raises TypeError. Same
+# defense-in-depth shape as `outrider.llm.pricing.RATE_TABLE` — without
+# the proxy, a test fixture or buggy caller could mutate the mapping
+# and silently change confidence for the rest of the pytest session.
+# Inlined into the proxy call directly so there's no importable
+# underscore-prefixed bare-dict back-door.
+_CONFIDENCE_BY_TIER: Final[Mapping[EvidenceTier, float]] = MappingProxyType(
+    {
+        EvidenceTier.OBSERVED: 0.9,
+        EvidenceTier.INFERRED: 0.75,
+        EvidenceTier.JUDGED: 0.5,
+    }
+)
 
 
 class ReviewFinding(BaseModel):
