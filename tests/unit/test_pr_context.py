@@ -188,6 +188,29 @@ def test_changed_file_non_renamed_must_not_carry_previous_path() -> None:
         )
 
 
+def test_changed_file_renamed_round_trip_json_preserves_previous_path() -> None:
+    """Round-21 regression guard: JSON round-trip for status='renamed' must
+    preserve `previous_path`. Pre-Round-21, the default round-trip tests
+    only covered status='modified' / 'added' — `previous_path` had
+    construction-time coverage but no serialization coverage. A future
+    Pydantic Optional-serialization regression or PRContext field-config
+    typo could silently drop `previous_path` on the wire."""
+    cf = ChangedFile(
+        path="new_name.py",
+        status="renamed",
+        additions=2,
+        deletions=2,
+        patch="@@ -1 +1 @@\n-old\n+new\n",
+        content_base="old\n",
+        content_head="new\n",
+        previous_path="old_name.py",
+    )
+    rehydrated = ChangedFile.model_validate_json(cf.model_dump_json())
+    assert rehydrated == cf
+    assert rehydrated.previous_path == "old_name.py"
+    assert rehydrated.path == "new_name.py"
+
+
 def test_changed_file_renamed_with_full_shape_admits() -> None:
     """Happy path: renamed file with both content sides + previous_path set."""
     cf = ChangedFile(
