@@ -246,12 +246,24 @@ def test_include_text_opt_in_appears_only_in_approved_paths() -> None:
     src_root = pathlib.Path(__file__).resolve().parents[2] / "src" / "outrider"
     allowed_subpaths = ("llm", "audit")
     leaks: list[str] = []
+    visited_non_allowed = 0
     for py in src_root.rglob("*.py"):
         rel = py.relative_to(src_root)
         if rel.parts and rel.parts[0] in allowed_subpaths:
             continue
+        visited_non_allowed += 1
         if "INCLUDE_TEXT_OPT_IN" in py.read_text(encoding="utf-8"):
             leaks.append(str(rel))
+    # Vacuous-pass guard: if no .py files outside llm/+audit/ are visited
+    # (e.g., a future refactor moves all non-llm/audit code elsewhere),
+    # this test would pass trivially without proving anything. Assert at
+    # least one non-allowed-path file was scanned to lock the test's
+    # invariant against silent drift.
+    assert visited_non_allowed > 0, (
+        f"vacuous-pass guard: no .py files found outside {allowed_subpaths!r} "
+        f"under {src_root}; the leak check would pass trivially. "
+        f"Either the source tree was restructured or the test is broken."
+    )
     assert not leaks, (
         f"INCLUDE_TEXT_OPT_IN leaked outside approved paths {allowed_subpaths!r}: "
         f"{leaks}. Only the persister (in audit/) and llm/ itself should "

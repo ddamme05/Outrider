@@ -77,6 +77,7 @@ _SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
 
 def compute_finding_content_hash(
     file_path: str,
+    *,
     line_start: int,
     line_end: int,
     finding_type: FindingType,
@@ -87,6 +88,13 @@ def compute_finding_content_hash(
     UTF-8 bytes, SHA-256 hex digest (lowercase). JSON encoding handles
     file paths with special characters deterministically; compact separators
     `(",", ":")` produce a single canonical byte sequence per input tuple.
+
+    `line_start`, `line_end`, and `finding_type` are keyword-only —
+    `line_start`/`line_end` are adjacent same-typed `int` parameters, and
+    a positional swap would silently produce a different hash, which IS
+    the dedup key. Same misuse-resistance pattern as
+    `outrider.llm.pricing.compute_cost_usd` (token args keyword-only)
+    and `outrider.coordinates.tree_sitter_to_github` (full keyword-only).
 
     Both the emitter (when constructing `FindingEvent`) and the
     `_verify_content_hash` model_validator on `FindingEvent` use this
