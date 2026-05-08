@@ -992,6 +992,66 @@ async def test_unmapped_apierror_translates_to_unknown() -> None:
         await provider.complete(_request())
 
 
+@pytest.mark.asyncio
+async def test_non_apierror_anthropic_subclass_does_not_escape() -> None:
+    """The SDK's exception root is `anthropic.AnthropicError`, not
+    `APIError`. `WorkloadIdentityError` is a real example that inherits
+    from `AnthropicError` directly (not via `APIError`); it would have
+    escaped a narrower `except APIError` block and broken the
+    'no vendor SDK exception escapes complete()' contract. The wrapper
+    catches `AnthropicError` to cover this and any future non-APIError
+    additions; unmapped subclasses translate to LLMUnknownError."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+
+    # Construct a non-APIError but AnthropicError. WorkloadIdentityError
+    # is the concrete real-world case but takes auth-config args we
+    # don't want to fake; subclassing AnthropicError directly proves
+    # the catch shape works for any future addition to the hierarchy.
+    class _NonAPIError(anthropic.AnthropicError):
+        pass
+
+    with (
+        _patched_create(raise_with=_NonAPIError("synthetic non-API error")),
+        pytest.raises(LLMUnknownError, match="unmapped AnthropicError"),
+    ):
+        await provider.complete(_request())
+
+
+@pytest.mark.asyncio
+async def test_step8_keyerror_fallback_on_unknown_response_model() -> None:
+    """After the response.model fix, step-8 cost lookup uses
+    response.model (not request.model). If the SDK substitutes a model
+    not in RATE_TABLE (alias resolution, deprecation routing), the
+    constructor's eager pricing-coverage check (which only validates
+    configured models) won't catch it — but the step-8 KeyError
+    fallback raises LLMPricingMissingError loudly with both
+    response.model and request.model in the message."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    # SDK responds with a model that's NOT in RATE_TABLE.
+    sdk_msg = _sdk_message(model="claude-haiku-99-99-substituted")
+    with (
+        _patched_create(return_value=sdk_msg),
+        pytest.raises(LLMPricingMissingError) as exc_info,
+    ):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    err = exc_info.value
+    # Error message names BOTH response.model and request.model for debug
+    assert "claude-haiku-99-99-substituted" in str(err)
+    assert "claude-sonnet-4-6" in str(err)
+    # Structured attribute carries response.model
+    assert err.missing_models == ("claude-haiku-99-99-substituted",)
+
+
 # ---------------------------------------------------------------------------
 # complete() — persister contract + AC#11 + AC#18 + AC#19 + AC#20.
 # ---------------------------------------------------------------------------

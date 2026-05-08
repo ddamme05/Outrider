@@ -293,10 +293,18 @@ class AnthropicProvider:
 
         # Step 4: SDK call + exception translation.
         # `time.perf_counter_ns()` for monotonic, high-res latency measurement.
+        # Catch `anthropic.AnthropicError` (the SDK exception root) rather
+        # than `APIError` — the SDK's `WorkloadIdentityError` is an
+        # `AnthropicError` subclass that does NOT inherit from `APIError`,
+        # so a narrower `except APIError` would let it escape the wrapper
+        # uncaught, breaking the "no vendor SDK exception escapes
+        # complete()" contract. WorkloadIdentityError fires only on the
+        # cloud-auth path V1 doesn't use today, but the broader catch is
+        # cheap defense-in-depth against future SDK additions.
         t_start_ns = time.perf_counter_ns()
         try:
             sdk_response: Message = await self._client.messages.create(**sdk_kwargs)
-        except anthropic.APIError as exc:
+        except anthropic.AnthropicError as exc:
             raise _translate_anthropic_error(exc) from exc
         latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
 
@@ -489,9 +497,14 @@ def _extract_single_text_block(message: Message) -> str:
     return message.content[0].text
 
 
-def _translate_anthropic_error(exc: anthropic.APIError) -> LLMProviderError:
+def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderError:
     """Map an Anthropic SDK exception to the typed `LLMProviderError`
     subclass per the round-13 mapping table.
+
+    Accepts `anthropic.AnthropicError` (the SDK exception root), not
+    just `APIError`. The broader signature catches `WorkloadIdentityError`
+    and any future non-APIError subclasses of AnthropicError; they fall
+    through to `LLMUnknownError` rather than escaping the wrapper.
 
     **Order matters** — `isinstance` checks fall through to broader
     parent classes. Two specific orderings are load-bearing:
@@ -539,5 +552,7 @@ def _translate_anthropic_error(exc: anthropic.APIError) -> LLMProviderError:
         return LLMInvalidResponseError(str(exc))
     if isinstance(exc, (anthropic.InternalServerError, anthropic.APIConnectionError)):
         return LLMUpstreamError(str(exc))
-    # Fall-through for unmapped APIError subclasses.
-    return LLMUnknownError(f"unmapped APIError: {type(exc).__name__}: {exc}")
+    # Fall-through for unmapped AnthropicError subclasses (covers any
+    # non-APIError SDK exception like WorkloadIdentityError, plus future
+    # additions to the SDK hierarchy that we haven't mapped yet).
+    return LLMUnknownError(f"unmapped AnthropicError: {type(exc).__name__}: {exc}")

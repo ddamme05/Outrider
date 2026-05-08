@@ -150,12 +150,24 @@ def test_each_token_class_is_a_separate_term(field: str) -> None:
 def test_compute_cost_usd_returns_decimal() -> None:
     """Decimal precision throughout — the cast to float happens at
     LLMCallEvent construction, NOT inside compute_cost_usd."""
-    cost = compute_cost_usd("claude-haiku-4-5", 1, 1, 1, 1)
+    cost = compute_cost_usd(
+        "claude-haiku-4-5",
+        input_tokens=1,
+        cache_write_tokens=1,
+        cache_read_tokens=1,
+        output_tokens=1,
+    )
     assert isinstance(cost, Decimal)
 
 
 def test_compute_cost_usd_zero_tokens_is_zero() -> None:
-    cost = compute_cost_usd("claude-sonnet-4-6", 0, 0, 0, 0)
+    cost = compute_cost_usd(
+        "claude-sonnet-4-6",
+        input_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        output_tokens=0,
+    )
     assert cost == Decimal(0)
 
 
@@ -165,7 +177,22 @@ def test_compute_cost_usd_unknown_model_raises_keyerror() -> None:
     production, and complete() step 8 wraps it as
     LLMPricingMissingError defensively."""
     with pytest.raises(KeyError):
-        compute_cost_usd("claude-fake-99-99", 1, 1, 1, 1)
+        compute_cost_usd(
+            "claude-fake-99-99",
+            input_tokens=1,
+            cache_write_tokens=1,
+            cache_read_tokens=1,
+            output_tokens=1,
+        )
+
+
+def test_compute_cost_usd_token_args_are_keyword_only() -> None:
+    """Misuse resistance: cache_write_tokens and cache_read_tokens bill
+    at OPPOSITE rates (1.25× premium for writes vs 0.10× discount for
+    reads). A positional swap would silently overcharge by 12.5×.
+    The keyword-only barrier prevents this."""
+    with pytest.raises(TypeError, match="positional argument"):
+        compute_cost_usd("claude-haiku-4-5", 1, 1, 1, 1)  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

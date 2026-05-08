@@ -148,12 +148,21 @@ RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(
 
 def compute_cost_usd(
     model: str,
+    *,
     input_tokens: int,
     cache_write_tokens: int,
     cache_read_tokens: int,
     output_tokens: int,
 ) -> Decimal:
     """Compute total cost in USD for one LLM call.
+
+    Token args are keyword-only so the four same-typed `int` parameters
+    can't be swapped by a positional caller. The swap that matters most
+    is `cache_write_tokens` ↔ `cache_read_tokens` — they bill at
+    OPPOSITE rates (1.25× input premium for writes vs 0.10× input
+    discount for reads), so a swap silently overcharges or undercharges
+    by an order of magnitude. Same misuse-resistance pattern as
+    `coordinates.tree_sitter_to_github` (round-N keyword-only barrier).
 
     Four-term sum per spec round-14 fold (Codex finding F2 — earlier
     designs missed cache-write tokens, undercounting Anthropic's actual
