@@ -1,4 +1,5 @@
 # PRContext + ChangedFile cross-boundary models per docs/spec.md §7.2
+# See DECISIONS.md#020 — Webhook receiver constructs seed PRContext; intake enriches
 """PRContext + ChangedFile: structured carriers of GitHub PR data.
 
 PRContext is the typed envelope that crosses every subsystem boundary in the
