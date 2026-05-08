@@ -33,9 +33,22 @@ the audit-trail anchor for every finding's coordinate translation, and an
 in-place mutation would break replay equivalence.
 
 ChangedFile.status uses Literal["added", "modified", "removed", "renamed"]
-per spec §7.2 verbatim. content_base / content_head are Optional because
-"added" files have no base content and "removed" files have no head content;
-the consuming nodes (analyze, coordinates) handle the None case explicitly.
+per spec §7.2 verbatim. content_base / content_head are Optional because the
+side-that-doesn't-exist is structurally None for `added` (no base) and
+`removed` (no head). The carrier's Optional typing alone admits malformed
+shapes (e.g., `added` with both content sides set, `modified` with both
+None); the post-intake `enforce_status_invariants` model_validator rejects
+all GitHub-API-impossible shapes. Four invariant classes are enforced:
+
+- Status↔content (Round 14): the side-that-doesn't-exist is None;
+  the side-that-does-exist is non-None.
+- Status↔count (Round 15): `added` requires deletions=0; `removed`
+  requires additions=0 (GitHub-impossible otherwise).
+- Rename path-shape (Round 16): `status="renamed"` requires
+  `previous_path` set AND `previous_path != path` (a same-path
+  rename is GitHub-impossible).
+- Cross-status (Rounds 14, 16): non-`renamed` statuses must NOT
+  carry `previous_path`.
 """
 
 from typing import Literal, Self
@@ -52,14 +65,29 @@ class ChangedFile(BaseModel):
     a parallel enum would.
 
     Per `DECISIONS.md#020`, `ChangedFile` instances are constructed by
-    intake AFTER fetching base/head content. `enforce_status_content`
-    pins the status↔content invariants so a buggy intake can't silently
-    produce a malformed instance:
+    intake AFTER fetching base/head content. `enforce_status_invariants`
+    rejects every GitHub-API-impossible shape so a buggy intake or
+    fixture can't silently produce a malformed instance:
 
+    Status↔content (Round 14):
     - `added`     → `content_head` set, `content_base` None
     - `removed`   → `content_base` set, `content_head` None
     - `modified`  → both `content_base` and `content_head` set
     - `renamed`   → both set, plus `previous_path` set to the old path
+
+    Status↔count (Round 15):
+    - `added`     → `deletions == 0` (added file has no pre-existing
+                    content to delete from)
+    - `removed`   → `additions == 0` (removed file has nothing being
+                    added)
+
+    Rename path-shape (Round 16):
+    - `renamed`   → `previous_path != path` (a same-path rename is
+                    GitHub-impossible — that would be modified or
+                    no change)
+
+    Cross-status (Rounds 14, 16):
+    - non-`renamed` → must NOT carry `previous_path`
 
     `previous_path` is None for non-rename statuses; for `renamed`,
     intake reads the value from GitHub's `/pulls/{number}/files`
@@ -79,13 +107,16 @@ class ChangedFile(BaseModel):
     previous_path: str | None = None
 
     @model_validator(mode="after")
-    def enforce_status_content(self) -> Self:
-        """Status↔content + status↔count invariants per `DECISIONS.md#020`
-        post-intake contract. GitHub's API can never produce
-        `status="added"` with `deletions>0` or `status="removed"` with
-        `additions>0`; admitting those shapes at the schema level would
-        let a buggy fixture or upstream silently slip a malformed
-        instance past the post-intake contract."""
+    def enforce_status_invariants(self) -> Self:
+        """Status-conditional invariants per `DECISIONS.md#020` post-intake
+        contract — covers content-side completeness (R14), count-side
+        impossibility (R15), and rename path-shape (R16). GitHub's API
+        cannot produce any of the rejected shapes; admitting them at the
+        schema level would let a buggy fixture or upstream silently slip
+        a malformed instance past the post-intake contract.
+
+        Renamed from `enforce_status_content` (R18) to reflect the wider
+        scope after R15/R16 added count and rename-path-shape checks."""
         if self.status == "added":
             if self.content_head is None:
                 raise ValueError("status='added' requires content_head to be non-None")
