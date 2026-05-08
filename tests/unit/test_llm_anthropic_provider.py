@@ -567,8 +567,9 @@ async def test_cache_control_true_attaches_ephemeral_to_system_block() -> None:
     per-block cache_control on the SYSTEM block (stable across calls).
     Top-level "Automatic Caching" targets the last cacheable block,
     which in V1's `system + [user]` shape is the volatile user message —
-    defeats the cache. Per spec.md §1476-1478 the system prompt is the
-    cache boundary; the volatile user/diff content stays outside."""
+    defeats the cache. Per spec.md §9.5 (Prompt caching for cost
+    reduction) the system prompt is the cache boundary; the volatile
+    user/diff content stays outside."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),

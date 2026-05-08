@@ -457,12 +457,13 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
       - `request.cache_control=True` → **per-block** `cache_control` on
         the system block. Round-21 fold per Codex finding: round-20's
         top-level "Automatic Caching" kwarg was a regression for V1's
-        single-turn shape. Per spec.md §1476-1478, the system prompt is
-        the cache boundary; the volatile user/diff content stays outside
-        the cache. Top-level automatic caching applies the breakpoint to
-        the LAST cacheable block — in V1's `system + [user]` shape that's
-        the user message, which changes per call. Per-block on system is
-        what produces measurable hits.
+        single-turn shape. Per spec.md §9.5 (Prompt caching for cost
+        reduction), the system prompt is the cache boundary; the
+        volatile user/diff content stays outside the cache. Top-level
+        automatic caching applies the breakpoint to the LAST cacheable
+        block — in V1's `system + [user]` shape that's the user
+        message, which changes per call. Per-block on system is what
+        produces measurable hits.
       - `stream` omitted → returns `Message`, not `AsyncStream`
       - `request.messages` is V1.5+; rejected at LLMRequest construction
         (validator); never reaches here in V1.
@@ -470,7 +471,7 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
     if request.cache_control:
         # Per-block ephemeral cache_control on the stable system block.
         # Volatile user/diff content stays outside the cache boundary
-        # per spec.md §1476-1478.
+        # per spec.md §9.5 (Prompt caching for cost reduction).
         system_param: str | list[TextBlockParam] = [
             TextBlockParam(
                 type="text",

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 class GitHubCommentLocation(BaseModel):
-    """Output of coordinate translation per docs/spec.md §7.2 line 1017.
+    """Output of coordinate translation per docs/spec.md §7.2.
 
     V1 returns single-line locations only — `start_line` / `start_side` stay
     None for every successful translation, regardless of whether the byte
