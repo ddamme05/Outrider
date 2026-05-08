@@ -1,8 +1,17 @@
 # Skeletal LangGraph state object per docs/spec.md §7.1 (V1 foundation slice)
 """ReviewState: the LangGraph state envelope, V1 skeletal slice.
 
-This file ships ONLY the slots populated by the intake and triage nodes;
-the slots populated by analyze, trace, synthesize, hitl, and publish are
+This file ships ONLY the slots populated at webhook seed time
+(`review_id`, `pr_context`, `received_at` per `DECISIONS.md#020`) plus the
+slot populated by the triage node (`triage_result`). Per `DECISIONS.md#020`,
+the webhook receiver constructs the seed `ReviewState` (with seed
+`PRContext` carrying `installation_id` + repo coords + PR identity + author
++ totals + empty `changed_files=()`) and the dispatcher carries that state
+to the graph; intake then enriches `pr_context` in place by fetching the
+file list + per-file content and returning a fresh `PRContext` with the
+populated `changed_files` tuple via `{"pr_context": new_pr_context}`.
+
+The slots populated by analyze, trace, synthesize, hitl, and publish are
 deferred to their respective node specs. The deferred slots and their
 dedup-keyed reducers (per spec §7.1) carry a replay-equivalence rationale
 that belongs with the node that owns them, not in this schema-foundation
