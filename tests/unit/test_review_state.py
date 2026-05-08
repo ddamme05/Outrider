@@ -193,7 +193,8 @@ def test_review_state_round_trip_with_triage_result() -> None:
 
 
 def test_review_state_required_fields_raise_when_omitted() -> None:
-    """No defaults on the three intake-populated slots."""
+    """No defaults on the three webhook-seeded slots (per DECISIONS.md#020):
+    review_id, pr_context, received_at."""
     with pytest.raises(ValidationError):
         ReviewState()  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
