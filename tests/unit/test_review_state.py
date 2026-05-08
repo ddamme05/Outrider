@@ -111,12 +111,57 @@ def test_review_state_is_not_frozen() -> None:
 
     LangGraph nodes return partial-update dicts that reducers merge; a frozen
     state would break the reducer contract. This test guards against an
-    accidental ConfigDict(frozen=True) flip.
+    accidental ConfigDict(frozen=True) flip — but well-typed assignments
+    must still pass validate_assignment=True. The companion tests below pin
+    that bad-typed assignments raise, so this test pins exactly the
+    intended escape hatch (typed mutation works; misuse-resistance fires).
     """
     state = _minimal_review_state()
     new_id = uuid4()
-    state.review_id = new_id  # must succeed
+    state.review_id = new_id  # well-typed; must succeed
     assert state.review_id == new_id
+
+
+def test_review_state_assigning_naive_datetime_raises() -> None:
+    """validate_assignment=True must fire on every attribute assignment, not
+    only at construction. A naive datetime assigned post-construction must
+    raise (else the AwareDatetime gate is bypassable; same hole the
+    ReviewFinding module docstring documents)."""
+    state = _minimal_review_state()
+    with pytest.raises(ValidationError):
+        state.received_at = datetime(2026, 5, 8, 12, 0, 0)  # naive — type: ignore[assignment]
+
+
+def test_review_state_assigning_wrong_type_pr_context_raises() -> None:
+    """Cross-model assignment guard: nested-model fields must revalidate.
+    A bare dict that doesn't match the PRContext shape must raise; a string
+    must raise; an unrelated object must raise."""
+    state = _minimal_review_state()
+    with pytest.raises(ValidationError):
+        state.pr_context = "not a PRContext"  # type: ignore[assignment]
+    with pytest.raises(ValidationError):
+        state.pr_context = {"owner": "acme"}  # incomplete dict — type: ignore[assignment]
+
+
+def test_review_state_assigning_wrong_type_triage_result_raises() -> None:
+    """Optional-typed-field guard: `triage_result: TriageResult | None` must
+    revalidate on assignment. Passing a non-None non-TriageResult value
+    (e.g., a string or an unrelated dict) must raise."""
+    state = _minimal_review_state()
+    with pytest.raises(ValidationError):
+        state.triage_result = "ok"  # type: ignore[assignment]
+    with pytest.raises(ValidationError):
+        state.triage_result = {"random_field": "bogus"}  # type: ignore[assignment]
+
+
+def test_review_state_well_typed_pr_context_assignment_succeeds() -> None:
+    """validate_assignment must accept correctly-typed values (the escape
+    hatch the previous test relies on). Reconstructing pr_context with a
+    fresh PRContext instance is the supported pattern."""
+    state = _minimal_review_state()
+    new_ctx = _minimal_pr_context()  # different instance
+    state.pr_context = new_ctx
+    assert state.pr_context is new_ctx
 
 
 def test_review_state_round_trip_without_triage_result() -> None:
