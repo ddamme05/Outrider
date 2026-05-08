@@ -24,7 +24,7 @@ source of truth for typed shapes per project convention).
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import cast
+from typing import Final, cast
 
 from outrider.ast_facts.models import ExclusionRule, SkipReason
 
@@ -59,7 +59,7 @@ EXCLUSION_RULES: tuple[ExclusionRule, ...] = (
 # Banner check inspects only the first N bytes of source to keep the
 # check O(1) regardless of file size; size-check runs before this so
 # oversized files never reach the banner check.
-_BANNER_PREFIX_BYTES: int = 200
+_BANNER_PREFIX_BYTES: Final[int] = 200
 
 
 # ---------------------------------------------------------------------------

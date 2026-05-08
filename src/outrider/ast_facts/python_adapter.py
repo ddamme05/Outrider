@@ -19,7 +19,7 @@ discards extracted tuples on a post-parse failed outcome, returns
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import tree_sitter_python
 from tree_sitter import Language, Node, Parser, Tree
@@ -47,8 +47,8 @@ if TYPE_CHECKING:
 # Module-level singletons
 # ---------------------------------------------------------------------------
 
-_PY_LANGUAGE = Language(tree_sitter_python.language())
-_PARSER = Parser(_PY_LANGUAGE)
+_PY_LANGUAGE: Final = Language(tree_sitter_python.language())
+_PARSER: Final = Parser(_PY_LANGUAGE)
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import hashlib
 from typing import (
     Any,
     ClassVar,
+    Final,
     Literal,
     Protocol,
     Self,
@@ -100,7 +101,9 @@ class _IncludeTextOptIn:
         return "<INCLUDE_TEXT_OPT_IN>"
 
 
-INCLUDE_TEXT_OPT_IN: _IncludeTextOptIn = _IncludeTextOptIn(_IncludeTextOptIn._CONSTRUCT_TOKEN)
+INCLUDE_TEXT_OPT_IN: Final[_IncludeTextOptIn] = _IncludeTextOptIn(
+    _IncludeTextOptIn._CONSTRUCT_TOKEN
+)
 
 
 def _redact_text(value: str, info: SerializationInfo) -> str:
@@ -522,7 +525,7 @@ class LLMProvider(Protocol):
 # `\x1e` = ASCII Information Separator Two; fixed delimiter so prompts that
 # happen to contain "system_prompt"-like substrings cannot collide with the
 # delimiter sequence.
-_PROMPT_HASH_DELIMITER = b"\x1e"
+_PROMPT_HASH_DELIMITER: Final[bytes] = b"\x1e"
 
 
 def _canonical_prompt_hash(system_prompt: str, user_prompt: str) -> str:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import keyword
 import re
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
@@ -28,14 +28,14 @@ if TYPE_CHECKING:
 # breaks GitHub API path semantics. Newline / NUL prevent header-injection and
 # null-byte attacks; glob characters prevent unintended pattern expansion at
 # downstream consumers.
-_SHELL_METACHARS_RE = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
+_SHELL_METACHARS_RE: Final = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 
 # Windows drive-letter prefix (e.g., `C:/`, `D:\\`, even `C:foo` for
 # drive-relative). `PurePosixPath("C:/Users/file.py").is_absolute()` returns
 # False (POSIX considers absolute = leading `/`), so a drive-prefixed path
 # slips through the standard `pp.is_absolute()` check. Reject it explicitly
 # so absolute Windows paths can't reach the GitHub comment API surface.
-_WINDOWS_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
+_WINDOWS_DRIVE_PREFIX_RE: Final = re.compile(r"^[A-Za-z]:")
 
 
 def diff_line_to_scope(

@@ -17,6 +17,7 @@ changes ship as new policy versions seeded by new migrations.
 """
 
 from enum import StrEnum
+from typing import Final
 
 
 class FindingType(StrEnum):
@@ -69,7 +70,7 @@ SEVERITY_POLICY: dict[FindingType, FindingSeverity] = {
 }
 
 
-_DEFAULT_SEVERITY: FindingSeverity = FindingSeverity.MEDIUM
+_DEFAULT_SEVERITY: Final[FindingSeverity] = FindingSeverity.MEDIUM
 
 
 def lookup_severity(finding_type: FindingType) -> FindingSeverity:
