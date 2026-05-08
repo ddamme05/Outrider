@@ -42,7 +42,7 @@ _GEN_FN = SkipReason.GENERATED_FILENAME
 _PFX = "path_prefix"
 _SFX = "filename_suffix"
 
-EXCLUSION_RULES: tuple[ExclusionRule, ...] = (
+EXCLUSION_RULES: Final[tuple[ExclusionRule, ...]] = (
     ExclusionRule(reason=SkipReason.OVERSIZED, kind="size", pattern=MAX_PARSE_BYTES),
     ExclusionRule(reason=_VENDORED, kind=_PFX, pattern="vendor/"),
     ExclusionRule(reason=_VENDORED, kind=_PFX, pattern="node_modules/"),
