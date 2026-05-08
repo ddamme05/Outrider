@@ -1037,7 +1037,10 @@ async def test_step8_keyerror_fallback_on_unknown_response_model() -> None:
         model_config=_model_config(),
         persister=persister,
     )
-    # SDK responds with a model that's NOT in RATE_TABLE.
+    # SDK responds with a model that's NOT in RATE_TABLE. This response
+    # model has no dated suffix, so normalize_to_pricing_key is a no-op
+    # and the literal response.model and the normalized pricing key are
+    # identical.
     sdk_msg = _sdk_message(model="claude-haiku-99-99-substituted")
     with (
         _patched_create(return_value=sdk_msg),
@@ -1048,8 +1051,53 @@ async def test_step8_keyerror_fallback_on_unknown_response_model() -> None:
     # Error message names BOTH response.model and request.model for debug
     assert "claude-haiku-99-99-substituted" in str(err)
     assert "claude-sonnet-4-6" in str(err)
-    # Structured attribute carries response.model
+    # Structured attribute carries the normalized pricing key — for an
+    # un-dated model that's the same as the literal response.model
     assert err.missing_models == ("claude-haiku-99-99-substituted",)
+
+
+@pytest.mark.asyncio
+async def test_step8_keyerror_message_names_normalized_pricing_key() -> None:
+    """Copilot follow-on: when the SDK substitutes a DATED model that
+    normalizes to a pricing key not in RATE_TABLE, the error message
+    AND `missing_models` must name the normalized key, not the literal
+    response.model. Otherwise an operator reading the error and adding
+    the literal dated string to RATE_TABLE would NOT fix the lookup —
+    `compute_cost_usd` would still resolve via `normalize_to_pricing_key`
+    to the undated key and miss the new dated entry."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    # Dated form that normalizes via -YYYYMMDD strip to a base alias
+    # NOT in RATE_TABLE. `normalize_to_pricing_key` strips the trailing
+    # 8-digit date suffix → "claude-fake-99-99" (not in RATE_TABLE).
+    sdk_msg = _sdk_message(model="claude-fake-99-99-20251020")
+    with (
+        _patched_create(return_value=sdk_msg),
+        pytest.raises(LLMPricingMissingError) as exc_info,
+    ):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    err = exc_info.value
+    msg = str(err)
+    # Both the literal response.model AND the normalized pricing key
+    # appear in the message so an operator updating RATE_TABLE fixes
+    # the actual missing entry, not the un-normalized dated literal.
+    assert "claude-fake-99-99-20251020" in msg, (
+        f"error message must name the literal response.model; got: {msg}"
+    )
+    assert "claude-fake-99-99" in msg, (
+        f"error message must name the normalized pricing key; got: {msg}"
+    )
+    # Structured attribute carries the normalized key (the actual
+    # missing RATE_TABLE entry), NOT the dated literal.
+    assert err.missing_models == ("claude-fake-99-99",), (
+        f"missing_models must hold the normalized pricing key for an "
+        f"operator to add the right RATE_TABLE entry; got: "
+        f"{err.missing_models}"
+    )
 
 
 # ---------------------------------------------------------------------------

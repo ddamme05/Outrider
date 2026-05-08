@@ -369,18 +369,26 @@ class AnthropicProvider:
         # the case where RATE_TABLE mutates between construction and call
         # (shouldn't happen — module-level Final dict — but typed for safety).
         #
-        # Audit-fidelity fix (deep self-audit): the cost lookup uses
-        # `response.model` rather than `request.model` so the rate-table
-        # key used to compute `cost_usd` matches the `LLMCallEvent.model`
-        # value that's persisted on the audit row (line below). Currently
-        # identical in practice — Anthropic SDK 0.100 echoes back the
-        # request model exactly — but if a future SDK ever substitutes
-        # (alias resolution, deprecation routing), audit replay would
-        # otherwise see `event.model = response.model` paired with a cost
-        # computed at `request.model`'s rate. The eager pricing-coverage
-        # check still validates configured models; if the SDK substitutes
-        # to an unknown model, the KeyError fallback below surfaces it
-        # loudly as `LLMPricingMissingError`.
+        # Audit-fidelity: pass `response.model` rather than `request.model`
+        # into `compute_cost_usd()` so both costing and the persisted
+        # `LLMCallEvent.model` are anchored to the upstream-returned model
+        # identifier. Note that `compute_cost_usd()` normalizes dated model
+        # IDs internally via `normalize_to_pricing_key`, so the effective
+        # `RATE_TABLE` lookup key may be the undated alias (e.g.,
+        # `claude-sonnet-4-6`) even when `response.model` is the dated
+        # form (e.g., `claude-sonnet-4-6-20251015`). Currently identical
+        # in practice — Anthropic SDK 0.100 echoes back the request model
+        # exactly — but if a future SDK ever substitutes (alias
+        # resolution, deprecation routing), audit replay would otherwise
+        # see `event.model = response.model` paired with a cost computed
+        # from `request.model`'s rate. The eager pricing-coverage check
+        # still validates configured models; if the SDK substitutes to a
+        # model whose normalized pricing key isn't in `RATE_TABLE`, the
+        # `KeyError` fallback below surfaces it loudly as
+        # `LLMPricingMissingError` — naming both the literal
+        # `response.model` AND the normalized pricing key in the message
+        # so an operator updating the rate table fixes the actual missing
+        # entry rather than the un-normalized literal.
         try:
             cost_decimal: Decimal = compute_cost_usd(
                 model=response.model,
@@ -390,13 +398,17 @@ class AnthropicProvider:
                 output_tokens=response.output_tokens,
             )
         except KeyError as exc:
+            pricing_key = normalize_to_pricing_key(response.model)
             raise LLMPricingMissingError(
-                f"Model {response.model!r} not in RATE_TABLE at "
-                f"complete() step 8 (request.model={request.model!r}); "
-                f"constructor's eager validation covers configured models "
+                f"Model {response.model!r} normalizes to pricing key "
+                f"{pricing_key!r}, which is not in RATE_TABLE at "
+                f"complete() step 8 (request.model={request.model!r}). "
+                f"Constructor's eager validation covers configured models "
                 f"only — this can fire if the SDK substitutes the model "
-                f"in its response (alias resolution, deprecation routing).",
-                missing_models=[response.model],
+                f"in its response (alias resolution, deprecation routing). "
+                f"Add the normalized key to RATE_TABLE + bump "
+                f"PRICING_VERSION to fix.",
+                missing_models=[pricing_key],
             ) from exc
 
         # Step 9: build LLMCallEvent + await persister.persist().
