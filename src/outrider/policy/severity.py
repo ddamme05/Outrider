@@ -16,7 +16,9 @@ in place would invalidate every historical review's replay; mapping
 changes ship as new policy versions seeded by new migrations.
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 
@@ -54,20 +56,31 @@ class FindingSeverity(StrEnum):
     INFO = "info"
 
 
-SEVERITY_POLICY: dict[FindingType, FindingSeverity] = {
-    FindingType.SQL_INJECTION: FindingSeverity.CRITICAL,
-    FindingType.AUTH_BYPASS: FindingSeverity.CRITICAL,
-    FindingType.HARDCODED_SECRET: FindingSeverity.HIGH,
-    FindingType.XSS: FindingSeverity.HIGH,
-    FindingType.PATH_TRAVERSAL: FindingSeverity.HIGH,
-    FindingType.MISSING_INPUT_VALIDATION: FindingSeverity.MEDIUM,
-    FindingType.N_PLUS_ONE_QUERY: FindingSeverity.MEDIUM,
-    FindingType.BLOCKING_CALL_IN_ASYNC: FindingSeverity.MEDIUM,
-    FindingType.MISSING_ERROR_HANDLING: FindingSeverity.LOW,
-    FindingType.MISSING_TEST: FindingSeverity.LOW,
-    FindingType.UNUSED_IMPORT: FindingSeverity.INFO,
-    FindingType.DEPRECATED_API: FindingSeverity.INFO,
-}
+# Wrapped in MappingProxyType so runtime mutation raises TypeError.
+# Same defense-in-depth shape as `outrider.llm.pricing.RATE_TABLE` and
+# `outrider.schemas.review_finding._CONFIDENCE_BY_TIER` — without the
+# proxy, a test fixture or buggy caller could `SEVERITY_POLICY[X] = Y`
+# and silently change classification for the rest of the process.
+# Inlined into the proxy call directly so there's no importable
+# bare-dict back-door. Per-version replay reads from
+# `policy/versions.py::load_policy_for_version`, not this constant —
+# this is the LIVE policy; historical policies live in the DB.
+SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType(
+    {
+        FindingType.SQL_INJECTION: FindingSeverity.CRITICAL,
+        FindingType.AUTH_BYPASS: FindingSeverity.CRITICAL,
+        FindingType.HARDCODED_SECRET: FindingSeverity.HIGH,
+        FindingType.XSS: FindingSeverity.HIGH,
+        FindingType.PATH_TRAVERSAL: FindingSeverity.HIGH,
+        FindingType.MISSING_INPUT_VALIDATION: FindingSeverity.MEDIUM,
+        FindingType.N_PLUS_ONE_QUERY: FindingSeverity.MEDIUM,
+        FindingType.BLOCKING_CALL_IN_ASYNC: FindingSeverity.MEDIUM,
+        FindingType.MISSING_ERROR_HANDLING: FindingSeverity.LOW,
+        FindingType.MISSING_TEST: FindingSeverity.LOW,
+        FindingType.UNUSED_IMPORT: FindingSeverity.INFO,
+        FindingType.DEPRECATED_API: FindingSeverity.INFO,
+    }
+)
 
 
 _DEFAULT_SEVERITY: Final[FindingSeverity] = FindingSeverity.MEDIUM
