@@ -116,9 +116,14 @@ def test_triage_result_round_trip_json() -> None:
 
 
 def test_triage_result_empty_file_tiers_admits() -> None:
-    """Empty file_tiers is valid (e.g., a PR with only documentation changes
-    that the LLM classified as SKIP across the board); size-cap policy
-    decides whether to skip the review entirely."""
+    """Empty file_tiers is valid at the schema level. In practice, an empty
+    file_tiers reaches a TriageResult only if the §6.10 size-cap policy
+    classified all files SKIP upstream of the triage LLM call (per spec
+    §6.10: 'Hard caps trigger before any LLM call') — the LLM itself does
+    not produce SKIP entries (per the module docstring on triage_result.py:
+    'DEEP / STANDARD / SKIM are the LLM-produced classifications; SKIP is
+    populated by the §6.10 size-cap policy gate'). The test pins the schema
+    admittance, not the publishing pathway."""
     result = _minimal_triage_result(file_tiers={})
     assert result.file_tiers == {}
 
