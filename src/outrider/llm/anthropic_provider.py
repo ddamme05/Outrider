@@ -337,18 +337,24 @@ class AnthropicProvider:
         # write has cache_creation > 0 (so doesn't trigger); cache eviction
         # also rewrites with cache_creation > 0 (so doesn't trigger). Only
         # the genuine "SDK refused to cache this prompt" condition matches.
-        # Warn once per (response.model, system_prompt_hash) per process —
-        # `response.model` is what actually executed and determines the
-        # cache threshold (alias resolution / deprecation routing can make
-        # response.model differ from request.model; the diagnostic should
-        # be anchored to the executing model). Same audit-fidelity rule
+        #
+        # The dedup key uses `normalize_to_pricing_key(response.model)` so
+        # dated aliases share a warn-once budget with their undated base
+        # (e.g., `claude-haiku-4-5-20251001` and `claude-haiku-4-5` are
+        # treated as the same model for warning suppression — they share
+        # the same cache threshold by definition). The literal
+        # `response.model` is still logged in the extras for operator
+        # visibility into what actually executed. Same normalization rule
         # as the cost-computation lookup at step 8.
         if (
             request.cache_control
             and response.cache_read_tokens == 0
             and response.cache_write_tokens == 0
         ):
-            cache_warn_key = (response.model, system_prompt_hash)
+            cache_warn_key = (
+                normalize_to_pricing_key(response.model),
+                system_prompt_hash,
+            )
             if cache_warn_key not in _WARNED_NONCACHEABLE:
                 _WARNED_NONCACHEABLE.add(cache_warn_key)
                 _LOGGER.warning(

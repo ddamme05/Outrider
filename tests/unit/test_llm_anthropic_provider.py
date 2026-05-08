@@ -849,6 +849,53 @@ async def test_cache_silently_disabled_warns_separately_per_model(
     assert seen_request_models == {"claude-sonnet-4-6", "claude-haiku-4-5"}
 
 
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_dedup_normalizes_dated_aliases(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """Two calls whose response.model values are dated/undated aliases of
+    the SAME base model (claude-haiku-4-5 vs claude-haiku-4-5-20251001)
+    should share a warn-once budget — they're the same model family for
+    cache-threshold purposes. The dedup key passes response.model
+    through normalize_to_pricing_key, so the second call is suppressed.
+    The literal response.model still appears in the extras for operator
+    visibility into what actually executed each time."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    # First call: undated alias.
+    undated_msg = _sdk_message(
+        model="claude-haiku-4-5",
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    with _patched_create(return_value=undated_msg):
+        await provider.complete(_request(cache_control=True, model="claude-haiku-4-5"))
+    # Second call: dated alias of the same base model.
+    dated_msg = _sdk_message(
+        model="claude-haiku-4-5-20251001",
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    with _patched_create(return_value=dated_msg):
+        await provider.complete(_request(cache_control=True, model="claude-haiku-4-5-20251001"))
+    warning_records = [r for r in caplog.records if "min-cacheable threshold" in r.getMessage()]
+    # Exactly ONE warn fires across both calls — dated and undated dedup
+    # together because they share the same cache threshold.
+    assert len(warning_records) == 1, (
+        f"expected 1 warn (dated/undated should share dedup budget); got "
+        f"{len(warning_records)} — dedup is incorrectly distinguishing aliases"
+    )
+    # The single warning's `model` extra carries the literal response.model
+    # of whichever call fired first (the undated alias here).
+    assert getattr(warning_records[0], "model", None) == "claude-haiku-4-5"
+
+
 # ---------------------------------------------------------------------------
 # complete() — multi-block fail-loud (AC#10).
 # ---------------------------------------------------------------------------
