@@ -12,12 +12,21 @@ from outrider.schemas import ChangedFile, PRContext
 
 
 def _minimal_changed_file(**overrides: object) -> ChangedFile:
+    """Default fixture: status='modified' with both content sides populated.
+
+    Per Round 14 / DECISIONS.md#020 status↔content invariants, ChangedFile
+    instances are constructed by intake AFTER fetching base/head content,
+    so the default fixture must satisfy the post-intake contract. Tests
+    that need a different status pass overrides for status + content fields.
+    """
     base = dict(
         path="src/foo.py",
         status="modified",
         additions=3,
         deletions=1,
         patch="@@ -1,3 +1,5 @@\n a\n b\n c\n+d\n+e",
+        content_base="old\n",
+        content_head="new\n",
     )
     base.update(overrides)
     return ChangedFile(**base)  # type: ignore[arg-type]
@@ -46,22 +55,20 @@ def _minimal_pr_context(**overrides: object) -> PRContext:
 
 
 def test_changed_file_minimal_construction_succeeds() -> None:
+    """Per Round 14, the default fixture has status='modified' with both
+    content_base and content_head populated (post-intake contract per
+    DECISIONS.md#020)."""
     cf = _minimal_changed_file()
     assert cf.path == "src/foo.py"
     assert cf.status == "modified"
-    assert cf.content_base is None
-    assert cf.content_head is None
+    assert cf.content_base == "old\n"
+    assert cf.content_head == "new\n"
+    assert cf.previous_path is None
     assert cf.language is None
 
 
-def test_changed_file_optional_fields_accept_strings() -> None:
-    cf = _minimal_changed_file(
-        content_base="old content",
-        content_head="new content",
-        language="python",
-    )
-    assert cf.content_base == "old content"
-    assert cf.content_head == "new content"
+def test_changed_file_language_field_accepts_string() -> None:
+    cf = _minimal_changed_file(language="python")
     assert cf.language == "python"
 
 
@@ -71,9 +78,99 @@ def test_changed_file_status_rejects_invalid_literal() -> None:
 
 
 def test_changed_file_status_accepts_each_of_four_canonical_values() -> None:
-    for status in ("added", "modified", "removed", "renamed"):
-        cf = _minimal_changed_file(status=status)
-        assert cf.status == status
+    """Per Round 14 status-content invariants, each status needs aligned
+    content fields. This test pins that each canonical status admits when
+    the corresponding content shape is provided."""
+    cf_added = _minimal_changed_file(
+        path="new.py", status="added", content_base=None, content_head="new content"
+    )
+    assert cf_added.status == "added"
+
+    cf_modified = _minimal_changed_file(status="modified")  # default has both
+    assert cf_modified.status == "modified"
+
+    cf_removed = _minimal_changed_file(
+        path="old.py", status="removed", content_base="old content", content_head=None
+    )
+    assert cf_removed.status == "removed"
+
+    cf_renamed = _minimal_changed_file(
+        path="new_path.py", status="renamed", previous_path="old_path.py"
+    )
+    assert cf_renamed.status == "renamed"
+    assert cf_renamed.previous_path == "old_path.py"
+
+
+def test_changed_file_added_requires_content_head_and_no_content_base() -> None:
+    """status='added' must have content_head set and content_base None."""
+    with pytest.raises(ValidationError, match="status='added' requires content_head"):
+        _minimal_changed_file(status="added", content_base=None, content_head=None)
+    with pytest.raises(ValidationError, match="status='added' requires content_base to be None"):
+        _minimal_changed_file(status="added", content_base="should not be set", content_head="new")
+
+
+def test_changed_file_removed_requires_content_base_and_no_content_head() -> None:
+    """status='removed' must have content_base set and content_head None."""
+    with pytest.raises(ValidationError, match="status='removed' requires content_base"):
+        _minimal_changed_file(status="removed", content_base=None, content_head=None)
+    with pytest.raises(ValidationError, match="status='removed' requires content_head to be None"):
+        _minimal_changed_file(
+            status="removed", content_base="old", content_head="should not be set"
+        )
+
+
+def test_changed_file_modified_requires_both_content_sides() -> None:
+    """status='modified' must have BOTH content_base and content_head set."""
+    with pytest.raises(ValidationError, match="status='modified' requires both"):
+        _minimal_changed_file(status="modified", content_base=None, content_head="new")
+    with pytest.raises(ValidationError, match="status='modified' requires both"):
+        _minimal_changed_file(status="modified", content_base="old", content_head=None)
+    with pytest.raises(ValidationError, match="status='modified' requires both"):
+        _minimal_changed_file(status="modified", content_base=None, content_head=None)
+
+
+def test_changed_file_renamed_requires_both_content_sides_and_previous_path() -> None:
+    """status='renamed' must have both content sides set AND previous_path set."""
+    # Missing previous_path
+    with pytest.raises(ValidationError, match="status='renamed' requires previous_path"):
+        _minimal_changed_file(status="renamed", previous_path=None)
+    # Missing content_base
+    with pytest.raises(ValidationError, match="status='renamed' requires both"):
+        _minimal_changed_file(
+            status="renamed",
+            content_base=None,
+            content_head="new",
+            previous_path="old.py",
+        )
+
+
+def test_changed_file_non_renamed_must_not_carry_previous_path() -> None:
+    """previous_path is renamed-status-specific; other statuses must not carry it."""
+    with pytest.raises(ValidationError, match="must not carry previous_path"):
+        _minimal_changed_file(status="modified", previous_path="something.py")
+    with pytest.raises(ValidationError, match="must not carry previous_path"):
+        _minimal_changed_file(
+            status="added",
+            content_base=None,
+            content_head="new",
+            previous_path="should-not-be-here.py",
+        )
+
+
+def test_changed_file_renamed_with_full_shape_admits() -> None:
+    """Happy path: renamed file with both content sides + previous_path set."""
+    cf = ChangedFile(
+        path="new_name.py",
+        status="renamed",
+        additions=2,
+        deletions=2,
+        patch="@@ -1 +1 @@\n-old\n+new\n",
+        content_base="old\n",
+        content_head="new\n",
+        previous_path="old_name.py",
+    )
+    assert cf.previous_path == "old_name.py"
+    assert cf.path == "new_name.py"
 
 
 def test_changed_file_additions_rejects_negative() -> None:
@@ -213,7 +310,13 @@ def test_pr_context_round_trip_preserves_changed_files() -> None:
     ctx = _minimal_pr_context(
         changed_files=[
             _minimal_changed_file(path="src/a.py", status="modified"),
-            _minimal_changed_file(path="src/b.py", status="added", deletions=0),
+            _minimal_changed_file(
+                path="src/b.py",
+                status="added",
+                deletions=0,
+                content_base=None,
+                content_head="new content",
+            ),
         ]
     )
     rehydrated = PRContext.model_validate_json(ctx.model_dump_json())

@@ -52,6 +52,8 @@ def _minimal_pr_context() -> PRContext:
                 additions=3,
                 deletions=1,
                 patch="@@ -1 +1,3 @@\n a\n+b\n+c",
+                content_base="a\n",
+                content_head="a\nb\nc\n",
             )
         ],
         total_additions=3,
