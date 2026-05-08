@@ -28,7 +28,15 @@ Run `uv sync --dev` before `pre-commit install`; the hooks call tools from `.ven
 .venv/bin/python scripts/test_check_decision_refs.py
 ```
 
-`pytest` is configured, but the current scaffold has no collected pytest tests yet; the smoke tests above are script entry points and are also wired into pre-commit.
+The script-style smoke tests above are also wired into pre-commit. The pytest suite covers the implemented modules:
+
+```bash
+.venv/bin/pytest tests/unit                    # ~746 unit tests, fast, no DB
+.venv/bin/pytest tests/integration             # ~49 integration tests; needs the postgres-test container (see docs/testing.md)
+.venv/bin/pytest tests/eval --is-eval          # ~76 eval scenarios; --is-eval is mandatory (conftest fails-loud without it)
+```
+
+See `docs/testing.md` for the three-tier test strategy and the two-container Postgres model.
 
 ## Docs
 
