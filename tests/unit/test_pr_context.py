@@ -78,19 +78,29 @@ def test_changed_file_status_rejects_invalid_literal() -> None:
 
 
 def test_changed_file_status_accepts_each_of_four_canonical_values() -> None:
-    """Per Round 14 status-content invariants, each status needs aligned
-    content fields. This test pins that each canonical status admits when
-    the corresponding content shape is provided."""
+    """Per Round 14 + Round 15 invariants, each status needs aligned content
+    fields AND aligned counts. This test pins that each canonical status
+    admits when the corresponding shape is provided."""
     cf_added = _minimal_changed_file(
-        path="new.py", status="added", content_base=None, content_head="new content"
+        path="new.py",
+        status="added",
+        deletions=0,  # added: no deletions per Round-15 count invariant
+        content_base=None,
+        content_head="new content",
     )
     assert cf_added.status == "added"
 
-    cf_modified = _minimal_changed_file(status="modified")  # default has both
+    cf_modified = _minimal_changed_file(
+        status="modified"
+    )  # default has both content + nonzero counts
     assert cf_modified.status == "modified"
 
     cf_removed = _minimal_changed_file(
-        path="old.py", status="removed", content_base="old content", content_head=None
+        path="old.py",
+        status="removed",
+        additions=0,  # removed: no additions per Round-15 count invariant
+        content_base="old content",
+        content_head=None,
     )
     assert cf_removed.status == "removed"
 
@@ -104,19 +114,38 @@ def test_changed_file_status_accepts_each_of_four_canonical_values() -> None:
 def test_changed_file_added_requires_content_head_and_no_content_base() -> None:
     """status='added' must have content_head set and content_base None."""
     with pytest.raises(ValidationError, match="status='added' requires content_head"):
-        _minimal_changed_file(status="added", content_base=None, content_head=None)
+        _minimal_changed_file(status="added", deletions=0, content_base=None, content_head=None)
     with pytest.raises(ValidationError, match="status='added' requires content_base to be None"):
-        _minimal_changed_file(status="added", content_base="should not be set", content_head="new")
+        _minimal_changed_file(
+            status="added", deletions=0, content_base="should not be set", content_head="new"
+        )
+
+
+def test_changed_file_added_rejects_nonzero_deletions() -> None:
+    """Round-15 count invariant: status='added' requires deletions=0
+    (an added file has no pre-existing content to delete from)."""
+    with pytest.raises(ValidationError, match="status='added' requires deletions=0"):
+        _minimal_changed_file(status="added", deletions=1, content_base=None, content_head="new")
 
 
 def test_changed_file_removed_requires_content_base_and_no_content_head() -> None:
     """status='removed' must have content_base set and content_head None."""
     with pytest.raises(ValidationError, match="status='removed' requires content_base"):
-        _minimal_changed_file(status="removed", content_base=None, content_head=None)
+        _minimal_changed_file(status="removed", additions=0, content_base=None, content_head=None)
     with pytest.raises(ValidationError, match="status='removed' requires content_head to be None"):
         _minimal_changed_file(
-            status="removed", content_base="old", content_head="should not be set"
+            status="removed",
+            additions=0,
+            content_base="old",
+            content_head="should not be set",
         )
+
+
+def test_changed_file_removed_rejects_nonzero_additions() -> None:
+    """Round-15 count invariant: status='removed' requires additions=0
+    (a removed file has nothing being added)."""
+    with pytest.raises(ValidationError, match="status='removed' requires additions=0"):
+        _minimal_changed_file(status="removed", additions=3, content_base="old", content_head=None)
 
 
 def test_changed_file_modified_requires_both_content_sides() -> None:
@@ -151,6 +180,7 @@ def test_changed_file_non_renamed_must_not_carry_previous_path() -> None:
     with pytest.raises(ValidationError, match="must not carry previous_path"):
         _minimal_changed_file(
             status="added",
+            deletions=0,  # Round-15 count invariant
             content_base=None,
             content_head="new",
             previous_path="should-not-be-here.py",
