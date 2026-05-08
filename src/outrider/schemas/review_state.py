@@ -39,21 +39,29 @@ on every return, defeating the reducer contract.
 `ReviewFinding` (review_finding.py module docstring): when `frozen=False`,
 construction-time validators (AwareDatetime, typed enums, nested-model
 construction) are bypassable via direct attribute assignment unless every
-assignment re-runs the validator chain. Without this flag,
-`state.received_at = datetime(...)  # naive` would silently admit, and
-`state.pr_context = some_dict` would coerce-or-bypass typed validation
-quietly. With it, the assignment raises. Per LangGraph 1.1.6
-(`narrative/use-graph-api.md` "Use Pydantic models for graph state"),
-Pydantic structural validation runs ONLY on the first node's input —
-subsequent nodes' outputs and reducer-merged state are NOT auto-validated,
-and the graph output is not a Pydantic instance. So `validate_assignment=True`
-is the primary structural defense across the post-first-input lifetime
-(catches direct attribute mutation post-merge); callers needing
-typed-validated post-reducer state must construct via
-`ReviewState.model_validate({**state.model_dump(), **delta})` rather than
-bare `model_copy(update=...)` (Pydantic 2 docs explicitly say `model_copy`
-does NOT revalidate the update payload). Round 7 corrected an earlier
-Round 5 docstring claim that the framework constructs a fresh
+assignment re-runs the validator chain. With the flag, invalid values
+raise on assignment — `state.received_at = datetime(...)  # naive` raises
+because the AwareDatetime validator fires; `state.pr_context = "string"`
+raises because PRContext is not str-coercible; `state.pr_context = {...}`
+with an INVALID/INCOMPLETE dict shape raises because PRContext's own
+construction validators fire on the dict. Important Pydantic 2.12 nuance
+(corrected Round 19 — earlier docstring overclaimed): a VALID dict-shaped
+payload that matches PRContext's schema IS validated and constructed into
+a fresh PRContext instance on assignment — that's reconstructive
+validation, not bypass. Tests pin the rejection cases (string-rejection,
+incomplete-dict-rejection, naive-datetime-rejection), and the well-typed
+escape-hatch test pins that a fresh PRContext instance assignment also
+succeeds. Per LangGraph 1.1.6 (`narrative/use-graph-api.md` "Use Pydantic
+models for graph state"), Pydantic structural validation runs ONLY on
+the first node's input — subsequent nodes' outputs and reducer-merged
+state are NOT auto-validated, and the graph output is not a Pydantic
+instance. So `validate_assignment=True` is the primary structural defense
+across the post-first-input lifetime (catches direct attribute mutation
+post-merge); callers needing typed-validated post-reducer state must
+construct via `ReviewState.model_validate({**state.model_dump(), **delta})`
+rather than bare `model_copy(update=...)` (Pydantic 2 docs explicitly say
+`model_copy` does NOT revalidate the update payload). Round 7 corrected
+an earlier Round 5 docstring claim that the framework constructs a fresh
 `model_validate`d instance per super-step — the local LangGraph docs
 confirm that's false.
 
