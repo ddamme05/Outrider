@@ -38,9 +38,9 @@ per spec §7.2 verbatim. content_base / content_head are Optional because
 the consuming nodes (analyze, coordinates) handle the None case explicitly.
 """
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ChangedFile(BaseModel):
@@ -50,6 +50,20 @@ class ChangedFile(BaseModel):
     enum, per spec §7.2 verbatim — GitHub's API uses the string values
     directly and Literal tracks the API contract more transparently than
     a parallel enum would.
+
+    Per `DECISIONS.md#020`, `ChangedFile` instances are constructed by
+    intake AFTER fetching base/head content. `enforce_status_content`
+    pins the status↔content invariants so a buggy intake can't silently
+    produce a malformed instance:
+
+    - `added`     → `content_head` set, `content_base` None
+    - `removed`   → `content_base` set, `content_head` None
+    - `modified`  → both `content_base` and `content_head` set
+    - `renamed`   → both set, plus `previous_path` set to the old path
+
+    `previous_path` is None for non-rename statuses; for `renamed`,
+    intake reads the value from GitHub's `/pulls/{number}/files`
+    response field `previous_filename`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -62,6 +76,43 @@ class ChangedFile(BaseModel):
     content_base: str | None = None
     content_head: str | None = None
     language: str | None = None
+    previous_path: str | None = None
+
+    @model_validator(mode="after")
+    def enforce_status_content(self) -> Self:
+        """Status↔content invariants per `DECISIONS.md#020` post-intake contract."""
+        if self.status == "added":
+            if self.content_head is None:
+                raise ValueError("status='added' requires content_head to be non-None")
+            if self.content_base is not None:
+                raise ValueError("status='added' requires content_base to be None")
+        elif self.status == "removed":
+            if self.content_base is None:
+                raise ValueError("status='removed' requires content_base to be non-None")
+            if self.content_head is not None:
+                raise ValueError("status='removed' requires content_head to be None")
+        elif self.status == "modified":
+            if self.content_base is None or self.content_head is None:
+                raise ValueError(
+                    "status='modified' requires both content_base and content_head to be non-None"
+                )
+        elif self.status == "renamed":
+            if self.content_base is None or self.content_head is None:
+                raise ValueError(
+                    "status='renamed' requires both content_base and content_head to be non-None"
+                )
+            if self.previous_path is None:
+                raise ValueError(
+                    "status='renamed' requires previous_path (the pre-rename path); "
+                    "GitHub's /pulls/{number}/files API returns this as `previous_filename`"
+                )
+        # Non-rename statuses must NOT carry previous_path
+        if self.status != "renamed" and self.previous_path is not None:
+            raise ValueError(
+                f"status={self.status!r} must not carry previous_path "
+                "(previous_path is renamed-status-specific)"
+            )
+        return self
 
 
 class PRContext(BaseModel):

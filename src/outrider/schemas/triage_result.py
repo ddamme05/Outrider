@@ -49,8 +49,9 @@ class ReviewTier(StrEnum):
 
     DEEP / STANDARD / SKIM are the LLM-produced classifications; SKIP is
     populated by the §6.10 size-cap policy gate (separate spec) when a PR
-    or file exceeds the agentic-review thresholds. Lowercase serialized
-    values match project enum convention.
+    exceeds the agentic-review thresholds (>1000 changed lines OR >30
+    files — both PR-level metrics; §6.10 has no per-file size policy).
+    Lowercase serialized values match project enum convention.
     """
 
     DEEP = "deep"
