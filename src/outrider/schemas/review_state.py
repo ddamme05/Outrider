@@ -33,12 +33,20 @@ construction) are bypassable via direct attribute assignment unless every
 assignment re-runs the validator chain. Without this flag,
 `state.received_at = datetime(...)  # naive` would silently admit, and
 `state.pr_context = some_dict` would coerce-or-bypass typed validation
-quietly. With it, the assignment raises. Note: under normal LangGraph
-operation nodes return dicts and the framework constructs a fresh
-`model_validate`d instance per super-step (which validates anyway); the
-flag's misuse-resistance value is the secondary defense against any code
-path that does `state.field = value` directly (which the conventions doc
-forbids but the type system doesn't structurally prevent).
+quietly. With it, the assignment raises. Per LangGraph 1.1.6
+(`narrative/use-graph-api.md` "Use Pydantic models for graph state"),
+Pydantic structural validation runs ONLY on the first node's input —
+subsequent nodes' outputs and reducer-merged state are NOT auto-validated,
+and the graph output is not a Pydantic instance. So `validate_assignment=True`
+is the primary structural defense across the post-first-input lifetime
+(catches direct attribute mutation post-merge); callers needing
+typed-validated post-reducer state must construct via
+`ReviewState.model_validate({**state.model_dump(), **delta})` rather than
+bare `model_copy(update=...)` (Pydantic 2 docs explicitly say `model_copy`
+does NOT revalidate the update payload). Round 7 corrected an earlier
+Round 5 docstring claim that the framework constructs a fresh
+`model_validate`d instance per super-step — the local LangGraph docs
+confirm that's false.
 
 Per spec §7.1: the state object round-trips through Postgres JSON via
 langgraph-checkpoint-postgres. All field types must be JSON-serializable;

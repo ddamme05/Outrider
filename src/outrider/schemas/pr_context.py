@@ -16,6 +16,14 @@ drift: spec §15.2 build_graph snippet calls `state.pr_context.installation_id`
 (line 1440) but the canonical §7.2 PRContext shape did not include the field.
 Resolved by canonical amendment + implementation in this commit.
 
+`installation_id` is plain `int` (no `Field(ge=1)`) per the eval-isolation
+convention in `docs/schema.md` — eval factories use synthetic non-colliding
+IDs that may include negative values. Production webhook validation enforces
+real GitHub installation-ID semantics at the input boundary (webhook-receiver
+spec); this shared schema supports both production and eval contexts. The
+constraint was tried-and-removed in Round 7 after an external reviewer
+flagged the eval-factory conflict.
+
 Both models use frozen=True: PRContext round-trips through LangGraph state
 JSON on every checkpoint; immutability prevents mid-graph mutation by any
 node and guarantees the value at HITL-resume matches the value at intake.
@@ -69,7 +77,7 @@ class PRContext(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    installation_id: int = Field(ge=1)
+    installation_id: int
     owner: str
     repo: str
     pr_number: int = Field(ge=1)
