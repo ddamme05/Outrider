@@ -80,17 +80,32 @@ class ChangedFile(BaseModel):
 
     @model_validator(mode="after")
     def enforce_status_content(self) -> Self:
-        """Status↔content invariants per `DECISIONS.md#020` post-intake contract."""
+        """Status↔content + status↔count invariants per `DECISIONS.md#020`
+        post-intake contract. GitHub's API can never produce
+        `status="added"` with `deletions>0` or `status="removed"` with
+        `additions>0`; admitting those shapes at the schema level would
+        let a buggy fixture or upstream silently slip a malformed
+        instance past the post-intake contract."""
         if self.status == "added":
             if self.content_head is None:
                 raise ValueError("status='added' requires content_head to be non-None")
             if self.content_base is not None:
                 raise ValueError("status='added' requires content_base to be None")
+            if self.deletions != 0:
+                raise ValueError(
+                    f"status='added' requires deletions=0 (got {self.deletions}); "
+                    "an added file has no pre-existing content to delete from"
+                )
         elif self.status == "removed":
             if self.content_base is None:
                 raise ValueError("status='removed' requires content_base to be non-None")
             if self.content_head is not None:
                 raise ValueError("status='removed' requires content_head to be None")
+            if self.additions != 0:
+                raise ValueError(
+                    f"status='removed' requires additions=0 (got {self.additions}); "
+                    "a removed file has nothing being added"
+                )
         elif self.status == "modified":
             if self.content_base is None or self.content_head is None:
                 raise ValueError(
