@@ -35,10 +35,15 @@ in-place mutation would break replay equivalence.
 ChangedFile.status uses Literal["added", "modified", "removed", "renamed"]
 per spec §7.2 verbatim. content_base / content_head are Optional because the
 side-that-doesn't-exist is structurally None for `added` (no base) and
-`removed` (no head). The carrier's Optional typing alone admits malformed
-shapes (e.g., `added` with both content sides set, `modified` with both
-None); the post-intake `enforce_status_invariants` model_validator rejects
-all GitHub-API-impossible shapes. Four invariant classes are enforced:
+`removed` (no head). `patch` is Optional because GitHub's
+`/pulls/{number}/files` API omits the `patch` property for binary diffs
+and for diffs too large for the API to include — applies to any status.
+Downstream code that consumes `patch` must treat `None` as "no textual
+diff available from GitHub" (not as an empty unified diff). The carrier's
+Optional typing alone admits malformed shapes (e.g., `added` with both
+content sides set, `modified` with both None); the post-intake
+`enforce_status_invariants` model_validator rejects all
+GitHub-API-impossible shapes. Four invariant classes are enforced:
 
 - Status↔content (Round 14): the side-that-doesn't-exist is None;
   the side-that-does-exist is non-None.
@@ -100,7 +105,7 @@ class ChangedFile(BaseModel):
     status: Literal["added", "modified", "removed", "renamed"]
     additions: int = Field(ge=0)
     deletions: int = Field(ge=0)
-    patch: str
+    patch: str | None = None
     content_base: str | None = None
     content_head: str | None = None
     language: str | None = None
@@ -186,7 +191,7 @@ class PRContext(BaseModel):
     repo: str
     pr_number: int = Field(ge=1)
     pr_title: str
-    pr_body: str
+    pr_body: str | None = None
     base_sha: str
     head_sha: str
     author: str
