@@ -42,7 +42,7 @@ into the payload before validating; the emitter dumps with
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Final, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -72,7 +72,7 @@ from outrider.schemas import (
 # line_end + finding_type)). Lowercase-hex is the canonical encoding;
 # enforce at the schema layer so the audit log's deduplication contract
 # can rely on a deterministic format.
-_SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
+_SHA256_HEX_PATTERN: Final = r"^[a-f0-9]{64}$"
 
 
 def compute_finding_content_hash(
@@ -428,17 +428,19 @@ AuditEvent = Annotated[
 # Module-level TypeAdapter so callers don't have to construct one each time
 # (TypeAdapter construction is comparatively expensive; reuse is the documented
 # Pydantic V2 pattern).
-AuditEventAdapter: TypeAdapter[
-    AgentTransitionEvent
-    | ReviewPhaseEvent
-    | LLMCallEvent
-    | FileExaminationEvent
-    | FindingEvent
-    | TraceDecisionEvent
-    | HITLRequestEvent
-    | HITLDecisionEvent
-    | PublishEvent
-    | PublishRoutingEvent
+AuditEventAdapter: Final[
+    TypeAdapter[
+        AgentTransitionEvent
+        | ReviewPhaseEvent
+        | LLMCallEvent
+        | FileExaminationEvent
+        | FindingEvent
+        | TraceDecisionEvent
+        | HITLRequestEvent
+        | HITLDecisionEvent
+        | PublishEvent
+        | PublishRoutingEvent
+    ]
 ] = TypeAdapter(AuditEvent)
 
 
