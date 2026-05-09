@@ -37,6 +37,12 @@ on:
   pull_request:
     branches: [main]
 
+# Default to read-only at the workflow level. Jobs that legitimately need
+# write scopes (e.g., commenting on a PR) opt in with their own permissions
+# block. Mitigates the impact of a compromised pinned-action SHA.
+permissions:
+  contents: read
+
 # Cancel in-progress runs for the same ref when a new commit is pushed —
 # saves runner minutes on rapid pushes (uses GH Actions concurrency primitive).
 concurrency:
