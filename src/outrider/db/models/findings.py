@@ -31,7 +31,6 @@ CHECK constraints encode the invariant that `line_start >= 1` (1-indexed per
 """
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
@@ -91,7 +90,7 @@ class Finding(Base):
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
     suggested_fix: Mapped[str | None] = mapped_column(Text, nullable=True)
     query_match_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    trace_path: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    trace_path: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     original_severity: Mapped[str | None] = mapped_column(Text, nullable=True)
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     overrider_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
