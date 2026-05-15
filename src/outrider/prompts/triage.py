@@ -38,9 +38,11 @@ Surfaces (per the triage-node spec's Reference Reconciliation):
 Render is intentionally non-raising. All str-keyed placeholder names are
 provided as keyword arguments at the format call, so `str.format` cannot
 hit a missing key. None field values stringify to `"None"`; they do not
-raise. Failure-path enumeration in the triage node depends on render
-being pure — request construction, provider call, schema validation, and
-policy validation are the only post-start-emission raise sources.
+raise. The triage node's full post-start-emission failure matrix lives
+in `agent.nodes.triage` (currently five sources: request construction,
+provider call, schema validation, policy validation, and end-phase
+emission); this module's contract is just that `render()` does not add
+a sixth source.
 
 V1.5+ extension hook: when multi-version prompt comparison surfaces,
 `prompts/triage.py` becomes `prompts/triage/registry.py` (or similar) and
