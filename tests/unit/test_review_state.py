@@ -132,6 +132,20 @@ def test_review_state_validate_assignment_catches_is_eval_post_construction() ->
         state.is_eval = {"not": "bool"}  # type: ignore[assignment]
 
 
+def test_review_state_is_eval_json_round_trip() -> None:
+    """is_eval must round-trip through model_dump_json + model_validate_json
+    — critical for LangGraph checkpoint persistence which serializes
+    state to JSON on every interrupt. A regression that drops is_eval
+    from the JSON shape would silently lose the eval flag on every
+    HITL resume / checkpoint reload."""
+    for flag in (True, False):
+        state = _minimal_review_state(is_eval=flag)
+        rehydrated = type(state).model_validate_json(state.model_dump_json())
+        assert rehydrated.is_eval is flag, (
+            f"is_eval={flag} dropped through JSON round-trip; got {rehydrated.is_eval}"
+        )
+
+
 def test_review_state_received_at_rejects_naive_datetime() -> None:
     """AwareDatetime per docs/conventions.md 'datetimes are AwareDatetime, never naive'."""
     with pytest.raises(ValidationError):

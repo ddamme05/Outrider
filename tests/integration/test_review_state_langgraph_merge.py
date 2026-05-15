@@ -247,6 +247,40 @@ async def test_result_dict_rehydrates_as_review_state(
 
 
 @pytest.mark.asyncio
+async def test_is_eval_survives_langgraph_merge(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """`is_eval` on the seed `ReviewState` must survive the partial-state
+    merge — triage returns `{"triage_result": ...}` only, so LangGraph's
+    default-reducer-overwrite path should leave the seed's `is_eval`
+    untouched. Without this test, a future regression that drops the
+    eval flag through the merge would silently pollute the production
+    audit stream with eval-tagged runs (or vice versa).
+
+    Tests both `is_eval=True` (eval seed) and `is_eval=False`
+    (production seed) round-trip cleanly."""
+    for eval_flag in (True, False):
+        state = _build_valid_seed_state()
+        state.is_eval = eval_flag  # validate_assignment=True validates this
+        graph = build_graph(
+            provider=_MockLLMProvider(),
+            model_config=ModelConfig(),
+            phase_event_sink=recording_phase_event_sink,
+        )
+
+        result = await graph.ainvoke(state)
+
+        # Default reducer is overwrite; triage didn't touch is_eval so it
+        # comes through unchanged
+        assert result["is_eval"] is eval_flag, (
+            f"is_eval={eval_flag} should survive merge; got {result['is_eval']}"
+        )
+        # Rehydration round-trip preserves the flag
+        rehydrated = ReviewState(**result)
+        assert rehydrated.is_eval is eval_flag
+
+
+@pytest.mark.asyncio
 async def test_phase_events_have_matching_phase_id_through_graph(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
