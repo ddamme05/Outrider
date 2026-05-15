@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     # Web / API
     "fastapi==0.135.3",
-    "uvicorn[standard]==0.45.0",
+    "uvicorn[standard]==0.47.0",
     "httpx==0.28.1",
 
     # Agent / LLM
