@@ -185,8 +185,12 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
 
     # LangGraph returns a dict, not a Pydantic instance
     assert isinstance(result, dict)
-    # triage_result is populated
-    assert "triage_result" in result
+    # Both keys must be present — explicit assertion catches the case where
+    # LangGraph silently drops one. Without this, an absent key would surface
+    # as KeyError below, which reads as "test infra broken" rather than
+    # "contract violated".
+    assert "triage_result" in result, "triage_result missing from merged state"
+    assert "pr_context" in result, "pr_context dropped from merged state"
     # pr_context survives unchanged (compare model_dump shapes; the dict
     # may contain Pydantic instances or dicts depending on LangGraph version)
     original_pr_context_dump = state.pr_context.model_dump(mode="json")
