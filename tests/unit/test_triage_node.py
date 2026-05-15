@@ -724,6 +724,93 @@ async def test_phase_event_review_id_matches_state_review_id_type(
         assert event.review_id == state.review_id
 
 
+class _RaiseOnEndSink:
+    """Test sink that records start but raises on end. Pins failure-source #5
+    in the documented post-start failure-mode matrix: the end-phase emission
+    itself raising (per PhaseEventSink Protocol's "Implementations MUST
+    persist before returning, OR raise" rule)."""
+
+    def __init__(self) -> None:
+        self.events: list[ReviewPhaseEvent] = []
+
+    async def emit_phase(self, event: ReviewPhaseEvent) -> None:
+        self.events.append(event)
+        if event.marker == "end":
+            raise RuntimeError("simulated durable-sink failure on end emission")
+
+
+@pytest.mark.asyncio
+async def test_triage_propagates_end_phase_sink_failure_after_successful_work() -> None:
+    """Failure source #5 in the post-start failure matrix: the end-phase
+    emission itself raises. This is the case where everything went right
+    EXCEPT the durable audit write — LLM call succeeded, schema validated,
+    policy passed, but the sink couldn't persist the end-event row.
+
+    Expected: the sink's exception propagates from triage; the start event
+    landed; the end event was attempted (and may have partially landed
+    depending on sink transactionality); `{"triage_result": ...}` is never
+    returned, so the partial state cannot reach downstream nodes.
+
+    Pins that triage doesn't silently swallow audit-infra failures."""
+    state = _build_state()
+    plan = _Plan(response_text=_build_triage_json())
+    provider = MockLLMProvider(plan)
+    raise_on_end = _RaiseOnEndSink()
+
+    with pytest.raises(RuntimeError, match="simulated durable-sink failure"):
+        await triage(
+            state,
+            provider=provider,
+            triage_model="claude-haiku-4-5",
+            phase_event_sink=raise_on_end,
+        )
+
+    # Both start AND end events appended to the sink's list — the start
+    # was emitted normally; the end was emitted and recorded BEFORE the
+    # sink raised. (A production sink that raises mid-transaction wouldn't
+    # have a recorded row, but the test sink records-then-raises so we can
+    # assert the order without DB-machinery.) The propagated exception is
+    # the load-bearing pin: triage must not silently swallow audit failures.
+    assert len(raise_on_end.events) == 2
+    assert raise_on_end.events[0].marker == "start"
+    assert raise_on_end.events[1].marker == "end"
+
+
+@pytest.mark.asyncio
+async def test_triage_propagates_start_phase_sink_failure_before_any_work() -> None:
+    """Symmetric failure-mode pin: if start-emit raises (audit infra
+    outage at node entry), the node fails BEFORE any LLM work. No
+    provider call, no partial state, no dangling-start in the sink.
+    The exception propagates as-is."""
+
+    class _RaiseOnStartSink:
+        def __init__(self) -> None:
+            self.events: list[ReviewPhaseEvent] = []
+
+        async def emit_phase(self, event: ReviewPhaseEvent) -> None:
+            if event.marker == "start":
+                raise RuntimeError("simulated audit infra outage at start")
+            self.events.append(event)
+
+    state = _build_state()
+    plan = _Plan(response_text=_build_triage_json())
+    provider = MockLLMProvider(plan)
+    raise_on_start = _RaiseOnStartSink()
+
+    with pytest.raises(RuntimeError, match="simulated audit infra outage"):
+        await triage(
+            state,
+            provider=provider,
+            triage_model="claude-haiku-4-5",
+            phase_event_sink=raise_on_start,
+        )
+
+    # Provider call never happened — start raised first
+    assert len(provider.received_requests) == 0
+    # No events recorded; start raised before append
+    assert raise_on_start.events == []
+
+
 @pytest.mark.asyncio
 async def test_triage_handles_empty_changed_files_end_to_end(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,

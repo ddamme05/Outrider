@@ -17,12 +17,25 @@ Runtime dependencies are closure-injected per `nodes-receive-deps-via-closure`:
   pairs per `phase-events-bound-work`. Required (no Optional, no production
   no-op default).
 
-Failure-path semantics: the end-event is skipped if ANY of four post-start
-steps raises — request construction (`pydantic.ValidationError`), provider
-call (`LLMProviderError` subclasses), schema validation (`pydantic.ValidationError`
-on `response.text`), or policy validation (`TriagePolicyViolationError`).
+Failure-path semantics: the end-event is skipped (or partially-written) if
+ANY of FIVE post-start failure sources raises:
+
+  1. Request construction (`pydantic.ValidationError`)
+  2. Provider call (`LLMProviderError` subclasses)
+  3. Schema validation (`pydantic.ValidationError` on `response.text`)
+  4. Policy validation (`TriagePolicyViolationError`)
+  5. End-phase-event emission itself (`PhaseEventSink.emit_phase` raise per
+     the Protocol's "Implementations MUST persist before returning, OR
+     raise" rule — durable sinks raise on persistence failure)
+
+Sources 1-4 mean the end event is never attempted; the audit stream has
+a dangling start. Source 5 means the end event WAS attempted; depending
+on the sink's transaction shape the row may have partially landed or
+not. In all five cases the function raises and `{"triage_result": ...}`
+is never returned, so the partial state cannot reach downstream nodes.
+
 The prompt-render step is intentionally pure / non-raising (see
-`prompts/triage.py`).
+`prompts/triage.py`) so it does NOT appear in this list.
 
 The post-schema policy gate (`_enforce_triage_policy`) is the deterministic
 floor: `TriageResult.model_validate_json(response.text)` validates SHAPE

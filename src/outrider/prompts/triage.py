@@ -27,8 +27,10 @@ Surfaces (per the triage-node spec's Reference Reconciliation):
   drift across replay.
 - `TriagePromptParts` — frozen dataclass result of `render()`. Dataclass
   not NamedTuple because dataclasses don't subclass `tuple` → positional
-  unpacking is structurally impossible. Swap-prone access patterns from
-  `(system, user) = render(...)` won't compile.
+  unpacking fails at runtime (the object isn't iterable). Swap-prone
+  access patterns like `(system, user) = render(...)` parse and compile
+  fine but raise `TypeError` on execution, so the swap can't ship
+  silently.
 - `render(pr_context: PRContext) -> TriagePromptParts` — pure function;
   builds the user prompt via `USER_TEMPLATE.format(**kwargs)` and pairs
   it with the constant `SYSTEM_PROMPT`.
