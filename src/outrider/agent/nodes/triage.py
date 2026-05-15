@@ -74,18 +74,44 @@ def _enforce_triage_policy(
     callers can pass `set`, `frozenset`, or `dict_keys` view without
     needing to wrap. Set arithmetic below works identically across all.
     """
-    if any(tier is ReviewTier.SKIP for tier in result.file_tiers.values()):
+    # Rule (a): no SKIP values.
+    skip_paths = sorted(path for path, tier in result.file_tiers.items() if tier is ReviewTier.SKIP)
+    if skip_paths:
         raise TriagePolicyViolationError(
-            "LLM produced SKIP; SKIP is policy-gate scope, not node output"
+            f"LLM produced SKIP tier for paths {skip_paths!r}; SKIP is the "
+            "policy-gate scope path (per the triage-node spec's non-goal #1) "
+            "and is never produced by this node. The deterministic §6.10 "
+            "size-cap gate upstream of triage is the only producer of SKIP; "
+            "an LLM-emitted SKIP is either a hallucination or a sign the "
+            "system prompt's 'never produce skip' rule needs reinforcement."
         )
+
+    # Rule (b): no unknown paths.
     actual_paths = frozenset(result.file_tiers.keys())
     extra = actual_paths - expected_paths
     if extra:
-        raise TriagePolicyViolationError(f"file_tiers contains unknown paths: {sorted(extra)!r}")
+        raise TriagePolicyViolationError(
+            f"file_tiers contains unknown paths {sorted(extra)!r} that are "
+            f"not in changed_files (expected: {sorted(expected_paths)!r}). "
+            "The triage node MUST tier exactly the changed-files set — no "
+            "more, no less. An unknown path indicates either an LLM "
+            "hallucination of a file that doesn't exist in this PR, or a "
+            "drift between intake's changed_files population and the "
+            "downstream node's expected set. Either is a correctness gap "
+            "the deterministic floor catches before the analyze step can "
+            "consume the bad triage_result."
+        )
+
+    # Rule (c): no missing paths.
     missing = expected_paths - actual_paths
     if missing:
         raise TriagePolicyViolationError(
-            f"file_tiers missing paths from changed_files: {sorted(missing)!r}"
+            f"file_tiers is missing paths {sorted(missing)!r} from changed_files "
+            f"(expected: {sorted(expected_paths)!r}). Every changed file "
+            "under review MUST receive a tier — DEEP, STANDARD, or SKIM. A "
+            "missing path means the downstream analyze node has no "
+            "instruction for that file: silent drop is the failure mode "
+            "the policy-gate exists to prevent."
         )
 
 

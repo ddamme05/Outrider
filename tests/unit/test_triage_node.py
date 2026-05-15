@@ -271,6 +271,17 @@ async def test_triage_propagates_llm_provider_error_with_dangling_start(
     [
         ("not-json-at-all", "non-JSON"),
         (json.dumps({"file_tiers": {}, "overall_risk": "LOW"}), "uppercase risk"),
+        (
+            json.dumps(
+                {
+                    "file_tiers": {"src/example.py": "DEEP"},  # uppercase
+                    "overall_risk": "low",
+                    "relevant_dimensions": [],
+                    "reasoning": "x",
+                }
+            ),
+            "uppercase tier",
+        ),
         (json.dumps({"file_tiers": {}, "extra_unknown_field": "x"}), "extra field"),
         # 600-char reasoning exceeds Field(max_length=500)
         (
@@ -283,6 +294,18 @@ async def test_triage_propagates_llm_provider_error_with_dangling_start(
                 }
             ),
             "reasoning too long",
+        ),
+        # unknown dimension value (not in ReviewDimension enum)
+        (
+            json.dumps(
+                {
+                    "file_tiers": {"src/example.py": "standard"},
+                    "overall_risk": "low",
+                    "relevant_dimensions": ["unknown_dimension"],
+                    "reasoning": "x",
+                }
+            ),
+            "unknown dimension",
         ),
     ],
 )
@@ -328,7 +351,7 @@ async def test_triage_rejects_skip_tier_with_dangling_start(
     )
     provider = MockLLMProvider(plan)
 
-    with pytest.raises(TriagePolicyViolationError, match="SKIP is policy-gate scope"):
+    with pytest.raises(TriagePolicyViolationError, match="policy-gate scope"):
         await triage(
             state,
             provider=provider,
@@ -351,7 +374,8 @@ async def test_triage_rejects_unknown_path(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
     """LLM returns a path not in changed_files → TriagePolicyViolationError
-    listing the offending path."""
+    listing the offending path. Also pins the dangling-start phase-event
+    pattern: start emitted, end NOT emitted on policy failure."""
     state = _build_state(files=(_build_changed_file(path="src/foo.py"),))
     plan = _Plan(
         response_text=_build_triage_json(
@@ -368,6 +392,10 @@ async def test_triage_rejects_unknown_path(
             phase_event_sink=recording_phase_event_sink,
         )
 
+    events = recording_phase_event_sink.events
+    assert len(events) == 1
+    assert events[0].marker == "start"
+
 
 # ---------------------------------------------------------------------------
 # Policy-violation: missing path
@@ -379,7 +407,8 @@ async def test_triage_rejects_missing_path(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
     """LLM omits a changed-file path from file_tiers → TriagePolicyViolationError
-    listing the missing path."""
+    listing the missing path. Also pins the dangling-start phase-event
+    pattern: start emitted, end NOT emitted on policy failure."""
     state = _build_state(
         files=(
             _build_changed_file(path="src/a.py"),
@@ -397,6 +426,10 @@ async def test_triage_rejects_missing_path(
             triage_model="claude-haiku-4-5",
             phase_event_sink=recording_phase_event_sink,
         )
+
+    events = recording_phase_event_sink.events
+    assert len(events) == 1
+    assert events[0].marker == "start"
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +711,72 @@ async def test_phase_event_review_id_matches_state_review_id_type(
     for event in recording_phase_event_sink.events:
         assert isinstance(event.review_id, UUID)
         assert event.review_id == state.review_id
+
+
+@pytest.mark.asyncio
+async def test_triage_handles_empty_changed_files_end_to_end(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Edge case: a zero-file PR (constructible if intake's GitHub fetch
+    returns an empty list — rare but documented behavior). The node must
+    not raise on the policy gate with `expected_paths=frozenset()` and
+    `file_tiers={}`; both happy and end-state must complete.
+
+    The helper isolation test `test_enforce_policy_empty_expected_with_empty_actual`
+    covers the pure function; this test covers the full node flow."""
+    state = _build_state(files=())
+    plan = _Plan(response_text=_build_triage_json(file_tiers={}))
+    provider = MockLLMProvider(plan)
+
+    result = await triage(
+        state,
+        provider=provider,
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+
+    triage_result = result["triage_result"]
+    assert isinstance(triage_result, TriageResult)
+    assert dict(triage_result.file_tiers) == {}
+    # Both phase events still bracketed even on zero-file degenerate case
+    assert len(recording_phase_event_sink.events) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,desc",
+    [
+        ("src/with spaces.py", "ascii spaces"),
+        ("src/日本語.py", "unicode (CJK)"),
+        ("src/sub/deep/nested/path.py", "deep nesting"),
+        ("src/__init__.py", "dunder"),
+    ],
+)
+async def test_triage_handles_special_path_characters(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+    path: str,
+    desc: str,
+) -> None:
+    """Policy gate uses set arithmetic on path strings. Spaces, unicode,
+    and deep paths must survive the round-trip through render → JSON →
+    `_enforce_triage_policy` set arithmetic without normalization
+    artifacts. Sibling to the input-boundary regression test, but at the
+    path-content layer rather than the format-string layer."""
+    state = _build_state(files=(_build_changed_file(path=path),))
+    plan = _Plan(
+        response_text=_build_triage_json(file_tiers={path: "standard"}),
+    )
+    provider = MockLLMProvider(plan)
+
+    result = await triage(
+        state,
+        provider=provider,
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+
+    triage_result = result["triage_result"]
+    assert path in dict(triage_result.file_tiers), f"({desc}) path missing"
 
 
 @pytest.mark.asyncio
