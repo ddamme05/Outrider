@@ -75,12 +75,17 @@ def _build_changed_file(
     )
 
 
-def _build_state(*, files: tuple[ChangedFile, ...] | None = None) -> ReviewState:
+def _build_state(
+    *,
+    files: tuple[ChangedFile, ...] | None = None,
+    is_eval: bool = False,
+) -> ReviewState:
     if files is None:
         files = (_build_changed_file(),)
     return ReviewState(
         review_id=uuid4(),
         received_at=datetime.now(UTC),
+        is_eval=is_eval,
         pr_context=PRContext(
             installation_id=12345,
             owner="acme",
@@ -546,6 +551,49 @@ async def test_triage_uses_injected_triage_model_not_hardcoded(
     )
 
     assert provider.received_requests[0].model == custom_model_id
+
+
+@pytest.mark.asyncio
+async def test_triage_threads_is_eval_false_from_state_to_request(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Production state (is_eval=False) → LLMRequest.is_eval=False. The
+    downstream audit row will be tagged production. Pins the canonical
+    default path."""
+    state = _build_state(is_eval=False)
+    plan = _Plan(response_text=_build_triage_json())
+    provider = MockLLMProvider(plan)
+
+    await triage(
+        state,
+        provider=provider,
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+
+    assert provider.received_requests[0].is_eval is False
+
+
+@pytest.mark.asyncio
+async def test_triage_threads_is_eval_true_from_state_to_request(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Eval state (is_eval=True from eval-harness factory) → LLMRequest.
+    is_eval=True. Without this, eval runs of triage would pollute the
+    production audit stream — exactly the bug docs/testing.md "Eval
+    isolation end-to-end" is designed to prevent. Pin the threading."""
+    state = _build_state(is_eval=True)
+    plan = _Plan(response_text=_build_triage_json())
+    provider = MockLLMProvider(plan)
+
+    await triage(
+        state,
+        provider=provider,
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+
+    assert provider.received_requests[0].is_eval is True
 
 
 @pytest.mark.asyncio

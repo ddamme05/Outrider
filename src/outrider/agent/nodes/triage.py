@@ -132,6 +132,8 @@ async def triage(
 
     # Step 3: build LLMRequest. Field validators run; ValidationError surfaces
     # if any value violates the request schema (e.g., empty prompt).
+    # `is_eval` flows from ReviewState.is_eval so audit rows produced during
+    # eval runs are correctly tagged per docs/testing.md "Eval isolation".
     request = LLMRequest(
         model=triage_model,
         system_prompt=parts.system_prompt,
@@ -140,10 +142,10 @@ async def triage(
         temperature=triage_prompt.TEMPERATURE,
         review_id=state.review_id,
         node_id="triage",
+        is_eval=state.is_eval,
         prompt_template_version=triage_prompt.VERSION,
         degraded_mode=False,  # triage has no degraded path in V1
         # cache_control defaults to True per DECISIONS#013 point 4
-        # is_eval defaults to False; eval-harness factories set explicitly
         # context_summary defaults to ()
     )
 
