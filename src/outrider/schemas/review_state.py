@@ -98,6 +98,14 @@ class ReviewState(BaseModel):
     pr_context: PRContext
     received_at: AwareDatetime
 
+    # Eval-isolation flag per `docs/testing.md` "Eval isolation end-to-end" +
+    # `docs/schema.md` (five tables carry `is_eval`). The webhook receiver /
+    # dispatcher sets this on the seed `ReviewState`; nodes thread it into
+    # their `LLMRequest.is_eval` so audit rows produced during eval runs
+    # are correctly tagged. Default `False` means "real production review"
+    # — eval-harness factories construct seeds with `is_eval=True`.
+    is_eval: bool = False
+
     # Populated by triage node (separate spec)
     triage_result: TriageResult | None = None
 

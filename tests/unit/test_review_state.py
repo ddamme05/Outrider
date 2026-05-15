@@ -95,6 +95,43 @@ def test_review_state_accepts_triage_result_instance() -> None:
     assert state.triage_result.overall_risk == RiskLevel.LOW
 
 
+def test_review_state_is_eval_defaults_to_false() -> None:
+    """Production reviews default to is_eval=False. Eval-harness factories
+    construct seeds with is_eval=True; nodes thread state.is_eval into
+    LLMRequest so audit rows produced during eval runs are correctly
+    tagged per `docs/testing.md` "Eval isolation"."""
+    state = _minimal_review_state()
+    assert state.is_eval is False
+
+
+def test_review_state_is_eval_accepts_true() -> None:
+    """Eval-harness factories MUST be able to set is_eval=True on the seed
+    so the entire downstream audit trail (LLMCallEvent rows, future phase
+    events, future findings) inherits the flag."""
+    state = _minimal_review_state(is_eval=True)
+    assert state.is_eval is True
+
+
+def test_review_state_is_eval_rejects_non_bool_garbage() -> None:
+    """Pydantic field validation: is_eval rejects values it can't coerce
+    to bool. Pydantic 2 DOES loose-coerce "yes"/"no"/"true"/"false"/1/0
+    per its standard boolean-validation rules; the test uses an
+    obviously-garbage value to confirm the type IS validated (not just
+    silently accepted as object). Pin so a future refactor that drops
+    the bool annotation doesn't silently admit lists/dicts/etc."""
+    with pytest.raises(ValidationError):
+        _minimal_review_state(is_eval=["not", "a", "bool"])  # type: ignore[arg-type]
+
+
+def test_review_state_validate_assignment_catches_is_eval_post_construction() -> None:
+    """validate_assignment=True on ReviewState means mid-graph mutation
+    of state.is_eval to garbage raises. Without this gate, a node could
+    silently flip the eval-isolation flag to a non-bool."""
+    state = _minimal_review_state(is_eval=False)
+    with pytest.raises(ValidationError):
+        state.is_eval = {"not": "bool"}  # type: ignore[assignment]
+
+
 def test_review_state_received_at_rejects_naive_datetime() -> None:
     """AwareDatetime per docs/conventions.md 'datetimes are AwareDatetime, never naive'."""
     with pytest.raises(ValidationError):

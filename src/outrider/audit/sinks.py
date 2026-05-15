@@ -30,7 +30,7 @@ class PhaseEventSink(Protocol):
     write to the audit_events table; test implementations record to a list
     for assertion.
 
-    Implementations MUST:
+    Production / durable implementations MUST:
       - Be idempotent on `(review_id, phase_id, marker)`. A future
         checkpoint replay or retry can re-emit the same start/end pair;
         the audit row must not duplicate. (`phase_id` is UUID4 —
@@ -45,6 +45,15 @@ class PhaseEventSink(Protocol):
         to land, and a sink that returns success-without-persistence is
         the failure mode the structural `isinstance` gate at `build_graph`
         construction time cannot catch alone.
+
+    Test / in-memory recording implementations (e.g., the
+    `RecordingPhaseEventSink` fixture in `tests/conftest.py`) are
+    DELIBERATELY exempt from the idempotency rule: they record every
+    emission to a list for assertion. Tests that need to verify start/end
+    pairs must check the recorded list themselves; making the recorder
+    dedupe would silently swallow legitimate test signals about
+    double-emissions. Concurrency-safety likewise relaxes for recorders
+    that target single-test fixtures.
 
     Same shape as `LLMExchangePersister` but for phase events only —
     `LLMCallEvent` emission stays inside `LLMProvider.complete()`. The
