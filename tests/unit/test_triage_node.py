@@ -587,12 +587,13 @@ async def test_triage_uses_injected_triage_model_not_hardcoded(
 
 
 @pytest.mark.asyncio
-async def test_triage_threads_is_eval_false_from_state_to_request(
+async def test_triage_threads_is_eval_false_from_state_to_request_and_phase_events(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
-    """Production state (is_eval=False) → LLMRequest.is_eval=False. The
-    downstream audit row will be tagged production. Pins the canonical
-    default path."""
+    """Production state (is_eval=False) → LLMRequest.is_eval=False AND
+    both ReviewPhaseEvent emissions carry is_eval=False. The downstream
+    audit rows (LLMCallEvent + 2x ReviewPhaseEvent) will all be tagged
+    production. Pins the canonical default path."""
     state = _build_state(is_eval=False)
     plan = _Plan(response_text=_build_triage_json())
     provider = MockLLMProvider(plan)
@@ -605,16 +606,22 @@ async def test_triage_threads_is_eval_false_from_state_to_request(
     )
 
     assert provider.received_requests[0].is_eval is False
+    for event in recording_phase_event_sink.events:
+        assert event.is_eval is False, (
+            f"phase event {event.marker} should carry is_eval=False; got {event.is_eval}"
+        )
 
 
 @pytest.mark.asyncio
-async def test_triage_threads_is_eval_true_from_state_to_request(
+async def test_triage_threads_is_eval_true_from_state_to_request_and_phase_events(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
     """Eval state (is_eval=True from eval-harness factory) → LLMRequest.
-    is_eval=True. Without this, eval runs of triage would pollute the
-    production audit stream — exactly the bug docs/testing.md "Eval
-    isolation end-to-end" is designed to prevent. Pin the threading."""
+    is_eval=True AND BOTH phase events carry is_eval=True. Without this,
+    eval runs of triage would pollute the production audit stream
+    through either the LLMCallEvent OR the ReviewPhaseEvent rows —
+    exactly the bug docs/testing.md "Eval isolation end-to-end" is
+    designed to prevent. Pin both threadings."""
     state = _build_state(is_eval=True)
     plan = _Plan(response_text=_build_triage_json())
     provider = MockLLMProvider(plan)
@@ -627,6 +634,10 @@ async def test_triage_threads_is_eval_true_from_state_to_request(
     )
 
     assert provider.received_requests[0].is_eval is True
+    for event in recording_phase_event_sink.events:
+        assert event.is_eval is True, (
+            f"phase event {event.marker} should carry is_eval=True; got {event.is_eval}"
+        )
 
 
 @pytest.mark.asyncio

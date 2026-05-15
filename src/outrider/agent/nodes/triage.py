@@ -154,12 +154,15 @@ async def triage(
 
     # Step 1: emit start phase event. If THIS raises (audit infra outage),
     # the node fails before any work; no dangling start.
+    # `is_eval` flows from ReviewState.is_eval so eval-tagged reviews
+    # produce eval-tagged phase events (parity with LLMCallEvent at step 4).
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
             phase_id=phase_id,
             node_id="triage",
             marker="start",
+            is_eval=state.is_eval,
             phase_key=None,  # V1 single-instance; V1.5 parallel-analyze populates this
         )
     )
@@ -202,13 +205,15 @@ async def triage(
         expected_paths={cf.path for cf in state.pr_context.changed_files},
     )
 
-    # Step 6: success-exit phase event. Same phase_id as the start above.
+    # Step 6: success-exit phase event. Same phase_id as the start above;
+    # same is_eval flag for audit-isolation parity.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
             phase_id=phase_id,
             node_id="triage",
             marker="end",
+            is_eval=state.is_eval,
             phase_key=None,
         )
     )
