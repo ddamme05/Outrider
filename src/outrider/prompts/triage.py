@@ -172,6 +172,31 @@ def render(pr_context: PRContext) -> TriagePromptParts:
     analyze ⇄ trace loop produces cache hits. The `user_prompt` carries
     the volatile per-PR data (title, file list, diffs) and stays outside
     the cache boundary by design.
+
+    Egress-eligible `PRContext` fields per DECISIONS#013 point 1
+    ("Egress include list"):
+      - `pr_title`              ✓ used here
+      - `pr_body`                   not currently used; would be eligible
+      - `changed_files[].path`  ✓ used (file list)
+      - `changed_files[].patch` ✓ used (diff summary; = file content delta)
+      - `changed_files[].status`/`.additions`/`.deletions` ✓ used (metadata)
+      - `author`                    not currently used; eligible
+      - branch names                not in PRContext today
+
+    `PRContext` fields that are NOT egress-eligible per DECISIONS#013
+    point 2 ("Egress exclude list") AND any future-refactor that
+    enriches the prompt MUST keep these OUT of the LLM payload:
+      - `installation_id`       — operational secret (auth scope)
+      - `base_sha` / `head_sha` — commit identifiers; not explicitly
+                                  excluded in #013 but not in the include
+                                  list either; treat as metadata that
+                                  belongs in audit rows, NOT in prompts
+      - `owner` / `repo`        — repository coordinates; same reasoning
+                                  as SHAs above
+
+    If a future refactor needs additional fields, surface a DECISIONS#013
+    supersession (per point 2's "If a future code path would send any
+    excluded item, that's a bug *and* a #013 supersession").
     """
     file_list = "\n".join(
         f"- {cf.path} ({cf.status}, +{cf.additions}/-{cf.deletions})"

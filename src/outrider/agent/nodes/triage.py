@@ -60,6 +60,17 @@ class TriagePolicyViolationError(ValueError):
     content rows by the time this exception fires (`provider.complete()`
     returned successfully); the caller decides whether to retry or fail
     the review.
+
+    Log-content note: the exception messages embed file paths via
+    `f"{paths!r}"` — for rule (b) those paths are LLM-controlled (a
+    fabricated path not in changed_files). Python's `repr` escapes
+    control chars to `\\xNN` notation, so ANSI / terminal-injection via
+    control sequences is mitigated. Per DECISIONS#013 point 5
+    ("Logs never contain prompt or completion content"), the policy-gate
+    paths are technically LLM completion content — but the leak is
+    bounded to filenames (not file CONTENTS) and `repr` neutralizes
+    active exfiltration. Callers logging this exception should consider
+    that paths in the message can be attacker-influenced.
     """
 
 
