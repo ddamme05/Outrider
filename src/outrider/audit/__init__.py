@@ -22,6 +22,7 @@ from outrider.audit.events import (
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
+from outrider.audit.sinks import PhaseEventSink
 
 __all__ = [
     "AgentTransitionEvent",
@@ -34,6 +35,7 @@ __all__ = [
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
+    "PhaseEventSink",
     "PublishEvent",
     "PublishRoutingEvent",
     "ReviewPhaseEvent",
