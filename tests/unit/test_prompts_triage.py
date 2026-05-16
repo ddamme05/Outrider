@@ -194,8 +194,81 @@ def test_system_prompt_documents_all_review_dimensions() -> None:
 def test_system_prompt_describes_reasoning_length_cap() -> None:
     """TriageResult.reasoning has Field(max_length=500). The LLM should
     know — otherwise it produces 1000-char rationales that fail schema
-    validation downstream."""
+    validation downstream. Reasoning cap is framed as natural-language
+    guidance ('two short sentences') with the 500-char schema bound as
+    a safety net (Haiku is unreliable at counting chars; sentence-count
+    framing tracks more reliably). Pin both forms."""
     assert "500" in SYSTEM_PROMPT
+    assert "two short sentences" in SYSTEM_PROMPT.lower(), (
+        "reasoning cap must use sentence-count framing, not just a raw "
+        "char count — see commit b61e7fb for the Haiku-drift rationale"
+    )
+
+
+def test_system_prompt_prohibits_markdown_fenced_json() -> None:
+    """Haiku has a well-known habit of wrapping structured output in
+    ```json ... ``` blocks 'to be helpful'. `TriageResult.model_validate_json`
+    does NOT tolerate code-fence wrappers — it raises `JSONDecodeError`.
+    The prompt must explicitly prohibit fences. Pin so a future prompt
+    edit that softens the wording (e.g., drops the fence ban while
+    keeping 'no surrounding text') doesn't silently re-open the failure
+    mode. The prohibition's specific shape — naming ```json by name —
+    matters because 'no surrounding text' alone is ambiguous about
+    whether code fences count as text."""
+    lowered = SYSTEM_PROMPT.lower()
+    # Must explicitly name markdown / code fences as forbidden
+    assert "markdown" in lowered or "code fence" in lowered or "```" in SYSTEM_PROMPT, (
+        "SYSTEM_PROMPT must explicitly prohibit markdown code fences around "
+        "the JSON output — Haiku wraps structured output in ```json blocks "
+        "by default; 'no surrounding text' alone is ambiguous"
+    )
+    # Must name the specific ```json fence the model defaults to
+    assert "```json" in SYSTEM_PROMPT, (
+        "SYSTEM_PROMPT must name ```json explicitly — generic 'no markdown' "
+        "wording lets Haiku rationalize that ```json isn't markdown"
+    )
+
+
+def test_system_prompt_guides_skim_for_unreviewable_files() -> None:
+    """The deterministic floor (_enforce_triage_policy rule c) rejects
+    missing paths, but the prompt should also tell the model what to do
+    when a file looks unreviewable (lockfiles, generated bindings,
+    binary diffs with '[no textual diff available]'). Without explicit
+    guidance the model either omits (caught by rule c, expensive halt)
+    or reaches for 'skip' (caught by rule a, also a halt). Pin the
+    SKIM-for-unreviewable guidance so future prompt edits don't silently
+    drop it and re-introduce the halt surface."""
+    lowered = SYSTEM_PROMPT.lower()
+    # The prompt names at least one unreviewable category and routes it to skim
+    assert any(
+        marker in lowered
+        for marker in ("lockfile", "generated", "binary", "vendored", "unreviewable")
+    ), "SYSTEM_PROMPT must name at least one unreviewable-file category"
+    assert "no textual diff" in lowered, (
+        "SYSTEM_PROMPT must reference the '[no textual diff available]' marker "
+        "that _format_file_diff renders for None patches — otherwise the model "
+        "won't connect the binary-diff case to the SKIM guidance"
+    )
+
+
+def test_system_prompt_guides_default_to_standard_when_uncertain() -> None:
+    """The deterministic floor catches omitted paths but the prompt
+    should steer the model into the policy before the floor has to
+    fire. Pin the 'default to standard when uncertain' instruction so
+    future edits don't drop it and re-open the silent-omission failure
+    mode the floor catches post-hoc."""
+    lowered = SYSTEM_PROMPT.lower()
+    # The prompt must explicitly tell the model to default rather than omit
+    assert "default" in lowered, (
+        "SYSTEM_PROMPT must instruct the model to default to a specific tier "
+        "when uncertain rather than omit — without this, missing paths route "
+        "to _enforce_triage_policy rule c (halt + retry cost)"
+    )
+    assert '"standard"' in SYSTEM_PROMPT, (
+        "SYSTEM_PROMPT must name 'standard' as the uncertain-fallback tier — "
+        "generic 'pick a tier' wording lets the model default to whatever it "
+        "thinks is safest, which has varied across Haiku versions"
+    )
 
 
 # ---------------------------------------------------------------------------
