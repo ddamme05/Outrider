@@ -158,9 +158,11 @@ class TriagePromptParts:
     """Render output: the (system, user) pair plus the cache-boundary contract.
 
     Dataclass (not NamedTuple) because dataclasses do NOT subclass tuple,
-    so positional unpacking (`s, u = render(...)`) is structurally
-    impossible. Only attribute access compiles — the swap-prone shape
-    `(system, user)` cannot re-emerge.
+    so the swap-prone shape `(system, user) = render(...)` parses and
+    compiles fine but raises `TypeError` at runtime when the iterator
+    protocol fails. The swap cannot ship silently — attribute access
+    (`parts.system_prompt`, `parts.user_prompt`) is the supported usage
+    pattern; positional unpacking fails loud on the very first call.
 
     Both fields are str (validated downstream by `LLMRequest.system_prompt`
     and `.user_prompt` which carry `min_length=1`).
