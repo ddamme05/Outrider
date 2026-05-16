@@ -336,27 +336,55 @@ def _value_or_missing_length(value: Any) -> int:
 
 
 def _diff_content_field_names(
+    *,
     prompt_db: str,
     prompt_new: str,
     completion_db: str,
     completion_new: str,
+    installation_id_db: int,
+    installation_id_new: int,
+    is_eval_db: bool,
+    is_eval_new: bool,
 ) -> tuple[str, ...]:
-    """Content-field variant: names of mismatched fields among prompt/completion."""
+    """Content-row mismatched-field names.
+
+    Includes `prompt`/`completion` (text content) AND
+    `installation_id`/`is_eval` (purge-scope + eval-isolation metadata).
+    The latter two drive operational semantics: `installation_id`
+    controls per-installation retention purge scope; `is_eval` controls
+    dashboard filtering, sweep ignoring, and the eval-row integrity gate
+    in `tests/eval/conftest.py`. A re-emission with same text but
+    flipped `is_eval` would silently bury a production review's content
+    under the eval flag — exactly the bug class the eval-isolation
+    contract is designed to prevent.
+    """
     mismatched: list[str] = []
     if prompt_db != prompt_new:
         mismatched.append("prompt")
     if completion_db != completion_new:
         mismatched.append("completion")
+    if installation_id_db != installation_id_new:
+        mismatched.append("installation_id")
+    if is_eval_db != is_eval_new:
+        mismatched.append("is_eval")
     return tuple(mismatched)
 
 
 def _compute_content_field_digests(
+    *,
     prompt_db: str,
     prompt_new: str,
     completion_db: str,
     completion_new: str,
 ) -> Mapping[str, FieldDigest]:
-    """SHA-256 + byte-length per mismatched content field."""
+    """SHA-256 + byte-length per mismatched text field.
+
+    `installation_id` and `is_eval` are intentionally OMITTED: they are
+    small primitives (int, bool), not text content. The mismatched-field
+    name is the diagnostic signal; an operator inspecting the conflict
+    pulls the actual values from the DB. The digest map is reserved for
+    content fields where the raw values would themselves be sensitive.
+    """
     digests: dict[str, FieldDigest] = {}
     if prompt_db != prompt_new:
         digests["prompt"] = FieldDigest(
@@ -569,10 +597,25 @@ class AuditPersister:
                 # no-op; if present, verify it matches our attempted write
                 # for the idempotency contract; either way, RETURN — never
                 # fall through to content INSERT from this branch.
+                #
+                # The SELECT includes `installation_id` and `is_eval`
+                # alongside the text content. Those columns drive
+                # operational semantics (purge scope + eval isolation);
+                # comparing only text would let a re-emission with same
+                # prompt/completion but different `installation_id` or
+                # flipped `is_eval` pass silently. `retention_expires_at`
+                # is intentionally EXCLUDED from the comparison — it
+                # derives from `event.timestamp + retention_settings.ttl`,
+                # so a TTL config change between deploys can legitimately
+                # produce different values for the same event_id; that's
+                # an operator-driven re-emission, not a producer bug.
                 content_row = await session.execute(
-                    select(LLMCallContent.prompt, LLMCallContent.completion).where(
-                        LLMCallContent.event_id == event.event_id
-                    )
+                    select(
+                        LLMCallContent.prompt,
+                        LLMCallContent.completion,
+                        LLMCallContent.installation_id,
+                        LLMCallContent.is_eval,
+                    ).where(LLMCallContent.event_id == event.event_id)
                 )
                 row_or_none = content_row.one_or_none()
                 if row_or_none is None:
@@ -582,15 +625,30 @@ class AuditPersister:
                     # guard — we never INSERT content for a previously-
                     # purged audit row.
                     return
-                prompt_db, completion_db = row_or_none
-                if prompt_db != request.user_prompt or completion_db != response.text:
+                prompt_db, completion_db, installation_id_db, is_eval_db = row_or_none
+                if (
+                    prompt_db != request.user_prompt
+                    or completion_db != response.text
+                    or installation_id_db != installation_id
+                    or is_eval_db != event.is_eval
+                ):
                     raise AuditPersisterIdempotencyConflict(
                         event_id=event.event_id,
                         mismatched_fields=_diff_content_field_names(
-                            prompt_db, request.user_prompt, completion_db, response.text
+                            prompt_db=prompt_db,
+                            prompt_new=request.user_prompt,
+                            completion_db=completion_db,
+                            completion_new=response.text,
+                            installation_id_db=installation_id_db,
+                            installation_id_new=installation_id,
+                            is_eval_db=is_eval_db,
+                            is_eval_new=event.is_eval,
                         ),
                         field_digests=_compute_content_field_digests(
-                            prompt_db, request.user_prompt, completion_db, response.text
+                            prompt_db=prompt_db,
+                            prompt_new=request.user_prompt,
+                            completion_db=completion_db,
+                            completion_new=response.text,
                         ),
                     )
                 return  # both audit and content match; idempotent no-op
@@ -634,23 +692,45 @@ class AuditPersister:
                 # ran between our INSERT and our SELECT returns as a no-op
                 # rather than raising `NoResultFound`. Retention contract
                 # wins over conflict detection.
+                # Same SELECT + comparison shape as the audit-conflict
+                # branch above: include installation_id + is_eval so a
+                # concurrent emit with the same event_id but different
+                # purge-scope / eval-flag cannot pass silently as idempotent.
                 content_row = await session.execute(
-                    select(LLMCallContent.prompt, LLMCallContent.completion).where(
-                        LLMCallContent.event_id == event.event_id
-                    )
+                    select(
+                        LLMCallContent.prompt,
+                        LLMCallContent.completion,
+                        LLMCallContent.installation_id,
+                        LLMCallContent.is_eval,
+                    ).where(LLMCallContent.event_id == event.event_id)
                 )
                 row_or_none = content_row.one_or_none()
                 if row_or_none is None:
                     return  # purged between INSERT and SELECT; respect retention
-                prompt_db, completion_db = row_or_none
-                if prompt_db != request.user_prompt or completion_db != response.text:
+                prompt_db, completion_db, installation_id_db, is_eval_db = row_or_none
+                if (
+                    prompt_db != request.user_prompt
+                    or completion_db != response.text
+                    or installation_id_db != installation_id
+                    or is_eval_db != event.is_eval
+                ):
                     raise AuditPersisterIdempotencyConflict(
                         event_id=event.event_id,
                         mismatched_fields=_diff_content_field_names(
-                            prompt_db, request.user_prompt, completion_db, response.text
+                            prompt_db=prompt_db,
+                            prompt_new=request.user_prompt,
+                            completion_db=completion_db,
+                            completion_new=response.text,
+                            installation_id_db=installation_id_db,
+                            installation_id_new=installation_id,
+                            is_eval_db=is_eval_db,
+                            is_eval_new=event.is_eval,
                         ),
                         field_digests=_compute_content_field_digests(
-                            prompt_db, request.user_prompt, completion_db, response.text
+                            prompt_db=prompt_db,
+                            prompt_new=request.user_prompt,
+                            completion_db=completion_db,
+                            completion_new=response.text,
                         ),
                     )
 

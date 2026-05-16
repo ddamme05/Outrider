@@ -273,33 +273,106 @@ def test_compute_field_digests_no_mismatch_is_empty_map() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _diff_args(
+    *,
+    prompt_db: str = "p",
+    prompt_new: str = "p",
+    completion_db: str = "c",
+    completion_new: str = "c",
+    installation_id_db: int = 42,
+    installation_id_new: int = 42,
+    is_eval_db: bool = False,
+    is_eval_new: bool = False,
+) -> dict[str, object]:
+    """Helper: keyword args for `_diff_content_field_names` with defaults
+    that match (so any subset can be flipped to trigger a single
+    mismatch). Updated round-26 fold: helper signature now includes
+    `installation_id` and `is_eval` (purge-scope + eval-isolation
+    metadata)."""
+    return {
+        "prompt_db": prompt_db,
+        "prompt_new": prompt_new,
+        "completion_db": completion_db,
+        "completion_new": completion_new,
+        "installation_id_db": installation_id_db,
+        "installation_id_new": installation_id_new,
+        "is_eval_db": is_eval_db,
+        "is_eval_new": is_eval_new,
+    }
+
+
 def test_diff_content_field_names_both_match() -> None:
     """No content mismatch → empty tuple."""
-    assert _diff_content_field_names("p", "p", "c", "c") == ()
+    assert _diff_content_field_names(**_diff_args()) == ()
 
 
 def test_diff_content_field_names_prompt_only() -> None:
-    assert _diff_content_field_names("p1", "p2", "c", "c") == ("prompt",)
+    assert _diff_content_field_names(**_diff_args(prompt_db="p1", prompt_new="p2")) == ("prompt",)
 
 
 def test_diff_content_field_names_completion_only() -> None:
-    assert _diff_content_field_names("p", "p", "c1", "c2") == ("completion",)
+    assert _diff_content_field_names(**_diff_args(completion_db="c1", completion_new="c2")) == (
+        "completion",
+    )
 
 
 def test_diff_content_field_names_both_mismatch() -> None:
-    assert _diff_content_field_names("p1", "p2", "c1", "c2") == ("prompt", "completion")
+    assert _diff_content_field_names(
+        **_diff_args(
+            prompt_db="p1",
+            prompt_new="p2",
+            completion_db="c1",
+            completion_new="c2",
+        )
+    ) == ("prompt", "completion")
+
+
+def test_diff_content_field_names_installation_id_only() -> None:
+    """Round-26 fold: same content, different installation_id → mismatched."""
+    assert _diff_content_field_names(**_diff_args(installation_id_db=1, installation_id_new=2)) == (
+        "installation_id",
+    )
+
+
+def test_diff_content_field_names_is_eval_only() -> None:
+    """Round-26 fold: same content, flipped is_eval → mismatched."""
+    assert _diff_content_field_names(**_diff_args(is_eval_db=False, is_eval_new=True)) == (
+        "is_eval",
+    )
+
+
+def test_diff_content_field_names_all_four_mismatch() -> None:
+    """Round-26 fold: text + purge-scope + eval-flag all mismatched →
+    ordered tuple lists prompt, completion, installation_id, is_eval."""
+    assert _diff_content_field_names(
+        **_diff_args(
+            prompt_db="p1",
+            prompt_new="p2",
+            completion_db="c1",
+            completion_new="c2",
+            installation_id_db=1,
+            installation_id_new=2,
+            is_eval_db=False,
+            is_eval_new=True,
+        )
+    ) == ("prompt", "completion", "installation_id", "is_eval")
 
 
 def test_compute_content_field_digests_carries_lengths_only() -> None:
     """Returned digests carry byte-lengths and SHA-256 of the content,
     never the content itself. Regression test for the metadata-only
     boundary at the helper layer.
+
+    Round-26 fold: digests are reserved for TEXT content fields. Small
+    primitives (installation_id, is_eval) are NOT digested — the
+    mismatched-field name is the diagnostic signal; raw values come
+    from the DB.
     """
     digests = _compute_content_field_digests(
-        "secret prompt text",
-        "different prompt",
-        "secret completion text",
-        "different completion",
+        prompt_db="secret prompt text",
+        prompt_new="different prompt",
+        completion_db="secret completion text",
+        completion_new="different completion",
     )
     # Both fields mismatched.
     assert set(digests) == {"prompt", "completion"}

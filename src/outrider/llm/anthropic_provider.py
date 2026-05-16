@@ -350,7 +350,18 @@ class AnthropicProvider:
         try:
             sdk_response: Message = await self._client.messages.create(**sdk_kwargs)
         except anthropic.AnthropicError as exc:
-            raise _translate_anthropic_error(exc) from exc
+            # `from None` (not `from exc`): SDK exception text is NOT a
+            # trust boundary we can rely on. anthropic SDK errors render
+            # their underlying httpx response body via `str(exc)`, which
+            # could contain prompt fragments echoed back by the upstream
+            # (e.g., context-length errors that quote the offending
+            # request). Preserving the SDK exception via `__cause__` would
+            # leak that body into traceback rendering by any log handler
+            # that uses `exc_info=True`. The wrapper class identity carries
+            # the operational signal (which kind of failure); the original
+            # SDK exception is intentionally dropped. Defense-in-depth for
+            # the persister-side metadata-only contract already in place.
+            raise _translate_anthropic_error(exc) from None
         latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
 
         # Step 5: validate response shape.
@@ -743,18 +754,29 @@ def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderErro
     The fall-through is `LLMUnknownError` (per round-13/14 abstract-base
     redesign — bare `LLMProviderError` is no longer raisable).
     """
+    # Metadata-only by contract: NEVER pass `str(exc)` or any other text
+    # extracted from the SDK exception body to the wrapper class
+    # constructor. Anthropic SDK error messages render the underlying
+    # response body, which can echo prompt/completion fragments from the
+    # request (e.g., context-length errors that quote the offending text).
+    # Passing `str(exc)` would store the body in `Exception.args[0]`,
+    # exposing it via `repr(exc)`, `str(exc)`, and traceback rendering.
+    # The wrapper class IDENTITY is the operational signal; the SDK
+    # exception type name (a safe-by-construction class name, NOT data)
+    # is the only attribute we surface, and only for the unknown branch.
+    # Defense-in-depth for the persister-side metadata-only contract.
     if isinstance(exc, anthropic.APITimeoutError):
-        return LLMTimeoutError(str(exc))
+        return LLMTimeoutError()
     if isinstance(exc, anthropic.RateLimitError):
-        return LLMRateLimitError(str(exc))
+        return LLMRateLimitError()
     if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
-        return LLMAuthError(str(exc))
+        return LLMAuthError()
     if isinstance(exc, anthropic.ConflictError):
         # Round-21 fold per Codex finding: 409 is in Anthropic SDK's
         # default-retry set (alongside 408/429/5xx), so the right
         # taxonomy is `retry_at_layer="node"`, not terminal. Round-20
         # incorrectly bucketed it with 404 as terminal.
-        return LLMConflictError(str(exc))
+        return LLMConflictError()
     if isinstance(
         exc,
         (
@@ -769,12 +791,15 @@ def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderErro
         # also terminal (request shape errors). Mapping all three to
         # LLMInvalidRequestError gives them the right
         # `retry_at_layer="none"` semantics.
-        return LLMInvalidRequestError(str(exc))
+        return LLMInvalidRequestError()
     if isinstance(exc, anthropic.APIResponseValidationError):
-        return LLMInvalidResponseError(str(exc))
+        return LLMInvalidResponseError()
     if isinstance(exc, (anthropic.InternalServerError, anthropic.APIConnectionError)):
-        return LLMUpstreamError(str(exc))
+        return LLMUpstreamError()
     # Fall-through for unmapped AnthropicError subclasses (covers any
     # non-APIError SDK exception like WorkloadIdentityError, plus future
-    # additions to the SDK hierarchy that we haven't mapped yet).
-    return LLMUnknownError(f"unmapped AnthropicError: {type(exc).__name__}: {exc}")
+    # additions to the SDK hierarchy that we haven't mapped yet). The
+    # SDK type NAME (a Python class identifier, not data) is preserved
+    # here so operators can see which SDK shape was unmapped — `str(exc)`
+    # remains forbidden.
+    return LLMUnknownError(f"unmapped AnthropicError: {type(exc).__name__}")
