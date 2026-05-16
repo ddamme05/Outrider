@@ -17,7 +17,7 @@ received_at is AwareDatetime — naive datetimes round-trip as subtly wrong
 times through Postgres timestamptz per docs/conventions.md "Code style".
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -177,6 +177,39 @@ def test_review_state_is_not_frozen() -> None:
     new_id = uuid4()
     state.review_id = new_id  # well-typed; must succeed
     assert state.review_id == new_id
+
+
+def test_review_state_assigning_wrong_type_review_id_raises() -> None:
+    """validate_assignment coverage: review_id is a UUID; reassignment with
+    a non-UUID value must raise. The module docstring's 'primary structural
+    defense across the post-first-input lifetime' claim is load-bearing on
+    EVERY field being type-enforced post-construction. Without this test,
+    a future refactor that loosens review_id's Pydantic type (e.g., bare
+    str) would silently slip past validate_assignment."""
+    state = _minimal_review_state()
+    with pytest.raises(ValidationError):
+        state.review_id = "not-a-uuid"  # type: ignore[assignment]
+    with pytest.raises(ValidationError):
+        state.review_id = 12345  # type: ignore[assignment]
+
+
+def test_review_state_received_at_round_trip_preserves_microseconds_and_offset() -> None:
+    """JSON round-trip on AwareDatetime must preserve microsecond precision
+    AND non-UTC tzinfo offset. The schema's existing round-trip test uses
+    UTC + zero microseconds — a regression that drops microseconds or
+    normalizes the offset to Z would still pass equality and never be
+    caught. This test pins both signals against the canonical contract."""
+    plus_two_hours = timezone(timedelta(hours=2))
+    precise = datetime(2026, 5, 8, 12, 34, 56, 789012, tzinfo=plus_two_hours)
+    state = _minimal_review_state(received_at=precise)
+    rehydrated = ReviewState.model_validate_json(state.model_dump_json())
+    assert rehydrated.received_at == state.received_at
+    assert rehydrated.received_at.microsecond == 789012, (
+        f"microsecond precision dropped: got {rehydrated.received_at.microsecond}"
+    )
+    assert rehydrated.received_at.utcoffset() == precise.utcoffset(), (
+        f"timezone offset normalized: got {rehydrated.received_at.utcoffset()}"
+    )
 
 
 def test_review_state_assigning_naive_datetime_raises() -> None:

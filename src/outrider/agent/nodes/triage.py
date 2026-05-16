@@ -232,7 +232,9 @@ async def triage(
             node_id="triage",
             marker="start",
             is_eval=state.is_eval,
-            phase_key=None,  # V1 single-instance; V1.5 parallel-analyze populates this
+            # triage is not a fan-out target by design; phase_key populates
+            # only for parallel-analyze siblings (V1.5+), never for triage.
+            phase_key=None,
         )
     )
 

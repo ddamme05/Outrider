@@ -125,6 +125,17 @@ class AuditEventBase(BaseModel):
     `sequence_number` is nullable on the base because it is assigned by
     Postgres BIGSERIAL at INSERT time. The construct-then-insert path
     has `None`; the read-then-reconstruct path has the assigned int.
+
+    Equality semantics: Pydantic compares all fields. `event_id` and
+    `timestamp` both use `default_factory` (uuid4 + `datetime.now(UTC)`),
+    so two events constructed back-to-back with otherwise-identical
+    args compare UNEQUAL. This is the intended semantic (each event is
+    a distinct point in time), but means tests asserting "the right
+    event was emitted" must compare specific fields (`review_id`,
+    `node_id`, `marker`, ...), NOT full model equality. The
+    `(event_id, sequence_number)` pair is the durable identity once a
+    row lands in `audit_events`; in-memory equality is rarely the
+    operation you want.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
