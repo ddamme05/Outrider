@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 import pytest
@@ -267,14 +267,18 @@ async def test_is_eval_survives_langgraph_merge(
     invocation path (the unit tests cover the direct-call path);
     pinning both surfaces together prevents a regression where the
     reducer drops the flag from one but not the other."""
+    # Graph construction does not depend on eval_flag — hoist out of the loop.
+    graph = build_graph(
+        provider=_MockLLMProvider(),
+        model_config=ModelConfig(),
+        phase_event_sink=recording_phase_event_sink,
+    )
     for eval_flag in (True, False):
         state = _build_valid_seed_state()
         state.is_eval = eval_flag  # validate_assignment=True validates this
-        graph = build_graph(
-            provider=_MockLLMProvider(),
-            model_config=ModelConfig(),
-            phase_event_sink=recording_phase_event_sink,
-        )
+        # events_before stays in the loop: the sink is function-scoped and
+        # accumulates across both iterations, so each iteration needs its
+        # own pre-invocation snapshot to slice the new events.
         events_before = len(recording_phase_event_sink.events)
 
         result = await graph.ainvoke(state)
@@ -328,8 +332,3 @@ async def test_phase_events_have_matching_phase_id_through_graph(
     assert events[0].phase_id == events[1].phase_id
     assert events[0].review_id == state.review_id
     assert events[1].review_id == state.review_id
-
-
-# Suppress unused-import warning on Literal — Literal IS used in fixtures
-# imported via conftest; we keep it imported for ergonomic test extension.
-_RESERVED = (Literal,)
