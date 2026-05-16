@@ -49,7 +49,8 @@ distinguish policy failure from transport failure (`LLMProviderError`)
 and schema failure (`pydantic.ValidationError`).
 """
 
-from collections.abc import Set
+import hashlib
+from collections.abc import Iterable, Set
 from uuid import uuid4
 
 from outrider.agent.state import ReviewState
@@ -58,6 +59,18 @@ from outrider.audit.sinks import PhaseEventSink
 from outrider.llm.base import LLMProvider, LLMRequest
 from outrider.prompts import triage as triage_prompt
 from outrider.schemas.triage_result import ReviewTier, TriageResult
+
+_POLICY_VIOLATION_SAMPLE_SIZE = 3
+"""How many paths from a violating set appear verbatim in error messages.
+
+The full sorted set is hashed (`sha256[:12]`) and the count is reported,
+so operators can correlate repeat violations and bound the disclosure
+surface. A bounded sample preserves enough signal for debugging without
+echoing arbitrary-length LLM/webhook-derived path lists into log
+streams. See `_format_path_set_for_error` below for the message shape;
+see DECISIONS#013 point 5 + #016 point 4 for the underlying "logs never
+contain prompt or completion content" rule.
+"""
 
 
 class TriagePolicyViolationError(ValueError):
@@ -87,6 +100,33 @@ class TriagePolicyViolationError(ValueError):
     """
 
 
+def _format_path_set_for_error(paths: Iterable[str]) -> str:
+    """Format a path set for embedding in `TriagePolicyViolationError`.
+
+    Returns `count=N hash=<sha256-12> sample=[...]` where sample is up to
+    `_POLICY_VIOLATION_SAMPLE_SIZE` paths formatted via `repr()` (which
+    escapes control chars to `\\xNN` notation — same ANSI / terminal-
+    injection mitigation the pre-mitigation code relied on). The hash is
+    SHA-256 over the NUL-separated sorted full set, first 12 hex chars —
+    long enough to be useful for correlating repeat violations, short
+    enough to read.
+
+    Bounds the disclosure surface per DECISIONS#013 point 5 + #016
+    point 4 ("logs never contain prompt or completion content"). The
+    paths come from two attacker-influenced sources: LLM output
+    (hallucinated unknown paths from rule b) and webhook payload
+    (`PRContext.changed_files` paths surfaced by rule c). A downstream
+    `logger.exception(...)` capturing this message would historically
+    have echoed the full set; the bounded-sample-plus-hash shape caps
+    that leak to `_POLICY_VIOLATION_SAMPLE_SIZE` paths regardless of
+    set size, while still giving operators a stable correlation key.
+    """
+    sorted_paths = sorted(paths)
+    digest = hashlib.sha256("\x00".join(sorted_paths).encode("utf-8")).hexdigest()[:12]
+    sample = sorted_paths[:_POLICY_VIOLATION_SAMPLE_SIZE]
+    return f"count={len(sorted_paths)} hash={digest} sample={sample!r}"
+
+
 def _enforce_triage_policy(
     result: TriageResult,
     *,
@@ -97,12 +137,18 @@ def _enforce_triage_policy(
     `expected_paths` is the abstract `Set` (from `collections.abc`) so
     callers can pass `set`, `frozenset`, or `dict_keys` view without
     needing to wrap. Set arithmetic below works identically across all.
+
+    Error messages embed bounded path samples plus a stable hash of the
+    full violating set — never the verbatim sorted list. See
+    `_format_path_set_for_error` for the message shape and the
+    DECISIONS#013 / #016 log-content discipline that motivates it.
     """
     # Rule (a): no SKIP values.
-    skip_paths = sorted(path for path, tier in result.file_tiers.items() if tier is ReviewTier.SKIP)
+    skip_paths = [path for path, tier in result.file_tiers.items() if tier is ReviewTier.SKIP]
     if skip_paths:
         raise TriagePolicyViolationError(
-            f"LLM produced SKIP tier for paths {skip_paths!r}; SKIP is the "
+            "LLM produced SKIP tier for one or more paths "
+            f"({_format_path_set_for_error(skip_paths)}); SKIP is the "
             "policy-gate scope path (per the triage-node spec's non-goal #1) "
             "and is never produced by this node. The deterministic §6.10 "
             "size-cap gate upstream of triage is the only producer of SKIP; "
@@ -115,8 +161,9 @@ def _enforce_triage_policy(
     extra = actual_paths - expected_paths
     if extra:
         raise TriagePolicyViolationError(
-            f"file_tiers contains unknown paths {sorted(extra)!r} that are "
-            f"not in changed_files (expected: {sorted(expected_paths)!r}). "
+            "file_tiers contains unknown paths "
+            f"({_format_path_set_for_error(extra)}) not in changed_files "
+            f"(expected: {_format_path_set_for_error(expected_paths)}). "
             "The triage node MUST tier exactly the changed-files set — no "
             "more, no less. An unknown path indicates either an LLM "
             "hallucination of a file that doesn't exist in this PR, or a "
@@ -130,12 +177,13 @@ def _enforce_triage_policy(
     missing = expected_paths - actual_paths
     if missing:
         raise TriagePolicyViolationError(
-            f"file_tiers is missing paths {sorted(missing)!r} from changed_files "
-            f"(expected: {sorted(expected_paths)!r}). Every changed file "
-            "under review MUST receive a tier — DEEP, STANDARD, or SKIM. A "
-            "missing path means the downstream analyze node has no "
-            "instruction for that file: silent drop is the failure mode "
-            "the policy-gate exists to prevent."
+            "file_tiers is missing paths from changed_files "
+            f"({_format_path_set_for_error(missing)}; expected: "
+            f"{_format_path_set_for_error(expected_paths)}). Every "
+            "changed file under review MUST receive a tier — DEEP, "
+            "STANDARD, or SKIM. A missing path means the downstream "
+            "analyze node has no instruction for that file: silent drop "
+            "is the failure mode the policy-gate exists to prevent."
         )
 
 
