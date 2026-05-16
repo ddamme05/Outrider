@@ -142,6 +142,47 @@ def test_recoverable_subclasses_are_node_layer() -> None:
         assert cls.retry_at_layer == "node"
 
 
+def test_provider_error_docstring_names_every_node_layer_class() -> None:
+    """Pins the round-30 codex audit fold: `LLMProviderError.__doc__`'s
+    `retry_at_layer` semantics section MUST name every concrete subclass
+    where `retry_at_layer == "node"`. Otherwise the doc drifts behind
+    the actual taxonomy as new retry-eligible classes are added.
+
+    This is the same class-omission bug pattern FUP-025 has been
+    defending against — round-14 caught `LLMConflictError` missing from
+    the retry-eligible list when 409 was promoted to `"node"`; round-30
+    caught the same omission in this docstring. The test fails-loud the
+    moment a new `"node"`-layer class is added without updating the
+    docstring.
+    """
+    from outrider.llm.base import LLMProviderError
+
+    # Compute the actual set of "node"-layer classes by walking the
+    # subclass tree (covers both direct subclasses and any future
+    # sub-subclasses that explicitly set `retry_at_layer="node"`).
+    def _all_subclasses(cls: type) -> set[type]:
+        result: set[type] = set()
+        for sub in cls.__subclasses__():
+            result.add(sub)
+            result.update(_all_subclasses(sub))
+        return result
+
+    node_layer_classes = {
+        cls for cls in _all_subclasses(LLMProviderError) if cls.retry_at_layer == "node"
+    }
+    assert node_layer_classes, "fixture sanity: at least one node-layer class must exist"
+
+    doc = LLMProviderError.__doc__
+    assert doc is not None, "LLMProviderError must have a docstring"
+    for cls in node_layer_classes:
+        assert cls.__name__ in doc, (
+            f"LLMProviderError.__doc__ does not name {cls.__name__!r} (a "
+            f"`retry_at_layer=node` class). The docstring's retry-semantics "
+            f"section must enumerate every node-layer class. Add the name "
+            f"to the bullet under `retry_at_layer semantics: - 'node': ...`."
+        )
+
+
 def test_terminal_subclasses_are_none_layer() -> None:
     """Auth/InvalidRequest/InvalidResponse/Unexpected/MissingAPIKey/
     PersisterNotWired/Persister/Unknown/PricingMissing are terminal."""
