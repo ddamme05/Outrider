@@ -76,11 +76,16 @@ deeper review should focus.
 - "standard" — typical application code changes that benefit from review
   but don't warrant the full deep-context pipeline.
 - "skim" — config files, dependency updates, formatting-only changes,
-  auto-generated code, or simple comment/docstring edits.
+  auto-generated code, or simple comment/docstring edits. If a file
+  looks unreviewable (lockfiles, generated bindings, vendored deps,
+  binary diffs marked "[no textual diff available]"), classify as
+  "skim" — never omit and never "skip".
 
 Never produce "skip" — that tier is reserved for a deterministic
 size-cap policy gate upstream of this node. Every file you receive needs
-a deep, standard, or skim classification.
+a deep, standard, or skim classification. If you cannot determine an
+appropriate tier for a file with confidence, default to "standard"
+rather than omitting it.
 
 ## Overall risk
 
@@ -111,7 +116,9 @@ doesn't need a style review. Choose what's load-bearing.
 
 ## Output
 
-Return exactly this JSON shape, no surrounding text:
+Return exactly this JSON shape and nothing else. Do NOT wrap the JSON
+in markdown code fences (no ```json, no ```). Do NOT add explanatory
+prose before or after. Your output starts with `{` and ends with `}`.
 
 {
   "file_tiers": {
@@ -120,9 +127,10 @@ Return exactly this JSON shape, no surrounding text:
   },
   "overall_risk": "<low|medium|high|critical>",
   "relevant_dimensions": ["<dimension>", ...],
-  "reasoning": "<<=500 chars explaining the classification>"
+  "reasoning": "<two short sentences explaining the classification>"
 }
 
+Keep "reasoning" to two short sentences (hard upper bound: 500 chars).
 Every changed file MUST appear in file_tiers with a tier value. Do not
 include paths not in the changed-files list. Do not produce "skip".
 """
