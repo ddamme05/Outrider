@@ -35,8 +35,9 @@ EXPECTED_FINAL_STATE = {
 
 def test_hitl_resume_idempotent_under_checkpoint_replay() -> None:
     """Seven-step HITL-resume flow ends idempotent + replay-equivalent."""
-    from outrider.agent import run_review_with_resume  # type: ignore[import-not-found]
     from outrider.audit.replay import assert_replay_equivalent  # type: ignore[import-not-found]
+
+    from outrider.agent import run_review_with_resume  # type: ignore[import-not-found]
 
     # 1. Process PR with guaranteed critical finding
     # 2. Assert graph interrupts at hitl
