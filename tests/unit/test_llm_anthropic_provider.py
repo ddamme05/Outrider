@@ -1059,6 +1059,64 @@ async def test_unmapped_apierror_translates_to_unknown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_translate_anthropic_error_does_not_leak_sdk_text_into_wrapper() -> None:
+    """Pins the round-26 codex fold: `_translate_anthropic_error()` MUST
+    NOT pass `str(exc)` (or any SDK exception body text) to the wrapper
+    class constructor, AND the `raise ... from None` at the wrapper site
+    MUST drop the SDK exception via `__suppress_context__`.
+
+    The leak vector: Anthropic SDK error messages render the underlying
+    httpx response body via `str(exc)`. The body can echo prompt
+    fragments from the failing request (most concretely:
+    context-length-exceeded errors quote the offending text). If the
+    wrapper passed `str(exc)` to e.g. `LLMRateLimitError(str(exc))`,
+    that text would land in `Exception.args[0]` and render in
+    `repr(wrapper)`, `str(wrapper)`, and traceback formatting by any
+    log handler using `exc_info=True`.
+
+    Test: mock an `anthropic.RateLimitError` whose `str()` contains a
+    distinctive sentinel; trigger `provider.complete()`; verify the
+    wrapper `LLMRateLimitError` does NOT carry the sentinel in any of
+    `str()`, `repr()`, `args`, or via the cause chain
+    (`exc.__cause__`/`__context__` with `__suppress_context__` set).
+    """
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+
+    sentinel = "secret_prompt_fragment_zzz9876_in_sdk_error_body"  # noqa: S105 — test fixture
+    sdk_exc = anthropic.RateLimitError(
+        sentinel,
+        response=_fake_response(429),
+        body=None,
+    )
+    # Sanity: the SDK exception DOES carry the sentinel via str().
+    assert sentinel in str(sdk_exc)
+
+    with _patched_create(raise_with=sdk_exc), pytest.raises(LLMRateLimitError) as exc_info:
+        await provider.complete(_request())
+
+    wrapper = exc_info.value
+    # Wrapper's own rendering surfaces — none carry SDK text.
+    assert sentinel not in str(wrapper), "wrapper str() leaks SDK body text"
+    assert sentinel not in repr(wrapper), "wrapper repr() leaks SDK body text"
+    for arg in wrapper.args:
+        assert sentinel not in str(arg), "wrapper args[] leaks SDK body text"
+
+    # `from None` suppresses cause-chain rendering. __cause__ must be
+    # None and __suppress_context__ must be True so traceback formatters
+    # don't walk __context__ either.
+    assert wrapper.__cause__ is None, "raise-from-None failed to drop __cause__"
+    assert wrapper.__suppress_context__ is True, (
+        "raise-from-None failed to set __suppress_context__; "
+        "traceback formatter would still render __context__"
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_apierror_anthropic_subclass_does_not_escape() -> None:
     """The SDK's exception root is `anthropic.AnthropicError`, not
     `APIError`. `WorkloadIdentityError` is a real example that inherits

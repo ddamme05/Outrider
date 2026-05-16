@@ -166,6 +166,91 @@ async def test_idempotency_conflict_str_omits_raw_content(
         assert forbidden not in exc_vars
 
 
+async def test_persist_content_installation_id_mismatch_raises_conflict(
+    persister_setup: PersisterTestSetup,
+    llm_call_event_factory: LLMCallEventFactory,
+    llm_request_factory: LLMRequestFactory,
+    llm_response_factory: LLMResponseFactory,
+) -> None:
+    """Same prompt/completion text but different `installation_id` →
+    `AuditPersisterIdempotencyConflict` with `installation_id` in
+    `mismatched_fields`. Pins the round-26 fold: content-row idempotency
+    must compare the purge-scope column, not just text. Otherwise a row
+    with matching content but wrong `installation_id` (e.g., a producer
+    bug crossing review scopes) would silently pass as idempotent.
+    """
+    event_obj = llm_call_event_factory(persister_setup.review_id)
+    request = llm_request_factory(persister_setup.review_id, user_prompt="same prompt")
+    response = llm_response_factory(text_value="same completion")
+    await persister_setup.persister.persist(event_obj, request, response)
+
+    # Divert the stored installation_id directly on the content row so
+    # re-emission compares against a mismatched value. (Seed a second
+    # installation row first so the FK is satisfied.)
+    alternate_installation_id = persister_setup.installation_id + 99999
+    async with persister_setup.engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO installations "
+                "(installation_id, app_slug, account_id, account_login, "
+                " account_type, permissions_at_install) "
+                "VALUES (:id, 'outrider', 88888888, 'alt-org', 'Organization', '{}'::jsonb)"
+            ),
+            {"id": alternate_installation_id},
+        )
+        await conn.execute(
+            text("UPDATE llm_call_content SET installation_id = :alt WHERE event_id = :eid"),
+            {"alt": alternate_installation_id, "eid": event_obj.event_id},
+        )
+
+    # Re-emit with the same content + same review (which still resolves
+    # to the original installation_id). The content row in DB now has
+    # the alternate id; the comparison must raise.
+    with pytest.raises(AuditPersisterIdempotencyConflict) as exc_info:
+        await persister_setup.persister.persist(event_obj, request, response)
+
+    assert "installation_id" in exc_info.value.mismatched_fields
+    # installation_id is a small primitive; no digest entry generated.
+    assert "installation_id" not in exc_info.value.field_digests
+
+
+async def test_persist_content_is_eval_mismatch_raises_conflict(
+    persister_setup: PersisterTestSetup,
+    llm_call_event_factory: LLMCallEventFactory,
+    llm_request_factory: LLMRequestFactory,
+    llm_response_factory: LLMResponseFactory,
+) -> None:
+    """Same prompt/completion text but different `is_eval` →
+    `AuditPersisterIdempotencyConflict` with `is_eval` in
+    `mismatched_fields`. Pins the round-26 fold: content-row idempotency
+    must compare the eval-isolation flag, not just text. Otherwise a
+    re-emission with flipped `is_eval` would silently bury production
+    review content under the eval flag (or vice versa), defeating the
+    `docs/testing.md` eval-isolation contract.
+    """
+    event_obj = llm_call_event_factory(persister_setup.review_id, is_eval=False)
+    request = llm_request_factory(persister_setup.review_id, user_prompt="same prompt")
+    response = llm_response_factory(text_value="same completion")
+    await persister_setup.persister.persist(event_obj, request, response)
+
+    # Flip the stored is_eval directly on the content row.
+    async with persister_setup.engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE llm_call_content SET is_eval = TRUE WHERE event_id = :eid"),
+            {"eid": event_obj.event_id},
+        )
+
+    # Re-emit with is_eval=False (original event's value); the audit row
+    # matches (audit payload includes is_eval=False), so we reach the
+    # content-comparison path. The stored content row now has
+    # is_eval=True; raise.
+    with pytest.raises(AuditPersisterIdempotencyConflict) as exc_info:
+        await persister_setup.persister.persist(event_obj, request, response)
+
+    assert "is_eval" in exc_info.value.mismatched_fields
+    assert "is_eval" not in exc_info.value.field_digests
+
+
 async def test_emit_phase_payload_mismatch_raises_conflict(
     persister_setup: PersisterTestSetup,
     review_phase_event_factory: ReviewPhaseEventFactory,
