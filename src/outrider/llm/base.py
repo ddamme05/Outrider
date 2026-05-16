@@ -19,10 +19,19 @@ chain. Two abstract-base enforcement notes worth pinning here:
     because `Exception.__new__` bypasses ABC's `__abstractmethods__`
     check. We use `__init__` type-guard + `__init_subclass__`
     presence + value-membership enforcement instead (rounds 13–15).
-  - `INCLUDE_TEXT_OPT_IN` is a typed sentinel, not a string key. The
-    persister opts into content serialization via
-    `model_dump(context=INCLUDE_TEXT_OPT_IN)`; identity check, not dict
-    lookup, so typos like `"INCLUDE_TEXT"` cannot accidentally pass.
+  - `INCLUDE_TEXT_OPT_IN` is a typed sentinel, not a string key. ANY
+    caller that intentionally needs to serialize `LLMRequest` or
+    `LLMResponse` with raw content (rather than the default redacted
+    form) passes it as the `model_dump()` context — identity check
+    (`info.context is INCLUDE_TEXT_OPT_IN`), not dict lookup, so typos
+    like `"INCLUDE_TEXT"` cannot accidentally pass. NOTE: the shipped
+    `AuditPersister` does NOT take this path — it persists raw
+    `prompt`/`completion` via direct attribute access
+    (`request.user_prompt`, `response.text`) into the `llm_call_content`
+    side-table, bypassing both the redaction serializer AND the audit
+    payload entirely. The sentinel remains as a utility for any future
+    caller that genuinely needs serialized-with-content form; today no
+    production code path uses it (verified round-30 codex audit).
 """
 
 import hashlib
@@ -151,8 +160,19 @@ class LLMProviderError(Exception):
     prevent instantiation. The pattern below is what works on Python 3.x.
 
     `retry_at_layer` semantics:
-      - `"node"`: the calling agent node should retry (used for
-        `LLMTimeoutError`/`LLMRateLimitError`/`LLMUpstreamError`).
+      - `"node"`: the calling agent node should retry (used for ALL FOUR
+        retry-eligible classes — `LLMTimeoutError` / `LLMRateLimitError`
+        / `LLMConflictError` / `LLMUpstreamError`. The 4-class set
+        mirrors Anthropic SDK 0.100's default-retry set 408/429/409/5xx
+        — see the round-14 + round-21 FUP-025 corrections for the
+        history. Omitting any of the four here would silently invite
+        the class-omission bug pattern FUP-025 has been defending
+        against; pinned by both
+        `tests/unit/test_llm_error_taxonomy.py::test_recoverable_subclasses_are_node_layer`
+        (every named class IS `"node"`) and
+        `::test_provider_error_docstring_names_every_node_layer_class`
+        (every `"node"`-layer class IS named in THIS docstring — round-30
+        codex audit fold)).
       - `"graph"`: LangGraph-level retry policy handles it (unused in V1).
       - `"wrapper"`: reserved for future use (currently the wrapper sets
         `max_retries=0` on the SDK so this is unused in V1).
@@ -211,8 +231,21 @@ class LLMConflictError(LLMProviderError):
 
 
 class LLMUpstreamError(LLMProviderError):
-    """5xx after SDK retries; translated from
-    `anthropic.InternalServerError` or `APIConnectionError`."""
+    """Upstream failure: server 5xx OR connection-level failure.
+
+    Translated from BOTH `anthropic.InternalServerError` (5xx with
+    HTTP response) AND `anthropic.APIConnectionError` (no HTTP
+    response — connect refused, DNS, SSL handshake). Per Anthropic SDK
+    0.100 docs (round-22 FUP-025 fold), connection errors are in the
+    SDK's documented retry-eligible set alongside 5xx. SDK auto-retries
+    are disabled in the wrapper (`max_retries=0`), so the calling node
+    owns retry for both cases — same `retry_at_layer="node"` semantic
+    regardless of whether an HTTP response was received.
+
+    The earlier docstring "5xx after SDK retries" was doubly wrong:
+    (a) SDK retries are not enabled, and (b) it omitted the
+    connection-error branch. Both corrected in round-30 codex audit.
+    """
 
     retry_at_layer: ClassVar[RetryLayer] = "node"
 
@@ -439,8 +472,15 @@ class LLMResponse(BaseModel):
     `llm.pricing.RATE_TABLE` and lands on `LLMCallEvent` (NOT here).
 
     `text` is completion content; default `model_dump()` redacts via
-    `field_serializer`. Persister opts in via
-    `model_dump(context=INCLUDE_TEXT_OPT_IN)`.
+    `field_serializer` (renders `"<redacted, N chars>"`). The redacted
+    form is what flows through any log/serialization path that uses
+    `model_dump()` without the opt-in sentinel. The shipped
+    `AuditPersister` does NOT use `model_dump()` for content
+    persistence — it reads `response.text` via direct attribute access
+    so the raw content lands in `llm_call_content.completion`. Callers
+    that genuinely want the model-dumped form WITH raw text pass
+    `INCLUDE_TEXT_OPT_IN` as the context (identity-checked); no
+    production code path does so today.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
