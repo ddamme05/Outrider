@@ -109,13 +109,15 @@ def build_graph(
     # module docstring — these catch missing-member, not wrong-signature.
     if not isinstance(provider, LLMProvider):
         raise BuildGraphError(
-            "provider does not satisfy LLMProvider Protocol "
-            "(missing `complete` member; see PEP 544 runtime-checkable semantics)"
+            f"provider does not satisfy LLMProvider Protocol "
+            f"(passed type: {type(provider).__name__}; "
+            f"missing `complete` member; see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(phase_event_sink, PhaseEventSink):
         raise BuildGraphError(
-            "phase_event_sink does not satisfy PhaseEventSink Protocol "
-            "(missing `emit_phase` member; see PEP 544 runtime-checkable semantics)"
+            f"phase_event_sink does not satisfy PhaseEventSink Protocol "
+            f"(passed type: {type(phase_event_sink).__name__}; "
+            f"missing `emit_phase` member; see PEP 544 runtime-checkable semantics)"
         )
 
     # Close over the per-tier model id, not the whole ModelConfig.
