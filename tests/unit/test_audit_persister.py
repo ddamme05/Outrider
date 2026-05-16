@@ -385,6 +385,73 @@ def test_compute_content_field_digests_carries_lengths_only() -> None:
         assert digest.attempted_length > 0
 
 
+def test_compute_content_field_digests_intentionally_omits_non_text_columns() -> None:
+    """Pin the design asymmetry between `mismatched_fields` and
+    `field_digests` (round-27 codex fold):
+
+    `_diff_content_field_names()` reports mismatches for ALL FOUR
+    content-row columns (prompt, completion, installation_id, is_eval) —
+    it is the authoritative list of what differed. `_compute_content_field_digests()`
+    intentionally returns digests only for TEXT columns (prompt,
+    completion) — SHA-256 of a one-character bool or a tiny int is not
+    a useful diagnostic, and emitting per-primitive digest tuples
+    bloats the exception payload for no signal. The mismatched-field
+    NAME is the diagnostic signal for primitives; the raw value (small,
+    safe) is recoverable from the DB.
+
+    This test pins that asymmetry as a design intent — a future
+    refactor that "fixes" the asymmetry by adding installation_id /
+    is_eval to the digest map would defeat the intent without surfacing
+    as a behavior change anywhere else.
+    """
+    # `_compute_content_field_digests` takes ONLY text-column kwargs.
+    sig = inspect.signature(_compute_content_field_digests)
+    text_only_params = {
+        "prompt_db",
+        "prompt_new",
+        "completion_db",
+        "completion_new",
+    }
+    assert set(sig.parameters) == text_only_params, (
+        "_compute_content_field_digests must take text-column kwargs only. "
+        "If installation_id/is_eval is now relevant for digests, that's a "
+        "design change — update this test deliberately AND update "
+        "_diff_content_field_names's matching expectations."
+    )
+
+    # When all four columns mismatch, only `prompt` + `completion` get
+    # digest entries; `installation_id` + `is_eval` appear ONLY in the
+    # `mismatched_fields` tuple, not in the `field_digests` map.
+    digests = _compute_content_field_digests(
+        prompt_db="p1",
+        prompt_new="p2",
+        completion_db="c1",
+        completion_new="c2",
+    )
+    assert set(digests.keys()) == {"prompt", "completion"}, (
+        "field_digests must cover ONLY text columns; primitives "
+        "(installation_id, is_eval) are intentionally omitted"
+    )
+
+    # The mismatched-fields tuple is the AUTHORITATIVE signal — it can
+    # contain entries that field_digests does not. Re-pin this contract
+    # via _diff_content_field_names for the all-four-mismatch case.
+    names = _diff_content_field_names(
+        prompt_db="p1",
+        prompt_new="p2",
+        completion_db="c1",
+        completion_new="c2",
+        installation_id_db=1,
+        installation_id_new=2,
+        is_eval_db=False,
+        is_eval_new=True,
+    )
+    assert names == ("prompt", "completion", "installation_id", "is_eval")
+    # The asymmetry is the contract: 4 mismatched names, 2 digests.
+    assert len(names) == 4
+    assert len(digests) == 2
+
+
 def test_field_digest_namedtuple_field_order() -> None:
     """Pin the namedtuple field order — `(existing_sha256, attempted_sha256,
     existing_length, attempted_length)`. A future refactor that reorders or
