@@ -87,16 +87,24 @@ class TriagePolicyViolationError(ValueError):
     returned successfully); the caller decides whether to retry or fail
     the review.
 
-    Log-content note: the exception messages embed file paths via
-    `f"{paths!r}"` — for rule (b) those paths are LLM-controlled (a
-    fabricated path not in changed_files). Python's `repr` escapes
-    control chars to `\\xNN` notation, so ANSI / terminal-injection via
-    control sequences is mitigated. Per DECISIONS#013 point 5
-    ("Logs never contain prompt or completion content"), the policy-gate
-    paths are technically LLM completion content — but the leak is
-    bounded to filenames (not file CONTENTS) and `repr` neutralizes
-    active exfiltration. Callers logging this exception should consider
-    that paths in the message can be attacker-influenced.
+    Log-content note: exception messages do NOT embed verbatim path
+    lists. All three rule messages route the violating set through
+    `_format_path_set_for_error`, which emits
+    `count=N hash=<sha256-12> sample=[first-3 paths, repr-escaped]`.
+    The disclosure surface is bounded to `_POLICY_VIOLATION_SAMPLE_SIZE`
+    (=3) paths regardless of set size; the SHA-256 hex prefix gives
+    operators a stable correlation key for repeat violations without
+    echoing content. ANSI / terminal-injection mitigation is preserved
+    by `repr()` on the bounded sample list — control chars escape to
+    `\\xNN` notation. Per DECISIONS#013 point 5 + #016 point 4
+    ("Logs never contain prompt or completion content"), only the
+    bounded sample paths can appear in a log capturing this exception's
+    message body; the full set is recoverable via the hash for replay
+    correlation but not from the message alone. Callers logging this
+    exception should still consider that the sample paths may be
+    attacker-influenced (LLM hallucination for rule b, webhook payload
+    for rule c). FUP-021 closed this gap; see the `_format_path_set_for_error`
+    docstring for the full design rationale.
     """
 
 
