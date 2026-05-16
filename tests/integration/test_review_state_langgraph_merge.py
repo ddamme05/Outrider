@@ -258,7 +258,15 @@ async def test_is_eval_survives_langgraph_merge(
     audit stream with eval-tagged runs (or vice versa).
 
     Tests both `is_eval=True` (eval seed) and `is_eval=False`
-    (production seed) round-trip cleanly."""
+    (production seed) round-trip cleanly through:
+      - the result-dict returned by ainvoke,
+      - the rehydrated ReviewState,
+      - both phase events emitted by triage during the invocation.
+
+    The phase-event assertion specifically covers the graph-driven
+    invocation path (the unit tests cover the direct-call path);
+    pinning both surfaces together prevents a regression where the
+    reducer drops the flag from one but not the other."""
     for eval_flag in (True, False):
         state = _build_valid_seed_state()
         state.is_eval = eval_flag  # validate_assignment=True validates this
@@ -267,6 +275,7 @@ async def test_is_eval_survives_langgraph_merge(
             model_config=ModelConfig(),
             phase_event_sink=recording_phase_event_sink,
         )
+        events_before = len(recording_phase_event_sink.events)
 
         result = await graph.ainvoke(state)
 
@@ -278,6 +287,21 @@ async def test_is_eval_survives_langgraph_merge(
         # Rehydration round-trip preserves the flag
         rehydrated = ReviewState(**result)
         assert rehydrated.is_eval is eval_flag
+
+        # Phase events emitted during THIS iteration must carry the same flag.
+        # Slicing from events_before isolates per-iteration emissions since
+        # the recording sink is function-scoped and accumulates across the loop.
+        new_events = recording_phase_event_sink.events[events_before:]
+        assert len(new_events) == 2, (
+            f"expected start+end phase-event pair for is_eval={eval_flag} "
+            f"iteration, got {len(new_events)}"
+        )
+        for ev in new_events:
+            assert ev.is_eval is eval_flag, (
+                f"phase event marker={ev.marker!r} carries is_eval={ev.is_eval}, "
+                f"expected {eval_flag} (eval-isolation contract broken at "
+                f"the graph-driven invocation path)"
+            )
 
 
 @pytest.mark.asyncio
