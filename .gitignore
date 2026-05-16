@@ -5,6 +5,7 @@ AGENTS.md
 .agents/
 generators/
 generated/
+antigua/
 
 # --- Local docs (ignored now; track when public) ---
 docs/
