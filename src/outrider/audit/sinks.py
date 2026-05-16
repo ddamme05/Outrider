@@ -11,9 +11,11 @@ V1 ships one sink: `PhaseEventSink` for `ReviewPhaseEvent` emission per
 `LLMProvider.complete()` and uses the sibling `LLMExchangePersister`
 Protocol in `llm/base.py` — no node code emits `LLMCallEvent` directly.
 
-The future FUP-007 audit-persister spec lands a single class implementing
-BOTH `PhaseEventSink` and `LLMExchangePersister` from one body, sharing a
-DB transaction lifecycle. Until then, real implementations are test-only.
+The durable `AuditPersister` in `outrider.audit.persister` implements
+BOTH `PhaseEventSink` and `LLMExchangePersister` from one body, sharing
+DB transaction lifecycle and session-per-call discipline. Test-only no-op
+implementations (`NoOpPersister`, `RecordingPhaseEventSink`) live in
+`tests/conftest.py` for fixtures that don't need durable persistence.
 """
 
 from typing import Protocol, runtime_checkable
@@ -57,8 +59,8 @@ class PhaseEventSink(Protocol):
 
     Same shape as `LLMExchangePersister` but for phase events only —
     `LLMCallEvent` emission stays inside `LLMProvider.complete()`. The
-    future FUP-007 persister implements BOTH `PhaseEventSink` and
-    `LLMExchangePersister` from one class.
+    durable `AuditPersister` in `outrider.audit.persister` implements
+    BOTH `PhaseEventSink` and `LLMExchangePersister` from one class.
 
     `@runtime_checkable` matches the `LLMExchangePersister` precedent and
     enables `build_graph` to reject sinks lacking the `emit_phase` member

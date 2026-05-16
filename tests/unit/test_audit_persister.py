@@ -1,0 +1,444 @@
+"""AuditPersister unit tests — constructor, Protocol conformance, helpers.
+
+DB-touching tests live in `tests/integration/` under `migrated_db`. This
+file covers everything checkable without a real Postgres.
+"""
+
+from __future__ import annotations
+
+import inspect
+from unittest.mock import MagicMock
+
+import pytest
+
+from outrider.audit.config import RetentionSettings
+from outrider.audit.persister import (
+    METADATA_ONLY_EXCEPTION_TYPES,
+    AuditPersister,
+    AuditPersisterConfigError,
+    AuditPersisterIdempotencyConflict,
+    AuditPersisterReviewIdMismatchError,
+    AuditPersisterReviewNotFoundError,
+    AuditPersisterSchemaInvariantError,
+    FieldDigest,
+    _compute_content_field_digests,
+    _compute_field_digests,
+    _diff_content_field_names,
+    _diff_field_names,
+)
+from outrider.audit.sinks import PhaseEventSink
+from outrider.llm.base import LLMExchangePersister
+
+# ---------------------------------------------------------------------------
+# Constructor — keyword-only + eager None-checks.
+# ---------------------------------------------------------------------------
+
+
+def test_constructor_requires_keyword_only_args() -> None:
+    """`*` makes both args keyword-only; positional construction fails."""
+    sessionmaker = MagicMock()
+    settings = RetentionSettings()
+    with pytest.raises(TypeError):
+        AuditPersister(sessionmaker, settings)  # type: ignore[misc]
+
+
+def test_constructor_session_factory_none_raises_config_error() -> None:
+    """Eager None-check on session_factory (mirrors build_graph precedent)."""
+    settings = RetentionSettings()
+    with pytest.raises(AuditPersisterConfigError, match="session_factory"):
+        AuditPersister(
+            session_factory=None,  # type: ignore[arg-type]
+            retention_settings=settings,
+        )
+
+
+def test_constructor_retention_settings_none_raises_config_error() -> None:
+    """Eager None-check on retention_settings."""
+    sessionmaker = MagicMock()
+    with pytest.raises(AuditPersisterConfigError, match="retention_settings"):
+        AuditPersister(
+            session_factory=sessionmaker,
+            retention_settings=None,  # type: ignore[arg-type]
+        )
+
+
+def test_constructor_succeeds_with_valid_args() -> None:
+    """Happy path: constructs without exception."""
+    sessionmaker = MagicMock()
+    settings = RetentionSettings()
+    persister = AuditPersister(
+        session_factory=sessionmaker,
+        retention_settings=settings,
+    )
+    assert persister is not None
+
+
+# ---------------------------------------------------------------------------
+# Protocol conformance — runtime-checkable isinstance gates.
+# ---------------------------------------------------------------------------
+
+
+def test_satisfies_llm_exchange_persister_protocol() -> None:
+    """`isinstance(persister, LLMExchangePersister)` is True via the
+    @runtime_checkable Protocol structural check (has `persist`)."""
+    persister = AuditPersister(
+        session_factory=MagicMock(),
+        retention_settings=RetentionSettings(),
+    )
+    assert isinstance(persister, LLMExchangePersister)
+
+
+def test_satisfies_phase_event_sink_protocol() -> None:
+    """`isinstance(persister, PhaseEventSink)` is True (has `emit_phase`)."""
+    persister = AuditPersister(
+        session_factory=MagicMock(),
+        retention_settings=RetentionSettings(),
+    )
+    assert isinstance(persister, PhaseEventSink)
+
+
+def test_public_methods_match_protocol_signatures() -> None:
+    """Public surface is exactly `persist` + `emit_phase`. No leaking
+    SQLAlchemy types in the signatures (parameter annotations are
+    domain types only)."""
+    persist_sig = inspect.signature(AuditPersister.persist)
+    emit_sig = inspect.signature(AuditPersister.emit_phase)
+
+    # persist(event, request, response) — 3 args plus self
+    assert list(persist_sig.parameters) == ["self", "event", "request", "response"]
+    # emit_phase(event) — 1 arg plus self
+    assert list(emit_sig.parameters) == ["self", "event"]
+
+
+# ---------------------------------------------------------------------------
+# Exception types — class hierarchy + metadata-only contract.
+# ---------------------------------------------------------------------------
+
+
+def test_config_error_is_valueerror_subclass() -> None:
+    """AuditPersisterConfigError inherits ValueError — callers can catch
+    broadly without coupling to the specific exception type."""
+    assert issubclass(AuditPersisterConfigError, ValueError)
+
+
+def test_review_not_found_is_lookuperror_subclass() -> None:
+    """AuditPersisterReviewNotFoundError inherits LookupError — `KeyError`
+    / `IndexError`-style semantics for "expected row absent"."""
+    assert issubclass(AuditPersisterReviewNotFoundError, LookupError)
+
+
+def test_idempotency_conflict_is_valueerror_subclass() -> None:
+    """AuditPersisterIdempotencyConflict inherits ValueError."""
+    assert issubclass(AuditPersisterIdempotencyConflict, ValueError)
+
+
+def test_idempotency_conflict_carries_metadata_only() -> None:
+    """Construction signature accepts only metadata; raw payload args
+    are NOT in the constructor's keyword set.
+
+    Regression test for the #016 logs-stay-metadata-only contract:
+    a future refactor that adds `existing_payload=...` or `prompt=...`
+    to this exception's __init__ would defeat the entire reason this
+    exception exists.
+    """
+    from uuid import uuid4
+
+    sig = inspect.signature(AuditPersisterIdempotencyConflict.__init__)
+    params = set(sig.parameters)
+    assert params == {"self", "event_id", "mismatched_fields", "field_digests"}
+    # Negative assertion: none of the raw-content keyword names are accepted.
+    for forbidden in ("existing_payload", "attempted_payload", "prompt", "completion", "payload"):
+        assert forbidden not in params, (
+            f"AuditPersisterIdempotencyConflict.__init__ has a `{forbidden}` "
+            "parameter; metadata-only contract violated"
+        )
+
+    # Constructed instance also doesn't carry raw content.
+    exc = AuditPersisterIdempotencyConflict(
+        event_id=uuid4(),
+        mismatched_fields=("cost_usd",),
+        field_digests={"cost_usd": FieldDigest("a" * 64, "b" * 64, 10, 12)},
+    )
+    exc_vars = set(vars(exc).keys())
+    for forbidden in ("existing_payload", "attempted_payload", "prompt", "completion", "payload"):
+        assert forbidden not in exc_vars
+
+
+def test_idempotency_conflict_str_does_not_contain_raw_content() -> None:
+    """`str(exc)` is what flows to log records' `message` field. It must
+    not contain raw prompt/completion/payload text — the entire reason
+    for the metadata-only contract (#016 + FUP-023 gap).
+    """
+    from uuid import uuid4
+
+    raw_prompt = "INTERNAL_SECRET_PROMPT_TEXT_DO_NOT_LOG"
+    raw_completion = "INTERNAL_SECRET_COMPLETION_TEXT_DO_NOT_LOG"
+    exc = AuditPersisterIdempotencyConflict(
+        event_id=uuid4(),
+        mismatched_fields=("prompt", "completion"),
+        field_digests={
+            "prompt": FieldDigest("a" * 64, "b" * 64, len(raw_prompt), len(raw_prompt)),
+            "completion": FieldDigest("c" * 64, "d" * 64, len(raw_completion), len(raw_completion)),
+        },
+    )
+    rendered = str(exc)
+    assert raw_prompt not in rendered
+    assert raw_completion not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Helper functions — _diff_field_names + _compute_field_digests.
+# ---------------------------------------------------------------------------
+
+
+def test_diff_field_names_returns_only_mismatched_keys() -> None:
+    """Equal values do NOT appear in the result."""
+    existing = {"a": 1, "b": "x", "c": [1, 2, 3]}
+    attempted = {"a": 1, "b": "y", "c": [1, 2, 3]}
+    assert _diff_field_names(existing, attempted) == ("b",)
+
+
+def test_diff_field_names_treats_missing_key_as_mismatch() -> None:
+    """Key present on one side but not the other is a mismatch (payload-
+    shape change between emissions is itself a producer bug)."""
+    existing = {"a": 1, "b": 2}
+    attempted = {"a": 1, "c": 3}
+    assert _diff_field_names(existing, attempted) == ("b", "c")
+
+
+def test_diff_field_names_distinguishes_missing_from_present_none() -> None:
+    """Regression: `.get(k)` returns None both when k is absent AND when
+    k is present with value None. The sentinel-based diff must report a
+    mismatch when one side has {"a": None} and the other has {}.
+
+    Today no LLMCallEvent/ReviewPhaseEvent field defaults to None inside
+    its payload, but a future optional event field would silently slip
+    past payload-equality verification under the naive `.get(k)` shape.
+    """
+    existing = {"a": None}
+    attempted: dict[str, object] = {}
+    assert _diff_field_names(existing, attempted) == ("a",)
+
+    # Symmetric: present-None on the attempted side, absent on existing.
+    existing2: dict[str, object] = {}
+    attempted2 = {"a": None}
+    assert _diff_field_names(existing2, attempted2) == ("a",)
+
+
+def test_compute_field_digests_distinguishes_missing_from_present_none() -> None:
+    """Missing-side fields get a distinct SHA-256 (sentinel input) AND
+    length `-1`, so operators inspecting the digest see "field absent"
+    rather than "field present with empty value" rendering as length 0
+    or 4 (the JSON encoding of `null`)."""
+    existing = {"a": None}
+    attempted: dict[str, object] = {}
+    digests = _compute_field_digests(existing, attempted)
+    assert set(digests) == {"a"}
+    digest = digests["a"]
+    # Existing side has {"a": None} — JSON-encoded value `null`.
+    # Attempted side is missing the key — sentinel renders as length -1.
+    assert digest.existing_length >= 0  # JSON-encoded `null`
+    assert digest.attempted_length == -1  # absent
+    assert digest.existing_sha256 != digest.attempted_sha256
+
+
+def test_diff_field_names_empty_when_all_match() -> None:
+    """Identical dicts → empty tuple. Conflict-no-op path."""
+    payload = {"a": 1, "b": 2}
+    assert _diff_field_names(payload, payload) == ()
+
+
+def test_compute_field_digests_returns_namedtuple_per_mismatch() -> None:
+    """Each mismatched field gets a FieldDigest with both SHA-256 hashes
+    AND both lengths."""
+    digests = _compute_field_digests({"a": "hello"}, {"a": "world"})
+    assert set(digests) == {"a"}
+    digest = digests["a"]
+    assert isinstance(digest, FieldDigest)
+    assert digest.existing_sha256 != digest.attempted_sha256
+    assert len(digest.existing_sha256) == 64
+    assert len(digest.attempted_sha256) == 64
+    assert digest.existing_length > 0
+    assert digest.attempted_length > 0
+
+
+def test_compute_field_digests_no_mismatch_is_empty_map() -> None:
+    """Matching payloads → empty digest map."""
+    digests = _compute_field_digests({"a": 1}, {"a": 1})
+    assert digests == {}
+
+
+# ---------------------------------------------------------------------------
+# Content-field helpers — _diff_content_field_names + _compute_content_field_digests.
+# ---------------------------------------------------------------------------
+
+
+def test_diff_content_field_names_both_match() -> None:
+    """No content mismatch → empty tuple."""
+    assert _diff_content_field_names("p", "p", "c", "c") == ()
+
+
+def test_diff_content_field_names_prompt_only() -> None:
+    assert _diff_content_field_names("p1", "p2", "c", "c") == ("prompt",)
+
+
+def test_diff_content_field_names_completion_only() -> None:
+    assert _diff_content_field_names("p", "p", "c1", "c2") == ("completion",)
+
+
+def test_diff_content_field_names_both_mismatch() -> None:
+    assert _diff_content_field_names("p1", "p2", "c1", "c2") == ("prompt", "completion")
+
+
+def test_compute_content_field_digests_carries_lengths_only() -> None:
+    """Returned digests carry byte-lengths and SHA-256 of the content,
+    never the content itself. Regression test for the metadata-only
+    boundary at the helper layer.
+    """
+    digests = _compute_content_field_digests(
+        "secret prompt text",
+        "different prompt",
+        "secret completion text",
+        "different completion",
+    )
+    # Both fields mismatched.
+    assert set(digests) == {"prompt", "completion"}
+    # FieldDigest namedtuple fields, NOT raw content.
+    for digest in digests.values():
+        assert isinstance(digest, FieldDigest)
+        assert len(digest.existing_sha256) == 64
+        assert len(digest.attempted_sha256) == 64
+        assert digest.existing_length > 0
+        assert digest.attempted_length > 0
+
+
+def test_field_digest_namedtuple_field_order() -> None:
+    """Pin the namedtuple field order — `(existing_sha256, attempted_sha256,
+    existing_length, attempted_length)`. A future refactor that reorders or
+    renames these breaks the conflict-conflict test contract."""
+    assert FieldDigest._fields == (
+        "existing_sha256",
+        "attempted_sha256",
+        "existing_length",
+        "attempted_length",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Metadata-only exception allowlist (H1+M4 contributor contract).
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_only_exception_types_lists_every_persister_exception() -> None:
+    """`METADATA_ONLY_EXCEPTION_TYPES` is the allowlist `LLMPersisterError` at
+    `anthropic_provider.py` consults to decide whether `str(exc)` is safe.
+    Every exception type the persister module raises MUST appear in this
+    allowlist OR have a deliberate decision to omit it.
+
+    Regression: if a future author adds a new exception class without
+    updating the allowlist, this test fires. Same shape as
+    `audit_events.AuditEvent` discriminated-union enumeration discipline.
+    """
+    expected = {
+        AuditPersisterConfigError,
+        AuditPersisterReviewNotFoundError,
+        AuditPersisterReviewIdMismatchError,
+        AuditPersisterSchemaInvariantError,
+        AuditPersisterIdempotencyConflict,
+    }
+    assert set(METADATA_ONLY_EXCEPTION_TYPES) == expected
+
+
+def test_schema_invariant_error_str_carries_only_metadata() -> None:
+    """`AuditPersisterSchemaInvariantError.__str__` must contain only
+    schema identifiers (event_id, column name) — never payload content.
+    Pinned because the bare `RuntimeError` it replaced was at risk under
+    the wrapper's `f"{exc!r}"` interpolation."""
+    from uuid import uuid4
+
+    event_id = uuid4()
+    exc = AuditPersisterSchemaInvariantError(
+        f"audit_events.payload is None for event_id={event_id}; "
+        "schema invariant violated (payload is NOT NULL)"
+    )
+    rendered = str(exc)
+    # Schema identifiers present.
+    assert str(event_id) in rendered
+    assert "payload" in rendered  # column name, OK
+    # Sentinel for "no content text would have been in this message"
+    # — the message is metadata-only by construction.
+
+
+# ---------------------------------------------------------------------------
+# _serialize_event_payload contract (H2: no default=str catchall).
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_event_payload_fails_loud_on_non_json_safe_type() -> None:
+    """`_serialize_event_payload` MUST raise (not silently coerce) when the
+    event's `model_dump(mode="json")` produces a non-JSON-safe type.
+
+    Regression: an earlier impl used `default=str` as a catchall, which
+    would silently coerce e.g. a Decimal to its string repr. That hides
+    exactly the producer-bug class the persister-boundary contract should
+    surface.
+
+    This test exercises the actual `_serialize_event_payload` function
+    (not just stdlib `json.dumps`). Approach: patch the class-level
+    `model_dump` method to return a payload dict containing a non-JSON-
+    safe value (bytes). Pydantic's `frozen=True` blocks instance-level
+    method assignment; class-level `patch.object` bypasses that.
+    """
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+    from uuid import uuid4
+
+    from outrider.audit.events import ReviewPhaseEvent
+    from outrider.audit.persister import _serialize_event_payload
+
+    event = ReviewPhaseEvent(
+        review_id=uuid4(),
+        phase_id=str(uuid4()),
+        node_id="triage",
+        marker="start",
+        timestamp=datetime.now(UTC),
+    )
+
+    # Force `model_dump(mode="json", ...)` to return a payload containing
+    # bytes — a Python type that's NOT JSON-safe. With the old `default=str`
+    # catchall this would coerce silently; without it, `json.dumps` raises.
+    def _bad_model_dump(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"smuggled_bytes": b"raw_bytes_should_not_serialize"}
+
+    with (
+        patch.object(ReviewPhaseEvent, "model_dump", _bad_model_dump),
+        pytest.raises(TypeError, match="bytes"),
+    ):
+        _serialize_event_payload(event)
+
+
+# ---------------------------------------------------------------------------
+# Exception-type identity for the type-narrow LLMPersisterError wrap (H1).
+# ---------------------------------------------------------------------------
+
+
+def test_every_persister_exception_is_metadata_only_listed() -> None:
+    """Forward-compat: a class defined inside `audit/persister.py` that
+    inherits from BaseException MUST be in the allowlist. Catches new
+    exception classes that bypass the contributor contract."""
+    import inspect
+
+    from outrider.audit import persister
+
+    discovered: set[type[BaseException]] = set()
+    for _, member in inspect.getmembers(persister, inspect.isclass):
+        if issubclass(member, BaseException) and member.__module__ == persister.__name__:
+            discovered.add(member)
+
+    missing = discovered - set(METADATA_ONLY_EXCEPTION_TYPES)
+    assert not missing, (
+        f"Exception classes defined in audit.persister but not in "
+        f"METADATA_ONLY_EXCEPTION_TYPES: {missing}. Add them to the "
+        "allowlist (or deliberately exclude with a comment + add to "
+        "this test's exclude set)."
+    )

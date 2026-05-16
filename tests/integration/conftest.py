@@ -49,14 +49,20 @@ import asyncio
 import os
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
+import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
+from outrider.audit.config import RetentionSettings
+from outrider.audit.persister import AuditPersister
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -235,3 +241,227 @@ async def migrated_db(fresh_db: str) -> str:
     """
     await _run_alembic_action("upgrade", "head", fresh_db)
     return fresh_db
+
+
+# ---------------------------------------------------------------------------
+# AuditPersister fixtures — shared across persister integration tests.
+# ---------------------------------------------------------------------------
+#
+# Each persister test needs the same setup: a seeded `installations` row,
+# a seeded `reviews` row (so `persister.persist()`'s SELECT-installation_id
+# lookup resolves), a live `AsyncEngine`, an `AuditPersister` instance.
+# These fixtures consolidate that boilerplate; per-test customization
+# (e.g., overriding the retention TTL) goes via direct construction.
+
+# Canonical installation_id for seeded test data. A test that needs a
+# distinct installation_id constructs its own seed inline.
+PERSISTER_TEST_INSTALLATION_ID = 12345
+
+
+@dataclass(frozen=True, slots=True)
+class PersisterTestSetup:
+    """Ready-to-go fixture bundle for AuditPersister integration tests.
+
+    Carries the engine (caller is responsible for nothing — disposal
+    handled by the fixture), the persister, the seeded review id, and
+    the installation_id. Tests acquire this fixture and proceed straight
+    to exercising `persist()` / `emit_phase()`.
+    """
+
+    engine: AsyncEngine
+    persister: AuditPersister
+    review_id: UUID
+    installation_id: int
+
+
+async def _seed_install_and_review(
+    engine: AsyncEngine,
+    installation_id: int = PERSISTER_TEST_INSTALLATION_ID,
+) -> UUID:
+    """Insert installations + reviews rows; return the reviews.id UUID."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO installations "
+                "(installation_id, app_slug, account_id, account_login, "
+                " account_type, permissions_at_install) "
+                "VALUES (:id, 'test-app', 1, 'octocat', 'User', '{}'::jsonb)"
+            ),
+            {"id": installation_id},
+        )
+        result = await conn.execute(
+            text(
+                "INSERT INTO reviews ("
+                "  installation_id, repo_id, pr_number, head_sha, status, "
+                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
+                "  total_input_tokens, total_output_tokens, total_cost_usd, "
+                "  wall_clock_seconds, retention_expires_at"
+                ") VALUES ("
+                "  :id, 100, 1, 'sha1', 'running', 0, 0, 0, 0, 0, 0, 0, "
+                "  NOW() + INTERVAL '90 days'"
+                ") RETURNING id"
+            ),
+            {"id": installation_id},
+        )
+        return UUID(str(result.scalar_one()))
+
+
+if TYPE_CHECKING:
+    from outrider.audit.events import LLMCallEvent, ReviewPhaseEvent
+    from outrider.llm.base import LLMRequest, LLMResponse
+
+
+# Type aliases for the factory fixtures.
+LLMCallEventFactory = Callable[..., "LLMCallEvent"]
+LLMRequestFactory = Callable[..., "LLMRequest"]
+LLMResponseFactory = Callable[..., "LLMResponse"]
+ReviewPhaseEventFactory = Callable[..., "ReviewPhaseEvent"]
+
+
+@pytest.fixture
+def llm_call_event_factory() -> LLMCallEventFactory:
+    """Factory: `factory(review_id, **kwargs) -> LLMCallEvent` with canonical
+    defaults. Tests pass kwargs to override per-case (e.g., distinct
+    `cost_usd` to trigger the idempotency-conflict path).
+    """
+    from datetime import UTC, datetime
+
+    from outrider.audit.events import LLMCallEvent
+
+    def _build(
+        review_id: UUID,
+        *,
+        cost_usd: float = 0.001,
+        latency_ms: int = 250,
+        is_eval: bool = False,
+    ) -> LLMCallEvent:
+        return LLMCallEvent(
+            review_id=review_id,
+            model="claude-haiku-4-5",
+            node_id="triage",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            cost_usd=cost_usd,
+            pricing_version="1.0.0",
+            latency_ms=latency_ms,
+            prompt_hash="a" * 64,
+            cache_hit=False,
+            context_summary=(),
+            prompt_template_version="triage:1",
+            system_prompt_hash="b" * 64,
+            degraded_mode=False,
+            is_eval=is_eval,
+            timestamp=datetime.now(UTC),
+        )
+
+    return _build
+
+
+@pytest.fixture
+def llm_request_factory() -> LLMRequestFactory:
+    """Factory: `factory(review_id, **kwargs) -> LLMRequest`."""
+    from outrider.llm.base import LLMRequest
+
+    def _build(
+        review_id: UUID,
+        *,
+        user_prompt: str = "the user prompt",
+        is_eval: bool = False,
+    ) -> LLMRequest:
+        return LLMRequest(
+            system_prompt="the system prompt",
+            user_prompt=user_prompt,
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            temperature=0.0,
+            review_id=review_id,
+            node_id="triage",
+            is_eval=is_eval,
+            prompt_template_version="triage:1",
+            degraded_mode=False,
+        )
+
+    return _build
+
+
+@pytest.fixture
+def llm_response_factory() -> LLMResponseFactory:
+    """Factory: `factory(**kwargs) -> LLMResponse`."""
+    from outrider.llm.base import LLMResponse
+
+    def _build(*, text_value: str = "the completion text") -> LLMResponse:
+        return LLMResponse(
+            text=text_value,
+            model="claude-haiku-4-5",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            finish_reason="end_turn",
+            latency_ms=250,
+        )
+
+    return _build
+
+
+@pytest.fixture
+def review_phase_event_factory() -> ReviewPhaseEventFactory:
+    """Factory: `factory(review_id, **kwargs) -> ReviewPhaseEvent`."""
+    from uuid import uuid4
+
+    from outrider.audit.events import ReviewPhaseEvent
+
+    def _build(
+        review_id: UUID,
+        *,
+        marker: str = "start",
+        phase_id: str | None = None,
+        phase_key: str | None = None,
+        is_eval: bool = False,
+    ) -> ReviewPhaseEvent:
+        return ReviewPhaseEvent(
+            review_id=review_id,
+            phase_id=phase_id or str(uuid4()),
+            node_id="triage",
+            marker=marker,  # type: ignore[arg-type]
+            is_eval=is_eval,
+            phase_key=phase_key,
+        )
+
+    return _build
+
+
+@pytest_asyncio.fixture
+async def persister_setup(migrated_db: str) -> AsyncGenerator[PersisterTestSetup]:
+    """Seeded DB + engine + persister + review_id, scoped to one test.
+
+    Disposes the engine on teardown. Tests that need custom retention
+    TTLs or sessionmaker settings construct their own setup inline; this
+    fixture covers the default case.
+
+    `hide_parameters=True` mirrors the production engine factory at
+    `src/outrider/api/lifespan.py::_default_engine_factory`. Without it,
+    SQLAlchemy exception strings would include bound `prompt`/`completion`
+    values from failing content INSERTs — violating the #016 logs-stay-
+    metadata-only contract once those exceptions cross the persister's
+    public surface and get wrapped by `LLMPersisterError(f"{exc!r}")`
+    in `AnthropicProvider.complete()`. Tests that exercise failure paths
+    rely on this setting being live so the assertions match production
+    behavior.
+    """
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        review_id = await _seed_install_and_review(engine)
+        persister = AuditPersister(
+            session_factory=async_sessionmaker(engine, expire_on_commit=False),
+            retention_settings=RetentionSettings(),
+        )
+        yield PersisterTestSetup(
+            engine=engine,
+            persister=persister,
+            review_id=review_id,
+            installation_id=PERSISTER_TEST_INSTALLATION_ID,
+        )
+    finally:
+        await engine.dispose()
