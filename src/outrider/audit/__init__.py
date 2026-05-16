@@ -3,8 +3,12 @@
 Re-exports the public symbols of the audit package. The emitter
 (`audit/emitter.py`, separate spec) constructs concrete events; replay
 (`audit/replay.py`, separate spec) reconstructs them via `AuditEvent`.
+The durable persister (`audit/persister.py`) implements both
+`LLMExchangePersister` and `PhaseEventSink` Protocol contracts atomically
+per `DECISIONS.md#016`.
 """
 
+from outrider.audit.config import RetentionSettings
 from outrider.audit.events import (
     AgentTransitionEvent,
     AuditEvent,
@@ -22,6 +26,16 @@ from outrider.audit.events import (
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
+from outrider.audit.persister import (
+    METADATA_ONLY_EXCEPTION_TYPES,
+    AuditPersister,
+    AuditPersisterConfigError,
+    AuditPersisterIdempotencyConflict,
+    AuditPersisterReviewIdMismatchError,
+    AuditPersisterReviewNotFoundError,
+    AuditPersisterSchemaInvariantError,
+    FieldDigest,
+)
 from outrider.audit.sinks import PhaseEventSink
 
 __all__ = [
@@ -29,7 +43,15 @@ __all__ = [
     "AuditEvent",
     "AuditEventAdapter",
     "AuditEventBase",
+    "AuditPersister",
+    "AuditPersisterConfigError",
+    "AuditPersisterIdempotencyConflict",
+    "AuditPersisterReviewIdMismatchError",
+    "AuditPersisterReviewNotFoundError",
+    "AuditPersisterSchemaInvariantError",
     "ContextManifestEntry",
+    "FieldDigest",
+    "METADATA_ONLY_EXCEPTION_TYPES",
     "FileExaminationEvent",
     "FindingEvent",
     "HITLDecisionEvent",
@@ -38,6 +60,7 @@ __all__ = [
     "PhaseEventSink",
     "PublishEvent",
     "PublishRoutingEvent",
+    "RetentionSettings",
     "ReviewPhaseEvent",
     "TraceDecisionEvent",
     "compute_finding_content_hash",

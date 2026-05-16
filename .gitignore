@@ -6,6 +6,7 @@ AGENTS.md
 generators/
 generated/
 antigua/
+HANDOFF.md
 
 # --- Local docs (ignored now; track when public) ---
 docs/

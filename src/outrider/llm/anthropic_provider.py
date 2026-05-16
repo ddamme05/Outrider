@@ -39,6 +39,7 @@ Constructor performs eager validation:
  10. Return LLMResponse.
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -110,6 +111,13 @@ _WARNED_RAW_VALUES: set[str] = set()
 # (model, system_prompt_hash) bounds spam under V1.5 parallel-analyze
 # fanout (same shape as `_WARNED_RAW_VALUES` above).
 _WARNED_NONCACHEABLE: set[tuple[str, str]] = set()
+
+
+# Bounded teardown for `AnthropicProvider.aclose()`. 10s is twice the
+# default httpx pool-timeout (5s) so a legitimately-slow drain still
+# completes; a hung close (e.g., in-flight request blocked on the 30s
+# read timeout) exceeds this and the wrapper releases without waiting.
+_ACLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
 def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
@@ -214,6 +222,30 @@ class AnthropicProvider:
         self._model_config = model_config
         self._persister = persister
         self._zdr_enabled = _resolve_zdr_attestation(zdr_enabled)
+        # `_closed` makes `aclose()` idempotent under both sequential AND
+        # concurrent calls. A future code path calling `aclose()` outside
+        # the lifespan teardown (e.g., a V2-style graceful-shutdown hook
+        # racing the lifespan callback) would otherwise stack a second
+        # `close()` on top of the lifespan callback; httpx behavior on
+        # repeated `aclose()` is version-dependent. The `_close_lock`
+        # serializes the check-then-set so two concurrent callers can't
+        # both pass `if self._closed` before either sets True.
+        #
+        # `asyncio.Lock()` constructed in __init__ binds to the running
+        # event loop on first acquire (Python 3.10+). Since `aclose()` is
+        # the only awaiter, this is safe — the provider is constructed in
+        # the same loop that will later call `aclose()`.
+        #
+        # `_close_task` retains a strong reference to the in-flight close
+        # task so a `wait_for` timeout doesn't strand it as an unreferenced
+        # task that asyncio may GC before completion (Python 3.10+ tracks
+        # tasks via WeakSet in some loop impls; an unreferenced task can
+        # be collected mid-execution). Cleared via a done-callback after
+        # the task completes so we don't accumulate dead references across
+        # multiple aclose calls.
+        self._closed: bool = False
+        self._close_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
 
         # SDK client — DefaultAsyncHttpxClient preserves SDK defaults
         # (headers, retry hooks, etc.) while we customize limits/timeout.
@@ -278,6 +310,19 @@ class AnthropicProvider:
         as typed `LLMProviderError` subclasses; the calling node reads
         `error.retry_at_layer` to decide retry behavior.
         """
+        # Step 0: post-teardown guard. `app.state.provider` survives
+        # lifespan teardown — a request handler queued by uvicorn's
+        # graceful-shutdown sequence (in-flight requests finish after
+        # the lifespan yields back) could call `complete()` on a closed
+        # client; without this guard, the underlying httpx call surfaces
+        # an obscure `RuntimeError("Cannot send a request, as the client
+        # has been closed.")` deep in the SDK. Loud-fail at the wrapper
+        # boundary is the right shape.
+        if self._closed:
+            raise LLMUnknownError(
+                "AnthropicProvider.complete() called after aclose(); "
+                "provider is closed and cannot accept new requests"
+            )
         # Step 1: fail-closed pre-call.
         # If persister is None, raise BEFORE the SDK call so the SDK
         # never sees a request from a misconfigured provider.
@@ -451,13 +496,165 @@ class AnthropicProvider:
             # have one error class to pattern-match for the post-SDK-
             # failure path. SDK call has succeeded (billing accounted);
             # no audit row landed → calling node halts the review.
+            #
+            # The wrapper handles two exception classes asymmetrically
+            # per DECISIONS#016 logs-stay-metadata-only:
+            #
+            # - Known metadata-only persister exception types
+            #   (`METADATA_ONLY_EXCEPTION_TYPES`): render `str(exc)` in
+            #   the wrapper message (each type carries a contributor-
+            #   enforced metadata-only `__str__`), AND preserve the cause
+            #   chain via `from exc` so tracebacks carry useful
+            #   diagnostic context — `__cause__` is also metadata-only
+            #   by contract.
+            #
+            # - Unknown exception types (e.g., a SQLAlchemy exception
+            #   that somehow survives `hide_parameters=True`, or a
+            #   future persister exception class with content-bearing
+            #   repr): render only `<TypeName>` in the wrapper message
+            #   AND use `from None` to DROP the cause chain entirely.
+            #   Without `from None`, Python's traceback formatter would
+            #   render `__cause__` — leaking the underlying exception's
+            #   `args` / `str()` (which may carry raw prompt/completion
+            #   text) past the wrapper's sanitization. The `from None`
+            #   sets `__suppress_context__ = True`, which also hides the
+            #   implicit `__context__`. Defense in depth alongside the
+            #   engine-level `hide_parameters=True` setting; closes the
+            #   traceback-chain leak path Codex flagged in round 9.
+            from outrider.audit.persister import METADATA_ONLY_EXCEPTION_TYPES
+
+            if isinstance(exc, METADATA_ONLY_EXCEPTION_TYPES):
+                raise LLMPersisterError(
+                    f"Persister failed after successful SDK call: {exc}. "
+                    f"The audit row did not land; calling node halts the review."
+                ) from exc
             raise LLMPersisterError(
-                f"Persister failed after successful SDK call: {exc!r}. "
+                f"Persister failed after successful SDK call: "
+                f"<{type(exc).__name__}>. "
                 f"The audit row did not land; calling node halts the review."
-            ) from exc
+            ) from None
 
         # Step 10: return response.
         return response
+
+    async def aclose(self) -> None:
+        """Close the underlying Anthropic SDK client and drain its connection pool.
+
+        Wired into the FastAPI lifespan teardown so connection pools drain
+        gracefully on app shutdown. The SDK's `AsyncAnthropic` (via
+        `DefaultAsyncHttpxClient`) keeps up to 50 connections (per the
+        `__init__` config); without explicit close, the OS reaps them at
+        process exit, which is fine for V1's single-provider-per-app
+        model but compounds under V1.5's parallel-analyze fanout where N
+        providers can be constructed per review.
+
+        Delegates to `AsyncAnthropic.close()` — the SDK's async close
+        method, which in turn closes the wrapped httpx client and drains
+        its connection pool. The wrapper exposes this as `aclose()` (the
+        async-conventional name) so the lifespan caller doesn't need to
+        know the SDK's specific method name; if the SDK ever renames
+        `close` to `aclose` (httpx convention), the wrapper hides the
+        change.
+
+        **Idempotent**: second and later calls are no-ops via the
+        `_closed` guard. httpx's behavior on repeated `aclose()` is
+        version-dependent; the wrapper-level guard means a future
+        graceful-shutdown hook calling `aclose()` outside the lifespan
+        teardown won't stack a second close on top of the lifespan
+        callback. The `_close_lock` serializes concurrent calls so the
+        check-then-set is atomic — two callers can't both pass
+        `if self._closed` before either sets True.
+
+        **Bounded teardown**: wrapped in `asyncio.wait_for(..., timeout=10s)`
+        so a hung SDK close (in-flight request waiting on the 30-second
+        read timeout, network blip during a rolling deploy, etc.) doesn't
+        block the entire lifespan teardown indefinitely. On timeout, the
+        wrapper marks itself closed and lets the OS reap the connection
+        pool — leak-on-rare-teardown beats indefinite hang.
+
+        **`asyncio.shield`** wraps the inner close-task so a timeout-induced
+        cancellation does NOT propagate into httpx mid-drain. Cancelling
+        httpx's `aclose()` while it's transitioning the client's `_state`
+        through `CLOSING` can leave the client in a half-closed state
+        (worse than letting it finish). With `shield`, the inner close
+        continues running in the background; the lifespan teardown returns
+        after the 10s deadline regardless. Under lifespan-teardown the
+        task is cancelled by the event-loop shutdown sequence
+        (`loop.shutdown_asyncgens()` / loop close); in tests, pytest-asyncio's
+        teardown silently cancels pending tasks — verified by running the
+        suite with `-W error::RuntimeWarning -W error::ResourceWarning`
+        and seeing no warnings.
+
+        **Strong-task retention via `self._close_task`**: `asyncio.shield()`
+        wraps the inner coroutine in a Task via `ensure_future`, but the
+        Task object isn't retained anywhere by `shield` itself. Python's
+        asyncio tracks tasks via WeakSet in some loop implementations
+        (3.10+), so an unreferenced Task can be GC'd before completion,
+        invalidating the docstring's "runs to completion" claim. Storing
+        the task on `self._close_task` keeps it alive; a done-callback
+        clears the reference after completion to prevent accumulation
+        across multiple aclose() calls (though the `_closed` guard makes
+        that a non-issue in practice — only the first call creates a task).
+
+        Closes FUP-011.
+        """
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._close_task = asyncio.create_task(self._client.close())
+            self._close_task.add_done_callback(self._clear_close_task)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._close_task),
+                    timeout=_ACLOSE_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                _LOGGER.warning(
+                    "AnthropicProvider.aclose() exceeded %.0fs timeout; "
+                    "leaking connection pool to OS reaper rather than blocking "
+                    "lifespan teardown (the shielded close task continues in "
+                    "the background, retained via self._close_task until "
+                    "completion or event-loop shutdown cancels it)",
+                    _ACLOSE_TIMEOUT_SECONDS,
+                )
+
+    def _clear_close_task(self, task: asyncio.Task[None]) -> None:
+        """Done-callback: consume the task's exception (if any) and release
+        the strong reference once the close task completes (or is cancelled
+        by event-loop shutdown).
+
+        Without consuming `task.exception()`, an SDK-close failure that
+        happens AFTER `wait_for` returned (the wait_for timed out and the
+        shielded close kept running) becomes an unretrieved task exception.
+        Python logs "Exception was never retrieved" at task GC time — an
+        opaque surface that bypasses normal wrapper logging. By calling
+        `task.exception()` here, the exception is "retrieved" (no log spam),
+        and we emit a metadata-only warning on the wrapper's logger so the
+        operator has at least a type-name signal.
+
+        Metadata-only per `DECISIONS.md#016`: log only the exception's
+        type name (`type(exc).__name__`), never `repr(exc)` or `str(exc)`
+        — the underlying SDK exceptions may carry bound parameter values
+        or response body fragments that would bypass `RejectLLMContentFilter`.
+        """
+        if task.cancelled():
+            # Cancellation by event-loop shutdown is the expected path
+            # when the wait_for timed out; no warning needed.
+            pass
+        else:
+            exc = task.exception()
+            if exc is not None:
+                _LOGGER.warning(
+                    "AnthropicProvider close task raised %s after aclose() "
+                    "returned; exception consumed to prevent unretrieved-"
+                    "exception log spam at task GC (lifespan teardown is "
+                    "already complete; this is the leak-on-rare-teardown "
+                    "trade-off documented on aclose).",
+                    type(exc).__name__,
+                )
+        if self._close_task is task:
+            self._close_task = None
 
 
 def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:

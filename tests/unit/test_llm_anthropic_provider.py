@@ -1311,6 +1311,87 @@ async def test_persister_failure_wraps_as_persister_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_persister_unknown_exception_drops_cause_chain() -> None:
+    """Round-9 regression for DECISIONS#016 logs-stay-metadata-only.
+
+    Unknown persister exception types (not in `METADATA_ONLY_EXCEPTION_TYPES`)
+    must be wrapped with `raise ... from None`. The wrapper's message is
+    sanitized to `<TypeName>`, but without `from None`, Python's traceback
+    formatter would render `__cause__` (the underlying exception's
+    `args` / `str()`), leaking raw content past the wrapper's sanitization.
+
+    Sentinel-string approach: raise `ValueError("SECRET_LEAK_SENTINEL")`
+    from the persister; catch the LLMPersisterError; verify:
+    - `__cause__ is None` (cause chain dropped)
+    - `__suppress_context__ is True` (implicit context also hidden)
+    - the sentinel string does NOT appear in `str(exc)` or `repr(exc)`
+    - the sentinel does NOT appear in the rendered traceback
+    """
+    import traceback
+
+    secret = "SECRET_LEAK_SENTINEL_DO_NOT_LEAK_xyz"  # noqa: S105 — test fixture
+    persister = _RecordingPersister(raise_with=ValueError(secret))
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    with _patched_create(), pytest.raises(LLMPersisterError) as exc_info:
+        await provider.complete(_request())
+
+    exc = exc_info.value
+    # Cause chain dropped — the round-9 fix.
+    assert exc.__cause__ is None, (
+        f"unknown persister exception must use `from None` to drop the "
+        f"cause chain; got __cause__={exc.__cause__!r}"
+    )
+    assert exc.__suppress_context__ is True, (
+        "from None should also set __suppress_context__=True to hide the implicit __context__"
+    )
+    # Wrapper message uses sanitized type name only.
+    assert "<ValueError>" in str(exc)
+    assert secret not in str(exc)
+    assert secret not in repr(exc)
+    # Rendered traceback does NOT carry the sentinel.
+    rendered_tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert secret not in rendered_tb, (
+        "rendered traceback leaked the sentinel string; `from None` did "
+        "not actually suppress the cause chain in the formatted output"
+    )
+
+
+@pytest.mark.asyncio
+async def test_persister_metadata_only_exception_preserves_cause_chain() -> None:
+    """Round-9 regression: metadata-only persister exception types preserve
+    the cause chain via `from exc` (the chain is also metadata-only, by
+    contract). Useful for operator debugging — the LLMPersisterError carries
+    diagnostic context, but only metadata-only content.
+    """
+    from outrider.audit.persister import AuditPersisterIdempotencyConflict, FieldDigest
+
+    conflict = AuditPersisterIdempotencyConflict(
+        event_id=uuid4(),
+        mismatched_fields=("cost_usd",),
+        field_digests={"cost_usd": FieldDigest("a" * 64, "b" * 64, 10, 12)},
+    )
+    persister = _RecordingPersister(raise_with=conflict)
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    with _patched_create(), pytest.raises(LLMPersisterError) as exc_info:
+        await provider.complete(_request())
+
+    exc = exc_info.value
+    # Metadata-only types: cause chain IS preserved for debug context.
+    assert exc.__cause__ is conflict
+    # Wrapper message renders the metadata-only `str(conflict)`.
+    assert "idempotency conflict" in str(exc)
+    assert "cost_usd" in str(exc)
+
+
+@pytest.mark.asyncio
 async def test_provider_does_not_import_agent_state() -> None:
     """AC#20 paired source-scan: anthropic_provider.py must NOT import
     from outrider.agent.* or outrider.schemas.review_state."""
