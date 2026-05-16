@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID, uuid4
@@ -26,6 +27,7 @@ import pytest
 from pydantic import ValidationError
 
 from outrider.agent.nodes.triage import (
+    _POLICY_VIOLATION_SAMPLE_SIZE,
     TriagePolicyViolationError,
     _enforce_triage_policy,
     triage,
@@ -374,8 +376,10 @@ async def test_triage_rejects_unknown_path(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
     """LLM returns a path not in changed_files → TriagePolicyViolationError
-    listing the offending path. Also pins the dangling-start phase-event
-    pattern: start emitted, end NOT emitted on policy failure."""
+    naming the rule. Also pins the dangling-start phase-event pattern:
+    start emitted, end NOT emitted on policy failure. Message content is
+    pinned by `test_enforce_policy_message_uses_bounded_sample_with_hash`
+    below; here we only assert the rule fires."""
     state = _build_state(files=(_build_changed_file(path="src/foo.py"),))
     plan = _Plan(
         response_text=_build_triage_json(
@@ -384,7 +388,7 @@ async def test_triage_rejects_unknown_path(
     )
     provider = MockLLMProvider(plan)
 
-    with pytest.raises(TriagePolicyViolationError, match="unrelated/bar.py"):
+    with pytest.raises(TriagePolicyViolationError, match="unknown paths"):
         await triage(
             state,
             provider=provider,
@@ -407,8 +411,10 @@ async def test_triage_rejects_missing_path(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
     """LLM omits a changed-file path from file_tiers → TriagePolicyViolationError
-    listing the missing path. Also pins the dangling-start phase-event
-    pattern: start emitted, end NOT emitted on policy failure."""
+    naming the rule. Also pins the dangling-start phase-event pattern:
+    start emitted, end NOT emitted on policy failure. Message content is
+    pinned by `test_enforce_policy_message_uses_bounded_sample_with_hash`
+    below; here we only assert the rule fires."""
     state = _build_state(
         files=(
             _build_changed_file(path="src/a.py"),
@@ -419,7 +425,7 @@ async def test_triage_rejects_missing_path(
     plan = _Plan(response_text=_build_triage_json(file_tiers={"src/a.py": "deep"}))
     provider = MockLLMProvider(plan)
 
-    with pytest.raises(TriagePolicyViolationError, match="src/b.py"):
+    with pytest.raises(TriagePolicyViolationError, match="missing paths"):
         await triage(
             state,
             provider=provider,
@@ -505,6 +511,113 @@ def test_enforce_policy_empty_expected_with_empty_actual() -> None:
     three rules)."""
     result = _build_triage_result(file_tiers={})
     _enforce_triage_policy(result, expected_paths=frozenset())
+
+
+# ---------------------------------------------------------------------------
+# Log-content discipline: bounded sample + hash, not verbatim path list
+# ---------------------------------------------------------------------------
+
+
+def test_enforce_policy_message_uses_bounded_sample_with_hash() -> None:
+    """Rule (b) error message must embed bounded-sample + count + hash,
+    NOT the verbatim sorted path list. Pins the FUP-021 mitigation: when
+    a hostile LLM emits arbitrary-length unknown paths, the exception
+    message body remains bounded so a downstream `logger.exception(...)`
+    can't echo unbounded LLM-controlled content into log streams.
+
+    Bound to verify:
+      - `count=N` reports the cardinality
+      - `hash=<12 hex chars>` correlates repeats without echoing content
+      - `sample=[...]` shows up to 3 paths (the configured size)
+      - paths beyond the sample do NOT appear in the message
+    """
+    overflow_paths = {f"hallucinated/path_{i:03d}.py" for i in range(20)}
+    file_tiers = {p: ReviewTier.STANDARD for p in overflow_paths}
+    result = _build_triage_result(file_tiers=file_tiers)
+
+    with pytest.raises(TriagePolicyViolationError) as exc_info:
+        _enforce_triage_policy(result, expected_paths={"src/a.py"})
+
+    message = str(exc_info.value)
+    # Cardinality is reported
+    assert "count=20" in message
+    # Hash is present, 12 hex chars
+    assert re.search(r"hash=[0-9a-f]{12}", message), (
+        f"message must include a 12-hex-char SHA-256 prefix; got: {message!r}"
+    )
+    # Sample contains the first 3 sorted paths
+    assert "path_000.py" in message
+    assert "path_001.py" in message
+    assert "path_002.py" in message
+    # Paths beyond the sample do NOT appear — this is the leak-bounding
+    # contract; if this assertion ever fires it means someone reverted
+    # the FUP-021 mitigation back to verbatim sorted(...)!r emission.
+    for path_idx in range(3, 20):
+        forbidden = f"path_{path_idx:03d}.py"
+        assert forbidden not in message, (
+            f"path beyond sample bound leaked into message: {forbidden!r} "
+            f"appeared in error body — see commit landing FUP-021"
+        )
+
+
+def test_enforce_policy_message_neutralizes_ansi_control_chars() -> None:
+    """A path containing ANSI control chars (e.g., from a hostile LLM
+    hallucination or a malicious branch name reaching PRContext) must
+    not embed those chars verbatim in the message body. `repr()` on the
+    sample list escapes them to `\\xNN` notation — pins that mitigation
+    survives the FUP-021 refactor from `sorted(...)!r` to bounded sample."""
+    hostile = "evil\x1b[31mFAKE-RED-TEXT\x1b[0m.py"
+    file_tiers = {hostile: ReviewTier.STANDARD}
+    result = _build_triage_result(file_tiers=file_tiers)
+
+    with pytest.raises(TriagePolicyViolationError) as exc_info:
+        _enforce_triage_policy(result, expected_paths={"src/a.py"})
+
+    message = str(exc_info.value)
+    # Raw ESC byte (0x1b) MUST NOT appear in the message body — otherwise a
+    # naive logger writing to a TTY would render the fake red text.
+    assert "\x1b" not in message, (
+        "raw ANSI ESC byte leaked into message; the bounded-sample "
+        "formatter must keep using repr() to escape control chars"
+    )
+    # The escaped form proves repr() is in the call chain.
+    assert "\\x1b" in message
+
+
+def test_enforce_policy_message_does_not_leak_full_expected_paths() -> None:
+    """The `expected: ...` clause in rule-b and rule-c messages must also
+    embed only bounded sample + hash, NOT the verbatim full expected-paths
+    set. `expected_paths` is webhook-derived (`PRContext.changed_files`)
+    and per `docs/trust-boundaries.md` #5 is attacker-influenced. The
+    same log-content discipline applies — leak surface stays bounded
+    regardless of changed-files set size.
+
+    Rule (c) embeds TWO bounded samples (the `missing` set and the
+    `expected_paths` set), so the leak ceiling is `2 * SAMPLE_SIZE`
+    when `missing ⊆ expected_paths` (and both samples may overlap on
+    the same prefix-sorted leading entries). The invariant is that the
+    leak does not grow with set size, not that it equals SAMPLE_SIZE."""
+    # Construct a large expected set with one missing
+    expected = {f"src/known_{i:03d}.py" for i in range(15)}
+    file_tiers = {p: ReviewTier.STANDARD for p in list(expected)[:14]}
+    result = _build_triage_result(file_tiers=file_tiers)
+
+    with pytest.raises(TriagePolicyViolationError) as exc_info:
+        _enforce_triage_policy(result, expected_paths=expected)
+
+    message = str(exc_info.value)
+    # Expected-set cardinality reported
+    assert "count=15" in message, f"expected count not reported in: {message!r}"
+    # Each bounded sample is capped at _POLICY_VIOLATION_SAMPLE_SIZE; rule (c)
+    # has two clauses (missing + expected), so 2*SAMPLE_SIZE is the ceiling
+    # regardless of how large the set grows. Anything above that means a
+    # verbatim list re-leaked through one of the clauses.
+    leak_ceiling = 2 * _POLICY_VIOLATION_SAMPLE_SIZE
+    leaked = sum(1 for i in range(15) if f"known_{i:03d}.py" in message)
+    assert leaked <= leak_ceiling, (
+        f"too many expected paths leaked ({leaked} > {leak_ceiling}); the "
+        f"bounded-sample contract was bypassed for at least one clause"
+    )
 
 
 # ---------------------------------------------------------------------------
