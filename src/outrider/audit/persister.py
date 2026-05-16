@@ -203,8 +203,24 @@ class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818 — spec-defi
 
     - `event_id`: the conflicting event id (UUID).
     - `mismatched_fields`: tuple of field names whose values differ between
-      the existing row and the attempted write.
-    - `field_digests`: per-field SHA-256 + length tuple (`FieldDigest`).
+      the existing row and the attempted write. **Authoritative** — this
+      is the complete list of what differed; every mismatch surfaces here
+      regardless of column type.
+    - `field_digests`: SHA-256 + byte-length tuple (`FieldDigest`) for the
+      subset of mismatched fields where digesting carries diagnostic
+      signal. **Populated for content-bearing payload fields** (e.g., the
+      `audit_events.payload` columns from `_compute_field_digests`, and the
+      text fields `prompt` / `completion` from `_compute_content_field_digests`).
+      **Intentionally NOT populated for small-primitive content-row columns**
+      (`installation_id: int`, `is_eval: bool` — a digest of `True` vs
+      `False` carries no information beyond the name in `mismatched_fields`).
+      Pin test:
+      `tests/unit/test_audit_persister.py::test_compute_content_field_digests_intentionally_omits_non_text_columns`.
+
+    Consumers MUST treat `mismatched_fields` as the authoritative list and
+    `field_digests` as best-effort detail for the fields where a digest is
+    useful. `set(field_digests) ⊆ set(mismatched_fields)`; the reverse is
+    not guaranteed.
 
     Operators investigating a conflict pull the full `audit_events.payload`
     and `llm_call_content` rows out-of-band (dashboard, `SELECT`); this
