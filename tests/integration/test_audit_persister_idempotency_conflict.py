@@ -40,13 +40,14 @@ async def test_persist_same_event_id_different_payload_raises_conflict(
     persister catches the payload mismatch on the audit-row conflict
     path and raises AuditPersisterIdempotencyConflict.
 
-    Divergence is on `timestamp` rather than `cost_usd` because the
-    response cross-check now recomputes cost_usd canonically from the
-    pricing table; a fabricated cost would trip that pre-tx guard
-    before reaching the audit-row idempotency path. Timestamp is the
-    last field on LLMCallEvent that can legitimately diverge between
-    two emissions with the same event_id (e.g., a retry that picks up
-    a fresh `datetime.now(UTC)` clock read).
+    Divergence is on `timestamp` because it's the simplest non-content-
+    bearing field that can legitimately differ between two emissions
+    with the same event_id (e.g., a retry that picks up a fresh
+    `datetime.now(UTC)` clock read). `cost_usd` and `pricing_version`
+    would also work post-round-51 (the pricing checks moved to the
+    fresh-write branch only; same-event_id re-emits route through the
+    audit-conflict path again), but timestamp keeps the test focused
+    on the conflict path without introducing pricing-table mechanics.
     """
     from datetime import UTC, datetime, timedelta
 
