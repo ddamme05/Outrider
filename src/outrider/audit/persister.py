@@ -171,7 +171,43 @@ class FieldDigest(NamedTuple):
 # ---------------------------------------------------------------------------
 
 
-class AuditPersisterConfigError(ValueError):
+class _FrozenAllowlistMeta(type):
+    """Metaclass that locks specific class attributes against reassignment.
+
+    Round-44 sharp-edges fold: the round-43 `__init_subclass__` hardening
+    blocks SUBCLASS declarations from overriding `_PARAM_HINTS` /
+    `_INVARIANTS`, AND the literal-class-ref lookup blocks INSTANCE
+    shadowing. But Python has no built-in "final class attribute" —
+    any module imported after `persister.py` can do
+    `AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil":
+    user_prompt})` on the PARENT class itself. This metaclass closes
+    that residual bypass by rejecting `setattr` on the locked attribute
+    names. Pattern mirrors `enum.EnumMeta`'s member-write block.
+
+    Locked names are declared on each class via `_FROZEN_ALLOWLIST_NAMES`
+    (a `ClassVar[frozenset[str]]`). Reassignment of any locked name
+    after class definition raises `AttributeError`.
+    """
+
+    def __setattr__(cls, name: str, value: object) -> None:
+        # Class-definition-time `__init_subclass__` already validated the
+        # subclass dict; this metaclass blocks POST-definition mutation
+        # on either the parent OR a subclass.
+        frozen = cls.__dict__.get("_FROZEN_ALLOWLIST_NAMES", frozenset())
+        # Walk MRO for inherited frozen-name declarations too.
+        for base in cls.__mro__:
+            frozen = frozen | base.__dict__.get("_FROZEN_ALLOWLIST_NAMES", frozenset())
+        if name in frozen:
+            raise AttributeError(
+                f"cannot reassign {cls.__name__}.{name} after class definition; "
+                "this allowlist is class-level closed by the metadata-only contract "
+                "(DECISIONS.md#016 + round-44 sharp-edges fold). Add a new entry via "
+                "a deliberate PR editing the literal mapping in the class body."
+            )
+        super().__setattr__(name, value)
+
+
+class AuditPersisterConfigError(ValueError, metaclass=_FrozenAllowlistMeta):
     """Eager construction-time validation failure on `AuditPersister.__init__`.
 
     Mirrors the `BuildGraphError` / `LLMMissingAPIKeyError` precedent: fail
@@ -209,6 +245,12 @@ class AuditPersisterConfigError(ValueError):
     close the round-43 sharp-edges H2 finding — even the gate's
     rejection message cannot leak the value that triggered it.
     """
+
+    # Names declared here are class-attr-frozen by `_FrozenAllowlistMeta`:
+    # `AuditPersisterConfigError._PARAM_HINTS = ...` (after class definition)
+    # raises AttributeError. Round-44 fold closes the post-definition
+    # reassignment bypass surfaced by the round-43 sharp-edges audit.
+    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset({"_PARAM_HINTS"})
 
     _PARAM_HINTS: ClassVar[Mapping[str, str]] = MappingProxyType(
         {
@@ -319,7 +361,7 @@ class AuditPersisterReviewIdMismatchError(ValueError):
         self.request_review_id = request_review_id
 
 
-class AuditPersisterSchemaInvariantError(RuntimeError):
+class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlistMeta):
     """Schema-level invariant violation detected at runtime.
 
     Raised when the persister observes a state the schema's NOT-NULL /
@@ -348,6 +390,10 @@ class AuditPersisterSchemaInvariantError(RuntimeError):
     translation can render it via `str()` safely; future authors editing
     this class MUST preserve the metadata-only property.
     """
+
+    # Names class-attr-frozen by `_FrozenAllowlistMeta` per the round-44
+    # sharp-edges fold (see AuditPersisterConfigError for rationale).
+    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset({"_INVARIANTS"})
 
     _INVARIANTS: ClassVar[frozenset[str]] = frozenset(
         {
