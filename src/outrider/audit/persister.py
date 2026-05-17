@@ -40,11 +40,33 @@ Key invariants:
   INSERT, that surface would carry raw `prompt`/`completion` text. The
   persister relies on `hide_parameters=True` on the engine (set in
   `api/lifespan.py::_default_engine_factory`) to strip bound values
-  from exception strings. Without that engine setting, any storage
-  failure on the content INSERT would surface raw content in the
-  wrapper's `LLMPersisterError(f"{exc!r}")` chain. Tests that construct
-  their own engine outside the lifespan MUST honor the same setting
-  to preserve the contract.
+  from exception strings.
+
+  Two complementary defenses converge here. The wrapper at
+  `anthropic_provider.py::complete()` already type-narrows on
+  `METADATA_ONLY_EXCEPTION_TYPES`: for the FIVE listed persister
+  exception classes it renders `str(exc)` (each carries a
+  contributor-enforced metadata-only `__str__`) and preserves the cause
+  chain via `from exc`; for ANY OTHER exception (including raw
+  SQLAlchemy errors that somehow surface), it renders only
+  `<TypeName>` and uses `from None` to drop the cause chain entirely
+  (`__suppress_context__` set, no traceback walk into the original).
+  So even WITHOUT `hide_parameters=True`, a raw SQLAlchemy exception
+  reaching the wrapper would render only its class name + suppressed
+  cause. `hide_parameters=True` is defense-in-depth for the case where
+  the SQLAlchemy exception's text was rendered elsewhere (a log
+  formatter that called `str()` on the exception before the wrapper
+  re-raised). Tests that construct their own engine outside the
+  lifespan MUST honor the same setting to preserve the layered
+  defense — the wrapper's type-narrow is the primary gate; the
+  engine's `hide_parameters` is the secondary.
+
+  (Round-30 codex audit fold: the prior docstring said content would
+  leak via `LLMPersisterError(f"{exc!r}")` — the round-3-era wrap
+  shape, before the round-9 + round-26 hardening. Current shape is
+  documented above; verified against
+  `src/outrider/llm/anthropic_provider.py::complete()` step 9
+  `except Exception as exc` block.)
 
 Design choices documented in the persister spec; reading the spec is the
 faster path to context than re-deriving from this docstring.
