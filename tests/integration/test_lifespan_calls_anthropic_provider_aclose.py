@@ -19,6 +19,9 @@ async def test_lifespan_calls_provider_aclose_on_shutdown() -> None:
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
+    # Round-39 strict `is True` gate requires the exact bool, not
+    # MagicMock's truthy default.
+    mock_engine.sync_engine.hide_parameters = True
 
     mock_provider = MagicMock()
     mock_provider.aclose = AsyncMock(return_value=None)
@@ -42,6 +45,7 @@ async def test_lifespan_calls_engine_dispose_on_shutdown() -> None:
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
+    mock_engine.sync_engine.hide_parameters = True
 
     mock_provider = MagicMock()
     mock_provider.aclose = AsyncMock(return_value=None)
