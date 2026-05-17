@@ -700,13 +700,30 @@ def test_event_request_field_mismatch_message_distinguishes_hash_from_direct() -
     assert "canonical hash" in str(sys_hash_exc)
 
 
+def test_canonical_recomputation_fields_are_frozen_on_both_classes() -> None:
+    """`_CANONICAL_RECOMPUTATION_FIELDS` is in `_FROZEN_ALLOWLIST_NAMES`
+    so the metaclass `__setattr__` blocks parent-class reassignment.
+    Without this, a module imported after `persister.py` could do
+    `Cls._CANONICAL_RECOMPUTATION_FIELDS = frozenset()` and the
+    misleading-message branch would silently fall back to the
+    `request.<field>` wording for the hash fields (or the canonical-
+    recomputation wording for non-hash fields).
+    """
+    with pytest.raises(AttributeError, match="cannot reassign"):
+        AuditPersisterEventRequestFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS = frozenset()  # type: ignore[misc]
+    with pytest.raises(AttributeError, match="cannot reassign"):
+        AuditPersisterEventResponseFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS = frozenset()  # type: ignore[misc]
+
+
 def test_event_response_field_mismatch_error_rejects_unknown_field_name() -> None:
     """Sibling of `event_request_field_mismatch_error_rejects_unknown_field_name`
-    on the response side. The 6-field allowlist (model, input_tokens,
-    output_tokens, latency_ms, cached_tokens, cache_hit) is closed at the
-    class level."""
+    on the response side. The allowlist (model, input_tokens,
+    output_tokens, latency_ms, cached_tokens, cache_hit, cost_usd,
+    pricing_version) is closed at the class level."""
     AuditPersisterEventResponseFieldMismatchError(field_name="model")
     AuditPersisterEventResponseFieldMismatchError(field_name="cache_hit")
+    AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+    AuditPersisterEventResponseFieldMismatchError(field_name="pricing_version")
 
     with pytest.raises(ValueError, match="field_name must be one of"):
         AuditPersisterEventResponseFieldMismatchError(field_name="anything_else")
