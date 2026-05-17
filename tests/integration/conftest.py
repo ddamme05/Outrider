@@ -331,8 +331,11 @@ _FACTORY_USER_PROMPT = "the user prompt"
 @pytest.fixture
 def llm_call_event_factory() -> LLMCallEventFactory:
     """Factory: `factory(review_id, **kwargs) -> LLMCallEvent` with canonical
-    defaults. Tests pass kwargs to override per-case (e.g., distinct
-    `cost_usd` to trigger the idempotency-conflict path).
+    defaults. Tests that need divergence on a cross-checked field use
+    `event.model_copy(update={...})` and expect the corresponding
+    pre-tx or in-tx guard to raise (e.g., diverging `cost_usd` trips
+    `AuditPersisterEventResponseFieldMismatchError`; diverging
+    `timestamp` trips `AuditPersisterIdempotencyConflict` on re-emit).
     """
     from datetime import UTC, datetime
 
