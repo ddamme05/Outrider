@@ -80,7 +80,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 
 # Runtime import: typed-kwarg signatures on the strict-keyword exception
 # constructors (round-41 fold) reference UUID as a parameter annotation;
@@ -176,19 +177,40 @@ class AuditPersisterConfigError(ValueError):
     Mirrors the `BuildGraphError` / `LLMMissingAPIKeyError` precedent: fail
     loud at construction, not on the first call.
 
-    **Strict-keyword constructor (round-41 codex fold).** Takes only typed
-    kwargs (`param_name` is the constructor parameter that failed; `hint`
-    is the static documentation hint about what type to pass). Cannot
-    accept arbitrary positional strings — a future contributor writing
+    **Strict-keyword constructor (round-41 codex fold).** Takes only the
+    typed `param_name` kwarg; the documentation hint is derived
+    internally from a class-level allowlist. Cannot accept arbitrary
+    positional strings — a future contributor writing
     `AuditPersisterConfigError(request.user_prompt)` gets a TypeError at
-    construction, not a silent content-leak path through
-    `Exception.__init__(*args)` and the wrapper's metadata-only allowlist.
+    construction.
+
+    **Class-level allowlist (round-42 codex fold).** `param_name` must
+    be one of the canonical AuditPersister constructor parameters; the
+    constructor raises `ValueError` if not. Removes the round-41 `hint:
+    str` kwarg (which still accepted arbitrary user-derived strings)
+    and derives the hint internally. A future
+    `AuditPersisterConfigError(param_name=user_input)` is rejected at
+    construction unless `user_input` literally equals an allowlisted
+    parameter name — and any new constructor parameter requires
+    updating both the persister AND the allowlist here.
     """
 
-    def __init__(self, *, param_name: str, hint: str) -> None:
-        super().__init__(f"{param_name} must not be None; {hint}")
+    _PARAM_HINTS: ClassVar[Mapping[str, str]] = MappingProxyType(
+        {
+            "session_factory": "pass an async_sessionmaker[AsyncSession]",
+            "retention_settings": "pass a RetentionSettings instance",
+        }
+    )
+
+    def __init__(self, *, param_name: str) -> None:
+        if param_name not in self._PARAM_HINTS:
+            raise ValueError(
+                f"param_name must be one of {sorted(self._PARAM_HINTS)}; "
+                f"got {param_name!r}. To add a new parameter, update "
+                f"AuditPersister.__init__ AND this allowlist together."
+            )
+        super().__init__(f"{param_name} must not be None; {self._PARAM_HINTS[param_name]}")
         self.param_name = param_name
-        self.hint = hint
 
 
 class AuditPersisterReviewNotFoundError(LookupError):
@@ -264,6 +286,15 @@ class AuditPersisterSchemaInvariantError(RuntimeError):
     `"audit_events.payload NOT NULL"`). Cannot accept arbitrary positional
     strings — same defense as the sibling classes.
 
+    **Class-level invariant allowlist (round-42 codex fold).** `invariant`
+    must be in the canonical allowlist `_INVARIANTS`; the constructor
+    raises `ValueError` if not. A future
+    `AuditPersisterSchemaInvariantError(event_id=..., invariant=f"bad
+    value {user_input}")` is rejected at construction unless the string
+    literally matches an allowlisted invariant identifier. Adding a new
+    schema-invariant violation site requires updating the allowlist
+    here, which forces review.
+
     **Metadata-only by contract** per `DECISIONS.md#016` point 4 — the
     exception message MUST carry only schema-level identifiers (event_id,
     table name, column name), never payload content. Listed in
@@ -272,7 +303,20 @@ class AuditPersisterSchemaInvariantError(RuntimeError):
     this class MUST preserve the metadata-only property.
     """
 
+    _INVARIANTS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "audit_events.payload NOT NULL",
+        }
+    )
+
     def __init__(self, *, event_id: UUID, invariant: str) -> None:
+        if invariant not in self._INVARIANTS:
+            raise ValueError(
+                f"invariant must be one of {sorted(self._INVARIANTS)}; "
+                f"got {invariant!r}. Adding a new schema-invariant violation "
+                f"site requires updating the allowlist on this class — "
+                f"per the round-42 metadata-only contract enforcement."
+            )
         super().__init__(f"{invariant} for event_id={event_id}; schema invariant violated")
         self.event_id = event_id
         self.invariant = invariant
@@ -594,15 +638,9 @@ class AuditPersister:
         retention_settings: RetentionSettings,
     ) -> None:
         if session_factory is None:
-            raise AuditPersisterConfigError(
-                param_name="session_factory",
-                hint="pass an async_sessionmaker[AsyncSession]",
-            )
+            raise AuditPersisterConfigError(param_name="session_factory")
         if retention_settings is None:
-            raise AuditPersisterConfigError(
-                param_name="retention_settings",
-                hint="pass a RetentionSettings instance",
-            )
+            raise AuditPersisterConfigError(param_name="retention_settings")
         self._session_factory = session_factory
         self._retention_settings = retention_settings
 

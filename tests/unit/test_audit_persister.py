@@ -649,6 +649,49 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
     )
 
 
+def test_config_error_rejects_unknown_param_name() -> None:
+    """Round-42 codex fold: `AuditPersisterConfigError.__init__` validates
+    `param_name` against a class-level allowlist. A future contributor
+    writing `AuditPersisterConfigError(param_name=user_derived_string)`
+    is rejected at construction unless the string literally equals an
+    allowlisted parameter name. Adding a new constructor parameter to
+    `AuditPersister.__init__` requires updating the allowlist on this
+    class together — forces review.
+    """
+    # Happy path: canonical values pass.
+    AuditPersisterConfigError(param_name="session_factory")
+    AuditPersisterConfigError(param_name="retention_settings")
+
+    # Failure path: unknown values rejected with a message naming the
+    # allowlist (only class-level identifier strings, no content leak).
+    with pytest.raises(ValueError, match="param_name must be one of"):
+        AuditPersisterConfigError(param_name="user_prompt_disguised_as_param")
+
+    with pytest.raises(ValueError, match="param_name must be one of"):
+        AuditPersisterConfigError(param_name="")
+
+
+def test_schema_invariant_error_rejects_unknown_invariant() -> None:
+    """Round-42 codex fold: `AuditPersisterSchemaInvariantError.__init__`
+    validates `invariant` against a class-level allowlist. A future
+    contributor writing
+    `AuditPersisterSchemaInvariantError(event_id=..., invariant=f"bad
+    value {user_input}")` is rejected unless the string literally
+    matches an allowlisted invariant identifier. Adding a new
+    schema-invariant violation site requires updating the allowlist.
+    """
+    from uuid import uuid4
+
+    event_id = uuid4()
+
+    # Happy path: canonical value passes.
+    AuditPersisterSchemaInvariantError(event_id=event_id, invariant="audit_events.payload NOT NULL")
+
+    # Failure path: unknown invariants rejected with the allowlist named.
+    with pytest.raises(ValueError, match="invariant must be one of"):
+        AuditPersisterSchemaInvariantError(event_id=event_id, invariant="some other schema rule")
+
+
 def test_metadata_only_classes_reject_positional_construction() -> None:
     """Round-41 codex fold (HIGH): structural defense against future
     drift. The previous shape — classes inheriting `Exception.__init__(*args)`
@@ -756,9 +799,8 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
     # and is expected to fail the leak assertion.
     class_level_identifier_kwarg_names = frozenset(
         {
-            "param_name",  # AuditPersisterConfigError
-            "hint",  # AuditPersisterConfigError
-            "invariant",  # AuditPersisterSchemaInvariantError
+            "param_name",  # AuditPersisterConfigError (round-42: also allowlist-validated)
+            "invariant",  # AuditPersisterSchemaInvariantError (round-42: also allowlist-validated)
         }
     )
 
