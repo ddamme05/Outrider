@@ -362,6 +362,27 @@ class AnthropicProvider:
             # SDK exception is intentionally dropped. Defense-in-depth for
             # the persister-side metadata-only contract already in place.
             raise _translate_anthropic_error(exc) from None
+        except Exception as exc:
+            # Non-Anthropic exception leaking from the SDK call. The Step 0
+            # `_closed` check is best-effort, not atomic vs. aclose() — a
+            # close that lands between the check and the await surfaces an
+            # `httpx.RuntimeError("Cannot send a request, as the client has
+            # been closed.")` instead of an `anthropic.AnthropicError`,
+            # which would escape the typed `LLMProviderError` contract.
+            # Translate to `LLMUnknownError` with `from None` so the cause
+            # chain stays content-clean (same metadata-only rationale as
+            # the AnthropicError branch). `except Exception` (not
+            # `BaseException`) preserves KeyboardInterrupt / SystemExit
+            # propagation. The type name renders as a class-level
+            # identifier; no exception args are interpolated.
+            if self._closed:
+                raise LLMUnknownError(
+                    "AnthropicProvider.complete() raced with aclose(); "
+                    "provider is closed and cannot accept new requests"
+                ) from None
+            raise LLMUnknownError(
+                f"AnthropicProvider non-Anthropic SDK failure: <{type(exc).__name__}>"
+            ) from None
         latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
 
         # Step 5: validate response shape.

@@ -1147,6 +1147,78 @@ async def test_non_apierror_anthropic_subclass_does_not_escape() -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_anthropic_exception_from_sdk_translates_to_llm_unknown_error() -> None:
+    """The pre-call `_closed` check is best-effort, not atomic vs.
+    `aclose()`. A close that lands between the check and the awaited
+    SDK call surfaces a `RuntimeError("Cannot send a request, as the
+    client has been closed.")` from httpx — NOT an
+    `anthropic.AnthropicError`. Without translation, that would escape
+    the typed `LLMProviderError` contract.
+
+    Pin: any non-Anthropic Exception raised by the SDK call translates
+    to `LLMUnknownError`. The exception type name appears in the
+    wrapper message (class-level identifier, safe to render);
+    `from None` is used to drop the cause chain so SDK exception args
+    don't propagate.
+    """
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+
+    runtime_error = RuntimeError("Cannot send a request, as the client has been closed.")
+
+    with (
+        _patched_create(raise_with=runtime_error),
+        pytest.raises(LLMUnknownError) as exc_info,
+    ):
+        await provider.complete(_request())
+
+    # Message identifies the class but does NOT echo the SDK exception's args.
+    rendered = str(exc_info.value)
+    assert "RuntimeError" in rendered
+    assert "Cannot send a request" not in rendered
+    # Cause chain is dropped (`from None`).
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+
+
+@pytest.mark.asyncio
+async def test_close_race_translates_to_llm_unknown_error_with_aclose_message() -> None:
+    """When the SDK raises during a close-race AND `_closed` is True,
+    the wrapper message names the close-race specifically rather than
+    the generic "non-Anthropic SDK failure" path. Operators reading
+    the log can distinguish a real SDK failure from a graceful-shutdown
+    request-after-close.
+    """
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+
+    # Flip the closed flag DIRECTLY (simulating a race where aclose()
+    # set _closed=True between the Step 0 check and the SDK call).
+    # The Step 0 check sees False at request-start because we haven't
+    # called aclose() yet at that point — but by the time the SDK
+    # invocation runs, it sees True. The mock's side_effect lets us
+    # interleave: when SDK is called, flip the flag THEN raise.
+    def _flip_then_raise(*_args: object, **_kwargs: object) -> None:
+        provider._closed = True
+        raise RuntimeError("client has been closed")
+
+    mock = AsyncMock(side_effect=_flip_then_raise)
+    with (
+        patch.object(anthropic.resources.messages.AsyncMessages, "create", mock),
+        pytest.raises(LLMUnknownError, match="raced with aclose"),
+    ):
+        await provider.complete(_request())
+
+
+@pytest.mark.asyncio
 async def test_step8_keyerror_fallback_on_unknown_response_model() -> None:
     """After the response.model fix, step-8 cost lookup uses
     response.model (not request.model). If the SDK substitutes a model
