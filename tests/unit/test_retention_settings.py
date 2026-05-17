@@ -76,8 +76,8 @@ def test_env_var_hour_form_parses(monkeypatch: pytest.MonkeyPatch) -> None:
     """ISO-8601 hour-precision form: `PT24H` parses as 1 day.
 
     Documents the env-var format operators should use. Bare integers
-    (e.g., "604800" for seconds) are NOT accepted by pydantic 2.12's
-    timedelta parser — operators must use ISO-8601 duration syntax.
+    (e.g., "604800" for seconds) are NOT accepted by pydantic-settings
+    2.13.1's timedelta parser — operators must use ISO-8601 duration syntax.
     """
     monkeypatch.setenv("OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL", "PT24H")
     settings = RetentionSettings()

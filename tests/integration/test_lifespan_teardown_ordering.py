@@ -106,14 +106,18 @@ async def test_lifespan_rejects_real_engine_without_hide_parameters(
 
 
 async def test_lifespan_rejects_engine_without_hide_parameters() -> None:
-    """M2 regression: lifespan body asserts `engine.hide_parameters is True`
-    on the constructed engine. A test seam (or future extraction) that
-    returns a real engine without the setting must fail loud at lifespan
-    entry rather than silently regressing DECISIONS#016 logs-stay-
-    metadata-only at runtime.
+    """M2 regression: lifespan body strict-checks
+    `engine.sync_engine.hide_parameters is True` on the constructed
+    engine. A test seam (or future extraction) that returns a real
+    engine without the setting must fail loud at lifespan entry rather
+    than silently regressing DECISIONS#016 logs-stay-metadata-only at
+    runtime.
 
     Constructs a real-shaped engine mock whose `hide_parameters` attribute
-    is False; asserts lifespan startup raises AssertionError before yielding.
+    is False; asserts lifespan startup raises `RuntimeError` before
+    yielding. (Round-7 elevation from strippable `assert` to runtime
+    `RuntimeError` so the gate survives `python -O`; round-39 further
+    strengthened from bare truthy check to strict `is not True`.)
     """
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
