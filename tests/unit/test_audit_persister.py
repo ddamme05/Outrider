@@ -649,6 +649,33 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
     )
 
 
+def test_config_error_frozen_allowlist_names_is_itself_frozen() -> None:
+    """Round-45 codex fold (HIGH): the round-44 metaclass freeze blocks
+    `_PARAM_HINTS` reassignment by consulting `_FROZEN_ALLOWLIST_NAMES`.
+    But `_FROZEN_ALLOWLIST_NAMES` itself was NOT in the frozen set,
+    leaving a bootstrap bypass:
+
+        AuditPersisterConfigError._FROZEN_ALLOWLIST_NAMES = frozenset()
+        AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil": "..."})
+
+    Round-45 made the freeze declaration self-referential —
+    `_FROZEN_ALLOWLIST_NAMES` includes the string
+    `"_FROZEN_ALLOWLIST_NAMES"` itself. This test pins the bootstrap
+    by attempting the first step (clearing the freeze declaration)
+    and asserting it raises AttributeError. The second step
+    (reassigning `_PARAM_HINTS`) is then unreachable.
+    """
+    with pytest.raises(AttributeError, match="cannot reassign"):
+        AuditPersisterConfigError._FROZEN_ALLOWLIST_NAMES = frozenset()  # type: ignore[misc]
+
+
+def test_schema_invariant_error_frozen_allowlist_names_is_itself_frozen() -> None:
+    """Sibling test for the round-45 bootstrap-the-freeze defense on
+    `AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES`."""
+    with pytest.raises(AttributeError, match="cannot reassign"):
+        AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES = frozenset()  # type: ignore[misc]
+
+
 def test_config_error_param_hints_cannot_be_reassigned_post_definition() -> None:
     """Round-44 sharp-edges fold (HIGH): the round-43 `__init_subclass__`
     closed subclass-override. But Python has no built-in "final class
