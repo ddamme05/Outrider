@@ -167,8 +167,21 @@ def test_provider_error_docstring_names_every_node_layer_class() -> None:
             result.update(_all_subclasses(sub))
         return result
 
+    # Use `getattr(..., None)` not `cls.retry_at_layer` directly: the
+    # failing-subclass tests above (`test_subclass_missing_retry_at_layer_*`)
+    # define orphan classes inside `pytest.raises` whose definitions raise
+    # in `__init_subclass__`. Python registers them in
+    # `LLMProviderError.__subclasses__()` via weakref BEFORE
+    # `__init_subclass__` runs (registration happens in `type.__new__`;
+    # `__init_subclass__` runs in `type.__init__`). The orphans live in
+    # the subclass registry until GC, which is non-deterministic across
+    # pytest test orderings — locally they may GC before this test runs,
+    # in CI they may not. Filter defensively so missing-attribute orphans
+    # don't crash the walk; `None != "node"` excludes them naturally.
     node_layer_classes = {
-        cls for cls in _all_subclasses(LLMProviderError) if cls.retry_at_layer == "node"
+        cls
+        for cls in _all_subclasses(LLMProviderError)
+        if getattr(cls, "retry_at_layer", None) == "node"
     }
     assert node_layer_classes, "fixture sanity: at least one node-layer class must exist"
 
