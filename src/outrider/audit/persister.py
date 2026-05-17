@@ -94,6 +94,7 @@ from outrider.db.models.audit_events import AuditEvent as AuditEventRow
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
 from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
+from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -381,7 +382,7 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
     """
 
     _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
-        {"_CHECKED_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
+        {"_CHECKED_FIELDS", "_CANONICAL_RECOMPUTATION_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
     )
 
     _CHECKED_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -399,7 +400,8 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
     # Fields whose comparison target is a canonical recomputation from the
     # request's prompt text, not a direct attribute on `LLMRequest`. Naming
     # `request.prompt_hash` in the error message would mislead — that field
-    # does not exist on the request side.
+    # does not exist on the request side. Included in `_FROZEN_ALLOWLIST_NAMES`
+    # so parent-class reassignment is blocked by the metaclass `__setattr__`.
     _CANONICAL_RECOMPUTATION_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"prompt_hash", "system_prompt_hash"}
     )
@@ -441,11 +443,12 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
 
 class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_FrozenAllowlistMeta):
     """`persist()` was called with `event.X` disagreeing with the value
-    the provider returned on `LLMResponse`. Pass-through fields shared
-    between `LLMResponse` and `LLMCallEvent` (model, token counts,
-    latency, cache_hit) drive cost / latency accounting + replay; a
-    mismatch means the audit row carries stale metrics while the
-    content row holds the real completion text.
+    the provider returned on `LLMResponse` (or with the canonical value
+    derived from the response). Pass-through fields shared between
+    `LLMResponse` and `LLMCallEvent` (model, token counts, latency,
+    cache_hit) drive replay; recomputed fields (`cost_usd` via
+    `compute_cost_usd`; `pricing_version` via the module constant)
+    drive cost accounting after retention purges content.
 
     Same threat model as EventRequestFieldMismatch but for the
     provider-return-through side rather than the request-pass-through
@@ -454,7 +457,7 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
     """
 
     _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
-        {"_CHECKED_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
+        {"_CHECKED_FIELDS", "_CANONICAL_RECOMPUTATION_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
     )
 
     _CHECKED_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -465,18 +468,31 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
             "latency_ms",
             "cached_tokens",
             "cache_hit",
+            "cost_usd",
+            "pricing_version",
         }
+    )
+
+    # Fields whose comparison target is a canonical recomputation, not a
+    # direct attribute on `LLMResponse`. `cost_usd` derives from the
+    # pricing table + response token counts; `pricing_version` is the
+    # module constant. Included in `_FROZEN_ALLOWLIST_NAMES` so
+    # parent-class reassignment is blocked by the metaclass.
+    _CANONICAL_RECOMPUTATION_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"cost_usd", "pricing_version"}
     )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if "_CHECKED_FIELDS" in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} cannot override "
-                "AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS; "
-                "the allowlist is class-level closed by the metadata-only contract "
-                "(DECISIONS.md#016)."
-            )
+        forbidden = {"_CHECKED_FIELDS", "_CANONICAL_RECOMPUTATION_FIELDS"}
+        for name in forbidden:
+            if name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} cannot override "
+                    f"AuditPersisterEventResponseFieldMismatchError.{name}; "
+                    "the allowlist is class-level closed by the metadata-only contract "
+                    "(DECISIONS.md#016)."
+                )
 
     def __init__(self, *, field_name: str) -> None:
         cls = AuditPersisterEventResponseFieldMismatchError
@@ -486,12 +502,15 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
                 f"field_name must be one of {sorted(cls._CHECKED_FIELDS)}; "
                 f"got value with sha256-prefix={digest!r}, length={len(field_name)}."
             )
-        # `cached_tokens` and `cache_hit` are derived from
-        # `response.cache_read_tokens` (the SDK name); the rest map
-        # one-to-one to identically-named response attributes.
+        if field_name in cls._CANONICAL_RECOMPUTATION_FIELDS:
+            comparison = (
+                f"event.{field_name} disagrees with the canonical value "
+                "recomputed from LLMResponse + pricing table"
+            )
+        else:
+            comparison = f"event.{field_name} disagrees with the value returned on LLMResponse"
         super().__init__(
-            f"persist() called with mismatched {field_name}: "
-            f"event.{field_name} disagrees with the value returned on LLMResponse. "
+            f"persist() called with mismatched {field_name}: {comparison}. "
             "Producer must build LLMCallEvent metrics from the LLMResponse the "
             "provider actually returned. Persister refuses to attribute across "
             "diverging scopes."
@@ -888,7 +907,20 @@ class AuditPersister:
         # cost / latency metrics while the content row holds the actual
         # completion text — and the response.text the persister stored
         # under those metrics is the one from this call, not the one the
-        # producer thought it accounted for.
+        # producer thought it accounted for. `cost_usd` is recomputed
+        # canonically from the response + pricing table so a Protocol
+        # caller cannot persist a fabricated cost; `pricing_version` is
+        # the module constant (mismatch means producer used a stale
+        # pricing snapshot).
+        _canonical_cost_usd = float(
+            compute_cost_usd(
+                response.model,
+                input_tokens=response.input_tokens,
+                cache_write_tokens=response.cache_write_tokens,
+                cache_read_tokens=response.cache_read_tokens,
+                output_tokens=response.output_tokens,
+            )
+        )
         _response_value_for = {
             "model": response.model,
             "input_tokens": response.input_tokens,
@@ -896,6 +928,8 @@ class AuditPersister:
             "latency_ms": response.latency_ms,
             "cached_tokens": response.cache_read_tokens,
             "cache_hit": response.cache_read_tokens > 0,
+            "cost_usd": _canonical_cost_usd,
+            "pricing_version": PRICING_VERSION,
         }
         for field_name in AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS:
             if getattr(event, field_name) != _response_value_for[field_name]:

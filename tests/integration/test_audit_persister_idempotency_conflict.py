@@ -36,17 +36,29 @@ async def test_persist_same_event_id_different_payload_raises_conflict(
     llm_request_factory: LLMRequestFactory,
     llm_response_factory: LLMResponseFactory,
 ) -> None:
-    """Producer bug: re-emit with same event_id, different cost_usd. The
+    """Producer bug: re-emit with same event_id, different timestamp. The
     persister catches the payload mismatch on the audit-row conflict
-    path and raises AuditPersisterIdempotencyConflict."""
+    path and raises AuditPersisterIdempotencyConflict.
+
+    Divergence is on `timestamp` rather than `cost_usd` because the
+    response cross-check now recomputes cost_usd canonically from the
+    pricing table; a fabricated cost would trip that pre-tx guard
+    before reaching the audit-row idempotency path. Timestamp is the
+    last field on LLMCallEvent that can legitimately diverge between
+    two emissions with the same event_id (e.g., a retry that picks up
+    a fresh `datetime.now(UTC)` clock read).
+    """
+    from datetime import UTC, datetime, timedelta
+
     request = llm_request_factory(persister_setup.review_id)
     response = llm_response_factory()
 
-    event1 = llm_call_event_factory(persister_setup.review_id, cost_usd=0.001)
+    event1 = llm_call_event_factory(persister_setup.review_id)
     await persister_setup.persister.persist(event1, request, response)
 
-    # Construct a second event with the SAME event_id but different cost_usd.
-    event2 = event1.model_copy(update={"cost_usd": 0.999})
+    # Construct a second event with the SAME event_id but different timestamp.
+    later = datetime.now(UTC) + timedelta(seconds=5)
+    event2 = event1.model_copy(update={"timestamp": later})
     assert event2.event_id == event1.event_id
 
     with pytest.raises(AuditPersisterIdempotencyConflict) as exc_info:
@@ -54,8 +66,8 @@ async def test_persist_same_event_id_different_payload_raises_conflict(
 
     exc = exc_info.value
     assert exc.event_id == event1.event_id
-    assert "cost_usd" in exc.mismatched_fields
-    digest = exc.field_digests["cost_usd"]
+    assert "timestamp" in exc.mismatched_fields
+    digest = exc.field_digests["timestamp"]
     assert isinstance(digest, FieldDigest)
     assert digest.existing_sha256 != digest.attempted_sha256
 

@@ -82,11 +82,24 @@ def _make_llm_call_event(
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
     user_prompt: str = _DEFAULT_USER_PROMPT,
 ) -> LLMCallEvent:
-    """Construct a representative LLMCallEvent fixture with hashes that
-    match the canonical hash of the corresponding request prompts."""
+    """Construct a representative LLMCallEvent fixture. Hashes match the
+    canonical hash of the request prompts; cost_usd / pricing_version
+    match what the response cross-check recomputes for the matching
+    `_make_llm_response()` fixture (100/50 tokens on claude-haiku-4-5)."""
     from uuid import UUID
 
     from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
+    from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
+
+    canonical_cost = float(
+        compute_cost_usd(
+            "claude-haiku-4-5",
+            input_tokens=100,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=50,
+        )
+    )
 
     return LLMCallEvent(
         review_id=UUID(review_id_str),
@@ -95,8 +108,8 @@ def _make_llm_call_event(
         input_tokens=100,
         output_tokens=50,
         cached_tokens=0,
-        cost_usd=0.001,
-        pricing_version="1.0.0",
+        cost_usd=canonical_cost,
+        pricing_version=PRICING_VERSION,
         latency_ms=250,
         prompt_hash=_canonical_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt),
         cache_hit=False,
@@ -461,6 +474,8 @@ async def test_persist_raises_when_event_system_prompt_hash_disagrees_with_reque
         ("latency_ms", {"latency_ms": 99999}),
         ("cached_tokens", {"cached_tokens": 9999}),
         ("cache_hit", {"cache_hit": True}),  # response.cache_read_tokens is 0
+        ("cost_usd", {"cost_usd": 0.999}),  # canonical is 0.00035 for the default fixture
+        ("pricing_version", {"pricing_version": "v0-pre-release"}),  # PRICING_VERSION is v2
     ],
 )
 async def test_persist_raises_when_event_response_field_disagrees(

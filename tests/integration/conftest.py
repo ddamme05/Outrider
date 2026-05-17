@@ -338,11 +338,29 @@ def llm_call_event_factory() -> LLMCallEventFactory:
 
     from outrider.audit.events import LLMCallEvent
     from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
+    from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
+
+    # Default factory matches the response factory's tokens/model so the
+    # persister's pre-tx response cross-check passes by construction.
+    # cost_usd recomputed canonically; pricing_version pinned to the
+    # module constant. Tests that need divergence on these fields use
+    # `model_copy(update=...)` and expect the cross-check to fire.
+    default_input_tokens = 100
+    default_output_tokens = 50
+    default_model = "claude-haiku-4-5"
+    canonical_cost_usd = float(
+        compute_cost_usd(
+            default_model,
+            input_tokens=default_input_tokens,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=default_output_tokens,
+        )
+    )
 
     def _build(
         review_id: UUID,
         *,
-        cost_usd: float = 0.001,
         latency_ms: int = 250,
         is_eval: bool = False,
         user_prompt: str = _FACTORY_USER_PROMPT,
@@ -350,13 +368,13 @@ def llm_call_event_factory() -> LLMCallEventFactory:
     ) -> LLMCallEvent:
         return LLMCallEvent(
             review_id=review_id,
-            model="claude-haiku-4-5",
+            model=default_model,
             node_id="triage",
-            input_tokens=100,
-            output_tokens=50,
+            input_tokens=default_input_tokens,
+            output_tokens=default_output_tokens,
             cached_tokens=0,
-            cost_usd=cost_usd,
-            pricing_version="1.0.0",
+            cost_usd=canonical_cost_usd,
+            pricing_version=PRICING_VERSION,
             latency_ms=latency_ms,
             prompt_hash=_canonical_prompt_hash(
                 system_prompt=system_prompt, user_prompt=user_prompt
