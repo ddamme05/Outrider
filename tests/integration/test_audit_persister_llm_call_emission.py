@@ -450,3 +450,48 @@ async def test_persist_raises_when_event_system_prompt_hash_disagrees_with_reque
             assert content_count.scalar_one() == 0
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "override"),
+    [
+        ("model", {"model": "claude-sonnet-4-6"}),
+        ("input_tokens", {"input_tokens": 9999}),
+        ("output_tokens", {"output_tokens": 9999}),
+        ("latency_ms", {"latency_ms": 99999}),
+        ("cached_tokens", {"cached_tokens": 9999}),
+        ("cache_hit", {"cache_hit": True}),  # response.cache_read_tokens is 0
+    ],
+)
+async def test_persist_raises_when_event_response_field_disagrees(
+    migrated_db: str,
+    field_name: str,
+    override: dict[str, object],
+) -> None:
+    """Provider-return-through fields shared between LLMResponse and
+    LLMCallEvent must agree. Otherwise the audit row carries stale
+    metrics while the content row holds the actual completion text the
+    persister stored.
+    """
+    from outrider.audit.persister import AuditPersisterEventResponseFieldMismatchError
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        consistent_event = _make_llm_call_event(seeded_review_id)
+        divergent_event = consistent_event.model_copy(update=override)
+        request = _make_llm_request(seeded_review_id)
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        with pytest.raises(AuditPersisterEventResponseFieldMismatchError) as exc_info:
+            await persister.persist(divergent_event, request, response)
+        assert exc_info.value.field_name == field_name
+
+        async with engine.connect() as conn:
+            audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            content_count = await conn.execute(text("SELECT COUNT(*) FROM llm_call_content"))
+            assert audit_count.scalar_one() == 0
+            assert content_count.scalar_one() == 0
+    finally:
+        await engine.dispose()
