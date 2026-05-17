@@ -20,6 +20,8 @@ from sqlalchemy import event, text
 from sqlalchemy.dialects.postgresql import Insert
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from tests.integration.conftest import (  # type: ignore[import-not-found]
         LLMCallEventFactory,
         LLMRequestFactory,
@@ -32,12 +34,19 @@ class _InjectedFaultError(RuntimeError):
     """Synthetic exception raised by the fault-injection listener."""
 
 
-def _install_content_insert_fault(engine_sync: Any) -> None:
+def _install_content_insert_fault(engine_sync: Any) -> Callable[..., Any]:
     """Register a `before_execute` listener that raises on llm_call_content INSERTs.
 
     Listener inspects the `clauseelement`; if it's an Insert against the
     `llm_call_content` table, raises `_InjectedFaultError`. Other statements
     (the audit_events INSERT, the SELECTs) pass through unmodified.
+
+    Returns the listener callable so callers can `event.remove(...)` it in
+    a `finally` block. Engine-level listeners persist for the engine's
+    lifetime — the persister_setup fixture disposes its engine in teardown
+    so isolation is protected even without explicit removal, but explicit
+    cleanup keeps each test's mutation local to its own try/finally and
+    survives future fixture-scope changes.
     """
 
     def _listener(  # type: ignore[no-untyped-def]
@@ -52,6 +61,7 @@ def _install_content_insert_fault(engine_sync: Any) -> None:
         return clauseelement, _multiparams, _params
 
     event.listen(engine_sync, "before_execute", _listener, retval=True)
+    return _listener
 
 
 async def test_persister_rollback_on_content_insert_failure(
@@ -67,27 +77,29 @@ async def test_persister_rollback_on_content_insert_failure(
     INSERT raises the synthetic fault; the transaction rolls back; neither
     row is visible afterward.
     """
-    _install_content_insert_fault(persister_setup.engine.sync_engine)
+    listener = _install_content_insert_fault(persister_setup.engine.sync_engine)
+    try:
+        event_obj = llm_call_event_factory(persister_setup.review_id)
+        request = llm_request_factory(persister_setup.review_id)
+        response = llm_response_factory()
 
-    event_obj = llm_call_event_factory(persister_setup.review_id)
-    request = llm_request_factory(persister_setup.review_id)
-    response = llm_response_factory()
+        with pytest.raises(_InjectedFaultError):
+            await persister_setup.persister.persist(event_obj, request, response)
 
-    with pytest.raises(_InjectedFaultError):
-        await persister_setup.persister.persist(event_obj, request, response)
-
-    # Post-rollback: neither row exists.
-    async with persister_setup.engine.connect() as conn:
-        audit_count = await conn.execute(
-            text("SELECT COUNT(*) FROM audit_events WHERE event_id = :eid"),
-            {"eid": event_obj.event_id},
-        )
-        content_count = await conn.execute(
-            text("SELECT COUNT(*) FROM llm_call_content WHERE event_id = :eid"),
-            {"eid": event_obj.event_id},
-        )
-        assert audit_count.scalar_one() == 0
-        assert content_count.scalar_one() == 0
+        # Post-rollback: neither row exists.
+        async with persister_setup.engine.connect() as conn:
+            audit_count = await conn.execute(
+                text("SELECT COUNT(*) FROM audit_events WHERE event_id = :eid"),
+                {"eid": event_obj.event_id},
+            )
+            content_count = await conn.execute(
+                text("SELECT COUNT(*) FROM llm_call_content WHERE event_id = :eid"),
+                {"eid": event_obj.event_id},
+            )
+            assert audit_count.scalar_one() == 0
+            assert content_count.scalar_one() == 0
+    finally:
+        event.remove(persister_setup.engine.sync_engine, "before_execute", listener)
 
 
 async def test_persister_atomicity_does_not_swallow_injected_exception(
@@ -99,11 +111,13 @@ async def test_persister_atomicity_does_not_swallow_injected_exception(
     """The fault propagates out as the original exception — not wrapped,
     swallowed, or translated. Caller sees the real cause.
     """
-    _install_content_insert_fault(persister_setup.engine.sync_engine)
+    listener = _install_content_insert_fault(persister_setup.engine.sync_engine)
+    try:
+        event_obj = llm_call_event_factory(persister_setup.review_id)
+        request = llm_request_factory(persister_setup.review_id)
+        response = llm_response_factory()
 
-    event_obj = llm_call_event_factory(persister_setup.review_id)
-    request = llm_request_factory(persister_setup.review_id)
-    response = llm_response_factory()
-
-    with pytest.raises(_InjectedFaultError, match="injected fault"):
-        await persister_setup.persister.persist(event_obj, request, response)
+        with pytest.raises(_InjectedFaultError, match="injected fault"):
+            await persister_setup.persister.persist(event_obj, request, response)
+    finally:
+        event.remove(persister_setup.engine.sync_engine, "before_execute", listener)
