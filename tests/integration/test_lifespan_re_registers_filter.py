@@ -27,6 +27,9 @@ def _make_test_lifespan() -> object:
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
+    # Round-39 strict `is True` gate requires the exact bool, not
+    # MagicMock's truthy default.
+    mock_engine.sync_engine.hide_parameters = True
 
     mock_provider = MagicMock()
     mock_provider.aclose = AsyncMock(return_value=None)

@@ -31,6 +31,11 @@ async def test_engine_dispose_runs_when_provider_aclose_raises() -> None:
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
+    # Round-39 strict `is True` gate requires the exact bool, not
+    # MagicMock's truthy default. Pin to True so the lifespan gate
+    # passes; this test isn't testing the gate, it's testing teardown
+    # ordering on aclose failure.
+    mock_engine.sync_engine.hide_parameters = True
 
     mock_provider = MagicMock()
     mock_provider.aclose = AsyncMock(side_effect=_SyntheticACloseError("injected"))
@@ -131,6 +136,41 @@ async def test_lifespan_rejects_engine_without_hide_parameters() -> None:
             pass
 
 
+async def test_lifespan_rejects_engine_with_truthy_non_bool_hide_parameters() -> None:
+    """Round-39 adversarial-modeler M3 fold: the `hide_parameters` gate
+    uses strict `is not True` (not bare falsy check). A test-injected
+    factory returning an engine where `sync_engine.hide_parameters =
+    "true"` (string, truthy but not the bool True) is rejected at
+    lifespan startup — SQLAlchemy's exception-string rendering checks
+    the boolean form, and non-bool truthy values produce undefined
+    redaction behavior depending on SA version.
+
+    Production path (`create_async_engine(..., hide_parameters=True)`)
+    always sets a bool, so the production gate is unaffected; this test
+    closes a test-injection vector flagged by the round-39 adversarial
+    threat model.
+    """
+    mock_engine = MagicMock()
+    mock_engine.dispose = AsyncMock(return_value=None)
+    mock_engine.url.drivername = "postgresql+psycopg"
+    # Truthy non-bool: the round-38 gate (bare `if not`) accepted this;
+    # the round-39 strengthened gate (`is not True`) rejects it.
+    mock_engine.sync_engine.hide_parameters = "true"
+
+    mock_provider = MagicMock()
+    mock_provider.aclose = AsyncMock(return_value=None)
+
+    lifespan = build_lifespan(
+        engine_factory=lambda: mock_engine,
+        provider_factory=lambda _persister: mock_provider,
+    )
+
+    app = FastAPI()
+    with pytest.raises(RuntimeError, match="hide_parameters"):
+        async with lifespan(app):
+            pass
+
+
 async def test_engine_dispose_runs_when_provider_constructor_fails() -> None:
     """If `provider_factory` raises DURING lifespan startup (after engine
     construction), the AsyncExitStack still runs the engine.dispose
@@ -139,6 +179,8 @@ async def test_engine_dispose_runs_when_provider_constructor_fails() -> None:
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
+    # Round-39 strict `is True` gate requires the exact bool.
+    mock_engine.sync_engine.hide_parameters = True
 
     def _failing_provider_factory(_persister: object) -> object:
         raise RuntimeError("provider construction failed")

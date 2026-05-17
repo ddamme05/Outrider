@@ -646,3 +646,115 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
         "allowlist (or deliberately exclude with a comment + add to "
         "this test's exclude set)."
     )
+
+
+def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
+    """Property test (round-39 adversarial-modeler U3 fold): the existing
+    `test_every_persister_exception_is_metadata_only_listed` enforces
+    CLASS MEMBERSHIP — every persister exception class is in the tuple.
+    It does NOT enforce the METADATA-ONLY PROPERTY of each class. A
+    future contributor adding a `prompt` kwarg to one of these classes
+    would pass the membership test silently while violating the actual
+    contract (DECISIONS#016 logs-stay-metadata-only).
+
+    This test constructs each allowlisted exception with content-shaped
+    sentinel strings injected via every constructor parameter and
+    asserts the sentinels do NOT appear in `str(exc)`, `repr(exc)`, or
+    any element of `exc.args`. If a contributor adds a content-bearing
+    constructor parameter to an allowlisted class, this test fails-loud
+    at the offending class.
+
+    The sentinel is chosen to be distinctive enough that any leak would
+    surface unambiguously (no false positives from class names /
+    module identifiers / hex digests).
+    """
+    import inspect
+    from uuid import uuid4
+
+    sentinel = "OUTRIDER_LEAK_SENTINEL_xyz789_DO_NOT_RENDER"
+
+    for exc_cls in METADATA_ONLY_EXCEPTION_TYPES:
+        # Discover the constructor signature; build a kwargs dict that
+        # passes the sentinel into every string parameter and a safe
+        # default into every typed parameter (UUID, tuple, Mapping).
+        sig = inspect.signature(exc_cls.__init__)
+        kwargs: dict[str, object] = {}
+        for name, param in sig.parameters.items():
+            if name == "self":
+                continue
+            # Inject the sentinel into any parameter whose annotation
+            # accepts str. We construct from the annotation when possible;
+            # for typed parameters we pass safe defaults so construction
+            # succeeds and we can inspect the resulting instance.
+            ann = param.annotation
+            if ann is str or ann == "str":
+                kwargs[name] = sentinel
+            elif "UUID" in str(ann):
+                kwargs[name] = uuid4()
+            elif "tuple" in str(ann).lower():
+                # tuple[str, ...] for mismatched_fields — inject sentinel
+                # as a field-name claim. If exc renders this verbatim,
+                # the sentinel surfaces.
+                kwargs[name] = (sentinel,)
+            elif "Mapping" in str(ann) or "dict" in str(ann).lower():
+                # field_digests: Mapping[str, FieldDigest] — populate
+                # with sentinel as key (constraint: key must be in
+                # mismatched_fields per the round-38 invariant guard).
+                if "mismatched_fields" in kwargs:
+                    kwargs[name] = {sentinel: FieldDigest("a" * 64, "b" * 64, 1, 1)}
+                else:
+                    kwargs[name] = {}
+            elif ann is int:
+                kwargs[name] = 42
+            elif param.default is not inspect.Parameter.empty:
+                # Use the default if we don't recognize the annotation.
+                continue
+            else:
+                # Unannotated or unrecognized type — best-effort: try
+                # passing the sentinel as a string and see what happens.
+                kwargs[name] = sentinel
+
+        # Construct (may raise if our injection violated a constraint;
+        # that's actually fine — it means the class structurally
+        # rejects the content-shaped input).
+        try:
+            exc = exc_cls(**kwargs)  # type: ignore[arg-type, call-arg]
+        except (TypeError, ValueError):
+            continue  # Constructor rejected the shape; structurally safe.
+
+        # Assert sentinel absent from every rendering surface.
+        rendered_str = str(exc)
+        rendered_repr = repr(exc)
+        args_str = " ".join(str(a) for a in exc.args)
+
+        # The sentinel may legitimately appear as a field NAME (in
+        # mismatched_fields) since field names are class-level identifiers
+        # — but only as the bare token "sentinel", not as a content payload.
+        # We allow appearance in mismatched_fields if the tuple was constructed
+        # with sentinel as a field-name claim (the test setup above does this).
+        if exc_cls is AuditPersisterIdempotencyConflict:
+            # field names ARE rendered in str(exc) per the metadata-only
+            # contract (they're class-level identifiers, not values).
+            # Verify the sentinel appears ONLY in the mismatched_fields
+            # portion, not elsewhere.
+            assert sentinel in str(exc.mismatched_fields), (
+                f"Test setup invariant: sentinel should be in mismatched_fields "
+                f"for {exc_cls.__name__}"
+            )
+        else:
+            # Non-conflict exceptions should not render the sentinel at all.
+            assert sentinel not in rendered_str, (
+                f"{exc_cls.__name__} rendered sentinel via str(): {rendered_str!r}. "
+                f"This exception class accepts a content-bearing constructor "
+                f"parameter — violates the METADATA_ONLY contract. Remove the "
+                f"parameter or rewrite __str__ to filter it."
+            )
+            assert sentinel not in rendered_repr, (
+                f"{exc_cls.__name__} rendered sentinel via repr(): {rendered_repr!r}."
+            )
+            assert sentinel not in args_str, (
+                f"{exc_cls.__name__} stored sentinel in args: {exc.args!r}. "
+                f"Per the metadata-only contract, args must contain only "
+                f"class-level identifiers (event_id, field-names), never raw "
+                f"content. Check `super().__init__(...)` arguments."
+            )

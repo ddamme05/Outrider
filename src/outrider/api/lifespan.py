@@ -212,11 +212,24 @@ def build_lifespan(
             #
             # The attribute lives on `sync_engine` since AsyncEngine wraps
             # the sync engine; the AsyncEngine type stub doesn't expose it.
-            if not engine.sync_engine.hide_parameters:
+            #
+            # Use strict `is not True` (not bare falsy check) so a
+            # test-injected factory returning an engine with
+            # `sync_engine.hide_parameters = "true"` (string, falsely
+            # truthy) is rejected — SQLAlchemy's exception-string
+            # rendering checks the boolean form; non-bool truthy values
+            # produce undefined redaction behavior depending on SA
+            # version. Production path (`create_async_engine(...,
+            # hide_parameters=True)`) always sets a bool, so the
+            # production gate is unaffected; the strict check closes a
+            # test-injection vector flagged by the round-39 adversarial
+            # threat-model.
+            if engine.sync_engine.hide_parameters is not True:
                 raise RuntimeError(
                     "engine_factory returned an engine without hide_parameters=True; "
                     "production engines MUST strip bound parameter values from "
-                    "exception strings per DECISIONS#016 logs-stay-metadata-only"
+                    "exception strings per DECISIONS#016 logs-stay-metadata-only "
+                    "(strict `is True` check — non-bool truthy values rejected)"
                 )
 
             # Step 2: session factory. `expire_on_commit=False` so callers
