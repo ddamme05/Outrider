@@ -95,9 +95,26 @@ class _IncludeTextOptIn:
     singleton. Direct construction outside this module raises `TypeError`.
 
     The serializer uses identity (`info.context is INCLUDE_TEXT_OPT_IN`),
-    NOT dict-key lookup — there is no string to typo. The persister imports
-    the singleton and passes it as `context=` on `model_dump()` to retrieve
-    full content for `llm_call_content` storage.
+    NOT dict-key lookup — there is no string to typo.
+
+    **Round-42 reconciliation:** the older provider-wrapper spec at
+    `specs/2026-05-05-llm-provider-wrapper.md` described this sentinel
+    as the ONLY way to retrieve raw content (e.g., persister calling
+    `request.model_dump(context=INCLUDE_TEXT_OPT_IN)`). That was the
+    at-approval plan; the audit-persister spec
+    (`specs/2026-05-16-audit-persister.md`) deliberately chose
+    **direct attribute access** instead (`request.user_prompt`,
+    `response.text`) because the persister stores raw content in the
+    `llm_call_content` side-table and there's no reason to round-trip
+    through `model_dump()` for the same result. The sentinel remains
+    as a utility for any future caller that genuinely needs the
+    serialized-WITH-content form; no production code path uses it
+    today. Both retrieval paths are content-clean by their own
+    discipline (the `field_serializer` redaction guards the
+    `model_dump()` path; the direct-attribute-access path bypasses the
+    serializer entirely and writes only to the dedicated content
+    side-table). See round-30/round-34/round-42 entries in the
+    audit-persister spec's Actual Outcome for the contract history.
     """
 
     _CONSTRUCT_TOKEN: ClassVar[object] = object()
