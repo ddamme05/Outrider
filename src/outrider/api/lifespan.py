@@ -201,8 +201,11 @@ def build_lifespan(
             # injecting any factory; this check is the safety gate against
             # a test (or future extraction) that returns a real engine
             # without the setting and silently regresses production behavior.
-            # MagicMock engines used in lifespan tests satisfy the
-            # truthy-check; real misconfigured engines fail loud.
+            # MagicMock engines used in lifespan tests MUST explicitly set
+            # `mock_engine.sync_engine.hide_parameters = True` (the bool)
+            # to pass — MagicMock's default truthy attribute fails the
+            # round-39 strict `is not True` check below. Real misconfigured
+            # engines fail loud.
             #
             # Explicit `if not / raise` rather than `assert`: `assert`
             # statements are stripped under `python -O`, making the

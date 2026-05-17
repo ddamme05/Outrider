@@ -43,7 +43,7 @@ class RetentionSettings(BaseSettings):
     need a non-default value re-construct with explicit kwargs rather
     than mutating an instance. Mirrors the `ModelConfig` pattern.
 
-    `pydantic-settings` 2.12 parses `timedelta` env vars as **ISO-8601
+    `pydantic-settings` 2.13.1 parses `timedelta` env vars as **ISO-8601
     duration strings only** (`P7D`, `PT24H`, `PT3600S`). Bare integers
     (e.g., `604800` for seconds) are NOT accepted — pinned by
     `tests/unit/test_retention_settings.py::test_env_var_bare_integer_seconds_is_rejected`.
@@ -73,6 +73,6 @@ class RetentionSettings(BaseSettings):
             "DECISIONS.md#016. Overridable via "
             "OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL env var (ISO-8601 "
             "duration string only — e.g., P7D, PT24H, PT3600S; bare "
-            "integer seconds are NOT accepted by pydantic 2.12)."
+            "integer seconds are NOT accepted by pydantic-settings 2.13.1)."
         ),
     )
