@@ -65,12 +65,10 @@ Key invariants:
   defense — the wrapper's type-narrow is the primary gate; the
   engine's `hide_parameters` is the secondary.
 
-  (Round-30 codex audit fold: the prior docstring said content would
-  leak via `LLMPersisterError(f"{exc!r}")` — the round-3-era wrap
-  shape, before the round-9 + round-26 hardening. Current shape is
-  documented above; verified against
-  `src/outrider/llm/anthropic_provider.py::complete()` step 9
-  `except Exception as exc` block.)
+  (Earlier docstring referenced a `LLMPersisterError(f"{exc!r}")` wrap
+  shape that has since been replaced by the two-layer defense described
+  above; verified against `src/outrider/llm/anthropic_provider.py::complete()`
+  step 9 `except Exception as exc` block.)
 
 Design choices documented in the persister spec; reading the spec is the
 faster path to context than re-deriving from this docstring.
@@ -84,10 +82,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 
 # Runtime import: typed-kwarg signatures on the strict-keyword exception
-# constructors (round-41 fold) reference UUID as a parameter annotation;
-# TYPE_CHECKING-only would only suffice if annotations were string-quoted,
-# but the runtime-validated parameter shape benefits from a real type at
-# module import.
+# constructors reference UUID as a parameter annotation. TYPE_CHECKING-only
+# would only suffice if annotations were string-quoted; runtime-validated
+# parameter shapes benefit from a real type at module import.
 from uuid import UUID  # noqa: TC003 — runtime annotation needed for typed exception constructors
 
 from sqlalchemy import select
@@ -172,31 +169,15 @@ class FieldDigest(NamedTuple):
 
 
 class _FrozenAllowlistMeta(type):
-    """Metaclass that locks specific class attributes against reassignment.
+    """Metaclass that rejects `setattr` on class attribute names listed in
+    `_FROZEN_ALLOWLIST_NAMES` (a `ClassVar[frozenset[str]]` declared on
+    the adopting class). Closes the "Python has no `final` class
+    attribute" gap. Pattern mirrors `enum.EnumMeta`'s member-write block.
 
-    Round-44 sharp-edges fold: the round-43 `__init_subclass__` hardening
-    blocks SUBCLASS declarations from overriding `_PARAM_HINTS` /
-    `_INVARIANTS`, AND the literal-class-ref lookup blocks INSTANCE
-    shadowing. But Python has no built-in "final class attribute" —
-    any module imported after `persister.py` can do
-    `AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil":
-    user_prompt})` on the PARENT class itself. This metaclass closes
-    that residual bypass by rejecting `setattr` on the locked attribute
-    names. Pattern mirrors `enum.EnumMeta`'s member-write block.
-
-    Locked names are declared on each class via `_FROZEN_ALLOWLIST_NAMES`
-    (a `ClassVar[frozenset[str]]`). Reassignment of any locked name
-    after class definition raises `AttributeError`.
-
-    **Round-45 codex correction — bootstrap-the-freeze.** Each
-    `_FROZEN_ALLOWLIST_NAMES` declaration MUST include the string
-    `"_FROZEN_ALLOWLIST_NAMES"` itself. Otherwise an attacker can
-    clear the freeze declaration first
-    (`cls._FROZEN_ALLOWLIST_NAMES = frozenset()`), then reassign the
-    now-unprotected allowlist. The self-referential inclusion makes
-    the freeze declaration as inviolable as the allowlist it governs.
-    The pin test `test_*_frozen_allowlist_names_is_itself_frozen`
-    asserts this bootstrap on each adopting class.
+    `_FROZEN_ALLOWLIST_NAMES` MUST include its own name — otherwise an
+    attacker can clear the freeze declaration first, then reassign the
+    now-unprotected target. The self-referential inclusion is the
+    bootstrap. See pin tests `test_*_frozen_allowlist_names_is_itself_frozen`.
     """
 
     def __setattr__(cls, name: str, value: object) -> None:
@@ -211,8 +192,8 @@ class _FrozenAllowlistMeta(type):
             raise AttributeError(
                 f"cannot reassign {cls.__name__}.{name} after class definition; "
                 "this allowlist is class-level closed by the metadata-only contract "
-                "(DECISIONS.md#016 + round-44 sharp-edges fold). Add a new entry via "
-                "a deliberate PR editing the literal mapping in the class body."
+                "(DECISIONS.md#016). Add a new entry via a deliberate PR editing "
+                "the literal mapping in the class body."
             )
         super().__setattr__(name, value)
 
@@ -220,53 +201,21 @@ class _FrozenAllowlistMeta(type):
 class AuditPersisterConfigError(ValueError, metaclass=_FrozenAllowlistMeta):
     """Eager construction-time validation failure on `AuditPersister.__init__`.
 
-    Mirrors the `BuildGraphError` / `LLMMissingAPIKeyError` precedent: fail
-    loud at construction, not on the first call.
+    Mirrors `BuildGraphError` / `LLMMissingAPIKeyError`: fail loud at
+    construction, not on first call.
 
-    **Strict-keyword constructor (round-41 codex fold).** Takes only the
-    typed `param_name` kwarg; the documentation hint is derived
-    internally from a class-level allowlist. Cannot accept arbitrary
-    positional strings — a future contributor writing
-    `AuditPersisterConfigError(request.user_prompt)` gets a TypeError at
-    construction.
-
-    **Class-level allowlist (round-42 codex fold).** `param_name` must
-    be one of the canonical AuditPersister constructor parameters; the
-    constructor raises `ValueError` if not. Removes the round-41 `hint:
-    str` kwarg (which still accepted arbitrary user-derived strings)
-    and derives the hint internally. A future
-    `AuditPersisterConfigError(param_name=user_input)` is rejected at
-    construction unless `user_input` literally equals an allowlisted
-    parameter name — and any new constructor parameter requires
-    updating both the persister AND the allowlist here.
-
-    **Subclass-override hardening (round-43 sharp-edges + adversarial
-    fold).** Two structural defenses against the insider-threat
-    subclass-escalation vector flagged by the round-43 audit:
-    (a) `__init_subclass__` REJECTS any subclass that defines its own
-    `_PARAM_HINTS` — preventing `class MyConfigError(AuditPersisterConfigError):
-    _PARAM_HINTS = MappingProxyType({"evil": user_prompt})`; (b) the
-    lookup at construction uses the LITERAL class reference
-    `AuditPersisterConfigError._PARAM_HINTS` rather than the MRO-resolving
-    `self._PARAM_HINTS`. Both layers are necessary: (a) catches the
-    declaration; (b) catches any runtime injection via descriptor
-    protocol or `setattr`. The rejection-message renders only the
-    SHA-256 prefix of the rejected value (NOT the value itself) to
-    close the round-43 sharp-edges H2 finding — even the gate's
-    rejection message cannot leak the value that triggered it.
+    Metadata-only contract: the strict-keyword `param_name: str` kwarg
+    is the only construction surface; the hint is derived internally
+    from `_PARAM_HINTS` so callers cannot inject arbitrary strings.
+    `param_name` must match an allowlisted value or construction raises
+    `ValueError`. `__init_subclass__` blocks subclass override of the
+    allowlist, the metaclass blocks parent-class reassignment, and the
+    rejection message renders only `sha256-prefix={hex[:12]}` so the
+    gate itself doesn't leak the rejected value.
     """
 
-    # Names declared here are class-attr-frozen by `_FrozenAllowlistMeta`:
-    # `AuditPersisterConfigError._PARAM_HINTS = ...` (after class definition)
-    # raises AttributeError. Round-44 fold closes the post-definition
-    # reassignment bypass surfaced by the round-43 sharp-edges audit.
-    #
-    # **Round-45 codex correction — bootstrap-the-freeze gap.** The set
-    # itself MUST appear in the set. Otherwise an attacker can clear the
-    # freeze declaration first (`cls._FROZEN_ALLOWLIST_NAMES = frozenset()`),
-    # then reassign the now-unprotected `_PARAM_HINTS`. Self-referential
-    # inclusion makes the freeze declaration as inviolable as the
-    # allowlist it governs.
+    # `_PARAM_HINTS` is frozen against post-definition reassignment by
+    # `_FrozenAllowlistMeta`. Self-reference closes the bootstrap bypass.
     _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
         {"_PARAM_HINTS", "_FROZEN_ALLOWLIST_NAMES"}
     )
@@ -280,39 +229,29 @@ class AuditPersisterConfigError(ValueError, metaclass=_FrozenAllowlistMeta):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        # Forbid subclasses from overriding the allowlist. A subclass that
-        # widens `_PARAM_HINTS` could be picked up by `isinstance(...,
-        # METADATA_ONLY_EXCEPTION_TYPES)` via MRO, then render a wider
-        # set of values through `str(exc)`. Reject the declaration at
-        # class-creation time so insider-threat / test-file subclass
-        # escalation fails-loud at import.
+        # Subclass override of `_PARAM_HINTS` would widen the allowlist
+        # while still matching `isinstance(..., METADATA_ONLY_EXCEPTION_TYPES)`
+        # via MRO. Reject at class-creation time.
         if "_PARAM_HINTS" in cls.__dict__:
             raise TypeError(
                 f"{cls.__name__} cannot override AuditPersisterConfigError._PARAM_HINTS; "
                 "the allowlist is class-level closed by the metadata-only contract "
-                "(DECISIONS.md#016). Add a new parameter to the parent class allowlist "
-                "via a deliberate PR, not via subclass override."
+                "(DECISIONS.md#016)."
             )
 
     def __init__(self, *, param_name: str) -> None:
-        # Use LITERAL class reference for the allowlist lookup — not
-        # `self._PARAM_HINTS` (MRO-resolving) — so a subclass that
-        # somehow attached a `_PARAM_HINTS` attribute at runtime (via
-        # `setattr` or descriptor protocol, bypassing __init_subclass__)
-        # still sees the parent's allowlist at validation time.
+        # Literal class reference (not `self._PARAM_HINTS`) so a runtime
+        # attribute injection bypassing `__init_subclass__` still hits
+        # the parent's allowlist.
         if param_name not in AuditPersisterConfigError._PARAM_HINTS:
-            # Render only the SHA-256 prefix of the rejected value, NOT
-            # the value itself. The rejected value MAY be content-bearing
-            # by definition (the gate exists to catch that case). The
-            # 12-char hex prefix is correlation-stable for operator
-            # debugging without leaking what was sent.
+            # SHA-256 prefix instead of the raw value — the rejected
+            # value may itself be content-bearing (the gate exists to
+            # catch that case).
             digest = hashlib.sha256(param_name.encode("utf-8", errors="replace")).hexdigest()[:12]
             raise ValueError(
                 f"param_name must be one of "
                 f"{sorted(AuditPersisterConfigError._PARAM_HINTS)}; "
-                f"got value with sha256-prefix={digest!r}, length={len(param_name)}. "
-                f"To add a new parameter, update AuditPersister.__init__ AND "
-                f"this allowlist together."
+                f"got value with sha256-prefix={digest!r}, length={len(param_name)}."
             )
         super().__init__(
             f"{param_name} must not be None; {AuditPersisterConfigError._PARAM_HINTS[param_name]}"
@@ -323,16 +262,13 @@ class AuditPersisterConfigError(ValueError, metaclass=_FrozenAllowlistMeta):
 class AuditPersisterReviewNotFoundError(LookupError):
     """`persist()` could not resolve `event.review_id` to a reviews row.
 
-    The persister sources `installation_id` from `reviews.installation_id`
-    inside the transaction; absence means a producer-side bug, since the
-    reviews row must be created before the graph dispatches. Surfacing
-    loud here is preferable to silently writing a content row with a
-    fabricated installation_id (which would then violate the
-    `llm_call_content.installation_id` FK regardless).
+    Absence is a producer-side bug: the reviews row must exist before
+    graph dispatch. Surfacing loud here beats silently writing a
+    content row with a fabricated installation_id (which would then
+    violate the `llm_call_content.installation_id` FK regardless).
 
-    **Strict-keyword constructor (round-41 codex fold).** Takes only the
-    typed `review_id: UUID`; generates the canonical message from it.
-    Cannot accept arbitrary positional strings.
+    Strict-keyword `review_id: UUID` constructor; the message is
+    generated from the UUID so no caller can inject content.
     """
 
     def __init__(self, *, review_id: UUID) -> None:
@@ -346,25 +282,16 @@ class AuditPersisterReviewNotFoundError(LookupError):
 class AuditPersisterReviewIdMismatchError(ValueError):
     """`persist()` was called with `event.review_id != request.review_id`.
 
-    The persister sources `installation_id` from `reviews WHERE id =
-    event.review_id` and stores `request.user_prompt` + `response.text`
-    in `llm_call_content` keyed by that installation. If the request's
-    `review_id` disagrees with the event's, the call would store
-    Review A's prompt/completion under Review B's installation scope —
-    misattributing the audit trail.
+    Without this guard, the call would store Review A's prompt/completion
+    under Review B's installation scope (the persister keys
+    `llm_call_content` by `installation_id` sourced from
+    `reviews WHERE id = event.review_id`). `AnthropicProvider.complete()`
+    builds `LLMCallEvent` from `LLMRequest` so the two always agree
+    today, but `LLMExchangePersister` is a public Protocol that a
+    future provider or test mock could violate.
 
-    Today's `AnthropicProvider.complete()` builds `LLMCallEvent` from
-    the `LLMRequest` (so `event.review_id == request.review_id` always),
-    but `LLMExchangePersister` is a public Protocol that future
-    providers / test mocks could violate. This check is a metadata-only
-    fail-loud guard at the persister boundary.
-
-    **Strict-keyword constructor (round-41 codex fold).** Takes only the
-    two typed UUIDs; generates the canonical message from them. Cannot
-    accept arbitrary positional strings.
-
-    Metadata-only by contract: the exception carries the two UUIDs +
-    field names only; no payload content.
+    Strict-keyword `event_review_id: UUID` + `request_review_id: UUID`
+    constructor; message generated from the two UUIDs.
     """
 
     def __init__(self, *, event_review_id: UUID, request_review_id: UUID) -> None:
@@ -388,34 +315,18 @@ class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlis
     on `audit_events.payload` after a PK conflict returns None, which
     the column's NOT NULL constraint forbids).
 
-    **Strict-keyword constructor (round-41 codex fold).** Takes typed
-    `event_id: UUID` + `invariant: str` (the invariant identifier, e.g.,
-    `"audit_events.payload NOT NULL"`). Cannot accept arbitrary positional
-    strings — same defense as the sibling classes.
-
-    **Class-level invariant allowlist (round-42 codex fold).** `invariant`
-    must be in the canonical allowlist `_INVARIANTS`; the constructor
-    raises `ValueError` if not. A future
-    `AuditPersisterSchemaInvariantError(event_id=..., invariant=f"bad
-    value {user_input}")` is rejected at construction unless the string
-    literally matches an allowlisted invariant identifier. Adding a new
-    schema-invariant violation site requires updating the allowlist
-    here, which forces review.
-
-    **Metadata-only by contract** per `DECISIONS.md#016` point 4 — the
-    exception message MUST carry only schema-level identifiers (event_id,
-    table name, column name), never payload content. Listed in
-    `METADATA_ONLY_EXCEPTION_TYPES` so the LLM-wrapper exception
-    translation can render it via `str()` safely; future authors editing
-    this class MUST preserve the metadata-only property.
+    Strict-keyword `event_id: UUID` + `invariant: str` constructor;
+    `invariant` must match an allowlisted identifier in `_INVARIANTS`
+    or construction raises `ValueError`. `__init_subclass__` blocks
+    subclass override of the allowlist; the metaclass blocks
+    parent-class reassignment; the rejection message renders only
+    `sha256-prefix={hex[:12]}`. Listed in
+    `METADATA_ONLY_EXCEPTION_TYPES` per `DECISIONS.md#016` point 4
+    — `str(exc)` carries only schema identifiers, never payload content.
     """
 
-    # Names class-attr-frozen by `_FrozenAllowlistMeta` per the round-44
-    # sharp-edges fold (see AuditPersisterConfigError for rationale).
-    # Round-45 codex correction: self-referential inclusion of
-    # `_FROZEN_ALLOWLIST_NAMES` itself closes the bootstrap-the-freeze
-    # bypass (clear the freeze declaration first, then reassign the
-    # now-unprotected `_INVARIANTS`).
+    # `_INVARIANTS` is frozen against post-definition reassignment by
+    # `_FrozenAllowlistMeta`. Self-reference closes the bootstrap bypass.
     _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
         {"_INVARIANTS", "_FROZEN_ALLOWLIST_NAMES"}
     )
@@ -428,28 +339,23 @@ class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlis
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        # Same subclass-override defense as AuditPersisterConfigError per
-        # the round-43 fold — see that class for the rationale.
+        # See AuditPersisterConfigError for the subclass-override rationale.
         if "_INVARIANTS" in cls.__dict__:
             raise TypeError(
                 f"{cls.__name__} cannot override AuditPersisterSchemaInvariantError._INVARIANTS; "
                 "the allowlist is class-level closed by the metadata-only contract "
-                "(DECISIONS.md#016). Add a new invariant via a deliberate PR, "
-                "not via subclass override."
+                "(DECISIONS.md#016)."
             )
 
     def __init__(self, *, event_id: UUID, invariant: str) -> None:
-        # Literal class reference for the allowlist lookup; see the
-        # round-43 hardening rationale on AuditPersisterConfigError.
+        # Literal class reference defends against runtime attribute injection;
+        # SHA-256 prefix defends against the gate itself leaking the rejected value.
         if invariant not in AuditPersisterSchemaInvariantError._INVARIANTS:
             digest = hashlib.sha256(invariant.encode("utf-8", errors="replace")).hexdigest()[:12]
             raise ValueError(
                 f"invariant must be one of "
                 f"{sorted(AuditPersisterSchemaInvariantError._INVARIANTS)}; "
-                f"got value with sha256-prefix={digest!r}, length={len(invariant)}. "
-                f"Adding a new schema-invariant violation site requires updating "
-                f"the allowlist on this class — per the round-42 metadata-only "
-                f"contract enforcement."
+                f"got value with sha256-prefix={digest!r}, length={len(invariant)}."
             )
         super().__init__(f"{invariant} for event_id={event_id}; schema invariant violated")
         self.event_id = event_id

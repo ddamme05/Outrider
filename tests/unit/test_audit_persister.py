@@ -165,7 +165,7 @@ def test_idempotency_conflict_carries_metadata_only() -> None:
 
 
 def test_idempotency_conflict_constructor_enforces_digest_subset_invariant() -> None:
-    """Pins the round-38 sharp-edges fold: the docstring invariant
+    """Pins: the docstring invariant
     `set(field_digests) ⊆ set(mismatched_fields)` is now enforced at
     construction. A call site that swaps argument order, or passes
     digests computed over a stale field set, would otherwise ship a
@@ -186,7 +186,7 @@ def test_idempotency_conflict_constructor_enforces_digest_subset_invariant() -> 
         field_digests={
             "prompt": FieldDigest("a" * 64, "b" * 64, 10, 12),
             # installation_id intentionally omitted from digests
-            # (text-only asymmetry from round-26+27 design intent).
+            # (text-only asymmetry).
         },
     )
     assert "prompt" in exc_ok.mismatched_fields
@@ -350,7 +350,7 @@ def _diff_args(
 ) -> dict[str, object]:
     """Helper: keyword args for `_diff_content_field_names` with defaults
     that match (so any subset can be flipped to trigger a single
-    mismatch). Updated round-26 fold: helper signature now includes
+    mismatch). Helper signature now includes
     `installation_id` and `is_eval` (purge-scope + eval-isolation
     metadata)."""
     return {
@@ -392,21 +392,21 @@ def test_diff_content_field_names_both_mismatch() -> None:
 
 
 def test_diff_content_field_names_installation_id_only() -> None:
-    """Round-26 fold: same content, different installation_id → mismatched."""
+    """same content, different installation_id → mismatched."""
     assert _diff_content_field_names(**_diff_args(installation_id_db=1, installation_id_new=2)) == (
         "installation_id",
     )
 
 
 def test_diff_content_field_names_is_eval_only() -> None:
-    """Round-26 fold: same content, flipped is_eval → mismatched."""
+    """same content, flipped is_eval → mismatched."""
     assert _diff_content_field_names(**_diff_args(is_eval_db=False, is_eval_new=True)) == (
         "is_eval",
     )
 
 
 def test_diff_content_field_names_all_four_mismatch() -> None:
-    """Round-26 fold: text + purge-scope + eval-flag all mismatched →
+    """text + purge-scope + eval-flag all mismatched →
     ordered tuple lists prompt, completion, installation_id, is_eval."""
     assert _diff_content_field_names(
         **_diff_args(
@@ -427,7 +427,7 @@ def test_compute_content_field_digests_carries_lengths_only() -> None:
     never the content itself. Regression test for the metadata-only
     boundary at the helper layer.
 
-    Round-26 fold: digests are reserved for TEXT content fields. Small
+    digests are reserved for TEXT content fields. Small
     primitives (installation_id, is_eval) are NOT digested — the
     mismatched-field name is the diagnostic signal; raw values come
     from the DB.
@@ -451,7 +451,7 @@ def test_compute_content_field_digests_carries_lengths_only() -> None:
 
 def test_compute_content_field_digests_intentionally_omits_non_text_columns() -> None:
     """Pin the design asymmetry between `mismatched_fields` and
-    `field_digests` (round-27 codex fold):
+    `field_digests` ():
 
     `_diff_content_field_names()` reports mismatches for ALL FOUR
     content-row columns (prompt, completion, installation_id, is_eval) —
@@ -557,8 +557,7 @@ def test_schema_invariant_error_str_carries_only_metadata() -> None:
     """`AuditPersisterSchemaInvariantError.__str__` must contain only
     schema identifiers (event_id, column name) — never payload content.
     Pinned because the bare `RuntimeError` it replaced was at risk under
-    the wrapper's `f"{exc!r}"` interpolation. Round-41 fold updated to
-    use the strict-keyword constructor."""
+    `f"{exc!r}"` interpolation."""
     from uuid import uuid4
 
     event_id = uuid4()
@@ -650,43 +649,29 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
 
 
 def test_config_error_frozen_allowlist_names_is_itself_frozen() -> None:
-    """Round-45 codex fold (HIGH): the round-44 metaclass freeze blocks
-    `_PARAM_HINTS` reassignment by consulting `_FROZEN_ALLOWLIST_NAMES`.
-    But `_FROZEN_ALLOWLIST_NAMES` itself was NOT in the frozen set,
-    leaving a bootstrap bypass:
-
-        AuditPersisterConfigError._FROZEN_ALLOWLIST_NAMES = frozenset()
-        AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil": "..."})
-
-    Round-45 made the freeze declaration self-referential —
-    `_FROZEN_ALLOWLIST_NAMES` includes the string
-    `"_FROZEN_ALLOWLIST_NAMES"` itself. This test pins the bootstrap
-    by attempting the first step (clearing the freeze declaration)
-    and asserting it raises AttributeError. The second step
-    (reassigning `_PARAM_HINTS`) is then unreachable.
+    """`_FROZEN_ALLOWLIST_NAMES` must include itself; otherwise the
+    metaclass freeze can be bypassed by clearing the freeze declaration
+    first (`cls._FROZEN_ALLOWLIST_NAMES = frozenset()`), then
+    reassigning the now-unprotected `_PARAM_HINTS`. Asserting the
+    first step raises makes the second unreachable.
     """
     with pytest.raises(AttributeError, match="cannot reassign"):
         AuditPersisterConfigError._FROZEN_ALLOWLIST_NAMES = frozenset()  # type: ignore[misc]
 
 
 def test_schema_invariant_error_frozen_allowlist_names_is_itself_frozen() -> None:
-    """Sibling test for the round-45 bootstrap-the-freeze defense on
+    """Sibling test for the bootstrap-the-freeze defense on
     `AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES`."""
     with pytest.raises(AttributeError, match="cannot reassign"):
         AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES = frozenset()  # type: ignore[misc]
 
 
 def test_config_error_param_hints_cannot_be_reassigned_post_definition() -> None:
-    """Round-44 sharp-edges fold (HIGH): the round-43 `__init_subclass__`
-    closed subclass-override. But Python has no built-in "final class
-    attribute" — any module imported after `persister.py` could do
-    `AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil":
-    user_prompt})` ON THE PARENT class itself, after definition. The
-    `__init_subclass__` hook doesn't fire on parent-attr reassignment.
-
-    Round-44 added `_FrozenAllowlistMeta` (metaclass) whose
-    `__setattr__` rejects writes to names in
-    `_FROZEN_ALLOWLIST_NAMES`. This test pins that contract.
+    """`_PARAM_HINTS` reassignment on the parent class itself must
+    raise (Python has no built-in `final` class attribute; the
+    metaclass `__setattr__` is the structural close). `__init_subclass__`
+    only fires on subclass definitions, not parent-attr reassignment,
+    so this gate is necessary in addition to the subclass-override guard.
     """
     from types import MappingProxyType
 
@@ -695,25 +680,19 @@ def test_config_error_param_hints_cannot_be_reassigned_post_definition() -> None
 
 
 def test_schema_invariant_error_invariants_cannot_be_reassigned_post_definition() -> None:
-    """Sibling test for the round-44 metaclass attr-freeze on
+    """Sibling test for the metaclass attr-freeze on
     `AuditPersisterSchemaInvariantError._INVARIANTS`."""
     with pytest.raises(AttributeError, match="cannot reassign"):
         AuditPersisterSchemaInvariantError._INVARIANTS = frozenset({"any"})  # type: ignore[misc]
 
 
 def test_config_error_rejects_subclass_overriding_param_hints() -> None:
-    """Round-43 sharp-edges + adversarial fold (HIGH): the round-42
-    allowlist is on a `ClassVar` looked up via `self._PARAM_HINTS`,
-    which Python resolves through MRO. A subclass override would widen
-    the allowlist while STILL matching the `isinstance(...,
-    METADATA_ONLY_EXCEPTION_TYPES)` check at the wrapper (which walks
-    MRO), reopening the content-leak vector round-42 closed.
-
-    Round-43 added `__init_subclass__` that REJECTS the subclass
-    declaration at class-creation time. A test file (or any insider-
-    threat code path) trying to define a widening subclass fails to
-    import. This test pins the contract by attempting to define such
-    a subclass inside `pytest.raises`.
+    """A subclass that overrides `_PARAM_HINTS` would widen the
+    allowlist while still matching `isinstance(...,
+    METADATA_ONLY_EXCEPTION_TYPES)` via MRO, reopening the content-
+    leak vector. `__init_subclass__` must reject the declaration at
+    class-creation time so insider-threat / test-file widening fails
+    to import.
     """
     from types import MappingProxyType
 
@@ -724,9 +703,9 @@ def test_config_error_rejects_subclass_overriding_param_hints() -> None:
 
 
 def test_schema_invariant_error_rejects_subclass_overriding_invariants() -> None:
-    """Sibling test for the round-43 subclass-override hardening on
-    `AuditPersisterSchemaInvariantError._INVARIANTS`. Same threat model
-    as the ConfigError sibling above."""
+    """Sibling test for the subclass-override hardening on
+    `AuditPersisterSchemaInvariantError._INVARIANTS`. Same threat
+    model as the ConfigError sibling above."""
     with pytest.raises(
         TypeError,
         match="cannot override AuditPersisterSchemaInvariantError._INVARIANTS",
@@ -737,16 +716,11 @@ def test_schema_invariant_error_rejects_subclass_overriding_invariants() -> None
 
 
 def test_config_error_rejection_message_does_not_leak_value() -> None:
-    """Round-43 sharp-edges HIGH-2 fold: the allowlist rejection message
-    must NOT echo the rejected value via `{value!r}`. If a future
-    contributor writes `AuditPersisterConfigError(param_name=user_input)`,
-    the construct-time ValueError rejection is itself a leak path —
-    the rejected value MAY BE content-bearing by definition (the gate
-    exists to catch that case). Round-43 changed the rejection message
-    to render only the SHA-256 prefix + length of the value.
-
-    A future log handler that captures the ValueError and renders
-    `str(exc)` sees only the digest, not the value.
+    """The allowlist rejection message must NOT echo the rejected value
+    via `{value!r}`. The rejected value may itself be content-bearing
+    (the gate exists to catch that case), so a future log handler
+    capturing the ValueError and rendering `str(exc)` must see only
+    the SHA-256 prefix + length, never the value itself.
     """
     sentinel = "OUTRIDER_REJECTED_VALUE_DO_NOT_LEAK_xyz789"
 
@@ -756,8 +730,8 @@ def test_config_error_rejection_message_does_not_leak_value() -> None:
     rendered = str(exc_info.value)
     assert sentinel not in rendered, (
         f"Rejection message leaked the rejected value: {rendered!r}. "
-        f"Round-43 contract: render only sha256-prefix + length, never the "
-        f"rejected value itself, because the value MAY be content-bearing."
+        f"Contract: render only sha256-prefix + length, never the rejected "
+        f"value itself, because the value MAY be content-bearing."
     )
     # Diagnostic info IS present in safe form.
     assert "sha256-prefix=" in rendered
@@ -765,8 +739,8 @@ def test_config_error_rejection_message_does_not_leak_value() -> None:
 
 
 def test_schema_invariant_error_rejection_message_does_not_leak_value() -> None:
-    """Sibling test for the round-43 sha256-prefix rejection message
-    on AuditPersisterSchemaInvariantError."""
+    """Sibling test for the sha256-prefix rejection message on
+    AuditPersisterSchemaInvariantError."""
     from uuid import uuid4
 
     sentinel = "OUTRIDER_INVARIANT_VALUE_DO_NOT_LEAK_xyz789"
@@ -781,7 +755,7 @@ def test_schema_invariant_error_rejection_message_does_not_leak_value() -> None:
 
 
 def test_config_error_rejects_unknown_param_name() -> None:
-    """Round-42 codex fold: `AuditPersisterConfigError.__init__` validates
+    """`AuditPersisterConfigError.__init__` validates
     `param_name` against a class-level allowlist. A future contributor
     writing `AuditPersisterConfigError(param_name=user_derived_string)`
     is rejected at construction unless the string literally equals an
@@ -803,7 +777,7 @@ def test_config_error_rejects_unknown_param_name() -> None:
 
 
 def test_schema_invariant_error_rejects_unknown_invariant() -> None:
-    """Round-42 codex fold: `AuditPersisterSchemaInvariantError.__init__`
+    """`AuditPersisterSchemaInvariantError.__init__`
     validates `invariant` against a class-level allowlist. A future
     contributor writing
     `AuditPersisterSchemaInvariantError(event_id=..., invariant=f"bad
@@ -824,26 +798,12 @@ def test_schema_invariant_error_rejects_unknown_invariant() -> None:
 
 
 def test_metadata_only_classes_reject_positional_construction() -> None:
-    """Round-41 codex fold (HIGH): structural defense against future
-    drift. The previous shape — classes inheriting `Exception.__init__(*args)`
-    untouched — allowed `AuditPersisterReviewNotFoundError(request.user_prompt)`
-    to construct successfully, storing the prompt in `args[0]`. The
-    wrapper at `AnthropicProvider.complete()` step 9 would then render
-    `f"...{exc}..."` via its METADATA_ONLY type-narrow branch (because
-    the class IS allowlisted), leaking the prompt fragment.
-
-    Round-41 refactored each allowlisted class to a strict-keyword
-    constructor that takes only typed identifiers (UUID,
-    class-level-identifier strings). Positional `Class("any_string")`
-    now raises TypeError at construction. This test pins that contract:
-    every class in `METADATA_ONLY_EXCEPTION_TYPES` MUST reject
-    positional construction with a single string arg.
-
-    A future contributor who tries `AuditPersisterReviewNotFoundError(
-    f"prompt was {user_prompt}")` gets a TypeError, not a silent leak.
-    The strict-keyword shape forces them to either use a typed kwarg
-    (UUID/identifier-only, no content path) or change the API
-    (forcing review).
+    """Every class in `METADATA_ONLY_EXCEPTION_TYPES` must reject
+    positional `Class("any string")` construction with TypeError.
+    Otherwise `AuditPersisterReviewNotFoundError(request.user_prompt)`
+    would store the prompt in `args[0]` and leak via the wrapper's
+    METADATA_ONLY type-narrow branch. The strict-keyword shape forces
+    callers to use typed kwargs only.
     """
     for exc_cls in METADATA_ONLY_EXCEPTION_TYPES:
         with pytest.raises(TypeError):
@@ -851,7 +811,7 @@ def test_metadata_only_classes_reject_positional_construction() -> None:
 
 
 def test_idempotency_conflict_constructor_has_no_content_bearing_params() -> None:
-    """Round-40 codex fold: structural pin on `AuditPersisterIdempotencyConflict`'s
+    """structural pin on `AuditPersisterIdempotencyConflict`'s
     constructor signature. The general property test below special-cases
     this class (because field names legitimately render in `str(exc)`),
     which means the property test alone cannot catch a future contributor
@@ -882,35 +842,13 @@ def test_idempotency_conflict_constructor_has_no_content_bearing_params() -> Non
 
 
 def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
-    """Property test (round-39 adversarial-modeler U3 fold, refined in
-    round-40): the existing
-    `test_every_persister_exception_is_metadata_only_listed` enforces
-    CLASS MEMBERSHIP — every persister exception class is in the tuple.
-    It does NOT enforce the METADATA-ONLY PROPERTY of each class. A
-    future contributor adding a `prompt` kwarg to one of these classes
-    would pass the membership test silently while violating the actual
-    contract (DECISIONS#016 logs-stay-metadata-only).
-
-    This test constructs each allowlisted exception with content-shaped
-    sentinel strings injected via every constructor parameter and
-    asserts the sentinels do NOT appear in `str(exc)`, `repr(exc)`, or
-    any element of `exc.args`. If a contributor adds a content-bearing
-    constructor parameter to an allowlisted class, this test fails-loud
-    at the offending class.
-
-    **Round-40 codex correction (sentinel-reuse defeat).** The previous
-    version of this test used ONE sentinel for both field-name slots
-    (`mismatched_fields`) and any content-bearing `str` slots. For
-    `IdempotencyConflict` the test then special-cased "sentinel appears
-    in mismatched_fields is OK" — but a future content-bearing `str`
-    kwarg on that class could ALSO accept the same sentinel and pass
-    silently (the assertion only checked mismatched_fields, not
-    content). Two sentinels now: `_FIELD_NAME_SENTINEL` allowed in
-    field-name slots; `_FORBIDDEN_CONTENT_SENTINEL` MUST NOT appear in
-    any rendering surface for ANY class including `IdempotencyConflict`.
-    The constructor-shape pin test above (`test_idempotency_conflict_
-    constructor_has_no_content_bearing_params`) is the second layer of
-    defense — it catches a new `str` kwarg at the parameter-set level.
+    """Property test: every allowlisted exception class must actually
+    BE metadata-only, not just LISTED in the allowlist tuple. Two
+    sentinels — `field_name_sentinel` allowed in identifier-style
+    kwargs (`mismatched_fields`, `param_name`, `invariant`);
+    `forbidden_content_sentinel` MUST NOT appear in `str(exc)`,
+    `repr(exc)`, or `exc.args` for ANY class. A future contributor
+    adding a content-bearing `str` kwarg trips the FORBIDDEN check.
     """
     import inspect
     from uuid import uuid4
@@ -919,22 +857,15 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
     field_name_sentinel = "OUTRIDER_FIELD_NAME_SENTINEL_abc123"
     forbidden_content_sentinel = "OUTRIDER_FORBIDDEN_CONTENT_SENTINEL_xyz789"
 
-    # Allowlist of `str` kwarg names that legitimately render class-level
-    # identifiers in `str(exc)`. The round-41 strict-keyword refactor
-    # introduced typed constructors taking class-level-identifier kwargs;
-    # round-42 narrowed `AuditPersisterConfigError` to ONLY `param_name`
-    # (the `hint` kwarg was removed; hint is derived internally from
-    # the class-level `_PARAM_HINTS` allowlist) AND added a runtime
-    # allowlist check on `invariant` for `SchemaInvariantError`. The
-    # property test must distinguish these surviving identifier kwargs
-    # from arbitrary content-bearing `str` kwargs that a future
-    # contributor might add (e.g., `prompt`, `completion`, `message`).
-    # ANY str-typed kwarg NOT in this set gets the FORBIDDEN sentinel
-    # and is expected to fail the leak assertion.
+    # `str` kwarg names that legitimately render class-level identifiers
+    # in `str(exc)` (allowlist-validated at construction). Any OTHER
+    # `str` kwarg gets the FORBIDDEN sentinel and must not render —
+    # catches future contributors adding `prompt: str`, `completion: str`,
+    # `message: str`, etc.
     class_level_identifier_kwarg_names = frozenset(
         {
-            "param_name",  # AuditPersisterConfigError (round-42: also allowlist-validated)
-            "invariant",  # AuditPersisterSchemaInvariantError (round-42: also allowlist-validated)
+            "param_name",  # AuditPersisterConfigError
+            "invariant",  # AuditPersisterSchemaInvariantError
         }
     )
 
@@ -968,7 +899,7 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
             elif "Mapping" in str(ann) or "dict" in str(ann).lower():
                 # field_digests: Mapping[str, FieldDigest] — populate
                 # with field-name sentinel as key (constraint: key must
-                # be in mismatched_fields per the round-38 invariant guard).
+                # be in mismatched_fields per the digest-subset invariant).
                 if "mismatched_fields" in kwargs:
                     kwargs[name] = {field_name_sentinel: FieldDigest("a" * 64, "b" * 64, 1, 1)}
                 else:
