@@ -649,6 +649,31 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
     )
 
 
+def test_config_error_param_hints_cannot_be_reassigned_post_definition() -> None:
+    """Round-44 sharp-edges fold (HIGH): the round-43 `__init_subclass__`
+    closed subclass-override. But Python has no built-in "final class
+    attribute" — any module imported after `persister.py` could do
+    `AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil":
+    user_prompt})` ON THE PARENT class itself, after definition. The
+    `__init_subclass__` hook doesn't fire on parent-attr reassignment.
+
+    Round-44 added `_FrozenAllowlistMeta` (metaclass) whose
+    `__setattr__` rejects writes to names in
+    `_FROZEN_ALLOWLIST_NAMES`. This test pins that contract.
+    """
+    from types import MappingProxyType
+
+    with pytest.raises(AttributeError, match="cannot reassign"):
+        AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil": "leaks"})  # type: ignore[misc]
+
+
+def test_schema_invariant_error_invariants_cannot_be_reassigned_post_definition() -> None:
+    """Sibling test for the round-44 metaclass attr-freeze on
+    `AuditPersisterSchemaInvariantError._INVARIANTS`."""
+    with pytest.raises(AttributeError, match="cannot reassign"):
+        AuditPersisterSchemaInvariantError._INVARIANTS = frozenset({"any"})  # type: ignore[misc]
+
+
 def test_config_error_rejects_subclass_overriding_param_hints() -> None:
     """Round-43 sharp-edges + adversarial fold (HIGH): the round-42
     allowlist is on a `ClassVar` looked up via `self._PARAM_HINTS`,
