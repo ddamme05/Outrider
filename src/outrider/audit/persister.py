@@ -125,13 +125,16 @@ _EXCLUDE_FROM_PAYLOAD: Final[set[str]] = {"sequence_number"}
 # of EACH exception type the persister raises — `str(exc)` and
 # `repr(exc)` MUST contain only schema identifiers (event_id, table/column
 # names, mismatched_fields, SHA-256 digests), never raw payload content.
-# `LLMPersisterError` at `anthropic_provider.py` consults this tuple to
-# decide whether wrapping `f"{exc!r}"` is safe: known metadata-only types
-# render via `str()`; unknown types render only as `<type-name>` to keep
-# unanticipated content out of the wrapper's message. A new exception
-# type added to this module MUST be reviewed for the metadata-only
-# property AND added to this tuple — that's the explicit contributor
-# contract.
+# `LLMPersisterError` at `anthropic_provider.py::complete()` step 9
+# (`except Exception as exc`) consults this tuple to type-narrow the
+# wrap shape: known metadata-only types render via `f"...{exc}..."`
+# with `from exc` (cause chain preserved — both wrapper message and
+# cause are content-clean); unknown types render only as
+# `f"...<{type(exc).__name__}>..."` with `from None`
+# (`__suppress_context__=True` blocks traceback walking into the
+# original exception's args/str). A new exception type added to this
+# module MUST be reviewed for the metadata-only property AND added to
+# this tuple — that's the explicit contributor contract.
 METADATA_ONLY_EXCEPTION_TYPES: tuple[type[BaseException], ...] = ()
 # Populated below after each class is defined; forward-ref-free.
 

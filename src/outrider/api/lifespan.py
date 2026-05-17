@@ -85,13 +85,28 @@ def _default_engine_factory() -> AsyncEngine:
     `IntegrityError` / `DataError` / etc. includes the bound parameters
     of the failing statement. Without this setting, a content-INSERT
     failure (e.g., FK violation on installations) would surface raw
-    `prompt` / `completion` text in `exc.args[0]`; downstream
-    `logger.exception(...)` or wrapping `LLMPersisterError(f"{exc!r}")`
-    would then bypass `RejectLLMContentFilter` (key-based, doesn't
-    pattern-match log record `message` fields — same FUP-023 gap).
-    With this set, exception strings render parameter values as `?`
-    placeholders, preserving the SQL shape for diagnostics without
-    leaking content.
+    `prompt` / `completion` text in `exc.args[0]`. The real residual
+    leak vector this setting defends against is `logger.exception(...)`
+    (or any log handler that calls `str(exc)` on the raw SQLAlchemy
+    exception BEFORE the wrapper at `anthropic_provider.py::complete()`
+    sees it) — those rendered strings bypass `RejectLLMContentFilter`
+    (key-based, doesn't pattern-match log record `message` fields, same
+    FUP-023 gap). With this set, exception strings render parameter
+    values as `?` placeholders, preserving the SQL shape for
+    diagnostics without leaking content.
+
+    NOTE on the wrapper-chain leak vector (now closed at the wrapper):
+    the round-9 + round-26 hardening of `anthropic_provider.py` no
+    longer leaks unknown exception text via the wrapper chain. For ANY
+    exception type not in `METADATA_ONLY_EXCEPTION_TYPES`, the wrapper
+    renders only `<TypeName>` and raises with `from None`
+    (`__suppress_context__=True` blocks traceback walking into the
+    original SQLAlchemy exception). So even without
+    `hide_parameters=True`, a raw SQLAlchemy exception reaching the
+    wrapper renders only its class name. The remaining concern this
+    setting addresses is the case where exception text is rendered by
+    some other handler BEFORE the wrapper sees it (e.g., SQLAlchemy
+    engine-level logging, third-party connection-pool error handlers).
     """
     try:
         database_url = os.environ["DATABASE_URL"]
