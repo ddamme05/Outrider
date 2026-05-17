@@ -193,6 +193,21 @@ class AuditPersisterConfigError(ValueError):
     construction unless `user_input` literally equals an allowlisted
     parameter name — and any new constructor parameter requires
     updating both the persister AND the allowlist here.
+
+    **Subclass-override hardening (round-43 sharp-edges + adversarial
+    fold).** Two structural defenses against the insider-threat
+    subclass-escalation vector flagged by the round-43 audit:
+    (a) `__init_subclass__` REJECTS any subclass that defines its own
+    `_PARAM_HINTS` — preventing `class MyConfigError(AuditPersisterConfigError):
+    _PARAM_HINTS = MappingProxyType({"evil": user_prompt})`; (b) the
+    lookup at construction uses the LITERAL class reference
+    `AuditPersisterConfigError._PARAM_HINTS` rather than the MRO-resolving
+    `self._PARAM_HINTS`. Both layers are necessary: (a) catches the
+    declaration; (b) catches any runtime injection via descriptor
+    protocol or `setattr`. The rejection-message renders only the
+    SHA-256 prefix of the rejected value (NOT the value itself) to
+    close the round-43 sharp-edges H2 finding — even the gate's
+    rejection message cannot leak the value that triggered it.
     """
 
     _PARAM_HINTS: ClassVar[Mapping[str, str]] = MappingProxyType(
@@ -202,14 +217,45 @@ class AuditPersisterConfigError(ValueError):
         }
     )
 
-    def __init__(self, *, param_name: str) -> None:
-        if param_name not in self._PARAM_HINTS:
-            raise ValueError(
-                f"param_name must be one of {sorted(self._PARAM_HINTS)}; "
-                f"got {param_name!r}. To add a new parameter, update "
-                f"AuditPersister.__init__ AND this allowlist together."
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        # Forbid subclasses from overriding the allowlist. A subclass that
+        # widens `_PARAM_HINTS` could be picked up by `isinstance(...,
+        # METADATA_ONLY_EXCEPTION_TYPES)` via MRO, then render a wider
+        # set of values through `str(exc)`. Reject the declaration at
+        # class-creation time so insider-threat / test-file subclass
+        # escalation fails-loud at import.
+        if "_PARAM_HINTS" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} cannot override AuditPersisterConfigError._PARAM_HINTS; "
+                "the allowlist is class-level closed by the metadata-only contract "
+                "(DECISIONS.md#016). Add a new parameter to the parent class allowlist "
+                "via a deliberate PR, not via subclass override."
             )
-        super().__init__(f"{param_name} must not be None; {self._PARAM_HINTS[param_name]}")
+
+    def __init__(self, *, param_name: str) -> None:
+        # Use LITERAL class reference for the allowlist lookup — not
+        # `self._PARAM_HINTS` (MRO-resolving) — so a subclass that
+        # somehow attached a `_PARAM_HINTS` attribute at runtime (via
+        # `setattr` or descriptor protocol, bypassing __init_subclass__)
+        # still sees the parent's allowlist at validation time.
+        if param_name not in AuditPersisterConfigError._PARAM_HINTS:
+            # Render only the SHA-256 prefix of the rejected value, NOT
+            # the value itself. The rejected value MAY be content-bearing
+            # by definition (the gate exists to catch that case). The
+            # 12-char hex prefix is correlation-stable for operator
+            # debugging without leaking what was sent.
+            digest = hashlib.sha256(param_name.encode("utf-8", errors="replace")).hexdigest()[:12]
+            raise ValueError(
+                f"param_name must be one of "
+                f"{sorted(AuditPersisterConfigError._PARAM_HINTS)}; "
+                f"got value with sha256-prefix={digest!r}, length={len(param_name)}. "
+                f"To add a new parameter, update AuditPersister.__init__ AND "
+                f"this allowlist together."
+            )
+        super().__init__(
+            f"{param_name} must not be None; {AuditPersisterConfigError._PARAM_HINTS[param_name]}"
+        )
         self.param_name = param_name
 
 
@@ -309,13 +355,30 @@ class AuditPersisterSchemaInvariantError(RuntimeError):
         }
     )
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        # Same subclass-override defense as AuditPersisterConfigError per
+        # the round-43 fold — see that class for the rationale.
+        if "_INVARIANTS" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} cannot override AuditPersisterSchemaInvariantError._INVARIANTS; "
+                "the allowlist is class-level closed by the metadata-only contract "
+                "(DECISIONS.md#016). Add a new invariant via a deliberate PR, "
+                "not via subclass override."
+            )
+
     def __init__(self, *, event_id: UUID, invariant: str) -> None:
-        if invariant not in self._INVARIANTS:
+        # Literal class reference for the allowlist lookup; see the
+        # round-43 hardening rationale on AuditPersisterConfigError.
+        if invariant not in AuditPersisterSchemaInvariantError._INVARIANTS:
+            digest = hashlib.sha256(invariant.encode("utf-8", errors="replace")).hexdigest()[:12]
             raise ValueError(
-                f"invariant must be one of {sorted(self._INVARIANTS)}; "
-                f"got {invariant!r}. Adding a new schema-invariant violation "
-                f"site requires updating the allowlist on this class — "
-                f"per the round-42 metadata-only contract enforcement."
+                f"invariant must be one of "
+                f"{sorted(AuditPersisterSchemaInvariantError._INVARIANTS)}; "
+                f"got value with sha256-prefix={digest!r}, length={len(invariant)}. "
+                f"Adding a new schema-invariant violation site requires updating "
+                f"the allowlist on this class — per the round-42 metadata-only "
+                f"contract enforcement."
             )
         super().__init__(f"{invariant} for event_id={event_id}; schema invariant violated")
         self.event_id = event_id
