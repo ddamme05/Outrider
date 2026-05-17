@@ -649,6 +649,85 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
     )
 
 
+def test_config_error_rejects_subclass_overriding_param_hints() -> None:
+    """Round-43 sharp-edges + adversarial fold (HIGH): the round-42
+    allowlist is on a `ClassVar` looked up via `self._PARAM_HINTS`,
+    which Python resolves through MRO. A subclass override would widen
+    the allowlist while STILL matching the `isinstance(...,
+    METADATA_ONLY_EXCEPTION_TYPES)` check at the wrapper (which walks
+    MRO), reopening the content-leak vector round-42 closed.
+
+    Round-43 added `__init_subclass__` that REJECTS the subclass
+    declaration at class-creation time. A test file (or any insider-
+    threat code path) trying to define a widening subclass fails to
+    import. This test pins the contract by attempting to define such
+    a subclass inside `pytest.raises`.
+    """
+    from types import MappingProxyType
+
+    with pytest.raises(TypeError, match="cannot override AuditPersisterConfigError._PARAM_HINTS"):
+
+        class _WideningConfigError(AuditPersisterConfigError):  # noqa: N818
+            _PARAM_HINTS = MappingProxyType({"anything": "leaks anything"})
+
+
+def test_schema_invariant_error_rejects_subclass_overriding_invariants() -> None:
+    """Sibling test for the round-43 subclass-override hardening on
+    `AuditPersisterSchemaInvariantError._INVARIANTS`. Same threat model
+    as the ConfigError sibling above."""
+    with pytest.raises(
+        TypeError,
+        match="cannot override AuditPersisterSchemaInvariantError._INVARIANTS",
+    ):
+
+        class _WideningInvariantError(AuditPersisterSchemaInvariantError):  # noqa: N818
+            _INVARIANTS = frozenset({"any invariant works now"})
+
+
+def test_config_error_rejection_message_does_not_leak_value() -> None:
+    """Round-43 sharp-edges HIGH-2 fold: the allowlist rejection message
+    must NOT echo the rejected value via `{value!r}`. If a future
+    contributor writes `AuditPersisterConfigError(param_name=user_input)`,
+    the construct-time ValueError rejection is itself a leak path —
+    the rejected value MAY BE content-bearing by definition (the gate
+    exists to catch that case). Round-43 changed the rejection message
+    to render only the SHA-256 prefix + length of the value.
+
+    A future log handler that captures the ValueError and renders
+    `str(exc)` sees only the digest, not the value.
+    """
+    sentinel = "OUTRIDER_REJECTED_VALUE_DO_NOT_LEAK_xyz789"
+
+    with pytest.raises(ValueError) as exc_info:
+        AuditPersisterConfigError(param_name=sentinel)
+
+    rendered = str(exc_info.value)
+    assert sentinel not in rendered, (
+        f"Rejection message leaked the rejected value: {rendered!r}. "
+        f"Round-43 contract: render only sha256-prefix + length, never the "
+        f"rejected value itself, because the value MAY be content-bearing."
+    )
+    # Diagnostic info IS present in safe form.
+    assert "sha256-prefix=" in rendered
+    assert "length=" in rendered
+
+
+def test_schema_invariant_error_rejection_message_does_not_leak_value() -> None:
+    """Sibling test for the round-43 sha256-prefix rejection message
+    on AuditPersisterSchemaInvariantError."""
+    from uuid import uuid4
+
+    sentinel = "OUTRIDER_INVARIANT_VALUE_DO_NOT_LEAK_xyz789"
+
+    with pytest.raises(ValueError) as exc_info:
+        AuditPersisterSchemaInvariantError(event_id=uuid4(), invariant=sentinel)
+
+    rendered = str(exc_info.value)
+    assert sentinel not in rendered
+    assert "sha256-prefix=" in rendered
+    assert "length=" in rendered
+
+
 def test_config_error_rejects_unknown_param_name() -> None:
     """Round-42 codex fold: `AuditPersisterConfigError.__init__` validates
     `param_name` against a class-level allowlist. A future contributor
@@ -790,10 +869,13 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
 
     # Allowlist of `str` kwarg names that legitimately render class-level
     # identifiers in `str(exc)`. The round-41 strict-keyword refactor
-    # introduced typed constructors that take `param_name`, `hint`,
-    # `invariant` etc. — these are class-level identifier strings by
-    # contract, NOT raw content. The property test must distinguish
-    # them from arbitrary content-bearing `str` kwargs that a future
+    # introduced typed constructors taking class-level-identifier kwargs;
+    # round-42 narrowed `AuditPersisterConfigError` to ONLY `param_name`
+    # (the `hint` kwarg was removed; hint is derived internally from
+    # the class-level `_PARAM_HINTS` allowlist) AND added a runtime
+    # allowlist check on `invariant` for `SchemaInvariantError`. The
+    # property test must distinguish these surviving identifier kwargs
+    # from arbitrary content-bearing `str` kwargs that a future
     # contributor might add (e.g., `prompt`, `completion`, `message`).
     # ANY str-typed kwarg NOT in this set gets the FORBIDDEN sentinel
     # and is expected to fail the leak assertion.
