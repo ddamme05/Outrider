@@ -107,6 +107,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AuditPersister",
     "AuditPersisterConfigError",
+    "AuditPersisterEventRequestFieldMismatchError",
     "AuditPersisterIdempotencyConflict",
     "AuditPersisterReviewIdMismatchError",
     "AuditPersisterReviewNotFoundError",
@@ -362,7 +363,64 @@ class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlis
         self.invariant = invariant
 
 
-class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818 — spec-defined name; "Conflict" is the semantic category, not "Error"
+class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_FrozenAllowlistMeta):
+    """`persist()` was called with `event.X != request.X` for a
+    pass-through field that drives eval isolation, audit attribution,
+    or replay correctness. Same threat model as ReviewIdMismatch but
+    for non-review-id fields shared between LLMRequest and LLMCallEvent.
+
+    Strict-keyword `field_name: str` constructor; field name must
+    match an allowlisted identifier in `_CHECKED_FIELDS` or
+    construction raises `ValueError`. The message intentionally does
+    NOT render the disagreeing values — those may be content-bearing
+    (e.g., `context_summary` carries scope-unit paths). Operators
+    query the DB to see the actual values; the exception names only
+    the field.
+    """
+
+    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"_CHECKED_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
+    )
+
+    _CHECKED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "is_eval",
+            "node_id",
+            "context_summary",
+            "prompt_template_version",
+            "degraded_mode",
+        }
+    )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "_CHECKED_FIELDS" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} cannot override "
+                "AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS; "
+                "the allowlist is class-level closed by the metadata-only contract "
+                "(DECISIONS.md#016)."
+            )
+
+    def __init__(self, *, field_name: str) -> None:
+        cls = AuditPersisterEventRequestFieldMismatchError
+        if field_name not in cls._CHECKED_FIELDS:
+            digest = hashlib.sha256(field_name.encode("utf-8", errors="replace")).hexdigest()[:12]
+            raise ValueError(
+                f"field_name must be one of {sorted(cls._CHECKED_FIELDS)}; "
+                f"got value with sha256-prefix={digest!r}, length={len(field_name)}."
+            )
+        super().__init__(
+            f"persist() called with mismatched {field_name}: "
+            f"event.{field_name} disagrees with request.{field_name}. "
+            "Producer must build LLMCallEvent fields from LLMRequest (or "
+            "vice versa). Persister refuses to attribute across diverging scopes."
+        )
+        self.field_name = field_name
+
+
+# Spec-defined name; "Conflict" is the semantic category, not "Error".
+class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818
     """Same `event_id` re-emission with different content.
 
     Metadata-only by contract per `DECISIONS.md#016` point 4 (logs stay
@@ -383,8 +441,8 @@ class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818 — spec-defi
       **Intentionally NOT populated for small-primitive content-row columns**
       (`installation_id: int`, `is_eval: bool` — a digest of `True` vs
       `False` carries no information beyond the name in `mismatched_fields`).
-      Pin test:
-      `tests/unit/test_audit_persister.py::test_compute_content_field_digests_intentionally_omits_non_text_columns`.
+      Pin test: `tests/unit/test_audit_persister.py
+      ::test_compute_content_field_digests_intentionally_omits_non_text_columns`.
 
     Consumers MUST treat `mismatched_fields` as the authoritative list and
     `field_digests` as best-effort detail for the fields where a digest is
@@ -445,6 +503,7 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterReviewNotFoundError,
     AuditPersisterReviewIdMismatchError,
     AuditPersisterSchemaInvariantError,
+    AuditPersisterEventRequestFieldMismatchError,
     AuditPersisterIdempotencyConflict,
 )
 
@@ -709,19 +768,23 @@ class AuditPersister:
           AuditPersisterIdempotencyConflict: same-`event_id` re-emit with
             different content.
         """
-        # Pre-tx consistency check: event and request MUST agree on review_id.
-        # Today's AnthropicProvider.complete() builds the event from the
-        # request (so they always agree), but LLMExchangePersister is a
-        # public Protocol and future providers / test mocks could violate
-        # this. Without the check, the persister would lookup installation_id
-        # via event.review_id but store request's content (prompt/completion)
-        # under that installation — misattributing audit trail.
-        # Metadata-only failure: carries only the two UUIDs + field names.
+        # Event and request must agree on review_id. Otherwise the
+        # persister would lookup installation_id via event.review_id
+        # but store request's content under that installation —
+        # misattributing the audit trail across review scopes.
         if request.review_id != event.review_id:
             raise AuditPersisterReviewIdMismatchError(
                 event_review_id=event.review_id,
                 request_review_id=request.review_id,
             )
+
+        # Pass-through fields shared between LLMRequest and LLMCallEvent
+        # must agree. The persister stores content from request while
+        # taking audit metadata from event; mismatch means rows would
+        # land under the wrong eval / attribution / replay scope.
+        for field_name in AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS:
+            if getattr(event, field_name) != getattr(request, field_name):
+                raise AuditPersisterEventRequestFieldMismatchError(field_name=field_name)
 
         payload = _serialize_event_payload(event)
         retention_expires_at: datetime = (

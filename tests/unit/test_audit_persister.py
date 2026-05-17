@@ -16,6 +16,7 @@ from outrider.audit.persister import (
     METADATA_ONLY_EXCEPTION_TYPES,
     AuditPersister,
     AuditPersisterConfigError,
+    AuditPersisterEventRequestFieldMismatchError,
     AuditPersisterIdempotencyConflict,
     AuditPersisterReviewIdMismatchError,
     AuditPersisterReviewNotFoundError,
@@ -548,6 +549,7 @@ def test_metadata_only_exception_types_lists_every_persister_exception() -> None
         AuditPersisterReviewNotFoundError,
         AuditPersisterReviewIdMismatchError,
         AuditPersisterSchemaInvariantError,
+        AuditPersisterEventRequestFieldMismatchError,
         AuditPersisterIdempotencyConflict,
     }
     assert set(METADATA_ONLY_EXCEPTION_TYPES) == expected
@@ -646,6 +648,35 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
         "allowlist (or deliberately exclude with a comment + add to "
         "this test's exclude set)."
     )
+
+
+def test_event_request_field_mismatch_error_rejects_unknown_field_name() -> None:
+    """`field_name` must be in the canonical `_CHECKED_FIELDS` allowlist.
+    A future caller passing user-derived strings is rejected at
+    construction with the SHA-256-prefix rejection shape."""
+    AuditPersisterEventRequestFieldMismatchError(field_name="is_eval")  # happy path
+    AuditPersisterEventRequestFieldMismatchError(field_name="node_id")  # happy path
+
+    with pytest.raises(ValueError, match="field_name must be one of"):
+        AuditPersisterEventRequestFieldMismatchError(field_name="anything_else")
+
+
+def test_event_request_field_mismatch_error_does_not_leak_disagreeing_values() -> None:
+    """The message names only the field; the values disagreeing across
+    event/request are NOT rendered (they may carry content)."""
+    secret = "OUTRIDER_SECRET_VALUE_DO_NOT_LEAK_xyz789"  # noqa: S105 — test sentinel
+
+    exc = AuditPersisterEventRequestFieldMismatchError(field_name="is_eval")
+    # Sanity: the field name IS in the message (it's a class-level identifier).
+    assert "is_eval" in str(exc)
+    # The exception accepts ONLY field_name; there is no constructor
+    # parameter through which a caller could inject a value sentinel.
+    sig = inspect.signature(AuditPersisterEventRequestFieldMismatchError.__init__)
+    assert set(sig.parameters) - {"self"} == {"field_name"}
+    # Constructed instance carries field_name only.
+    assert exc.field_name == "is_eval"
+    assert secret not in str(exc)
+    assert secret not in repr(exc)
 
 
 def test_config_error_frozen_allowlist_names_is_itself_frozen() -> None:
@@ -866,6 +897,7 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
         {
             "param_name",  # AuditPersisterConfigError
             "invariant",  # AuditPersisterSchemaInvariantError
+            "field_name",  # AuditPersisterEventRequestFieldMismatchError
         }
     )
 
