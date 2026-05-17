@@ -443,12 +443,17 @@ async def persister_setup(migrated_db: str) -> AsyncGenerator[PersisterTestSetup
     `hide_parameters=True` mirrors the production engine factory at
     `src/outrider/api/lifespan.py::_default_engine_factory`. Without it,
     SQLAlchemy exception strings would include bound `prompt`/`completion`
-    values from failing content INSERTs — violating the #016 logs-stay-
-    metadata-only contract once those exceptions cross the persister's
-    public surface and get wrapped by `LLMPersisterError(f"{exc!r}")`
-    in `AnthropicProvider.complete()`. Tests that exercise failure paths
-    rely on this setting being live so the assertions match production
-    behavior.
+    values from failing content INSERTs. The real residual leak vector
+    this defends against is any log handler that renders `str(exc)` on
+    the raw SQLAlchemy exception BEFORE the wrapper at
+    `AnthropicProvider.complete()` Step 9 sees it (engine-level logging,
+    third-party pool handlers, ad-hoc `logger.exception(...)` calls in
+    test code). The wrapper-chain vector is separately closed via the
+    round-9 + round-26 hardening: unknown exception types render only
+    as `<TypeName>` and raise with `from None`, suppressing the cause
+    chain via `__suppress_context__`. Tests that exercise failure paths
+    rely on this engine setting being live so the assertions match
+    production behavior.
     """
     engine = create_async_engine(migrated_db, hide_parameters=True)
     try:

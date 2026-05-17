@@ -115,6 +115,28 @@ def _default_engine_factory() -> AsyncEngine:
             "DATABASE_URL env var is required for the FastAPI lifespan. "
             "See .env.example for the canonical postgres URL shape."
         ) from exc
+
+    # Driver-allowlist gate: SQLAlchemy's `create_async_engine` accepts ANY
+    # URL string and constructs lazily (no connection happens at construct
+    # time). If an operator copies a SYNC URL from pgAdmin/alembic context
+    # (e.g., `postgresql://...` or `postgresql+psycopg2://...`), construction
+    # succeeds; the failure surfaces deep in the first `persister.persist()`
+    # call as `InvalidRequestError: The asyncio extension requires an async
+    # driver` — far from the configuration error. Fail-loud at lifespan
+    # startup instead.
+    if not (
+        database_url.startswith("postgresql+psycopg://")
+        or database_url.startswith("postgresql+asyncpg://")
+    ):
+        raise RuntimeError(
+            "DATABASE_URL must use an async driver scheme — "
+            "'postgresql+psycopg://' (psycopg3 async) or "
+            "'postgresql+asyncpg://'. Bare 'postgresql://' resolves to the "
+            "sync psycopg2 driver, which crashes `create_async_engine` on "
+            "first use deep inside a request rather than at startup. "
+            "See .env.example for the canonical URL shape."
+        )
+
     return create_async_engine(database_url, hide_parameters=True)
 
 

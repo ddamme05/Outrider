@@ -164,6 +164,70 @@ def test_idempotency_conflict_carries_metadata_only() -> None:
         assert forbidden not in exc_vars
 
 
+def test_idempotency_conflict_constructor_enforces_digest_subset_invariant() -> None:
+    """Pins the round-38 sharp-edges fold: the docstring invariant
+    `set(field_digests) ⊆ set(mismatched_fields)` is now enforced at
+    construction. A call site that swaps argument order, or passes
+    digests computed over a stale field set, would otherwise ship a
+    metadata-only-looking exception whose diagnostic claims are
+    internally inconsistent — `mismatched_fields` says one thing,
+    `field_digests` keys say another. Constructor MUST fail-loud.
+
+    Metadata-only contract preserved: the validation error message
+    names only field-name strings (class-level identifiers, never
+    content); no payload bytes leak.
+    """
+    from uuid import uuid4
+
+    # Happy path: digest keys ⊆ mismatched fields → no raise.
+    exc_ok = AuditPersisterIdempotencyConflict(
+        event_id=uuid4(),
+        mismatched_fields=("prompt", "completion", "installation_id"),
+        field_digests={
+            "prompt": FieldDigest("a" * 64, "b" * 64, 10, 12),
+            # installation_id intentionally omitted from digests
+            # (text-only asymmetry from round-26+27 design intent).
+        },
+    )
+    assert "prompt" in exc_ok.mismatched_fields
+    assert "installation_id" in exc_ok.mismatched_fields
+    assert "installation_id" not in exc_ok.field_digests
+
+    # Happy path: empty digests is valid (e.g., only primitive-column mismatch).
+    exc_primitives_only = AuditPersisterIdempotencyConflict(
+        event_id=uuid4(),
+        mismatched_fields=("installation_id", "is_eval"),
+        field_digests={},
+    )
+    assert exc_primitives_only.mismatched_fields == ("installation_id", "is_eval")
+    assert exc_primitives_only.field_digests == {}
+
+    # Failure path: digest key NOT in mismatched_fields → ValueError.
+    with pytest.raises(ValueError, match="subset of mismatched_fields"):
+        AuditPersisterIdempotencyConflict(
+            event_id=uuid4(),
+            mismatched_fields=("prompt",),
+            field_digests={
+                "prompt": FieldDigest("a" * 64, "b" * 64, 10, 12),
+                "completion": FieldDigest("c" * 64, "d" * 64, 20, 22),
+            },
+        )
+
+    # Failure-path message names the OFFENDING field key, not raw content
+    # (the constructor validation is itself metadata-only).
+    with pytest.raises(ValueError) as exc_info:
+        AuditPersisterIdempotencyConflict(
+            event_id=uuid4(),
+            mismatched_fields=("prompt",),
+            field_digests={"unknown_field": FieldDigest("a" * 64, "b" * 64, 1, 1)},
+        )
+    assert "unknown_field" in str(exc_info.value)
+    # The validation message itself contains only field-name strings,
+    # never raw payload content (FieldDigest fields are SHA-256 + lengths).
+    for forbidden_content in ("INTERNAL_SECRET", "raw_payload", "prompt_text"):
+        assert forbidden_content not in str(exc_info.value)
+
+
 def test_idempotency_conflict_str_does_not_contain_raw_content() -> None:
     """`str(exc)` is what flows to log records' `message` field. It must
     not contain raw prompt/completion/payload text — the entire reason

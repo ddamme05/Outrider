@@ -1,13 +1,18 @@
 """Engine-level hide_parameters contract — bound prompt/completion never
 appear in SQLAlchemy exception strings.
 
-Codex sharp-edges finding: `LLMPersisterError(f"{exc!r}")` in
-`AnthropicProvider.complete()` wraps the persister's exceptions with
-the original exception's repr; SQLAlchemy's default `IntegrityError`
-string representation embeds bound parameter values, which for a
-failing content INSERT would carry raw `prompt` / `completion` text.
-`RejectLLMContentFilter` is key-based (per FUP-023) and would not
-strip content from the log record's `message` field.
+Original codex sharp-edges finding (round-3-era): SQLAlchemy's default
+`IntegrityError` string representation embeds bound parameter values,
+which for a failing content INSERT would carry raw `prompt` /
+`completion` text. `RejectLLMContentFilter` is key-based (per FUP-023)
+and would not strip content from the log record's `message` field.
+The residual leak vector remaining today is any log handler that
+renders `str(exc)` on the raw SQLAlchemy exception BEFORE the wrapper
+at `AnthropicProvider.complete()` Step 9 sees it (engine-level
+logging, third-party pool handlers, ad-hoc `logger.exception(...)`
+calls in test code). The wrapper-chain vector for unknown exception
+types is separately closed via the round-9 + round-26 hardening
+(`<TypeName>` rendering + `from None` + `__suppress_context__`).
 
 The defense: `hide_parameters=True` on the engine. SQLAlchemy then
 renders bound parameter values as placeholders in exception strings.
