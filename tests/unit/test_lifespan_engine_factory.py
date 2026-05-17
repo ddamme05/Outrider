@@ -82,28 +82,17 @@ async def test_default_engine_factory_accepts_psycopg_async_scheme(
         await engine.dispose()
 
 
-async def test_default_engine_factory_accepts_asyncpg_scheme_via_gate_only(
+def test_default_engine_factory_rejects_asyncpg_scheme(
     clean_database_url_env: None,
 ) -> None:
-    """`postgresql+asyncpg://` is allowlisted as a forward-compatibility
-    seam; the project uses psycopg3 today (asyncpg is not installed) but
-    the gate doesn't lock out a future asyncpg migration. Test the GATE
-    by patching `create_async_engine` so we don't trigger the missing-
-    driver ModuleNotFoundError; the assertion is "the gate let this URL
-    through," not "SQLAlchemy can construct an asyncpg engine"."""
-    from unittest.mock import MagicMock, patch
-
+    """`postgresql+asyncpg://` is rejected — the asyncpg driver is not a
+    project dependency (DECISIONS.md#001 standardizes on psycopg3 async),
+    so accepting the scheme would advertise a URL shape that crashes
+    `create_async_engine` with `ModuleNotFoundError` at construction.
+    Reject at lifespan startup with the same gate that catches sync URLs."""
     os.environ["DATABASE_URL"] = "postgresql+asyncpg://user:pw@host:5432/db"
-    sentinel_engine = MagicMock(name="async_engine_sentinel")
-    with patch(
-        "outrider.api.lifespan.create_async_engine", return_value=sentinel_engine
-    ) as create_mock:
-        returned = _default_engine_factory()
-    assert returned is sentinel_engine
-    # Gate let the URL through; create_async_engine was called with it.
-    create_mock.assert_called_once_with(
-        "postgresql+asyncpg://user:pw@host:5432/db", hide_parameters=True
-    )
+    with pytest.raises(RuntimeError, match="canonical async driver"):
+        _default_engine_factory()
 
 
 def test_default_engine_factory_rejects_completely_unrelated_scheme(

@@ -124,17 +124,18 @@ def _default_engine_factory() -> AsyncEngine:
     # call as `InvalidRequestError: The asyncio extension requires an async
     # driver` — far from the configuration error. Fail-loud at lifespan
     # startup instead.
-    if not (
-        database_url.startswith("postgresql+psycopg://")
-        or database_url.startswith("postgresql+asyncpg://")
-    ):
+    # Single allowed scheme per DECISIONS.md#001 (psycopg3 async only;
+    # asyncpg is not a project dependency). Bare `postgresql://`
+    # resolves to sync psycopg2 and crashes `create_async_engine` deep
+    # in the first request; reject at startup.
+    if not database_url.startswith("postgresql+psycopg://"):
         raise RuntimeError(
-            "DATABASE_URL must use an async driver scheme — "
-            "'postgresql+psycopg://' (psycopg3 async) or "
-            "'postgresql+asyncpg://'. Bare 'postgresql://' resolves to the "
-            "sync psycopg2 driver, which crashes `create_async_engine` on "
-            "first use deep inside a request rather than at startup. "
-            "See .env.example for the canonical URL shape."
+            "DATABASE_URL must use the canonical async driver scheme "
+            "'postgresql+psycopg://' (psycopg3 async). Other schemes — "
+            "bare 'postgresql://' (sync psycopg2), 'postgresql+psycopg2://' "
+            "(sync), 'postgresql+asyncpg://' (driver not installed) — are "
+            "rejected at lifespan startup so misconfiguration fails-loud "
+            "instead of crashing on first request. See .env.example."
         )
 
     return create_async_engine(database_url, hide_parameters=True)
