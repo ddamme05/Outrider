@@ -107,11 +107,11 @@ def _build_llm_call_event() -> LLMCallEvent:
         cost_usd=0.0001,
         pricing_version="v1",
         latency_ms=100,
-        prompt_hash="sha256-abc",
+        prompt_hash="a" * 64,
         cache_hit=False,
         context_summary=(_entry(),),
         prompt_template_version="analyze@1.0.0",
-        system_prompt_hash="sha256-def",
+        system_prompt_hash="b" * 64,
         degraded_mode=False,
     )
 

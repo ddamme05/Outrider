@@ -98,7 +98,7 @@ def _make_llm_call_event(
         cost_usd=0.001,
         pricing_version="1.0.0",
         latency_ms=250,
-        prompt_hash=_canonical_prompt_hash(system_prompt, user_prompt),
+        prompt_hash=_canonical_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt),
         cache_hit=False,
         context_summary=(),
         prompt_template_version="triage:1",

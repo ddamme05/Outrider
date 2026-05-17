@@ -585,7 +585,7 @@ class LLMProvider(Protocol):
 _PROMPT_HASH_DELIMITER: Final[bytes] = b"\x1e"
 
 
-def _canonical_prompt_hash(system_prompt: str, user_prompt: str) -> str:
+def _canonical_prompt_hash(*, system_prompt: str, user_prompt: str) -> str:
     """Replay-equivalence canonicalization for `LLMCallEvent.prompt_hash`.
 
     SHA-256 over `system_prompt.encode("utf-8") + b"\\x1e" +
@@ -593,8 +593,10 @@ def _canonical_prompt_hash(system_prompt: str, user_prompt: str) -> str:
     trimming, no line-ending conversion. Pinned by AC#15: a known
     (system_prompt, user_prompt) pair produces a known hex digest.
 
-    Drift in this function silently breaks replay reconstruction — the
-    paired test must fail loud if anyone changes the canonicalization.
+    Keyword-only because both args are `str` and adjacent; positional
+    swap would silently produce a different valid SHA-256 with no type
+    signal. Sibling pattern matches `compute_finding_content_hash` in
+    `audit/events.py`.
     """
     return hashlib.sha256(
         system_prompt.encode("utf-8") + _PROMPT_HASH_DELIMITER + user_prompt.encode("utf-8")

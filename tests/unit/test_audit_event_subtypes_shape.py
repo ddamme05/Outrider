@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from outrider.audit.events import (
     AgentTransitionEvent,
@@ -53,7 +54,7 @@ def _llm_call_kwargs() -> dict[str, Any]:
         "cached_tokens": 0,
         "cost_usd": 0.01,
         "latency_ms": 800,
-        "prompt_hash": "sha256-abc",
+        "prompt_hash": "a" * 64,
         "cache_hit": False,
         "context_summary": (
             ContextManifestEntry(
@@ -66,7 +67,7 @@ def _llm_call_kwargs() -> dict[str, Any]:
         ),
         "prompt_template_version": "analyze@1.0.0",
         "pricing_version": "v1",
-        "system_prompt_hash": "sha256-def",
+        "system_prompt_hash": "b" * 64,
         "degraded_mode": False,
     }
 
@@ -172,3 +173,16 @@ def test_subtype_admits_with_valid_fields_and_event_type_literal_correct(
     event = event_class(review_id=uuid4(), **kwargs)
     assert event.event_type == expected_event_type
     assert event.review_id is not None
+
+
+@pytest.mark.parametrize("field_name", ["prompt_hash", "system_prompt_hash"])
+def test_llm_call_event_hash_fields_reject_non_hex(field_name: str) -> None:
+    """`LLMCallEvent.prompt_hash` and `system_prompt_hash` must be SHA-256
+    lowercase hex (matches sibling `FindingEvent.finding_content_hash`).
+    Catches a producer-side bug at construction time rather than waiting
+    for the persister's pre-tx recomputation guard to catch it at INSERT.
+    """
+    kwargs = _llm_call_kwargs()
+    kwargs[field_name] = "sha256-abc"  # legacy literal; not lowercase hex
+    with pytest.raises(ValidationError):
+        LLMCallEvent(review_id=uuid4(), **kwargs)

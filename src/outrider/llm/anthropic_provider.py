@@ -381,7 +381,9 @@ class AnthropicProvider:
         )
 
         # Step 7: hash the prompts.
-        prompt_hash = _canonical_prompt_hash(request.system_prompt, request.user_prompt)
+        prompt_hash = _canonical_prompt_hash(
+            system_prompt=request.system_prompt, user_prompt=request.user_prompt
+        )
         system_prompt_hash = _canonical_system_prompt_hash(request.system_prompt)
 
         # Prompt-caching silently-disabled diagnostic.

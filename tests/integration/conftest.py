@@ -321,9 +321,9 @@ ReviewPhaseEventFactory = Callable[..., "ReviewPhaseEvent"]
 # Canonical prompts used by the request + event factories so their
 # prompt_hash / system_prompt_hash values agree by construction. The
 # persister's pre-tx guard checks `event.prompt_hash ==
-# _canonical_prompt_hash(request.system_prompt, request.user_prompt)`
-# — the factories share these prompts so hashes line up unless a test
-# deliberately diverges them.
+# _canonical_prompt_hash(system_prompt=request.system_prompt,
+# user_prompt=request.user_prompt)` — the factories share these prompts
+# so hashes line up unless a test deliberately diverges them.
 _FACTORY_SYSTEM_PROMPT = "the system prompt"
 _FACTORY_USER_PROMPT = "the user prompt"
 
@@ -358,7 +358,9 @@ def llm_call_event_factory() -> LLMCallEventFactory:
             cost_usd=cost_usd,
             pricing_version="1.0.0",
             latency_ms=latency_ms,
-            prompt_hash=_canonical_prompt_hash(system_prompt, user_prompt),
+            prompt_hash=_canonical_prompt_hash(
+                system_prompt=system_prompt, user_prompt=user_prompt
+            ),
             cache_hit=False,
             context_summary=(),
             prompt_template_version="triage:1",
