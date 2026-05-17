@@ -263,6 +263,23 @@ class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818 — spec-defi
         mismatched_fields: tuple[str, ...],
         field_digests: Mapping[str, FieldDigest],
     ) -> None:
+        # Enforce the docstring invariant `set(field_digests) ⊆ set(mismatched_fields)`
+        # at construction time. A call site that swaps argument order, or
+        # passes digests computed over a stale field set, would otherwise
+        # ship a metadata-only-looking exception whose diagnostic claims
+        # are internally inconsistent — `mismatched_fields` says one thing,
+        # `field_digests` keys say another. Fail-loud on construction so
+        # the bug surfaces at the offending site, not in operator forensics.
+        # Metadata-only preserved: the assertion message names only field
+        # names (which are class-level identifiers, never content).
+        digest_keys = set(field_digests)
+        mismatched_set = set(mismatched_fields)
+        if not digest_keys.issubset(mismatched_set):
+            extra = digest_keys - mismatched_set
+            raise ValueError(
+                f"field_digests keys must be subset of mismatched_fields; "
+                f"got extra digest keys not in mismatched_fields: {sorted(extra)}"
+            )
         self.event_id = event_id
         self.mismatched_fields = mismatched_fields
         self.field_digests = field_digests

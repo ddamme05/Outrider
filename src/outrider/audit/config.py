@@ -50,6 +50,13 @@ class RetentionSettings(BaseSettings):
     The `gt=timedelta(0)` constraint rejects zero AND negative values at
     construction, surfacing operator misconfiguration before any content
     row lands.
+
+    **Test-construction pattern.** `frozen=True` blocks both attribute
+    reassignment AND `model_copy(update={...})` (the copy raises
+    ValidationError on the frozen check). Tests that need a non-default
+    TTL must construct via explicit kwargs:
+    `RetentionSettings(llm_content_retention_ttl=timedelta(days=N))`.
+    Reaching for `model_copy` first will produce a confusing error.
     """
 
     model_config = SettingsConfigDict(
