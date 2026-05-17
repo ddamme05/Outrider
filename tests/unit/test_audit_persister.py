@@ -557,13 +557,14 @@ def test_schema_invariant_error_str_carries_only_metadata() -> None:
     """`AuditPersisterSchemaInvariantError.__str__` must contain only
     schema identifiers (event_id, column name) — never payload content.
     Pinned because the bare `RuntimeError` it replaced was at risk under
-    the wrapper's `f"{exc!r}"` interpolation."""
+    the wrapper's `f"{exc!r}"` interpolation. Round-41 fold updated to
+    use the strict-keyword constructor."""
     from uuid import uuid4
 
     event_id = uuid4()
     exc = AuditPersisterSchemaInvariantError(
-        f"audit_events.payload is None for event_id={event_id}; "
-        "schema invariant violated (payload is NOT NULL)"
+        event_id=event_id,
+        invariant="audit_events.payload NOT NULL",
     )
     rendered = str(exc)
     # Schema identifiers present.
@@ -648,6 +649,33 @@ def test_every_persister_exception_is_metadata_only_listed() -> None:
     )
 
 
+def test_metadata_only_classes_reject_positional_construction() -> None:
+    """Round-41 codex fold (HIGH): structural defense against future
+    drift. The previous shape — classes inheriting `Exception.__init__(*args)`
+    untouched — allowed `AuditPersisterReviewNotFoundError(request.user_prompt)`
+    to construct successfully, storing the prompt in `args[0]`. The
+    wrapper at `AnthropicProvider.complete()` step 9 would then render
+    `f"...{exc}..."` via its METADATA_ONLY type-narrow branch (because
+    the class IS allowlisted), leaking the prompt fragment.
+
+    Round-41 refactored each allowlisted class to a strict-keyword
+    constructor that takes only typed identifiers (UUID,
+    class-level-identifier strings). Positional `Class("any_string")`
+    now raises TypeError at construction. This test pins that contract:
+    every class in `METADATA_ONLY_EXCEPTION_TYPES` MUST reject
+    positional construction with a single string arg.
+
+    A future contributor who tries `AuditPersisterReviewNotFoundError(
+    f"prompt was {user_prompt}")` gets a TypeError, not a silent leak.
+    The strict-keyword shape forces them to either use a typed kwarg
+    (UUID/identifier-only, no content path) or change the API
+    (forcing review).
+    """
+    for exc_cls in METADATA_ONLY_EXCEPTION_TYPES:
+        with pytest.raises(TypeError):
+            exc_cls("any positional string would be content-leak-risky")  # type: ignore[call-arg]
+
+
 def test_idempotency_conflict_constructor_has_no_content_bearing_params() -> None:
     """Round-40 codex fold: structural pin on `AuditPersisterIdempotencyConflict`'s
     constructor signature. The general property test below special-cases
@@ -713,9 +741,26 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
     import inspect
     from uuid import uuid4
 
-    # Two sentinels: one allowed in field-name slots, one strictly forbidden.
+    # Two sentinels: one allowed in identifier slots, one strictly forbidden.
     field_name_sentinel = "OUTRIDER_FIELD_NAME_SENTINEL_abc123"
     forbidden_content_sentinel = "OUTRIDER_FORBIDDEN_CONTENT_SENTINEL_xyz789"
+
+    # Allowlist of `str` kwarg names that legitimately render class-level
+    # identifiers in `str(exc)`. The round-41 strict-keyword refactor
+    # introduced typed constructors that take `param_name`, `hint`,
+    # `invariant` etc. — these are class-level identifier strings by
+    # contract, NOT raw content. The property test must distinguish
+    # them from arbitrary content-bearing `str` kwargs that a future
+    # contributor might add (e.g., `prompt`, `completion`, `message`).
+    # ANY str-typed kwarg NOT in this set gets the FORBIDDEN sentinel
+    # and is expected to fail the leak assertion.
+    class_level_identifier_kwarg_names = frozenset(
+        {
+            "param_name",  # AuditPersisterConfigError
+            "hint",  # AuditPersisterConfigError
+            "invariant",  # AuditPersisterSchemaInvariantError
+        }
+    )
 
     for exc_cls in METADATA_ONLY_EXCEPTION_TYPES:
         # Discover the constructor signature; build a kwargs dict that
@@ -727,12 +772,16 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
                 continue
             ann = param.annotation
             if ann is str or ann == "str":
-                # ANY str-typed kwarg gets the FORBIDDEN sentinel. The
-                # canonical metadata-only classes have no `str` kwargs
-                # today (only UUID/tuple/Mapping). A future contributor
-                # adding `prompt: str = ""` would receive the forbidden
-                # sentinel via this branch and fail the leak assertion.
-                kwargs[name] = forbidden_content_sentinel
+                # Distinguish identifier-style kwargs from content-bearing
+                # ones. Identifier-style kwargs use the FIELD_NAME sentinel
+                # (allowed to render); content-bearing kwargs use the
+                # FORBIDDEN sentinel (must not render anywhere). A future
+                # contributor adding `prompt: str = ""` would hit the
+                # ELSE branch and receive the forbidden sentinel.
+                if name in class_level_identifier_kwarg_names:
+                    kwargs[name] = field_name_sentinel
+                else:
+                    kwargs[name] = forbidden_content_sentinel
             elif "UUID" in str(ann):
                 kwargs[name] = uuid4()
             elif "tuple" in str(ann).lower():

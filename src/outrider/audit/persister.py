@@ -82,6 +82,13 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
+# Runtime import: typed-kwarg signatures on the strict-keyword exception
+# constructors (round-41 fold) reference UUID as a parameter annotation;
+# TYPE_CHECKING-only would only suffice if annotations were string-quoted,
+# but the runtime-validated parameter shape benefits from a real type at
+# module import.
+from uuid import UUID  # noqa: TC003 — runtime annotation needed for typed exception constructors
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
@@ -92,7 +99,6 @@ from outrider.db.models.reviews import Review
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
-    from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -169,7 +175,20 @@ class AuditPersisterConfigError(ValueError):
 
     Mirrors the `BuildGraphError` / `LLMMissingAPIKeyError` precedent: fail
     loud at construction, not on the first call.
+
+    **Strict-keyword constructor (round-41 codex fold).** Takes only typed
+    kwargs (`param_name` is the constructor parameter that failed; `hint`
+    is the static documentation hint about what type to pass). Cannot
+    accept arbitrary positional strings — a future contributor writing
+    `AuditPersisterConfigError(request.user_prompt)` gets a TypeError at
+    construction, not a silent content-leak path through
+    `Exception.__init__(*args)` and the wrapper's metadata-only allowlist.
     """
+
+    def __init__(self, *, param_name: str, hint: str) -> None:
+        super().__init__(f"{param_name} must not be None; {hint}")
+        self.param_name = param_name
+        self.hint = hint
 
 
 class AuditPersisterReviewNotFoundError(LookupError):
@@ -181,7 +200,18 @@ class AuditPersisterReviewNotFoundError(LookupError):
     loud here is preferable to silently writing a content row with a
     fabricated installation_id (which would then violate the
     `llm_call_content.installation_id` FK regardless).
+
+    **Strict-keyword constructor (round-41 codex fold).** Takes only the
+    typed `review_id: UUID`; generates the canonical message from it.
+    Cannot accept arbitrary positional strings.
     """
+
+    def __init__(self, *, review_id: UUID) -> None:
+        super().__init__(
+            f"persist() requires a reviews row for review_id={review_id}; "
+            "reviews row must be created before graph dispatch."
+        )
+        self.review_id = review_id
 
 
 class AuditPersisterReviewIdMismatchError(ValueError):
@@ -200,9 +230,25 @@ class AuditPersisterReviewIdMismatchError(ValueError):
     providers / test mocks could violate. This check is a metadata-only
     fail-loud guard at the persister boundary.
 
+    **Strict-keyword constructor (round-41 codex fold).** Takes only the
+    two typed UUIDs; generates the canonical message from them. Cannot
+    accept arbitrary positional strings.
+
     Metadata-only by contract: the exception carries the two UUIDs +
     field names only; no payload content.
     """
+
+    def __init__(self, *, event_review_id: UUID, request_review_id: UUID) -> None:
+        super().__init__(
+            f"persist() called with mismatched review_ids: "
+            f"event.review_id={event_review_id} but "
+            f"request.review_id={request_review_id}; "
+            "producer must build LLMCallEvent.review_id from "
+            "LLMRequest.review_id (or vice versa). Persister refuses "
+            "to attribute content across review scopes."
+        )
+        self.event_review_id = event_review_id
+        self.request_review_id = request_review_id
 
 
 class AuditPersisterSchemaInvariantError(RuntimeError):
@@ -213,6 +259,11 @@ class AuditPersisterSchemaInvariantError(RuntimeError):
     on `audit_events.payload` after a PK conflict returns None, which
     the column's NOT NULL constraint forbids).
 
+    **Strict-keyword constructor (round-41 codex fold).** Takes typed
+    `event_id: UUID` + `invariant: str` (the invariant identifier, e.g.,
+    `"audit_events.payload NOT NULL"`). Cannot accept arbitrary positional
+    strings — same defense as the sibling classes.
+
     **Metadata-only by contract** per `DECISIONS.md#016` point 4 — the
     exception message MUST carry only schema-level identifiers (event_id,
     table name, column name), never payload content. Listed in
@@ -220,6 +271,11 @@ class AuditPersisterSchemaInvariantError(RuntimeError):
     translation can render it via `str()` safely; future authors editing
     this class MUST preserve the metadata-only property.
     """
+
+    def __init__(self, *, event_id: UUID, invariant: str) -> None:
+        super().__init__(f"{invariant} for event_id={event_id}; schema invariant violated")
+        self.event_id = event_id
+        self.invariant = invariant
 
 
 class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818 — spec-defined name; "Conflict" is the semantic category, not "Error"
@@ -539,11 +595,13 @@ class AuditPersister:
     ) -> None:
         if session_factory is None:
             raise AuditPersisterConfigError(
-                "session_factory must not be None; pass an async_sessionmaker[AsyncSession]"
+                param_name="session_factory",
+                hint="pass an async_sessionmaker[AsyncSession]",
             )
         if retention_settings is None:
             raise AuditPersisterConfigError(
-                "retention_settings must not be None; pass a RetentionSettings instance"
+                param_name="retention_settings",
+                hint="pass a RetentionSettings instance",
             )
         self._session_factory = session_factory
         self._retention_settings = retention_settings
@@ -583,11 +641,8 @@ class AuditPersister:
         # Metadata-only failure: carries only the two UUIDs + field names.
         if request.review_id != event.review_id:
             raise AuditPersisterReviewIdMismatchError(
-                f"persist() called with mismatched review_ids: "
-                f"event.review_id={event.review_id} but "
-                f"request.review_id={request.review_id}; "
-                "producer must build LLMCallEvent.review_id from "
-                "LLMRequest.review_id."
+                event_review_id=event.review_id,
+                request_review_id=request.review_id,
             )
 
         payload = _serialize_event_payload(event)
@@ -603,11 +658,7 @@ class AuditPersister:
                 select(Review.installation_id).where(Review.id == event.review_id)
             )
             if installation_id is None:
-                raise AuditPersisterReviewNotFoundError(
-                    f"persist() requires a reviews row for "
-                    f"review_id={event.review_id}; reviews row must be created "
-                    "before graph dispatch."
-                )
+                raise AuditPersisterReviewNotFoundError(review_id=event.review_id)
 
             # Step 2: INSERT audit_events with ON CONFLICT verification.
             audit_stmt = (
@@ -649,8 +700,8 @@ class AuditPersister:
                 # than silently substituting `{}` for diagnostics.
                 if existing_payload is None:
                     raise AuditPersisterSchemaInvariantError(
-                        f"audit_events.payload is None for event_id={event.event_id}; "
-                        "schema invariant violated (payload is NOT NULL)"
+                        event_id=event.event_id,
+                        invariant="audit_events.payload NOT NULL",
                     )
                 if existing_payload != payload:
                     raise AuditPersisterIdempotencyConflict(
@@ -839,8 +890,8 @@ class AuditPersister:
                 )
                 if existing_payload is None:
                     raise AuditPersisterSchemaInvariantError(
-                        f"audit_events.payload is None for event_id={event.event_id}; "
-                        "schema invariant violated (payload is NOT NULL)"
+                        event_id=event.event_id,
+                        invariant="audit_events.payload NOT NULL",
                     )
                 if existing_payload != payload:
                     raise AuditPersisterIdempotencyConflict(

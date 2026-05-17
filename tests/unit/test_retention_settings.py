@@ -87,12 +87,12 @@ def test_env_var_hour_form_parses(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_env_var_bare_integer_seconds_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pydantic 2.12 does NOT parse bare integer env var as seconds for
-    `timedelta` fields — only ISO-8601 duration strings (`P7D`, `PT24H`)
-    are accepted. Test documents the operator-facing format constraint
-    so a future Pydantic-version upgrade that DOES accept bare ints
-    surfaces as a test failure (welcome relaxation), not silent
-    interpretation drift.
+    """pydantic-settings 2.13.1 does NOT parse bare integer env var as
+    seconds for `timedelta` fields — only ISO-8601 duration strings
+    (`P7D`, `PT24H`) are accepted. Test documents the operator-facing
+    format constraint so a future pydantic-settings upgrade that DOES
+    accept bare ints surfaces as a test failure (welcome relaxation),
+    not silent interpretation drift.
     """
     monkeypatch.setenv("OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL", "604800")
     with pytest.raises(ValidationError):
