@@ -709,10 +709,12 @@ def test_canonical_recomputation_fields_are_frozen_on_both_classes() -> None:
     `request.<field>` wording for the hash fields (or the canonical-
     recomputation wording for non-hash fields).
     """
+    request_cls = AuditPersisterEventRequestFieldMismatchError
+    response_cls = AuditPersisterEventResponseFieldMismatchError
     with pytest.raises(AttributeError, match="cannot reassign"):
-        AuditPersisterEventRequestFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS = frozenset()  # type: ignore[misc]
+        request_cls._CANONICAL_RECOMPUTATION_FIELDS = frozenset()  # type: ignore[misc]
     with pytest.raises(AttributeError, match="cannot reassign"):
-        AuditPersisterEventResponseFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS = frozenset()  # type: ignore[misc]
+        response_cls._CANONICAL_RECOMPUTATION_FIELDS = frozenset()  # type: ignore[misc]
 
 
 def test_event_response_field_mismatch_error_rejects_unknown_field_name() -> None:

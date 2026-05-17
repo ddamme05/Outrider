@@ -903,23 +903,26 @@ class AuditPersister:
             raise AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")
 
         # Provider-return-through fields shared between LLMResponse and
-        # LLMCallEvent must agree. Otherwise the audit row carries stale
-        # cost / latency metrics while the content row holds the actual
-        # completion text — and the response.text the persister stored
-        # under those metrics is the one from this call, not the one the
-        # producer thought it accounted for. `cost_usd` is recomputed
-        # canonically from the response + pricing table so a Protocol
-        # caller cannot persist a fabricated cost; `pricing_version` is
-        # the module constant (mismatch means producer used a stale
-        # pricing snapshot).
-        _canonical_cost_usd = float(
-            compute_cost_usd(
-                response.model,
-                input_tokens=response.input_tokens,
-                cache_write_tokens=response.cache_write_tokens,
-                cache_read_tokens=response.cache_read_tokens,
-                output_tokens=response.output_tokens,
-            )
+        # LLMCallEvent must agree. Split into two groups:
+        #
+        # (1) STABLE fields (model, token counts, latency, cache state)
+        #     are checked pre-tx — disagreement is a producer bug
+        #     regardless of when the call landed. Pre-tx avoids a
+        #     wasted transaction on clearly malformed pairs.
+        #
+        # (2) PRICING-version-bound fields (`cost_usd`, `pricing_version`)
+        #     are checked INSIDE the transaction, only on the fresh-write
+        #     branch. `compute_cost_usd` reads the current pricing table
+        #     and `PRICING_VERSION` is the current module constant; both
+        #     change over deploys. An idempotent re-emission of an event
+        #     originally persisted under an older pricing version would
+        #     legitimately carry the old `pricing_version` / `cost_usd`,
+        #     and the audit-conflict path is the right verifier for that
+        #     case (payload equality against the stored row). Catching
+        #     pricing drift pre-tx would block those re-emissions.
+        _stable_response_fields = (
+            AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS
+            - AuditPersisterEventResponseFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS
         )
         _response_value_for = {
             "model": response.model,
@@ -928,10 +931,8 @@ class AuditPersister:
             "latency_ms": response.latency_ms,
             "cached_tokens": response.cache_read_tokens,
             "cache_hit": response.cache_read_tokens > 0,
-            "cost_usd": _canonical_cost_usd,
-            "pricing_version": PRICING_VERSION,
         }
-        for field_name in AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS:
+        for field_name in _stable_response_fields:
             if getattr(event, field_name) != _response_value_for[field_name]:
                 raise AuditPersisterEventResponseFieldMismatchError(field_name=field_name)
 
@@ -1060,6 +1061,28 @@ class AuditPersister:
                         ),
                     )
                 return  # both audit and content match; idempotent no-op
+
+            # Fresh-write pricing cross-check. Reachable only on the
+            # freshly-inserted audit branch — never on idempotent re-emit.
+            # An older event re-emitted across a `PRICING_VERSION` bump
+            # carries its original `cost_usd` / `pricing_version`; the
+            # audit-conflict path above is the right verifier for that
+            # case. Pre-tx pricing checks would block such re-emits.
+            # Brand-new events MUST use the current pricing snapshot;
+            # raising here rolls back the freshly-inserted audit row.
+            canonical_cost_usd = float(
+                compute_cost_usd(
+                    response.model,
+                    input_tokens=response.input_tokens,
+                    cache_write_tokens=response.cache_write_tokens,
+                    cache_read_tokens=response.cache_read_tokens,
+                    output_tokens=response.output_tokens,
+                )
+            )
+            if event.cost_usd != canonical_cost_usd:
+                raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+            if event.pricing_version != PRICING_VERSION:
+                raise AuditPersisterEventResponseFieldMismatchError(field_name="pricing_version")
 
             # Step 3 (freshly-inserted audit branch): INSERT llm_call_content.
             # Reachable ONLY when the audit row was newly inserted this

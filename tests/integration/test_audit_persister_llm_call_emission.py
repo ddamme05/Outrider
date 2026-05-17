@@ -510,3 +510,57 @@ async def test_persist_raises_when_event_response_field_disagrees(
             assert content_count.scalar_one() == 0
     finally:
         await engine.dispose()
+
+
+async def test_persist_idempotent_re_emit_survives_pricing_version_bump(
+    migrated_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An event originally persisted under PRICING_VERSION=vN must remain
+    idempotent-re-emittable after a deploy bumps the constant to v(N+1).
+    The cost_usd / pricing_version checks run on the fresh-write branch
+    only; on conflict, the audit-row payload-equality check trusts the
+    historical pricing values stored in the existing row.
+
+    Without the fresh-write-only split, a producer holding a cached
+    event from before the bump would receive `EventResponseFieldMismatchError`
+    on every retry — across-deploy retries are a normal operational
+    surface, not a producer bug.
+    """
+    from outrider.audit import persister as persister_module
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        event = _make_llm_call_event(seeded_review_id)
+        request = _make_llm_request(seeded_review_id)
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        # First persist: succeeds under the current PRICING_VERSION.
+        await persister.persist(event, request, response)
+
+        # Simulate a deploy that bumps PRICING_VERSION. The persister's
+        # local binding (imported at module load) is what the in-tx
+        # check reads, so patch there.
+        monkeypatch.setattr(persister_module, "PRICING_VERSION", "v-future-bump")
+
+        # Re-emit the SAME event (cached at the producer with pre-bump
+        # pricing_version). Audit-conflict path runs; payload equality
+        # against the stored row holds; no-op. No exception, no extra
+        # rows, no resurrection.
+        await persister.persist(event, request, response)
+
+        async with engine.connect() as conn:
+            audit_count = await conn.execute(
+                text("SELECT COUNT(*) FROM audit_events WHERE event_id = :eid"),
+                {"eid": event.event_id},
+            )
+            content_count = await conn.execute(
+                text("SELECT COUNT(*) FROM llm_call_content WHERE event_id = :eid"),
+                {"eid": event.event_id},
+            )
+            assert audit_count.scalar_one() == 1
+            assert content_count.scalar_one() == 1
+    finally:
+        await engine.dispose()
