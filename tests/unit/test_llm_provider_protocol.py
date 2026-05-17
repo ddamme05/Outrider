@@ -189,7 +189,7 @@ def test_canonical_prompt_hash_pinned_digest() -> None:
     """
     sys_prompt = "You are a code reviewer."
     user_prompt = "Review this PR."
-    digest = _canonical_prompt_hash(sys_prompt, user_prompt)
+    digest = _canonical_prompt_hash(system_prompt=sys_prompt, user_prompt=user_prompt)
     expected = "06a3f1c3ed69f279e780742b5762f8609818741d0c3408beb61c80111d2c7709"
     # If this digest changes, EITHER the canonicalization changed (which
     # breaks replay — bug), OR you intentionally re-pinned and need to
@@ -203,16 +203,16 @@ def test_canonical_prompt_hash_pinned_digest() -> None:
 
 def test_canonical_prompt_hash_is_deterministic() -> None:
     """Same inputs → same digest, every time."""
-    digest_a = _canonical_prompt_hash("sys", "user")
-    digest_b = _canonical_prompt_hash("sys", "user")
+    digest_a = _canonical_prompt_hash(system_prompt="sys", user_prompt="user")
+    digest_b = _canonical_prompt_hash(system_prompt="sys", user_prompt="user")
     assert digest_a == digest_b
 
 
 def test_canonical_prompt_hash_distinguishes_system_vs_user() -> None:
     """Delimiter prevents trivial collision between
     ('a', 'bc') vs ('ab', 'c')."""
-    digest_a = _canonical_prompt_hash("a", "bc")
-    digest_b = _canonical_prompt_hash("ab", "c")
+    digest_a = _canonical_prompt_hash(system_prompt="a", user_prompt="bc")
+    digest_b = _canonical_prompt_hash(system_prompt="ab", user_prompt="c")
     assert digest_a != digest_b
 
 
@@ -225,8 +225,8 @@ def test_canonical_prompt_hash_no_unicode_normalization() -> None:
     nfd = "café"  # decomposed: 'e' + combining acute U+0301
     # Verify they really are different byte sequences:
     assert nfc.encode("utf-8") != nfd.encode("utf-8")
-    digest_a = _canonical_prompt_hash(nfc, "user")
-    digest_b = _canonical_prompt_hash(nfd, "user")
+    digest_a = _canonical_prompt_hash(system_prompt=nfc, user_prompt="user")
+    digest_b = _canonical_prompt_hash(system_prompt=nfd, user_prompt="user")
     assert digest_a != digest_b
 
 
@@ -234,7 +234,7 @@ def test_canonical_system_prompt_hash_is_separate() -> None:
     """`system_prompt` has its own cache lifecycle — separate hash."""
     sys_prompt = "You are a code reviewer."
     user_prompt = "Review this PR."
-    full_hash = _canonical_prompt_hash(sys_prompt, user_prompt)
+    full_hash = _canonical_prompt_hash(system_prompt=sys_prompt, user_prompt=user_prompt)
     sys_hash = _canonical_system_prompt_hash(sys_prompt)
     assert full_hash != sys_hash
 

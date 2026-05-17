@@ -798,7 +798,9 @@ class AuditPersister:
         # while the content row holds text-Y; after retention purges
         # the content, only the (wrong) hash survives — replay would
         # reconstruct under a false identity.
-        if event.prompt_hash != _canonical_prompt_hash(request.system_prompt, request.user_prompt):
+        if event.prompt_hash != _canonical_prompt_hash(
+            system_prompt=request.system_prompt, user_prompt=request.user_prompt
+        ):
             raise AuditPersisterEventRequestFieldMismatchError(field_name="prompt_hash")
         if event.system_prompt_hash != _canonical_system_prompt_hash(request.system_prompt):
             raise AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")

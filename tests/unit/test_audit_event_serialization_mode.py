@@ -24,7 +24,7 @@ def _build_llm_call() -> LLMCallEvent:
         cached_tokens=0,
         cost_usd=0.01,
         latency_ms=800,
-        prompt_hash="sha256-abc",
+        prompt_hash="a" * 64,
         cache_hit=False,
         context_summary=(
             Entry(
@@ -37,7 +37,7 @@ def _build_llm_call() -> LLMCallEvent:
         ),
         prompt_template_version="analyze@1.0.0",
         pricing_version="v1",
-        system_prompt_hash="sha256-def",
+        system_prompt_hash="b" * 64,
         degraded_mode=False,
     )
 

@@ -226,11 +226,11 @@ class LLMCallEvent(AuditEventBase):
     cost_usd: float = Field(ge=0)
     pricing_version: str
     latency_ms: int = Field(ge=0)
-    prompt_hash: str
+    prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     cache_hit: bool
     context_summary: tuple[ContextManifestEntry, ...]
     prompt_template_version: str
-    system_prompt_hash: str
+    system_prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     degraded_mode: bool
 
 
