@@ -343,11 +343,12 @@ def llm_call_event_factory() -> LLMCallEventFactory:
     from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
     from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 
-    # Default factory matches the response factory's tokens/model so the
-    # persister's pre-tx response cross-check passes by construction.
-    # cost_usd recomputed canonically; pricing_version pinned to the
-    # module constant. Tests that need divergence on these fields use
-    # `model_copy(update=...)` and expect the cross-check to fire.
+    # Default factory matches the response factory's tokens/model/latency/
+    # cache state so the persister's pre-tx STABLE-field response check
+    # passes by construction. cost_usd recomputed canonically + pricing_version
+    # pinned to the module constant so the in-tx fresh-write pricing check
+    # also passes. Tests that need divergence on any of these use
+    # `model_copy(update=...)` and expect the corresponding guard to fire.
     default_input_tokens = 100
     default_output_tokens = 50
     default_model = "claude-haiku-4-5"
