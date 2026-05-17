@@ -44,13 +44,17 @@ Key invariants:
 
   Two complementary defenses converge here. The wrapper at
   `anthropic_provider.py::complete()` already type-narrows on
-  `METADATA_ONLY_EXCEPTION_TYPES`: for the FIVE listed persister
-  exception classes it renders `str(exc)` (each carries a
+  `METADATA_ONLY_EXCEPTION_TYPES`: for any persister exception class
+  listed in that tuple it renders `str(exc)` (each carries a
   contributor-enforced metadata-only `__str__`) and preserves the cause
   chain via `from exc`; for ANY OTHER exception (including raw
   SQLAlchemy errors that somehow surface), it renders only
   `<TypeName>` and uses `from None` to drop the cause chain entirely
   (`__suppress_context__` set, no traceback walk into the original).
+  Allowlist completeness is structurally enforced by
+  `test_every_persister_exception_is_metadata_only_listed`
+  (`inspect`-based discovery; a new exception class added to this
+  module without being added to the tuple fails the test).
   So even WITHOUT `hide_parameters=True`, a raw SQLAlchemy exception
   reaching the wrapper would render only its class name + suppressed
   cause. `hide_parameters=True` is defense-in-depth for the case where
@@ -269,11 +273,16 @@ class AuditPersisterIdempotencyConflict(ValueError):  # noqa: N818 — spec-defi
 
 # Populate the allowlist now that every named exception class above is
 # defined. `LLMPersisterError` at `anthropic_provider.py` checks this
-# tuple to decide whether `str(exc)` can be safely rendered into the
-# wrapper's message; types NOT listed get rendered only as their class
-# name. Any new exception type added to this module MUST be reviewed
-# for the metadata-only property AND added here — that's the explicit
-# contributor contract documented above.
+# tuple to decide the wrap shape: listed types render as `str(exc)`
+# with `from exc` (cause chain preserved — both wrapper message and
+# cause are content-clean); types NOT listed render only as
+# `<TypeName>` with `from None` (cause chain suppressed via
+# `__suppress_context__=True` so `traceback.format_exception` cannot
+# walk into the original exception's args/str). Any new exception type
+# added to this module MUST be reviewed for the metadata-only property
+# AND added here — that's the explicit contributor contract documented
+# above. Structurally enforced by
+# `test_every_persister_exception_is_metadata_only_listed`.
 METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterConfigError,
     AuditPersisterReviewNotFoundError,
