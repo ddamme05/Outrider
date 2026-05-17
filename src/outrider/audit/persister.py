@@ -187,6 +187,16 @@ class _FrozenAllowlistMeta(type):
     Locked names are declared on each class via `_FROZEN_ALLOWLIST_NAMES`
     (a `ClassVar[frozenset[str]]`). Reassignment of any locked name
     after class definition raises `AttributeError`.
+
+    **Round-45 codex correction — bootstrap-the-freeze.** Each
+    `_FROZEN_ALLOWLIST_NAMES` declaration MUST include the string
+    `"_FROZEN_ALLOWLIST_NAMES"` itself. Otherwise an attacker can
+    clear the freeze declaration first
+    (`cls._FROZEN_ALLOWLIST_NAMES = frozenset()`), then reassign the
+    now-unprotected allowlist. The self-referential inclusion makes
+    the freeze declaration as inviolable as the allowlist it governs.
+    The pin test `test_*_frozen_allowlist_names_is_itself_frozen`
+    asserts this bootstrap on each adopting class.
     """
 
     def __setattr__(cls, name: str, value: object) -> None:
@@ -250,7 +260,16 @@ class AuditPersisterConfigError(ValueError, metaclass=_FrozenAllowlistMeta):
     # `AuditPersisterConfigError._PARAM_HINTS = ...` (after class definition)
     # raises AttributeError. Round-44 fold closes the post-definition
     # reassignment bypass surfaced by the round-43 sharp-edges audit.
-    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset({"_PARAM_HINTS"})
+    #
+    # **Round-45 codex correction — bootstrap-the-freeze gap.** The set
+    # itself MUST appear in the set. Otherwise an attacker can clear the
+    # freeze declaration first (`cls._FROZEN_ALLOWLIST_NAMES = frozenset()`),
+    # then reassign the now-unprotected `_PARAM_HINTS`. Self-referential
+    # inclusion makes the freeze declaration as inviolable as the
+    # allowlist it governs.
+    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"_PARAM_HINTS", "_FROZEN_ALLOWLIST_NAMES"}
+    )
 
     _PARAM_HINTS: ClassVar[Mapping[str, str]] = MappingProxyType(
         {
@@ -393,7 +412,13 @@ class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlis
 
     # Names class-attr-frozen by `_FrozenAllowlistMeta` per the round-44
     # sharp-edges fold (see AuditPersisterConfigError for rationale).
-    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset({"_INVARIANTS"})
+    # Round-45 codex correction: self-referential inclusion of
+    # `_FROZEN_ALLOWLIST_NAMES` itself closes the bootstrap-the-freeze
+    # bypass (clear the freeze declaration first, then reassign the
+    # now-unprotected `_INVARIANTS`).
+    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"_INVARIANTS", "_FROZEN_ALLOWLIST_NAMES"}
+    )
 
     _INVARIANTS: ClassVar[frozenset[str]] = frozenset(
         {
