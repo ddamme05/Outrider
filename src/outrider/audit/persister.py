@@ -109,6 +109,7 @@ __all__ = [
     "AuditPersister",
     "AuditPersisterConfigError",
     "AuditPersisterEventRequestFieldMismatchError",
+    "AuditPersisterEventResponseFieldMismatchError",
     "AuditPersisterIdempotencyConflict",
     "AuditPersisterReviewIdMismatchError",
     "AuditPersisterReviewNotFoundError",
@@ -395,15 +396,25 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
         }
     )
 
+    # Fields whose comparison target is a canonical recomputation from the
+    # request's prompt text, not a direct attribute on `LLMRequest`. Naming
+    # `request.prompt_hash` in the error message would mislead — that field
+    # does not exist on the request side.
+    _CANONICAL_RECOMPUTATION_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"prompt_hash", "system_prompt_hash"}
+    )
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if "_CHECKED_FIELDS" in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} cannot override "
-                "AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS; "
-                "the allowlist is class-level closed by the metadata-only contract "
-                "(DECISIONS.md#016)."
-            )
+        forbidden = {"_CHECKED_FIELDS", "_CANONICAL_RECOMPUTATION_FIELDS"}
+        for name in forbidden:
+            if name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} cannot override "
+                    f"AuditPersisterEventRequestFieldMismatchError.{name}; "
+                    "the allowlist is class-level closed by the metadata-only contract "
+                    "(DECISIONS.md#016)."
+                )
 
     def __init__(self, *, field_name: str) -> None:
         cls = AuditPersisterEventRequestFieldMismatchError
@@ -413,11 +424,77 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
                 f"field_name must be one of {sorted(cls._CHECKED_FIELDS)}; "
                 f"got value with sha256-prefix={digest!r}, length={len(field_name)}."
             )
+        if field_name in cls._CANONICAL_RECOMPUTATION_FIELDS:
+            comparison = (
+                f"event.{field_name} disagrees with the canonical hash "
+                "recomputed from request prompts"
+            )
+        else:
+            comparison = f"event.{field_name} disagrees with request.{field_name}"
         super().__init__(
-            f"persist() called with mismatched {field_name}: "
-            f"event.{field_name} disagrees with request.{field_name}. "
+            f"persist() called with mismatched {field_name}: {comparison}. "
             "Producer must build LLMCallEvent fields from LLMRequest (or "
             "vice versa). Persister refuses to attribute across diverging scopes."
+        )
+        self.field_name = field_name
+
+
+class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_FrozenAllowlistMeta):
+    """`persist()` was called with `event.X` disagreeing with the value
+    the provider returned on `LLMResponse`. Pass-through fields shared
+    between `LLMResponse` and `LLMCallEvent` (model, token counts,
+    latency, cache_hit) drive cost / latency accounting + replay; a
+    mismatch means the audit row carries stale metrics while the
+    content row holds the real completion text.
+
+    Same threat model as EventRequestFieldMismatch but for the
+    provider-return-through side rather than the request-pass-through
+    side. The two classes are kept separate so the exception name
+    pinpoints which boundary diverged.
+    """
+
+    _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"_CHECKED_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
+    )
+
+    _CHECKED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "latency_ms",
+            "cached_tokens",
+            "cache_hit",
+        }
+    )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "_CHECKED_FIELDS" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} cannot override "
+                "AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS; "
+                "the allowlist is class-level closed by the metadata-only contract "
+                "(DECISIONS.md#016)."
+            )
+
+    def __init__(self, *, field_name: str) -> None:
+        cls = AuditPersisterEventResponseFieldMismatchError
+        if field_name not in cls._CHECKED_FIELDS:
+            digest = hashlib.sha256(field_name.encode("utf-8", errors="replace")).hexdigest()[:12]
+            raise ValueError(
+                f"field_name must be one of {sorted(cls._CHECKED_FIELDS)}; "
+                f"got value with sha256-prefix={digest!r}, length={len(field_name)}."
+            )
+        # `cached_tokens` and `cache_hit` are derived from
+        # `response.cache_read_tokens` (the SDK name); the rest map
+        # one-to-one to identically-named response attributes.
+        super().__init__(
+            f"persist() called with mismatched {field_name}: "
+            f"event.{field_name} disagrees with the value returned on LLMResponse. "
+            "Producer must build LLMCallEvent metrics from the LLMResponse the "
+            "provider actually returned. Persister refuses to attribute across "
+            "diverging scopes."
         )
         self.field_name = field_name
 
@@ -507,6 +584,7 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterReviewIdMismatchError,
     AuditPersisterSchemaInvariantError,
     AuditPersisterEventRequestFieldMismatchError,
+    AuditPersisterEventResponseFieldMismatchError,
     AuditPersisterIdempotencyConflict,
 )
 
@@ -804,6 +882,24 @@ class AuditPersister:
             raise AuditPersisterEventRequestFieldMismatchError(field_name="prompt_hash")
         if event.system_prompt_hash != _canonical_system_prompt_hash(request.system_prompt):
             raise AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")
+
+        # Provider-return-through fields shared between LLMResponse and
+        # LLMCallEvent must agree. Otherwise the audit row carries stale
+        # cost / latency metrics while the content row holds the actual
+        # completion text — and the response.text the persister stored
+        # under those metrics is the one from this call, not the one the
+        # producer thought it accounted for.
+        _response_value_for = {
+            "model": response.model,
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "latency_ms": response.latency_ms,
+            "cached_tokens": response.cache_read_tokens,
+            "cache_hit": response.cache_read_tokens > 0,
+        }
+        for field_name in AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS:
+            if getattr(event, field_name) != _response_value_for[field_name]:
+                raise AuditPersisterEventResponseFieldMismatchError(field_name=field_name)
 
         payload = _serialize_event_payload(event)
         retention_expires_at: datetime = (

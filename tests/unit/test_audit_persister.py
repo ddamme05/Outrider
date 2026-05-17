@@ -17,6 +17,7 @@ from outrider.audit.persister import (
     AuditPersister,
     AuditPersisterConfigError,
     AuditPersisterEventRequestFieldMismatchError,
+    AuditPersisterEventResponseFieldMismatchError,
     AuditPersisterIdempotencyConflict,
     AuditPersisterReviewIdMismatchError,
     AuditPersisterReviewNotFoundError,
@@ -550,6 +551,7 @@ def test_metadata_only_exception_types_lists_every_persister_exception() -> None
         AuditPersisterReviewIdMismatchError,
         AuditPersisterSchemaInvariantError,
         AuditPersisterEventRequestFieldMismatchError,
+        AuditPersisterEventResponseFieldMismatchError,
         AuditPersisterIdempotencyConflict,
     }
     assert set(METADATA_ONLY_EXCEPTION_TYPES) == expected
@@ -675,6 +677,56 @@ def test_event_request_field_mismatch_error_does_not_leak_disagreeing_values() -
     assert set(sig.parameters) - {"self"} == {"field_name"}
     # Constructed instance carries field_name only.
     assert exc.field_name == "is_eval"
+    assert secret not in str(exc)
+    assert secret not in repr(exc)
+
+
+def test_event_request_field_mismatch_message_distinguishes_hash_from_direct() -> None:
+    """Hash-field message names "canonical hash recomputed from request prompts"
+    instead of the non-existent `request.prompt_hash` / `request.system_prompt_hash`.
+    Direct fields keep the original `event.X disagrees with request.X` wording.
+    """
+    direct_exc = AuditPersisterEventRequestFieldMismatchError(field_name="node_id")
+    assert "request.node_id" in str(direct_exc)
+    assert "canonical hash" not in str(direct_exc)
+
+    hash_exc = AuditPersisterEventRequestFieldMismatchError(field_name="prompt_hash")
+    # Misleading text MUST NOT appear: LLMRequest has no `prompt_hash` field.
+    assert "request.prompt_hash" not in str(hash_exc)
+    assert "canonical hash" in str(hash_exc)
+
+    sys_hash_exc = AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")
+    assert "request.system_prompt_hash" not in str(sys_hash_exc)
+    assert "canonical hash" in str(sys_hash_exc)
+
+
+def test_event_response_field_mismatch_error_rejects_unknown_field_name() -> None:
+    """Sibling of `event_request_field_mismatch_error_rejects_unknown_field_name`
+    on the response side. The 6-field allowlist (model, input_tokens,
+    output_tokens, latency_ms, cached_tokens, cache_hit) is closed at the
+    class level."""
+    AuditPersisterEventResponseFieldMismatchError(field_name="model")
+    AuditPersisterEventResponseFieldMismatchError(field_name="cache_hit")
+
+    with pytest.raises(ValueError, match="field_name must be one of"):
+        AuditPersisterEventResponseFieldMismatchError(field_name="anything_else")
+    # Request-side fields are NOT on the response allowlist — separation
+    # of concerns between the two sibling classes.
+    with pytest.raises(ValueError, match="field_name must be one of"):
+        AuditPersisterEventResponseFieldMismatchError(field_name="node_id")
+
+
+def test_event_response_field_mismatch_error_does_not_leak_disagreeing_values() -> None:
+    """Same metadata-only contract as the request-side sibling. `model`
+    happens to be a class-level identifier; a future caller cannot inject
+    a value sentinel through the constructor."""
+    secret = "OUTRIDER_SECRET_MODEL_NAME_xyz789"  # noqa: S105 — test sentinel
+
+    exc = AuditPersisterEventResponseFieldMismatchError(field_name="model")
+    assert "model" in str(exc)
+    sig = inspect.signature(AuditPersisterEventResponseFieldMismatchError.__init__)
+    assert set(sig.parameters) - {"self"} == {"field_name"}
+    assert exc.field_name == "model"
     assert secret not in str(exc)
     assert secret not in repr(exc)
 
@@ -901,7 +953,7 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
         {
             "param_name",  # AuditPersisterConfigError
             "invariant",  # AuditPersisterSchemaInvariantError
-            "field_name",  # AuditPersisterEventRequestFieldMismatchError
+            "field_name",  # AuditPersister{Event,Response}FieldMismatchError
         }
     )
 
