@@ -72,9 +72,21 @@ def _make_persister(engine: AsyncEngine) -> AuditPersister:
     )
 
 
-def _make_llm_call_event(review_id_str: str) -> LLMCallEvent:
-    """Construct a representative LLMCallEvent fixture."""
+_DEFAULT_SYSTEM_PROMPT = "the system prompt"
+_DEFAULT_USER_PROMPT = "the user prompt"
+
+
+def _make_llm_call_event(
+    review_id_str: str,
+    *,
+    system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
+    user_prompt: str = _DEFAULT_USER_PROMPT,
+) -> LLMCallEvent:
+    """Construct a representative LLMCallEvent fixture with hashes that
+    match the canonical hash of the corresponding request prompts."""
     from uuid import UUID
+
+    from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
 
     return LLMCallEvent(
         review_id=UUID(review_id_str),
@@ -86,22 +98,22 @@ def _make_llm_call_event(review_id_str: str) -> LLMCallEvent:
         cost_usd=0.001,
         pricing_version="1.0.0",
         latency_ms=250,
-        prompt_hash="a" * 64,
+        prompt_hash=_canonical_prompt_hash(system_prompt, user_prompt),
         cache_hit=False,
         context_summary=(),
         prompt_template_version="triage:1",
-        system_prompt_hash="b" * 64,
+        system_prompt_hash=_canonical_system_prompt_hash(system_prompt),
         degraded_mode=False,
         timestamp=datetime.now(UTC),
     )
 
 
-def _make_llm_request(review_id_str: str, user_prompt: str = "the user prompt") -> LLMRequest:
+def _make_llm_request(review_id_str: str, user_prompt: str = _DEFAULT_USER_PROMPT) -> LLMRequest:
     """Construct a representative LLMRequest with non-redacted text."""
     from uuid import UUID
 
     return LLMRequest(
-        system_prompt="the system prompt",
+        system_prompt=_DEFAULT_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         model="claude-haiku-4-5",
         max_tokens=1024,
@@ -138,7 +150,7 @@ async def test_persist_writes_both_rows_atomically(migrated_db: str) -> None:
     engine = create_async_engine(migrated_db, hide_parameters=True)
     try:
         review_id_str = await _seed_installation_and_review(engine)
-        event = _make_llm_call_event(review_id_str)
+        event = _make_llm_call_event(review_id_str, user_prompt="my secret prompt")
         request = _make_llm_request(review_id_str, user_prompt="my secret prompt")
         response = _make_llm_response(text_value="my secret completion")
 
@@ -191,12 +203,12 @@ async def test_persist_persists_raw_prompt_not_redaction_marker(migrated_db: str
     engine = create_async_engine(migrated_db, hide_parameters=True)
     try:
         review_id_str = await _seed_installation_and_review(engine)
-        event = _make_llm_call_event(review_id_str)
         # Fixture strings deliberately do NOT contain the substring
         # "redacted" so the substring-absence assertion below catches the
         # real failure mode (persisting `"<redacted, 38 chars>"`).
         secret_prompt = "the user's actual untouched prompt"  # noqa: S105 — test fixture
         secret_completion = "the model's actual untouched completion"  # noqa: S105 — test fixture
+        event = _make_llm_call_event(review_id_str, user_prompt=secret_prompt)
         request = _make_llm_request(review_id_str, user_prompt=secret_prompt)
         response = _make_llm_response(text_value=secret_completion)
 
@@ -351,6 +363,86 @@ async def test_persist_raises_when_review_id_does_not_resolve(migrated_db: str) 
             await persister.persist(event, request, response)
 
         # No rows landed.
+        async with engine.connect() as conn:
+            audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            content_count = await conn.execute(text("SELECT COUNT(*) FROM llm_call_content"))
+            assert audit_count.scalar_one() == 0
+            assert content_count.scalar_one() == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_persist_raises_when_event_prompt_hash_disagrees_with_request(
+    migrated_db: str,
+) -> None:
+    """`event.prompt_hash` must equal canonical hash of (request.system_prompt,
+    request.user_prompt). A mismatch means audit row would carry hash-of-X
+    while content row holds text-Y; after retention purges content, only the
+    (wrong) hash survives and replay reconstructs under a false identity.
+    """
+    from outrider.audit.persister import AuditPersisterEventRequestFieldMismatchError
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        # Event's hash computed over "different" user prompt; request carries default.
+        event = _make_llm_call_event(seeded_review_id, user_prompt="hash-divergent-prompt")
+        request = _make_llm_request(seeded_review_id)  # default user_prompt
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        with pytest.raises(AuditPersisterEventRequestFieldMismatchError) as exc_info:
+            await persister.persist(event, request, response)
+        assert exc_info.value.field_name == "prompt_hash"
+
+        rendered = str(exc_info.value)
+        # Sentinel content from either side never leaks into the exception.
+        assert "hash-divergent-prompt" not in rendered
+        assert request.user_prompt not in rendered
+        assert request.system_prompt not in rendered
+
+        # Guard is pre-tx: no rows landed.
+        async with engine.connect() as conn:
+            audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            content_count = await conn.execute(text("SELECT COUNT(*) FROM llm_call_content"))
+            assert audit_count.scalar_one() == 0
+            assert content_count.scalar_one() == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_persist_raises_when_event_system_prompt_hash_disagrees_with_request(
+    migrated_db: str,
+) -> None:
+    """`event.system_prompt_hash` must equal canonical hash of
+    `request.system_prompt`. Same retention-window identity-drift hazard as
+    the prompt_hash check, isolated to the system-prompt surface.
+
+    Independent isolation requires a `model_copy` that overrides ONLY
+    `system_prompt_hash` (leaving `prompt_hash` consistent with the
+    request); otherwise the earlier `prompt_hash` check fires first and
+    masks this branch.
+    """
+    from outrider.audit.persister import AuditPersisterEventRequestFieldMismatchError
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        consistent_event = _make_llm_call_event(seeded_review_id)
+        # Override only system_prompt_hash; prompt_hash stays consistent with request.
+        divergent_event = consistent_event.model_copy(update={"system_prompt_hash": "f" * 64})
+        request = _make_llm_request(seeded_review_id)
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        with pytest.raises(AuditPersisterEventRequestFieldMismatchError) as exc_info:
+            await persister.persist(divergent_event, request, response)
+        assert exc_info.value.field_name == "system_prompt_hash"
+
+        rendered = str(exc_info.value)
+        assert request.system_prompt not in rendered
+        assert request.user_prompt not in rendered
+
         async with engine.connect() as conn:
             audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
             content_count = await conn.execute(text("SELECT COUNT(*) FROM llm_call_content"))

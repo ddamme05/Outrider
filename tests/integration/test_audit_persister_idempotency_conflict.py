@@ -91,7 +91,7 @@ async def test_persist_content_mismatch_raises_conflict(
     same audit payload (idempotent), different content stored than what
     we're attempting to insert.
     """
-    event_obj = llm_call_event_factory(persister_setup.review_id)
+    event_obj = llm_call_event_factory(persister_setup.review_id, user_prompt="prompt A")
     request1 = llm_request_factory(persister_setup.review_id, user_prompt="prompt A")
     response = llm_response_factory()
     await persister_setup.persister.persist(event_obj, request1, response)
@@ -106,16 +106,15 @@ async def test_persist_content_mismatch_raises_conflict(
             {"eid": event_obj.event_id},
         )
 
-    # Now re-emit with prompt C (different from both the stored "prompt B"
-    # and the original "prompt A"). The audit row matches (same payload);
-    # the content path's conflict-verification SELECTs "prompt B" and
-    # detects mismatch against "prompt C".
-    request2 = llm_request_factory(persister_setup.review_id, user_prompt="prompt C")
-    # The content row exists (the resurrection guard would NOT return);
-    # the content INSERT hits ON CONFLICT DO NOTHING; verification reads
-    # "prompt B" vs "prompt C" and raises.
+    # Re-emit with the same event + request (both "prompt A"). The
+    # audit row matches (same payload); the content path's
+    # conflict-verification SELECTs "prompt B" (manually injected
+    # above) and detects mismatch against "prompt A" from the request.
+    # The content row exists, so the resurrection guard does NOT
+    # return; the content INSERT hits ON CONFLICT DO NOTHING;
+    # verification reads "prompt B" vs request's "prompt A" and raises.
     with pytest.raises(AuditPersisterIdempotencyConflict) as exc_info:
-        await persister_setup.persister.persist(event_obj, request2, response)
+        await persister_setup.persister.persist(event_obj, request1, response)
 
     exc = exc_info.value
     assert "prompt" in exc.mismatched_fields
@@ -134,7 +133,7 @@ async def test_idempotency_conflict_str_omits_raw_content(
     secret_prompt = "operator_secret_prompt_text_xyz123"  # noqa: S105 — test fixture, not credential
     secret_completion = "model_completion_text_abc789"  # noqa: S105 — test fixture, not credential
 
-    event_obj = llm_call_event_factory(persister_setup.review_id)
+    event_obj = llm_call_event_factory(persister_setup.review_id, user_prompt=secret_prompt)
     request1 = llm_request_factory(persister_setup.review_id, user_prompt=secret_prompt)
     response = llm_response_factory(text_value=secret_completion)
     await persister_setup.persister.persist(event_obj, request1, response)
@@ -179,7 +178,7 @@ async def test_persist_content_installation_id_mismatch_raises_conflict(
     with matching content but wrong `installation_id` (e.g., a producer
     bug crossing review scopes) would silently pass as idempotent.
     """
-    event_obj = llm_call_event_factory(persister_setup.review_id)
+    event_obj = llm_call_event_factory(persister_setup.review_id, user_prompt="same prompt")
     request = llm_request_factory(persister_setup.review_id, user_prompt="same prompt")
     response = llm_response_factory(text_value="same completion")
     await persister_setup.persister.persist(event_obj, request, response)
@@ -228,7 +227,9 @@ async def test_persist_content_is_eval_mismatch_raises_conflict(
     review content under the eval flag (or vice versa), defeating the
     `docs/testing.md` eval-isolation contract.
     """
-    event_obj = llm_call_event_factory(persister_setup.review_id, is_eval=False)
+    event_obj = llm_call_event_factory(
+        persister_setup.review_id, is_eval=False, user_prompt="same prompt"
+    )
     request = llm_request_factory(persister_setup.review_id, user_prompt="same prompt")
     response = llm_response_factory(text_value="same completion")
     await persister_setup.persister.persist(event_obj, request, response)

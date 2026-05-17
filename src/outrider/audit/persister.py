@@ -93,6 +93,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from outrider.db.models.audit_events import AuditEvent as AuditEventRow
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
+from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -389,6 +390,8 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             "context_summary",
             "prompt_template_version",
             "degraded_mode",
+            "prompt_hash",
+            "system_prompt_hash",
         }
     )
 
@@ -782,9 +785,23 @@ class AuditPersister:
         # must agree. The persister stores content from request while
         # taking audit metadata from event; mismatch means rows would
         # land under the wrong eval / attribution / replay scope.
-        for field_name in AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS:
+        _direct_check_fields = AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS - {
+            "prompt_hash",
+            "system_prompt_hash",
+        }
+        for field_name in _direct_check_fields:
             if getattr(event, field_name) != getattr(request, field_name):
                 raise AuditPersisterEventRequestFieldMismatchError(field_name=field_name)
+
+        # Event hashes must match canonical hashes of the request's
+        # prompts. If they disagree, the audit row carries hash-of-X
+        # while the content row holds text-Y; after retention purges
+        # the content, only the (wrong) hash survives — replay would
+        # reconstruct under a false identity.
+        if event.prompt_hash != _canonical_prompt_hash(request.system_prompt, request.user_prompt):
+            raise AuditPersisterEventRequestFieldMismatchError(field_name="prompt_hash")
+        if event.system_prompt_hash != _canonical_system_prompt_hash(request.system_prompt):
+            raise AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")
 
         payload = _serialize_event_payload(event)
         retention_expires_at: datetime = (

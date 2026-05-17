@@ -694,7 +694,9 @@ def test_schema_invariant_error_frozen_allowlist_names_is_itself_frozen() -> Non
     """Sibling test for the bootstrap-the-freeze defense on
     `AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES`."""
     with pytest.raises(AttributeError, match="cannot reassign"):
-        AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES = frozenset()  # type: ignore[misc]
+        AuditPersisterSchemaInvariantError._FROZEN_ALLOWLIST_NAMES = (  # type: ignore[misc]
+            frozenset()
+        )
 
 
 def test_config_error_param_hints_cannot_be_reassigned_post_definition() -> None:
@@ -707,7 +709,9 @@ def test_config_error_param_hints_cannot_be_reassigned_post_definition() -> None
     from types import MappingProxyType
 
     with pytest.raises(AttributeError, match="cannot reassign"):
-        AuditPersisterConfigError._PARAM_HINTS = MappingProxyType({"evil": "leaks"})  # type: ignore[misc]
+        AuditPersisterConfigError._PARAM_HINTS = (  # type: ignore[misc]
+            MappingProxyType({"evil": "leaks"})
+        )
 
 
 def test_schema_invariant_error_invariants_cannot_be_reassigned_post_definition() -> None:

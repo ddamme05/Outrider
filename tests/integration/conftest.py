@@ -318,6 +318,16 @@ LLMResponseFactory = Callable[..., "LLMResponse"]
 ReviewPhaseEventFactory = Callable[..., "ReviewPhaseEvent"]
 
 
+# Canonical prompts used by the request + event factories so their
+# prompt_hash / system_prompt_hash values agree by construction. The
+# persister's pre-tx guard checks `event.prompt_hash ==
+# _canonical_prompt_hash(request.system_prompt, request.user_prompt)`
+# — the factories share these prompts so hashes line up unless a test
+# deliberately diverges them.
+_FACTORY_SYSTEM_PROMPT = "the system prompt"
+_FACTORY_USER_PROMPT = "the user prompt"
+
+
 @pytest.fixture
 def llm_call_event_factory() -> LLMCallEventFactory:
     """Factory: `factory(review_id, **kwargs) -> LLMCallEvent` with canonical
@@ -327,6 +337,7 @@ def llm_call_event_factory() -> LLMCallEventFactory:
     from datetime import UTC, datetime
 
     from outrider.audit.events import LLMCallEvent
+    from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
 
     def _build(
         review_id: UUID,
@@ -334,6 +345,8 @@ def llm_call_event_factory() -> LLMCallEventFactory:
         cost_usd: float = 0.001,
         latency_ms: int = 250,
         is_eval: bool = False,
+        user_prompt: str = _FACTORY_USER_PROMPT,
+        system_prompt: str = _FACTORY_SYSTEM_PROMPT,
     ) -> LLMCallEvent:
         return LLMCallEvent(
             review_id=review_id,
@@ -345,11 +358,11 @@ def llm_call_event_factory() -> LLMCallEventFactory:
             cost_usd=cost_usd,
             pricing_version="1.0.0",
             latency_ms=latency_ms,
-            prompt_hash="a" * 64,
+            prompt_hash=_canonical_prompt_hash(system_prompt, user_prompt),
             cache_hit=False,
             context_summary=(),
             prompt_template_version="triage:1",
-            system_prompt_hash="b" * 64,
+            system_prompt_hash=_canonical_system_prompt_hash(system_prompt),
             degraded_mode=False,
             is_eval=is_eval,
             timestamp=datetime.now(UTC),
@@ -366,11 +379,11 @@ def llm_request_factory() -> LLMRequestFactory:
     def _build(
         review_id: UUID,
         *,
-        user_prompt: str = "the user prompt",
+        user_prompt: str = _FACTORY_USER_PROMPT,
         is_eval: bool = False,
     ) -> LLMRequest:
         return LLMRequest(
-            system_prompt="the system prompt",
+            system_prompt=_FACTORY_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             model="claude-haiku-4-5",
             max_tokens=1024,
