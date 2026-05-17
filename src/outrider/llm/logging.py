@@ -3,11 +3,15 @@
 """Three-tier recursive content-leak filter.
 
 Defense-in-depth backup to the schema-level default-redaction on
-`LLMRequest`/`LLMResponse`/`LLMMessage`. The schema-level redaction is the
-primary defense — `model_dump()` elides content unless the persister opts
-in via `INCLUDE_TEXT_OPT_IN`. This filter catches leak paths that don't go
-through `model_dump()`: ad-hoc dicts, third-party SDK debug logging, raw
-Pydantic instances dropped into `extra={...}`.
+`LLMRequest`/`LLMResponse`/`LLMMessage`. The schema-level redaction is
+the primary defense for the `model_dump()` path — `model_dump()` elides
+content unless a caller explicitly opts in by passing the
+`INCLUDE_TEXT_OPT_IN` sentinel as the serialization context (no
+production caller does so today; the persister persists raw content
+via direct attribute access into the `llm_call_content` side-table,
+bypassing `model_dump()` entirely). This filter catches leak paths
+that don't go through `model_dump()`: ad-hoc dicts, third-party SDK
+debug logging, raw Pydantic instances dropped into `extra={...}`.
 
 Three rejection tiers (see AC#21):
 
