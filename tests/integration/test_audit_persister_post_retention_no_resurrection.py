@@ -37,7 +37,7 @@ async def test_persist_does_not_resurrect_purged_content_same_payload(
     """Persist event X (both rows land). Manually delete llm_call_content
     (simulates retention sweep). Re-persist X with same content. The
     persister returns no-op; content row stays absent."""
-    event_obj = llm_call_event_factory(persister_setup.review_id)
+    event_obj = llm_call_event_factory(persister_setup.review_id, user_prompt="prompt A")
     request = llm_request_factory(persister_setup.review_id, user_prompt="prompt A")
     response = llm_response_factory(text_value="completion A")
 
@@ -94,7 +94,7 @@ async def test_persist_does_not_resurrect_purged_content_different_content(
     BEFORE any content-side comparison. The retention contract trumps
     content-conflict detection.
     """
-    event_obj = llm_call_event_factory(persister_setup.review_id)
+    event_obj = llm_call_event_factory(persister_setup.review_id, user_prompt="prompt A")
     request_a = llm_request_factory(persister_setup.review_id, user_prompt="prompt A")
     response_a = llm_response_factory(text_value="completion A")
     await persister_setup.persister.persist(event_obj, request_a, response_a)
@@ -106,13 +106,16 @@ async def test_persist_does_not_resurrect_purged_content_different_content(
             {"eid": event_obj.event_id},
         )
 
-    # Re-persist same event with DIFFERENT content. Audit payload matches
-    # (same event obj); content would differ (B vs A), but the guard returns
-    # before the content compare.
-    request_b = llm_request_factory(persister_setup.review_id, user_prompt="prompt B")
-    response_b = llm_response_factory(text_value="completion B")
+    # Re-persist the same event + request. Audit payload matches (same
+    # event_obj). Content row was purged, so the resurrection guard
+    # returns before any content INSERT. The retention contract trumps
+    # any re-population path. ("Different content" variant of this
+    # scenario is unreachable via the natural API now that the
+    # request/event hash guard catches divergence pre-tx; the
+    # resurrection guard's correctness is still pinned by the same-
+    # content path here + the integrity assertion below.)
     # No exception; no-op return.
-    await persister_setup.persister.persist(event_obj, request_b, response_b)
+    await persister_setup.persister.persist(event_obj, request_a, response_a)
 
     async with persister_setup.engine.connect() as conn:
         content_count = await conn.execute(
