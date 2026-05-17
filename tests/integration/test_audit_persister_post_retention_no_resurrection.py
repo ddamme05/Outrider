@@ -86,13 +86,21 @@ async def test_persist_does_not_resurrect_purged_content_different_content(
     llm_request_factory: LLMRequestFactory,
     llm_response_factory: LLMResponseFactory,
 ) -> None:
-    """Variant: re-persist with DIFFERENT content after purge. The guard
-    fires BEFORE the content compare (audit payload still matches), so
-    no content-mismatch exception is raised — the no-op returns first.
+    """Variant: re-persist with DIFFERENT response text after purge. The
+    resurrection guard fires BEFORE the content compare (audit payload
+    still matches, no pre-tx guard fires on `response.text` divergence),
+    so no content-mismatch exception is raised — the no-op returns first.
 
     Pins the explicit ordering: resurrection-guard return is reached
     BEFORE any content-side comparison. The retention contract trumps
     content-conflict detection.
+
+    Divergence is on `response.text` rather than `request.user_prompt`
+    because diverging the prompt would trip the pre-tx
+    `_canonical_prompt_hash` guard before reaching the audit-conflict
+    path — and the resurrection guard is reached via the audit-conflict
+    path. `response.text` is not on any pre-tx cross-check, so it's the
+    legitimate divergent surface for this scenario.
     """
     event_obj = llm_call_event_factory(persister_setup.review_id, user_prompt="prompt A")
     request_a = llm_request_factory(persister_setup.review_id, user_prompt="prompt A")
@@ -106,16 +114,16 @@ async def test_persist_does_not_resurrect_purged_content_different_content(
             {"eid": event_obj.event_id},
         )
 
-    # Re-persist the same event + request. Audit payload matches (same
-    # event_obj). Content row was purged, so the resurrection guard
-    # returns before any content INSERT. The retention contract trumps
-    # any re-population path. ("Different content" variant of this
-    # scenario is unreachable via the natural API now that the
-    # request/event hash guard catches divergence pre-tx; the
-    # resurrection guard's correctness is still pinned by the same-
-    # content path here + the integrity assertion below.)
-    # No exception; no-op return.
-    await persister_setup.persister.persist(event_obj, request_a, response_a)
+    # Re-persist with the SAME event + request but DIFFERENT response
+    # text. All pre-tx cross-checks pass (event/request unchanged; the
+    # stable response fields — model, tokens, latency — also unchanged
+    # by the factory; text is not on the cross-check). Audit row INSERT
+    # conflicts; payload-equality passes (same event_obj). SELECT for
+    # existing content returns None (purged), so resurrection guard
+    # returns no-op BEFORE the content-mismatch comparison. No exception
+    # raised; content row stays absent.
+    response_b = llm_response_factory(text_value="completion B")
+    await persister_setup.persister.persist(event_obj, request_a, response_b)
 
     async with persister_setup.engine.connect() as conn:
         content_count = await conn.execute(

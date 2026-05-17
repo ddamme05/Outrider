@@ -53,24 +53,39 @@ async def test_lifespan_installs_filter_on_late_registered_handler() -> None:
     # this simulates the uvicorn-late-registration scenario.
     late_handler = logging.StreamHandler()
     target_logger = logging.getLogger("outrider.llm.test_filter_re_registration")
-    target_logger.addHandler(late_handler)
-    target_logger.propagate = False  # isolate from root for the test
 
-    # Before lifespan runs, the late handler has NO filter installed.
-    from outrider.llm.logging import RejectLLMContentFilter
+    # Loggers are process-global; save state and restore in `finally` so
+    # this test's handler-add / propagate mutation does not leak into
+    # any other test that touches the same logger tree.
+    saved_handlers = list(target_logger.handlers)
+    saved_propagate = target_logger.propagate
+    saved_level = target_logger.level
+    try:
+        target_logger.addHandler(late_handler)
+        target_logger.propagate = False  # isolate from root for the test
 
-    pre_filter_count = sum(1 for f in late_handler.filters if isinstance(f, RejectLLMContentFilter))
-    assert pre_filter_count == 0
+        # Before lifespan runs, the late handler has NO filter installed.
+        from outrider.llm.logging import RejectLLMContentFilter
 
-    # Enter the lifespan body.
-    app = FastAPI()
-    lifespan_cm = _make_test_lifespan()(app)
-    async with lifespan_cm:
-        # Inside lifespan body, the filter IS installed on the late handler.
-        post_filter_count = sum(
+        pre_filter_count = sum(
             1 for f in late_handler.filters if isinstance(f, RejectLLMContentFilter)
         )
-        assert post_filter_count == 1
+        assert pre_filter_count == 0
+
+        # Enter the lifespan body.
+        app = FastAPI()
+        lifespan_cm = _make_test_lifespan()(app)
+        async with lifespan_cm:
+            # Inside lifespan body, the filter IS installed on the late handler.
+            post_filter_count = sum(
+                1 for f in late_handler.filters if isinstance(f, RejectLLMContentFilter)
+            )
+            assert post_filter_count == 1
+    finally:
+        target_logger.removeHandler(late_handler)
+        target_logger.handlers = saved_handlers
+        target_logger.propagate = saved_propagate
+        target_logger.level = saved_level
 
 
 async def test_lifespan_filter_actually_rejects_content_records() -> None:
@@ -86,18 +101,30 @@ async def test_lifespan_filter_actually_rejects_content_records() -> None:
 
     target_logger = logging.getLogger("outrider.llm.test_capture")
     capture_handler = _CaptureHandler()
-    target_logger.addHandler(capture_handler)
-    target_logger.setLevel(logging.DEBUG)
-    target_logger.propagate = False
 
-    app = FastAPI()
-    lifespan_cm = _make_test_lifespan()(app)
-    async with lifespan_cm:
-        # Emit a record carrying content fields the filter rejects.
-        target_logger.info(
-            "test message",
-            extra={"prompt": "secret prompt content"},
-        )
+    # Save process-global logger state so this test cannot contaminate
+    # other tests that touch the outrider.llm.* tree.
+    saved_handlers = list(target_logger.handlers)
+    saved_propagate = target_logger.propagate
+    saved_level = target_logger.level
+    try:
+        target_logger.addHandler(capture_handler)
+        target_logger.setLevel(logging.DEBUG)
+        target_logger.propagate = False
 
-    # Filter rejected → emit() was never called.
-    assert len(captured) == 0, f"Filter failed to reject content record; captured: {captured}"
+        app = FastAPI()
+        lifespan_cm = _make_test_lifespan()(app)
+        async with lifespan_cm:
+            # Emit a record carrying content fields the filter rejects.
+            target_logger.info(
+                "test message",
+                extra={"prompt": "secret prompt content"},
+            )
+
+        # Filter rejected → emit() was never called.
+        assert len(captured) == 0, f"Filter failed to reject content record; captured: {captured}"
+    finally:
+        target_logger.removeHandler(capture_handler)
+        target_logger.handlers = saved_handlers
+        target_logger.propagate = saved_propagate
+        target_logger.level = saved_level
