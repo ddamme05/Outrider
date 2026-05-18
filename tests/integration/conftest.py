@@ -307,7 +307,7 @@ async def _seed_install_and_review(
 
 
 if TYPE_CHECKING:
-    from outrider.audit.events import LLMCallEvent, ReviewPhaseEvent
+    from outrider.audit.events import FileExaminationEvent, LLMCallEvent, ReviewPhaseEvent
     from outrider.llm.base import LLMRequest, LLMResponse
 
 
@@ -316,6 +316,7 @@ LLMCallEventFactory = Callable[..., "LLMCallEvent"]
 LLMRequestFactory = Callable[..., "LLMRequest"]
 LLMResponseFactory = Callable[..., "LLMResponse"]
 ReviewPhaseEventFactory = Callable[..., "ReviewPhaseEvent"]
+FileExaminationEventFactory = Callable[..., "FileExaminationEvent"]
 
 
 # Canonical prompts used by the request + event factories so their
@@ -464,6 +465,39 @@ def review_phase_event_factory() -> ReviewPhaseEventFactory:
             marker=marker,  # type: ignore[arg-type]
             is_eval=is_eval,
             phase_key=phase_key,
+        )
+
+    return _build
+
+
+@pytest.fixture
+def file_examination_event_factory() -> FileExaminationEventFactory:
+    """Factory: `factory(review_id, **kwargs) -> FileExaminationEvent`.
+
+    Defaults to a clean parse — overrides let tests construct skipped
+    rows with a `skip_reason`. Used by FUP-029 integration tests
+    (round-31 fold) to exercise `AuditPersister.emit_file_examination`.
+    """
+    from outrider.audit.events import FileExaminationEvent
+
+    def _build(
+        review_id: UUID,
+        *,
+        file_path: str = "src/example.py",
+        examination_type: str = "intake_fetch",
+        node_id: str = "intake",
+        parse_status: str = "clean",
+        skip_reason: object | None = None,
+        is_eval: bool = False,
+    ) -> FileExaminationEvent:
+        return FileExaminationEvent(
+            review_id=review_id,
+            file_path=file_path,
+            examination_type=examination_type,  # type: ignore[arg-type]
+            node_id=node_id,  # type: ignore[arg-type]
+            parse_status=parse_status,  # type: ignore[arg-type]
+            skip_reason=skip_reason,  # type: ignore[arg-type]
+            is_eval=is_eval,
         )
 
     return _build

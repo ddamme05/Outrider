@@ -1,15 +1,19 @@
-"""build_graph guard tests per the triage-node spec.
+"""build_graph guard tests per the triage-node + intake-and-webhook specs.
 
 Narrowly scoped to dependency / None guards on `agent/graph.py::build_graph`.
 Functional behavior (the compiled graph actually runs) is covered by the
 integration tests in `tests/integration/test_review_state_langgraph_merge.py`.
 
-Five rejection contracts pinned here:
+Rejection contracts pinned here (six gates after intake-and-webhook landed):
   1. provider=None → BuildGraphError
   2. model_config=None → BuildGraphError
   3. phase_event_sink=None → BuildGraphError
-  4. provider lacking `complete` member → BuildGraphError (isinstance gate)
-  5. phase_event_sink lacking `emit_phase` member → BuildGraphError (isinstance gate)
+  4. file_examination_sink=None → BuildGraphError
+  5. db_factory=None → BuildGraphError
+  6. github_factory=None → BuildGraphError
+  7. provider lacking `complete` member → BuildGraphError (isinstance gate)
+  8. phase_event_sink lacking `emit_phase` member → BuildGraphError (isinstance gate)
+  9. file_examination_sink lacking `emit_file_examination` member → BuildGraphError
 
 PEP 544 caveat: the isinstance gates check MEMBER PRESENCE only — wrong
 signature or async-shape falls through to fail at the first call. Tests
@@ -27,7 +31,10 @@ from outrider.agent.graph import BuildGraphError, build_graph
 from outrider.llm.config import ModelConfig
 
 if TYPE_CHECKING:
-    from outrider.audit.events import ReviewPhaseEvent
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
+    from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
 
 
@@ -43,11 +50,30 @@ class _StubProvider:
         raise NotImplementedError("test stub")
 
 
-class _StubSink:
+class _StubPhaseSink:
     """Satisfies PhaseEventSink Protocol structurally (has `emit_phase`)."""
 
     async def emit_phase(self, event: ReviewPhaseEvent) -> None:
         return None
+
+
+class _StubFileExaminationSink:
+    """Satisfies FileExaminationSink Protocol structurally."""
+
+    async def emit_file_examination(self, event: FileExaminationEvent) -> None:
+        return None
+
+
+def _stub_db_factory() -> async_sessionmaker[AsyncSession]:
+    """A bare object passes the None-check + duck-typed runtime use; tests
+    that exercise actual DB calls live elsewhere (integration tests)."""
+    return object()  # type: ignore[return-value]
+
+
+def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
+    """A callable that satisfies the type at the call site; never invoked
+    in these unit tests."""
+    raise NotImplementedError("test stub")
 
 
 def _valid_args() -> dict[str, Any]:
@@ -55,7 +81,10 @@ def _valid_args() -> dict[str, Any]:
     return {
         "provider": _StubProvider(),
         "model_config": ModelConfig(),
-        "phase_event_sink": _StubSink(),
+        "phase_event_sink": _StubPhaseSink(),
+        "file_examination_sink": _StubFileExaminationSink(),
+        "db_factory": _stub_db_factory(),
+        "github_factory": _stub_github_factory,
     }
 
 
@@ -99,8 +128,29 @@ def test_build_graph_rejects_phase_event_sink_none() -> None:
         build_graph(**args)
 
 
+def test_build_graph_rejects_file_examination_sink_none() -> None:
+    args = _valid_args()
+    args["file_examination_sink"] = None
+    with pytest.raises(BuildGraphError, match="file_examination_sink must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_db_factory_none() -> None:
+    args = _valid_args()
+    args["db_factory"] = None
+    with pytest.raises(BuildGraphError, match="db_factory must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_github_factory_none() -> None:
+    args = _valid_args()
+    args["github_factory"] = None
+    with pytest.raises(BuildGraphError, match="github_factory must not be None"):
+        build_graph(**args)
+
+
 # ---------------------------------------------------------------------------
-# Structural Protocol rejection (2 sibling tests)
+# Structural Protocol rejection
 # ---------------------------------------------------------------------------
 
 
@@ -121,6 +171,18 @@ def test_build_graph_rejects_phase_event_sink_missing_emit_phase_member() -> Non
     args = _valid_args()
     args["phase_event_sink"] = object()  # no `emit_phase` attribute
     with pytest.raises(BuildGraphError, match="phase_event_sink does not satisfy PhaseEventSink"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_file_examination_sink_missing_member() -> None:
+    """`isinstance(sink, FileExaminationSink)` fails on objects without
+    `emit_file_examination`. Same shape as the phase-event sink gate."""
+    args = _valid_args()
+    args["file_examination_sink"] = object()
+    with pytest.raises(
+        BuildGraphError,
+        match="file_examination_sink does not satisfy FileExaminationSink",
+    ):
         build_graph(**args)
 
 
@@ -152,4 +214,8 @@ def test_build_graph_signature_is_keyword_only() -> None:
     relaxation."""
     with pytest.raises(TypeError):
         # Positional invocation should fail
-        build_graph(_StubProvider(), ModelConfig(), _StubSink())  # type: ignore[misc]
+        build_graph(
+            _StubProvider(),  # type: ignore[misc]
+            ModelConfig(),
+            _StubPhaseSink(),
+        )

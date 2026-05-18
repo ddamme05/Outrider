@@ -18,9 +18,11 @@ credentials or a live API call.
 
 from __future__ import annotations
 
+import base64
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 import pytest
@@ -33,7 +35,7 @@ from outrider.schemas.review_state import ReviewState
 from outrider.schemas.triage_result import TriageResult
 
 if TYPE_CHECKING:
-    from outrider.audit.events import ReviewPhaseEvent
+    from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
     from outrider.llm.base import LLMRequest, LLMResponse
 
 
@@ -79,6 +81,145 @@ class _MockLLMProvider:
             finish_reason="end_turn",
             latency_ms=42,
         )
+
+
+# ---------------------------------------------------------------------------
+# Cooperative intake mocks
+# ---------------------------------------------------------------------------
+#
+# Intake's deps are stubbed with values that produce a ChangedFile
+# tuple BYTE-IDENTICAL to the seed's pr_context.changed_files. That way
+# intake's pr_context-replacement is a structural no-op at the
+# changed_files level, and tests that asserted "pr_context survives"
+# (under the single-node triage graph) still hold under the two-node
+# intake → triage graph.
+
+
+_SEED_FILENAME = "src/example.py"
+_SEED_BASE_BYTES = b"old\n"
+_SEED_HEAD_BYTES = b"new\n"
+_SEED_PATCH = "@@ -1 +1 @@\n-old\n+new\n"
+
+
+@dataclass
+class _StubFileMeta:
+    filename: str
+    status: str
+    additions: int
+    deletions: int
+    patch: str | None = None
+    previous_filename: str | None = None
+
+
+@dataclass
+class _StubContentFile:
+    encoding: str
+    content: str
+
+
+@dataclass
+class _StubResponse:
+    parsed_data: Any
+
+
+class _StubReposAPI:
+    async def async_get_content(
+        self, owner: str, repo: str, path: str, *, ref: str
+    ) -> _StubResponse:
+        # Return base64(content_base) for base SHA, base64(content_head)
+        # for head SHA. The seed uses base_sha="a"*40 and head_sha="b"*40.
+        if ref == "a" * 40:
+            content_bytes = _SEED_BASE_BYTES
+        elif ref == "b" * 40:
+            content_bytes = _SEED_HEAD_BYTES
+        else:
+            content_bytes = b""
+        return _StubResponse(
+            parsed_data=_StubContentFile(
+                encoding="base64",
+                content=base64.b64encode(content_bytes).decode("ascii"),
+            )
+        )
+
+
+class _StubPullsAPI:
+    async def async_list_files(
+        self, owner: str, repo: str, pull_number: int, **kwargs: Any
+    ) -> _StubResponse:
+        return _StubResponse(
+            parsed_data=[
+                _StubFileMeta(
+                    filename=_SEED_FILENAME,
+                    status="modified",
+                    additions=5,
+                    deletions=2,
+                    patch=_SEED_PATCH,
+                )
+            ]
+        )
+
+
+class _StubRestAPI:
+    def __init__(self) -> None:
+        self.repos = _StubReposAPI()
+        self.pulls = _StubPullsAPI()
+
+
+class _StubGitHub:
+    def __init__(self) -> None:
+        self.rest = _StubRestAPI()
+
+
+def _stub_github_factory(installation_id: int) -> Any:
+    return _StubGitHub()
+
+
+# DB factory stub — intake's happy path only hits this for the size-gate /
+# failure-path branches, neither of which fires for the seed's single
+# small modified file.
+class _NeverCalledSession:
+    async def __aenter__(self) -> _NeverCalledSession:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    def begin(self) -> _NeverCalledSession:
+        return self
+
+    async def execute(self, stmt: Any) -> Any:
+        raise AssertionError("intake happy-path should not write to reviews table in these tests")
+
+
+def _stub_db_factory() -> _NeverCalledSession:
+    return _NeverCalledSession()
+
+
+class _RecordingFileExaminationSink:
+    def __init__(self) -> None:
+        self.events: list[FileExaminationEvent] = []
+
+    async def emit_file_examination(self, event: FileExaminationEvent) -> None:
+        self.events.append(event)
+
+
+def _intake_kwargs(
+    *,
+    phase_event_sink: _RecordingPhaseEventSinkLike,
+    file_examination_sink: _RecordingFileExaminationSink | None = None,
+) -> dict[str, Any]:
+    """Build the new build_graph kwargs introduced by intake-and-webhook.
+
+    Encapsulates the four new deps so test bodies stay readable.
+    """
+    return {
+        "db_factory": _stub_db_factory,  # type: ignore[arg-type]
+        "github_factory": _stub_github_factory,
+        "provider": _MockLLMProvider(),
+        "model_config": ModelConfig(),
+        "phase_event_sink": phase_event_sink,
+        "file_examination_sink": file_examination_sink or _RecordingFileExaminationSink(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +273,13 @@ def _build_seed_dict_with_naive_datetime() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 # FUP-019 test 1: first-node input validation fires
 # ---------------------------------------------------------------------------
+#
+# Rebuilt 2026-05-17 for the two-node intake → triage graph: each test
+# now passes the cooperative intake deps (stub github_factory + stub
+# db_factory + recording file_examination_sink) via the `_intake_kwargs`
+# helper. The intake-side stubs are designed so that the produced
+# `ChangedFile` tuple is byte-identical to the seed's pr_context.changed_files,
+# preserving each test's original assertions about pr_context survival.
 
 
 @pytest.mark.asyncio
@@ -147,11 +295,7 @@ async def test_naive_datetime_seed_raises_validation_error_at_first_node_input(
     ReviewState is the post-first-input lifetime defense; the construction-
     time validator (AwareDatetime → reject naive) is the first-input gate.
     """
-    graph = build_graph(
-        provider=_MockLLMProvider(),
-        model_config=ModelConfig(),
-        phase_event_sink=recording_phase_event_sink,
-    )
+    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
     bad_seed = _build_seed_dict_with_naive_datetime()
     with pytest.raises(ValidationError):
         await graph.ainvoke(bad_seed)
@@ -175,11 +319,7 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
     already passed for the sink; this test verifies the runtime contract.
     """
     state = _build_valid_seed_state()
-    graph = build_graph(
-        provider=_MockLLMProvider(),
-        model_config=ModelConfig(),
-        phase_event_sink=recording_phase_event_sink,
-    )
+    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
 
     result = await graph.ainvoke(state)
 
@@ -201,10 +341,11 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
         # dict-shaped — direct compare after re-serializing the original
         assert result_pr_context == original_pr_context_dump
 
-    # Phase events were emitted: start + end bracketing
-    assert len(recording_phase_event_sink.events) == 2
-    assert recording_phase_event_sink.events[0].marker == "start"
-    assert recording_phase_event_sink.events[1].marker == "end"
+    # Phase events were emitted: two start+end pairs (intake, then triage).
+    events = recording_phase_event_sink.events
+    assert len(events) == 4
+    assert [e.node_id for e in events] == ["intake", "intake", "triage", "triage"]
+    assert [e.marker for e in events] == ["start", "end", "start", "end"]
 
 
 # ---------------------------------------------------------------------------
@@ -226,11 +367,7 @@ async def test_result_dict_rehydrates_as_review_state(
     contract documented in `review_state.py`.
     """
     state = _build_valid_seed_state()
-    graph = build_graph(
-        provider=_MockLLMProvider(),
-        model_config=ModelConfig(),
-        phase_event_sink=recording_phase_event_sink,
-    )
+    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
 
     result = await graph.ainvoke(state)
     rehydrated = ReviewState(**result)
@@ -268,11 +405,7 @@ async def test_is_eval_survives_langgraph_merge(
     pinning both surfaces together prevents a regression where the
     reducer drops the flag from one but not the other."""
     # Graph construction does not depend on eval_flag — hoist out of the loop.
-    graph = build_graph(
-        provider=_MockLLMProvider(),
-        model_config=ModelConfig(),
-        phase_event_sink=recording_phase_event_sink,
-    )
+    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
     for eval_flag in (True, False):
         state = _build_valid_seed_state()
         state.is_eval = eval_flag  # validate_assignment=True validates this
@@ -295,9 +428,10 @@ async def test_is_eval_survives_langgraph_merge(
         # Phase events emitted during THIS iteration must carry the same flag.
         # Slicing from events_before isolates per-iteration emissions since
         # the recording sink is function-scoped and accumulates across the loop.
+        # Two-node graph: intake start/end + triage start/end = 4 events.
         new_events = recording_phase_event_sink.events[events_before:]
-        assert len(new_events) == 2, (
-            f"expected start+end phase-event pair for is_eval={eval_flag} "
+        assert len(new_events) == 4, (
+            f"expected intake+triage start/end pairs for is_eval={eval_flag} "
             f"iteration, got {len(new_events)}"
         )
         for ev in new_events:
@@ -312,23 +446,26 @@ async def test_is_eval_survives_langgraph_merge(
 async def test_phase_events_have_matching_phase_id_through_graph(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
-    """End-to-end: the start and end events captured by the sink share the
-    same phase_id. Validates the closure correctly threads phase_id through
-    both emit_phase calls inside the LangGraph-managed node invocation.
+    """End-to-end: each node's start/end pair shares the same phase_id.
+    Validates the closure correctly threads phase_id through both emit_phase
+    calls inside the LangGraph-managed node invocation. Two-node graph:
+    intake produces one start/end pair, triage produces a second.
 
     The unit test pins this at the node level; the integration test
     confirms the full graph orchestration doesn't break the contract."""
     state = _build_valid_seed_state()
-    graph = build_graph(
-        provider=_MockLLMProvider(),
-        model_config=ModelConfig(),
-        phase_event_sink=recording_phase_event_sink,
-    )
+    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
 
     await graph.ainvoke(state)
 
     events = recording_phase_event_sink.events
-    assert len(events) == 2
-    assert events[0].phase_id == events[1].phase_id
-    assert events[0].review_id == state.review_id
-    assert events[1].review_id == state.review_id
+    assert len(events) == 4
+    # Intake start/end share a phase_id; triage start/end share a phase_id;
+    # the two pairs use DIFFERENT phase_ids (one per node invocation).
+    assert events[0].node_id == "intake" and events[1].node_id == "intake"
+    assert events[2].node_id == "triage" and events[3].node_id == "triage"
+    assert events[0].phase_id == events[1].phase_id  # intake pair
+    assert events[2].phase_id == events[3].phase_id  # triage pair
+    assert events[0].phase_id != events[2].phase_id  # different pairs
+    for ev in events:
+        assert ev.review_id == state.review_id

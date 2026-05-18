@@ -9,12 +9,27 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 
 from outrider.api.lifespan import build_lifespan
 
+# PEM + env-var injection + LLM provider stub are centralized in
+# `tests/conftest.py` per round-31 fold (DevEx audit, HIGH). Tests grab
+# fresh stubs via the `make_stub_llm_provider` factory fixture.
 
-async def test_lifespan_calls_provider_aclose_on_shutdown() -> None:
+
+@pytest.fixture(autouse=True)
+def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — fixture activates env
+    """Lifespan hard-requires `GitHubAppSettings()` at startup; the shared
+    `github_app_env` fixture from `tests/conftest.py` provides the three
+    env vars. Module-local autouse wrapper saves per-test argument plumbing.
+    """
+
+
+async def test_lifespan_calls_provider_aclose_on_shutdown(
+    make_stub_llm_provider: type,
+) -> None:
     """Lifespan teardown awaits `provider.aclose()`."""
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
@@ -23,36 +38,36 @@ async def test_lifespan_calls_provider_aclose_on_shutdown() -> None:
     # MagicMock's truthy default.
     mock_engine.sync_engine.hide_parameters = True
 
-    mock_provider = MagicMock()
-    mock_provider.aclose = AsyncMock(return_value=None)
+    stub_provider = make_stub_llm_provider()
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister: stub_provider,
     )
 
     app = FastAPI()
     async with lifespan(app):
         # Provider is constructed at startup; aclose not called yet.
-        mock_provider.aclose.assert_not_called()
+        stub_provider.aclose.assert_not_called()
 
     # After exiting the context manager, aclose was called exactly once.
-    mock_provider.aclose.assert_awaited_once()
+    stub_provider.aclose.assert_awaited_once()
 
 
-async def test_lifespan_calls_engine_dispose_on_shutdown() -> None:
+async def test_lifespan_calls_engine_dispose_on_shutdown(
+    make_stub_llm_provider: type,
+) -> None:
     """Lifespan teardown awaits `engine.dispose()`."""
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
     mock_engine.sync_engine.hide_parameters = True
 
-    mock_provider = MagicMock()
-    mock_provider.aclose = AsyncMock(return_value=None)
+    stub_provider = make_stub_llm_provider()
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister: stub_provider,
     )
 
     app = FastAPI()
