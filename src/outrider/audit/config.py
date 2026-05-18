@@ -31,13 +31,24 @@ __all__ = ["RetentionSettings"]
 # expected path for compliance/forensics use cases.
 _DEFAULT_LLM_CONTENT_RETENTION_TTL: Final[timedelta] = timedelta(days=90)
 
+# Default 90 days for the `reviews` table per `DECISIONS.md#012/#014`:
+# reviews are a content-table purge target under retention, operator-
+# overridable. Mirrors the LLM-content default; reviews are typically
+# the less-sensitive surface (no prompt/completion text) so the same
+# 90-day floor is the operationally simple default.
+_DEFAULT_REVIEW_RETENTION_TTL: Final[timedelta] = timedelta(days=90)
+
 
 class RetentionSettings(BaseSettings):
     """Retention TTLs for audit content tables.
 
     Env-prefix matches the per-subsystem `OUTRIDER_<SUBSYSTEM>_` convention
-    established by `ModelConfig` in `llm/config.py`. Full env var name for
-    the only field today: `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL`.
+    established by `ModelConfig` in `llm/config.py`. Env var names:
+
+      - `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` (llm_call_content rows)
+      - `OUTRIDER_AUDIT_REVIEW_RETENTION_TTL` (reviews rows, added by the
+        intake-and-webhook spec — operator-overridable per
+        `DECISIONS.md#012/#014`)
 
     `frozen=True` means construction-time-only configuration; tests that
     need a non-default value re-construct with explicit kwargs rather
@@ -77,5 +88,17 @@ class RetentionSettings(BaseSettings):
             "OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL env var (ISO-8601 "
             "duration string only — e.g., P7D, PT24H, PT3600S; bare "
             "integer seconds are NOT accepted by pydantic-settings 2.13.1)."
+        ),
+    )
+
+    review_retention_ttl: timedelta = Field(
+        default=_DEFAULT_REVIEW_RETENTION_TTL,
+        gt=timedelta(0),
+        description=(
+            "TTL for reviews rows. Default 90 days per DECISIONS.md#012/#014: "
+            "reviews are content-table purge targets carrying operator-"
+            "overridable TTL. The webhook handler reads this at insert "
+            "time to populate reviews.retention_expires_at. Override via "
+            "OUTRIDER_AUDIT_REVIEW_RETENTION_TTL env var (ISO-8601 duration)."
         ),
     )

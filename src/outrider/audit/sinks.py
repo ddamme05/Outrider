@@ -20,7 +20,7 @@ implementations (`NoOpPersister`, `RecordingPhaseEventSink`) live in
 
 from typing import Protocol, runtime_checkable
 
-from outrider.audit.events import ReviewPhaseEvent
+from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
 
 
 @runtime_checkable
@@ -76,6 +76,50 @@ class PhaseEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class FileExaminationSink(Protocol):
+    """Sink for FileExaminationEvent emissions per intake's content-fetch path.
+
+    Intake emits one `FileExaminationEvent` per file fetched (`parse_status`
+    in `clean` / `degraded` / `failed` / `skipped`). The cross-field rule
+    that `skip_reason` is non-None iff `parse_status="skipped"` is enforced
+    by the event model itself (per `DECISIONS.md#018`) — the sink only
+    persists; it does not re-validate.
+
+    Same shape and discipline as `PhaseEventSink`:
+      - Idempotent on `event.event_id`. Re-emission of an identical event
+        (from a retry or checkpoint replay) must not duplicate the row.
+      - Safe under concurrent invocation. Intake's phase-2 content fan-out
+        uses `asyncio.gather` under a semaphore; multiple worker coroutines
+        may emit concurrently from one node invocation. The durable sink
+        serializes per call (fresh `AsyncSession` per emission, matching
+        the `emit_phase` precedent at `persister.py:1170`).
+      - Persist before returning, OR raise. Silent drop is never acceptable
+        — `phase-events-bound-work`'s sibling discipline applies here:
+        intake's `FileExaminationEvent` is the structural-evidence row that
+        proves a file was actually examined; losing it silently breaks
+        replay equivalence.
+
+    The durable `AuditPersister` implements this Protocol alongside
+    `PhaseEventSink` and `LLMExchangePersister` — one class, one transaction-
+    lifecycle discipline, three sinks. Test fixtures may record to a list
+    or persist directly per the same recorder-vs-durable split documented
+    on `PhaseEventSink`.
+
+    `@runtime_checkable` matches the `PhaseEventSink` precedent and enables
+    `build_graph` to reject sinks lacking the `emit_file_examination` member
+    at construction time via `isinstance(...)`. PEP 544 caveat applies:
+    member-presence only, not signature shape — wrong-signature
+    `emit_file_examination` still surfaces at first emission. mypy strict
+    is the write-time gate for signature shape.
+    """
+
+    async def emit_file_examination(self, event: FileExaminationEvent) -> None:
+        """Persist a single file-examination event; raise on persistence failure."""
+        ...
+
+
 __all__ = [
+    "FileExaminationSink",
     "PhaseEventSink",
 ]

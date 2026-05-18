@@ -103,7 +103,12 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from outrider.audit.config import RetentionSettings
-    from outrider.audit.events import LLMCallEvent, ReviewPhaseEvent
+    from outrider.audit.events import (
+        AgentTransitionEvent,
+        FileExaminationEvent,
+        LLMCallEvent,
+        ReviewPhaseEvent,
+    )
     from outrider.llm.base import LLMRequest, LLMResponse
 
 __all__ = [
@@ -769,7 +774,9 @@ def _compute_content_field_digests(
     return digests
 
 
-def _serialize_event_payload(event: LLMCallEvent | ReviewPhaseEvent) -> dict[str, Any]:
+def _serialize_event_payload(
+    event: LLMCallEvent | ReviewPhaseEvent | FileExaminationEvent | AgentTransitionEvent,
+) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
 
     Per `audit/events.py` module docstring: `mode="json"` (so UUIDs and
@@ -1189,6 +1196,61 @@ class AuditPersister:
                     review_id=event.review_id,
                     event_type=event.event_type,
                     phase_key=event.phase_key,
+                    timestamp=event.timestamp,
+                    is_eval=event.is_eval,
+                    payload=payload,
+                )
+                .on_conflict_do_nothing(index_elements=["event_id"])
+                .returning(AuditEventRow.event_id)
+            )
+            inserted = await session.scalar(stmt)
+            if inserted is None:
+                existing_payload = await session.scalar(
+                    select(AuditEventRow.payload).where(AuditEventRow.event_id == event.event_id)
+                )
+                if existing_payload is None:
+                    raise AuditPersisterSchemaInvariantError(
+                        event_id=event.event_id,
+                        invariant="audit_events.payload NOT NULL",
+                    )
+                if existing_payload != payload:
+                    raise AuditPersisterIdempotencyConflict(
+                        event_id=event.event_id,
+                        mismatched_fields=_diff_field_names(existing_payload, payload),
+                        field_digests=_compute_field_digests(existing_payload, payload),
+                    )
+
+    # -- FileExaminationSink surface ----------------------------------------
+
+    async def emit_file_examination(self, event: FileExaminationEvent) -> None:
+        """Persist a FileExaminationEvent row to audit_events.
+
+        Mirrors `emit_phase` semantics: idempotent on `event.event_id`;
+        payload-mismatch on PK conflict raises `AuditPersisterIdempotencyConflict`;
+        no content side-table (FileExaminationEvent carries only structural
+        identifiers — file_path, examination_type, parse_status, skip_reason —
+        none of which is content per `DECISIONS.md#014` point 5's borderline-
+        fields rule).
+
+        `phase_key` is written as NULL (the denormalized top-level column is
+        populated only for `ReviewPhaseEvent`; per the `_NO_PHASE_KEY` sentinel
+        rule, every other event type writes NULL).
+
+        Intake's phase-2 content fan-out emits these concurrently under
+        `asyncio.gather`; each emission opens its own `AsyncSession` so the
+        fan-out is safe under the per-call session discipline shared with
+        `emit_phase`.
+        """
+        payload = _serialize_event_payload(event)
+
+        async with self._session_factory() as session, session.begin():
+            stmt = (
+                postgresql_insert(AuditEventRow)
+                .values(
+                    event_id=event.event_id,
+                    review_id=event.review_id,
+                    event_type=event.event_type,
+                    phase_key=_NO_PHASE_KEY,
                     timestamp=event.timestamp,
                     is_eval=event.is_eval,
                     payload=payload,
