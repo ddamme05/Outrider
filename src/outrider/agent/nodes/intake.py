@@ -119,16 +119,20 @@ async def intake(
     phase_id = str(uuid4())
     pr_context = state.pr_context
 
-    phase_start = ReviewPhaseEvent(
-        review_id=state.review_id,
-        is_eval=state.is_eval,
-        phase_id=phase_id,
-        node_id="intake",
-        marker="start",
-    )
-    await phase_event_sink.emit_phase(phase_start)
-
     try:
+        # Phase-start emission is inside the guarded boundary so a
+        # persister failure here triggers the same `status='failed'`
+        # cleanup path as any other intake failure. Outside the try,
+        # a persister exception would strand the review at 'running'.
+        phase_start = ReviewPhaseEvent(
+            review_id=state.review_id,
+            is_eval=state.is_eval,
+            phase_id=phase_id,
+            node_id="intake",
+            marker="start",
+        )
+        await phase_event_sink.emit_phase(phase_start)
+
         gh = github_factory(pr_context.installation_id)
 
         # Phase 1 (sequential): file list with status / counts / patch.
