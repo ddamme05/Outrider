@@ -40,7 +40,7 @@ from contextlib import (
     AsyncExitStack,
     asynccontextmanager,
 )
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import (
@@ -49,8 +49,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from outrider.agent.graph import build_graph
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
+from outrider.github.auth import make_installation_client_factory
+from outrider.github.config import GitHubAppSettings
 from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.logging import register_filter_on_all_handlers
@@ -255,21 +258,66 @@ def build_lifespan(
             provider = provider_factory(persister)
             stack.push_async_callback(provider.aclose)
 
-            # Step 6: re-apply log filter post-handler-registration.
+            # Step 6: GitHub App settings (env-driven). Reads
+            # OUTRIDER_GITHUB_APP_ID + _APP_PRIVATE_KEY + _WEBHOOK_SECRET.
+            # The webhook router reads `webhook_secret.get_secret_value()`
+            # at the verify_signature call site (not here at construction).
+            github_app_settings = GitHubAppSettings()
+
+            # Step 7: github_factory — per-installation `GitHub` client
+            # factory bound to the lifespan-validated `github_app_settings`.
+            # Per `DECISIONS.md#020` + `nodes-receive-deps-via-closure`,
+            # minting happens at intake call-site, not at webhook receipt.
+            # The settings object is closed over once here; each call to
+            # `github_factory(iid)` reads `.app_private_key.get_secret_value()`
+            # at the call site so the PEM is in plain memory only briefly.
+            #
+            # Round-31 fold: previously bound the bare `make_installation_client`
+            # which re-instantiated `GitHubAppSettings()` per call, defeating
+            # the env-validation gate at startup. The settings-bound factory
+            # pattern routes any env-var change through the next lifespan
+            # restart, not through a runtime ValidationError.
+            github_factory = make_installation_client_factory(github_app_settings)
+
+            # Step 8: build the compiled graph with all six deps injected
+            # at construction time. `db_factory` is the canonical first
+            # parameter per `docs/spec.md §9.3`; the order here mirrors
+            # the spec's signature.
+            model_config = ModelConfig()
+            compiled_graph = build_graph(
+                provider=provider,
+                model_config=model_config,
+                phase_event_sink=persister,
+                file_examination_sink=persister,
+                db_factory=session_factory,
+                github_factory=github_factory,
+            )
+
+            # Step 9: `run_graph` closure for the V1 dispatcher to call
+            # from BackgroundTasks. The dispatcher itself is per-request
+            # (built via FastAPI Depends in the webhook handler); the
+            # graph is lifespan-bound.
+            async def run_graph(state: Any) -> Any:
+                return await compiled_graph.ainvoke(state)
+
+            # Step 10: re-apply log filter post-handler-registration.
             # uvicorn registers its handlers before the lifespan body
             # runs, so by here all handler chains exist; idempotent
             # `register_filter_on_all_handlers()` adds the filter to any
             # newly-registered handler missing it.
             register_filter_on_all_handlers()
 
-            # Stash deps on app.state so future request handlers (when the
-            # webhook spec lands) can resolve them via FastAPI's
-            # dependency-injection system.
+            # Stash deps on app.state so request handlers can resolve
+            # them via FastAPI's dependency-injection system.
             app.state.engine = engine
             app.state.session_factory = session_factory
             app.state.retention_settings = retention_settings
             app.state.persister = persister
             app.state.provider = provider
+            app.state.github_app_settings = github_app_settings
+            app.state.github_factory = github_factory
+            app.state.compiled_graph = compiled_graph
+            app.state.run_graph = run_graph
 
             # Safe: `engine.url.drivername` is the scheme alone (e.g.,
             # "postgresql+psycopg") — never carries credentials. DO NOT log
