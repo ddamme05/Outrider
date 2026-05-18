@@ -370,7 +370,13 @@ async def receive_pull_request_webhook(
     dispatcher = _build_dispatcher(request, background_tasks)
     try:
         await dispatcher.dispatch(seed_state)
-    except Exception:
+    except BaseException:
+        # `BaseException` (not `Exception`) so `asyncio.CancelledError`
+        # — which inherits from BaseException in Python 3.8+ — doesn't
+        # bypass the cleanup. Lifespan shutdown / client disconnect /
+        # supervisor abort during dispatch would otherwise strand the
+        # review at 'running' with no failure signal.
+        #
         # The review row + initial AgentTransitionEvent committed; if
         # dispatch fails (event-loop shutdown, JSON-serialize crash,
         # broker unreachable in V2), the row would sit at 'running'
@@ -386,16 +392,34 @@ async def receive_pull_request_webhook(
         # different natural key) to get a fresh review. The full
         # durable-recovery story (dispatched_at column with conditional
         # re-dispatch) is FUP-eligible per the spec's idempotency bullet.
-        async with session_factory() as failure_session, failure_session.begin():
-            from sqlalchemy import update as _update  # noqa: PLC0415
+        #
+        # The failed-status write is wrapped in its own try/except so a
+        # DB error during cleanup doesn't mask the original dispatch
+        # failure. Bare `raise` re-raises the original exception
+        # (including CancelledError); the cleanup-failure log line is
+        # distinct from the dispatch-failure log so operators can tell
+        # which path went wrong.
+        try:
+            async with session_factory() as failure_session, failure_session.begin():
+                from sqlalchemy import update as _update  # noqa: PLC0415
 
-            await failure_session.execute(
-                _update(Review).where(Review.id == review_id).values(status="failed")
+                await failure_session.execute(
+                    _update(Review).where(Review.id == review_id).values(status="failed")
+                )
+        except Exception:
+            logger.exception(
+                "webhook dispatch failed AND failed-status cleanup also failed; "
+                "review remains at 'running' (operator must remediate)",
+                extra={
+                    "review_id": str(review_id),
+                    "x_github_delivery": x_github_delivery,
+                },
             )
-        logger.exception(
-            "webhook dispatch failed after row commit; review marked failed",
-            extra={"review_id": str(review_id), "x_github_delivery": x_github_delivery},
-        )
+        else:
+            logger.exception(
+                "webhook dispatch failed after row commit; review marked failed",
+                extra={"review_id": str(review_id), "x_github_delivery": x_github_delivery},
+            )
         raise
 
     return {"status": "running", "review_id": str(review_id)}
