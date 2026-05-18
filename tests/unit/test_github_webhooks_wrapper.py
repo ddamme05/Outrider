@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,13 @@ def test_signature_only_call_site() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     src_root = repo_root / "src" / "outrider"
 
+    # Anchor to real Python import statements so docstring / comment
+    # mentions of `from githubkit.webhooks import ...` don't trigger
+    # false positives. `^\s*` covers indented re-imports (rare but
+    # legal); `\b` on the bare-import form prevents matching
+    # `githubkit.webhooks_extra`.
+    import_pattern = r"^\s*(from\s+githubkit\.webhooks\s+import|import\s+githubkit\.webhooks\b)"
+
     # Use ripgrep if available (faster + ignores binary files / venv); fall
     # back to a manual scan for environments without rg.
     rg = shutil.which("rg")
@@ -81,7 +89,8 @@ def test_signature_only_call_site() -> None:
                 "--type",
                 "py",
                 "-l",
-                r"from\s+githubkit\.webhooks|import\s+githubkit\.webhooks",
+                "--multiline",  # `^` with multiline anchors per line
+                import_pattern,
                 str(src_root),
             ],
             check=False,
@@ -91,11 +100,11 @@ def test_signature_only_call_site() -> None:
         )
         hits = [line for line in result.stdout.splitlines() if line.strip()]
     else:
-        # Fallback: walk and grep ourselves
+        compiled = re.compile(import_pattern, re.MULTILINE)
         hits = []
         for py_file in src_root.rglob("*.py"):
             text = py_file.read_text(encoding="utf-8")
-            if "from githubkit.webhooks" in text or "import githubkit.webhooks" in text:
+            if compiled.search(text):
                 hits.append(str(py_file))
 
     expected = str(src_root / "github" / "webhooks.py")
