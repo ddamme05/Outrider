@@ -136,6 +136,45 @@ def test_dispatch_json_roundtrip_gate_succeeds_for_pure_state() -> None:
     asyncio.run(dispatcher.dispatch(state))
 
 
+def test_dispatch_propagates_json_roundtrip_failure_without_queueing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If `state.model_dump_json()` raises (non-JSON-serializable field
+    sneaks in), the exception propagates from `dispatch` AND no
+    background task is queued. Pins the fail-loud V1↔V2 parity gate:
+    if a future refactor removed the round-trip entirely, the positive
+    test would still pass, but this test fails because the gate isn't
+    firing on the bad state.
+    """
+    bg_tasks = BackgroundTasks()
+
+    async def run_graph(s: ReviewState) -> None:
+        return None
+
+    dispatcher = BackgroundTasksDispatcher(
+        background_tasks=bg_tasks,
+        run_graph=run_graph,
+    )
+    state = _build_seed_state()
+
+    class _SimulatedDumpError(RuntimeError):
+        pass
+
+    def _raising_dump_json(self: object) -> str:  # noqa: ARG001
+        msg = "simulated non-serializable field in ReviewState"
+        raise _SimulatedDumpError(msg)
+
+    monkeypatch.setattr(ReviewState, "model_dump_json", _raising_dump_json)
+
+    with pytest.raises(_SimulatedDumpError, match="simulated non-serializable"):
+        asyncio.run(dispatcher.dispatch(state))
+
+    # No background task was queued — `add_task` runs AFTER the
+    # dump+validate round-trip, so a dump failure must short-circuit
+    # before any task is enqueued.
+    assert bg_tasks.tasks == []
+
+
 def test_dispatcher_satisfies_runtime_checkable_protocol() -> None:
     """A real `BackgroundTasksDispatcher` instance passes the
     `isinstance(d, ReviewDispatcher)` check — pins the runtime-checkable
