@@ -84,6 +84,7 @@ def _valid_payload(
         "repository": {
             "id": repo_id,
             "full_name": "acme/widgets",
+            "name": "widgets",
             "owner": {"login": "acme", "id": 2},
         },
         "installation": {"id": installation_id},

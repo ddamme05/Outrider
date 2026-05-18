@@ -84,20 +84,29 @@ class RepositoryRef(BaseModel):
     """Repository identification.
 
     `id` is the canonical numeric repo id used in idempotency
-    (`(repo_id, pr_number, head_sha)` triple). `full_name` is informational;
-    `owner.login` is the canonical source for the owner string when
-    constructing `PRContext.owner` downstream.
+    (`(repo_id, pr_number, head_sha)` triple). `owner.login` is the
+    canonical source for the owner string when constructing
+    `PRContext.owner` downstream; `name` is the canonical source for the
+    repo-name string when constructing `PRContext.repo`.
 
-    `full_name` is validated to have exactly one slash and two non-empty
-    halves — GitHub canonically issues `owner/repo`. Rejecting other
-    shapes at the input boundary prevents downstream code from
-    constructing requests with empty owner or empty repo segments.
+    `full_name` is preserved as an informational field (it appears in
+    logs and audit messages where the combined `"owner/repo"` form is
+    operator-readable shorthand). It's validated to have exactly one
+    slash and two non-empty halves — GitHub canonically issues
+    `owner/repo`. Rejecting other shapes at the input boundary prevents
+    downstream code from constructing requests with empty owner or
+    empty repo segments. Note: `full_name` is NOT used to DERIVE
+    `owner`/`repo` at PRContext construction; per the canonical-source
+    discipline, those come from `owner.login` and `name` directly.
+    `name` carries the same character-class restrictions as
+    `owner.login` (no slashes; GitHub disallows slashes in repo names).
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     id: int = Field(ge=1)
     full_name: str = Field(min_length=3, pattern=r"^[^/]+/[^/]+$")
+    name: str = Field(min_length=1, pattern=r"^[^/]+$")
     owner: WebhookUser
 
 

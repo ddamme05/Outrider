@@ -417,11 +417,18 @@ def _build_seed_pr_context(payload: PullRequestEventPayload) -> Any:
     # Lazy import avoids the same circular-import shape as ReviewState.
     from outrider.schemas.pr_context import PRContext  # noqa: PLC0415
 
-    owner, _, repo = payload.repository.full_name.partition("/")
+    # Canonical source per `api/webhooks/schemas.py::RepositoryRef`:
+    # `owner.login` for the owner string, `name` for the repo string.
+    # NOT `full_name.partition("/")` — `full_name` is informational
+    # (used in logs/audit messages); deriving owner/repo from it would
+    # bypass the per-field input-boundary validators and risk drift if
+    # GitHub ever changes the `full_name` format. Codex round-35 #3
+    # MEDIUM: previous impl used the partition split; now reads the
+    # individual fields directly.
     return PRContext(
         installation_id=payload.installation.id,
-        owner=owner,
-        repo=repo,
+        owner=payload.repository.owner.login,
+        repo=payload.repository.name,
         pr_number=payload.pull_request.number,
         pr_title=payload.pull_request.title,
         pr_body=payload.pull_request.body,
