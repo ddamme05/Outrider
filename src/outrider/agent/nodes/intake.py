@@ -77,7 +77,7 @@ _SIZE_GATE_MAX_FILES = 30
 # PR is over the threshold regardless of total file count. Encoding this
 # structurally (rather than as a constant on each side) catches drift —
 # a future bump of `_SIZE_GATE_MAX_FILES` without a matching `per_page`
-# change would silently bypass the gate. Round-31 fold (sharp-edges MEDIUM).
+# change would silently bypass the gate.
 _LIST_PR_FILES_PER_PAGE = _SIZE_GATE_MAX_FILES + 1
 
 # Per the spec line 4 in the intake-node sequence: bounded concurrency on
@@ -91,8 +91,7 @@ _CONCURRENCY_LIMIT = 8
 # = 30 MB worst case under the file-count gate. 10 MB total is the
 # practical ceiling: enough for triage/analyze on a normally-sized PR,
 # bounded enough that 100 concurrent webhook deliveries × 10 MB = 1 GB
-# memory pressure (manageable on most worker sizes). Round-31 fold
-# (adversarial MEDIUM + sharp-edges MEDIUM convergent on DoS surface).
+# memory pressure (manageable on most worker sizes).
 _TOTAL_DECODED_BYTES_CAP = 10_000_000
 
 
@@ -154,15 +153,14 @@ async def intake(
         # protects against a worst-case 30 × 1MB = 30MB pressure under
         # the per-file + file-count gates.
         #
-        # `asyncio.TaskGroup` (NOT `asyncio.gather`) per round-31 fold
-        # (Codex pass 5 HIGH): with `gather`, the first exception
-        # propagates but sibling tasks KEEP RUNNING. A sibling could
-        # emit a `FileExaminationEvent` AFTER the failure handler's
-        # phase-end marker, violating the `phase-events-bound-work`
-        # invariant (replay loses the causal barrier). TaskGroup
-        # cancels siblings on first failure and propagates as
-        # `ExceptionGroup`; we unwrap so the outer `except Exception`
-        # handler sees the original cause, not a wrapping group.
+        # `asyncio.TaskGroup` (NOT `asyncio.gather`): with `gather`,
+        # the first exception propagates but sibling tasks KEEP
+        # RUNNING — a sibling could emit a `FileExaminationEvent`
+        # AFTER the failure handler's phase-end marker, violating
+        # `phase-events-bound-work` (replay loses the causal barrier).
+        # TaskGroup cancels siblings on first failure and propagates
+        # as `ExceptionGroup`; we unwrap so the outer handler sees
+        # the original cause, not a wrapping group.
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
         byte_budget = _ByteBudget(cap=_TOTAL_DECODED_BYTES_CAP)
         per_file_results: list[asyncio.Task[ChangedFile | None]] = []
@@ -225,24 +223,17 @@ async def intake(
         # BOTH the phase-end emit AND the status-write are wrapped in
         # try/except so the bare `raise` at the end re-raises the
         # ORIGINAL intake exception, not a SQLAlchemy / persister error
-        # from the best-effort cleanup. Round-31 FUP-032 fold: previously
-        # only phase-end was wrapped — a DB error in `_set_review_status`
-        # would surface to the operator as the chained exception cause,
-        # obscuring the actual intake failure (GitHub timeout, parse
-        # error, etc.) the operator most needs to see.
+        # from the best-effort cleanup.
         #
-        # `except BaseException` (not `except Exception`) per Codex
-        # round-34 #3 HIGH: in Python 3.8+, `asyncio.CancelledError`
-        # inherits from `BaseException`, not `Exception`. Catching only
-        # `Exception` would let a cancellation (lifespan shutdown,
-        # client disconnect, supervisor abort) bypass phase-end emission
-        # AND the `status='failed'` write — leaving a durable
-        # phase-start with no end and a review row stuck at 'running'.
-        # `BaseException` ensures the audit-trail + operator-visible
-        # status converge on the same outcome regardless of how the
-        # intake failed. The bare `raise` at the end re-raises the
-        # original exception (including CancelledError), so the
-        # graph runner's cancellation semantics are preserved.
+        # `except BaseException` (not `except Exception`):
+        # `asyncio.CancelledError` inherits from `BaseException`, so
+        # catching only `Exception` would let a cancellation (lifespan
+        # shutdown, client disconnect, supervisor abort) bypass
+        # phase-end emission AND the `status='failed'` write — leaving
+        # a durable phase-start with no end and a review row stuck at
+        # 'running'. The bare `raise` at the end re-raises the original
+        # exception (including CancelledError), so the graph runner's
+        # cancellation semantics are preserved.
         try:
             await _emit_phase_end(phase_event_sink, state, phase_id)
         except Exception:
@@ -290,9 +281,8 @@ class _ByteBudget:
     over the cap are denied (and the caller emits OVERSIZED for that
     file); files that fit are admitted and the total is incremented.
 
-    Round-31 fold (adversarial + sharp-edges convergent on DoS surface).
-    The per-file 1MB cap + 30-file gate alone left a 30MB worst case;
-    this cap is the second guard at the aggregate level.
+    Second guard at the aggregate level: the per-file 1MB cap + 30-file
+    gate alone left a 30MB worst case that this accumulator bounds.
     """
 
     def __init__(self, *, cap: int) -> None:
@@ -312,6 +302,17 @@ class _ByteBudget:
                 return False
             self._used += n_bytes
             return True
+
+    async def release(self, n_bytes: int) -> None:
+        """Release a previously-reserved chunk back to the budget.
+
+        Used by two-sided fetch paths (modified / renamed) when one
+        side classifies clean but the other fails — the file is
+        skipped, so the clean side's reservation must return to the
+        pool to avoid crowding out later valid files.
+        """
+        async with self._lock:
+            self._used = max(0, self._used - n_bytes)
 
 
 async def _semaphore_guarded_fetch(
@@ -346,9 +347,8 @@ async def _gather_two_fetches(
     failure propagates upward. `asyncio.gather` leaves siblings
     running by default, which would let the second fetch finish AFTER
     the outer per-file failure path emits its skip/audit event —
-    violating the `phase-events-bound-work` discipline at a finer
-    granularity than the outer fan-out's TaskGroup (Codex round-34 #2
-    HIGH).
+    violating `phase-events-bound-work` at a finer granularity than
+    the outer fan-out's TaskGroup.
 
     ExceptionGroup unwrap mirrors the outer fan-out's logic: prefer
     the first non-CancelledError so operators see the root cause, not
@@ -417,12 +417,11 @@ async def _process_one_file(
             validate_diff_path(raw_previous_filename) if raw_previous_filename is not None else None
         )
     except CoordinateError as exc:
-        # Log with the raw bytes AND the exception message truncated to
-        # a small length so an attacker can't blow up log volume with a
-        # 10MB filename. `CoordinateError.__str__` embeds the full
-        # rejected path in its message — per Codex round-34 #6, logging
-        # `exc` directly defeats the `truncated_raw` cap because the
-        # exception text would still carry the unbounded path.
+        # Truncate both the raw bytes AND the exception message so an
+        # attacker can't blow up log volume with a 10MB filename.
+        # `CoordinateError.__str__` embeds the full rejected path in
+        # its message — logging `exc` directly would defeat the
+        # `truncated_raw` cap.
         truncated_raw = repr(raw_filename)[:200]
         truncated_reason = repr(str(exc))[:200]
         logger.warning(
@@ -527,11 +526,15 @@ async def _process_one_file(
             content_head, skip_reason_head = await _classify_or_reserve_decode(
                 bytes_head, byte_budget
             )
-            # Skip the file if EITHER version is binary/malformed —
-            # mixing a clean head with a binary base (or vice versa)
-            # would feed corrupted text to the LLM.
+            # Skip if either side is binary/malformed. Release the
+            # clean side's reservation so it doesn't crowd out later
+            # valid files.
             binary_reason = skip_reason_base or skip_reason_head
             if binary_reason is not None:
+                if skip_reason_base is None:
+                    await byte_budget.release(len(bytes_base))
+                if skip_reason_head is None:
+                    await byte_budget.release(len(bytes_head))
                 await _emit_skip(
                     file_examination_sink,
                     state=state,
@@ -578,6 +581,10 @@ async def _process_one_file(
             )
             binary_reason = skip_reason_base or skip_reason_head
             if binary_reason is not None:
+                if skip_reason_base is None:
+                    await byte_budget.release(len(bytes_base))
+                if skip_reason_head is None:
+                    await byte_budget.release(len(bytes_head))
                 await _emit_skip(
                     file_examination_sink,
                     state=state,
@@ -637,10 +644,8 @@ async def _emit_skip(
 ) -> None:
     """Emit FileExaminationEvent(parse_status='skipped', skip_reason=reason).
 
-    Generalizes the previous `_emit_oversize` helper (round-31 fold)
-    so the same audit-event shape covers both OVERSIZED (per-file 1MB
-    cap) and BINARY (NUL-byte / malformed-UTF-8 detection) without
-    duplicating the event-construction boilerplate.
+    Single helper for every skip path (per-file cap exceeded, binary
+    detection, malformed UTF-8) so the audit-event shape is uniform.
     """
     event = FileExaminationEvent(
         review_id=state.review_id,
@@ -680,12 +685,8 @@ async def _set_review_status(
     `status` is narrowed to the two values intake's failure / size-gate
     paths actually write — any other transitions (`running` at INSERT,
     `awaiting_approval` at HITL, `completed` at publish) happen
-    elsewhere in the graph and through different paths. Round-31 fold:
-    accepting a bare `str` here would let a fat-fingered `"skiped"` or
-    semantically-wrong `"pending"` silently land in the `review_status_enum`
-    column at the DB layer (or fail loud only at insert time, with the
-    review row already half-touched). Narrow Literal pins the contract
-    at the type-checker.
+    elsewhere in the graph and through different paths. Narrow Literal
+    catches fat-fingered values (`"skiped"`, `"pending"`) at type-check.
     """
     async with db_factory() as session, session.begin():
         await session.execute(update(Review).where(Review.id == review_id).values(status=status))
