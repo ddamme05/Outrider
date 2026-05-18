@@ -484,13 +484,12 @@ async def test_per_file_binary_content_skipped_not_silently_corrupted() -> None:
     silently corrupted into U+FFFD-replacement text and flowed to
     triage/analyze as 'clean'.
 
-    Pins round-31 fold (sharp-edges HIGH): `_classify_or_reserve_decode`
-    checks `b'\\x00' in content_bytes` BEFORE the UTF-8 decode. Skip is
-    emitted with `SkipReason.OVERSIZED` because DECISIONS#018 fixes the
-    V1 enum to five values (no `BINARY`); the canonical-amendment that
-    would add `SkipReason.BINARY` is tracked at FUP-033. The behavior
-    (binary blobs skipped, not corrupted) is the load-bearing assertion;
-    the routing-through-OVERSIZED is a non-ideal-but-canonical-conformant
+    `_classify_or_reserve_decode` checks `b'\\x00' in content_bytes`
+    BEFORE the UTF-8 decode. Skip is emitted with `SkipReason.OVERSIZED`
+    because DECISIONS#018 fixes the V1 enum to five values (no
+    `BINARY`); the canonical amendment is tracked at FUP-033. The
+    load-bearing assertion is the behavior (binary blobs skipped, not
+    corrupted); the OVERSIZED routing is a canonical-conformant
     intermediate.
     """
     from outrider.ast_facts.models import SkipReason
@@ -622,8 +621,107 @@ async def test_byte_budget_try_reserve_is_atomic_under_concurrent_calls() -> Non
     assert budget._used <= cap
 
 
+@pytest.mark.asyncio
+async def test_byte_budget_release_returns_bytes_to_pool() -> None:
+    """`_ByteBudget.release(n)` decrements `_used` by `n` so a
+    previously-reserved-but-rolled-back chunk can be re-used by later
+    files.
+
+    Pins the rollback path used by the two-sided fetch branches
+    (modified / renamed) when one side classifies clean and reserves
+    budget but the other side fails — without release, the clean
+    side's reservation would crowd out later valid files.
+    """
+    from outrider.agent.nodes.intake import _ByteBudget
+
+    budget = _ByteBudget(cap=1000)
+
+    # Reserve 600, release 600 — budget fully restored.
+    assert await budget.try_reserve(600) is True
+    assert budget._used == 600
+    await budget.release(600)
+    assert budget._used == 0
+
+    # A subsequent 1000-byte reservation must fit (would NOT fit if
+    # the prior 600 had stuck).
+    assert await budget.try_reserve(1000) is True
+
+    # `release` clamps at zero — releasing more than was reserved
+    # leaves the accumulator at 0, not negative.
+    await budget.release(99_999)
+    assert budget._used == 0
+
+
+@pytest.mark.asyncio
+async def test_modified_file_releases_clean_side_when_other_side_binary() -> None:
+    """Modified file with clean base + binary head: the clean base's
+    byte reservation MUST be released back to the budget before the
+    file is dropped, otherwise later valid files are skipped as
+    OVERSIZED due to phantom accounting.
+
+    Pins the rollback wiring in the modified branch of
+    `_process_one_file`.
+    """
+    from outrider.ast_facts.models import SkipReason
+
+    state = _build_state()
+    files = [
+        _StubFileMeta(filename="dirty.py", status="modified", additions=1, deletions=1),
+        _StubFileMeta(filename="clean.py", status="added", additions=1, deletions=0),
+    ]
+    # dirty.py: clean base, binary head (NUL byte in head)
+    # clean.py: small clean text
+    payload_base_clean = b"def f(): pass\n"  # clean text, valid UTF-8
+    payload_head_binary = b"binary\x00content"  # NUL byte → BINARY skip
+    payload_clean = b"def g(): pass\n"
+
+    content = {
+        ("dirty.py", "b" * 40): payload_base_clean,  # base_sha
+        ("dirty.py", "h" * 40): payload_head_binary,  # head_sha
+        ("clean.py", "h" * 40): payload_clean,
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    # Drop the aggregate cap just above what BOTH clean files would
+    # use, so if `dirty.py`'s clean-base reservation isn't released,
+    # `clean.py` would be skipped as OVERSIZED.
+    from outrider.agent.nodes import intake as intake_mod
+
+    monkeypatch_cap = len(payload_base_clean) + len(payload_clean)
+    original_cap = intake_mod._TOTAL_DECODED_BYTES_CAP
+    intake_mod._TOTAL_DECODED_BYTES_CAP = monkeypatch_cap
+    try:
+        result = await intake(
+            state,
+            github_factory=_stub_github_factory(gh),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=file_sink,
+        )
+    finally:
+        intake_mod._TOTAL_DECODED_BYTES_CAP = original_cap
+
+    assert result.goto == "triage"
+    assert result.update is not None
+    new_ctx: PRContext = result.update["pr_context"]
+
+    # `clean.py` must be admitted as clean (it would NOT be if
+    # `dirty.py`'s base reservation hadn't been released).
+    paths = [cf.path for cf in new_ctx.changed_files]
+    assert paths == ["clean.py"]
+
+    # Audit events: `dirty.py` skipped+OVERSIZED (binary), `clean.py` clean.
+    by_path = {e.file_path: e for e in file_sink.events}
+    assert by_path["dirty.py"].parse_status == "skipped"
+    assert by_path["dirty.py"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["clean.py"].parse_status == "clean"
+
+
 # ===========================================================================
-# Aggregate decoded-bytes cap (round-31 fold)
+# Aggregate decoded-bytes cap
 # ===========================================================================
 
 
@@ -635,7 +733,6 @@ async def test_aggregate_bytes_cap_emits_oversized_when_total_exceeded(
     intake-wide cap, the offending file is skipped with OVERSIZED — NOT
     the whole intake. Files admitted under the cap still flow as clean.
 
-    Pins round-31 fold (adversarial + sharp-edges convergent on DoS).
     Drops the cap to a small value via monkeypatch so two ~600-byte
     files trigger the overshoot deterministically.
     """
@@ -745,9 +842,9 @@ async def test_intake_status_write_failure_preserves_original_exception(
     `RuntimeError("simulated GitHub failure")`) is re-raised — not the
     SQLAlchemy error from the cleanup.
 
-    Pins round-31 FUP-032 fold (sharp-edges MEDIUM): without the
-    exception-preserving try/except around `_set_review_status`, the
-    operator would see the cleanup error and chase the wrong root cause.
+    Without the exception-preserving try/except around
+    `_set_review_status`, the operator would see the cleanup error and
+    chase the wrong root cause.
     """
     import logging
 
