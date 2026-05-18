@@ -1,67 +1,86 @@
-# Single-node StateGraph(ReviewState) factory per specs/2026-05-15-triage-node.md.
-"""Single-node `StateGraph(ReviewState)` factory.
+# Two-node StateGraph(ReviewState) factory per specs/2026-05-17-intake-and-webhook.md.
+"""Two-node `StateGraph(ReviewState)` factory: intake → triage.
 
-V1 ships ONE node: `triage`. The factory's responsibility ends at
-producing a `CompiledStateGraph` that consumers (FastAPI app at startup
-in production; tests at fixture-setup) can invoke via
+V1.x ships TWO nodes: `intake` and `triage`. Intake enriches
+`pr_context.changed_files` per `DECISIONS.md#020`; triage runs a fast
+LLM pass for tier classification. The factory produces a
+`CompiledStateGraph` that consumers invoke via
 `await graph.ainvoke(seed_state)`.
 
-Multi-node graph topology (intake → triage → analyze ⇄ trace →
-synthesize → hitl → publish) is a downstream spec per non-goal #3 of the
-triage-node spec.
+Multi-node graph topology beyond intake → triage (analyze ⇄ trace →
+synthesize → hitl → publish) is downstream of this spec.
+
+## Routing: Command, not static or conditional edges from intake
+
+Per the intake-and-webhook spec (Shape B), intake returns
+`Command(goto=...)` to drive routing. No `add_edge("intake", "triage")`
+and no `add_conditional_edges("intake", ...)` — per LangGraph 1.1.6
+semantics, a static edge would fire ALONGSIDE the Command's dynamic
+edge (sending to both destinations), and a conditional edge would
+require a new state slot which conflicts with the canonical ReviewState
+ownership rule (`pr_context.changed_files` enrichment only, no new
+top-level slots from intake).
+
+  - Success path: intake returns `Command(update={"pr_context": ...},
+    goto="triage")` → routes to triage.
+  - Size-gate skip: intake returns `Command(goto=END)` → routes to END.
+  - Failure: intake re-raises after writing `reviews.status='failed'` —
+    graph terminates via exception, no `Command` returned.
 
 ## Dependency injection
 
-All three runtime deps are required keyword arguments per
-`nodes-receive-deps-via-closure`:
+Required keyword arguments per `nodes-receive-deps-via-closure`:
 
-  - `provider: LLMProvider` — the LLM transport; closed-over inside the
-    triage callable.
-  - `model_config: ModelConfig` — only `triage_model` is captured at the
-    callsite (NOT the whole config object) so `model-strings-from-config-
-    not-hardcoded` is honored.
-  - `phase_event_sink: PhaseEventSink` — required (no Optional, no no-op
-    default per the triage-node spec's "no-silent-phase-drop" guarantee).
+  - `provider: LLMProvider` — LLM transport for triage.
+  - `model_config: ModelConfig` — `triage_model` only is captured at
+    callsite (per `model-strings-from-config-not-hardcoded`).
+  - `phase_event_sink: PhaseEventSink` — required for both nodes; both
+    emit start/end phase markers.
+  - `file_examination_sink: FileExaminationSink` — required for intake's
+    per-file `FileExaminationEvent` emissions.
+  - `db_factory: async_sessionmaker[AsyncSession]` — required for intake's
+    `reviews.status='skipped'` / `'failed'` writes. Per canonical
+    `docs/spec.md §9.3`, `db_factory` is the first parameter; this spec
+    adds it after the existing two sink params for backward-compat with
+    the triage-node spec's signature precedent.
+  - `github_factory: Callable[[int], GitHub]` — required for intake to
+    construct a per-installation `GitHub` client on-demand. Per
+    `DECISIONS.md#020`, minting happens at intake call-site, not at
+    webhook receipt.
 
 ## Validation gates
 
-Three None-rejections + two structural rejections, all at construction
-time (BEFORE any `StateGraph` work happens):
-
-  1. `provider is None` → `BuildGraphError`
-  2. `model_config is None` → `BuildGraphError`
-  3. `phase_event_sink is None` → `BuildGraphError`
-  4. `not isinstance(provider, LLMProvider)` → `BuildGraphError`
-     Member-presence check: catches objects missing `complete`.
-  5. `not isinstance(phase_event_sink, PhaseEventSink)` → `BuildGraphError`
-     Member-presence check: catches objects missing `emit_phase`.
-
-PEP 544 caveat: `@runtime_checkable` Protocols verify member PRESENCE
-only — not signature, async-vs-sync nature, arity, or types. Wrong-
-signature `complete`/`emit_phase` falls through to fail at the first
-call site. mypy strict mode is the write-time gate for signature shape.
-The deliberate decision NOT to add `inspect.signature` runtime introspection
-is documented in the triage-node spec — that's brittle and not worth it.
+None-rejections + structural Protocol checks at construction time
+(BEFORE any `StateGraph` work). PEP 544 caveat applies: member-presence
+only, not signature shape.
 
 ## Async invocation
 
-Triage is `async def`. Per LangGraph 1.1.6 docs (narrative/use-graph-api.md
-"Use Pydantic models for graph state" + the async section), async-node
-graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`,
-NOT sync `.invoke(...)`.
+Both nodes are `async def`. Per LangGraph 1.1.6 docs, async-node graphs
+are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
 """
 
+from __future__ import annotations
+
 import functools
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from outrider.agent.nodes.intake import intake
 from outrider.agent.nodes.triage import triage
 from outrider.agent.state import ReviewState
-from outrider.audit.sinks import PhaseEventSink
+from outrider.audit.sinks import FileExaminationSink, PhaseEventSink
 from outrider.llm.base import LLMProvider
-from outrider.llm.config import ModelConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from outrider.github import InstallationGitHubClient
+    from outrider.llm.config import ModelConfig
 
 # LangGraph's CompiledStateGraph is generic over [StateT, ContextT, InputT,
 # OutputT]; V1 uses ReviewState for state but the output is a dict (per
@@ -84,15 +103,23 @@ class BuildGraphError(ValueError):
 
 def build_graph(
     *,
+    db_factory: async_sessionmaker[AsyncSession],
+    github_factory: Callable[[int], InstallationGitHubClient],
     provider: LLMProvider,
     model_config: ModelConfig,
     phase_event_sink: PhaseEventSink,
+    file_examination_sink: FileExaminationSink,
 ) -> _CompiledTriageGraph:
-    """Build the single-node triage graph.
+    """Build the two-node intake → triage graph.
 
     Keyword-only arguments to prevent positional-confusion bugs at
-    callsites that will eventually pass 3+ deps. Validation order: None
-    checks first (cheaper), then Protocol structural checks.
+    callsites with multiple deps. Validation order: None checks first
+    (cheaper), then Protocol structural checks.
+
+    Parameter order mirrors the canonical `docs/spec.md §9.3` signature:
+    `db_factory` is first, `github_factory` second, then the LLM provider
+    + model_config + sinks. Because all params are keyword-only,
+    reordering is source-compat for every caller.
 
     Returns a compiled `StateGraph(ReviewState)` ready for
     `await graph.ainvoke(seed_state)` invocation.
@@ -104,6 +131,12 @@ def build_graph(
         raise BuildGraphError("model_config must not be None")
     if phase_event_sink is None:
         raise BuildGraphError("phase_event_sink must not be None")
+    if file_examination_sink is None:
+        raise BuildGraphError("file_examination_sink must not be None")
+    if db_factory is None:
+        raise BuildGraphError("db_factory must not be None")
+    if github_factory is None:
+        raise BuildGraphError("github_factory must not be None")
 
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
@@ -119,6 +152,12 @@ def build_graph(
             f"(passed type: {type(phase_event_sink).__name__}; "
             f"missing `emit_phase` member; see PEP 544 runtime-checkable semantics)"
         )
+    if not isinstance(file_examination_sink, FileExaminationSink):
+        raise BuildGraphError(
+            f"file_examination_sink does not satisfy FileExaminationSink Protocol "
+            f"(passed type: {type(file_examination_sink).__name__}; "
+            f"missing `emit_file_examination` member; see PEP 544 runtime-checkable semantics)"
+        )
 
     # Close over the per-tier model id, not the whole ModelConfig.
     triage_callable = functools.partial(
@@ -127,10 +166,23 @@ def build_graph(
         triage_model=model_config.triage_model,
         phase_event_sink=phase_event_sink,
     )
+    intake_callable = functools.partial(
+        intake,
+        github_factory=github_factory,
+        db_factory=db_factory,
+        phase_event_sink=phase_event_sink,
+        file_examination_sink=file_examination_sink,
+    )
 
     builder = StateGraph(ReviewState)
+    builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
-    builder.add_edge(START, "triage")
+    builder.add_edge(START, "intake")
+    # NO `builder.add_edge("intake", "triage")` here, and NO
+    # `builder.add_conditional_edges("intake", ...)`. Intake routes via
+    # `Command(goto=...)` per LangGraph 1.1.6 semantics — a static edge
+    # would fire alongside the Command and send to BOTH destinations.
+    # See module docstring "Routing" section for the full rationale.
     builder.add_edge("triage", END)
     return builder.compile()
 
