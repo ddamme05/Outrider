@@ -61,13 +61,13 @@ async def list_pr_files(
     **Pagination strategy.** GitHub's `/pulls/{number}/files` is paginated
     (default `per_page=30`, max 100). Intake's size gate skips PRs with
     more than `_SIZE_GATE_MAX_FILES` files outright. The caller passes
-    `per_page = _SIZE_GATE_MAX_FILES + 1` (round-31 fold, sharp-edges
-    MEDIUM): if the response returns `_SIZE_GATE_MAX_FILES + 1` entries,
-    the size gate fires without paginating further; if ≤ `_SIZE_GATE_MAX_FILES`
-    are returned, the list is complete. Default of 31 here preserves the
-    invariant for callers that don't pass an explicit value (defends
-    against silent gate bypass if intake's constant drifts up without a
-    corresponding `per_page` argument change).
+    `per_page = _SIZE_GATE_MAX_FILES + 1`: if the response returns
+    `_SIZE_GATE_MAX_FILES + 1` entries, the size gate fires without
+    paginating further; if ≤ `_SIZE_GATE_MAX_FILES` are returned, the
+    list is complete. Default of 31 here preserves the invariant for
+    callers that don't pass an explicit value (defends against silent
+    gate bypass if intake's constant drifts up without a corresponding
+    `per_page` argument change).
 
     Owner and repo strings come from the validated webhook payload via
     `RepositoryRef.owner.login` and `RepositoryRef.name` directly

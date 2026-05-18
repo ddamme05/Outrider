@@ -40,9 +40,7 @@ class ReviewDispatcher(Protocol):
     so that fields whose serialize-then-validate cycle is not identity
     (e.g., `set`→`list`, `tuple`→`list`, `ZoneInfo`→fixed-offset)
     surface as drift at V1 dispatch time, NOT on the first V2
-    production review. Round-31 fold changed V1 from "dump+discard
-    serialization gate" to "real round-trip + pass rehydrated state to
-    add_task" precisely for this V1↔V2 parity property.
+    production review.
 
     `dispatch` does NOT block on graph completion — it returns once the
     state has been enqueued for background execution. Failure modes

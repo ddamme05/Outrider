@@ -148,13 +148,10 @@ def test_malformed_signature_header_returns_401_via_false_path() -> None:
     which falls back to "sha1" mode and runs `hmac.compare_digest`
     unconditionally). Router treats False as 401.
 
-    Round-32 audit-the-audit: this test was previously named
-    `test_signature_verifier_exception_returns_401` and claimed to test
-    a verifier-raise → router-401 conversion. That test was vacuous —
-    verify never raised on the input; the 401 came from the False-path
-    not a raise-then-catch. Renamed + docstring corrected; the
-    raise-path is now covered by `test_unexpected_verifier_exception_returns_5xx`
-    below.
+    Distinct from `test_unexpected_verifier_exception_returns_5xx`
+    below, which exercises the raise-path. This test exercises the
+    False-return-path: `verify` returns False for malformed shapes,
+    the router translates False to 401.
     """
     client = TestClient(_make_app())
     body = json.dumps(_valid_pr_opened_payload()).encode()
@@ -176,13 +173,11 @@ def test_unexpected_verifier_exception_returns_5xx(
     error, dependency regression, etc.), the router does NOT collapse
     it to 401 — the exception propagates and FastAPI returns 5xx.
 
-    Pins the round-32 fold (sharp-edges MEDIUM): the router used to
-    wrap `verify_signature` in `except Exception → 401`, which hid
-    real server faults behind auth failures. The fold removed the wrap
-    so operators see the actual failure class. Test injects a
+    The router does NOT wrap `verify_signature` in `except Exception →
+    401` — that wrap would hide real server faults behind auth
+    failures. Operators see the actual failure class. Test injects a
     monkeypatched `verify_signature` that raises `RuntimeError`;
-    asserts 5xx (TestClient surfaces the exception class info, but the
-    HTTP-shape contract is 5xx, not 401).
+    asserts 5xx.
     """
     import outrider.api.webhooks.router as router_mod
 

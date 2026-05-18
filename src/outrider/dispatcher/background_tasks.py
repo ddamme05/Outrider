@@ -15,9 +15,7 @@ state — serializes via `model_dump_json()` AND re-hydrates via
 adds a field that serializes one way and rehydrates differently (e.g.,
 `set`→`list`, `tuple`→`list`, `ZoneInfo("America/New_York")`→fixed-offset),
 V1's node execution sees the same shape V2's broker rehydration will
-deliver. A serialize-and-discard gate (Round-30 shape) caught only
-serialization failures; the rehydration drift class was invisible until
-V2 production. Round-31 fold (sharp-edges HIGH).
+deliver.
 """
 
 from __future__ import annotations
