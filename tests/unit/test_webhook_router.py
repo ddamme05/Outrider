@@ -100,6 +100,7 @@ def _valid_pr_opened_payload() -> dict[str, Any]:
         "repository": {
             "id": 999,
             "full_name": "acme/widgets",
+            "name": "widgets",
             "owner": {"login": "acme", "id": 2},
         },
         "installation": {"id": 12345},

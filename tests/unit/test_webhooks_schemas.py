@@ -34,6 +34,7 @@ def _valid_payload() -> dict[str, Any]:
         "repository": {
             "id": 999,
             "full_name": "acme/widgets",
+            "name": "widgets",
             "owner": {"login": "acme", "id": 200},
         },
         "installation": {"id": 12345},
