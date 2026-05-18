@@ -145,11 +145,15 @@ def test_installation_auth_strategy_only_call_site() -> None:
     # alias `InstallationGitHubClient` for callers outside `github/`).
     # Both are inside the wrapper folder; the rule is "only inside
     # src/outrider/github/" — not "only in one specific file."
-    github_dir = str(src_root / "github")
+    github_dir = (src_root / "github").resolve()
     assert hits, "Expected at least one import of `AppInstallationAuthStrategy`."
     for hit in hits:
-        assert hit.startswith(github_dir), (
+        hit_path = Path(hit).resolve()
+        # `is_relative_to` is the correct ancestor check: rejects
+        # sibling directories like `github_extra/` that would pass a
+        # naive `startswith(str(github_dir))`.
+        assert hit_path.is_relative_to(github_dir), (
             f"`AppInstallationAuthStrategy` imported from {hit!r}; "
-            f"all imports must be inside {github_dir!r}. "
+            f"all imports must be inside {github_dir}. "
             f"Move the call into the wrapper."
         )
