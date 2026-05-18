@@ -65,7 +65,7 @@ class WebhookUser(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     login: str
-    id: int
+    id: int = Field(ge=1)
 
 
 class WebhookInstallation(BaseModel):
