@@ -42,8 +42,15 @@ def test_returns_false_from_wrapper() -> None:
 
 
 def test_propagates_wrapper_exceptions() -> None:
-    """If the wrapper raises (malformed header, etc.), the exception
-    propagates — caller treats it as 401 per the route discipline."""
+    """If the wrapper raises, the exception propagates unwrapped.
+
+    `githubkit.webhooks.verify` returns False on mismatch (it does NOT
+    raise on malformed digest / wrong length / base64 garbage). Any raise
+    is a programming-error class fault — wrong-type input, dependency
+    regression — and surfaces as 5xx, NOT 401. The route returns 401
+    only on the False path. See `signature.py::verify_signature`
+    docstring + `router.py` step-4 comment for the full contract.
+    """
 
     class _FakeWebhookError(Exception):
         pass
