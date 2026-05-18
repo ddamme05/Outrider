@@ -108,9 +108,18 @@ def test_installation_auth_strategy_only_call_site() -> None:
     # A docstring reference like "wraps `githubkit.AppInstallationAuthStrategy`"
     # is fine; what we're banning is `from githubkit import
     # AppInstallationAuthStrategy` or `import githubkit.AppInstallationAuthStrategy`.
+    #
+    # Two patterns:
+    #   1. Single-line OR parenthesized multiline `from githubkit import ...`
+    #      containing the symbol bounded by `\b` (rejects substring matches
+    #      like `AppInstallationAuthStrategyCustom`).
+    #   2. Bare `import githubkit.AppInstallationAuthStrategy` (Python allows
+    #      this for any submodule, even though it's rare in practice).
     import_pattern = (
-        r"^from\s+githubkit\s+import\s+[^\n]*AppInstallationAuthStrategy"
-        r"|^import\s+githubkit\.AppInstallationAuthStrategy"
+        r"^from\s+githubkit\s+import\s+"
+        r"(?:\([^)]*\bAppInstallationAuthStrategy\b[^)]*\)"
+        r"|[^\n]*\bAppInstallationAuthStrategy\b)"
+        r"|^import\s+githubkit\.AppInstallationAuthStrategy\b"
     )
     rg = shutil.which("rg")
     if rg is not None:
