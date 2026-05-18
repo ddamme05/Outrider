@@ -70,9 +70,11 @@ async def list_pr_files(
     corresponding `per_page` argument change).
 
     Owner and repo strings come from the validated webhook payload via
-    `RepositoryRef.owner.login` + the `full_name` pattern check; they
-    are NOT path-validated here because they're URL-segments, not
-    filesystem paths.
+    `RepositoryRef.owner.login` and `RepositoryRef.name` directly
+    (the canonical per-field source); `full_name` is informational
+    only and is NOT used to derive these values. They are not
+    path-validated here because they're URL-segments, not filesystem
+    paths.
     """
     resp = await gh.rest.pulls.async_list_files(owner, repo, pull_number, per_page=per_page)
     return list(resp.parsed_data)
