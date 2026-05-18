@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 if TYPE_CHECKING:
     from outrider.audit.events import LLMCallEvent, ReviewPhaseEvent
@@ -91,41 +94,30 @@ def recording_phase_event_sink() -> RecordingPhaseEventSink:
 # GitHub-App test fixtures — shared across auth/lifespan/filter tests.
 # ---------------------------------------------------------------------------
 #
-# Per round-31 multi-lens audit (DevEx HIGH): the same PEM block + env
-# fixture + LLM provider stub previously appeared inline in three test
-# files (test_github_auth_wrapper.py, test_lifespan_re_registers_filter.py,
-# test_lifespan_calls_anthropic_provider_aclose.py). Centralized here so
-# a PEM rotation or env-var rename touches one place.
+# Centralized so a PEM rotation or env-var rename touches one place.
 
 
-TEST_GITHUB_APP_PRIVATE_KEY_PEM = """-----BEGIN RSA PRIVATE KEY-----
-MIIEowIBAAKCAQEAyV3jByXmtRDdMVQuQzZBzZ4WK/wXf6OhV79IfYxOpaA/D87T
-+9yzhRgI3OqDt6w8GdW8b62Bnlcj+JpUlDeJWj99H6OYDcOQXTjp2qsdoUFXrSqi
-ZpL9JSf25LxoY/AyJ7+yLLEgEgYzgvKM/CdAh1FUDH4xKK8WTpQRYjzn9zywV3qa
-RUFOVMyW/9MGlxoGgF+JU/Q4S7P5tBNgrAUbzpsfX23pPKpsWPYbT2qIMOgN/Cu5
-qPp/v34UM6IIWQYDejaeapwUjvFvXNvy/aLk78qsiLcQ1OZALwBTwIptCG6mlFiM
-TwoFlSbCV+sQ4OFB44d5tHkYrkrPgKAOhrZ4VQIDAQABAoIBAEDVwSVTGCC2BPlS
-xJq2KQUbCjnL1Wq6gAOJZuh84xVR/zKR4UvRrSDRxe6P9DqEv8RvfXm6rl/63oCp
-e0d6Sb1G2lU+IUcIRTpJg/9XYL5KqkZQjlGfnTpoOTumOgX9NeAaoeRSwLYz3GW0
-nIvr3DBftxq2KIsB8nbQy+i07ngzZRRBb9wRcDPRGsR45fl/HOUjEXLcYUR+QSrT
-2DUjDmCYr/ohG7VtuVRrM7tWSEjqYpZi8oxbODHWyMOEf3GtSF4o8DfImfQDLY6h
-ie+0Ndnu1FlRxQ7QkrjqcjeQ1ATBYzdpvPMpovDxnyDg7Z0+W8VCkH2bbtSE6kfQ
-fmF2u4ECgYEA8Xg26WeOipvLBzfdMz/Ckdq3K9Zh2vJ+rGCMUw5+VgB/2HrjP3RR
-ev2y2WtwO+i1ZbN8b5MlDoZKKvKpw/cWZHbdL7BNAzMz0Bq+UoeZdRZAjqBYjGEG
-xx+1cKzc7CTxoBQQKMlbS5GqlswtPK5xLF7uG0POoLsxr0BkkAdwUgUCgYEA1ZGT
-WrLPgrPMVlmuypIVYj04vCY7VLpRRGBI7/UfqJzVKdrJDfx7nLgcwy+QQTrxJgxJ
-B8N5GU1HvUFGD2pHpA9MMakgX79+8s12CRyJBwxbpO4lkkjqLrkb5SO2OHRsklrP
-yE6XzAZ/x4UmTuvKTAQfMTSC0bQVRFRwymvA7tECgYBy3wEqBjKtFmZcdwIVlblG
-KHODYAVUuvf+Egn1IFRDfsLDtgQK/2QFV3lt+KqlspsOiTbZ9MTbB9NdMpiBcrA+
-F5fyXOAQ1qLrnHsklUVdcGjf0EwTzZ8ufWFFJVo+9PVTPDywbVUNs+UVjY6/JFGV
-TaUuPF+sGOaDiojuGBKhrQKBgF13eUzy9KIBxKHK1lZSRiOmYthBpJF0vJX+R6KO
-e0pj5/yPg7M9NCnXdfUjLfGm3WBQPnsl/sgL8MqwbgxbeYfYNiOZGNgcENrIlcJU
-2GjlKgrSDgyKqNcF74OkH7SgC8oM4/wHocSpqgD8sH6XlBE7yJUcUf3DXR2C2x9w
-UO6BAoGBAJa66xH4Yi54JeZdT3i9BiPL6QPLOG2g8O09JL2gZsHnVjyEopgsHnsZ
-KwzcQXSEMXyAdvAGTQVf1qiQTuI8KO0iijUOnLgwJ97kAVtw01Z3SqimbBSpEK4n
-e9Wj1IM7r5h2YqnYbVL4S26vNQyfA0lKZ5T9q8X/eYIWGowm1zUI
------END RSA PRIVATE KEY-----
-"""
+@functools.cache
+def _generate_test_rsa_pem() -> str:
+    """Generate a one-shot RSA-2048 PEM at first call; cache thereafter.
+
+    Tests need a structurally-valid PEM so githubkit's `AppInstallationAuthStrategy`
+    accepts it at construction (no JWT mint happens until the first API
+    call, but the constructor parses the PEM). Generating at import-time
+    instead of committing the PEM avoids tripping secret scanners on a
+    repo-committed `BEGIN RSA PRIVATE KEY` block. The key is process-local
+    and never leaves the test interpreter.
+    """
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return pem_bytes.decode("ascii")
+
+
+TEST_GITHUB_APP_PRIVATE_KEY_PEM = _generate_test_rsa_pem()
 
 
 @pytest.fixture
