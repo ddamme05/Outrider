@@ -1,4 +1,4 @@
-"""AuditPersister.emit_file_examination() — round-31 FUP-029 fold.
+"""AuditPersister.emit_file_examination() — closes FUP-029.
 
 Spec lines 92 + 110 in `specs/2026-05-17-intake-and-webhook.md` named
 both a unit and an integration test for the new persister method:
@@ -97,10 +97,9 @@ async def test_emit_file_examination_skipped_with_skip_reason_landed(
     """The skipped variant — skip_reason populated, parse_status='skipped'.
 
     Pins that the persister writes through both the `parse_status` and
-    `skip_reason` fields into the JSONB payload, using the canonical
-    `SkipReason.OVERSIZED` value (the round-31 fold routes binary AND
-    oversized through this same reason pending FUP-033's canonical
-    amendment to DECISIONS#018 for a separate `SkipReason.BINARY`).
+    `skip_reason` fields into the JSONB payload. Binary and oversized
+    files currently share `SkipReason.OVERSIZED` pending FUP-033's
+    canonical amendment to DECISIONS#018 for a separate `SkipReason.BINARY`.
     """
     event = file_examination_event_factory(
         persister_setup.review_id,

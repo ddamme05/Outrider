@@ -57,10 +57,7 @@ def verify_webhook_signature(
         does NOT collapse these to 401 — they propagate as 5xx so
         unexpected verifier faults (dependency regressions, wrong-shape
         inputs) are operator-visible rather than masquerading as auth
-        failures. Per round-31 fold (sharp-edges MEDIUM + Codex passes
-        1/3/4 convergent): the spec previously suggested wrapping into
-        401, but githubkit's contract makes that wrap unnecessary AND
-        misleading. The route returns 401 ONLY on `False` from this
+        failures. The route returns 401 ONLY on `False` from this
         function.
     """
     return verify(secret, body, signature_header)

@@ -271,12 +271,10 @@ def build_lifespan(
             # The settings object is closed over once here; each call to
             # `github_factory(iid)` reads `.app_private_key.get_secret_value()`
             # at the call site so the PEM is in plain memory only briefly.
-            #
-            # Round-31 fold: previously bound the bare `make_installation_client`
-            # which re-instantiated `GitHubAppSettings()` per call, defeating
-            # the env-validation gate at startup. The settings-bound factory
-            # pattern routes any env-var change through the next lifespan
-            # restart, not through a runtime ValidationError.
+            # The settings-bound factory pattern routes any env-var change
+            # through the next lifespan restart — a bare-function binding
+            # would re-instantiate `GitHubAppSettings()` per call and
+            # defeat the env-validation gate at startup.
             github_factory = make_installation_client_factory(github_app_settings)
 
             # Step 8: build the compiled graph with all six deps injected

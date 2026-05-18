@@ -1,23 +1,21 @@
 # FastAPI router for the GitHub webhook endpoint per intake-and-webhook spec.
 """`POST /webhooks/github` — webhook receiver.
 
-Sequence (mirrors the spec's Implementation Sketch step list, as
-amended by the round-32 fold for body-read-after-header-check):
+Sequence:
 
   1. `received_at = datetime.now(UTC)` — capture as early as possible,
      BEFORE any input-validation work. Held in a local; only attached
      to the seed ReviewState once signature/membership/idempotency clear.
   2. Read `X-Hub-Signature-256`; missing → 401 WITHOUT reading the
      request body (defends against unauthenticated multi-GB POST
-     buffering pressure per round-32 fold).
+     buffering pressure).
   3. `body = await request.body()` — raw bytes captured BEFORE any
      model binding. FastAPI's default `Request.body()` caches internally
      (Starlette `_body`); a second call returns the same bytes.
   4. `verify_signature(secret, body, signature_header)` via the
      route-facing module that delegates to `github/webhooks.py`. Returns
-     False → 401. Unexpected raises propagate as 5xx (round-32 fold:
-     no broad `except Exception` wrap; verifier programming errors are
-     operator-visible, not auth-failure-shaped).
+     False → 401. Unexpected raises propagate as 5xx (verifier
+     programming errors are operator-visible, not auth-failure-shaped).
   5. Parse JSON payload via `PullRequestEventPayload`.
   6. Event/action allowlist (opened/synchronize/reopened) — others 2xx no-op.
   7. Active-membership SELECT — `installations.tombstoned_at IS NULL`
@@ -29,9 +27,9 @@ amended by the round-32 fold for body-read-after-header-check):
      (direct SQL, the documented exception to the persister-only rule).
      Commit. On IntegrityError with `uq_review_natural_key` → duplicate;
      return existing review. On other IntegrityError → fall back to
-     natural-key SELECT (user-approved defensive pattern per round-31
-     fold; deviates from spec's narrow-introspection-only rule), then
-     re-raise only if no natural-key row exists.
+     natural-key SELECT (user-approved defensive pattern; deviates from
+     spec's narrow-introspection-only rule), then re-raise only if no
+     natural-key row exists.
  10. Construct seed `ReviewState(review_id, pr_context, received_at,
      is_eval=False)`; call `await dispatcher.dispatch(state)`.
  11. Return 202 Accepted with `review_id`.
@@ -105,13 +103,9 @@ async def receive_pull_request_webhook(
 
     # Step 2: signature header presence — BEFORE body-read.
     #
-    # Round-31 fold (Codex pass 1 HIGH): the previous order was
-    # body-read → header-check, which buffered the entire request body
-    # in memory before authenticating. An unsigned POST with a multi-GB
-    # body would consume that much RAM before failing. Checking the
-    # header presence first lets unauthenticated traffic short-circuit
-    # before buffering. (A full Content-Length / streaming-HMAC cap is
-    # the next hardening layer — tracked at FUP-034.)
+    # Body-read-after-header-check defends against an unsigned multi-GB
+    # POST consuming RAM before failing. Full Content-Length /
+    # streaming-HMAC cap tracked at FUP-034.
     if x_hub_signature_256 is None:
         logger.warning(
             "webhook rejected: missing X-Hub-Signature-256",
@@ -128,12 +122,11 @@ async def receive_pull_request_webhook(
     # `verify_signature` (delegating to `githubkit.webhooks.verify`)
     # returns False for any signature mismatch — malformed digest,
     # wrong-length header, base64 garbage, mismatched HMAC — never
-    # raises in those cases. Per round-31 fold (sharp-edges MEDIUM):
-    # we DON'T wrap this call in `except Exception` → 401. An unexpected
-    # verifier exception (programming bug, dependency regression, etc.)
-    # is a server-side fault and should surface as 5xx, not be silently
-    # collapsed into a "401 invalid signature" response. The old broad
-    # except masked the failure class operators most need to see.
+    # raises in those cases. We do NOT wrap this call in
+    # `except Exception` → 401: an unexpected verifier exception
+    # (programming bug, dependency regression) is a server-side fault
+    # that should surface as 5xx, not collapse into a "401 invalid
+    # signature" response that hides the actual failure class.
     settings: GitHubAppSettings = request.app.state.github_app_settings
     secret = settings.webhook_secret.get_secret_value()
     signature_ok = verify_signature(secret, body, x_hub_signature_256)
@@ -317,9 +310,8 @@ async def receive_pull_request_webhook(
         # Defensive fallback. **NOTE: this deviates from the canonical
         # spec's narrow-introspection-only rule** (which mandates
         # re-raise when `_is_reviews_natural_key_conflict` returns
-        # False). The deviation is user-approved (see ITERATION_LOG
-        # round-31 + COMMIT_LOG round-32 entries). Spec reconciliation
-        # is deferred to the spec arc's Actual Outcome closeout.
+        # False). The deviation is user-approved and documented in the
+        # spec's Actual Outcome section.
         #
         # The rationale: primary introspection returned False could
         # mean (a) genuine audit-side conflict / FK violation that must
@@ -422,9 +414,7 @@ def _build_seed_pr_context(payload: PullRequestEventPayload) -> Any:
     # NOT `full_name.partition("/")` — `full_name` is informational
     # (used in logs/audit messages); deriving owner/repo from it would
     # bypass the per-field input-boundary validators and risk drift if
-    # GitHub ever changes the `full_name` format. Codex round-35 #3
-    # MEDIUM: previous impl used the partition split; now reads the
-    # individual fields directly.
+    # GitHub ever changes the `full_name` format.
     return PRContext(
         installation_id=payload.installation.id,
         owner=payload.repository.owner.login,
@@ -488,14 +478,14 @@ def _is_reviews_natural_key_conflict(exc: SQLAlchemyIntegrityError) -> bool:
     `constraint_name` is `None`/different, returns False.
 
     **Note on caller behavior:** the spec's load-bearing rule is "False
-    → re-raise (audit-side conflicts, FK violations, etc.)." Round-31
-    added a defensive fallback at the call site: when this returns
-    False, the caller does a natural-key SELECT and returns 200 if a
-    row exists (treating it as a duplicate that the introspection
-    couldn't classify, e.g., a psycopg-shape change). Only when the
-    SELECT returns no row does the caller re-raise. The deviation is
-    user-approved; see the call site (`receive_pull_request_webhook`)
-    for the inline rationale.
+    → re-raise (audit-side conflicts, FK violations, etc.)." The
+    caller adds a defensive fallback: when this returns False, it
+    SELECTs the natural-key row and returns 200 if a row exists
+    (treating it as a duplicate the introspection couldn't classify,
+    e.g., under a psycopg-shape change). Only when the SELECT returns
+    no row does the caller re-raise. The deviation is user-approved;
+    see the call site (`receive_pull_request_webhook`) for the inline
+    rationale.
     """
     orig = exc.orig
     if orig is None:

@@ -1,6 +1,6 @@
 """Graph-wiring introspection — Command is the sole routing mechanism from intake.
 
-Round-31 FUP-030 fold. Spec line 96 (`specs/2026-05-17-intake-and-webhook.md`):
+Closes FUP-030. Spec line 96 (`specs/2026-05-17-intake-and-webhook.md`):
 
 > Also assert by introspecting `build_graph(...)` output that no static
 > `add_edge('intake', 'triage')` and no `add_conditional_edges('intake', ...)`
@@ -163,12 +163,12 @@ def test_intake_runs_via_command_goto_triage_on_happy_path(
 
 # ---------------------------------------------------------------------------
 # Behavioral routing — Command(goto="triage") AND Command(goto=END) actually
-# route correctly. Codex round-32 pass HIGH: the introspection tests above
-# pin the ABSENCE of static/conditional edges; these tests pin that the
-# replacement (Command-based routing) actually delivers triage / END
-# destinations. Without these, a regression that removed the intake node's
-# Command return (e.g., refactor to plain `return state_update`) would
-# silently halt the graph at intake but the introspection tests would
+# route correctly. The introspection tests above pin the ABSENCE of static
+# /conditional edges; these tests pin that the replacement (Command-based
+# routing) actually delivers triage / END destinations. Without these, a
+# regression that removed the intake node's Command return (e.g., refactor
+# to plain `return state_update`) would silently halt the graph at intake
+# but the introspection tests would
 # still pass.
 # ---------------------------------------------------------------------------
 

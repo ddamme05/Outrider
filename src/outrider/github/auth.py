@@ -20,13 +20,12 @@ Why a fresh client per call (the inner factory):
     Test `test_github_factory_distinct_clients.py` exercises this.
 
 Why settings-bound at lifespan (the outer factory):
-  - Lifespan startup constructs `GitHubAppSettings()` once at module load,
-    where a missing/typo'd env var fails loud with the project's friendly
+  - Lifespan startup constructs `GitHubAppSettings()` once where a
+    missing/typo'd env var fails loud with the project's friendly
     RuntimeError shape. A nested `GitHubAppSettings()` call on every
-    `make_installation_client(...)` defeats that gate — env-var
+    `make_installation_client(...)` would defeat that gate — env-var
     disappearance on a running pod would surface as `ValidationError`
     deep inside intake (a graph node), not at boot.
-  - Round-31 multi-lens audit (sharp-edges HIGH + DevEx MEDIUM convergent).
 """
 
 from collections.abc import Callable
