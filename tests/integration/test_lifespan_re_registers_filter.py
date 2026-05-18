@@ -16,14 +16,32 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 
 from outrider.api.lifespan import build_lifespan
 
+# PEM + env-var injection + LLM provider stub are centralized in
+# `tests/conftest.py` per round-31 fold (DevEx audit, HIGH). Tests grab
+# fresh stubs via the `make_stub_llm_provider` factory fixture.
 
-def _make_test_lifespan() -> object:
-    """Build a lifespan with mock engine + provider so the real DB/SDK
-    aren't required for filter-re-registration testing."""
+
+@pytest.fixture(autouse=True)
+def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — fixture activates env
+    """Lifespan hard-requires `GitHubAppSettings()` at startup; the shared
+    `github_app_env` fixture from `tests/conftest.py` provides the three
+    env vars. Module-local autouse wrapper saves per-test argument plumbing.
+    """
+
+
+def _make_test_lifespan(stub_provider_cls: type) -> object:
+    """Build a lifespan with mock engine + stub provider so the real DB/SDK
+    aren't required for filter-re-registration testing.
+
+    `stub_provider_cls` is the StubLLMProvider CLASS from the
+    `make_stub_llm_provider` factory fixture — the helper instantiates
+    a fresh stub per call.
+    """
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
@@ -31,16 +49,17 @@ def _make_test_lifespan() -> object:
     # MagicMock's truthy default.
     mock_engine.sync_engine.hide_parameters = True
 
-    mock_provider = MagicMock()
-    mock_provider.aclose = AsyncMock(return_value=None)
+    stub_provider = stub_provider_cls()
 
     return build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister: stub_provider,
     )
 
 
-async def test_lifespan_installs_filter_on_late_registered_handler() -> None:
+async def test_lifespan_installs_filter_on_late_registered_handler(
+    make_stub_llm_provider: type,
+) -> None:
     """Simulate uvicorn registering its handler AFTER `import outrider` (which
     already called `register_filter_on_all_handlers()` once). The lifespan
     body's call re-runs the install and the late-registered handler now
@@ -74,7 +93,7 @@ async def test_lifespan_installs_filter_on_late_registered_handler() -> None:
 
         # Enter the lifespan body.
         app = FastAPI()
-        lifespan_cm = _make_test_lifespan()(app)
+        lifespan_cm = _make_test_lifespan(make_stub_llm_provider)(app)
         async with lifespan_cm:
             # Inside lifespan body, the filter IS installed on the late handler.
             post_filter_count = sum(
@@ -88,7 +107,9 @@ async def test_lifespan_installs_filter_on_late_registered_handler() -> None:
         target_logger.level = saved_level
 
 
-async def test_lifespan_filter_actually_rejects_content_records() -> None:
+async def test_lifespan_filter_actually_rejects_content_records(
+    make_stub_llm_provider: type,
+) -> None:
     """End-to-end behavior: after lifespan setup, content-bearing records
     emitted on outrider.* loggers are rejected by the actual handler
     chain. Pins the FUP-006 exit rule: integration test boots a minimal
@@ -113,7 +134,7 @@ async def test_lifespan_filter_actually_rejects_content_records() -> None:
         target_logger.propagate = False
 
         app = FastAPI()
-        lifespan_cm = _make_test_lifespan()(app)
+        lifespan_cm = _make_test_lifespan(make_stub_llm_provider)(app)
         async with lifespan_cm:
             # Emit a record carrying content fields the filter rejects.
             target_logger.info(

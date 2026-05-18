@@ -1,0 +1,305 @@
+"""Tests for `api/webhooks/router.py` — the testable paths.
+
+DB-touching paths (membership lookup, INSERT, dispatch, IntegrityError
+introspection) need a real Postgres for honest coverage and live in the
+integration tier alongside the rest of the router-to-graph slice. These
+unit tests focus on:
+
+  - Missing `X-Hub-Signature-256` → 401.
+  - Signature verification failure → 401.
+  - Non-`pull_request` event → 2xx no-op.
+  - Unsupported PR action → 2xx no-op.
+  - Malformed payload → 400.
+  - `X-GitHub-Delivery` header is forwarded to logs (traceability), not
+    persisted.
+
+All tests use FastAPI's `TestClient` with a minimal app that wires only
+the router + the `app.state` slots the router reads. No DB connection
+is required.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
+from outrider.api.webhooks.router import router
+
+if TYPE_CHECKING:
+    import pytest
+
+# ---------------------------------------------------------------------------
+# Minimal app fixture
+# ---------------------------------------------------------------------------
+
+
+_SECRET = "test-webhook-secret"  # noqa: S105 — fixture sentinel
+
+
+def _make_app(*, valid_membership: bool = True) -> FastAPI:
+    """Build a minimal FastAPI app that exposes the webhook router and
+    stubs the `app.state` slots the router reads.
+
+    `valid_membership=False` returns no row from the membership SELECT,
+    triggering the 4xx fail-closed path. (Not actually used in the unit
+    tests below — listed here for the integration-tier follow-up.)
+    """
+    app = FastAPI()
+    app.include_router(router)
+
+    # Stub GitHubAppSettings
+    settings_stub = SimpleNamespace(
+        app_id=12345,
+        app_private_key=SecretStr("test-private-key"),  # noqa: S106 — fixture
+        webhook_secret=SecretStr(_SECRET),
+    )
+    app.state.github_app_settings = settings_stub
+
+    # Stub session_factory (returns a session that errors if hit —
+    # ensures these unit tests never reach the DB-touching paths).
+    def _never_call_session_factory() -> Any:
+        raise AssertionError("Unit test should not reach the DB-touching code path.")
+
+    app.state.session_factory = _never_call_session_factory
+
+    # Stub run_graph (never called in these tests — dispatch path is
+    # past the DB INSERT).
+    async def _never_call_run_graph(state: Any) -> Any:
+        raise AssertionError("Unit test should not reach the dispatch / run_graph path.")
+
+    app.state.run_graph = _never_call_run_graph
+
+    return app
+
+
+def _sign(secret: str, body: bytes) -> str:
+    mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"sha256={mac}"
+
+
+def _valid_pr_opened_payload() -> dict[str, Any]:
+    return {
+        "action": "opened",
+        "pull_request": {
+            "number": 42,
+            "title": "Test PR",
+            "body": None,
+            "user": {"login": "alice", "id": 1},
+            "head": {"sha": "a" * 40, "ref": "feat/x"},
+            "base": {"sha": "b" * 40, "ref": "main"},
+            "additions": 5,
+            "deletions": 2,
+        },
+        "repository": {
+            "id": 999,
+            "full_name": "acme/widgets",
+            "owner": {"login": "acme", "id": 2},
+        },
+        "installation": {"id": 12345},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_missing_signature_header_returns_401() -> None:
+    """No `X-Hub-Signature-256` → 401 without any body parsing."""
+    client = TestClient(_make_app())
+    body = json.dumps(_valid_pr_opened_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={"X-GitHub-Event": "pull_request"},
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "missing signature"}
+
+
+def test_invalid_signature_returns_401() -> None:
+    """Signature mismatch → 401 without any body parsing."""
+    client = TestClient(_make_app())
+    body = json.dumps(_valid_pr_opened_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid signature"}
+
+
+def test_malformed_signature_header_returns_401_via_false_path() -> None:
+    """Malformed signature header (no `sha256=` prefix, wrong length) →
+    `githubkit.webhooks.verify` returns False (it does NOT raise on
+    malformed shapes — see `githubkit.versions.*.webhooks._namespace.verify`
+    which falls back to "sha1" mode and runs `hmac.compare_digest`
+    unconditionally). Router treats False as 401.
+
+    Round-32 audit-the-audit: this test was previously named
+    `test_signature_verifier_exception_returns_401` and claimed to test
+    a verifier-raise → router-401 conversion. That test was vacuous —
+    verify never raised on the input; the 401 came from the False-path
+    not a raise-then-catch. Renamed + docstring corrected; the
+    raise-path is now covered by `test_unexpected_verifier_exception_returns_5xx`
+    below.
+    """
+    client = TestClient(_make_app())
+    body = json.dumps(_valid_pr_opened_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "not-a-valid-signature-shape",
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_unexpected_verifier_exception_returns_5xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If `verify_signature` raises an UNEXPECTED exception (programming
+    error, dependency regression, etc.), the router does NOT collapse
+    it to 401 — the exception propagates and FastAPI returns 5xx.
+
+    Pins the round-32 fold (sharp-edges MEDIUM): the router used to
+    wrap `verify_signature` in `except Exception → 401`, which hid
+    real server faults behind auth failures. The fold removed the wrap
+    so operators see the actual failure class. Test injects a
+    monkeypatched `verify_signature` that raises `RuntimeError`;
+    asserts 5xx (TestClient surfaces the exception class info, but the
+    HTTP-shape contract is 5xx, not 401).
+    """
+    import outrider.api.webhooks.router as router_mod
+
+    def _raising_verify(*args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        msg = "simulated unexpected verifier fault"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(router_mod, "verify_signature", _raising_verify)
+
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    body = json.dumps(_valid_pr_opened_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    # Server-side 5xx (FastAPI default for uncaught exception). The
+    # contract is "NOT 401" + "5xx range" — exact code depends on the
+    # FastAPI exception handler chain, which is a server-side concern,
+    # not the security-critical-route concern this test pins.
+    assert response.status_code >= 500
+    assert response.status_code != 401
+
+
+def test_non_pull_request_event_returns_2xx_ignored() -> None:
+    """Signed-but-non-pull_request event → 2xx with `ignored` status.
+
+    GitHub should NOT retry these (per spec line 26: signed but
+    unsupported → 2xx no-op).
+    """
+    client = TestClient(_make_app())
+    body = json.dumps({"hello": "world"}).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "push",
+        },
+    )
+    # FastAPI's default 202 status code on the route + 200-class for
+    # ignored — the route declares 202; ignored returns explicit dict.
+    assert response.status_code == 202
+    assert response.json() == {"status": "ignored", "reason": "event_type"}
+
+
+def test_unsupported_pr_action_returns_2xx_ignored() -> None:
+    """Signed `pull_request.closed` → 2xx ignored (allowlist is
+    opened/synchronize/reopened)."""
+    client = TestClient(_make_app())
+    payload = _valid_pr_opened_payload()
+    payload["action"] = "closed"
+    body = json.dumps(payload).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 202
+    assert response.json() == {"status": "ignored", "reason": "action"}
+
+
+def test_malformed_payload_returns_400() -> None:
+    """Valid signature, valid event/action, but the JSON shape doesn't
+    match `PullRequestEventPayload` → 400."""
+    client = TestClient(_make_app())
+    # Missing required `installation` field; valid signature on whatever bytes.
+    body = json.dumps({"action": "opened", "pull_request": {}}).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_x_github_delivery_logged_not_persisted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The delivery GUID flows into the log line for the request but
+    isn't otherwise observable. Pin against accidental persistence in
+    a future refactor."""
+    client = TestClient(_make_app())
+    body = json.dumps(_valid_pr_opened_payload()).encode()
+    delivery_id = "abc123-delivery-guid"
+
+    with caplog.at_level("INFO"):
+        client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                # No signature → 401, but the receipt log still fires.
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": delivery_id,
+            },
+        )
+
+    # The receipt log line carries the delivery id.
+    receipt_records = [r for r in caplog.records if r.message == "webhook received"]
+    assert len(receipt_records) == 1
+    assert getattr(receipt_records[0], "x_github_delivery", None) == delivery_id
+
+
+# ---------------------------------------------------------------------------
+# DB-touching paths covered in tests/integration/test_webhook_router_integration.py
+# against real Postgres via the project's `migrated_db` fixture. The
+# integration tier covers: unknown installation 4xx, inactive membership
+# 4xx, tombstoned installation 4xx, happy-path 202 with event_id-match,
+# idempotency fast-path 200, and retention-from-settings. The two
+# IntegrityError-race tests (natural-key conflict slow-path,
+# audit-side IntegrityError re-raise) remain skipped in the integration
+# file pending a monkey-patch fixture; tracked there, not duplicated here.
