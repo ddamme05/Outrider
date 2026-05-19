@@ -37,7 +37,7 @@ installation membership, idempotency, etc.).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
     "PullRequestEventPayload",
@@ -122,44 +122,86 @@ class RepositoryRef(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     id: int = Field(ge=1)
-    # full_name = "owner/name"; bounded as 39 (login cap) + "/" + 100
-    # (GitHub repo-name cap) + comfortable margin. Without max_length,
-    # a forged payload could submit a multi-MB full_name that flows
-    # into log lines and audit-message rendering.
-    full_name: str = Field(min_length=3, max_length=200, pattern=r"^[^/]+/[^/]+$")
-    # GitHub caps repo names at 100 chars server-side; 100 is the
-    # bound. Without max_length, an oversized name flows into URL
-    # segments (`repos/{owner}/{name}/...`) and prompts.
-    name: str = Field(min_length=1, max_length=100, pattern=r"^[^/]+$")
+    # full_name = "<owner>/<name>". Both halves use the GitHub repo /
+    # owner character class (alphanumeric + `.` `_` `-`) — the prior
+    # `[^/]+` was too permissive, admitting whitespace, control chars,
+    # and shell metachars that flow into URL segments and audit
+    # rendering. Max length 200 covers the worst case (39-char login
+    # + "/" + 100-char repo-name + small margin).
+    full_name: str = Field(
+        min_length=3,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+    )
+    # GitHub caps repo names at 100 chars server-side. Character class
+    # matches what GitHub permits: alphanumeric + `.` `_` `-`. The
+    # prior `[^/]+` admitted whitespace / control / shell-meta which
+    # would flow into URL segments (`repos/{owner}/{name}/...`) and
+    # prompts.
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     owner: WebhookUser
 
 
 class PullRequestRef(BaseModel):
     """`head` or `base` of the pull request — the SHA and ref.
 
-    `sha` is bounded as lowercase hex, 40-64 chars. GitHub today uses
-    SHA-1 (40 hex) and is migrating some surfaces to SHA-256 (64 hex);
-    the bounded range tolerates either without admitting arbitrarily
-    long or non-hex strings flowing into URL segments, idempotency
-    keys, and prompts. The trust-boundary identity guarantee is that
-    `(repo_id, pr_number, head_sha)` uniquely identifies a review — a
-    non-hex `head_sha` would still natural-key uniquely but would also
-    flow into log lines / audit payloads / prompts as raw bytes.
+    `sha` is exactly 40 hex (SHA-1, GitHub's default) OR exactly 64 hex
+    (SHA-256, GitHub's object-format migration on some surfaces). The
+    alternation pattern rejects impossible intermediate lengths
+    (41-63 chars, 65+) that a range-bound `min_length=40 max_length=64`
+    would admit. The trust-boundary identity guarantee is that
+    `(repo_id, pr_number, head_sha)` uniquely identifies a review.
 
-    `ref` is bounded length + git-ref-name character class.
-    `max_length=255` covers any real branch / tag name; the character
-    class admits the chars `git check-ref-format` allows (alphanumeric
-    + `.` `_` `/` `-` `+`) and rejects shell-meta, control, whitespace,
-    and `..` traversal would-be inputs. Without bounds, an oversized
-    ref flows into prompts and audit payloads with the same blast
-    radius as title/body — bounding is consistent with the
-    input-boundary tightening cascade across this schema.
+    `ref` validation has two layers because Pydantic v2's rust-regex
+    doesn't support negative lookaheads / lookbehinds:
+      1. **Field pattern** — character class + bounded length. Admits
+         `git check-ref-format`'s allowed chars (alphanumeric + `.`
+         `_` `/` `-` `+`) and rejects shell-meta, control, whitespace.
+      2. **field_validator** — structural rules the pattern can't
+         express: no leading/trailing `/`, no `//` empty segments, no
+         `..` traversal segment, no segment ending in `.lock` or `.`.
+         Mirrors `git check-ref-format`'s rule subset that's
+         enforceable without lookaround.
+
+    Both layers are load-bearing — pattern alone admits `../head`,
+    `foo/../bar`, `a//b`, `/lead`, `trail/` (chars all valid; structure
+    pathological). validator alone would admit shell-meta chars
+    (structure clean; chars hostile).
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    sha: str = Field(min_length=40, max_length=64, pattern=r"^[a-f0-9]+$")
+    sha: str = Field(pattern=r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$")
     ref: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._/\-+]+$")
+
+    @field_validator("ref")
+    @classmethod
+    def _validate_ref_structure(cls, value: str) -> str:
+        """Structural rules from `git check-ref-format` that Pydantic
+        v2's rust-regex can't express. The Field pattern handles
+        character class + length; this handles segment shape.
+        """
+        if value.startswith("/"):
+            msg = f"ref {value!r} cannot start with '/'"
+            raise ValueError(msg)
+        if value.endswith("/"):
+            msg = f"ref {value!r} cannot end with '/'"
+            raise ValueError(msg)
+        segments = value.split("/")
+        for seg in segments:
+            if seg == "":
+                msg = f"ref {value!r} contains empty segment ('//' or boundary slash)"
+                raise ValueError(msg)
+            if seg == "..":
+                msg = f"ref {value!r} contains '..' traversal segment"
+                raise ValueError(msg)
+            if seg.endswith(".lock"):
+                msg = f"ref {value!r} segment ends with '.lock' (git-reserved)"
+                raise ValueError(msg)
+            if seg.endswith("."):
+                msg = f"ref {value!r} segment ends with '.'"
+                raise ValueError(msg)
+        return value
 
 
 class WebhookPullRequest(BaseModel):

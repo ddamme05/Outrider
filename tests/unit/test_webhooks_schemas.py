@@ -239,6 +239,121 @@ def test_full_name_and_name_at_caps_admitted() -> None:
     assert len(payload.repository.full_name) == 200
 
 
+def test_sha_intermediate_length_rejected() -> None:
+    """`sha` admits ONLY exactly 40 (SHA-1) or exactly 64 (SHA-256).
+    Lengths 41-63 and 65+ are impossible per GitHub's spec; the prior
+    range-bound `min_length=40 max_length=64` admitted them. The
+    alternation pattern closes the gap."""
+    for bad_len in (41, 42, 50, 63, 65, 80):
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["sha"] = "a" * bad_len
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_leading_slash_rejected() -> None:
+    """`ref` starting with `/` → ValidationError per git-check-ref-format.
+    The char pattern alone admits this; the field_validator rejects."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["ref"] = "/main"
+    with pytest.raises(ValidationError, match="cannot start with '/'"):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_trailing_slash_rejected() -> None:
+    """`ref` ending with `/` → ValidationError."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["ref"] = "feat/"
+    with pytest.raises(ValidationError, match="cannot end with '/'"):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_double_slash_rejected() -> None:
+    """`ref` containing `//` → empty segment → ValidationError."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["ref"] = "feat//bar"
+    with pytest.raises(ValidationError, match="empty segment"):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_traversal_segment_rejected() -> None:
+    """`ref` with `..` as a segment → ValidationError. Covers both
+    `../head` (leading) and `foo/../bar` (interior). Char pattern
+    admits both because `.` is in the class."""
+    for bad in ["../head", "foo/../bar", ".."]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = bad
+        with pytest.raises(ValidationError, match="'\\.\\.' traversal"):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_lock_suffix_rejected() -> None:
+    """`ref` segment ending in `.lock` → ValidationError per
+    git-check-ref-format. Git reserves `.lock` suffixes for lock files."""
+    for bad in ["feat.lock", "foo/bar.lock"]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = bad
+        with pytest.raises(ValidationError, match="'.lock'"):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_dot_suffix_rejected() -> None:
+    """`ref` segment ending in `.` → ValidationError per
+    git-check-ref-format."""
+    for bad in ["foo.", "foo/bar."]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = bad
+        with pytest.raises(ValidationError, match="ends with '.'"):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_name_with_whitespace_rejected() -> None:
+    """`RepositoryRef.name` strict charset rejects whitespace. The
+    prior `[^/]+` admitted any non-slash including spaces, tabs,
+    newlines."""
+    for bad in ["my repo", "my\trepo", "my\nrepo"]:
+        payload_dict = _valid_payload()
+        payload_dict["repository"]["name"] = bad
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_name_with_shell_metachars_rejected() -> None:
+    """`name` strict charset rejects shell-metacharacters that the
+    prior `[^/]+` admitted. Same rationale as login: forged-payload
+    indicator AND defense-in-depth on the URL-segment construction
+    path."""
+    for bad in ["repo;rm", "repo$x", "repo`x`", "repo|bad", "repo&&x"]:
+        payload_dict = _valid_payload()
+        payload_dict["repository"]["name"] = bad
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_name_with_dot_dash_underscore_admitted() -> None:
+    """Positive-boundary: real GitHub repo-name shapes (alphanumeric +
+    `.` `_` `-`) admit cleanly. Pins the carve-out: the tightened
+    pattern is restrictive enough to reject shell-meta but permissive
+    enough for legitimate names."""
+    for good in ["widgets", "my.repo", "my-repo", "my_repo", "Repo-2", "v1.0"]:
+        payload_dict = _valid_payload()
+        payload_dict["repository"]["name"] = good
+        payload_dict["repository"]["full_name"] = f"acme/{good}"
+        payload = PullRequestEventPayload.model_validate(payload_dict)
+        assert payload.repository.name == good
+
+
+def test_full_name_with_whitespace_or_shell_rejected() -> None:
+    """`full_name` strict charset matches `name` strict charset on
+    both halves of `<owner>/<name>`. Rejects whitespace + shell-meta
+    that the prior `[^/]+/[^/]+` admitted."""
+    for bad in ["acme/my repo", "acme/repo;rm", "ac me/widgets", "acme/widgets$"]:
+        payload_dict = _valid_payload()
+        payload_dict["repository"]["full_name"] = bad
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
 def test_unknown_action_parses_then_router_no_ops() -> None:
     """A new-to-us action string parses cleanly at the schema level.
 
