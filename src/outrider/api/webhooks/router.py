@@ -436,7 +436,24 @@ async def receive_pull_request_webhook(
         try:
             await asyncio.shield(cleanup_task)
         except asyncio.CancelledError:
-            await cleanup_task
+            # Drain the shielded task before re-raising. `_mark_failed`
+            # catches Exception, NOT BaseException — so a CancelledError
+            # arriving mid-cleanup OR an uncaught system-level exception
+            # would propagate from `await cleanup_task` and MASK the
+            # original dispatch failure. Catch + log + fall through to
+            # the bare `raise` below so the original exception still
+            # propagates.
+            try:
+                await cleanup_task
+            except BaseException:
+                logger.exception(
+                    "webhook dispatch failed AND failed-status cleanup task "
+                    "did not complete cleanly; review may remain at 'running'",
+                    extra={
+                        "review_id": str(review_id),
+                        "x_github_delivery": x_github_delivery,
+                    },
+                )
         raise
 
     return {"status": "running", "review_id": str(review_id)}
