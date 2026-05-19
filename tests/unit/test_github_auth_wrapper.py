@@ -115,11 +115,22 @@ def test_installation_auth_strategy_only_call_site() -> None:
     #      like `AppInstallationAuthStrategyCustom`).
     #   2. Bare `import githubkit.AppInstallationAuthStrategy` (Python allows
     #      this for any submodule, even though it's rare in practice).
+    # `(?m)` makes `^` anchor at start-of-line (not start-of-input).
+    # Without it, rust-regex via `rg -U` matches only the first line
+    # of each file — silently missing imports anywhere past line 1
+    # (module docstring, future-imports, etc.). The Python fallback
+    # uses `re.MULTILINE` flag below for the same semantics. Python's
+    # re module requires the inline flag at the START of the pattern;
+    # the alternation is wrapped in a non-capturing group so the single
+    # `(?m)` prefix applies to both branches.
     import_pattern = (
+        r"(?m)"
+        r"(?:"
         r"^from\s+githubkit\s+import\s+"
         r"(?:\([^)]*\bAppInstallationAuthStrategy\b[^)]*\)"
         r"|[^\n]*\bAppInstallationAuthStrategy\b)"
         r"|^import\s+githubkit\.AppInstallationAuthStrategy\b"
+        r")"
     )
     rg = shutil.which("rg")
     if rg is not None:
@@ -191,9 +202,16 @@ def test_no_githubkit_imports_outside_wrapper() -> None:
     #   - `import githubkit` / `import githubkit.sub`.
     # `\b` on the package boundary rejects substring matches like
     # `githubkit_extra` (hypothetical fork name).
+    # `(?m)` makes `^` anchor at start-of-line, not start-of-input.
+    # See sibling guard above for the full rationale on the rg + Python
+    # multiline-semantics gap. Single `(?m)` prefix + alternation in
+    # a non-capturing group (Python re rejects mid-pattern global flags).
     import_pattern = (
+        r"(?m)"
+        r"(?:"
         r"^\s*from\s+githubkit(\.\w+)*\s+import\b"
         r"|^\s*import\s+githubkit(\.\w+)*\b"
+        r")"
     )
     rg = shutil.which("rg")
     if rg is not None:
