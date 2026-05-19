@@ -166,3 +166,69 @@ def test_installation_auth_strategy_only_call_site() -> None:
             f"all imports must be inside {github_dir}. "
             f"Move the call into the wrapper."
         )
+
+
+def test_no_githubkit_imports_outside_wrapper() -> None:
+    """Trust-boundary invariant: NO `import githubkit*` or
+    `from githubkit* import ...` outside `src/outrider/github/`.
+
+    The narrow guards above (`test_installation_auth_strategy_only_call_site`,
+    and the webhook-side `test_signature_only_call_site`) catch specific
+    symbols / submodules; this one catches the FULL surface. A future
+    refactor that introduces, say, `from githubkit.rest import RestNamespace`
+    or `import githubkit.graphql` in a non-wrapper file would bypass both
+    narrow guards but is caught here. Documented in
+    `docs/trust-boundaries.md#8-llm-provider-boundary`'s sister rule for
+    the github surface and `CLAUDE.md`'s "vendor SDK imports outside their
+    wrapper folder" enumeration.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    src_root = repo_root / "src" / "outrider"
+
+    # Match any githubkit import:
+    #   - `from githubkit import X` / `from githubkit.sub import X`
+    #     (single-line OR parenthesized multi-line).
+    #   - `import githubkit` / `import githubkit.sub`.
+    # `\b` on the package boundary rejects substring matches like
+    # `githubkit_extra` (hypothetical fork name).
+    import_pattern = (
+        r"^\s*from\s+githubkit(\.\w+)*\s+import\b"
+        r"|^\s*import\s+githubkit(\.\w+)*\b"
+    )
+    rg = shutil.which("rg")
+    if rg is not None:
+        result = subprocess.run(  # noqa: S603 — fixed args, absolute rg path
+            [
+                rg,
+                "--type",
+                "py",
+                "-l",
+                "-U",  # multiline / regex anchors
+                import_pattern,
+                str(src_root),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        hits = [line for line in result.stdout.splitlines() if line.strip()]
+    else:
+        import re as _re  # noqa: PLC0415 — fallback path
+
+        compiled = _re.compile(import_pattern, _re.MULTILINE)
+        hits = []
+        for py_file in src_root.rglob("*.py"):
+            text = py_file.read_text(encoding="utf-8")
+            if compiled.search(text):
+                hits.append(str(py_file))
+
+    github_dir = (src_root / "github").resolve()
+    assert hits, "Expected at least one githubkit import inside the wrapper."
+    for hit in hits:
+        hit_path = Path(hit).resolve()
+        assert hit_path.is_relative_to(github_dir), (
+            f"`githubkit` imported from {hit!r}; all `from githubkit ...` "
+            f"and `import githubkit ...` imports must be inside "
+            f"{github_dir}. Move the call into the wrapper."
+        )
