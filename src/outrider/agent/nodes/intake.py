@@ -238,41 +238,57 @@ async def intake(
         # 'running'. The bare `raise` at the end re-raises the original
         # exception (including CancelledError), so the graph runner's
         # cancellation semantics are preserved.
+        # Cleanup runs as a shielded task: a SECOND cancellation arriving
+        # mid-cleanup (lifespan abort racing the original failure) would
+        # otherwise interrupt `_emit_phase_end` or `_set_review_status`
+        # mid-await and leave the review stranded. asyncio.shield protects
+        # the cleanup task from cancellation propagating in from the
+        # outer await; if the outer await raises CancelledError, we
+        # explicitly await the shielded cleanup task to completion before
+        # letting the bare `raise` propagate the original failure.
+
+        async def _failure_cleanup() -> None:
+            try:
+                await _emit_phase_end(phase_event_sink, state, phase_id)
+            except Exception:
+                # AUDIT-INTEGRITY VIOLATION: the failure-path phase-end
+                # event did NOT persist. This leaves a durable phase-start
+                # with no matching phase-end — replay tools and dashboard
+                # projections that bound work between start/end markers
+                # see the phase as never-completed. Distinguishing
+                # `audit_integrity_violation=True` so the anomaly scanner
+                # AND ad-hoc operator greps can find these.
+                logger.exception(
+                    "intake: phase-end emit failed during failure handling; "
+                    "proceeding to status='failed' write anyway "
+                    "(AUDIT-INTEGRITY: orphan phase-start without phase-end)",
+                    extra={
+                        "review_id": str(state.review_id),
+                        "phase_id": phase_id,
+                        "node_id": "intake",
+                        "audit_integrity_violation": True,
+                    },
+                )
+            try:
+                await _set_review_status(db_factory, state.review_id, "failed")
+            except Exception:
+                logger.exception(
+                    "intake: status='failed' write failed during failure "
+                    "handling; row remains 'running' but original intake "
+                    "exception will still re-raise. Operators must rely on "
+                    "the audit phase-end marker + the stuck-review sweep "
+                    "(future) to recover.",
+                    extra={"review_id": str(state.review_id)},
+                )
+
+        cleanup_task = asyncio.create_task(_failure_cleanup())
         try:
-            await _emit_phase_end(phase_event_sink, state, phase_id)
-        except Exception:
-            # AUDIT-INTEGRITY VIOLATION: the failure-path phase-end
-            # event did NOT persist. This leaves a durable phase-start
-            # with no matching phase-end — replay tools and dashboard
-            # projections that bound work between start/end markers see
-            # the phase as never-completed. Logged with a distinguishing
-            # `audit_integrity_violation=True` field so the anomaly
-            # scanner (future) AND ad-hoc operator greps can find these
-            # cases without sifting through generic exception logs.
-            # Phase_id is included so the orphan start row can be
-            # correlated; review_id ties back to the affected review.
-            logger.exception(
-                "intake: phase-end emit failed during failure handling; "
-                "proceeding to status='failed' write anyway "
-                "(AUDIT-INTEGRITY: orphan phase-start without phase-end)",
-                extra={
-                    "review_id": str(state.review_id),
-                    "phase_id": phase_id,
-                    "node_id": "intake",
-                    "audit_integrity_violation": True,
-                },
-            )
-        try:
-            await _set_review_status(db_factory, state.review_id, "failed")
-        except Exception:
-            logger.exception(
-                "intake: status='failed' write failed during failure "
-                "handling; row remains 'running' but original intake "
-                "exception will still re-raise. Operators must rely on "
-                "the audit phase-end marker + the stuck-review sweep "
-                "(future) to recover.",
-                extra={"review_id": str(state.review_id)},
-            )
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            # Outer task is being cancelled, but the shielded cleanup
+            # task is still running. Await it before propagating so the
+            # phase-end + status='failed' writes complete first.
+            await cleanup_task
         raise
 
 
