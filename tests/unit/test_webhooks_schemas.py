@@ -287,6 +287,20 @@ def test_ref_traversal_segment_rejected() -> None:
             PullRequestEventPayload.model_validate(payload_dict)
 
 
+def test_ref_embedded_double_dot_rejected() -> None:
+    """`ref` segment containing `..` (not exactly `..`, not starting
+    with `.`) → ValidationError. Covers `feature..x`, `a..b`, nested
+    `release/foo..bar`. The `seg == ".."` check catches the bare form;
+    `startswith(".")` catches `.hidden`; embedded `..` between non-dot
+    chars slips both — git-check-ref-format rejects any `..` regardless
+    of position."""
+    for bad in ["feature..x", "a..b", "release/foo..bar"]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = bad
+        with pytest.raises(ValidationError, match="contains '\\.\\.'"):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
 def test_ref_dot_prefix_segment_rejected() -> None:
     """`ref` segment starting with `.` → ValidationError per
     git-check-ref-format. Covers `.hidden`, `release/.tmp` — both pass
