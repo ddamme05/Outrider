@@ -997,3 +997,72 @@ async def test_intake_phase2_failure_unwraps_taskgroup_exception() -> None:
 
     # status='failed' write happened.
     assert session_factory.call_count == 1
+
+
+# ===========================================================================
+# Phase-start emit failure (multi-lens audit at commit 20e4b62 HIGH)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_intake_phase_start_emit_failure_does_not_emit_orphan_phase_end() -> None:
+    """A persister failure on the FIRST emit (phase-start) must NOT cause
+    the failure handler to emit a phase-end. Without the
+    `phase_start_persisted` gate, the cleanup unconditionally emits
+    phase-end and produces an end-only marker (durable phase-end with
+    no matching phase-start) — equally destructive to
+    `phase-events-bound-work` replay semantics as the orphan-start case.
+
+    Behavior under the gate:
+      - phase-start emit raises → outer try catches in failure handler
+      - failure handler sees phase_start_persisted=False → skips phase-end
+      - status='failed' write still happens
+      - original phase-start exception propagates
+
+    A regression that drops the gate would produce `events == [<end>]`
+    instead of `events == []`.
+    """
+    state = _build_state()
+
+    class _PhaseStartFailingSink:
+        """emit_phase raises on the first call (phase-start), succeeds
+        on any subsequent call. Tracks all attempts."""
+
+        def __init__(self) -> None:
+            self.attempts: list[ReviewPhaseEvent] = []
+            self.persisted: list[ReviewPhaseEvent] = []
+
+        async def emit_phase(self, event: ReviewPhaseEvent) -> None:
+            self.attempts.append(event)
+            if len(self.attempts) == 1:
+                msg = "simulated persister failure on phase-start emit"
+                raise RuntimeError(msg)
+            self.persisted.append(event)
+
+    phase_sink = _PhaseStartFailingSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+    # github_factory shape doesn't matter — intake fails before invoking it.
+    gh = _FailingGitHub()
+
+    with pytest.raises(RuntimeError, match="simulated persister failure on phase-start emit"):
+        await intake(
+            state,
+            github_factory=_stub_github_factory(gh),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=file_sink,
+        )
+
+    # One attempted emit (the failed phase-start); zero persisted.
+    assert len(phase_sink.attempts) == 1
+    assert phase_sink.attempts[0].marker == "start"
+    assert phase_sink.persisted == [], (
+        "phase-end was emitted despite phase-start emit failing — "
+        "`phase_start_persisted` gate regressed; orphan end-only marker would land."
+    )
+
+    # status='failed' write still happened (cleanup is independent of phase-end).
+    assert session_factory.call_count == 1
+    # No file events — intake never reached phase-2.
+    assert file_sink.events == []
