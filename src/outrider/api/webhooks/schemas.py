@@ -122,8 +122,15 @@ class RepositoryRef(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     id: int = Field(ge=1)
-    full_name: str = Field(min_length=3, pattern=r"^[^/]+/[^/]+$")
-    name: str = Field(min_length=1, pattern=r"^[^/]+$")
+    # full_name = "owner/name"; bounded as 39 (login cap) + "/" + 100
+    # (GitHub repo-name cap) + comfortable margin. Without max_length,
+    # a forged payload could submit a multi-MB full_name that flows
+    # into log lines and audit-message rendering.
+    full_name: str = Field(min_length=3, max_length=200, pattern=r"^[^/]+/[^/]+$")
+    # GitHub caps repo names at 100 chars server-side; 100 is the
+    # bound. Without max_length, an oversized name flows into URL
+    # segments (`repos/{owner}/{name}/...`) and prompts.
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[^/]+$")
     owner: WebhookUser
 
 

@@ -145,6 +145,100 @@ def test_sha256_length_admitted() -> None:
     assert len(payload.pull_request.head.sha) == 64
 
 
+def test_sha1_length_admitted() -> None:
+    """Positive-boundary: `sha` admits 40-hex (SHA-1) — GitHub's default
+    today. Pins the lower-bound inclusive admission paired with the
+    upper-bound 64-hex test above."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["sha"] = "a" * 40
+    payload_dict["pull_request"]["base"]["sha"] = "b" * 40
+    payload = PullRequestEventPayload.model_validate(payload_dict)
+    assert len(payload.pull_request.head.sha) == 40
+    assert len(payload.pull_request.base.sha) == 40
+
+
+def test_ref_empty_rejected() -> None:
+    """`PullRequestRef.ref` has `min_length=1` — empty ref bypasses
+    downstream prompt + audit-payload paths."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["ref"] = ""
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_too_long_rejected() -> None:
+    """`ref` `max_length=255` covers any real branch / tag name. 256+
+    indicates a forged payload that would flow into prompts at
+    inflated cost."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["ref"] = "a" * 256
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_with_shell_metachars_rejected() -> None:
+    """`ref` pattern rejects shell-meta + whitespace + traversal-style
+    characters. Catches forged payloads with control chars / newlines /
+    backticks that would flow into log lines and prompts."""
+    for bad in ["feat;rm", "feat`x`", "feat$x", "feat\nbar", "feat ~bar", "feat:bar"]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = bad
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_ref_realistic_shapes_admitted() -> None:
+    """Real GitHub ref shapes admit cleanly: branch names with `/`,
+    tag names with `.`, version-like names with `+`, dependabot/-shapes
+    with `-` and `_`. Pins the cascade carve-out: pattern is bounded
+    enough to reject shell-meta but permissive enough for legitimate
+    `git check-ref-format` shapes."""
+    for good in [
+        "main",
+        "feat/foo-bar",
+        "release/v1.2.3",
+        "renovate/lock-file-maintenance",
+        "v1.0.0+build.42",
+        "user.name/topic_branch",
+    ]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = good
+        payload = PullRequestEventPayload.model_validate(payload_dict)
+        assert payload.pull_request.head.ref == good
+
+
+def test_full_name_too_long_rejected() -> None:
+    """`RepositoryRef.full_name` has `max_length=200`. The pattern
+    matched any owner/name with a slash; without max_length, a forged
+    payload could submit a multi-MB full_name."""
+    payload_dict = _valid_payload()
+    payload_dict["repository"]["full_name"] = "a" * 100 + "/" + "b" * 100 + "c" * 50
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_name_too_long_rejected() -> None:
+    """`RepositoryRef.name` has `max_length=100` matching GitHub's own
+    server-side cap. An oversized name flows into URL segments and
+    prompts."""
+    payload_dict = _valid_payload()
+    payload_dict["repository"]["name"] = "a" * 101
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_full_name_and_name_at_caps_admitted() -> None:
+    """Positive-boundary: `full_name` at 200 chars (the cap) and `name`
+    at 100 chars (the cap) admit cleanly. Pins the inclusive boundary
+    so a strict-less-than regression flips this test."""
+    payload_dict = _valid_payload()
+    payload_dict["repository"]["name"] = "n" * 100
+    payload_dict["repository"]["full_name"] = "o" * 99 + "/" + "n" * 100
+    payload = PullRequestEventPayload.model_validate(payload_dict)
+    assert len(payload.repository.name) == 100
+    assert len(payload.repository.full_name) == 200
+
+
 def test_unknown_action_parses_then_router_no_ops() -> None:
     """A new-to-us action string parses cleanly at the schema level.
 
