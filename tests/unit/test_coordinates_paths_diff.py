@@ -238,18 +238,35 @@ def test_unicode_bidi_override_rejected() -> None:
         validate_diff_path(rlo_path)
 
 
-def test_unicode_zero_width_rejected() -> None:
-    """U+200B (Zero Width Space), U+200C (ZWNJ), U+200D (ZWJ), U+FEFF
-    (BOM as middle char) → CoordinateError. Same trojan-source attack
-    class as bidi-override."""
+def test_unicode_invisible_format_rejected() -> None:
+    """U+200B (Zero Width Space) and U+FEFF (BOM as middle char) →
+    CoordinateError. Same trojan-source attack class as bidi-override:
+    they enable visual-vs-byte disguise without rendering on their own.
+
+    Deliberately NOT in the reject set: U+200C (ZWNJ) and U+200D (ZWJ)
+    — these are legitimate in real scripts (Persian, Hindi, emoji
+    sequences). Their acceptance is pinned by
+    `test_unicode_zwnj_zwj_accepted_for_real_scripts`.
+    """
     for bad in [
         "fake​safe.py",
-        "fake‌safe.py",
-        "fake‍safe.py",
         "fake﻿safe.py",
     ]:
         with pytest.raises(CoordinateError, match="bidi-override or zero-width"):
             validate_diff_path(bad)
+
+
+def test_unicode_zwnj_zwj_accepted_for_real_scripts() -> None:
+    """U+200C Zero Width Non-Joiner and U+200D Zero Width Joiner are
+    legitimately used in Persian, Arabic, Hindi/Devanagari, and emoji
+    sequences. Filenames containing them MUST be accepted; rejecting
+    them blocks legitimate non-Latin-script contributors. This test
+    pins the carve-out introduced after the audit-the-audit pass
+    flagged the prior over-rejection."""
+    # U+200C ZWNJ — Persian "می‌خواهم" ("I want")-like filename.
+    assert validate_diff_path("می‌خواهم.py") == "می‌خواهم.py"
+    # U+200D ZWJ — Devanagari conjunct.
+    assert validate_diff_path("क्‍ष.py") == "क्‍ष.py"
 
 
 def test_unicode_bidi_isolate_family_rejected() -> None:
