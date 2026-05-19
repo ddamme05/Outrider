@@ -11,7 +11,6 @@ import hmac
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -107,17 +106,17 @@ def test_signature_only_call_site() -> None:
             if compiled.search(text):
                 hits.append(str(py_file))
 
-    expected = str(src_root / "github" / "webhooks.py")
-    assert hits == [expected], (
+    # Normalize both sides via `.resolve()` so the assertion holds
+    # whether rg returns relative-or-absolute paths (varies by
+    # invocation context) and across symlinked checkouts.
+    expected = (src_root / "github" / "webhooks.py").resolve()
+    resolved_hits = [Path(h).resolve() for h in hits]
+    assert resolved_hits == [expected], (
         f"Expected `githubkit.webhooks` import only at {expected!r}; "
-        f"found at {hits!r}. Move the call into the wrapper."
+        f"found at {resolved_hits!r}. Move the call into the wrapper."
     )
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="Sub-second relevance: regression check requires modern import system.",
-)
 def test_wrapper_returns_bool_not_truthy_string() -> None:
     """Be explicit: the wrapper returns a real `bool`, not a truthy str /
     None / int. Defends downstream callers from accidentally treating
