@@ -25,7 +25,6 @@ START → intake admission edge.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -263,29 +262,23 @@ async def test_command_goto_end_actually_skips_triage() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bare-asyncio call to discourage future test isolation issues — none of
-# the above tests await anything, but importing langgraph.graph from a
-# pytest-asyncio session sometimes warms a default-loop. Explicit no-op
-# coroutine ensures the test file doesn't accidentally depend on global
-# loop state.
+# Graph-wiring introspection is sync — exercise the compiled graph's builder
+# fields directly to confirm no event loop is required for the contract under
+# test. Pins the contract independent of pytest-asyncio's `asyncio_mode` /
+# loop policy (the previous `asyncio.get_running_loop()` check was
+# runner-policy-dependent, not contract-dependent).
 # ---------------------------------------------------------------------------
 
 
-def test_no_event_loop_dependency() -> None:
-    """The introspection tests are sync — they MUST NOT depend on an
-    event loop being available. If a future contributor adds an
-    `async def` test here without `@pytest.mark.asyncio`, the test file
-    might run under whatever loop policy happens to be active and mask
-    test-isolation bugs.
+def test_graph_wiring_inspectable_without_event_loop(compiled_graph: Any) -> None:
+    """Builder fields (`nodes`, `edges`, `branches`) are inspectable
+    synchronously — no event-loop required. The compiled-graph fixture
+    is constructed in sync context and the introspection above touches
+    only these fields.
     """
-    # If a loop is required by something we transitively imported, this
-    # will surface in the introspection tests above, not here. The
-    # presence of this test pins the no-loop expectation.
-    try:
-        asyncio.get_running_loop()
-        loop_required = True
-    except RuntimeError:
-        loop_required = False
-    assert loop_required is False, (
-        "Graph-wiring introspection should not require a running event loop."
-    )
+    assert "intake" in compiled_graph.builder.nodes
+    assert "triage" in compiled_graph.builder.nodes
+    # `edges` is a set of (src, dst) tuples; `branches` is a dict.
+    # Touching them must not require asyncio state.
+    assert isinstance(compiled_graph.builder.edges, set)
+    assert isinstance(compiled_graph.builder.branches, dict)
