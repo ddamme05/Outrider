@@ -685,12 +685,19 @@ async def test_modified_file_releases_clean_side_when_other_side_binary() -> Non
     file_sink = _RecordingFileExaminationSink()
     session_factory = _StubSessionFactoryV2()
 
-    # Drop the aggregate cap just above what BOTH clean files would
-    # use, so if `dirty.py`'s clean-base reservation isn't released,
-    # `clean.py` would be skipped as OVERSIZED.
+    # Drop the aggregate cap to ONE BYTE below the sum of both clean
+    # files' sizes. Math:
+    #   - WITH release: dirty.py reserves 14 (base) then releases 14
+    #     when head fails NUL-check → used=0. clean.py reserves 14 →
+    #     used=14 ≤ 27. Admitted.
+    #   - WITHOUT release: dirty.py reserves 14 and keeps it → used=14.
+    #     clean.py tries to reserve 14 → 14+14=28 > 27. REJECTED.
+    # The `-1` makes the test fail loudly under a `release()`-omitted
+    # regression. Without it (cap = 14 + 14 = 28), both files fit
+    # regardless of whether release ran — the test would be vacuous.
     from outrider.agent.nodes import intake as intake_mod
 
-    monkeypatch_cap = len(payload_base_clean) + len(payload_clean)
+    monkeypatch_cap = len(payload_base_clean) + len(payload_clean) - 1
     original_cap = intake_mod._TOTAL_DECODED_BYTES_CAP
     intake_mod._TOTAL_DECODED_BYTES_CAP = monkeypatch_cap
     try:
@@ -782,6 +789,143 @@ async def test_aggregate_bytes_cap_emits_oversized_when_total_exceeded(
     )
     assert clean_count == 1
     assert oversized_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_status_logged_and_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A file with an unknown GitHub status (e.g., `"copied"`, or a
+    future GitHub-added status) → log warning + drop file + NO
+    FileExaminationEvent emitted. Forward-compat behavior the code
+    documents at intake.py:644-649. Without this test the branch is
+    uncovered; a regression that crashed the whole intake on unknown
+    status would only fail when GitHub adds a new status in production.
+    """
+    import logging
+
+    state = _build_state()
+    files = [
+        _StubFileMeta(filename="ok.py", status="added", additions=1, deletions=0),
+        _StubFileMeta(filename="copied.py", status="copied", additions=1, deletions=0),
+    ]
+    content = {("ok.py", "h" * 40): b"def f(): pass\n"}
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    with caplog.at_level(logging.WARNING, logger="outrider.agent.nodes.intake"):
+        result = await intake(
+            state,
+            github_factory=_stub_github_factory(gh),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=file_sink,
+        )
+
+    assert result.goto == "triage"
+    assert result.update is not None
+    new_ctx: PRContext = result.update["pr_context"]
+
+    # `copied.py` is dropped — only `ok.py` survives.
+    paths = [cf.path for cf in new_ctx.changed_files]
+    assert paths == ["ok.py"]
+
+    # NO FileExaminationEvent emitted for `copied.py` (the unknown-status
+    # branch deliberately does NOT emit; per current behavior the audit
+    # invisibility is documented at intake.py:644-649).
+    file_paths_with_events = {e.file_path for e in file_sink.events}
+    assert "copied.py" not in file_paths_with_events
+    assert "ok.py" in file_paths_with_events
+
+    # Warning log fires.
+    skip_logs = [r for r in caplog.records if "unknown file status" in r.getMessage()]
+    assert len(skip_logs) == 1
+    assert "copied" in skip_logs[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_binary_blob_does_not_consume_budget_before_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The classify-then-reserve order is the load-bearing invariant of
+    `_classify_or_reserve_decode` (intake.py docstring lines 757-760):
+    binary/malformed bytes must NOT consume the aggregate text budget,
+    or a single binary blob in an early file would starve later valid
+    files into spurious OVERSIZED skips.
+
+    Existing tests pin the OUTCOME of binary skip; this one pins the
+    ORDER. With cap=60: binary (50 bytes of NULs) + text (8 bytes
+    UTF-8). Math:
+      - WITH classify-first (current): binary file fails NUL check
+        without reserving → used=0; text reserves 8 → used=8 ≤ 60.
+        Text admitted.
+      - WITH reserve-first (regression): binary reserves 50 → used=50;
+        text tries to reserve 8 → 50+8=58 ≤ 60. Text STILL admitted.
+
+    Hmm — the default 10 MB cap is too coarse. Even with the regression,
+    a 50-byte binary + 8-byte text BOTH fit. We need the binary to be
+    LARGE relative to the cap so reserve-first would exhaust budget:
+
+      - cap = 60. Binary = 55 bytes NULs. Text = 10 bytes UTF-8.
+      - WITH classify-first: binary fails NUL check, no reserve;
+        text reserves 10 → used=10 ≤ 60. Admitted.
+      - WITH reserve-first regression: binary reserves 55; text tries
+        10 → 55+10=65 > 60. REJECTED.
+
+    The regression-revealing case is when binary_size + text_size > cap
+    but text_size alone fits.
+    """
+    from outrider.agent.nodes import intake as intake_mod
+    from outrider.ast_facts.models import SkipReason
+
+    monkeypatch.setattr(intake_mod, "_TOTAL_DECODED_BYTES_CAP", 60)
+
+    state = _build_state()
+    files = [
+        _StubFileMeta(filename="binary.py", status="added", additions=1, deletions=0),
+        _StubFileMeta(filename="text.py", status="added", additions=1, deletions=0),
+    ]
+    payload_binary = b"\x00" * 55  # 55 NULs — fails the NUL byte check
+    payload_text = b"x = 1\n" * 1  # 6 bytes valid UTF-8
+
+    content = {
+        ("binary.py", "h" * 40): payload_binary,
+        ("text.py", "h" * 40): payload_text,
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    result = await intake(
+        state,
+        github_factory=_stub_github_factory(gh),
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert result.goto == "triage"
+    assert result.update is not None
+    new_ctx: PRContext = result.update["pr_context"]
+
+    # text.py MUST be admitted as clean. If classify-then-reserve
+    # regressed to reserve-then-classify, the binary's 55 bytes would
+    # have phantom-reserved budget and text.py would be skipped as
+    # OVERSIZED at 55 + 6 = 61 > 60.
+    paths = [cf.path for cf in new_ctx.changed_files]
+    assert paths == ["text.py"], (
+        "text.py was not admitted — binary.py's bytes consumed the "
+        "aggregate budget. classify-then-reserve order regressed: a "
+        "binary blob is now starving valid text files from the budget."
+    )
+
+    by_path = {e.file_path: e for e in file_sink.events}
+    assert by_path["binary.py"].parse_status == "skipped"
+    assert by_path["binary.py"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["text.py"].parse_status == "clean"
 
 
 # ===========================================================================

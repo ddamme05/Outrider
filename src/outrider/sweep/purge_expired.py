@@ -34,7 +34,7 @@ purge_audit count, which catches order-reversal bugs.
 import logging
 from typing import Final
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,18 @@ _RETENTION_TABLES: Final[tuple[str, ...]] = (
     "findings",
     "reviews",
 )
+
+# Reviews in these statuses are NOT eligible for time-based purge even
+# if their `retention_expires_at` has passed: a 'running' review hasn't
+# completed (mid-graph; deleting it strands LangGraph checkpoints), and
+# an 'awaiting_approval' review is the HITL-paused state — purging
+# would prevent the human-decision resume path entirely. Operators who
+# need to force-delete stuck reviews can use a separate maintenance
+# action; the automated sweep MUST preserve active state. Child tables
+# (`llm_call_content`, `findings`) follow their own retention TTL
+# independently per `DECISIONS.md#012/#014` — purging content while a
+# parent review is still active is the documented retention semantics.
+_REVIEWS_ACTIVE_STATUSES: Final[tuple[str, ...]] = ("running", "awaiting_approval")
 
 # Sentinel installation_id for time-based sweeps that aren't scoped to
 # a particular install. purge_audit.installation_id is a loose `bigint`
@@ -120,9 +132,21 @@ async def purge_expired(
         # Table names come from a controlled allow-list (_RETENTION_TABLES);
         # they are not user input. Bandit S608 flagged for the f-string but
         # parameterizing identifiers is not supported in SQL.
-        result = await conn.execute(
-            text(f"DELETE FROM {table} WHERE retention_expires_at < NOW()")  # noqa: S608
-        )
+        if table == "reviews":
+            # Reviews in 'running' or 'awaiting_approval' must not be
+            # purged — see `_REVIEWS_ACTIVE_STATUSES` docstring.
+            sql = (
+                f"DELETE FROM {table} WHERE retention_expires_at < NOW() "  # noqa: S608
+                f"AND status NOT IN :active_statuses"
+            )
+            active = list(_REVIEWS_ACTIVE_STATUSES)
+            result = await conn.execute(
+                text(sql).bindparams(bindparam("active_statuses", expanding=True, value=active))
+            )
+        else:
+            result = await conn.execute(
+                text(f"DELETE FROM {table} WHERE retention_expires_at < NOW()")  # noqa: S608
+            )
         count = result.rowcount or 0
         if count > 0:
             rows_per_table[table] = count
