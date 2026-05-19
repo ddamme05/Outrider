@@ -203,6 +203,16 @@ async def purge_installation(
 
     rows_per_table: dict[str, int] = {}
 
+    # Deliberately NO `_REVIEWS_ACTIVE_STATUSES` filter here (unlike
+    # `purge_expired` above). An installation hard-delete is the
+    # revocation path: the user removed the GitHub App, so all of
+    # their data must go — including any in-flight `running` or
+    # `awaiting_approval` reviews. Preserving those would leave
+    # orphan reviews that can never resume (the installation is gone)
+    # and never publish (no token available). The asymmetry between
+    # the two functions is intentional: time-based sweep protects
+    # active reviews from TTL deletion; installation-purge terminates
+    # everything by definition.
     for table in _RETENTION_TABLES:
         result = await conn.execute(
             text(f"DELETE FROM {table} WHERE installation_id = :id"),  # noqa: S608
