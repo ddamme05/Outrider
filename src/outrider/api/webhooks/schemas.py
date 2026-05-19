@@ -138,12 +138,21 @@ class PullRequestRef(BaseModel):
     `(repo_id, pr_number, head_sha)` uniquely identifies a review — a
     non-hex `head_sha` would still natural-key uniquely but would also
     flow into log lines / audit payloads / prompts as raw bytes.
+
+    `ref` is bounded length + git-ref-name character class.
+    `max_length=255` covers any real branch / tag name; the character
+    class admits the chars `git check-ref-format` allows (alphanumeric
+    + `.` `_` `/` `-` `+`) and rejects shell-meta, control, whitespace,
+    and `..` traversal would-be inputs. Without bounds, an oversized
+    ref flows into prompts and audit payloads with the same blast
+    radius as title/body — bounding is consistent with the
+    input-boundary tightening cascade across this schema.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     sha: str = Field(min_length=40, max_length=64, pattern=r"^[a-f0-9]+$")
-    ref: str
+    ref: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._/\-+]+$")
 
 
 class WebhookPullRequest(BaseModel):
