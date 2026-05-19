@@ -52,7 +52,7 @@ _SHELL_METACHARS_RE: Final = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 # Including these would block legitimate non-Latin-script filename
 # contributors (false-positive surface introduced by an earlier audit
 # fold; corrected after the audit-the-audit pass flagged it).
-_TROJAN_SOURCE_CHARS_RE: Final = re.compile(r"[‪-‮⁦-⁩​‎‏﻿]")
+_TROJAN_SOURCE_CHARS_RE: Final = re.compile("[\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 # Reject paths whose FIRST path component is `.git` (case-insensitive).
 # `.git/config`, `.git/HEAD`, etc. are not legitimate PR-modifiable files
