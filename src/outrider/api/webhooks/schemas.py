@@ -198,6 +198,14 @@ class PullRequestRef(BaseModel):
             if seg == "..":
                 msg = f"ref {value!r} contains '..' traversal segment"
                 raise ValueError(msg)
+            if ".." in seg:
+                # Embedded `..` (e.g., `feature..x`, `a..b`) — the
+                # `seg == ".."` check above catches the bare form,
+                # `startswith(".")` below catches leading-dot. Embedded
+                # `..` between non-dot chars slips both. git-check-ref-format
+                # rejects ANY `..` in a ref name regardless of position.
+                msg = f"ref {value!r} segment {seg!r} contains '..'"
+                raise ValueError(msg)
             if seg.startswith("."):
                 # git-check-ref-format rejects components starting with
                 # `.` — covers `.hidden`, `release/.tmp`. Without this
