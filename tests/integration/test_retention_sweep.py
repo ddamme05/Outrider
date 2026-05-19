@@ -252,5 +252,17 @@ async def test_purge_expired_preserves_active_reviews_past_ttl(migrated_db: str)
             assert statuses == ["running", "awaiting_approval"], (
                 f"Expected running+awaiting_approval to survive; got {statuses}."
             )
+
+            # purge_audit side effect: one row for the `reviews` table per
+            # sweep run that purged any rows. Pins the audit-write contract
+            # the per-table loop documents — without this assertion a
+            # regression that broke `_write_purge_audit` would still pass.
+            audit_count = await conn.scalar(
+                text(
+                    "SELECT COUNT(*) FROM purge_audit "
+                    "WHERE target_table = 'reviews' AND purge_role = 'test'"
+                )
+            )
+            assert audit_count == 1, f"Expected one purge_audit row for reviews; got {audit_count}."
     finally:
         await engine.dispose()
