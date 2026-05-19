@@ -166,6 +166,22 @@ async def receive_pull_request_webhook(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="malformed Content-Length",
             ) from None
+        # Negative Content-Length is HTTP-malformed but `int()` accepts
+        # "-1" cleanly, and `-1 > cap` is False — without an explicit
+        # check, a negative header bypasses both the malformed-400 path
+        # AND the 413 cap, deferring rejection until after body buffer.
+        if content_length < 0:
+            logger.warning(
+                "webhook rejected: negative Content-Length",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length_raw": content_length_header[:64],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="malformed Content-Length",
+            )
         if content_length > _MAX_WEBHOOK_BODY_BYTES:
             logger.warning(
                 "webhook rejected: Content-Length exceeds cap",
