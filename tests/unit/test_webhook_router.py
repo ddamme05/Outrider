@@ -250,6 +250,28 @@ def test_malformed_content_length_returns_400() -> None:
     assert response.status_code == 400
 
 
+def test_negative_content_length_returns_400() -> None:
+    """`Content-Length: -1` → 400. `int("-1")` parses cleanly and
+    `-1 > cap` is False, so without the explicit negative-check the
+    negative header would bypass BOTH the malformed-400 path AND the
+    413 cap, deferring rejection until after the body is buffered.
+    """
+    client = TestClient(_make_app())
+    body = b"{}"
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "X-GitHub-Event": "pull_request",
+            "Content-Length": "-1",
+        },
+    )
+    # Either the router's 400 OR a transport-layer rejection; either
+    # way the path doesn't 5xx and doesn't reach body-read.
+    assert response.status_code == 400
+
+
 def test_body_just_under_cap_admitted_past_signature_check() -> None:
     """Positive-boundary: a body just under the 1 MiB cap is NOT
     rejected by the size guard — the request flows past the
