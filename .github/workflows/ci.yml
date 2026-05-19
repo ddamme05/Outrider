@@ -85,6 +85,19 @@ jobs:
           activate-environment: true
       - name: uv sync --frozen
         run: uv sync --dev --frozen
+      - name: Cache .mypy_cache
+        # Cold mypy --strict on 70 src files is ~2m30s; warm incremental
+        # runs are typically <30s. Key invalidates on Python interpreter
+        # change (`.python-version`) or dep set change (`pyproject.toml` /
+        # `uv.lock` — covers the pinned mypy version itself). `github.sha`
+        # suffix lets every run save a fresh cache; `restore-keys` pulls
+        # the closest prior cache when the suffix misses.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-py-${{ hashFiles('.python-version') }}-deps-${{ hashFiles('pyproject.toml', 'uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-py-${{ hashFiles('.python-version') }}-deps-${{ hashFiles('pyproject.toml', 'uv.lock') }}-
       - name: mypy --strict src
         # `--strict` is redundant with pyproject.toml's `[tool.mypy] strict = true`
         # but explicit at the call site so the YAML is self-describing AND matches
