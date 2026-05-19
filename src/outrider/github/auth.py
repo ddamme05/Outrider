@@ -29,7 +29,9 @@ Why settings-bound at lifespan (the outer factory):
 """
 
 from collections.abc import Callable
+from typing import Final
 
+import httpx
 from githubkit import AppInstallationAuthStrategy, GitHub
 
 from outrider.github.config import GitHubAppSettings
@@ -38,6 +40,22 @@ __all__ = [
     "InstallationGitHubClient",
     "make_installation_client_factory",
 ]
+
+
+# Explicit per-operation timeouts on the githubkit GitHub client.
+# Default is `timeout=None` (no timeout — requests hang indefinitely on
+# upstream stalls). Intake runs in a background task post-webhook-ACK;
+# a stalled API call would otherwise pin the whole review pipeline.
+# Shape mirrors `llm/anthropic_provider.py`'s explicit-httpx-Timeout
+# pattern so the two SDK-wrapping surfaces have consistent operational
+# behavior. Values: connect timeout is short (TCP handshake or auth
+# resolution), read is the dominant cost (paginated file fetches), write
+# matches read, pool covers connection-pool acquisition contention.
+# A future operator-tunable shape can move these to `GitHubAppSettings`;
+# tracked at FUP-034 alongside other input-boundary configuration.
+_GITHUB_CLIENT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
+    connect=5.0, read=30.0, write=30.0, pool=10.0
+)
 
 
 # Type alias for a GitHub client authenticated as a specific installation.
@@ -94,7 +112,8 @@ def make_installation_client_factory(
                 settings.app_id,
                 settings.app_private_key.get_secret_value(),
                 installation_id,
-            )
+            ),
+            timeout=_GITHUB_CLIENT_TIMEOUT,
         )
 
     return make_installation_client
