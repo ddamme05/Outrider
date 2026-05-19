@@ -119,6 +119,14 @@ async def intake(
     phase_id = str(uuid4())
     pr_context = state.pr_context
 
+    # Tracks whether the phase-start event actually persisted. The failure
+    # handler only emits a matching phase-end if this is True — otherwise
+    # an early phase-start emit failure would produce an end-only marker
+    # (durable phase-end with no corresponding phase-start), breaking the
+    # phase-events-bound-work invariant in the opposite direction from the
+    # orphan-start case the audit_integrity_violation log handles.
+    phase_start_persisted = False
+
     try:
         # Phase-start emission is inside the guarded boundary so a
         # persister failure here triggers the same `status='failed'`
@@ -132,6 +140,7 @@ async def intake(
             marker="start",
         )
         await phase_event_sink.emit_phase(phase_start)
+        phase_start_persisted = True
 
         gh = github_factory(pr_context.installation_id)
 
@@ -248,27 +257,35 @@ async def intake(
         # letting the bare `raise` propagate the original failure.
 
         async def _failure_cleanup() -> None:
-            try:
-                await _emit_phase_end(phase_event_sink, state, phase_id)
-            except Exception:
-                # AUDIT-INTEGRITY VIOLATION: the failure-path phase-end
-                # event did NOT persist. This leaves a durable phase-start
-                # with no matching phase-end — replay tools and dashboard
-                # projections that bound work between start/end markers
-                # see the phase as never-completed. Distinguishing
-                # `audit_integrity_violation=True` so the anomaly scanner
-                # AND ad-hoc operator greps can find these.
-                logger.exception(
-                    "intake: phase-end emit failed during failure handling; "
-                    "proceeding to status='failed' write anyway "
-                    "(AUDIT-INTEGRITY: orphan phase-start without phase-end)",
-                    extra={
-                        "review_id": str(state.review_id),
-                        "phase_id": phase_id,
-                        "node_id": "intake",
-                        "audit_integrity_violation": True,
-                    },
-                )
+            # Only emit phase-end if the matching phase-start actually
+            # persisted. Without this guard, a persister failure during
+            # the very first emit would produce an end-only marker
+            # (durable phase-end with no corresponding phase-start) —
+            # the opposite of the orphan-start case below, equally
+            # destructive to `phase-events-bound-work` replay semantics.
+            if phase_start_persisted:
+                try:
+                    await _emit_phase_end(phase_event_sink, state, phase_id)
+                except Exception:
+                    # AUDIT-INTEGRITY VIOLATION: the failure-path
+                    # phase-end event did NOT persist. This leaves a
+                    # durable phase-start with no matching phase-end —
+                    # replay tools and dashboard projections that bound
+                    # work between start/end markers see the phase as
+                    # never-completed. `audit_integrity_violation=True`
+                    # so the anomaly scanner AND ad-hoc operator greps
+                    # can find these.
+                    logger.exception(
+                        "intake: phase-end emit failed during failure handling; "
+                        "proceeding to status='failed' write anyway "
+                        "(AUDIT-INTEGRITY: orphan phase-start without phase-end)",
+                        extra={
+                            "review_id": str(state.review_id),
+                            "phase_id": phase_id,
+                            "node_id": "intake",
+                            "audit_integrity_violation": True,
+                        },
+                    )
             try:
                 await _set_review_status(db_factory, state.review_id, "failed")
             except Exception:
@@ -429,8 +446,8 @@ async def _process_one_file(
     # of the raw path + a sanitized excerpt) is FUP-eligible; not added
     # in this spec.
     #
-    # Other exceptions inside the fetch block propagate through
-    # asyncio.gather and trigger the node's failure path.
+    # Other exceptions inside the fetch block propagate through the
+    # surrounding `asyncio.TaskGroup` and trigger the node's failure path.
     try:
         filename = validate_diff_path(raw_filename)
         previous_filename = (
