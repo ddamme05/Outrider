@@ -116,6 +116,35 @@ def test_short_sha_rejected() -> None:
         PullRequestEventPayload.model_validate(payload_dict)
 
 
+def test_non_hex_sha_rejected() -> None:
+    """`sha` is bounded lowercase hex. A non-hex char (e.g., a slash or
+    capital) → ValidationError. Without the pattern, raw bytes could
+    flow into URL segments + audit payloads via a forged payload."""
+    for bad in ["a" * 39 + "/", "A" * 40, "g" * 40, "z" * 40]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["sha"] = bad
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_overlong_sha_rejected() -> None:
+    """`sha` has `max_length=64` (SHA-256). 65+ chars → ValidationError."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["sha"] = "a" * 65
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_sha256_length_admitted() -> None:
+    """`sha` admits 64-hex (SHA-256) for forward-compat with GitHub's
+    object-format migration on some surfaces."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["head"]["sha"] = "a" * 64
+    payload_dict["pull_request"]["base"]["sha"] = "b" * 64
+    payload = PullRequestEventPayload.model_validate(payload_dict)
+    assert len(payload.pull_request.head.sha) == 64
+
+
 def test_unknown_action_parses_then_router_no_ops() -> None:
     """A new-to-us action string parses cleanly at the schema level.
 
