@@ -434,6 +434,11 @@ async def test_webhook_natural_key_conflict_via_integrity_error_returns_200() ->
     """Concurrent race where the fast-path SELECT misses but the INSERT
     hits the UNIQUE on `uq_review_natural_key` → IntegrityError caught,
     constraint-name introspected, 200 with existing review_id."""
+    # Fail-loud body: if someone removes the `@pytest.mark.skip` above
+    # without implementing the test, this raises rather than silently
+    # passing as an empty function. The skip-marker is the only thing
+    # making this an acceptable not-yet-implemented placeholder.
+    pytest.fail("FUP-028 placeholder body — implement before removing skip marker.")
 
 
 @pytest.mark.skip(
@@ -452,3 +457,7 @@ async def test_webhook_audit_side_integrity_error_reraises() -> None:
     a row with the same event_id pre-minted); the constraint-name
     introspection at step 10 should re-raise the IntegrityError (not
     misclassify as a natural-key duplicate). Returns 5xx."""
+    # Fail-loud body: if someone removes the `@pytest.mark.skip` above
+    # without implementing the test, this raises rather than silently
+    # passing as an empty function.
+    pytest.fail("FUP-028 placeholder body — implement before removing skip marker.")
