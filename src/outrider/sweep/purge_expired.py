@@ -34,7 +34,7 @@ purge_audit count, which catches order-reversal bugs.
 import logging
 from typing import Final
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = logging.getLogger(__name__)
@@ -135,14 +135,18 @@ async def purge_expired(
         if table == "reviews":
             # Reviews in 'running' or 'awaiting_approval' must not be
             # purged — see `_REVIEWS_ACTIVE_STATUSES` docstring.
-            sql = (
-                f"DELETE FROM {table} WHERE retention_expires_at < NOW() "  # noqa: S608
-                f"AND status NOT IN :active_statuses"
-            )
-            active = list(_REVIEWS_ACTIVE_STATUSES)
-            result = await conn.execute(
-                text(sql).bindparams(bindparam("active_statuses", expanding=True, value=active))
-            )
+            # The active-statuses list is inlined as SQL literals (not
+            # bound parameters) because `reviews.status` is a custom
+            # `review_status_enum` Postgres type; SQLAlchemy-bound
+            # VARCHARs can't compare to the enum without a CAST, which
+            # adds complexity for no benefit — the constant is a fixed
+            # module-level tuple and there's no injection vector.
+            active_sql = ", ".join(f"'{s}'" for s in _REVIEWS_ACTIVE_STATUSES)
+            # noqa is on the f-string line per ruff's line-anchoring;
+            # table comes from `_RETENTION_TABLES` allowlist; statuses
+            # come from `_REVIEWS_ACTIVE_STATUSES` module-level constant.
+            sql_text = f"DELETE FROM {table} WHERE retention_expires_at < NOW() AND status NOT IN ({active_sql})"  # noqa: S608, E501
+            result = await conn.execute(text(sql_text))
         else:
             result = await conn.execute(
                 text(f"DELETE FROM {table} WHERE retention_expires_at < NOW()")  # noqa: S608

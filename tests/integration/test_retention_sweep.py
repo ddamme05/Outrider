@@ -175,3 +175,82 @@ async def test_purge_expired_skips_unexpired_rows(migrated_db: str) -> None:
             assert purge_count.scalar_one() == 0
     finally:
         await engine.dispose()
+
+
+async def test_purge_expired_preserves_active_reviews_past_ttl(migrated_db: str) -> None:
+    """Reviews in 'running' or 'awaiting_approval' MUST survive the
+    time-based sweep even when retention_expires_at has passed.
+
+    Backs the status-filter introduced in commit da994e7 (data-integrity
+    audit finding): a HITL-paused review left past TTL would otherwise
+    be hard-deleted, breaking HITL resume. A 'running' review past TTL
+    would strand the LangGraph checkpoint.
+
+    Seeds two expired reviews:
+      - status='running' with retention_expires_at in the past
+      - status='awaiting_approval' with retention_expires_at in the past
+    Plus one expired 'completed' review as a positive control (must be
+    purged so the test fails if the filter accidentally protects all
+    reviews).
+
+    Expected: 1 review purged ('completed'); 2 reviews survive
+    ('running' + 'awaiting_approval'); 1 purge_audit row.
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO installations "
+                    "(installation_id, app_slug, account_id, account_login, "
+                    " account_type, permissions_at_install) "
+                    "VALUES (:id, 'test-app', 1, 'octocat', 'User', '{}'::jsonb)"
+                ),
+                {"id": _INSTALLATION_ID},
+            )
+            # Three reviews, all past-TTL, distinct statuses.
+            for pr_number, status in [
+                (1, "running"),
+                (2, "awaiting_approval"),
+                (3, "completed"),
+            ]:
+                await conn.execute(
+                    text(
+                        "INSERT INTO reviews ("
+                        "  installation_id, repo_id, pr_number, head_sha, status, "
+                        "  files_examined, files_traced_beyond_diff, llm_calls_made, "
+                        "  total_input_tokens, total_output_tokens, total_cost_usd, "
+                        "  wall_clock_seconds, retention_expires_at"
+                        ") VALUES ("
+                        "  :id, 100, :pr_number, :head_sha, :status, 0, 0, 0, 0, 0, 0, 0, "
+                        "  NOW() - INTERVAL '1 day'"
+                        ")"
+                    ),
+                    {
+                        "id": _INSTALLATION_ID,
+                        "pr_number": pr_number,
+                        "head_sha": f"sha{pr_number}",
+                        "status": status,
+                    },
+                )
+
+        async with engine.begin() as conn:
+            rows_per_table = await purge_expired(conn, purge_role="test")
+
+        # Only the 'completed' review purged; 'running' + 'awaiting_approval' survive.
+        assert rows_per_table == {"reviews": 1}, (
+            f"Expected exactly 1 review purged (the 'completed' one); "
+            f"got {rows_per_table}. The status filter is broken: either "
+            f"protecting too much (active filter wider than running + "
+            f"awaiting_approval) or protecting too little (active reviews "
+            f"being purged)."
+        )
+
+        async with engine.connect() as conn:
+            surviving = await conn.execute(text("SELECT status FROM reviews ORDER BY pr_number"))
+            statuses = [row[0] for row in surviving.fetchall()]
+            assert statuses == ["running", "awaiting_approval"], (
+                f"Expected running+awaiting_approval to survive; got {statuses}."
+            )
+    finally:
+        await engine.dispose()
