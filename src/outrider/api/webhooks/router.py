@@ -9,9 +9,16 @@ Sequence:
   2. Read `X-Hub-Signature-256`; missing → 401 WITHOUT reading the
      request body (defends against unauthenticated multi-GB POST
      buffering pressure).
+  2b. Content-Length precheck against `_MAX_WEBHOOK_BODY_BYTES` (1 MiB).
+     `Content-Length` exceeding cap → 413 BEFORE `await request.body()`.
+     Malformed (non-integer) Content-Length → 400. Post-read length
+     guard at step 3 is defense-in-depth for chunked / missing-header
+     deliveries. Streaming-HMAC bound remains FUP-034 part 1.
   3. `body = await request.body()` — raw bytes captured BEFORE any
-     model binding. FastAPI's default `Request.body()` caches internally
-     (Starlette `_body`); a second call returns the same bytes.
+     model binding; rejected with 413 if `len(body)` exceeds the cap
+     (catches chunked / lying-Content-Length cases). FastAPI's default
+     `Request.body()` caches internally (Starlette `_body`); a second
+     call returns the same bytes.
   4. `verify_signature(secret, body, signature_header)` via the
      route-facing module that delegates to `github/webhooks.py`. Returns
      False → 401. Unexpected raises propagate as 5xx (verifier
@@ -31,7 +38,10 @@ Sequence:
      spec's narrow-introspection-only rule), then re-raise only if no
      natural-key row exists.
  10. Construct seed `ReviewState(review_id, pr_context, received_at,
-     is_eval=False)`; call `await dispatcher.dispatch(state)`.
+     is_eval=False)`; call `await dispatcher.dispatch(state)`. Dispatch
+     failure → mark review failed via a shielded cleanup task (drained
+     under `except BaseException` so the original failure isn't masked),
+     then re-raise.
  11. Return 202 Accepted with `review_id`.
 
 `X-GitHub-Delivery` is logged for traceability; never persisted.
