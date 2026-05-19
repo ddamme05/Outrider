@@ -192,8 +192,18 @@ class PullRequestRef(BaseModel):
             if seg == "":
                 msg = f"ref {value!r} contains empty segment ('//' or boundary slash)"
                 raise ValueError(msg)
+            # `..` is a special case of "starts with '.'"; check it
+            # FIRST so the more specific error message wins for the
+            # most common traversal attempt.
             if seg == "..":
                 msg = f"ref {value!r} contains '..' traversal segment"
+                raise ValueError(msg)
+            if seg.startswith("."):
+                # git-check-ref-format rejects components starting with
+                # `.` — covers `.hidden`, `release/.tmp`. Without this
+                # rule, dot-prefixed segments cross the trust boundary
+                # into fetch / state / audit.
+                msg = f"ref {value!r} contains segment starting with '.'"
                 raise ValueError(msg)
             if seg.endswith(".lock"):
                 msg = f"ref {value!r} segment ends with '.lock' (git-reserved)"

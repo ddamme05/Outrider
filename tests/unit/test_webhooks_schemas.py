@@ -287,6 +287,20 @@ def test_ref_traversal_segment_rejected() -> None:
             PullRequestEventPayload.model_validate(payload_dict)
 
 
+def test_ref_dot_prefix_segment_rejected() -> None:
+    """`ref` segment starting with `.` → ValidationError per
+    git-check-ref-format. Covers `.hidden`, `release/.tmp` — both pass
+    the char pattern (`.` is allowed) AND the `..` segment check
+    (these aren't exactly `..`) but git rejects any component
+    starting with `.`. Without this rule dot-prefixed components
+    cross the trust boundary."""
+    for bad in [".hidden", "release/.tmp", "feat/.lock-name", "a/.b/c"]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["head"]["ref"] = bad
+        with pytest.raises(ValidationError, match="starting with '\\.'"):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
 def test_ref_lock_suffix_rejected() -> None:
     """`ref` segment ending in `.lock` → ValidationError per
     git-check-ref-format. Git reserves `.lock` suffixes for lock files."""
