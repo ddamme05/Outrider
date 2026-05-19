@@ -76,7 +76,18 @@ def test_signature_only_call_site() -> None:
     # false positives. `^\s*` covers indented re-imports (rare but
     # legal); `\b` on the bare-import form prevents matching
     # `githubkit.webhooks_extra`.
-    import_pattern = r"^\s*(from\s+githubkit\.webhooks\s+import|import\s+githubkit\.webhooks\b)"
+    # Three import shapes to catch:
+    #   1. `from githubkit.webhooks import X` (submodule import)
+    #   2. `from githubkit import webhooks` (module-level re-import)
+    #   3. `import githubkit.webhooks` (bare submodule import)
+    # `(?m)` makes `^` anchor at start-of-line, not start-of-input
+    # (rust-regex via `rg -U` defaults to start-of-input; without
+    # `(?m)` imports on any non-first line silently slip through).
+    import_pattern = (
+        r"(?m)^\s*(from\s+githubkit\.webhooks\s+import"
+        r"|from\s+githubkit\s+import\s+webhooks\b"
+        r"|import\s+githubkit\.webhooks\b)"
+    )
 
     # Use ripgrep if available (faster + ignores binary files / venv); fall
     # back to a manual scan for environments without rg.
