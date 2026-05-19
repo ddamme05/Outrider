@@ -322,8 +322,6 @@ async def test_persist_raises_when_event_request_review_ids_mismatch(
     Metadata-only failure: the raised `AuditPersisterReviewIdMismatchError`
     carries only the two UUIDs, never prompt/completion content.
     """
-    import pytest
-
     from outrider.audit.persister import AuditPersisterReviewIdMismatchError
 
     engine = create_async_engine(migrated_db, hide_parameters=True)
