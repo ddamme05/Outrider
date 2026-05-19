@@ -271,6 +271,22 @@ async def intake(
             # (durable phase-end with no corresponding phase-start) —
             # the opposite of the orphan-start case below, equally
             # destructive to `phase-events-bound-work` replay semantics.
+            if not phase_start_persisted:
+                # Distinct log signal so operators querying for "intake
+                # phase-start orphans" can distinguish (a) "no phase-start
+                # ever attempted" (no log) from (b) "phase-start attempted
+                # but persister failed before commit" (this log line).
+                # Without it, the gate fires silently and the only signal
+                # is the propagating exception in the outer scope.
+                logger.warning(
+                    "intake: phase-start persistence failed; skipping phase-end "
+                    "emit to preserve start↔end pairing invariant",
+                    extra={
+                        "review_id": str(state.review_id),
+                        "phase_id": phase_id,
+                        "node_id": "intake",
+                    },
+                )
             if phase_start_persisted:
                 try:
                     await _emit_phase_end(phase_event_sink, state, phase_id)
