@@ -87,33 +87,32 @@ def _build_enriched_state() -> ReviewState:
 
 
 def test_seed_state_roundtrips_through_json() -> None:
-    """Webhook-seed shape (empty changed_files) round-trips cleanly."""
+    """Webhook-seed shape (empty changed_files) round-trips cleanly.
+
+    Asserts FULL model equality, not a subset of fields — any field
+    that doesn't survive dump→validate identity (e.g., a future field
+    where set→list, tuple→list, or a custom timezone normalization
+    happens) would silently slip past a partial-field check.
+    """
     seed = _build_seed()
     serialized = seed.model_dump_json()
     rehydrated = ReviewState.model_validate_json(serialized)
 
-    assert rehydrated.review_id == seed.review_id
-    assert rehydrated.received_at == seed.received_at
-    assert rehydrated.is_eval == seed.is_eval
-    assert rehydrated.pr_context.installation_id == seed.pr_context.installation_id
-    assert rehydrated.pr_context.changed_files == ()
+    assert rehydrated == seed
 
 
 def test_post_intake_state_roundtrips_through_json() -> None:
-    """Post-intake shape (populated changed_files) round-trips cleanly."""
+    """Post-intake shape (populated changed_files) round-trips cleanly.
+
+    Asserts FULL model equality across the entire nested state shape
+    (including `pr_context.changed_files` tuple contents). Pydantic's
+    `__eq__` on frozen models compares all fields by value.
+    """
     state = _build_enriched_state()
     serialized = state.model_dump_json()
     rehydrated = ReviewState.model_validate_json(serialized)
 
-    assert rehydrated.review_id == state.review_id
-    assert len(rehydrated.pr_context.changed_files) == 1
-    rcf = rehydrated.pr_context.changed_files[0]
-    ocf = state.pr_context.changed_files[0]
-    assert rcf.path == ocf.path
-    assert rcf.status == ocf.status
-    assert rcf.content_base == ocf.content_base
-    assert rcf.content_head == ocf.content_head
-    assert rcf.previous_path == ocf.previous_path
+    assert rehydrated == state
 
 
 def test_is_eval_true_roundtrips() -> None:
