@@ -193,7 +193,15 @@ async def intake(
                             )
                         )
                     )
-        except* Exception as eg:
+        # `except* BaseException` (not `except* Exception`) so a
+        # CancelledError from the OUTER scope (lifespan shutdown,
+        # client disconnect) — which since Python 3.8 inherits from
+        # BaseException, NOT Exception — matches and gets unwrapped
+        # the same way as a real per-file failure. Without this, the
+        # BaseExceptionGroup[CancelledError] would propagate raw to the
+        # outer `except BaseException` failure handler — cleanup still
+        # runs, but operators see a less useful exception trace.
+        except* BaseException as eg:
             # Unwrap the ExceptionGroup so the outer `except Exception`
             # handler sees a single exception, matching pre-TaskGroup
             # `gather` semantics for downstream consumers. The TaskGroup
@@ -398,7 +406,11 @@ async def _gather_two_fetches(
         async with asyncio.TaskGroup() as tg:
             base_task = tg.create_task(base_coro)
             head_task = tg.create_task(head_coro)
-    except* Exception as eg:
+    # `except* BaseException` mirrors the outer fan-out: outer-scope
+    # cancellation propagates as BaseExceptionGroup[CancelledError]
+    # (Python 3.8+ CancelledError ∈ BaseException), so `except* Exception`
+    # would miss it and the unwrap-the-root-cause logic wouldn't fire.
+    except* BaseException as eg:
         root_cause = next(
             (exc for exc in eg.exceptions if not isinstance(exc, asyncio.CancelledError)),
             eg.exceptions[0],
