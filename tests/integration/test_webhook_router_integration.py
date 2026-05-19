@@ -67,7 +67,7 @@ def _valid_payload(
     installation_id: int = _INSTALLATION_ID,
     repo_id: int = _REPO_ID,
     pr_number: int = 42,
-    head_sha: str = "h" * 40,
+    head_sha: str = "a" * 40,
 ) -> dict[str, Any]:
     return {
         "action": "opened",
@@ -313,13 +313,20 @@ async def test_webhook_to_triage_happy_path(
     assert review.repo_id == _REPO_ID
     assert review.pr_number == 42
 
-    # AgentTransitionEvent row exists with matching event_id in row + payload
+    # AgentTransitionEvent row exists with matching event_id in row + payload.
+    # COUNT first, then row inspection: a duplicate agent_transition row for
+    # the same review_id would slip past `.first()`-only inspection.
     async with engine.connect() as conn:
+        n_for_review = await conn.scalar(
+            text("SELECT COUNT(*) FROM audit_events WHERE review_id = :rid"),
+            {"rid": review_id_str},
+        )
         ae_row = await conn.execute(
             text("SELECT event_id, event_type, payload FROM audit_events WHERE review_id = :rid"),
             {"rid": review_id_str},
         )
         ae = ae_row.first()
+    assert n_for_review == 1, f"Expected exactly 1 audit row for review; got {n_for_review}."
     assert ae is not None
     assert ae.event_type == "agent_transition"
     payload_dict = ae.payload
