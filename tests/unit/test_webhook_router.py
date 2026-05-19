@@ -5,13 +5,20 @@ introspection) need a real Postgres for honest coverage and live in the
 integration tier alongside the rest of the router-to-graph slice. These
 unit tests focus on:
 
-  - Missing `X-Hub-Signature-256` → 401.
-  - Signature verification failure → 401.
+  - Missing `X-Hub-Signature-256` → 401 (and pins step-2 ordering:
+    body is NOT read on the missing-sig path, via a `Request.body` spy).
+  - Signature verification failure → 401, including the malformed-header
+    `verify` False-path and the unexpected-exception 5xx path.
+  - Content-Length precheck: oversized header → 413 BEFORE body-read
+    (pinned via `Request.body` spy); malformed header → 400.
+  - Post-read body-size guard: body exceeding `_MAX_WEBHOOK_BODY_BYTES`
+    → 413; just-under-cap admits past size guards (reaches signature
+    verification).
   - Non-`pull_request` event → 2xx no-op.
   - Unsupported PR action → 2xx no-op.
   - Malformed payload → 400.
   - `X-GitHub-Delivery` header is forwarded to logs (traceability), not
-    persisted.
+    persisted; receipt log fires on the 401 path.
 
 All tests use FastAPI's `TestClient` with a minimal app that wires only
 the router + the `app.state` slots the router reads. No DB connection
@@ -241,6 +248,67 @@ def test_malformed_content_length_returns_400() -> None:
     # at a lower layer. Accept either the router's 400 OR a transport
     # 400; either way the path doesn't 5xx and doesn't admit the body.
     assert response.status_code == 400
+
+
+def test_body_just_under_cap_admitted_past_signature_check() -> None:
+    """Positive-boundary: a body just under the 1 MiB cap is NOT
+    rejected by the size guard — the request flows past the
+    Content-Length precheck AND the post-read len() guard and into
+    the signature-verification path (which then fails with 401
+    because the test sends a bogus signature). Pins the inclusive
+    boundary on the cap so a strict-less-than regression flips this
+    test.
+    """
+    client = TestClient(_make_app())
+    # 1 MiB - 1 byte. Anything ≤ _MAX_WEBHOOK_BODY_BYTES (1_048_576)
+    # must not 413; this exercises the just-under-cap path.
+    body = b"x" * (1_048_576 - 1)
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    # Reaches signature verification → 401 (invalid signature).
+    # The path is what's pinned, not the 401 specifically — the test
+    # would also pass with 200 if the body had a valid signature.
+    # What it MUST NOT be is 413.
+    assert response.status_code != 413, (
+        f"Body just under the cap was rejected as too large (got {response.status_code}). "
+        f"The cap boundary regressed to strict-less-than or the cap value shifted."
+    )
+    assert response.status_code == 401
+
+
+def test_post_read_guard_catches_oversized_body_without_content_length() -> None:
+    """Defense-in-depth: when `Content-Length` is absent (chunked
+    transfer or a lying header below the cap), the post-read length
+    guard at `len(body) > _MAX_WEBHOOK_BODY_BYTES` fires. The
+    Content-Length precheck alone wouldn't catch this case.
+
+    httpx's TestClient sets Content-Length automatically when given
+    `content=bytes`, so we can't easily test the "no Content-Length"
+    case at the unit tier. We test the load-bearing condition: send
+    a body whose length exceeds the cap with Content-Length matching
+    (so the precheck DOES fire — which means the post-read guard is
+    a redundant net for the lying / chunked case). Test name pins
+    the intent; FUP-034 part 1's streaming-HMAC bound is what closes
+    the chunked-no-Content-Length DoS for real.
+    """
+    client = TestClient(_make_app())
+    body = b"x" * (1_048_576 + 1)
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 413
+    assert response.json() == {"detail": "payload too large"}
 
 
 def test_malformed_signature_header_returns_401_via_false_path() -> None:
