@@ -179,6 +179,70 @@ def test_invalid_signature_returns_401() -> None:
     assert response.json() == {"detail": "invalid signature"}
 
 
+def test_oversized_content_length_returns_413_before_body_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Content-Length` header above the cap → 413 BEFORE
+    `await request.body()` buffers anything. Pins the precheck
+    ordering — a regression that moved the precheck below body-read
+    would still 413 but would have already buffered the multi-MB
+    payload, defeating the DoS defense.
+    """
+    from starlette.requests import Request  # noqa: PLC0415
+
+    body_read_count = 0
+    original_body = Request.body
+
+    async def _recording_body(self: Request) -> bytes:
+        nonlocal body_read_count
+        body_read_count += 1
+        return await original_body(self)
+
+    monkeypatch.setattr(Request, "body", _recording_body)
+
+    client = TestClient(_make_app())
+    # Don't actually send 10 MB — the precheck reads the HEADER, not
+    # the body. Tiny body + lying header is enough to exercise.
+    body = b"{}"
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "X-GitHub-Event": "pull_request",
+            "Content-Length": str(2_000_000),  # 2 MB, over the 1 MiB cap
+        },
+    )
+    assert response.status_code == 413
+    assert response.json() == {"detail": "payload too large"}
+    assert body_read_count == 0, (
+        "Body was read despite Content-Length precheck firing — precheck ordering regressed."
+    )
+
+
+def test_malformed_content_length_returns_400() -> None:
+    """Non-integer `Content-Length` → 400. Without this guard a
+    `Content-Length: abc` header would raise `ValueError` inside
+    `int(...)` and surface as 5xx, a worse operator experience than
+    a 400 telling the sender their header is malformed.
+    """
+    client = TestClient(_make_app())
+    body = b"{}"
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "X-GitHub-Event": "pull_request",
+            "Content-Length": "not-a-number",
+        },
+    )
+    # Note: starlette/httpx may itself reject malformed Content-Length
+    # at a lower layer. Accept either the router's 400 OR a transport
+    # 400; either way the path doesn't 5xx and doesn't admit the body.
+    assert response.status_code == 400
+
+
 def test_malformed_signature_header_returns_401_via_false_path() -> None:
     """Malformed signature header (no `sha256=` prefix, wrong length) →
     `githubkit.webhooks.verify` returns False (it does NOT raise on

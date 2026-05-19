@@ -73,6 +73,27 @@ router = APIRouter()
 
 _PULL_REQUEST_ACTION_ALLOWLIST: frozenset[str] = frozenset({"opened", "synchronize", "reopened"})
 
+# Hard cap on webhook body size at the FastAPI/ASGI boundary. GitHub's
+# real `pull_request` payloads are well under 1 MiB (the heaviest cases
+# are big PRs with long descriptions; the payload itself does not include
+# file content — intake pulls content via the contents API). 1 MiB is
+# 5-10x typical worst-case, comfortable headroom without admitting
+# attacker-controlled multi-MB / multi-GB bodies into RAM.
+#
+# Two-layer enforcement:
+#   1. Content-Length precheck — reject before `await request.body()`
+#      buffers anything. Most well-formed deliveries carry this header.
+#   2. Post-read length guard — defense-in-depth for chunked /
+#      no-content-length / lying-content-length deliveries. The
+#      precheck-only path would still buffer the full body before the
+#      schema/signature layer caught oversize.
+#
+# Full streaming-HMAC bound (no buffering even chunked) is FUP-034 part 1
+# remaining work; this commit lands the Content-Length precheck + post-
+# read guard, closing the unsigned/signed-but-attacker DoS path with
+# Content-Length set.
+_MAX_WEBHOOK_BODY_BYTES: int = 1_048_576  # 1 MiB
+
 
 @router.post(
     "/webhooks/github",
@@ -105,8 +126,8 @@ async def receive_pull_request_webhook(
     # Step 2: signature header presence — BEFORE body-read.
     #
     # Body-read-after-header-check defends against an unsigned multi-GB
-    # POST consuming RAM before failing. Full Content-Length /
-    # streaming-HMAC cap tracked at FUP-034.
+    # POST consuming RAM before failing. Streaming-HMAC cap (full
+    # chunked-transfer defense) tracked at FUP-034.
     if x_hub_signature_256 is None:
         logger.warning(
             "webhook rejected: missing X-Hub-Signature-256",
@@ -114,9 +135,60 @@ async def receive_pull_request_webhook(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing signature")
 
+    # Step 2b: Content-Length precheck BEFORE buffering. A signed but
+    # attacker-controlled delivery that sets `Content-Length: 10000000000`
+    # would otherwise force `await request.body()` to allocate. The
+    # precheck rejects at HTTP-413 before any read; the post-read guard
+    # below catches the missing-header / lying-header chunked cases.
+    content_length_header = request.headers.get("content-length")
+    if content_length_header is not None:
+        try:
+            content_length = int(content_length_header)
+        except ValueError:
+            logger.warning(
+                "webhook rejected: malformed Content-Length",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length_raw": content_length_header[:64],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="malformed Content-Length",
+            ) from None
+        if content_length > _MAX_WEBHOOK_BODY_BYTES:
+            logger.warning(
+                "webhook rejected: Content-Length exceeds cap",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length": content_length,
+                    "cap": _MAX_WEBHOOK_BODY_BYTES,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="payload too large",
+            )
+
     # Step 3: capture raw body bytes BEFORE any JSON parsing. Signature
     # verification (next step) requires the raw bytes the sender HMAC'd.
     body = await request.body()
+    if len(body) > _MAX_WEBHOOK_BODY_BYTES:
+        # Defense-in-depth for chunked / missing / lying Content-Length.
+        # Reached after buffering — strictly worse than the precheck,
+        # which is why FUP-034 part 1 remains open for streaming-HMAC.
+        logger.warning(
+            "webhook rejected: body size exceeds cap post-read",
+            extra={
+                "x_github_delivery": x_github_delivery,
+                "body_bytes": len(body),
+                "cap": _MAX_WEBHOOK_BODY_BYTES,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="payload too large",
+        )
 
     # Step 4: signature verification BEFORE event-type filtering.
     #
