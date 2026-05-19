@@ -157,13 +157,24 @@ async def fetch_file_content_at(
     if len(content_b64) > _PER_FILE_CONTENT_CAP_BYTES * 2:
         return None
 
-    # `validate=True`: raise on non-base64 bytes rather than silently
-    # stripping them. `validate=False` (the prior shape) would have let
-    # an upstream returning `<valid base64><garbage>=` succeed by
-    # discarding the garbage, expanding our attack surface. Wrap in
-    # try/except to map binascii.Error → None (caller treats as skip).
+    # GitHub's contents API wraps inline base64 at ~60 chars with `\n`
+    # separators. Strip them BEFORE strict validation — otherwise
+    # `validate=True` raises `Only base64 data is allowed` on every real
+    # response (the pre-decode size cap above explicitly accounts for
+    # wrapping, so the two halves of the contract have to agree).
+    # `\r` is stripped too for defense against CRLF intermediate proxies;
+    # GitHub itself uses `\n` only.
+    #
+    # `validate=True` on the normalized form raises on non-base64 bytes
+    # rather than silently stripping them. `validate=False` (the original
+    # shape pre-1e59980) would have let an upstream returning
+    # `<valid base64><garbage>=` succeed by discarding the garbage,
+    # expanding our attack surface. Strip-newlines-then-strict-validate
+    # preserves the security gate while accepting GitHub's wire format.
+    # `binascii.Error → None` so caller treats as skip.
+    normalized_b64 = content_b64.replace("\n", "").replace("\r", "")
     try:
-        decoded = base64.b64decode(content_b64, validate=True)
+        decoded = base64.b64decode(normalized_b64, validate=True)
     except binascii.Error:
         return None
 
