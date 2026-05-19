@@ -145,6 +145,65 @@ def test_recognized_actions_parse(action: str) -> None:
     assert payload.action == action
 
 
+def test_login_empty_rejected() -> None:
+    """`WebhookUser.login` has `min_length=1` — empty login bypasses
+    downstream URL-segment construction and prompt-emission paths."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["user"]["login"] = ""
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_login_with_slash_rejected() -> None:
+    """`WebhookUser.login` pattern rejects forward slashes — a slashed
+    login flowing into `repos/{owner}/...` URL segments would silently
+    escape the per-repo scope."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["user"]["login"] = "alice/bob"
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_login_with_shell_metachars_rejected() -> None:
+    """`WebhookUser.login` pattern rejects shell-metacharacter chars —
+    not because the login reaches a shell (it doesn't — vendor-sdks-only-
+    in-wrappers + no subprocess) but because the same characters tend
+    to indicate forged-or-replayed payloads."""
+    for bad in ["alice;", "alice|bob", "alice$x", "alice`x`", "alice\nbob"]:
+        payload_dict = _valid_payload()
+        payload_dict["pull_request"]["user"]["login"] = bad
+        with pytest.raises(ValidationError):
+            PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_login_too_long_rejected() -> None:
+    """`WebhookUser.login` has `max_length=39` matching GitHub's own
+    server-side limit. A 40+ char login indicates a forged payload."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["user"]["login"] = "a" * 40
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_pr_title_too_long_rejected() -> None:
+    """`WebhookPullRequest.title` has `max_length=4096`. Without this
+    cap, a multi-MB title floods the audit-table payload JSONB and the
+    LLM prompt (triage + analyze both reference `PRContext.pr_title`)."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["title"] = "x" * 4097
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_pr_body_too_long_rejected() -> None:
+    """`WebhookPullRequest.body` has `max_length=65536`. Same rationale
+    as title: bounds the prompt + audit-table cost contribution."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["body"] = "y" * 65537
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
+
+
 def test_models_are_frozen() -> None:
     """The parsed payload is immutable downstream of webhook parsing."""
     payload = PullRequestEventPayload.model_validate(_valid_payload())

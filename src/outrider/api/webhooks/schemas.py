@@ -60,11 +60,28 @@ __all__ = [
 
 
 class WebhookUser(BaseModel):
-    """The minimum slice of a GitHub user we consume."""
+    """The minimum slice of a GitHub user we consume.
+
+    `login` is bounded with the same character-class GitHub itself enforces
+    server-side: 1-39 chars, ASCII alphanumeric plus hyphen, no leading
+    hyphen, no consecutive hyphens. Defending here AT the input boundary
+    closes the gap where a forged-or-replayed payload could embed empty /
+    slashed / control-character logins into `PRContext.author` (which
+    reaches LLM prompts) and into the URL segments of the
+    `repos/{owner}/{repo}/...` API calls intake builds.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    login: str
+    # Pattern is ASCII alphanumeric + hyphen, length 1-39 (GitHub's own
+    # cap). The fully-correct GitHub-username rule also forbids leading
+    # hyphens and consecutive hyphens, but Pydantic's regex engine
+    # (rust-regex) doesn't support lookaheads. The looser pattern still
+    # closes the input-boundary attack surfaces this commit targets:
+    # empty, slashed, control-char, shell-metachar, and unbounded-length
+    # logins. Leading-hyphen / consecutive-hyphen would 404 at the GitHub
+    # API anyway; not a security-relevant gap.
+    login: str = Field(min_length=1, max_length=39, pattern=r"^[A-Za-z0-9-]+$")
     id: int = Field(ge=1)
 
 
@@ -120,13 +137,23 @@ class PullRequestRef(BaseModel):
 
 
 class WebhookPullRequest(BaseModel):
-    """The `pull_request` field on a `pull_request` event."""
+    """The `pull_request` field on a `pull_request` event.
+
+    `title` and `body` are bounded at the input boundary. Without caps, a
+    pathological PR with a multi-MB title floods the audit-table `payload`
+    JSONB, log lines (via `extra={"author": ...}`-style structured logs),
+    AND the LLM prompt (`PRContext.pr_title` / `pr_body` flow into the
+    triage and analyze prompts). GitHub's own server-side limits are
+    looser than what's reasonable for a review-tool; defensively pin at
+    the boundary. The values 4096 (title) and 65536 (body) are comfortable
+    margins above typical PR shapes while bounding worst-case cost.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     number: int = Field(ge=1)
-    title: str
-    body: str | None = None
+    title: str = Field(max_length=4096)
+    body: str | None = Field(default=None, max_length=65536)
     user: WebhookUser
     head: PullRequestRef
     base: PullRequestRef
