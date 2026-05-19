@@ -199,3 +199,67 @@ def test_nul_byte_in_path_rejected() -> None:
     """NUL byte in path → CoordinateError (null-byte attack prevention)."""
     with pytest.raises(CoordinateError, match="shell metacharacters"):
         validate_diff_path("foo\x00bar.py")
+
+
+def test_dot_git_first_component_rejected() -> None:
+    """`.git/HEAD`, `.git/config` etc. → CoordinateError. These are not
+    legitimate PR-modifiable files; the validator otherwise admits them
+    (relative, no `..`, no shell metachars). The `.git` reject is at the
+    FIRST path component only — `.github/workflows/x.yml`, `.gitignore`,
+    and nested `path/to/.git/foo` are unaffected."""
+    for bad in [".git/HEAD", ".git/config", ".git/info/refs", ".GIT/HEAD"]:
+        with pytest.raises(CoordinateError, match="`.git` internal directory"):
+            validate_diff_path(bad)
+
+
+def test_dot_github_workflows_path_accepted() -> None:
+    """`.github/workflows/foo.yml` is a legitimate PR-modifiable file
+    and MUST NOT be rejected by the `.git/` guard (component-equality,
+    not prefix-match). Pins the carve-out: `.github` ≠ `.git`."""
+    assert validate_diff_path(".github/workflows/release.yml") == ".github/workflows/release.yml"
+    assert validate_diff_path(".gitignore") == ".gitignore"
+    assert validate_diff_path(".gitkeep") == ".gitkeep"
+
+
+def test_nested_dot_git_component_accepted() -> None:
+    """`docs/example/.git/HEAD` is admitted — the `.git` reject is the
+    FIRST component only. A path with `.git` deep inside the tree is
+    not a `.git` internal-directory reference, just an oddly-named
+    nested dir. Tightening this would block legitimate test fixtures."""
+    assert validate_diff_path("docs/example/.git/HEAD") == "docs/example/.git/HEAD"
+
+
+def test_unicode_bidi_override_rejected() -> None:
+    """U+202E (Right-to-Left Override) → CoordinateError per CVE-2021-42574.
+    A path containing RLO renders differently in editors and audit logs
+    from what the bytes say it is — breaks the audit story."""
+    rlo_path = "report‮xls.py"
+    with pytest.raises(CoordinateError, match="bidi-override or zero-width"):
+        validate_diff_path(rlo_path)
+
+
+def test_unicode_zero_width_rejected() -> None:
+    """U+200B (Zero Width Space), U+200C (ZWNJ), U+200D (ZWJ), U+FEFF
+    (BOM as middle char) → CoordinateError. Same trojan-source attack
+    class as bidi-override."""
+    for bad in [
+        "fake​safe.py",
+        "fake‌safe.py",
+        "fake‍safe.py",
+        "fake﻿safe.py",
+    ]:
+        with pytest.raises(CoordinateError, match="bidi-override or zero-width"):
+            validate_diff_path(bad)
+
+
+def test_unicode_bidi_isolate_family_rejected() -> None:
+    """U+2066 (LRI), U+2067 (RLI), U+2068 (FSI), U+2069 (PDI) — the
+    isolate-bidi family from CVE-2021-42574 — also rejected."""
+    for bad in [
+        "test⁦hidden.py",
+        "test⁧hidden.py",
+        "test⁨hidden.py",
+        "test⁩hidden.py",
+    ]:
+        with pytest.raises(CoordinateError, match="bidi-override or zero-width"):
+            validate_diff_path(bad)

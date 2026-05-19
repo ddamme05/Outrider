@@ -30,6 +30,24 @@ if TYPE_CHECKING:
 # downstream consumers.
 _SHELL_METACHARS_RE: Final = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 
+# Unicode bidi-override and zero-width characters per CVE-2021-42574
+# ("Trojan Source"). A path containing U+202E (RLO) renders left-to-right
+# in editors and audit logs differently from what the bytes say it is —
+# e.g., `report‮xls.py` displays as `reportyp.slx`. Operators reading
+# audit logs or PR dashboards would see a different filename than the one
+# actually fetched from GitHub. Zero-width chars (U+200B family, U+FEFF)
+# enable similar disguise + name-collision attacks.
+_TROJAN_SOURCE_CHARS_RE: Final = re.compile(r"[​-‏‪-‮⁦-⁩﻿]")
+
+# Reject paths whose FIRST path component is `.git` (case-insensitive).
+# `.git/config`, `.git/HEAD`, etc. are not legitimate PR-modifiable files
+# but the validator otherwise admits them (they're relative, have no `..`,
+# no shell metachars). Workflow files under `.github/workflows/` ARE
+# legitimate (Outrider doesn't audit `.github/` content but the API call
+# is permitted). Narrow the reject to `.git` exactly (not `.gitignore`,
+# `.github`, etc.) via component-equality, not prefix-match.
+_GIT_INTERNAL_FIRST_COMPONENT: Final = ".git"
+
 # Windows drive-letter prefix (e.g., `C:/`, `D:\\`, even `C:foo` for
 # drive-relative). `PurePosixPath("C:/Users/file.py").is_absolute()` returns
 # False (POSIX considers absolute = leading `/`), so a drive-prefixed path
@@ -235,6 +253,14 @@ def validate_diff_path(file_path: str) -> str:
         )
     if _SHELL_METACHARS_RE.search(file_path):
         raise CoordinateError(f"file_path {file_path!r} contains shell metacharacters")
+    if _TROJAN_SOURCE_CHARS_RE.search(file_path):
+        # Per CVE-2021-42574. Path bytes that render as a different
+        # filename in audit logs / dashboards break the audit story
+        # (operators see a different path than the one fetched).
+        raise CoordinateError(
+            f"file_path {file_path!r} contains Unicode bidi-override or "
+            "zero-width characters (CVE-2021-42574 / trojan source)"
+        )
     if _WINDOWS_DRIVE_PREFIX_RE.match(file_path):
         raise CoordinateError(
             f"file_path {file_path!r} has a Windows drive-letter prefix; "
@@ -245,6 +271,14 @@ def validate_diff_path(file_path: str) -> str:
         raise CoordinateError(f"file_path {file_path!r} is absolute; must be repo-relative")
     if ".." in pp.parts:
         raise CoordinateError(f"file_path {file_path!r} contains '..' traversal")
+    if pp.parts and pp.parts[0].lower() == _GIT_INTERNAL_FIRST_COMPONENT:
+        # `.git/HEAD`, `.git/config`, etc. — not legitimate PR targets.
+        # Component-equality (not prefix-match) so `.github/`, `.gitignore`,
+        # and `.gitkeep` are unaffected.
+        raise CoordinateError(
+            f"file_path {file_path!r} targets the `.git` internal directory; "
+            "not a legitimate PR-modifiable path"
+        )
     return pp.as_posix()
 
 
