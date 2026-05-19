@@ -6,14 +6,16 @@ row has a retention TTL, set in configuration and operator-overridable via
 `pydantic-settings`"), retention values must be operator-tunable rather than
 hard-coded module constants.
 
-This module owns the LLM-content TTL only. Other retention TTLs (`findings`,
-`reviews`) belong to their owning subsystems' settings when those land.
+This module owns the audit retention TTLs currently needed by the persister:
+`llm_content_retention_ttl` (llm_call_content rows) and `review_retention_ttl`
+(reviews rows, added by the intake-and-webhook spec). Other retention TTLs
+(`findings`) belong to their owning subsystems' settings when those land.
 
 Validators:
-  - `gt=timedelta(0)`: rejects zero AND negative TTLs at construction. Operator
-    setting `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL=0` raises `ValidationError`
-    at startup, not a silent metadata-only-replay slip where the retention sweep
-    deletes every content row on its next tick.
+  - `gt=timedelta(0)` on every TTL field: rejects zero AND negative TTLs at
+    construction. Operator setting any TTL env var to `0` raises
+    `ValidationError` at startup, not a silent metadata-only-replay slip
+    where the retention sweep deletes every content row on its next tick.
 """
 
 from datetime import timedelta
@@ -63,14 +65,16 @@ class RetentionSettings(BaseSettings):
     row lands.
 
     **Test-construction pattern.** Tests that need a non-default TTL
-    MUST construct via explicit kwargs:
-    `RetentionSettings(llm_content_retention_ttl=timedelta(days=N))`.
+    MUST construct via explicit kwargs, e.g.
+    `RetentionSettings(llm_content_retention_ttl=timedelta(days=N))` or
+    `RetentionSettings(review_retention_ttl=timedelta(days=N))`.
 
     Do NOT use `model_copy(update={...})`. Pydantic v2's `model_copy`
     is permitted on frozen models AND **does not validate the update
     payload** — a copy with `update={"llm_content_retention_ttl":
-    timedelta(0)}` silently bypasses the `gt=timedelta(0)` constraint.
-    Only the explicit-kwarg constructor runs the validator.
+    timedelta(0)}` (or any other TTL field) silently bypasses the
+    `gt=timedelta(0)` constraint. Only the explicit-kwarg constructor
+    runs the validator.
     """
 
     model_config = SettingsConfigDict(
