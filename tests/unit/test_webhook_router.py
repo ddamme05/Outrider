@@ -312,7 +312,7 @@ def test_x_github_delivery_logged_not_persisted(
     delivery_id = "abc123-delivery-guid"
 
     with caplog.at_level("INFO"):
-        client.post(
+        response = client.post(
             "/webhooks/github",
             content=body,
             headers={
@@ -322,7 +322,9 @@ def test_x_github_delivery_logged_not_persisted(
             },
         )
 
-    # The receipt log line carries the delivery id.
+    # The 401 path AND the receipt-log line both fire — the log carries
+    # the delivery id regardless of acceptance.
+    assert response.status_code == 401
     receipt_records = [r for r in caplog.records if r.message == "webhook received"]
     assert len(receipt_records) == 1
     assert getattr(receipt_records[0], "x_github_delivery", None) == delivery_id
