@@ -22,6 +22,7 @@ Intake itself does NOT import githubkit.
 from __future__ import annotations
 
 import base64
+import binascii
 from typing import TYPE_CHECKING, Any
 
 from outrider.coordinates.diff_parser import validate_diff_path
@@ -145,12 +146,30 @@ async def fetch_file_content_at(
         # an empty string and `encoding` is "none").
         return None
 
-    # `content` is base64-encoded; the API may include `\n` separators.
-    decoded = base64.b64decode(content_b64, validate=False)
+    # Pre-decode size cap: base64 expands ~4/3, so a 1 MB decoded cap
+    # bounds the encoded form to ~1.4 MB. A 2× safety margin
+    # (2_000_000 bytes encoded) covers `\n`-padded GitHub responses while
+    # rejecting pathological inputs BEFORE the decode allocation. This
+    # is the load-bearing defense — a hostile or compromised upstream
+    # returning a multi-MB `content` string would otherwise force a
+    # multi-MB UTF-8 buffer to be allocated before the post-decode cap
+    # at line below catches it.
+    if len(content_b64) > _PER_FILE_CONTENT_CAP_BYTES * 2:
+        return None
+
+    # `validate=True`: raise on non-base64 bytes rather than silently
+    # stripping them. `validate=False` (the prior shape) would have let
+    # an upstream returning `<valid base64><garbage>=` succeed by
+    # discarding the garbage, expanding our attack surface. Wrap in
+    # try/except to map binascii.Error → None (caller treats as skip).
+    try:
+        decoded = base64.b64decode(content_b64, validate=True)
+    except binascii.Error:
+        return None
 
     if len(decoded) > _PER_FILE_CONTENT_CAP_BYTES:
-        # Belt-and-suspenders: even if GitHub returned inline-base64 for
-        # a borderline file, enforce the cap. Caller maps to SkipReason.OVERSIZED.
+        # Belt-and-suspenders: even after the pre-decode gate, enforce
+        # the cap on the decoded form. Caller maps to SkipReason.OVERSIZED.
         return None
 
     return decoded
