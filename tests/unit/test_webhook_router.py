@@ -125,6 +125,44 @@ def test_missing_signature_header_returns_401() -> None:
     assert response.json() == {"detail": "missing signature"}
 
 
+def test_missing_signature_does_not_read_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins step-2 ordering: the 401 path raises BEFORE `await request.body()`.
+
+    The router's header-first ordering is what closes the unsigned-multi-GB
+    DoS surface (router.py step-2 comment + spec Actual Outcome divergence
+    #1). A regression that moved body-read above the header check would
+    still pass the 401 assertion in the test above — this test makes that
+    regression fail loudly by monkey-patching `Request.body` to record
+    invocations and asserting the count stays at zero on the 401 path.
+    """
+    from starlette.requests import Request  # noqa: PLC0415 — test-local
+
+    body_read_count = 0
+
+    original_body = Request.body
+
+    async def _recording_body(self: Request) -> bytes:
+        nonlocal body_read_count
+        body_read_count += 1
+        return await original_body(self)
+
+    monkeypatch.setattr(Request, "body", _recording_body)
+
+    client = TestClient(_make_app())
+    body = json.dumps(_valid_pr_opened_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={"X-GitHub-Event": "pull_request"},
+    )
+    assert response.status_code == 401
+    assert body_read_count == 0, (
+        "Body was read before the missing-signature 401 — the header-first "
+        "ordering that closes the unsigned-multi-GB DoS surface has regressed. "
+        "See router.py step-2 comment + spec Actual Outcome divergence #1."
+    )
+
+
 def test_invalid_signature_returns_401() -> None:
     """Signature mismatch → 401 without any body parsing."""
     client = TestClient(_make_app())
