@@ -128,11 +128,21 @@ class RepositoryRef(BaseModel):
 
 
 class PullRequestRef(BaseModel):
-    """`head` or `base` of the pull request — the SHA and ref."""
+    """`head` or `base` of the pull request — the SHA and ref.
+
+    `sha` is bounded as lowercase hex, 40-64 chars. GitHub today uses
+    SHA-1 (40 hex) and is migrating some surfaces to SHA-256 (64 hex);
+    the bounded range tolerates either without admitting arbitrarily
+    long or non-hex strings flowing into URL segments, idempotency
+    keys, and prompts. The trust-boundary identity guarantee is that
+    `(repo_id, pr_number, head_sha)` uniquely identifies a review — a
+    non-hex `head_sha` would still natural-key uniquely but would also
+    flow into log lines / audit payloads / prompts as raw bytes.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    sha: str = Field(min_length=40)
+    sha: str = Field(min_length=40, max_length=64, pattern=r"^[a-f0-9]+$")
     ref: str
 
 
