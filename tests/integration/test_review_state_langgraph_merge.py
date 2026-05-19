@@ -99,6 +99,10 @@ _SEED_FILENAME = "src/example.py"
 _SEED_BASE_BYTES = b"old\n"
 _SEED_HEAD_BYTES = b"new\n"
 _SEED_PATCH = "@@ -1 +1 @@\n-old\n+new\n"
+_SEED_INSTALLATION_ID = 12345
+_SEED_OWNER = "acme"
+_SEED_REPO = "widget"
+_SEED_PULL_NUMBER = 42
 
 
 @dataclass
@@ -126,6 +130,14 @@ class _StubReposAPI:
     async def async_get_content(
         self, owner: str, repo: str, path: str, *, ref: str
     ) -> _StubResponse:
+        # Validate the graph wired the right coordinates through to the
+        # fetch helper. Without these, the test would still pass if
+        # intake fetched the wrong file from the wrong repo and only
+        # got the ref right.
+        assert owner == _SEED_OWNER, f"unexpected owner {owner!r}"
+        assert repo == _SEED_REPO, f"unexpected repo {repo!r}"
+        assert path == _SEED_FILENAME, f"unexpected path {path!r}"
+
         # Return base64(content_base) for base SHA, base64(content_head)
         # for head SHA. The seed uses base_sha="a"*40 and head_sha="b"*40.
         if ref == "a" * 40:
@@ -144,8 +156,17 @@ class _StubReposAPI:
 
 class _StubPullsAPI:
     async def async_list_files(
-        self, owner: str, repo: str, pull_number: int, **kwargs: Any
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        **kwargs: Any,  # noqa: ARG002
     ) -> _StubResponse:
+        # Validate the graph passed the seed PR coordinates through.
+        assert owner == _SEED_OWNER, f"unexpected owner {owner!r}"
+        assert repo == _SEED_REPO, f"unexpected repo {repo!r}"
+        assert pull_number == _SEED_PULL_NUMBER, f"unexpected pull_number {pull_number}"
+
         return _StubResponse(
             parsed_data=[
                 _StubFileMeta(
@@ -171,6 +192,9 @@ class _StubGitHub:
 
 
 def _stub_github_factory(installation_id: int) -> Any:
+    # Validate the seed installation_id flows from PRContext through
+    # build_graph's github_factory closure.
+    assert installation_id == _SEED_INSTALLATION_ID, f"unexpected installation_id {installation_id}"
     return _StubGitHub()
 
 
@@ -232,10 +256,10 @@ def _build_valid_seed_state() -> ReviewState:
         review_id=uuid4(),
         received_at=datetime.now(UTC),
         pr_context=PRContext(
-            installation_id=12345,
-            owner="acme",
-            repo="widget",
-            pr_number=42,
+            installation_id=_SEED_INSTALLATION_ID,
+            owner=_SEED_OWNER,
+            repo=_SEED_REPO,
+            pr_number=_SEED_PULL_NUMBER,
             base_sha="a" * 40,
             head_sha="b" * 40,
             pr_title="Test PR",
