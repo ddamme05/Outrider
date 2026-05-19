@@ -1237,9 +1237,9 @@ class AuditPersister:
         rule, every other event type writes NULL).
 
         Intake's phase-2 content fan-out emits these concurrently under
-        `asyncio.gather`; each emission opens its own `AsyncSession` so the
-        fan-out is safe under the per-call session discipline shared with
-        `emit_phase`.
+        `asyncio.TaskGroup`; each emission opens its own `AsyncSession` so
+        the fan-out is safe under the per-call session discipline shared
+        with `emit_phase`.
         """
         payload = _serialize_event_payload(event)
 

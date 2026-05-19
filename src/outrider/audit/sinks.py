@@ -90,10 +90,11 @@ class FileExaminationSink(Protocol):
       - Idempotent on `event.event_id`. Re-emission of an identical event
         (from a retry or checkpoint replay) must not duplicate the row.
       - Safe under concurrent invocation. Intake's phase-2 content fan-out
-        uses `asyncio.gather` under a semaphore; multiple worker coroutines
-        may emit concurrently from one node invocation. The durable sink
-        serializes per call (fresh `AsyncSession` per emission, matching
-        the `emit_phase` precedent at `persister.py:1170`).
+        uses `asyncio.TaskGroup` under a semaphore; multiple worker
+        coroutines may emit concurrently from one node invocation. The
+        durable sink serializes per call (fresh `AsyncSession` per
+        emission, matching the `emit_phase` precedent at
+        `persister.py:1170`).
       - Persist before returning, OR raise. Silent drop is never acceptable
         — `phase-events-bound-work`'s sibling discipline applies here:
         intake's `FileExaminationEvent` is the structural-evidence row that
