@@ -727,6 +727,85 @@ async def test_modified_file_releases_clean_side_when_other_side_binary() -> Non
     assert by_path["clean.py"].parse_status == "clean"
 
 
+@pytest.mark.asyncio
+async def test_renamed_file_releases_clean_side_when_other_side_binary() -> None:
+    """Renamed file with clean base (at previous_path) + binary head
+    (at new path): the clean base's byte reservation MUST be released
+    back to the budget before the file is dropped, otherwise later
+    valid files are skipped as OVERSIZED due to phantom accounting.
+
+    Sibling-coverage parity with `test_modified_file_releases_...`. The
+    renamed branch (intake.py:610) is structurally parallel to the
+    modified branch with the same release-on-binary rollback wiring;
+    without this test, a regression that dropped `await byte_budget.release`
+    from the renamed branch only (but kept it in modified) would pass
+    every existing test.
+    """
+    from outrider.ast_facts.models import SkipReason
+
+    state = _build_state()
+    files = [
+        _StubFileMeta(
+            filename="new_path.py",
+            status="renamed",
+            additions=1,
+            deletions=1,
+            previous_filename="old_path.py",
+        ),
+        _StubFileMeta(filename="clean.py", status="added", additions=1, deletions=0),
+    ]
+    # renamed: clean base (at old_path.py / base_sha), binary head (at new_path.py / head_sha)
+    payload_base_clean = b"def f(): pass\n"  # 14 bytes, valid UTF-8
+    payload_head_binary = b"binary\x00content"  # NUL byte → binary skip
+    payload_clean = b"def g(): pass\n"
+
+    content = {
+        ("old_path.py", "b" * 40): payload_base_clean,  # base at previous_filename
+        ("new_path.py", "h" * 40): payload_head_binary,  # head at new filename
+        ("clean.py", "h" * 40): payload_clean,
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    # Same cap math as the modified-branch sibling test: -1 makes the
+    # test fail loudly if release() is omitted on the renamed branch.
+    from outrider.agent.nodes import intake as intake_mod
+
+    monkeypatch_cap = len(payload_base_clean) + len(payload_clean) - 1
+    original_cap = intake_mod._TOTAL_DECODED_BYTES_CAP
+    intake_mod._TOTAL_DECODED_BYTES_CAP = monkeypatch_cap
+    try:
+        result = await intake(
+            state,
+            github_factory=_stub_github_factory(gh),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=file_sink,
+        )
+    finally:
+        intake_mod._TOTAL_DECODED_BYTES_CAP = original_cap
+
+    assert result.goto == "triage"
+    assert result.update is not None
+    new_ctx: PRContext = result.update["pr_context"]
+
+    # `clean.py` must be admitted as clean — it would NOT be if the
+    # renamed branch's clean-base reservation hadn't been released.
+    paths = [cf.path for cf in new_ctx.changed_files]
+    assert paths == ["clean.py"]
+
+    # Audit events: `new_path.py` skipped+OVERSIZED (binary head),
+    # `clean.py` clean. The renamed file's `file_path` in the audit
+    # event is the NEW path per the FileExaminationEvent contract
+    # (canonical "where the file lives now" form).
+    by_path = {e.file_path: e for e in file_sink.events}
+    assert by_path["new_path.py"].parse_status == "skipped"
+    assert by_path["new_path.py"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["clean.py"].parse_status == "clean"
+
+
 # ===========================================================================
 # Aggregate decoded-bytes cap
 # ===========================================================================
@@ -1025,6 +1104,113 @@ async def test_intake_status_write_failure_preserves_original_exception(
         r for r in caplog.records if "status='failed' write failed during failure" in r.getMessage()
     ]
     assert len(status_write_log_records) == 1
+
+
+@pytest.mark.asyncio
+async def test_intake_compound_phase_start_and_status_write_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """COMPOUND failure: phase-start emit fails AND _set_review_status
+    fails. Distinct from the two separate tests above, both of which
+    fail ONE leg with the other leg healthy. A regression that worked
+    for "phase-start fail with healthy db" + "running-fetch fail with
+    failing db" but broke when BOTH fail together would only surface
+    here.
+
+    Expected behavior:
+      - Original phase-start RuntimeError propagates (NOT the OSError
+        from the cleanup db write).
+      - phase_start_persisted gate fires → no orphan phase-end emitted.
+      - Both failure-handler legs run (the gate-fired warning AND the
+        status-write-failed log).
+      - No FileExaminationEvent emitted (intake never reached phase-2).
+
+    Pins that the two cleanup legs are independent (one's failure
+    doesn't prevent the other from running) and that the gate's
+    audit-integrity guarantee holds under double-failure.
+    """
+    import logging
+
+    state = _build_state()
+
+    class _PhaseStartFailingSink:
+        """Same shape as the phase-start-failing sink in
+        test_intake_phase_start_emit_failure_does_not_emit_orphan_phase_end."""
+
+        def __init__(self) -> None:
+            self.attempts: list[ReviewPhaseEvent] = []
+            self.persisted: list[ReviewPhaseEvent] = []
+
+        async def emit_phase(self, event: ReviewPhaseEvent) -> None:
+            self.attempts.append(event)
+            if len(self.attempts) == 1:
+                msg = "simulated persister failure on phase-start emit"
+                raise RuntimeError(msg)
+            self.persisted.append(event)
+
+    class _StatusWriteFailingFactory:
+        """db_factory that raises on every session open."""
+
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def __call__(self) -> Any:
+            self.call_count += 1
+            msg = "simulated db error during status write"
+            raise OSError(msg)
+
+    phase_sink = _PhaseStartFailingSink()
+    file_sink = _RecordingFileExaminationSink()
+    failing_factory = _StatusWriteFailingFactory()
+    gh = _FailingGitHub()  # never reached — phase-start fails first
+
+    # The ORIGINAL phase-start RuntimeError re-raises; the OSError from
+    # the status-write cleanup must NOT mask it.
+    with (
+        caplog.at_level(logging.WARNING, logger="outrider.agent.nodes.intake"),
+        pytest.raises(RuntimeError, match="simulated persister failure on phase-start emit"),
+    ):
+        await intake(
+            state,
+            github_factory=_stub_github_factory(gh),
+            db_factory=failing_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=file_sink,
+        )
+
+    # Phase-start was attempted exactly once; phase-end was NEVER
+    # emitted (the gate fired because phase_start_persisted=False).
+    assert len(phase_sink.attempts) == 1
+    assert phase_sink.attempts[0].marker == "start"
+    assert phase_sink.persisted == [], (
+        "Phase-end was emitted despite phase-start emit failing — "
+        "compound failure broke the phase_start_persisted gate."
+    )
+
+    # The status-write was ALSO attempted (the gate doesn't short-circuit
+    # the status write; cleanup legs are independent).
+    assert failing_factory.call_count == 1
+
+    # Both cleanup log lines fire:
+    # - WARNING from the gate ("phase-start persistence failed; skipping phase-end")
+    # - ERROR from _set_review_status ("status='failed' write failed during failure")
+    gate_logs = [
+        r
+        for r in caplog.records
+        if "phase-start persistence failed; skipping phase-end" in r.getMessage()
+    ]
+    status_logs = [
+        r for r in caplog.records if "status='failed' write failed during failure" in r.getMessage()
+    ]
+    assert len(gate_logs) == 1, (
+        f"Gate-fired warning missing; saw {[r.getMessage() for r in caplog.records]}"
+    )
+    assert len(status_logs) == 1, (
+        f"Status-write-failed log missing; saw {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # No FileExaminationEvent emitted (intake failed before phase-2).
+    assert file_sink.events == []
 
 
 # ===========================================================================
