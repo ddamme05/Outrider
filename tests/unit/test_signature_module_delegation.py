@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from outrider.api.webhooks.signature import verify_signature
 
 
@@ -58,11 +60,11 @@ def test_propagates_wrapper_exceptions() -> None:
     def _raise(*args: Any, **kwargs: Any) -> bool:
         raise _FakeWebhookError("malformed")
 
-    with patch(
-        "outrider.api.webhooks.signature.verify_webhook_signature",
-        side_effect=_raise,
+    with (
+        patch(
+            "outrider.api.webhooks.signature.verify_webhook_signature",
+            side_effect=_raise,
+        ),
+        pytest.raises(_FakeWebhookError),
     ):
-        import pytest
-
-        with pytest.raises(_FakeWebhookError):
-            verify_signature("s", b"b", "sha256=invalid")  # noqa: S106 — test
+        verify_signature("s", b"b", "sha256=invalid")  # noqa: S106 — test
