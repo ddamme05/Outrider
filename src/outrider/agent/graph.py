@@ -138,6 +138,22 @@ def build_graph(
     if github_factory is None:
         raise BuildGraphError("github_factory must not be None")
 
+    # Non-callable factories would pass the None check but fail at first
+    # intake execution with a confusing TypeError. The cost of one
+    # `callable()` check now is the cost of avoiding a deferred crash
+    # that strands the FIRST review the misconfigured app handles.
+    # `async_sessionmaker` is callable (instances act as session factory
+    # via `__call__`); `github_factory` is `Callable[[int], ...]`. Both
+    # satisfy `callable()`.
+    if not callable(db_factory):
+        raise BuildGraphError(
+            f"db_factory must be callable (got type: {type(db_factory).__name__})"
+        )
+    if not callable(github_factory):
+        raise BuildGraphError(
+            f"github_factory must be callable (got type: {type(github_factory).__name__})"
+        )
+
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
     if not isinstance(provider, LLMProvider):

@@ -65,9 +65,16 @@ class _StubFileExaminationSink:
 
 
 def _stub_db_factory() -> async_sessionmaker[AsyncSession]:
-    """A bare object passes the None-check + duck-typed runtime use; tests
-    that exercise actual DB calls live elsewhere (integration tests)."""
-    return object()  # type: ignore[return-value]
+    """A callable stub satisfying both the None-check and the
+    `callable()` check at construction time. The duck-typed runtime
+    use (opening a session) is exercised in integration tests, not
+    here."""
+
+    def _factory() -> Any:
+        msg = "test stub — db_factory should not be invoked in build-time tests"
+        raise NotImplementedError(msg)
+
+    return _factory  # type: ignore[return-value]
 
 
 def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
@@ -146,6 +153,26 @@ def test_build_graph_rejects_github_factory_none() -> None:
     args = _valid_args()
     args["github_factory"] = None
     with pytest.raises(BuildGraphError, match="github_factory must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_db_factory_non_callable() -> None:
+    """A non-None but non-callable `db_factory` (e.g., a bare object())
+    passes the None check but would fail at first intake invocation with
+    a confusing TypeError. The callable check at build time surfaces
+    misconfiguration BEFORE the first review is dispatched."""
+    args = _valid_args()
+    args["db_factory"] = object()  # non-callable
+    with pytest.raises(BuildGraphError, match="db_factory must be callable"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_github_factory_non_callable() -> None:
+    """Same shape as the db_factory check: non-callable github_factory
+    fails at build time, not at first intake invocation."""
+    args = _valid_args()
+    args["github_factory"] = object()  # non-callable
+    with pytest.raises(BuildGraphError, match="github_factory must be callable"):
         build_graph(**args)
 
 
