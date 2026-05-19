@@ -856,26 +856,14 @@ async def test_binary_blob_does_not_consume_budget_before_text(
     files into spurious OVERSIZED skips.
 
     Existing tests pin the OUTCOME of binary skip; this one pins the
-    ORDER. With cap=60: binary (50 bytes of NULs) + text (8 bytes
-    UTF-8). Math:
-      - WITH classify-first (current): binary file fails NUL check
-        without reserving → used=0; text reserves 8 → used=8 ≤ 60.
-        Text admitted.
-      - WITH reserve-first (regression): binary reserves 50 → used=50;
-        text tries to reserve 8 → 50+8=58 ≤ 60. Text STILL admitted.
-
-    Hmm — the default 10 MB cap is too coarse. Even with the regression,
-    a 50-byte binary + 8-byte text BOTH fit. We need the binary to be
-    LARGE relative to the cap so reserve-first would exhaust budget:
-
-      - cap = 60. Binary = 55 bytes NULs. Text = 10 bytes UTF-8.
-      - WITH classify-first: binary fails NUL check, no reserve;
-        text reserves 10 → used=10 ≤ 60. Admitted.
-      - WITH reserve-first regression: binary reserves 55; text tries
-        10 → 55+10=65 > 60. REJECTED.
-
+    ORDER. Setup: cap=60, binary=55 NULs, text=6 bytes valid UTF-8.
     The regression-revealing case is when binary_size + text_size > cap
     but text_size alone fits.
+
+      - WITH classify-first (current): binary fails NUL check without
+        reserving → used=0. Text reserves 6 → used=6 ≤ 60. Admitted.
+      - WITH reserve-first (regression): binary reserves 55 → used=55.
+        Text tries to reserve 6 → 55+6=61 > 60. REJECTED.
     """
     from outrider.agent.nodes import intake as intake_mod
     from outrider.ast_facts.models import SkipReason
