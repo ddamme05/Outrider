@@ -39,6 +39,7 @@ Sequence:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -399,27 +400,43 @@ async def receive_pull_request_webhook(
         # (including CancelledError); the cleanup-failure log line is
         # distinct from the dispatch-failure log so operators can tell
         # which path went wrong.
-        try:
-            async with session_factory() as failure_session, failure_session.begin():
-                from sqlalchemy import update as _update  # noqa: PLC0415
+        #
+        # The cleanup is spawned as a task and awaited via
+        # `asyncio.shield` so a SECOND cancellation arriving while the
+        # status write is in flight doesn't interrupt the write and
+        # strand the review at 'running'. `await asyncio.shield(coro)`
+        # alone is insufficient — the outer task still observes the
+        # CancelledError; we explicitly catch it and `await cleanup_task`
+        # to drain the shielded write before re-raising the original
+        # dispatch failure.
+        async def _mark_failed() -> None:
+            try:
+                async with session_factory() as failure_session, failure_session.begin():
+                    from sqlalchemy import update as _update  # noqa: PLC0415
 
-                await failure_session.execute(
-                    _update(Review).where(Review.id == review_id).values(status="failed")
+                    await failure_session.execute(
+                        _update(Review).where(Review.id == review_id).values(status="failed")
+                    )
+            except Exception:
+                logger.exception(
+                    "webhook dispatch failed AND failed-status cleanup also failed; "
+                    "review remains at 'running' (operator must remediate)",
+                    extra={
+                        "review_id": str(review_id),
+                        "x_github_delivery": x_github_delivery,
+                    },
                 )
-        except Exception:
-            logger.exception(
-                "webhook dispatch failed AND failed-status cleanup also failed; "
-                "review remains at 'running' (operator must remediate)",
-                extra={
-                    "review_id": str(review_id),
-                    "x_github_delivery": x_github_delivery,
-                },
-            )
-        else:
-            logger.exception(
-                "webhook dispatch failed after row commit; review marked failed",
-                extra={"review_id": str(review_id), "x_github_delivery": x_github_delivery},
-            )
+            else:
+                logger.exception(
+                    "webhook dispatch failed after row commit; review marked failed",
+                    extra={"review_id": str(review_id), "x_github_delivery": x_github_delivery},
+                )
+
+        cleanup_task = asyncio.create_task(_mark_failed())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            await cleanup_task
         raise
 
     return {"status": "running", "review_id": str(review_id)}
