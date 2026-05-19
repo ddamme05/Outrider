@@ -8,26 +8,42 @@ Constructs at startup, in dependency order:
      post-commit attribute access on returned rows doesn't lazy-refresh).
   3. `RetentionSettings()` — reads `OUTRIDER_AUDIT_*` env vars.
   4. `AuditPersister(session_factory=..., retention_settings=...)`.
-  5. `ModelConfig()` — reads `OUTRIDER_MODEL_*` env vars.
-  6. `AnthropicProvider(api_key=..., model_config=..., persister=...)`.
-  7. `register_filter_on_all_handlers()` — re-applies the log-content
-     filter to any handler uvicorn registered between `import outrider`
-     and lifespan entry. Per `RejectLLMContentFilter`'s idempotent
-     install (see `llm/logging.py`), calling again is safe.
+  5. `AnthropicProvider(api_key=..., model_config=..., persister=...)`
+     (model_config built once, shared with the compiled graph below).
+  6. `GitHubAppSettings()` — reads `OUTRIDER_GITHUB_APP_*` env vars.
+     Validating the App credentials at startup means missing / malformed
+     env surfaces as a friendly RuntimeError at boot, not a deep-stack
+     `ValidationError` inside the first intake invocation.
+  7. `github_factory = make_installation_client_factory(github_app_settings)`
+     — per-installation `GitHub` client factory closing over the
+     lifespan-validated settings. Per `DECISIONS.md#020` + the
+     `nodes-receive-deps-via-closure` invariant, installation-token
+     minting happens at intake call-site, not at webhook receipt.
+  8. `compiled_graph = build_graph(...)` — the V1 two-node intake →
+     triage graph with all six deps injected at construction time
+     (`db_factory`, `github_factory`, `provider`, `model_config`,
+     `phase_event_sink=persister`, `file_examination_sink=persister`).
+  9. `run_graph` async closure that the V1 `BackgroundTasksDispatcher`
+     invokes per request to call `compiled_graph.ainvoke(state)`.
+  10. `register_filter_on_all_handlers()` — re-applies the log-content
+      filter to any handler uvicorn registered between `import outrider`
+      and lifespan entry. Idempotent (see `llm/logging.py`).
 
 Teardown is `AsyncExitStack` LIFO — every push_async_callback runs even
 if a prior callback raises. Closes FUP-006 (filter re-registration) and
 FUP-011 (provider aclose).
+
+The webhook router (`api/webhooks/router.py`) reads `app.state` bindings
+to resolve per-request dependencies: `session_factory`, `retention_settings`,
+`github_app_settings` (webhook signature secret), `github_factory`,
+`run_graph`. `compiled_graph`, `persister`, `provider`, `engine` are also
+stashed for diagnostics / future routes.
 
 `build_lifespan(...)` is the test seam: production callers use the
 module-level `lifespan` (which calls `build_lifespan()` with defaults);
 tests pass factories to inject mocks for engine/provider construction,
 or to inject a provider whose `aclose()` raises (the teardown-ordering
 test).
-
-V1 has no HTTP routes; the lifespan exists for the persister + provider
-construction it owns. A future webhook-receiver spec adds routes that
-consume `app.state.persister` and `app.state.provider`.
 """
 
 from __future__ import annotations
