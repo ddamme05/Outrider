@@ -327,9 +327,27 @@ async def intake(
             await asyncio.shield(cleanup_task)
         except asyncio.CancelledError:
             # Outer task is being cancelled, but the shielded cleanup
-            # task is still running. Await it before propagating so the
-            # phase-end + status='failed' writes complete first.
-            await cleanup_task
+            # task is still running. Drain it before propagating.
+            # `_failure_cleanup`'s inner blocks only catch Exception
+            # (not BaseException) — so a second CancelledError mid-
+            # cleanup OR an uncaught system-level exception would
+            # propagate from `await cleanup_task` and MASK the original
+            # intake failure. Catch + log + fall through to the bare
+            # `raise` so the original exception still propagates.
+            try:
+                await cleanup_task
+            except BaseException:
+                logger.exception(
+                    "intake: failure-cleanup task did not complete cleanly; "
+                    "row may remain at 'running' AND/OR phase-end may be missing "
+                    "(AUDIT-INTEGRITY: cascade failure during failure handling)",
+                    extra={
+                        "review_id": str(state.review_id),
+                        "phase_id": phase_id,
+                        "node_id": "intake",
+                        "audit_integrity_violation": True,
+                    },
+                )
         raise
 
 
