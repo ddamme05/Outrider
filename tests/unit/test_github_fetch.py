@@ -341,3 +341,39 @@ async def test_fetch_returns_none_on_invalid_base64() -> None:
         ref="abc",
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_handles_github_newline_wrapped_base64() -> None:
+    """GitHub's contents API returns inline base64 wrapped at ~60 chars
+    with `\\n` separators. The fetch path strips newlines before strict
+    `validate=True` decode; if the strip-then-validate order regresses
+    (e.g., someone "simplifies" to bare `b64decode(content, validate=True)`),
+    `binascii.Error: Only base64 data is allowed` fires and every real
+    GitHub response returns None — silently skipping every file.
+
+    Pins the wire-format compatibility that the bare unit-test happy
+    path doesn't exercise (base64.b64encode().decode() produces
+    unwrapped output; the wrapped shape is GitHub-specific).
+    """
+    raw = b"def hello(): return 'world'\n" * 5  # 140 bytes
+    encoded = base64.b64encode(raw).decode("ascii")
+    # GitHub wraps at 60 chars; mimic that shape exactly.
+    wrapped = "\n".join(encoded[i : i + 60] for i in range(0, len(encoded), 60))
+    assert "\n" in wrapped, "fixture must contain newlines to exercise the strip"
+
+    response = _StubContentFile(encoding="base64", content=wrapped)
+    gh = _StubGitHub(content_response=response)
+
+    result = await fetch_file_content_at(
+        gh,  # type: ignore[arg-type]
+        owner="acme",
+        repo="widgets",
+        path="wire_format.py",
+        ref="abc",
+    )
+    assert result == raw, (
+        "Wrapped GitHub-shape base64 did not decode to original bytes. "
+        "The newline-strip-before-validate contract has regressed; "
+        "real PR webhooks would silently skip every file."
+    )
