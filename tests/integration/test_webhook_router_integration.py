@@ -312,6 +312,12 @@ async def test_webhook_to_triage_happy_path(
     assert review.status == "running"
     assert review.repo_id == _REPO_ID
     assert review.pr_number == 42
+    # Natural-key fields pinned: the SELECT already retrieves these,
+    # the test was just missing the assertions. A regression in either
+    # head_sha (idempotency key) or installation_id (token-minting
+    # scope) would otherwise slip past the happy-path guard.
+    assert review.head_sha == "a" * 40
+    assert review.installation_id == _INSTALLATION_ID
 
     # AgentTransitionEvent row exists with matching event_id in row + payload.
     # COUNT first, then row inspection: a duplicate agent_transition row for
