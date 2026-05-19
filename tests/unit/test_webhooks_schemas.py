@@ -185,6 +185,16 @@ def test_login_too_long_rejected() -> None:
         PullRequestEventPayload.model_validate(payload_dict)
 
 
+def test_login_exactly_at_max_length_admitted() -> None:
+    """Positive-boundary case: `max_length=39` is inclusive (Pydantic's
+    semantics). A 39-char login admits cleanly. Pins the inclusive
+    boundary so a strict-less-than regression flips this test."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["user"]["login"] = "a" * 39
+    payload = PullRequestEventPayload.model_validate(payload_dict)
+    assert len(payload.pull_request.user.login) == 39
+
+
 def test_pr_title_too_long_rejected() -> None:
     """`WebhookPullRequest.title` has `max_length=4096`. Without this
     cap, a multi-MB title floods the audit-table payload JSONB and the
@@ -202,6 +212,26 @@ def test_pr_body_too_long_rejected() -> None:
     payload_dict["pull_request"]["body"] = "y" * 65537
     with pytest.raises(ValidationError):
         PullRequestEventPayload.model_validate(payload_dict)
+
+
+def test_pr_title_exactly_at_max_length_admitted() -> None:
+    """Positive-boundary case: `max_length=4096` is inclusive. A
+    4096-char title admits cleanly. Pins the inclusive boundary so a
+    strict-less-than regression flips this test."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["title"] = "x" * 4096
+    payload = PullRequestEventPayload.model_validate(payload_dict)
+    assert len(payload.pull_request.title) == 4096
+
+
+def test_pr_body_exactly_at_max_length_admitted() -> None:
+    """Positive-boundary case: `max_length=65536` is inclusive. A
+    65536-char body admits cleanly."""
+    payload_dict = _valid_payload()
+    payload_dict["pull_request"]["body"] = "y" * 65536
+    payload = PullRequestEventPayload.model_validate(payload_dict)
+    assert payload.pull_request.body is not None
+    assert len(payload.pull_request.body) == 65536
 
 
 def test_models_are_frozen() -> None:
