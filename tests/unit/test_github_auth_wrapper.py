@@ -160,23 +160,18 @@ def test_installation_auth_strategy_only_call_site() -> None:
             if compiled.search(text):
                 hits.append(str(py_file))
 
-    # Allowed import sites: `github/auth.py` (uses the SDK class to
-    # construct clients) and `github/__init__.py` (re-exports the type
-    # alias `InstallationGitHubClient` for callers outside `github/`).
-    # Both are inside the wrapper folder; the rule is "only inside
-    # src/outrider/github/" — not "only in one specific file."
-    github_dir = (src_root / "github").resolve()
-    assert hits, "Expected at least one import of `AppInstallationAuthStrategy`."
-    for hit in hits:
-        hit_path = Path(hit).resolve()
-        # `is_relative_to` is the correct ancestor check: rejects
-        # sibling directories like `github_extra/` that would pass a
-        # naive `startswith(str(github_dir))`.
-        assert hit_path.is_relative_to(github_dir), (
-            f"`AppInstallationAuthStrategy` imported from {hit!r}; "
-            f"all imports must be inside {github_dir}. "
-            f"Move the call into the wrapper."
-        )
+    # Allowed import site: `github/auth.py` ONLY. The `InstallationGitHubClient`
+    # type alias is defined in auth.py and re-exported by `github/__init__.py`
+    # without re-importing `AppInstallationAuthStrategy` — so any other hit
+    # under `src/outrider/github/` is a regression. The prior folder-wide
+    # `is_relative_to` check would have silently admitted a new direct
+    # import in, say, `github/fetch.py`.
+    expected = (src_root / "github" / "auth.py").resolve()
+    resolved_hits = [Path(hit).resolve() for hit in hits]
+    assert resolved_hits == [expected], (
+        f"`AppInstallationAuthStrategy` should be imported only at {expected!r}; "
+        f"found at {resolved_hits!r}. Move the call into the wrapper (auth.py)."
+    )
 
 
 def test_no_githubkit_imports_outside_wrapper() -> None:
