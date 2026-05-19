@@ -140,9 +140,13 @@ async def webhook_app(migrated_db: str) -> AsyncGenerator[tuple[FastAPI, AsyncEn
     app.include_router(router)
 
     # Settings stub — webhook secret matches `_SECRET` so signed test
-    # bodies verify cleanly.
+    # bodies verify cleanly. `app_id` deliberately distinct from
+    # `_INSTALLATION_ID` so an app-id-vs-installation-id mixup in the
+    # webhook wiring fails loudly: a regression that read `app_id` where
+    # the router should read `installation.id` from the payload would
+    # surface as the wrong-row lookup or a Pydantic validation error.
     app.state.github_app_settings = SimpleNamespace(
-        app_id=_INSTALLATION_ID,
+        app_id=98765,
         app_private_key=SecretStr("test-private-key"),  # noqa: S106
         webhook_secret=SecretStr(_SECRET),
     )
@@ -193,12 +197,13 @@ async def test_webhook_unknown_installation_returns_4xx(
     assert response.status_code == 404
     assert "installation or repository not active" in response.json()["detail"]
 
-    # No DB rows
+    # No DB rows, no dispatched task — full fail-closed contract.
     async with engine.connect() as conn:
         n_reviews = await conn.scalar(text("SELECT COUNT(*) FROM reviews"))
         n_audit = await conn.scalar(text("SELECT COUNT(*) FROM audit_events"))
     assert n_reviews == 0
     assert n_audit == 0
+    assert app.state._dispatched == []  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -223,10 +228,13 @@ async def test_webhook_inactive_repo_membership_returns_4xx(
     )
     assert response.status_code == 404
 
-    # No review row was created
+    # Full fail-closed contract: no review row, no audit row, no dispatch.
     async with engine.connect() as conn:
         n_reviews = await conn.scalar(text("SELECT COUNT(*) FROM reviews"))
+        n_audit = await conn.scalar(text("SELECT COUNT(*) FROM audit_events"))
     assert n_reviews == 0
+    assert n_audit == 0
+    assert app.state._dispatched == []  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -250,6 +258,14 @@ async def test_webhook_tombstoned_installation_returns_4xx(
         },
     )
     assert response.status_code == 404
+
+    # Full fail-closed contract: no review row, no audit row, no dispatch.
+    async with engine.connect() as conn:
+        n_reviews = await conn.scalar(text("SELECT COUNT(*) FROM reviews"))
+        n_audit = await conn.scalar(text("SELECT COUNT(*) FROM audit_events"))
+    assert n_reviews == 0
+    assert n_audit == 0
+    assert app.state._dispatched == []  # noqa: SLF001
 
 
 @pytest.mark.asyncio
