@@ -283,3 +283,61 @@ async def test_fetch_accepts_borderline_under_cap() -> None:
         ref="abc",
     )
     assert result == under_cap
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_none_when_encoded_exceeds_pre_decode_cap() -> None:
+    """A multi-MB inline-base64 `content` string is rejected BEFORE
+    decode, bounding the worst-case allocation. The pre-decode cap is
+    2x the decoded cap (base64 expands ~4/3 so 2x covers padding +
+    newlines). A regression that moved the cap to post-decode would
+    still pass the OUTPUT-side check below but would have allocated
+    multi-MB UTF-8 intermediate.
+
+    Without this gate, a hostile upstream returning a 100 MB `content`
+    field would force a ~75 MB decoded buffer before the cap caught it.
+    """
+    # 5 MB of `=` (valid base64 padding chars but decodes to empty).
+    # The pre-decode gate fires on the encoded length, NOT on the decoded
+    # form. Even though this would decode to 0 bytes, the encoded buffer
+    # is the attack vector for memory pressure.
+    over_pre_decode_cap = "=" * 5_000_000
+    response = _StubContentFile(
+        encoding="base64",
+        content=over_pre_decode_cap,
+    )
+    gh = _StubGitHub(content_response=response)
+
+    result = await fetch_file_content_at(
+        gh,  # type: ignore[arg-type]
+        owner="acme",
+        repo="widgets",
+        path="hostile.py",
+        ref="abc",
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_none_on_invalid_base64() -> None:
+    """`validate=True`: non-base64 bytes raise `binascii.Error` which
+    we map to None (caller treats as skip). The prior `validate=False`
+    would have silently stripped garbage and returned partial decoded
+    bytes — defense-in-depth against a compromised upstream or
+    response-mock-bypass returning `<valid base64><garbage>=`.
+    """
+    invalid_b64 = "this is definitely not <base64> ;DROP TABLE--"
+    response = _StubContentFile(
+        encoding="base64",
+        content=invalid_b64,
+    )
+    gh = _StubGitHub(content_response=response)
+
+    result = await fetch_file_content_at(
+        gh,  # type: ignore[arg-type]
+        owner="acme",
+        repo="widgets",
+        path="garbage.py",
+        ref="abc",
+    )
+    assert result is None
