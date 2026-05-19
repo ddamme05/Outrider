@@ -53,7 +53,7 @@ def _make_test_lifespan(stub_provider_cls: type) -> object:
 
     return build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: stub_provider,
+        provider_factory=lambda _persister, _model_config: stub_provider,
     )
 
 

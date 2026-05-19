@@ -42,7 +42,7 @@ async def test_lifespan_calls_provider_aclose_on_shutdown(
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: stub_provider,
+        provider_factory=lambda _persister, _model_config: stub_provider,
     )
 
     app = FastAPI()
@@ -67,7 +67,7 @@ async def test_lifespan_calls_engine_dispose_on_shutdown(
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: stub_provider,
+        provider_factory=lambda _persister, _model_config: stub_provider,
     )
 
     app = FastAPI()

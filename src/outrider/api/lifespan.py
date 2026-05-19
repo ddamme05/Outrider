@@ -90,7 +90,15 @@ _LOGGER = logging.getLogger("outrider.api.lifespan")
 
 
 EngineFactory = Callable[[], AsyncEngine]
-ProviderFactory = Callable[[AuditPersister], AnthropicProvider]
+# `ProviderFactory` accepts the lifespan-built `ModelConfig` so the
+# provider and the compiled graph share ONE instance. The prior shape
+# (`Callable[[AuditPersister], AnthropicProvider]`) silently constructed
+# two independent `ModelConfig()` instances — one inside the factory,
+# one in the lifespan body for `build_graph(...)`. Env-driven settings
+# read once at the lifespan boundary must stay single-instance through
+# the whole graph; constructing the same Settings class twice defeats
+# the "lifespan-validated once" guarantee.
+ProviderFactory = Callable[[AuditPersister, ModelConfig], AnthropicProvider]
 
 
 def _default_engine_factory() -> AsyncEngine:
@@ -160,14 +168,21 @@ def _default_engine_factory() -> AsyncEngine:
     return create_async_engine(database_url, hide_parameters=True)
 
 
-def _default_provider_factory(persister: AuditPersister) -> AnthropicProvider:
+def _default_provider_factory(
+    persister: AuditPersister,
+    model_config: ModelConfig,
+) -> AnthropicProvider:
     """Production provider factory: reads ANTHROPIC_API_KEY env, constructs
-    AnthropicProvider with the default ModelConfig (reads OUTRIDER_MODEL_*).
+    AnthropicProvider with the supplied (lifespan-built) `ModelConfig`.
 
     Privacy startup notice fires inside the provider's `__init__` (per
     DECISIONS#015 point 4), once per lifespan startup. The `persister`
     arg is injected so the wrapper's fail-closed-pre-call gate is
-    satisfied at construction.
+    satisfied at construction. The `model_config` arg is injected so
+    the provider and the compiled graph share ONE instance — the prior
+    shape constructed an independent `ModelConfig()` here AND a separate
+    one in the lifespan body for `build_graph(...)`, defeating the
+    single-source guarantee.
     """
     try:
         api_key_raw = os.environ["ANTHROPIC_API_KEY"]
@@ -177,7 +192,7 @@ def _default_provider_factory(persister: AuditPersister) -> AnthropicProvider:
         ) from exc
     return AnthropicProvider(
         api_key=SecretStr(api_key_raw),
-        model_config=ModelConfig(),
+        model_config=model_config,
         persister=persister,
     )
 
@@ -270,8 +285,14 @@ def build_lifespan(
                 retention_settings=retention_settings,
             )
 
-            # Step 5: provider; lifespan teardown awaits aclose.
-            provider = provider_factory(persister)
+            # Step 5: ModelConfig built ONCE here and shared with both
+            # the provider (step 5b) AND build_graph (step 8). Reading
+            # OUTRIDER_MODEL_* twice would defeat the lifespan's
+            # "validated once, reused" guarantee.
+            model_config = ModelConfig()
+
+            # Step 5b: provider; lifespan teardown awaits aclose.
+            provider = provider_factory(persister, model_config)
             stack.push_async_callback(provider.aclose)
 
             # Step 6: GitHub App settings (env-driven). Reads
@@ -296,8 +317,9 @@ def build_lifespan(
             # Step 8: build the compiled graph with all six deps injected
             # at construction time. `db_factory` is the canonical first
             # parameter per `docs/spec.md §9.3`; the order here mirrors
-            # the spec's signature.
-            model_config = ModelConfig()
+            # the spec's signature. `model_config` is the SAME instance
+            # already passed to the provider at step 5b — single-source
+            # guarantee.
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,

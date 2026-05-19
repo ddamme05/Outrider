@@ -42,7 +42,7 @@ async def test_engine_dispose_runs_when_provider_aclose_raises() -> None:
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister, _model_config: mock_provider,
     )
 
     app = FastAPI()
@@ -93,7 +93,7 @@ async def test_lifespan_rejects_real_engine_without_hide_parameters(
 
     lifespan = build_lifespan(
         engine_factory=lambda: real_engine_no_hide_params,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister, _model_config: mock_provider,
     )
 
     app = FastAPI()
@@ -131,7 +131,7 @@ async def test_lifespan_rejects_engine_without_hide_parameters() -> None:
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister, _model_config: mock_provider,
     )
 
     app = FastAPI()
@@ -166,7 +166,7 @@ async def test_lifespan_rejects_engine_with_truthy_non_bool_hide_parameters() ->
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister: mock_provider,
+        provider_factory=lambda _persister, _model_config: mock_provider,
     )
 
     app = FastAPI()
@@ -186,7 +186,7 @@ async def test_engine_dispose_runs_when_provider_constructor_fails() -> None:
     # Round-39 strict `is True` gate requires the exact bool.
     mock_engine.sync_engine.hide_parameters = True
 
-    def _failing_provider_factory(_persister: object) -> object:
+    def _failing_provider_factory(_persister: object, _model_config: object) -> object:
         raise RuntimeError("provider construction failed")
 
     lifespan = build_lifespan(
