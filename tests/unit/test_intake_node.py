@@ -143,15 +143,29 @@ class _StubGitHub:
         )
 
 
+_EXPECTED_INSTALLATION_ID = 12345  # matches `_build_state()` PRContext
+
+
 def _stub_github_factory(gh: Any) -> Any:
     """Wrap any stub `GitHub`-like into a `Callable[[int], GitHub]` shape.
 
     Accepts `_StubGitHub`, `_FailingGitHub`, or any other test stub that
     duck-types as a githubkit `GitHub` for the intake call sites we
     exercise.
+
+    The returned factory asserts the installation_id it receives matches
+    the seed state's value (12345 via `_build_state`). A regression
+    where intake passed the wrong installation_id into `github_factory`
+    (e.g., a typo using `repo_id` instead) would otherwise still pass
+    every test because the wrapper returned the stub for any input.
     """
 
     def factory(installation_id: int) -> Any:
+        assert installation_id == _EXPECTED_INSTALLATION_ID, (
+            f"github_factory received installation_id={installation_id}, "
+            f"expected {_EXPECTED_INSTALLATION_ID} from seed state. "
+            f"Did intake start using the wrong field on PRContext?"
+        )
         return gh
 
     return factory
@@ -267,7 +281,7 @@ def _build_state(*, total_additions: int = 5, total_deletions: int = 2) -> Revie
         review_id=uuid4(),
         received_at=datetime.now(UTC),
         pr_context=PRContext(
-            installation_id=12345,
+            installation_id=_EXPECTED_INSTALLATION_ID,
             owner="acme",
             repo="widgets",
             pr_number=42,
