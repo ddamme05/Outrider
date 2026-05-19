@@ -160,12 +160,26 @@ class _StubPullsAPI:
         owner: str,
         repo: str,
         pull_number: int,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> _StubResponse:
         # Validate the graph passed the seed PR coordinates through.
         assert owner == _SEED_OWNER, f"unexpected owner {owner!r}"
         assert repo == _SEED_REPO, f"unexpected repo {repo!r}"
         assert pull_number == _SEED_PULL_NUMBER, f"unexpected pull_number {pull_number}"
+        # Pin the load-bearing per_page contract: intake requests
+        # `_SIZE_GATE_MAX_FILES + 1` (= 31) so a single API call surfaces
+        # any "over the gate" PR without paginating. A regression that
+        # dropped or changed this value would silently bypass the size
+        # gate in production; without this assert the test stays green
+        # because the stub returns a fixed 1-file response anyway.
+        from outrider.agent.nodes.intake import _LIST_PR_FILES_PER_PAGE  # noqa: PLC0415
+
+        per_page = kwargs.get("per_page")
+        assert per_page == _LIST_PR_FILES_PER_PAGE, (
+            f"intake must request per_page=_LIST_PR_FILES_PER_PAGE "
+            f"(= _SIZE_GATE_MAX_FILES + 1 = {_LIST_PR_FILES_PER_PAGE}); "
+            f"got per_page={per_page!r}"
+        )
 
         return _StubResponse(
             parsed_data=[
