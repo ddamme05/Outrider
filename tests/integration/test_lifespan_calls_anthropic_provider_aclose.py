@@ -204,7 +204,6 @@ async def test_complete_after_aclose_raises_loud() -> None:
     — opaque to log readers. The guard surfaces the misuse at the wrapper
     boundary instead.
     """
-    import pytest
     from pydantic import SecretStr
 
     from outrider.llm.anthropic_provider import AnthropicProvider

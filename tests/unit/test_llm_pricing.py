@@ -362,8 +362,6 @@ def test_rate_table_raw_dict_not_importable() -> None:
         "for `from outrider.llm.pricing import _RATE_TABLE_RAW`."
     )
     # Belt: the public surface still raises on mutation.
-    import pytest
-
     with pytest.raises(TypeError):
         RATE_TABLE["claude-fake"] = ModelPricing(  # type: ignore[index]
             in_per_token=Decimal("0"),
