@@ -30,14 +30,29 @@ if TYPE_CHECKING:
 # downstream consumers.
 _SHELL_METACHARS_RE: Final = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 
-# Unicode bidi-override and zero-width characters per CVE-2021-42574
+# Unicode bidi-override and invisible-format characters per CVE-2021-42574
 # ("Trojan Source"). A path containing U+202E (RLO) renders left-to-right
 # in editors and audit logs differently from what the bytes say it is —
 # e.g., `report‮xls.py` displays as `reportyp.slx`. Operators reading
 # audit logs or PR dashboards would see a different filename than the one
-# actually fetched from GitHub. Zero-width chars (U+200B family, U+FEFF)
-# enable similar disguise + name-collision attacks.
-_TROJAN_SOURCE_CHARS_RE: Final = re.compile(r"[​-‏‪-‮⁦-⁩﻿]")
+# actually fetched from GitHub.
+#
+# Narrow reject set — only chars that enable the trojan-source disguise
+# AND have no legitimate filename use:
+#   - U+200B Zero Width Space (invisible, no legitimate filename use)
+#   - U+200E, U+200F LTR/RTL Mark (bidi format)
+#   - U+202A-U+202E LRE/RLE/PDF/LRO/RLO (bidi format, CVE-2021-42574 core)
+#   - U+2066-U+2069 LRI/RLI/FSI/PDI (bidi isolate, CVE-2021-42574 core)
+#   - U+FEFF Byte Order Mark / Zero Width No-Break Space (invisible)
+#
+# Deliberately EXCLUDED from reject (legitimate in real scripts):
+#   - U+200C Zero Width Non-Joiner (Persian, Arabic word-joining)
+#   - U+200D Zero Width Joiner (Hindi/Devanagari conjuncts, emoji ZWJ
+#     sequences, ligature control)
+# Including these would block legitimate non-Latin-script filename
+# contributors (false-positive surface introduced by an earlier audit
+# fold; corrected after the audit-the-audit pass flagged it).
+_TROJAN_SOURCE_CHARS_RE: Final = re.compile(r"[‪-‮⁦-⁩​‎‏﻿]")
 
 # Reject paths whose FIRST path component is `.git` (case-insensitive).
 # `.git/config`, `.git/HEAD`, etc. are not legitimate PR-modifiable files
