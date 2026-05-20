@@ -80,16 +80,30 @@ and consumed by the trace node per `DECISIONS.md#017`."""
 
 
 class SkipReason(StrEnum):
-    """V1 exclusion rule taxonomy. One value per `SkipReason` — see
-    `parser_outcome.EXCLUSION_RULES` for the actual rule tuple
-    (multiple rules may share a reason; e.g., five vendored prefixes).
-    Imported by `outrider/audit/events.py` per `DECISIONS.md#018`."""
+    """Skip-reason taxonomy across parser AND analyze-node decisions.
+
+    Two naming axes per `DECISIONS.md#018` Amended 2026-05-20:
+    - Parser-stage (rule rooted in file content):
+      `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,
+      `GENERATED_BANNER`. See `parser_outcome.EXCLUSION_RULES` for the
+      actual rule tuple (multiple rules may share a reason).
+    - Analyze-stage (rule rooted in analyze's decision rationale):
+      `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
+      `NO_CHANGED_SCOPE_UNITS`. Set by the analyze node body when it
+      skips a file mid-pass.
+
+    Imported by `outrider/audit/events.py` per `DECISIONS.md#018`.
+    """
 
     OVERSIZED = "OVERSIZED"
     VENDORED = "VENDORED"
     GENERATED_FILENAME = "GENERATED_FILENAME"
     MINIFIED = "MINIFIED"
     GENERATED_BANNER = "GENERATED_BANNER"
+    # Analyze-stage skip causes per `DECISIONS.md#018` Amended 2026-05-20.
+    COST_BUDGET_EXHAUSTED = "COST_BUDGET_EXHAUSTED"
+    NO_REVIEWABLE_CONTEXT = "NO_REVIEWABLE_CONTEXT"
+    NO_CHANGED_SCOPE_UNITS = "NO_CHANGED_SCOPE_UNITS"
 
 
 # ---------------------------------------------------------------------------

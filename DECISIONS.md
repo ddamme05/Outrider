@@ -576,6 +576,22 @@ The two surfaces (logs vs database) need different rules: logs flow to stdout, l
 
 **Referenced from.** `spec.md` §5.5 (audit-records-the-reason wording, exclusion-pattern enumeration), `spec.md` §8.2 (`FileExaminationEvent` field list), `specs/2026-04-30-ast-facts-module.md` (Approval prerequisite, Audit Events Emitted note), `src/outrider/audit/events.py` (`FileExaminationEvent.skip_reason` field + `_enforce_skip_reason_outcome` validator + `SkipReason` import), `src/outrider/ast_facts/__init__.py` (module-level `__getattr__` lazy-load of `parse_python` + subprocess-isolated import-light regression test in `tests/integration/test_ast_facts_query_registry.py`), `src/outrider/ast_facts/models.py` (`SkipReason` enum + `ParseResult.skip_reason` field), `audit/replay.py` (when written — replay can additionally assert stored `skip_reason` is one of the canonical enum values).
 
+**Amended 2026-05-20** — three new `SkipReason` enum values for analyze-stage skip causes.
+
+The original five `SkipReason` values cover the ast_facts/-stage exclusion rules (`OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`, `GENERATED_BANNER`) — all decisions the parser can make before the analyze node runs. Analyze itself can also skip a file for reasons the parser cannot: the cost budget is exhausted before analyze reaches it, the file has no reviewable diff context after parse-failure (binary or pure-deletion), or the file's changes don't intersect any scope unit (comment-only, whitespace-only, module-level). Each case needs its own `SkipReason` value so the audit row distinguishes them and dashboard skip-reason aggregates render meaningfully.
+
+Adds three values to `ast_facts/models.py::SkipReason`:
+
+- `COST_BUDGET_EXHAUSTED` — pre-flight budget gate in the analyze node refused to run an LLM call against this file because the cumulative per-review cost has already crossed the configured ceiling.
+- `NO_REVIEWABLE_CONTEXT` — parse failed AND the diff carries no addable hunks (binary file, pure deletion) — there's nothing for even a JUDGED-tier degraded-mode finding to anchor against per the §4 `span_within_degraded_context` admission rule.
+- `NO_CHANGED_SCOPE_UNITS` — file parsed cleanly but the diff hunks don't intersect any scope unit (comment-only, whitespace-only, module-level-only changes). Sending such a file through analyze would consume budget for no value.
+
+The `SkipReason` Literal in `FileExaminationEvent` accepts the new values automatically because it inherits from the enum. No DB migration (per the original #018 point 5: `audit_events.payload` is JSONB; no schema constraint). No backfill (audit log carries no `FileExaminationEvent` rows from analyze yet — analyze hasn't shipped).
+
+**Consumer:** the sister `specs/YYYY-MM-DD-analyze-implementation.md` spec's analyze-node body sets one of these three values on `FileExaminationEvent.skip_reason` when it skips a file mid-pass. The foundation spec (`specs/2026-05-19-analyze-foundation.md` §0a) lands the enum additions in `src/outrider/ast_facts/models.py` so they're available before the analyze-implementation spec consumes them.
+
+**Open question for human approval.** The original #018's five values follow a naming convention rooted in the file's content (`OVERSIZED`, `VENDORED`, etc.). The three new values name analyze's decision rationale (`COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`, `NO_CHANGED_SCOPE_UNITS`) — a different naming axis. Acceptable trade-off? Alternative: a single `SKIPPED_BY_ANALYZE` value with a separate `skip_detail: str` field. Rejected here because (a) the three reasons need to be enumerable for dashboard aggregation, (b) free-text detail would defeat #014's structural-metadata-only audit rule. The mixed naming axis is the better cost.
+
 ---
 
 ## 019. `schemas/` is for owner-less cross-boundary models; owned protocol/event surfaces live with their owner
