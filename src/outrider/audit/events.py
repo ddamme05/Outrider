@@ -61,7 +61,7 @@ from outrider.policy import (
     FindingType,
     enforce_proof_boundary,
 )
-from outrider.policy.canonical import SHA256_HEX_PATTERN
+from outrider.policy.canonical import SHA256_HEX_PATTERN, SHA256_HEX_PATTERN_SHORT
 from outrider.schemas import (
     PerFindingDecision,
     PublishDestination,
@@ -500,12 +500,11 @@ class PublishRoutingEvent(AuditEventBase):
 # ---------------------------------------------------------------------------
 
 
-# Short SHA-256-hex prefix pattern for hostile-string fingerprinting per
-# `specs/2026-05-19-analyze-foundation.md` §5 (FindingProposalRejectedEvent).
-# `_SHA256_HEX_PATTERN` matches the full 64-char digest; this matches the
-# 16-char prefix used when storing `sha256(raw_value)[:16]` to dedup audit
-# rows without leaking model-controlled raw values per `DECISIONS.md#014`.
-_SHA256_HEX_PATTERN_SHORT: Final = r"^[a-f0-9]{16}$"
+# Module-local alias for the canonical short pattern. Single source lives
+# in `outrider.policy.canonical`; redefining the regex here would
+# reintroduce the per-call-site drift class the chokepoint module was
+# created to prevent (Copilot review fold).
+_SHA256_HEX_PATTERN_SHORT: Final = SHA256_HEX_PATTERN_SHORT
 
 
 class AnalyzeCompletedEvent(AuditEventBase):
@@ -519,7 +518,7 @@ class AnalyzeCompletedEvent(AuditEventBase):
 
     event_type: Literal["analyze_completed"] = "analyze_completed"
     pass_index: int = Field(ge=0)
-    node_id: str = "analyze"
+    node_id: Literal["analyze"] = "analyze"
     n_files_analyzed: int = Field(ge=0)
     n_files_skipped: int = Field(ge=0)
     n_llm_calls: int = Field(ge=0)
@@ -586,7 +585,7 @@ class FindingProposalRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
-    node_id: str = "analyze"
+    node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     claimed_evidence_tier: EvidenceTier | None = None
@@ -644,7 +643,7 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
-    node_id: str = "analyze"
+    node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     rejection_reason: Literal["raw_response_unparseable"]

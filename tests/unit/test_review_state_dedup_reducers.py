@@ -21,7 +21,11 @@ from typing import Any, get_args, get_type_hints
 from uuid import uuid4
 
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
-from outrider.policy.canonical import compute_identity_hash, compute_round_id
+from outrider.policy.canonical import (
+    compute_candidate_id,
+    compute_identity_hash,
+    compute_round_id,
+)
 from outrider.schemas import (
     AnalysisRound,
     ReviewDimension,
@@ -85,11 +89,21 @@ def _round(pass_index: int = 0, *, distinct: str = "") -> AnalysisRound:
 
 
 def _candidate(seed: str = "a") -> TraceCandidate:
+    """Construct a TraceCandidate with a canonical candidate_id derived
+    from its own payload (required by `_enforce_candidate_id_matches_payload`).
+    """
+    source_proposal_hash = compute_identity_hash({"prop": seed})
+    candidate_path = f"src/{seed}.py"
+    reason = "x"
     return TraceCandidate(
-        candidate_id=compute_identity_hash({"seed": seed}),
-        source_proposal_hash=compute_identity_hash({"prop": seed}),
-        reason="x",
-        candidate_path=f"src/{seed}.py",
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=source_proposal_hash,
+            candidate_path=candidate_path,
+            reason=reason,
+        ),
+        source_proposal_hash=source_proposal_hash,
+        reason=reason,
+        candidate_path=candidate_path,
     )
 
 

@@ -35,9 +35,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from outrider.ast_facts.models import Span  # noqa: TC001 — Pydantic field type, runtime import
+from outrider.coordinates import validate_diff_path
 from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
     FindingType,
@@ -125,12 +126,30 @@ class TraceCandidateProposal(BaseModel):
     pit-of-success fix; provenance markers (Literal["admitted"]) are
     belt only, validation-derived field shape is the load-bearing
     prevention.
+
+    The `candidate_path` field validator below enforces the documented
+    "already passed validate_diff_path" invariant at the schema layer
+    (post-PR review fold) — without it, the admitted-vs-raw distinction
+    rested on parser flow alone; with it, the schema is the durable
+    floor and any future producer / replay reconstruction validates
+    against the same rule.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     candidate_path: Annotated[str, Field(max_length=1024)]
     reason: Annotated[str, Field(max_length=500)]
+
+    @field_validator("candidate_path")
+    @classmethod
+    def _enforce_canonical_candidate_path(cls, path: str) -> str:
+        """Re-run `validate_diff_path` so the admitted layer enforces the
+        canonical-path invariant the layer's name promises. The raw layer
+        (`TraceCandidateProposalRaw.candidate_path_raw`) stays loose — its
+        whole purpose is to admit unvalidated model output long enough for
+        the parser to emit a rejection event.
+        """
+        return validate_diff_path(path)
 
 
 class AnalyzeFindingProposal(BaseModel):

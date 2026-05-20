@@ -1431,6 +1431,11 @@ async def test_audit_context_fields_pass_through(monkeypatch: pytest.MonkeyPatch
     assert event.is_eval is True
     assert event.prompt_template_version == "analyze@2.0.0"
     assert event.degraded_mode is True
+    # Post-PR review fold: the request carries degradation_reason and the
+    # wrapper must pass it through to the audit event. Without this
+    # assertion a regression that drops the field mid-pipeline would
+    # silently pass the pass-through contract test.
+    assert event.degradation_reason == "parse_failed"
 
 
 @pytest.mark.asyncio

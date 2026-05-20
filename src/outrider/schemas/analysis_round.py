@@ -76,6 +76,20 @@ class AnalysisRound(BaseModel):
         return tuple(validate_diff_path(p) for p in paths)
 
     @model_validator(mode="after")
+    def _enforce_time_ordering(self) -> Self:
+        """`ended_at >= started_at` per coherence-guard fold (Copilot/CodeRabbit
+        convergent on PR review). A round whose end precedes its start is
+        an impossible timing that would otherwise leak into replay /
+        reporting and confuse latency aggregates.
+        """
+        if self.ended_at < self.started_at:
+            raise ValueError(
+                f"AnalysisRound.ended_at ({self.ended_at!r}) must be >= "
+                f"started_at ({self.started_at!r})."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_round_id_matches_payload(self) -> Self:
         """Assert `round_id == compute_round_id(...)` over this round's payload.
 

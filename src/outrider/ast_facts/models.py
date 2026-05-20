@@ -114,14 +114,40 @@ class SkipReason(StrEnum):
         (dashboard skip-panel, anomaly scanner, operator alerts) need
         a type-level discriminator to render or filter without string-
         parsing the value name.
+
+        Post-PR review fold (Copilot/CodeRabbit/Codex convergent):
+        explicit two-set membership instead of a "default to parser"
+        fallback. The two sets are checked at import time against the
+        full enum to fail loud on a future addition that forgets to
+        update one of them — a missing value would otherwise silently
+        misclassify as parser-stage.
         """
+        if self in _PARSER_STAGE_SKIP_REASONS:
+            return "parser"
         if self in _ANALYZE_STAGE_SKIP_REASONS:
             return "analyze"
-        return "parser"
+        # Unreachable: the module-load assertion below proves every
+        # enum value lives in exactly one set. `mypy` won't infer this,
+        # so the explicit raise is also the type-narrowing.
+        raise AssertionError(
+            f"SkipReason {self!r} is not in the parser-stage or analyze-stage "
+            f"sets — the lockstep guard below should have prevented import. "
+            f"This is unreachable; if you see it, the import-time check was "
+            f"bypassed."
+        )
 
 
 # Module-private — drives `SkipReason.stage()`. Keep in lockstep with
 # the analyze-stage value additions per DECISIONS.md#018 Amended 2026-05-20.
+_PARSER_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
+    {
+        SkipReason.OVERSIZED,
+        SkipReason.VENDORED,
+        SkipReason.GENERATED_FILENAME,
+        SkipReason.MINIFIED,
+        SkipReason.GENERATED_BANNER,
+    }
+)
 _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
     {
         SkipReason.COST_BUDGET_EXHAUSTED,
@@ -129,6 +155,25 @@ _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
         SkipReason.NO_CHANGED_SCOPE_UNITS,
     }
 )
+
+# Import-time totality + disjointness check. A new SkipReason value
+# added without an entry in one of the two sets fails this assertion
+# at module load, BEFORE any code path can call `stage()` and get a
+# silent fallback misclassification. Post-PR review fold.
+if _PARSER_STAGE_SKIP_REASONS & _ANALYZE_STAGE_SKIP_REASONS:
+    raise AssertionError(
+        f"SkipReason stage sets must be disjoint; overlap: "
+        f"{_PARSER_STAGE_SKIP_REASONS & _ANALYZE_STAGE_SKIP_REASONS}"
+    )
+_combined: frozenset[SkipReason] = _PARSER_STAGE_SKIP_REASONS | _ANALYZE_STAGE_SKIP_REASONS
+_all_skip_reasons: frozenset[SkipReason] = frozenset(SkipReason)
+if _combined != _all_skip_reasons:
+    missing = _all_skip_reasons - _combined
+    raise AssertionError(
+        f"SkipReason values must each belong to exactly one stage set; "
+        f"unmapped: {sorted(r.value for r in missing)}. Add to "
+        f"_PARSER_STAGE_SKIP_REASONS or _ANALYZE_STAGE_SKIP_REASONS."
+    )
 
 
 # ---------------------------------------------------------------------------

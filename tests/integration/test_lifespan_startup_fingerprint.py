@@ -25,6 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from outrider.api.lifespan import StartupError, build_lifespan
+from outrider.policy.versions import PolicyVersionShapeError
 
 
 @pytest.fixture(autouse=True)
@@ -130,11 +131,14 @@ _EXTRA_KEY_POLICY_JSONB = """{
         # Case (c) per §0c: values differ (live mapping is stale).
         (_VALUE_DRIFT_POLICY_JSONB, StartupError),
         # Case (a) per §0c: keys differ (DB has an extra type not in live).
-        # Loader's shape check raises PolicyVersionShapeError before
-        # mismatch comparison; we accept either error class on this arm
-        # since both represent fingerprint-check failure on the same row.
-        # Per §0c DevEx LOW-1: parametrize two drift shapes.
-        (_EXTRA_KEY_POLICY_JSONB, Exception),
+        # The loader's shape check raises `PolicyVersionShapeError` BEFORE
+        # the fingerprint mismatch comparison runs (the loader can't
+        # round-trip an unknown FindingType key into the typed enum world).
+        # Post-PR review fold: pin the precise type rather than the broad
+        # `Exception` — an `Exception` assertion would silently pass on any
+        # unrelated DB/connectivity failure and mask the regression class
+        # this test exists to catch.
+        (_EXTRA_KEY_POLICY_JSONB, PolicyVersionShapeError),
     ],
 )
 async def test_policy_mismatch_raises_startup_error(

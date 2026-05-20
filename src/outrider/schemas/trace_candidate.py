@@ -22,12 +22,12 @@ legitimate cross-file-to-look-at signal.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from outrider.coordinates import validate_diff_path
-from outrider.policy.canonical import SHA256_HEX_PATTERN
+from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_candidate_id
 
 
 class TraceCandidate(BaseModel):
@@ -60,3 +60,36 @@ class TraceCandidate(BaseModel):
         every construction site.
         """
         return validate_diff_path(path)
+
+    @model_validator(mode="after")
+    def _enforce_candidate_id_matches_payload(self) -> Self:
+        """Assert `candidate_id == compute_candidate_id(...)` over this
+        candidate's payload.
+
+        Mirror of `AnalysisRound._enforce_round_id_matches_payload`
+        (post-PR review fold). Without this, `candidate_id` was only
+        pattern-checked — a caller could supply ANY 64-char hex string
+        and Pydantic accepted it. The dedup-by-key reducer would then
+        admit two logically-equivalent candidates under different
+        `candidate_id`s and double-accumulate trace requests on replay.
+
+        Routes through the existing `compute_candidate_id` typed wrapper
+        rather than reinventing the recipe — single chokepoint property
+        per `outrider.policy.canonical`. Field-validator already
+        normalized `candidate_path`, so the value passed here is the
+        post-`validate_diff_path` form.
+        """
+        expected = compute_candidate_id(
+            source_proposal_hash=self.source_proposal_hash,
+            candidate_path=self.candidate_path,
+            reason=self.reason,
+        )
+        if self.candidate_id != expected:
+            raise ValueError(
+                f"TraceCandidate.candidate_id={self.candidate_id!r} does not "
+                f"match the canonical id computed from this candidate's "
+                f"payload ({expected!r}). Construct via "
+                f"`compute_candidate_id(...)` rather than passing an "
+                f"arbitrary hex string."
+            )
+        return self
