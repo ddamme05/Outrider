@@ -195,8 +195,13 @@ class ContextManifestEntry(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    file_path: str
-    scope_unit_name: str
+    # `file_path` cap matches `AnalysisRound.files_examined` per-element
+    # max_length=1024. `scope_unit_name` carries a Python identifier
+    # (function/method/class name) plus optional dotted qualifier;
+    # 1024 chars accommodates deeply-nested closures while bounding
+    # the audit-row growth.
+    file_path: str = Field(max_length=1024)
+    scope_unit_name: str = Field(max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     inclusion_reason: Literal[
@@ -235,7 +240,14 @@ class ReviewPhaseEvent(AuditEventBase):
 
     event_type: Literal["review_phase"] = "review_phase"
     phase_id: str
-    node_id: str
+    # The seven graph nodes per spec §4 (intake, triage, analyze, trace,
+    # synthesize, hitl, publish). Each emits start/end ReviewPhaseEvent
+    # pairs scoping the node's work. V1 only intake + triage have shipped
+    # emit sites; the other five emit when their respective node specs
+    # land. Tightening the Literal now is forward-compatible AND stops
+    # an emission-site typo (`"analyse"`, `"sythesize"`) from landing in
+    # the append-only audit log before the spec for that node arrives.
+    node_id: Literal["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"]
     marker: Literal["start", "end"]
     phase_key: str | None = None
 
