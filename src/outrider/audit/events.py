@@ -69,6 +69,7 @@ from outrider.policy import (
     enforce_proof_boundary,
 )
 from outrider.policy.canonical import SHA256_HEX_PATTERN, SHA256_HEX_PATTERN_SHORT
+from outrider.policy.severity import BARE_SEMVER_PATTERN
 from outrider.schemas import (
     PerFindingDecision,
     PublishDestination,
@@ -85,15 +86,14 @@ from outrider.schemas import (
 # the existing references below.
 _SHA256_HEX_PATTERN: Final = SHA256_HEX_PATTERN
 
-# Bare-semver pattern matching `outrider.policy.severity._SEMVER_RE` AND
-# the DB CHECK constraint added by migration `3d03bca7f2be`. Audit events
-# carrying `policy_version` apply this pattern so a bogus value (e.g.,
-# "banana") fails at construction rather than landing in the append-only
-# audit log and breaking replay reconstruction downstream. Foundation-
-# wide adversarial audit M1, narrowed to policy_version only:
-# `pricing_version` carries `PRICING_VERSION` which uses a distinct
-# versioning scheme (`"v2"` not bare semver) per `llm/pricing.py`.
-_BARE_SEMVER_PATTERN: Final = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+# `BARE_SEMVER_PATTERN` (re-exported via the `from outrider.policy.severity`
+# import above) gates the bare-semver shape on every `policy_version`
+# field below. Single source of truth — the runtime `_SEMVER_RE` in
+# `policy.severity` AND the DB CHECK constraint added by migration
+# `3d03bca7f2be` derive from the same string. Foundation-wide adversarial
+# audit M1, narrowed to policy_version only: `pricing_version` carries
+# `PRICING_VERSION` which uses a distinct versioning scheme (`"v2"` not
+# bare semver) per `llm/pricing.py`.
 
 
 def compute_finding_content_hash(
@@ -327,7 +327,13 @@ class FileExaminationEvent(AuditEventBase):
 
     event_type: Literal["file_examination"] = "file_examination"
     file_path: str
-    examination_type: str
+    # Bounded to the two actually-emitted values today (intake's per-file
+    # fetch record at `agent/nodes/intake.py:703,737` and analyze's
+    # per-file examination at the sister-spec node body). Adding a third
+    # stage's emission site is a schema change — the explicit Literal forces
+    # the discriminator-like field to be widened deliberately rather than
+    # drifting on a string typo from a future contributor.
+    examination_type: Literal["intake_fetch", "analyze"]
     node_id: str
     parse_status: Literal["clean", "degraded", "failed", "skipped"]
     skip_reason: SkipReason | None = None
@@ -371,7 +377,7 @@ class FindingEvent(AuditEventBase):
     evidence_tier: EvidenceTier
     query_match_id: str | None = None
     trace_path: tuple[str, ...] | None = None
-    policy_version: str = Field(pattern=_BARE_SEMVER_PATTERN)
+    policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_proof_boundary(self) -> Self:
@@ -539,7 +545,7 @@ class AnalyzeCompletedEvent(AuditEventBase):
     total_output_tokens: int = Field(ge=0)
     total_cost_usd: float = Field(ge=0)
     pricing_version: str
-    policy_version: str = Field(pattern=_BARE_SEMVER_PATTERN)
+    policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
     analyze_model: str
 
     @model_validator(mode="after")

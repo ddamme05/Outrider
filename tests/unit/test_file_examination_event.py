@@ -28,7 +28,12 @@ def _base_kwargs() -> dict[str, Any]:
         "review_id": uuid4(),
         "timestamp": datetime.now(UTC),
         "file_path": "f.py",
-        "examination_type": "structural",
+        # `examination_type` is bounded to the literal set actually emitted
+        # by src/ — `intake_fetch` (agent/nodes/intake.py) and `analyze`
+        # (sister analyze-node spec). A future stage that emits its own
+        # examination_type widens the Literal in `audit/events.py` and
+        # adds a row to the parametrized values test below.
+        "examination_type": "intake_fetch",
         "node_id": "intake",
     }
 
@@ -116,3 +121,34 @@ def test_file_examination_event_round_trips_skipped_with_reason() -> None:
     rehydrated = FileExaminationEvent.model_validate(payload)
     assert rehydrated.parse_status == "skipped"
     assert rehydrated.skip_reason == SkipReason.OVERSIZED
+
+
+@pytest.mark.parametrize("examination_type", ["intake_fetch", "analyze"])
+def test_file_examination_event_admits_canonical_examination_types(
+    examination_type: str,
+) -> None:
+    """The two values actually emitted by src/ admit cleanly."""
+    kwargs = _base_kwargs()
+    kwargs["examination_type"] = examination_type
+    kwargs["parse_status"] = "clean"
+    event = FileExaminationEvent(**kwargs)
+    assert event.examination_type == examination_type
+
+
+@pytest.mark.parametrize(
+    "examination_type",
+    ["deep", "structural", "shallow", "INTAKE_FETCH", ""],
+)
+def test_file_examination_event_rejects_unknown_examination_type(
+    examination_type: str,
+) -> None:
+    """A non-canonical examination_type (typo, casing variant, made-up
+    third stage) fails at the schema layer. Pre-PR-review-round-5 the
+    field was `examination_type: str` and admitted any value; the
+    Literal lock landed in round-5 to stop a future emission-site typo
+    from drifting through the append-only audit log."""
+    kwargs = _base_kwargs()
+    kwargs["examination_type"] = examination_type
+    kwargs["parse_status"] = "clean"
+    with pytest.raises(ValidationError):
+        FileExaminationEvent(**kwargs)

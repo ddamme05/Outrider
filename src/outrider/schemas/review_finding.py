@@ -27,17 +27,20 @@ EvidenceTier / FindingType / FindingSeverity.
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Final, Self
+from typing import Annotated, Any, Final, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+from outrider.coordinates import validate_diff_path
 from outrider.policy import (
     EvidenceTier,
     FindingSeverity,
     FindingType,
     enforce_proof_boundary,
 )
+from outrider.policy.canonical import SHA256_HEX_PATTERN
+from outrider.policy.severity import BARE_SEMVER_PATTERN
 
 
 class ReviewDimension(StrEnum):
@@ -100,30 +103,67 @@ class ReviewFinding(BaseModel):
     finding_id: UUID = Field(default_factory=uuid4)
     review_id: UUID
     installation_id: int
-    policy_version: str
+    # Bare-semver: same shape `AnalyzeCompletedEvent.policy_version`,
+    # `FindingEvent.policy_version`, and the `severity_policies` DB CHECK
+    # all enforce. Without the pattern here, a malformed `policy_version`
+    # could be persisted on the `ReviewFinding` while the audit-event row
+    # written from the SAME finding refuses construction — silent divergence
+    # between the in-memory finding and its append-only audit shadow.
+    policy_version: Annotated[str, Field(pattern=BARE_SEMVER_PATTERN)]
     finding_type: FindingType
     dimension: ReviewDimension
     severity: FindingSeverity
     evidence_tier: EvidenceTier
+    # Repo-relative POSIX, post-`validate_diff_path` normalized — same
+    # contract `AnalysisRound.files_examined` and `TraceCandidate.candidate_path`
+    # enforce at the schema layer. Without this, a path that fails
+    # `validate_diff_path` could ride on the finding through replay and
+    # be rejected at the publisher boundary only — too late.
     file_path: str
     line_start: int = Field(ge=1)
     line_end: int
-    title: str = Field(max_length=120)
-    description: str = Field(max_length=1000)
-    evidence: str
-    suggested_fix: str | None = None
-    query_match_id: str | None = None
+    title: Annotated[str, Field(max_length=120)]
+    description: Annotated[str, Field(max_length=1000)]
+    # Model-output cap. The model is told to include a code snippet plus
+    # short prose; 2000 chars is generous enough for typical findings and
+    # bounded enough that a runaway response can't fill an audit row with
+    # MB of fabricated evidence.
+    evidence: Annotated[str, Field(max_length=2000)]
+    # Model-output cap. Suggested fixes can include a code snippet so the
+    # cap matches `evidence`.
+    suggested_fix: Annotated[str | None, Field(max_length=2000)] = None
+    # Query-registry-id cap. Today's query ids are short paths (`security/sql_injection`);
+    # 200 chars is well above the realistic max and well below pathological.
+    query_match_id: Annotated[str | None, Field(max_length=200)] = None
     # tuple, not list: post-construction `.append()` / `.clear()` on a list
     # would bypass validate_assignment (which only fires on attribute
     # rebinding, not in-place mutation). Tuple delivers true immutability.
     trace_path: tuple[str, ...] | None = None
     # Lifecycle / HITL-set fields (None at analyze-time):
     original_severity: FindingSeverity | None = None
-    override_reason: str | None = None
+    # Reviewer-supplied; reviewers can be human and HITL UIs can be sloppy,
+    # but 1000 chars matches the model-output reason caps elsewhere and
+    # caps a copy-pasted novel-length explanation.
+    override_reason: Annotated[str | None, Field(max_length=1000)] = None
     overrider_id: UUID | None = None
     publish_destination: PublishDestination | None = None
-    # Dedup (analyze sets at construction time per spec §8.5):
-    content_hash: str
+    # SHA-256 hex digest, lowercase. Sibling of `AnalysisRound.round_id` and
+    # `TraceCandidate.candidate_id` (both patterned). The dedup contract
+    # in `FindingEvent` joins via this field, so the shape MUST match the
+    # corresponding event's `finding_content_hash` (also patterned).
+    content_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Re-run `validate_diff_path` so the schema layer enforces the
+        repo-relative-POSIX invariant. Same shape as
+        `AnalysisRound._enforce_canonical_files_examined` and
+        `TraceCandidate._enforce_canonical_candidate_path` — propagates the
+        canonical-record discipline to every cross-boundary model that
+        carries a diff-side path.
+        """
+        return validate_diff_path(path)
 
     @model_validator(mode="before")
     @classmethod

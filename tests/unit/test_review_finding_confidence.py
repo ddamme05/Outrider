@@ -32,7 +32,8 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        "content_hash": "h",
+        # Real SHA-256 hex digest shape per `SHA256_HEX_PATTERN`.
+        "content_hash": "a" * 64,
     }
     fields.update(overrides)
     return ReviewFinding(**fields)

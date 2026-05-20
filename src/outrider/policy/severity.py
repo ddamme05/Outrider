@@ -102,10 +102,19 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
 # lookups. §0c sharp-edges audit finding #2 (regex tightened to the
 # strict no-leading-zero shape; comment updated post-PR review to match
 # the actual DB CHECK in migration `3d03bca7f2be`).
-_SEMVER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$",
-    re.ASCII,
-)
+BARE_SEMVER_PATTERN: Final[str] = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+"""Strict bare-semver regex string.
+
+Single source of truth. Used by the runtime `_SEMVER_RE` check below
+AND by every Pydantic `Field(pattern=...)` that gates a
+`policy_version` (audit events, ReviewFinding, etc.). Defining the
+pattern once stops the catalog-self-drift between `policy/severity.py`,
+`audit/events.py`, and the DB CHECK constraint in
+`db/migrations/versions/3d03bca7f2be_severity_policies_protections.py`
+from re-emerging the way it did pre-PR-review-round-4.
+"""
+
+_SEMVER_RE: Final[re.Pattern[str]] = re.compile(BARE_SEMVER_PATTERN, re.ASCII)
 
 ACTIVE_POLICY_VERSION: Final[str] = "1.0.0"
 if not _SEMVER_RE.fullmatch(ACTIVE_POLICY_VERSION):
