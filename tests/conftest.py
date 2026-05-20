@@ -89,8 +89,12 @@ def _no_severity_policy_patching() -> Iterator[None]:
             "during this test. Patching the dimension mapping breaks the "
             "module-load lockstep guard and would silently misroute findings "
             "to wrong dimensions at classification time. Construct a separate "
-            "dict locally if you need alternate mappings. See "
-            "specs/2026-05-19-analyze-foundation.md §8."
+            "dict locally if you need alternate mappings — "
+            "`{FindingType.X: ReviewDimension.Y, ...}` "
+            "(import ReviewDimension from `outrider.schemas.review_finding` "
+            "or via `outrider.schemas`; FindingType from `outrider.policy`). "
+            "See specs/2026-05-19-analyze-foundation.md §8 + foundation-wide "
+            "DevEx audit F8."
         )
 
 

@@ -156,6 +156,44 @@ class ReviewFinding(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_dimension_lockstep(self) -> Self:
+        """`dimension` must equal `FINDING_TYPE_TO_DIMENSION[finding_type]`.
+
+        Foundation-wide data-integrity audit F2: dimension is a stored
+        field (not computed), so a stale serialized payload could survive
+        replay under an old mapping. The module-load lockstep guard in
+        `outrider.policy.dimensions` fires only at import — it cannot
+        detect a finding ALREADY in `audit_events.payload` carrying a
+        drifted dimension. This validator closes that hole by asserting
+        the stored dimension matches the current mapping at construction
+        AND replay time (Pydantic re-runs `model_validator(mode='after')`
+        on `model_validate`).
+
+        Imported locally to avoid a circular import:
+        `policy.dimensions` imports `ReviewDimension` from this module
+        for its mapping values. The dependency goes one way at module
+        load and the other way at call time, which is fine.
+        """
+        # Local import: `policy.dimensions` imports from this module at
+        # load time, so a top-level import would cycle.
+        from outrider.policy.dimensions import (  # noqa: PLC0415
+            FINDING_TYPE_TO_DIMENSION,
+        )
+
+        expected = FINDING_TYPE_TO_DIMENSION[self.finding_type]
+        if self.dimension != expected:
+            raise ValueError(
+                f"ReviewFinding.dimension={self.dimension.value!r} drifted from "
+                f"FINDING_TYPE_TO_DIMENSION[{self.finding_type.value!r}]="
+                f"{expected.value!r}. Either the mapping changed since this "
+                f"finding was constructed (replay-time drift; bump "
+                f"FINDING_TYPE_TO_DIMENSION_VERSION if mappings are versioning) "
+                f"or the caller is constructing a finding without going "
+                f"through the canonical lookup (use lookup_dimension)."
+            )
+        return self
+
 
 __all__ = [
     "PublishDestination",

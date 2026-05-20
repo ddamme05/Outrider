@@ -78,6 +78,16 @@ from outrider.schemas import (
 # the existing references below.
 _SHA256_HEX_PATTERN: Final = SHA256_HEX_PATTERN
 
+# Bare-semver pattern matching `outrider.policy.severity._SEMVER_RE` AND
+# the DB CHECK constraint added by migration `3d03bca7f2be`. Audit events
+# carrying `policy_version` apply this pattern so a bogus value (e.g.,
+# "banana") fails at construction rather than landing in the append-only
+# audit log and breaking replay reconstruction downstream. Foundation-
+# wide adversarial audit M1, narrowed to policy_version only:
+# `pricing_version` carries `PRICING_VERSION` which uses a distinct
+# versioning scheme (`"v2"` not bare semver) per `llm/pricing.py`.
+_BARE_SEMVER_PATTERN: Final = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+
 
 def compute_finding_content_hash(
     file_path: str,
@@ -333,7 +343,7 @@ class FindingEvent(AuditEventBase):
     evidence_tier: EvidenceTier
     query_match_id: str | None = None
     trace_path: tuple[str, ...] | None = None
-    policy_version: str
+    policy_version: str = Field(pattern=_BARE_SEMVER_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_proof_boundary(self) -> Self:
@@ -502,7 +512,7 @@ class AnalyzeCompletedEvent(AuditEventBase):
     total_output_tokens: int = Field(ge=0)
     total_cost_usd: float = Field(ge=0)
     pricing_version: str
-    policy_version: str
+    policy_version: str = Field(pattern=_BARE_SEMVER_PATTERN)
     analyze_model: str
 
     @model_validator(mode="after")
@@ -519,7 +529,11 @@ class AnalyzeCompletedEvent(AuditEventBase):
             raise ValueError(
                 f"Proposal accounting mismatch: n_proposals_seen={self.n_proposals_seen} "
                 f"!= n_findings_emitted({self.n_findings_emitted}) + "
-                f"n_proposals_rejected({self.n_proposals_rejected}) = {expected}"
+                f"n_proposals_rejected({self.n_proposals_rejected}) = {expected}. "
+                f"Response-level rejections (n_responses_rejected={self.n_responses_rejected}) "
+                f"do NOT enter this equation — only proposal-level rejections do. "
+                f"If counting raw-response-unparseable cases, those increment "
+                f"n_responses_rejected (separate)."
             )
         return self
 

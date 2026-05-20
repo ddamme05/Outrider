@@ -62,13 +62,16 @@ FINDING_TYPE_TO_DIMENSION: Final[Mapping[FindingType, ReviewDimension]] = Mappin
 # set-equality assertion at the unit-test layer; this guard is the
 # deterministic floor that fires even when `git commit --no-verify`
 # bypasses CI (per post-split audit C4+S9).
-def _verify_lockstep() -> None:
+def verify_lockstep() -> None:
     """Assert lockstep across the three sets at import time.
 
     Wrapped in a function (not module-level top-level statement) so a
     future contributor adding test-side guard logic has a single
     surface to import + call, and so the subprocess-isolated CI test
     pinning the import-time failure can call this wrapper directly.
+    Foundation-wide sharp-edges audit I-7: dropped the leading underscore
+    because the function is called from `outrider/__init__.py` as a
+    load-bearing public entry point.
     """
     finding_type_set = set(FindingType)
     severity_set = set(SEVERITY_POLICY)
@@ -81,11 +84,16 @@ def _verify_lockstep() -> None:
             f"  FINDING_TYPE_TO_DIMENSION keys:   {sorted(t.value for t in dimension_set)}\n"
             "All three must be identical. A new FindingType requires "
             "matching entries in SEVERITY_POLICY (severity assignment) and "
-            "FINDING_TYPE_TO_DIMENSION (dimension assignment) in the same commit."
+            "FINDING_TYPE_TO_DIMENSION (dimension assignment) in the same commit.\n"
+            "After fixing the lockstep, lifespan startup will additionally "
+            "verify the live SEVERITY_POLICY mapping against the DB-stored row "
+            "at ACTIVE_POLICY_VERSION (api/lifespan.py Step 1b) — bump "
+            "ACTIVE_POLICY_VERSION and add a severity_policies migration row if "
+            "the policy values changed. Foundation-wide data-integrity audit F5."
         )
 
 
-_verify_lockstep()
+verify_lockstep()
 
 
 def lookup_dimension(finding_type: FindingType) -> ReviewDimension:

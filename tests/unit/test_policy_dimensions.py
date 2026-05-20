@@ -5,7 +5,7 @@ Pins:
 - Every `FindingType` has a dimension entry; conversely no extras.
 - Lockstep with `SEVERITY_POLICY` (same key set).
 - `MappingProxyType` blocks runtime mutation.
-- `_verify_lockstep()` raises when the three sets drift (simulated
+- `verify_lockstep()` raises when the three sets drift (simulated
   via temporary set difference).
 - `lookup_dimension` returns the canonical mapping.
 """
@@ -17,8 +17,8 @@ import pytest
 from outrider.policy import SEVERITY_POLICY, FindingType
 from outrider.policy.dimensions import (
     FINDING_TYPE_TO_DIMENSION,
-    _verify_lockstep,
     lookup_dimension,
+    verify_lockstep,
 )
 from outrider.schemas import ReviewDimension
 
@@ -63,8 +63,8 @@ def test_lookup_dimension_returns_mapped_value() -> None:
 
 
 def test_verify_lockstep_passes_in_canonical_state() -> None:
-    """`_verify_lockstep()` is a no-op when the three sets match."""
-    _verify_lockstep()  # raises AssertionError on drift; canonical state should pass
+    """`verify_lockstep()` is a no-op when the three sets match."""
+    verify_lockstep()  # raises AssertionError on drift; canonical state should pass
 
 
 def test_verify_lockstep_raises_on_simulated_drift(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,7 +88,7 @@ def test_verify_lockstep_raises_on_simulated_drift(monkeypatch: pytest.MonkeyPat
         MappingProxyType(short_dict),
     )
     with pytest.raises(AssertionError, match="Policy lockstep violation"):
-        _verify_lockstep()
+        verify_lockstep()
 
 
 def test_module_load_lockstep_runs_at_import() -> None:

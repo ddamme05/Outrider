@@ -22,14 +22,56 @@ import hashlib
 import json
 from typing import Any, Final
 
-# Lowercase-hex SHA-256 string pattern. Lives here (not in `audit/events.py`)
-# so both `schemas/` and `audit/` can import it without a circular dependency.
-# Producers go through `compute_identity_hash` below; consumers validate
-# stored strings against this pattern.
+__all__ = [
+    "SHA256_HEX_PATTERN",
+    "SHA256_HEX_PATTERN_SHORT",
+    "canonicalize_for_hash",
+    "compute_candidate_id",
+    "compute_identity_hash",
+    "compute_proposal_hash",
+    "compute_response_hash",
+    "compute_round_id",
+]
+
+
+# Lowercase-hex SHA-256 string pattern (full 64-char digest). Lives here
+# (not in `audit/events.py`) so both `schemas/` and `audit/` can import
+# it without a circular dependency. Producers go through
+# `compute_identity_hash` below; consumers validate stored strings
+# against this pattern.
 SHA256_HEX_PATTERN: Final[str] = r"^[a-f0-9]{64}$"
 
+# Short SHA-256-hex prefix pattern (16 chars). Used for hostile-string
+# fingerprinting per `DECISIONS.md#014` point 1: store
+# `sha256(raw_value)[:16]` instead of the raw model-controlled value, so
+# audit consumers can dedup + detect length-class anomalies without
+# leaking content. Lifted from `audit/events.py` per the foundation-wide
+# sharp-edges audit I-2 — same chokepoint discipline as the full
+# pattern above; per-call-site `_SHA256_HEX_PATTERN_PREFIX_N` literals
+# are the same drift class the canonical recipe is designed to prevent.
+SHA256_HEX_PATTERN_SHORT: Final[str] = r"^[a-f0-9]{16}$"
 
-def _canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
+
+# Pre-existing canonical encodings NOT routed through this module
+# (foundation-wide sharp-edges audit I-6, accepted-asymmetry option):
+#
+# - `outrider.audit.events.compute_finding_content_hash` — JSON-array
+#   payload `[file_path, line_start, line_end, finding_type.value]`,
+#   SHA-256 hex. Predates this module; stored hash values live in
+#   `audit_events.payload` rows. Re-canonicalizing would break those.
+# - `outrider.llm.base._canonical_prompt_hash` — `\x1e`-delimited
+#   two-string concatenation, SHA-256 hex. Predates this module;
+#   stored hash values live in `llm_call_content.prompt_hash` rows
+#   under retention. Re-canonicalizing would break those.
+#
+# Both stay independent of this module to preserve wire-format
+# compatibility on historical rows. New identity-bearing hashes added
+# from the foundation onward (round_id, candidate_id, proposal_hash,
+# response_hash) MUST go through `compute_identity_hash` below —
+# avoiding per-call-site recipe drift is the load-bearing property.
+
+
+def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     """Canonical UTF-8 bytes for a hash-input payload.
 
     Encodes via `json.dumps` with `sort_keys=True` (eliminates field-order
@@ -60,12 +102,20 @@ def _canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     if not all(isinstance(k, str) for k in payload):
         bad_keys = [k for k in payload if not isinstance(k, str)]
         raise TypeError(
-            f"_canonicalize_for_hash requires str keys; got {len(bad_keys)} "
+            f"canonicalize_for_hash requires str keys; got {len(bad_keys)} "
             f"non-str: {bad_keys[:5]!r}. Convert keys via `str(...)` before "
             f"hashing (silent int→str coercion under sort_keys=True is the "
             f"encoding-collision class the canonical recipe is designed to "
-            f"prevent — §1 crazy-audit MEDIUM-2)."
+            f"prevent)."
         )
+    # Foundation-wide data-integrity audit F4: reject Pydantic BaseModel
+    # instances as values. Without this, a caller passing a model directly
+    # (e.g., `payload["span"] = raw.span`) hits `json.dumps`'s default
+    # serializer which raises `TypeError` deep in the stack — the
+    # diagnostic message points at `json.dumps`, not at the caller's
+    # contract violation. Explicit rejection here surfaces the right
+    # escape hatch (`model.model_dump(mode='json')`).
+    _reject_basemodel_values(payload)
     return json.dumps(
         payload,
         sort_keys=True,
@@ -75,11 +125,174 @@ def _canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _reject_basemodel_values(payload: dict[str, Any]) -> None:
+    """Walk one level deep; fail-loud on Pydantic BaseModel instances.
+
+    The canonical recipe documents the value contract as JSON-native
+    primitives. A model instance silently breaks that — `json.dumps`'s
+    default raises `TypeError` with a message pointing at `dumps`, not
+    at the caller. Naming the surface here keeps the diagnostic
+    actionable: "convert via model_dump(mode='json') first".
+
+    Only walks one level — nested lists/dicts of plain primitives are
+    fine. Deeper nesting of BaseModel inside lists/dicts is a sister-
+    spec concern (the foundation never constructs payloads that nest
+    models deeper than one level).
+    """
+    # Local import to keep `policy/canonical.py` import-light for the
+    # `schemas/ → audit/ → policy/` import graph; pydantic is a runtime
+    # dep but not needed at module-load time.
+    from pydantic import BaseModel  # noqa: PLC0415
+
+    for k, v in payload.items():
+        if isinstance(v, BaseModel):
+            raise TypeError(
+                f"canonicalize_for_hash got a Pydantic BaseModel at key {k!r}: "
+                f"{type(v).__name__}. Convert via `model.model_dump(mode='json')` "
+                f"before hashing — the canonical recipe requires JSON-native "
+                f"primitives (str/int/bool/None/list/dict)."
+            )
+
+
 def compute_identity_hash(payload: dict[str, Any]) -> str:
     """SHA-256 hex digest of the canonical UTF-8 bytes for `payload`.
 
     The hex output is the standard 64-char lowercase shape matching
-    `_SHA256_HEX_PATTERN` validators on `AnalysisRound.round_id`,
+    `SHA256_HEX_PATTERN` validators on `AnalysisRound.round_id`,
     `TraceCandidate.candidate_id`, and downstream proposal hashes.
+
+    Prefer the typed wrappers below (`compute_proposal_hash`,
+    `compute_response_hash`, `compute_round_id`, `compute_candidate_id`)
+    for the four foundation-defined identity hashes — they build the
+    canonical payload internally so callers can't typo a key or forget
+    a field. This bare entrypoint is for ad-hoc test fixtures and
+    future identity-hash recipes the wrappers don't yet cover.
     """
-    return hashlib.sha256(_canonicalize_for_hash(payload)).hexdigest()
+    return hashlib.sha256(canonicalize_for_hash(payload)).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Typed wrappers for the four foundation-defined identity hashes.
+# Per foundation-wide DevEx audit F3: the proposal_hash / response_hash /
+# round_id / candidate_id payload shapes are in spec prose only — without
+# typed wrappers, a sister-spec parser author can typo a field name,
+# forget a key, or stringify a Span incorrectly and the resulting hash
+# still matches `SHA256_HEX_PATTERN`. The wrappers move each recipe into
+# code so mypy catches missing kwargs and the canonical encoding lives
+# in ONE place per hash type.
+# ---------------------------------------------------------------------------
+
+
+def compute_proposal_hash(
+    *,
+    finding_type: str,
+    evidence_tier: str,
+    query_match_id: str | None,
+    trace_path: tuple[str, ...] | None,
+    title: str,
+    description: str,
+    evidence: str,
+    byte_start: int,
+    byte_end: int,
+) -> str:
+    """SHA-256 hex of an `AnalyzeFindingProposalRaw`'s identity payload.
+
+    Per spec §1 "Canonical identity encoding" — 8 keys from the raw
+    proposal: finding_type, evidence_tier, query_match_id, trace_path,
+    title, description, evidence, span (as `{byte_start, byte_end}`).
+    `trace_candidates` deliberately excluded (model child-output, not
+    parent identity). All keyword-only — finding_type/evidence_tier
+    are both raw `str` (not enum-coerced) because the hash is computed
+    AT the raw layer, BEFORE admission.
+
+    Used by `FindingProposalRejectedEvent.proposal_hash` and by
+    `TraceCandidate.source_proposal_hash` so candidates join with
+    rejected proposals in the audit stream.
+    """
+    return compute_identity_hash(
+        {
+            "finding_type": finding_type,
+            "evidence_tier": evidence_tier,
+            "query_match_id": query_match_id,
+            "trace_path": list(trace_path) if trace_path is not None else None,
+            "title": title,
+            "description": description,
+            "evidence": evidence,
+            "span": {"byte_start": byte_start, "byte_end": byte_end},
+        }
+    )
+
+
+def compute_response_hash(response_text: str) -> str:
+    """SHA-256 hex of the FULL raw analyze response text, UTF-8 encoded.
+
+    Per spec §5 + post-split S11: full text, NO 8 KiB prefix. The
+    SHA-256 output is 64 hex chars carrying no recoverable completion
+    text — hash-only, no content leak per `DECISIONS.md#014`.
+
+    Used by `AnalyzeResponseRejectedEvent.response_hash`.
+
+    Note: this hash is over the raw response BYTES, not a structured
+    payload, so it doesn't go through `canonicalize_for_hash`. Distinct
+    encoding from the other three wrappers because the input shape is
+    distinct (bytes, not a dict).
+    """
+    return hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+
+
+def compute_round_id(
+    *,
+    pass_index: int,
+    files_examined: tuple[str, ...],
+    files_skipped: tuple[str, ...],
+    finding_content_hashes: tuple[str, ...],
+) -> str:
+    """SHA-256 hex identifying an `AnalysisRound`.
+
+    Per spec §1: content-derived from the round's payload so re-emission
+    of the same logical round (e.g., from a checkpoint replay) produces
+    the same id and collapses on the dedup-by-round_id reducer.
+
+    `finding_content_hashes` is the sequence of `ReviewFinding.content_hash`
+    values from this round's findings (not the full finding payloads —
+    the content_hash already captures finding identity).
+    `files_examined`/`files_skipped` MUST be the canonical
+    `validate_diff_path` output per `AnalysisRound._enforce_canonical_paths`.
+    Caller responsibility: pass them sorted if cross-process determinism
+    is required across non-deterministic enumeration orders.
+    """
+    return compute_identity_hash(
+        {
+            "pass_index": pass_index,
+            "files_examined": list(files_examined),
+            "files_skipped": list(files_skipped),
+            "finding_content_hashes": list(finding_content_hashes),
+        }
+    )
+
+
+def compute_candidate_id(
+    *,
+    source_proposal_hash: str,
+    candidate_path: str,
+    reason: str,
+) -> str:
+    """SHA-256 hex identifying a `TraceCandidate`.
+
+    Per spec §1: content-derived from the candidate's payload so
+    re-emission of the same logical candidate produces the same id and
+    collapses on the dedup-by-candidate_id reducer.
+
+    `candidate_path` MUST be the canonical `validate_diff_path` output
+    per `TraceCandidate._enforce_canonical_path`. `source_proposal_hash`
+    matches `FindingProposalRejectedEvent.proposal_hash` for the audit
+    join — caller passes the same string that landed on the rejection
+    event (or would land, if the proposal were rejected).
+    """
+    return compute_identity_hash(
+        {
+            "source_proposal_hash": source_proposal_hash,
+            "candidate_path": candidate_path,
+            "reason": reason,
+        }
+    )

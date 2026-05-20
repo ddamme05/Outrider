@@ -17,7 +17,7 @@ import hashlib
 
 import pytest
 
-from outrider.policy.canonical import _canonicalize_for_hash, compute_identity_hash
+from outrider.policy.canonical import canonicalize_for_hash, compute_identity_hash
 
 
 def test_canonical_bytes_for_known_fixture() -> None:
@@ -28,7 +28,7 @@ def test_canonical_bytes_for_known_fixture() -> None:
     drifting downstream identity hashes.
     """
     payload = {"b": 2, "a": 1, "c": ["x", "y"]}
-    out = _canonicalize_for_hash(payload)
+    out = canonicalize_for_hash(payload)
     assert out == b'{"a":1,"b":2,"c":["x","y"]}'
 
 
@@ -36,14 +36,14 @@ def test_canonical_bytes_sort_keys_eliminates_field_order() -> None:
     """Same content, different insertion order, identical bytes."""
     payload_a = {"a": 1, "b": 2, "c": 3}
     payload_b = {"c": 3, "b": 2, "a": 1}
-    assert _canonicalize_for_hash(payload_a) == _canonicalize_for_hash(payload_b)
+    assert canonicalize_for_hash(payload_a) == canonicalize_for_hash(payload_b)
 
 
 def test_canonical_bytes_compact_separators() -> None:
     """No spaces around `:` or `,` — defends against json.dumps default
     `", "` separator drift.
     """
-    out = _canonicalize_for_hash({"a": 1, "b": 2})
+    out = canonicalize_for_hash({"a": 1, "b": 2})
     assert b", " not in out
     assert b": " not in out
 
@@ -56,7 +56,7 @@ def test_canonical_bytes_preserves_multibyte_utf8() -> None:
     payload and an equivalent multibyte one.
     """
     payload = {"text": "café — résumé"}
-    out = _canonicalize_for_hash(payload)
+    out = canonicalize_for_hash(payload)
     assert "café".encode() in out
     assert b"\\u" not in out
 
@@ -70,7 +70,7 @@ def test_canonical_bytes_rejects_lone_surrogate() -> None:
     """
     payload = {"text": "\ud800"}  # lone high surrogate
     with pytest.raises(UnicodeEncodeError):
-        _canonicalize_for_hash(payload)
+        canonicalize_for_hash(payload)
 
 
 def test_compute_identity_hash_returns_lowercase_hex_sha256() -> None:
@@ -83,9 +83,9 @@ def test_compute_identity_hash_returns_lowercase_hex_sha256() -> None:
 
 
 def test_compute_identity_hash_matches_manual_sha256() -> None:
-    """Identity-hash is exactly `sha256(_canonicalize_for_hash(payload))`."""
+    """Identity-hash is exactly `sha256(canonicalize_for_hash(payload))`."""
     payload = {"file_path": "src/foo.py", "line_start": 10, "line_end": 12}
-    expected = hashlib.sha256(_canonicalize_for_hash(payload)).hexdigest()
+    expected = hashlib.sha256(canonicalize_for_hash(payload)).hexdigest()
     assert compute_identity_hash(payload) == expected
 
 
@@ -113,7 +113,7 @@ def test_canonical_bytes_rejects_nan() -> None:
     digest no semantically-equal payload can reproduce. `allow_nan=False`
     fails loud at hash time, not at downstream JSON-consumer time."""
     with pytest.raises(ValueError, match="Out of range float"):
-        _canonicalize_for_hash({"x": float("nan")})
+        canonicalize_for_hash({"x": float("nan")})
 
 
 @pytest.mark.parametrize("bad_value", [float("inf"), float("-inf")])
@@ -121,20 +121,20 @@ def test_canonical_bytes_rejects_infinity(bad_value: float) -> None:
     """HIGH fold: Infinity tokens are non-RFC-8259 — downstream consumers
     (V1.5 JS dashboard, V2 archival pipelines) can't re-parse them."""
     with pytest.raises(ValueError, match="Out of range float"):
-        _canonicalize_for_hash({"x": bad_value})
+        canonicalize_for_hash({"x": bad_value})
 
 
 def test_canonical_bytes_rejects_int_keys() -> None:
     """MEDIUM-2 fold: `{1: "a"}` and `{"1": "a"}` would hash identically
     under sort_keys=True's silent int→str coercion. Fail loud instead."""
     with pytest.raises(TypeError, match="requires str keys"):
-        _canonicalize_for_hash({1: "a"})  # type: ignore[dict-item]
+        canonicalize_for_hash({1: "a"})  # type: ignore[dict-item]
 
 
 def test_canonical_bytes_rejects_mixed_keys() -> None:
     """Same fold: catch non-str keys even when most keys ARE str."""
     with pytest.raises(TypeError, match="requires str keys"):
-        _canonicalize_for_hash({"a": 1, 2: "b"})  # type: ignore[dict-item]
+        canonicalize_for_hash({"a": 1, 2: "b"})  # type: ignore[dict-item]
 
 
 def test_canonical_bytes_rejects_datetime_value() -> None:
@@ -144,7 +144,7 @@ def test_canonical_bytes_rejects_datetime_value() -> None:
     from datetime import UTC, datetime
 
     with pytest.raises(TypeError, match="not JSON serializable"):
-        _canonicalize_for_hash({"ts": datetime.now(UTC)})  # type: ignore[dict-item]
+        canonicalize_for_hash({"ts": datetime.now(UTC)})  # type: ignore[dict-item]
 
 
 def test_canonical_bytes_rejects_uuid_value() -> None:
@@ -152,7 +152,7 @@ def test_canonical_bytes_rejects_uuid_value() -> None:
     from uuid import uuid4
 
     with pytest.raises(TypeError, match="not JSON serializable"):
-        _canonicalize_for_hash({"id": uuid4()})  # type: ignore[dict-item]
+        canonicalize_for_hash({"id": uuid4()})  # type: ignore[dict-item]
 
 
 def test_canonical_bytes_admits_pre_converted_iso_datetime() -> None:
@@ -160,5 +160,5 @@ def test_canonical_bytes_admits_pre_converted_iso_datetime() -> None:
     from datetime import UTC, datetime
 
     ts = datetime.now(UTC)
-    out = _canonicalize_for_hash({"ts": ts.isoformat()})
+    out = canonicalize_for_hash({"ts": ts.isoformat()})
     assert b'"ts":"' in out

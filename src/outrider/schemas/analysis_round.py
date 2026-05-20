@@ -17,8 +17,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
+from outrider.coordinates import validate_diff_path
 from outrider.policy.canonical import SHA256_HEX_PATTERN
 from outrider.schemas.review_finding import (
     ReviewFinding,  # noqa: TC001 — Pydantic field type, needs runtime import
@@ -47,3 +48,22 @@ class AnalysisRound(BaseModel):
     files_skipped: tuple[Annotated[str, Field(max_length=1024)], ...]
     started_at: AwareDatetime
     ended_at: AwareDatetime
+
+    @field_validator("files_examined", "files_skipped")
+    @classmethod
+    def _enforce_canonical_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
+        """Reject paths that aren't `coordinates.validate_diff_path` output.
+
+        Foundation-wide data-integrity audit F1: `round_id` is content-
+        derived from this round's payload (per spec §1). If callers pass
+        non-canonical paths (`./src/a.py` vs `src/a.py`, trailing slash,
+        unvalidated metachars), the resulting `round_id` is non-
+        deterministic across producers — replay re-application collides
+        under a DIFFERENT key, defeating idempotency.
+
+        Pushing the rule down to the schema means the parser, replay
+        reconstructor, test fixture, and any future producer all get
+        the same guarantee. `validate_diff_path` raises `CoordinateError`
+        on invalid input — Pydantic surfaces that as `ValidationError`.
+        """
+        return tuple(validate_diff_path(p) for p in paths)
