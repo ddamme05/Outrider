@@ -49,6 +49,7 @@ async def test_append_only_trigger_objects_exist(migrated_db: str) -> None:
                     "  'trg_severity_policies_append_only', "
                     "  'trg_severity_policies_no_truncate'"
                     ") AND NOT tgisinternal "
+                    "AND tgrelid = 'severity_policies'::regclass "
                     "ORDER BY tgname"
                 )
             )

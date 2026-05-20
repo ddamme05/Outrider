@@ -160,17 +160,36 @@ def test_span_within_degraded_context_span_fully_equal_range() -> None:
     )
 
 
-def test_span_within_degraded_context_empty_span_inside_range() -> None:
-    """An empty span [a, a) where a is inside (c, d) — the half-open
-    intersection check `a < d AND c < b` becomes `a < d AND c < a`,
-    which holds when c < a < d. So empty span strictly inside a range
-    intersects."""
+def test_span_within_degraded_context_empty_span_rejected() -> None:
+    """An empty span `[a, a)` covers zero bytes — it cannot anchor a
+    JUDGED-tier finding to changed content. Even when `a` sits strictly
+    inside an addable range, the gate rejects: a zero-width span the
+    model fabricated to "land inside" the diff would otherwise slip
+    through degraded-mode admission.
+    """
     assert (
         span_within_degraded_context(
             Span(byte_start=20, byte_end=20),
             addable_diff_byte_ranges=((10, 50),),
         )
-        is True
+        is False
+    )
+
+
+def test_span_within_degraded_context_empty_range_skipped() -> None:
+    """A range with `c >= d` carries no bytes; the gate skips it rather
+    than admitting overlap by accident. Without this, a malformed
+    `addable_diff_byte_ranges` tuple with `(50, 50)` would let a span
+    at `byte_start=49, byte_end=51` slip through via `49 < 50 AND 50 < 51`.
+    """
+    # Span overlaps a real range, so we know rejection here is specifically
+    # because the empty range is skipped, not because the span itself is empty.
+    assert (
+        span_within_degraded_context(
+            Span(byte_start=49, byte_end=51),
+            addable_diff_byte_ranges=((50, 50),),
+        )
+        is False
     )
 
 

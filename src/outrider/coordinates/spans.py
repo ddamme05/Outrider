@@ -87,10 +87,21 @@ def span_within_degraded_context(
     overlap.
 
     Empty `addable_diff_byte_ranges` returns False (no degraded
-    context to anchor against).
+    context to anchor against). An empty `span` (`byte_start == byte_end`)
+    also returns False: a zero-width span covers no bytes, so it cannot
+    meaningfully anchor a JUDGED-tier finding to changed content. Without
+    this gate, the half-open check `a < d AND c < a` would admit a
+    zero-width span sitting strictly inside a changed range, which is
+    exactly the fabrication the gate is supposed to refuse. Empty
+    ranges in `addable_diff_byte_ranges` are likewise skipped: a range
+    with `c >= d` carries no bytes.
     """
+    if span.byte_start >= span.byte_end:
+        return False
     # Half-open intersection: [a, b) intersects [c, d) iff a < d AND c < b.
-    return any(span.byte_start < d and c < span.byte_end for c, d in addable_diff_byte_ranges)
+    return any(
+        c < d and span.byte_start < d and c < span.byte_end for c, d in addable_diff_byte_ranges
+    )
 
 
 def span_to_line_range(span: Span, source: str) -> tuple[int, int]:

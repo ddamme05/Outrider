@@ -6,14 +6,19 @@ Create Date: 2026-05-19
 
 Adds the protections genesis didn't have:
 
-  1. CHECK constraint `ck_severity_policies_version_semver` enforcing bare
-     semver shape (`^\\d+\\.\\d+\\.\\d+$`) on `severity_policies.version`.
-     The existing `version='1.0.0'` row (seeded by af138edd4b57_genesis.py
+  1. CHECK constraint `ck_severity_policies_version_semver` enforcing
+     tight bare semver shape on `severity_policies.version`:
+     `^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$`. Exactly
+     three dot-separated numeric components; the literal `0` is allowed
+     but otherwise no leading zeros (`01.0.0` rejected); no pre-release
+     or build suffix (`1.0.0-rc1` and `1.0.0+build` rejected). The
+     existing `version='1.0.0'` row (seeded by af138edd4b57_genesis.py
      at lines 432-449) satisfies the CHECK, so the ALTER applies cleanly
      on a populated DB. Belt-and-suspenders to the Python-side semver
-     assertion at `outrider.policy.severity::ACTIVE_POLICY_VERSION`: DB
-     rejects malformed inserts even if a future migration sneaks one past
-     the Python guard.
+     assertion at `outrider.policy.severity::ACTIVE_POLICY_VERSION`: the
+     two regexes agree, so a value the Python guard accepts also passes
+     the DB CHECK, and the DB rejects malformed inserts even if a
+     future migration sneaks one past the Python guard.
 
   2. Append-only trigger `trg_severity_policies_append_only` on
      `severity_policies`, mirroring the existing `audit_events`

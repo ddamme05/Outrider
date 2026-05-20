@@ -215,6 +215,34 @@ def test_trace_candidate_admitted_uses_candidate_path() -> None:
     assert admitted.candidate_path == "src/middleware/auth.py"
 
 
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "../escape.py",
+        "src/../../escape.py",
+        "/etc/passwd",
+        "src/foo.py\x00",
+    ],
+)
+def test_trace_candidate_admitted_rejects_invalid_path(bad_path: str) -> None:
+    """The admitted-layer `candidate_path` validator re-runs
+    `validate_diff_path` so traversal / absolute / NUL-bearing paths
+    are refused at the schema boundary, NOT just at the raw→admitted
+    translator. Pins the schema-layer guarantee against silent
+    construction of an admitted proposal with a path the API surface
+    would reject.
+
+    Pydantic V2's `field_validator` re-raises non-`ValueError` /
+    non-`AssertionError` exceptions directly, so a `CoordinateError`
+    from `validate_diff_path` surfaces as itself, not wrapped in a
+    `ValidationError`. The test accepts either.
+    """
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        TraceCandidateProposal(candidate_path=bad_path, reason="x")
+
+
 def test_trace_candidate_admitted_rejects_candidate_path_raw_kwarg() -> None:
     """The raw layer's field name is NOT a valid admitted field — post-
     split S4 pit-of-success: a raw→admitted swap fails Pydantic

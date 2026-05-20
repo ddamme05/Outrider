@@ -94,13 +94,32 @@ def test_verify_lockstep_raises_on_simulated_drift(monkeypatch: pytest.MonkeyPat
 def test_module_load_lockstep_runs_at_import() -> None:
     """`outrider.policy.dimensions` is force-imported from `outrider/__init__.py`
     so the lockstep guard fires at app startup / test collection — even
-    when no analyze code is on the import path. Verify the module is in
-    sys.modules after a bare `import outrider`."""
+    when no analyze code is on the import path.
+
+    Runs in a SUBPROCESS so the assertion isn't self-fulfilling: the
+    parent test process has already imported `outrider.policy.dimensions`
+    at file-load (line 18) just by setting up the rest of the test
+    suite, so an in-process check would pass regardless of whether
+    `outrider/__init__.py` does anything. The subprocess starts with a
+    clean `sys.modules`, imports only `outrider`, and prints the
+    membership of `outrider.policy.dimensions`.
+    """
+    import subprocess
     import sys
 
-    import outrider  # noqa: F401 — import-time side effect under test
-
-    assert "outrider.policy.dimensions" in sys.modules, (
+    result = subprocess.run(  # noqa: S603 — argv list, no shell, fixed args
+        [
+            sys.executable,
+            "-c",
+            ("import sys; import outrider; print('outrider.policy.dimensions' in sys.modules)"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert result.stdout.strip() == "True", (
         "outrider.policy.dimensions must be force-imported by outrider/__init__.py "
-        "so the lockstep guard runs at app startup, not just at first analyze import"
+        "so the lockstep guard runs at app startup, not just at first analyze import. "
+        f"subprocess stdout={result.stdout!r} stderr={result.stderr!r}"
     )
