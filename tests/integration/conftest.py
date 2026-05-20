@@ -66,6 +66,33 @@ from outrider.audit.persister import AuditPersister
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
+
+
+async def _noop_severity_policy_fingerprint_check(_engine: object) -> None:
+    """Async no-op for MagicMock-engine lifespan tests.
+
+    Lifespan tests that inject a MagicMock engine cannot satisfy the
+    default `_verify_severity_policy_fingerprint` (which opens a real DB
+    connection at lifespan Step 1b). Pass this helper via
+    `build_lifespan(severity_policy_fingerprint_check=...)` to bypass.
+
+    The §0c fingerprint behavior itself is exercised against a real
+    `migrated_db` engine in `test_lifespan_startup_fingerprint.py` —
+    this no-op exists so OTHER lifespan tests (teardown ordering, filter
+    re-registration, provider aclose) aren't blocked on having a real DB.
+
+    Discoverability per §0c-devex-H2: lifted from three duplicated
+    in-file definitions into this conftest so a future fourth lifespan
+    test finds the canonical helper.
+    """
+
+
+@pytest.fixture(scope="session")
+def noop_severity_policy_fingerprint_check() -> Callable[[object], Awaitable[None]]:
+    """Session-scoped: the no-op is stateless, safe to share."""
+    return _noop_severity_policy_fingerprint_check
+
+
 # The pyproject_async template puts source-code config (script_location etc.)
 # in pyproject.toml under [tool.alembic]; alembic.ini holds DB connection +
 # logging only. The CLI auto-discovers both, but a path-constructed Config

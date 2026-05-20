@@ -23,7 +23,9 @@ from outrider.api.lifespan import build_lifespan
 
 # PEM + env-var injection + LLM provider stub are centralized in
 # `tests/conftest.py` per round-31 fold (DevEx audit, HIGH). Tests grab
-# fresh stubs via the `make_stub_llm_provider` factory fixture.
+# fresh stubs via the `make_stub_llm_provider` factory fixture. The
+# §0c fingerprint-bypass helper (`noop_severity_policy_fingerprint_check`)
+# is in `tests/integration/conftest.py` per §0c-devex-H2.
 
 
 @pytest.fixture(autouse=True)
@@ -34,13 +36,15 @@ def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — 
     """
 
 
-def _make_test_lifespan(stub_provider_cls: type) -> object:
+def _make_test_lifespan(stub_provider_cls: type, noop_fingerprint: object) -> object:
     """Build a lifespan with mock engine + stub provider so the real DB/SDK
     aren't required for filter-re-registration testing.
 
     `stub_provider_cls` is the StubLLMProvider CLASS from the
     `make_stub_llm_provider` factory fixture — the helper instantiates
-    a fresh stub per call.
+    a fresh stub per call. `noop_fingerprint` is the §0c bypass callable
+    from the integration conftest's `noop_severity_policy_fingerprint_check`
+    fixture (per §0c-devex-H2 consolidation).
     """
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
@@ -54,11 +58,13 @@ def _make_test_lifespan(stub_provider_cls: type) -> object:
     return build_lifespan(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: stub_provider,
+        severity_policy_fingerprint_check=noop_fingerprint,  # type: ignore[arg-type]
     )
 
 
 async def test_lifespan_installs_filter_on_late_registered_handler(
     make_stub_llm_provider: type,
+    noop_severity_policy_fingerprint_check: object,
 ) -> None:
     """Simulate uvicorn registering its handler AFTER `import outrider` (which
     already called `register_filter_on_all_handlers()` once). The lifespan
@@ -93,7 +99,9 @@ async def test_lifespan_installs_filter_on_late_registered_handler(
 
         # Enter the lifespan body.
         app = FastAPI()
-        lifespan_cm = _make_test_lifespan(make_stub_llm_provider)(app)
+        lifespan_cm = _make_test_lifespan(
+            make_stub_llm_provider, noop_severity_policy_fingerprint_check
+        )(app)
         async with lifespan_cm:
             # Inside lifespan body, the filter IS installed on the late handler.
             post_filter_count = sum(
@@ -109,6 +117,7 @@ async def test_lifespan_installs_filter_on_late_registered_handler(
 
 async def test_lifespan_filter_actually_rejects_content_records(
     make_stub_llm_provider: type,
+    noop_severity_policy_fingerprint_check: object,
 ) -> None:
     """End-to-end behavior: after lifespan setup, content-bearing records
     emitted on outrider.* loggers are rejected by the actual handler
@@ -134,7 +143,9 @@ async def test_lifespan_filter_actually_rejects_content_records(
         target_logger.propagate = False
 
         app = FastAPI()
-        lifespan_cm = _make_test_lifespan(make_stub_llm_provider)(app)
+        lifespan_cm = _make_test_lifespan(
+            make_stub_llm_provider, noop_severity_policy_fingerprint_check
+        )(app)
         async with lifespan_cm:
             # Emit a record carrying content fields the filter rejects.
             target_logger.info(

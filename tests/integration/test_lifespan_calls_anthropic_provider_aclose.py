@@ -16,7 +16,9 @@ from outrider.api.lifespan import build_lifespan
 
 # PEM + env-var injection + LLM provider stub are centralized in
 # `tests/conftest.py` per round-31 fold (DevEx audit, HIGH). Tests grab
-# fresh stubs via the `make_stub_llm_provider` factory fixture.
+# fresh stubs via the `make_stub_llm_provider` factory fixture. The
+# §0c fingerprint-bypass helper (`noop_severity_policy_fingerprint_check`)
+# is in `tests/integration/conftest.py` per §0c-devex-H2.
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +31,7 @@ def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — 
 
 async def test_lifespan_calls_provider_aclose_on_shutdown(
     make_stub_llm_provider: type,
+    noop_severity_policy_fingerprint_check: object,
 ) -> None:
     """Lifespan teardown awaits `provider.aclose()`."""
     mock_engine = MagicMock()
@@ -43,6 +46,7 @@ async def test_lifespan_calls_provider_aclose_on_shutdown(
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: stub_provider,
+        severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
     )
 
     app = FastAPI()
@@ -56,6 +60,7 @@ async def test_lifespan_calls_provider_aclose_on_shutdown(
 
 async def test_lifespan_calls_engine_dispose_on_shutdown(
     make_stub_llm_provider: type,
+    noop_severity_policy_fingerprint_check: object,
 ) -> None:
     """Lifespan teardown awaits `engine.dispose()`."""
     mock_engine = MagicMock()
@@ -68,6 +73,7 @@ async def test_lifespan_calls_engine_dispose_on_shutdown(
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: stub_provider,
+        severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
     )
 
     app = FastAPI()
