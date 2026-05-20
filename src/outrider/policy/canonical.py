@@ -279,27 +279,30 @@ def compute_proposal_hash(
     BEFORE admission.
 
     `source_file_path` runs through `coordinates.validate_diff_path`
-    BEFORE entering the hash payload. Per the round-2-crazy-audit DI-H1
-    path-canonicalization rule (spec.md §1: "All `files_examined`,
-    `files_skipped`, and `candidate_path` strings entering identity
-    hashes MUST be in canonical form"), `source_file_path` is now the
-    fourth path-bearing input to a hash recipe and inherits the same
-    rule. Without this gate, `"src/foo.py"` and `"./src/foo.py"` and
-    `"src//foo.py"` (the same file under different aliases) would
-    produce distinct `proposal_hash` values — reopening exactly the
-    dedup false-negative Codex round-7 caught. Canonicalization here
-    + at the carrier-schema layers means alias paths produce a SINGLE
-    canonical hash. The pedagogical placement of `source_file_path`
-    as the first dict key remains — `canonicalize_for_hash`'s
-    `sort_keys=True` makes position hash-irrelevant.
+    BEFORE entering the hash payload. Per the path-canonicalization
+    rule (spec.md §1: "All `files_examined`, `files_skipped`, and
+    `candidate_path` strings entering identity hashes MUST be in
+    canonical form"), `source_file_path` is the fourth path-bearing
+    input to a hash recipe and inherits the same rule. Without this
+    gate, `"src/foo.py"`, `"./src/foo.py"`, and `"src//foo.py"` (the
+    same file under different aliases) would produce distinct
+    `proposal_hash` values — reopening the dedup false-negative that
+    DECISIONS.md#022 was specifically designed to close.
+    Canonicalization here + at the carrier-schema layers means alias
+    paths produce a SINGLE canonical hash. The pedagogical placement
+    of `source_file_path` as the first dict key remains —
+    `canonicalize_for_hash`'s `sort_keys=True` makes position
+    hash-irrelevant.
 
     Used by `FindingProposalRejectedEvent.proposal_hash` and by
-    `TraceCandidate.source_proposal_hash`. Two analyze passes over
-    DIFFERENT source files emitting logically-identical proposals now
-    produce DISTINCT hashes (the old recipe collapsed them — a real
-    Codex round-6 audit finding). The trace node still dedups actual
-    fetches by `candidate_path` at execution time; the candidate-identity
-    model preserves the per-source-file causal edges either way.
+    `TraceCandidate.source_proposal_hash`. Per DECISIONS.md#022,
+    proposal identity is PR/file-scoped, so two analyze passes over
+    DIFFERENT source files emitting logically-identical proposals
+    produce DISTINCT hashes — preserving per-source-file audit
+    provenance on the candidate trail. The trace node still dedups
+    actual fetches by `candidate_path` at execution time; the
+    candidate-identity model preserves the per-source-file causal
+    edges either way.
     """
     from outrider.coordinates import validate_diff_path  # noqa: PLC0415
 

@@ -217,11 +217,10 @@ class ContextManifestEntry(BaseModel):
     def _enforce_canonical_file_path(cls, path: str) -> str:
         """Re-run `validate_diff_path` so the audit-event side enforces the
         same repo-relative-POSIX invariant `AnalysisRound.files_examined`
-        does. Codex round-6 audit (HIGH): pre-fold the audit-event shadow
-        was weaker than the schemas-side validation — a traversal-bearing
-        or shell-metacharacter path on a ContextManifestEntry inside
-        LLMCallEvent.context_summary could ride into the append-only audit
-        log without going through the canonical gate.
+        does. Without this gate, a traversal-bearing or shell-metacharacter
+        path on a `ContextManifestEntry` inside `LLMCallEvent.context_summary`
+        could ride into the append-only audit log without going through
+        the canonical path-validation gate.
         """
         return validate_diff_path(path)
 
@@ -417,9 +416,12 @@ class FileExaminationEvent(AuditEventBase):
     @field_validator("file_path")
     @classmethod
     def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`. Codex round-6
-        audit (HIGH): the audit-event side was weaker than the
-        `AnalysisRound.files_examined` validator at the schemas side."""
+        """Audit-shadow mirror of `paths-validated-before-use`. Matches
+        the `AnalysisRound.files_examined` validator at the schemas side
+        so the audit-row contract is at least as strict as the in-memory
+        shape — a traversal-bearing or shell-metacharacter path can't
+        ride into the append-only log unvalidated.
+        """
         return validate_diff_path(path)
 
     @model_validator(mode="after")
@@ -466,12 +468,12 @@ class FindingEvent(AuditEventBase):
     @field_validator("file_path")
     @classmethod
     def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`. Codex round-6
-        audit (HIGH): pre-fold `FindingEvent.file_path` was raw `str` while
-        `ReviewFinding.file_path` already ran `validate_diff_path`. The
-        audit shadow must be at least as strict as the in-memory shape;
-        otherwise a traversal-bearing file_path could ride into the
-        append-only log."""
+        """Audit-shadow mirror of `paths-validated-before-use`. Matches
+        the `ReviewFinding.file_path` validator at the schemas side —
+        the audit shadow must be at least as strict as the in-memory
+        shape, or a traversal-bearing file_path could ride into the
+        append-only log unvalidated.
+        """
         return validate_diff_path(path)
 
     @model_validator(mode="after")
@@ -501,11 +503,12 @@ class FindingEvent(AuditEventBase):
         audit-event layer. Without this, a row like
         `(finding_type=SQL_INJECTION, dimension=PERFORMANCE)` admits even
         though `FINDING_TYPE_TO_DIMENSION[SQL_INJECTION] == SECURITY` —
-        same gap class Codex round-5 caught on `severity`. The
-        module-load lockstep guard in `outrider.policy.dimensions` fires
-        only at import; it can't detect an audit row ALREADY in
-        `audit_events.payload` carrying a drifted dimension. This
-        validator closes that hole at the audit-event layer too.
+        the same gap class the schemas-side validator closes for
+        `severity`. The module-load lockstep guard in
+        `outrider.policy.dimensions` fires only at import; it can't
+        detect an audit row ALREADY in `audit_events.payload` carrying
+        a drifted dimension. This validator closes that hole at the
+        audit-event layer too.
 
         Imported locally to avoid a circular import: `policy.dimensions`
         imports `ReviewDimension` from `schemas.review_finding`; this
@@ -539,18 +542,27 @@ class FindingEvent(AuditEventBase):
         severity must always match SEVERITY_POLICY[finding_type] at
         write time, no override case to consider.
 
-        Per Codex round-6 (HIGH): fresh writes MUST use
-        `ACTIVE_POLICY_VERSION`. Any non-ACTIVE `policy_version` is
-        REJECTED below — the previous "skip if non-ACTIVE" branch was a
-        quiet bypass that let a fresh-write attacker dodge live-policy
-        enforcement by smuggling a backdated semver. Historical-event
-        replay loads via the persister/replay layer's
-        `policy/versions.py::load_policy_for_version` path, NOT fresh
-        schema construction. Per `severity-policy-versioned-for-replay`.
+        Replay-aware scoping. `model_validate` is the SAME path
+        `TypeAdapter(AuditEvent).validate_python(...)` uses to
+        reconstruct historical events (see module docstring at
+        the top of this file). A historical event under an older
+        `policy_version` MUST validate cleanly — the severity it
+        carries was correct AT WRITE TIME under its frozen policy,
+        and we have no synchronous loader for the historical
+        mapping here (`policy/versions.py::load_policy_for_version`
+        is async; it's the persister/replay layer's job, not the
+        schema's).
 
-        Codex round-5 audit (HIGH-confidence valid finding) — without
-        the SEVERITY_POLICY match check below, a row like (SQL_INJECTION,
-        LOW) lands in the append-only audit stream.
+        Scope: the live-policy match check below fires ONLY when
+        `policy_version == ACTIVE_POLICY_VERSION`. Older versions
+        skip and trust the historical row. The "fresh-write smuggle"
+        concern (a producer setting `policy_version="0.9.0"` to
+        dodge the live check) is NOT defended at the schema layer —
+        it's a producer-side discipline enforced by the emitter and,
+        when the replay/persister spec lands, by the persister's
+        write-time check that incoming events carry the active
+        version. The schema layer cannot distinguish fresh writes
+        from replay reconstruction inside `model_validate`.
         """
         # Local import: policy modules cannot import from audit.events
         # at top-level (they don't), so this could move up; kept local
@@ -561,21 +573,9 @@ class FindingEvent(AuditEventBase):
         )
 
         if self.policy_version != ACTIVE_POLICY_VERSION:
-            # Codex round-6 audit (HIGH): the previous "skip if non-ACTIVE"
-            # path was a quiet bypass. Fresh writes MUST use ACTIVE; the
-            # persister/replay layer handles historical events via
-            # `policy/versions.py::load_policy_for_version` (NOT through
-            # fresh schema construction). Until a KNOWN_POLICY_VERSIONS
-            # registry differentiates "valid historical version" from
-            # "smuggled non-existent version", reject any non-ACTIVE write
-            # at the schema layer.
-            raise ValueError(
-                f"FindingEvent.policy_version={self.policy_version!r} is not "
-                f"ACTIVE_POLICY_VERSION ({ACTIVE_POLICY_VERSION!r}). Fresh writes "
-                f"must use the active policy. Historical-event replay goes through "
-                f"the persister/replay layer, NOT fresh schema construction. Per "
-                f"`severity-policy-versioned-for-replay` (docs/invariants.md)."
-            )
+            # Historical event: trust the row. Versioned-replay
+            # cross-check belongs in the persister/replay layer.
+            return self
         expected = SEVERITY_POLICY.get(self.finding_type)
         if expected is None or self.severity != expected:
             raise ValueError(
@@ -824,10 +824,11 @@ class FindingProposalRejectedEvent(AuditEventBase):
     @field_validator("file_path")
     @classmethod
     def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow `paths-validated-before-use`. Codex round-6 (HIGH).
-        Even rejected proposals carry a file_path that names the analyze
-        target; a traversal-bearing path here would land in the audit log
-        with no in-memory ReviewFinding to gate it."""
+        """Audit-shadow `paths-validated-before-use`. Even rejected
+        proposals carry a file_path that names the analyze target;
+        a traversal-bearing path here would land in the audit log
+        with no in-memory ReviewFinding to gate it.
+        """
         return validate_diff_path(path)
 
     @model_validator(mode="after")
@@ -879,7 +880,8 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     @field_validator("file_path")
     @classmethod
     def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow `paths-validated-before-use`. Codex round-6 (HIGH)."""
+        """Audit-shadow `paths-validated-before-use`. Same canonical
+        gate as `FindingProposalRejectedEvent.file_path` above."""
         return validate_diff_path(path)
 
     rejection_detail: Annotated[str, Field(max_length=500)]

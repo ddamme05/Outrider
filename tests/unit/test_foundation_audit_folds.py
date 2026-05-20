@@ -231,7 +231,7 @@ def test_compute_proposal_hash_distinct_across_source_files() -> None:
 
 
 def test_compute_proposal_hash_canonicalizes_aliased_paths() -> None:
-    """Codex round-7 (HIGH): the recipe canonicalizes `source_file_path`
+    """the recipe canonicalizes `source_file_path`
     through `coordinates.validate_diff_path` BEFORE entering the hash
     payload. Alias paths that name the same file (`src/foo.py` vs
     `./src/foo.py`) produce IDENTICAL hashes, NOT distinct ones —
