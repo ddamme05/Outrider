@@ -428,6 +428,24 @@ class LLMRequest(BaseModel):
     context_summary: tuple[ContextManifestEntry, ...] = ()
     prompt_template_version: str = Field(min_length=1)
     degraded_mode: bool
+    # Pins the provenance of `degraded_mode=True`. Per §0b of
+    # `specs/2026-05-19-analyze-foundation.md` and the post-split audit
+    # S5 finding: `degraded_mode=True` was an unauthenticated bypass
+    # flag that any analyze caller could set to skip the context
+    # validator. The typed reason makes `degraded_mode` un-bypassable
+    # without naming a documented degradation cause. The Literal is
+    # narrow on purpose: new reasons require expanding it (deliberate
+    # friction so degraded-mode causes stay enumerable). V1 reasons
+    # match the sister spec's parse-failure / has_error_in_changed_regions
+    # branches.
+    #
+    # Sibling-sweep checklist when adding a new value here (per §0b
+    # sharp-edges SE-4): (1) extend this Literal; (2) extend
+    # `LLMCallEvent.degradation_reason` Literal in lockstep at
+    # `outrider.audit.events`; (3) add a sister-spec parser branch
+    # mapping the new ast_facts outcome to this reason; (4) extend
+    # `tests/unit/test_llm_request_schema.py`'s truth-table tests.
+    degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
 
     @field_serializer("system_prompt")
     def _redact_system_prompt(self, value: str, info: SerializationInfo) -> str:
@@ -449,13 +467,77 @@ class LLMRequest(BaseModel):
             )
         return self
 
+    # Provenance validator runs FIRST (declared before
+    # `_enforce_context_for_scope_nodes`) so its more-informative error
+    # fires before the context validator on conflicting requests. Per
+    # §0b of `specs/2026-05-19-analyze-foundation.md` (sharp-edges
+    # SE-M4): a request with `degraded_mode=True` on a non-analyze node
+    # AND empty context_summary should report the analyze-only scoping
+    # violation, not the context-required violation. Pydantic runs
+    # model validators in declaration order.
+    @model_validator(mode="after")
+    def _enforce_degradation_provenance(self) -> Self:
+        """`degraded_mode` requires `node_id == "analyze"` AND a typed
+        `degradation_reason`, bidirectionally.
+
+        Three-way coupling prevents silent bypass:
+          (a) a buggy caller cannot set `degraded_mode=True` without
+              also naming a documented degradation cause;
+          (b) a non-analyze request (trace/synthesize/triage) cannot
+              carry analyze-specific degradation semantics at all
+              (round-2-post-split audit F3: prior framing only enforced
+              bool/reason coupling, letting trace requests carry
+              `degraded_mode=True` + an analyze-specific reason).
+        """
+        # Rule 1: only analyze can be degraded in V1. Other nodes have
+        # no degraded-mode contract; allowing degraded_mode=True
+        # elsewhere would be silent contract drift.
+        if self.degraded_mode and self.node_id != "analyze":
+            raise ValueError(
+                f"degraded_mode=True only valid for node_id='analyze' in V1; "
+                f"got node_id={self.node_id!r}. Synthesize/trace/triage have "
+                f"no degraded-mode contract."
+            )
+        if self.degradation_reason is not None and self.node_id != "analyze":
+            raise ValueError(
+                f"degradation_reason is only valid for node_id='analyze' in V1; "
+                f"got node_id={self.node_id!r}."
+            )
+        # Rule 2: bool ↔ reason bidirectional coupling (within analyze).
+        if self.degraded_mode and self.degradation_reason is None:
+            raise ValueError(
+                "degraded_mode=True requires degradation_reason; "
+                "naked degraded_mode is a silent context-validator bypass"
+            )
+        if (not self.degraded_mode) and self.degradation_reason is not None:
+            raise ValueError(
+                "degradation_reason requires degraded_mode=True; "
+                "reason without mode is inconsistent"
+            )
+        return self
+
     @model_validator(mode="after")
     def _enforce_context_for_scope_nodes(self) -> Self:
         """`analyze` and `synthesize` always pack scope context; an empty
         `context_summary` from those nodes is a node-side bug worth
-        catching at request construction (round 11 sharp-edges H1)."""
+        catching at request construction (round 11 sharp-edges H1).
+
+        Per §0b: analyze admits empty `context_summary` ONLY when
+        `degraded_mode=True` AND a typed `degradation_reason` is supplied
+        — the provenance validator above already enforces that the two
+        are coupled, so we only need to check one. Synthesize is
+        unconditional regardless of degraded state (it never carries
+        the analyze-specific degraded contract per
+        `_enforce_degradation_provenance`).
+        """
         nodes_requiring_context = frozenset({"analyze", "synthesize"})
         if self.node_id in nodes_requiring_context and len(self.context_summary) == 0:
+            # Audit S5: degraded analyze admits empty context, but the
+            # provenance validator above already required degradation_reason
+            # to be set when degraded_mode is True — so checking either
+            # flag is sufficient.
+            if self.node_id == "analyze" and self.degraded_mode:
+                return self
             raise ValueError(
                 f"node_id={self.node_id!r} requires non-empty context_summary; "
                 f"the analyze/synthesize node always packs scope context"
@@ -477,6 +559,7 @@ class LLMRequest(BaseModel):
             ("context_summary_count", len(self.context_summary)),
             ("prompt_template_version", self.prompt_template_version),
             ("degraded_mode", self.degraded_mode),
+            ("degradation_reason", self.degradation_reason),
         ]
 
 

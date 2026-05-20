@@ -397,6 +397,10 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             "context_summary",
             "prompt_template_version",
             "degraded_mode",
+            # §0b: pair the bool with its typed reason on the cross-check
+            # allowlist so wrapper drift (event drops the reason, request
+            # had one) is caught at persist time, not just at construction.
+            "degradation_reason",
             "prompt_hash",
             "system_prompt_hash",
         }

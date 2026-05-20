@@ -232,6 +232,44 @@ class LLMCallEvent(AuditEventBase):
     prompt_template_version: str
     system_prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     degraded_mode: bool
+    # Per §0b of `specs/2026-05-19-analyze-foundation.md` + the audit's
+    # convergent finding: `degraded_mode: bool` alone loses provenance on
+    # metadata-only replay (post-retention or partial-content). The two
+    # reasons (`parse_failed` vs `tree_has_error_in_changed_regions`)
+    # imply structurally different prompt content; collapsing them into
+    # the bool means audit-stream queries like "how many parse_failed
+    # analyze calls did we make this month" become unanswerable. Same
+    # bidirectional coupling as `LLMRequest.degradation_reason` enforced
+    # by `_enforce_degradation_reason_consistency` below. Spec gap
+    # surfaced by the §0b crazy-audit; landing in the same commit per
+    # `feedback_spec_gaps_surface_as_suggestions` since omission would
+    # corrupt replay reconstruction.
+    degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
+
+    @model_validator(mode="after")
+    def _enforce_degradation_reason_consistency(self) -> Self:
+        """`degraded_mode == (degradation_reason is not None)` bidirectionally,
+        mirroring `LLMRequest._enforce_degradation_provenance`.
+
+        Provenance pairing across the request → event boundary: the
+        wrapper copies these two fields verbatim, so if a request was
+        admissible (bool/reason coupled), the event must be too. A
+        divergent event would mean the wrapper lost the field mid-pipeline
+        — a class of bug the persister's `_CHECKED_FIELDS` also catches
+        but this validator surfaces at event-construction time, before
+        any DB write.
+        """
+        if self.degraded_mode and self.degradation_reason is None:
+            raise ValueError(
+                "LLMCallEvent.degraded_mode=True requires a non-None degradation_reason; "
+                "the wrapper must pass through LLMRequest.degradation_reason verbatim"
+            )
+        if (not self.degraded_mode) and self.degradation_reason is not None:
+            raise ValueError(
+                "LLMCallEvent.degradation_reason requires degraded_mode=True; "
+                "reason without mode is inconsistent (wrapper drift?)"
+            )
+        return self
 
 
 class FileExaminationEvent(AuditEventBase):

@@ -1400,7 +1400,14 @@ async def test_cost_computed_against_response_model_not_request_model() -> None:
 
 @pytest.mark.asyncio
 async def test_audit_context_fields_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC#20: provider passes audit-context fields through unchanged."""
+    """AC#20: provider passes audit-context fields through unchanged.
+
+    Per §0b: `degraded_mode=True` is analyze-only in V1 — the previous
+    framing of this test pinned it on synthesize, which the §0b
+    provenance validator now correctly rejects. Switched to analyze and
+    paired with the required `degradation_reason` so the pass-through
+    contract is exercised under a valid configuration.
+    """
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -1410,18 +1417,19 @@ async def test_audit_context_fields_pass_through(monkeypatch: pytest.MonkeyPatch
     review_id = uuid4()
     request = _request(
         review_id=review_id,
-        node_id="synthesize",
+        node_id="analyze",
         is_eval=True,
-        prompt_template_version="synth@2.0.0",
+        prompt_template_version="analyze@2.0.0",
         degraded_mode=True,
+        degradation_reason="parse_failed",
     )
     with _patched_create():
         await provider.complete(request)
     event = persister.calls[0][0]
     assert event.review_id == review_id
-    assert event.node_id == "synthesize"
+    assert event.node_id == "analyze"
     assert event.is_eval is True
-    assert event.prompt_template_version == "synth@2.0.0"
+    assert event.prompt_template_version == "analyze@2.0.0"
     assert event.degraded_mode is True
 
 

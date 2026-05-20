@@ -522,6 +522,14 @@ class AnthropicProvider:
             prompt_template_version=request.prompt_template_version,
             system_prompt_hash=system_prompt_hash,
             degraded_mode=request.degraded_mode,
+            # §0b: forward the typed degradation cause so metadata-only
+            # replay (post-retention or partial-content) can distinguish
+            # `parse_failed` from `tree_has_error_in_changed_regions`.
+            # Convergent finding from §0b crazy-audit (adversarial HIGH,
+            # sharp-edges SE-1, data-integrity F1): without this pass-
+            # through, the wrapper drops the typed cause that
+            # `LLMRequest._enforce_degradation_provenance` mandates.
+            degradation_reason=request.degradation_reason,
         )
         try:
             await self._persister.persist(event, request, response)

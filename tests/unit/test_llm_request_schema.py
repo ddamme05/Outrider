@@ -244,3 +244,236 @@ def test_all_node_ids_construct_with_appropriate_context() -> None:
         req = LLMRequest(**_kwargs(node_id=node_id, context_summary=(_entry(),)))
         assert req.node_id == node_id
         assert len(req.context_summary) == 1
+
+
+# ---------------------------------------------------------------------------
+# §0b: degradation_reason + provenance validator.
+# Pins the 13-row truth table from specs/2026-05-19-analyze-foundation.md §0b.
+# Three-way coupling: analyze-only scoping AND bidirectional bool/reason
+# coupling AND degraded-analyze admits empty context_summary.
+# ---------------------------------------------------------------------------
+
+
+def test_degradation_reason_defaults_none() -> None:
+    """New `degradation_reason` field defaults to None — backward compatible
+    with existing callers that don't set degraded_mode."""
+    req = LLMRequest(**_kwargs())
+    assert req.degradation_reason is None
+
+
+@pytest.mark.parametrize("reason", ["parse_failed", "tree_has_error_in_changed_regions"])
+def test_analyze_degraded_with_typed_reason_admits_empty_context(reason: str) -> None:
+    """Matrix row: analyze + degraded_mode=True + reason + empty context → ADMIT.
+
+    The §0b core path: degraded analyze with a documented provenance reason
+    is the only way to bypass the context-required validator.
+    """
+    req = LLMRequest(
+        **_kwargs(
+            node_id="analyze",
+            degraded_mode=True,
+            degradation_reason=reason,
+            context_summary=(),
+        )
+    )
+    assert req.degraded_mode is True
+    assert req.degradation_reason == reason
+    assert req.context_summary == ()
+
+
+def test_analyze_degraded_without_reason_raises_provenance() -> None:
+    """Matrix row: analyze + degraded_mode=True + reason=None + empty → REJECT.
+
+    Naked degraded_mode is the silent context-validator bypass §0b closes.
+    """
+    with pytest.raises(ValidationError, match="degraded_mode=True requires degradation_reason"):
+        LLMRequest(
+            **_kwargs(
+                node_id="analyze",
+                degraded_mode=True,
+                degradation_reason=None,
+                context_summary=(),
+            )
+        )
+
+
+def test_analyze_reason_without_mode_raises_provenance() -> None:
+    """Matrix row: analyze + degraded_mode=False + reason="parse_failed" → REJECT.
+
+    Reason-without-mode is the inverse asymmetry — the bool/reason coupling
+    is enforced in both directions so neither flag can drift independently.
+    """
+    with pytest.raises(ValidationError, match="degradation_reason requires degraded_mode=True"):
+        LLMRequest(
+            **_kwargs(
+                node_id="analyze",
+                degraded_mode=False,
+                degradation_reason="parse_failed",
+                context_summary=(_entry(),),
+            )
+        )
+
+
+def test_analyze_non_degraded_with_empty_context_raises_context() -> None:
+    """Matrix row: analyze + degraded_mode=False + reason=None + empty → REJECT (context).
+
+    Non-degraded analyze still requires context — degraded_mode is the
+    ONLY escape hatch.
+    """
+    with pytest.raises(ValidationError, match="non-empty context_summary"):
+        LLMRequest(
+            **_kwargs(
+                node_id="analyze",
+                degraded_mode=False,
+                degradation_reason=None,
+                context_summary=(),
+            )
+        )
+
+
+def test_analyze_non_degraded_with_context_admits() -> None:
+    """Matrix row: analyze + degraded_mode=False + reason=None + non-empty → ADMIT.
+
+    The happy non-degraded analyze path — unchanged from pre-§0b behavior.
+    """
+    req = LLMRequest(
+        **_kwargs(
+            node_id="analyze",
+            degraded_mode=False,
+            degradation_reason=None,
+            context_summary=(_entry(),),
+        )
+    )
+    assert req.degraded_mode is False
+    assert req.degradation_reason is None
+
+
+@pytest.mark.parametrize("node_id", ["synthesize", "trace", "triage"])
+def test_non_analyze_with_degraded_mode_raises_scoping(node_id: str) -> None:
+    """Matrix rows: synthesize/trace/triage + degraded_mode=True → REJECT (scoping).
+
+    Per round-2-post-split audit F3: only analyze has a degraded-mode
+    contract in V1. Carrying it elsewhere is silent contract drift.
+    """
+    extra: dict[str, object] = {
+        "node_id": node_id,
+        "degraded_mode": True,
+        "degradation_reason": "parse_failed",
+    }
+    if node_id == "synthesize":
+        extra["context_summary"] = (_entry(),)
+    with pytest.raises(
+        ValidationError, match="degraded_mode=True only valid for node_id='analyze'"
+    ):
+        LLMRequest(**_kwargs(**extra))
+
+
+@pytest.mark.parametrize("node_id", ["synthesize", "trace", "triage"])
+def test_non_analyze_with_reason_only_raises_scoping(node_id: str) -> None:
+    """Matrix rows: synthesize/trace/triage + degradation_reason set → REJECT.
+
+    The scoping rule is symmetric: reason-on-non-analyze raises even when
+    degraded_mode=False. Without this, a buggy caller could leave the
+    field set across requests and silently mark non-analyze rows as
+    degraded-related at the audit layer.
+    """
+    extra: dict[str, object] = {
+        "node_id": node_id,
+        "degraded_mode": False,
+        "degradation_reason": "parse_failed",
+    }
+    if node_id == "synthesize":
+        extra["context_summary"] = (_entry(),)
+    with pytest.raises(
+        ValidationError, match="degradation_reason is only valid for node_id='analyze'"
+    ):
+        LLMRequest(**_kwargs(**extra))
+
+
+def test_synthesize_non_degraded_with_context_admits() -> None:
+    """Matrix row: synthesize + degraded_mode=False + reason=None + non-empty → ADMIT.
+
+    Synthesize is unaffected by degraded-mode logic and unchanged from
+    pre-§0b behavior.
+    """
+    req = LLMRequest(
+        **_kwargs(
+            node_id="synthesize",
+            degraded_mode=False,
+            degradation_reason=None,
+            context_summary=(_entry(),),
+        )
+    )
+    assert req.node_id == "synthesize"
+
+
+def test_trace_non_degraded_with_empty_context_admits() -> None:
+    """Matrix row: trace + degraded_mode=False + reason=None + empty → ADMIT.
+
+    Trace is not in the context-required nodeset; the §0b provenance
+    validator's analyze-only scoping also doesn't fire when both
+    degraded_mode and reason are unset.
+    """
+    req = LLMRequest(
+        **_kwargs(
+            node_id="trace",
+            degraded_mode=False,
+            degradation_reason=None,
+            context_summary=(),
+        )
+    )
+    assert req.node_id == "trace"
+
+
+def test_degradation_reason_rejects_arbitrary_string() -> None:
+    """The Literal is narrow on purpose — new degradation causes require
+    explicit Literal expansion. An off-list string is a contract violation
+    that V1 must reject at construction.
+    """
+    with pytest.raises(ValidationError):
+        LLMRequest(
+            **_kwargs(
+                node_id="analyze",
+                degraded_mode=True,
+                degradation_reason="some_new_reason",
+                context_summary=(),
+            )
+        )
+
+
+def test_provenance_validator_fires_before_context_on_conflict() -> None:
+    """SE-2 audit fold: declaration-order behavioral pin.
+
+    A request with `synthesize + degraded_mode=True + empty
+    context_summary` would fail BOTH validators (provenance: only analyze
+    admits degraded_mode; context: synthesize requires non-empty context).
+    The more-informative provenance error must fire FIRST — if the order
+    inverted, callers would chase the "missing context" error instead of
+    the "wrong node for degraded_mode" cause. Pydantic V2 runs
+    `@model_validator(mode="after")` in declaration order; this test
+    surfaces a future refactor that re-orders the validators (auto-sort,
+    mixin migration, model_rebuild) by behavioral assertion rather than
+    introspection of internal Pydantic state.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        LLMRequest(
+            **_kwargs(
+                node_id="synthesize",
+                degraded_mode=True,
+                degradation_reason="parse_failed",
+                context_summary=(),
+            )
+        )
+    # Provenance error must surface; context-validator error must not
+    # "win" over it. The provenance validator should also raise here
+    # because synthesize cannot carry degradation_reason at all.
+    error_str = str(exc_info.value)
+    assert "only valid for node_id='analyze'" in error_str, (
+        f"Expected provenance scoping error to fire first; got: {error_str}"
+    )
+    # Negative pin: the context validator's prose must NOT appear, because
+    # the provenance validator should short-circuit construction first.
+    assert "non-empty context_summary" not in error_str, (
+        f"Context validator fired despite provenance violation; "
+        f"declaration order may have inverted. Got: {error_str}"
+    )
