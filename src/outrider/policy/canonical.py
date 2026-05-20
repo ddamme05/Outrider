@@ -360,6 +360,11 @@ def compute_candidate_id(
     matches `FindingProposalRejectedEvent.proposal_hash` for the audit
     join — caller passes the same string that landed on the rejection
     event (or would land, if the proposal were rejected).
+
+    The payload dict's key order is IRRELEVANT — `canonicalize_for_hash`
+    applies `sort_keys=True` so any ordering produces identical canonical
+    bytes. A future refactor reordering the literal below cannot drift
+    the digest.
     """
     return compute_identity_hash(
         {

@@ -76,6 +76,18 @@ def normalize_to_pricing_key(model: str) -> str:
     return _DATED_SUFFIX_PATTERN.sub("", model)
 
 
+PRICING_VERSION_PATTERN: Final[str] = r"^v[1-9][0-9]*$"
+"""Single-source regex shape for `PRICING_VERSION` strings.
+
+The pricing version uses `vN` (no leading zeros, N >= 1), distinct
+from the bare-semver shape `policy_version` uses. Exported so
+`audit/events.py` can apply the pattern at the `pricing_version`
+field on `LLMCallEvent` and `AnalyzeCompletedEvent` — without the
+gate, a malformed value (e.g., "v0", "v1.0", "") could land in the
+append-only audit log and break replay reconstruction's
+version-keyed cost aggregation.
+"""
+
 # Bump on every rate-table change. The digest-pinning test in
 # `test_llm_pricing.py` fails if rates change without a version bump,
 # preventing silent replay drift.
@@ -85,6 +97,11 @@ def normalize_to_pricing_key(model: str) -> str:
 #   (the 4-7 model didn't exist in the Anthropic SDK 0.100 catalog;
 #   canonical model name correction)
 PRICING_VERSION: Final[str] = "v2"
+if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
+    raise RuntimeError(
+        f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
+        f"(vN shape, no leading zeros, N >= 1); got {PRICING_VERSION!r}"
+    )
 
 
 class ModelPricing(NamedTuple):

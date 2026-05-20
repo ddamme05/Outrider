@@ -210,10 +210,25 @@ def test_review_finding_evidence_max_length() -> None:
         _build_finding(evidence="x" * 2001)
 
 
+def test_review_finding_evidence_admits_at_max() -> None:
+    """The inclusive boundary (2000 chars) admits cleanly — paired with
+    the +1 rejection test above. Without this, a future refactor that
+    accidentally tightens the cap to 1999 would only fail the rejection
+    side (silently shifting the boundary)."""
+    finding = _build_finding(evidence="x" * 2000)
+    assert len(finding.evidence) == 2000
+
+
 def test_review_finding_suggested_fix_max_length() -> None:
     """2000-char cap on model-emitted suggested fix."""
     with pytest.raises(ValidationError, match="suggested_fix"):
         _build_finding(suggested_fix="x" * 2001)
+
+
+def test_review_finding_suggested_fix_admits_at_max() -> None:
+    finding = _build_finding(suggested_fix="x" * 2000)
+    assert finding.suggested_fix is not None
+    assert len(finding.suggested_fix) == 2000
 
 
 def test_review_finding_override_reason_max_length() -> None:
@@ -223,6 +238,12 @@ def test_review_finding_override_reason_max_length() -> None:
         _build_finding(override_reason="x" * 1001)
 
 
+def test_review_finding_override_reason_admits_at_max() -> None:
+    finding = _build_finding(override_reason="x" * 1000)
+    assert finding.override_reason is not None
+    assert len(finding.override_reason) == 1000
+
+
 def test_review_finding_query_match_id_max_length() -> None:
     """200-char cap on query-registry id (well above realistic max)."""
     with pytest.raises(ValidationError, match="query_match_id"):
@@ -230,3 +251,12 @@ def test_review_finding_query_match_id_max_length() -> None:
             evidence_tier=EvidenceTier.OBSERVED,
             query_match_id="x" * 201,
         )
+
+
+def test_review_finding_query_match_id_admits_at_max() -> None:
+    finding = _build_finding(
+        evidence_tier=EvidenceTier.OBSERVED,
+        query_match_id="x" * 200,
+    )
+    assert finding.query_match_id is not None
+    assert len(finding.query_match_id) == 200

@@ -24,19 +24,33 @@ reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
 because the outer model's frozen-ness does not propagate.
 
-Four event types carry validators:
+Six event types carry validators (plus `PerFindingDecision` inherited
+by `HITLDecisionEvent.decisions`):
 
-  - `FindingEvent` runs `policy/findings.enforce_proof_boundary` so the
-    proof boundary holds at the audit-event layer, not just on
-    `ReviewFinding`. Backs `evidence-tier-schema-enforced`.
+  - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
+    per `DECISIONS.md#016` Amended 2026-05-19: non-None iff
+    `degraded_mode is True`. The audit-driven spec extension landed
+    with the foundation arc.
+  - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
+    per `DECISIONS.md#018`: `skip_reason is not None` ↔
+    `parse_status == "skipped"`.
+  - `FindingEvent` carries three validators — proof-boundary
+    (`policy/findings.enforce_proof_boundary`, backs
+    `evidence-tier-schema-enforced`), the line constraint
+    (`line_end >= line_start`), and `_verify_content_hash` per spec §8.5
+    (rejects emitter bugs that produce a mis-computed hash with the
+    right shape).
   - `TraceDecisionEvent` enforces the three-rule resolution invariant
     per `DECISIONS.md#017` (Amended same-day, two clauses):
     (a) resolved ↔ non-None target_file;
     (b) unresolved/ambiguous ↔ target_file is None;
     (c) when resolved, target_file in candidates_considered.
-  - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
-    per `DECISIONS.md#018`: `skip_reason is not None` ↔
-    `parse_status == "skipped"`.
+  - `AnalyzeCompletedEvent` enforces two accounting equations per
+    foundation §5: `n_proposals_seen == n_findings_emitted +
+    n_proposals_rejected`, and `n_responses_rejected <= n_llm_calls`.
+  - `FindingProposalRejectedEvent` enforces the bidirectional
+    `claimed_evidence_tier` ↔ `rejection_reason ==
+    "evidence_tier_not_in_enum"` coupling.
   - `PerFindingDecision` (referenced via `HITLDecisionEvent.decisions`)
     carries its own validator per `schemas/hitl.py`; the wrapping event
     inherits that gate.
@@ -62,6 +76,7 @@ from pydantic import (
 )
 
 from outrider.ast_facts.models import SkipReason
+from outrider.llm.pricing import PRICING_VERSION_PATTERN
 from outrider.policy import (
     EvidenceTier,
     FindingSeverity,
@@ -245,7 +260,7 @@ class LLMCallEvent(AuditEventBase):
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
     cost_usd: float = Field(ge=0)
-    pricing_version: str
+    pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
     latency_ms: int = Field(ge=0)
     prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     cache_hit: bool
@@ -544,7 +559,7 @@ class AnalyzeCompletedEvent(AuditEventBase):
     total_cached_tokens: int = Field(ge=0)
     total_output_tokens: int = Field(ge=0)
     total_cost_usd: float = Field(ge=0)
-    pricing_version: str
+    pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
     analyze_model: str
 

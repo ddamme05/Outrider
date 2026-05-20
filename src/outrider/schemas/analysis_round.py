@@ -90,6 +90,26 @@ class AnalysisRound(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _enforce_files_examined_skipped_disjoint(self) -> Self:
+        """A file is either examined or skipped per pass — never both.
+
+        Sharp-edges audit M-2 (low confidence, real): without this check
+        a caller could construct an `AnalysisRound` with the same path
+        in both tuples; the canonical id computation would produce a
+        valid `round_id` for the contradictory payload, masking the
+        semantic invariant at the recipe layer. Fail at the schema
+        boundary instead — the file-status accounting downstream
+        (per-file metrics, skip-reason aggregates) presumes the split.
+        """
+        overlap = set(self.files_examined) & set(self.files_skipped)
+        if overlap:
+            raise ValueError(
+                f"AnalysisRound: files cannot appear in both "
+                f"files_examined and files_skipped; overlap: {sorted(overlap)!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_round_id_matches_payload(self) -> Self:
         """Assert `round_id == compute_round_id(...)` over this round's payload.
 

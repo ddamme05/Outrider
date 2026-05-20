@@ -148,3 +148,28 @@ def test_analysis_round_files_examined_path_length_bounded() -> None:
     long_path = "src/" + ("a" * 1025) + ".py"
     with pytest.raises(ValidationError):
         AnalysisRound(**_round_kwargs(files_examined=(long_path,)))  # type: ignore[arg-type]
+
+
+def test_analysis_round_rejects_file_in_both_examined_and_skipped() -> None:
+    """A file can be EITHER examined or skipped per pass, never both —
+    the file-status accounting downstream presumes the split. Sharp-edges
+    audit M-2 surfaced the recipe-layer admit; the schema validator
+    rejects the contradictory payload."""
+    finding = _finding()
+    bad_round_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py",),
+        files_skipped=("src/foo.py",),
+        finding_content_hashes=(finding.content_hash,),
+    )
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="files_examined and files_skipped"):
+        AnalysisRound(
+            round_id=bad_round_id,
+            pass_index=0,
+            findings=(finding,),
+            files_examined=("src/foo.py",),
+            files_skipped=("src/foo.py",),
+            started_at=now,
+            ended_at=now,
+        )
