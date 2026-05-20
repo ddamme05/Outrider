@@ -21,13 +21,17 @@ from outrider.policy.versions import (
     load_policy_for_version,
 )
 
-# Deliberately NOT re-exported (per §1 crazy-audit LOW): `outrider.policy.canonical`
-# is consumed via the deep import path (`from outrider.policy.canonical import
-# SHA256_HEX_PATTERN`, `compute_identity_hash`). Adding it to `__all__` would
-# create two coexisting public paths (`outrider.policy.SHA256_HEX_PATTERN` AND
-# `outrider.policy.canonical.SHA256_HEX_PATTERN`) and the resulting drift would
-# defeat the "single chokepoint for identity-hash encoding" property the module
-# exists to enforce. The deep-import path is canonical.
+# Deliberately NOT re-exported (per §1 crazy-audit LOW + §6 implementation
+# discovery): `outrider.policy.canonical` and `outrider.policy.dimensions`
+# are consumed via deep import paths (`from outrider.policy.canonical
+# import SHA256_HEX_PATTERN`, `from outrider.policy.dimensions import
+# FINDING_TYPE_TO_DIMENSION`). Re-exporting from this `__init__.py`
+# creates a circular import for `dimensions` (which imports
+# `ReviewDimension` from `outrider.schemas.review_finding`, which
+# imports back into `outrider.policy` for `EvidenceTier`), and would
+# create two coexisting public paths for `canonical` — defeating the
+# "single chokepoint for identity-hash encoding" property the module
+# exists to enforce. Deep-import is canonical for both.
 
 __all__ = [
     "SEVERITY_POLICY",
