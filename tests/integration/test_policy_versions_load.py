@@ -74,7 +74,7 @@ async def test_load_unknown_version_raises(migrated_db: str) -> None:
     engine = create_async_engine(migrated_db)
     try:
         async with engine.connect() as conn:
-            with pytest.raises(UnknownPolicyVersionError, match="9.9.9"):
+            with pytest.raises(UnknownPolicyVersionError, match=r"9\.9\.9"):
                 await load_policy_for_version("9.9.9", conn)
     finally:
         await engine.dispose()

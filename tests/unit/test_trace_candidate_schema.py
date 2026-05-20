@@ -18,24 +18,34 @@ from outrider.schemas import TraceCandidate
 def _kwargs(**overrides: object) -> dict[str, object]:
     """Fixture kwargs with a canonical `candidate_id` derived from the
     candidate's payload. Tests that deliberately exercise drift override
-    `candidate_id`; tests that exercise normalization override
-    `candidate_path` (the `candidate_id` then needs to also change to
-    match the post-normalization payload).
+    `candidate_id` directly; tests that exercise other-field validators
+    (path normalization, length, hex-shape on `source_proposal_hash`,
+    etc.) override those fields and the helper recomputes the
+    `candidate_id` to match — otherwise a canonical-ID-mismatch fires
+    first and the field the test is actually exercising is never
+    reached.
     """
     source_proposal_hash = compute_identity_hash({"prop": 1})
     candidate_path = "src/middleware/auth.py"
     reason = "auth middleware referenced by the finding"
     base: dict[str, object] = {
-        "candidate_id": compute_candidate_id(
-            source_proposal_hash=source_proposal_hash,
-            candidate_path=candidate_path,
-            reason=reason,
-        ),
         "source_proposal_hash": source_proposal_hash,
         "reason": reason,
         "candidate_path": candidate_path,
     }
     base.update(overrides)
+    if "candidate_id" not in overrides:
+        source_value = base["source_proposal_hash"]
+        path_value = base["candidate_path"]
+        reason_value = base["reason"]
+        assert isinstance(source_value, str)
+        assert isinstance(path_value, str)
+        assert isinstance(reason_value, str)
+        base["candidate_id"] = compute_candidate_id(
+            source_proposal_hash=source_value,
+            candidate_path=path_value,
+            reason=reason_value,
+        )
     return base
 
 

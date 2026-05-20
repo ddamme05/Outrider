@@ -274,16 +274,27 @@ def test_analysis_round_rejects_traversal_in_files_examined() -> None:
     `CoordinateError` directly when it derives from Exception (it
     only wraps `ValueError`/`AssertionError`), so the test pins the
     domain error type.
+
+    IDs are derived from the SAME payload as the round so a passing
+    test can only come from path-traversal rejection, not from an
+    incidental canonical-ID-mismatch on a different validator.
     """
     from outrider.coordinates import CoordinateError
 
     now = datetime.now(UTC)
+    finding = _valid_finding()
+    bad_path = "../escape.py"
     with pytest.raises((ValidationError, CoordinateError)):
         AnalysisRound(
-            round_id=compute_identity_hash({"x": 1}),
+            round_id=compute_round_id(
+                pass_index=0,
+                files_examined=(bad_path,),
+                files_skipped=(),
+                finding_content_hashes=(finding.content_hash,),
+            ),
             pass_index=0,
-            findings=(_valid_finding(),),
-            files_examined=("../escape.py",),
+            findings=(finding,),
+            files_examined=(bad_path,),
             files_skipped=(),
             started_at=now,
             ended_at=now,
@@ -291,15 +302,28 @@ def test_analysis_round_rejects_traversal_in_files_examined() -> None:
 
 
 def test_trace_candidate_rejects_traversal_in_candidate_path() -> None:
-    """Same rule on the candidate-side schema."""
+    """Same rule on the candidate-side schema.
+
+    `candidate_id` is derived from the same payload as the rest of the
+    object so a passing test can only come from path-traversal
+    rejection, not from canonical-ID-mismatch on a different
+    validator.
+    """
     from outrider.coordinates import CoordinateError
 
+    prop = compute_identity_hash({"b": 1})
+    bad_path = "../escape.py"
+    reason = "r"
     with pytest.raises((ValidationError, CoordinateError)):
         TraceCandidate(
-            candidate_id=compute_identity_hash({"a": 1}),
-            source_proposal_hash=compute_identity_hash({"b": 1}),
-            reason="r",
-            candidate_path="../escape.py",
+            candidate_id=compute_candidate_id(
+                source_proposal_hash=prop,
+                candidate_path=bad_path,
+                reason=reason,
+            ),
+            source_proposal_hash=prop,
+            reason=reason,
+            candidate_path=bad_path,
         )
 
 
