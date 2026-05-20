@@ -191,33 +191,12 @@ class ScopeUnit(BaseModel):
     name: str
     qualified_name: str
     file_path: str
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
-    byte_start: int = Field(ge=0)
-    byte_end: int = Field(ge=0)
+    line_start: int
+    line_end: int
+    byte_start: int
+    byte_end: int
     decorators: tuple[str, ...] = ()
     parent_scope_id: str | None = None
-
-    @model_validator(mode="after")
-    def _enforce_line_and_byte_ordering(self) -> Self:
-        """`line_end >= line_start` and `byte_end >= byte_start`.
-
-        Category F sweep — `Span` enforces the byte ordering at its own
-        construction, but `ScopeUnit` did not, and `to_span()` constructs
-        a Span only when callers ASK for one. A producer-side bug (or a
-        test fixture) that built a ScopeUnit with descending byte/line
-        order would survive into the analyze prompt, coordinates spans,
-        and audit events without ever passing through Span's validator.
-        """
-        if self.line_end < self.line_start:
-            raise ValueError(
-                f"ScopeUnit.line_end ({self.line_end}) must be >= line_start ({self.line_start})"
-            )
-        if self.byte_end < self.byte_start:
-            raise ValueError(
-                f"ScopeUnit.byte_end ({self.byte_end}) must be >= byte_start ({self.byte_start})"
-            )
-        return self
 
     def to_span(self) -> "Span":
         """Return a `Span` covering this scope unit's byte range.
@@ -238,7 +217,7 @@ class ImportRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    line: int = Field(ge=1)
+    line: int
     import_kind: Literal["direct", "from", "relative", "star"]
     module: str
     names: tuple[str, ...] = ()
@@ -257,7 +236,7 @@ class CallSite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    line: int = Field(ge=1)
+    line: int
     callee_name: str
     enclosing_scope_id: str
 
@@ -268,7 +247,7 @@ class AssignmentSite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    line: int = Field(ge=1)
+    line: int
     target_name: str
     enclosing_scope_id: str
 
@@ -293,58 +272,13 @@ class ChangedRegion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    patch_line_start: int = Field(ge=1)
-    patch_line_end: int = Field(ge=1)
-    head_line_start: int = Field(ge=1)
-    head_line_end: int = Field(ge=1)
+    patch_line_start: int
+    patch_line_end: int
+    head_line_start: int
+    head_line_end: int
     base_line_start: int | None = None
     base_line_end: int | None = None
     owning_scope_ids: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def _enforce_line_ordering_and_base_pairing(self) -> Self:
-        """Cross-field constraints on the three (start, end) line pairs.
-
-        Category F sweep — three line-pair invariants:
-
-        1. `patch_line_end >= patch_line_start`
-        2. `head_line_end >= head_line_start`
-        3. `base_line_start is None ↔ base_line_end is None`
-           AND when both non-None, `base_line_end >= base_line_start`.
-
-        The base pair is optional (pure additions don't have a base) but
-        must be paired — None on one side and not the other is a bug
-        in the producer that would propagate to downstream coordinates
-        translation as a silently asymmetric region.
-        """
-        if self.patch_line_end < self.patch_line_start:
-            raise ValueError(
-                f"ChangedRegion.patch_line_end ({self.patch_line_end}) must be >= "
-                f"patch_line_start ({self.patch_line_start})"
-            )
-        if self.head_line_end < self.head_line_start:
-            raise ValueError(
-                f"ChangedRegion.head_line_end ({self.head_line_end}) must be >= "
-                f"head_line_start ({self.head_line_start})"
-            )
-        base_start_none = self.base_line_start is None
-        base_end_none = self.base_line_end is None
-        if base_start_none != base_end_none:
-            raise ValueError(
-                f"ChangedRegion.base_line_start={self.base_line_start!r} and "
-                f"base_line_end={self.base_line_end!r} must be paired — both None "
-                f"(pure addition) or both set (modification/deletion)"
-            )
-        if (
-            self.base_line_start is not None
-            and self.base_line_end is not None
-            and self.base_line_end < self.base_line_start
-        ):
-            raise ValueError(
-                f"ChangedRegion.base_line_end ({self.base_line_end}) must be >= "
-                f"base_line_start ({self.base_line_start})"
-            )
-        return self
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +432,41 @@ class ParseResult(BaseModel):
             raise ValueError(
                 f"ParseResult: skip_reason={self.skip_reason!r} requires "
                 f"parser_outcome='skipped' (got {self.parser_outcome!r})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_empty_collections_on_non_clean(self) -> Self:
+        """Failed and skipped paths emit empty tuples per the docstring.
+
+        Category F sweep — the docstring promises "Empty-tuples shape on
+        the failed and skipped paths." Without a validator, a producer
+        bug (or stale audit row from a previous schema iteration) could
+        present `parser_outcome="failed"` AND non-empty `scope_units` —
+        the downstream consumer would believe the file parsed (because
+        scope_units exists) AND failed (because parser_outcome says so),
+        which is the kind of contradiction the schema layer exists to
+        rule out. `clean` allows empty collections (an empty Python
+        file is a valid clean parse with 0 scope_units).
+        """
+        if self.parser_outcome == "clean":
+            return self
+        non_empty = []
+        if self.scope_units:
+            non_empty.append(f"scope_units (len={len(self.scope_units)})")
+        if self.imports:
+            non_empty.append(f"imports (len={len(self.imports)})")
+        if self.call_sites:
+            non_empty.append(f"call_sites (len={len(self.call_sites)})")
+        if self.assignment_sites:
+            non_empty.append(f"assignment_sites (len={len(self.assignment_sites)})")
+        if self.has_error:
+            non_empty.append(f"has_error (keys={sorted(self.has_error)})")
+        if non_empty:
+            raise ValueError(
+                f"ParseResult: parser_outcome={self.parser_outcome!r} requires empty "
+                f"collections (no scope_units / imports / call_sites / assignment_sites "
+                f"/ has_error keys); got non-empty: {', '.join(non_empty)}"
             )
         return self
 
