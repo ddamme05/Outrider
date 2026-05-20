@@ -131,13 +131,7 @@ def test_review_state_json_dump_includes_new_state_slots() -> None:
     Pydantic JSON; assert the slots are visible in the output.
 
     The Pydantic mode='json' dump path is what langgraph-checkpoint-postgres
-    uses to persist state. We verify the slots make it to the JSON
-    representation; full re-validation roundtrip is a separate concern
-    (ReviewFinding.confidence is a computed_field that emits but doesn't
-    re-validate under extra='forbid' — a real downstream interaction
-    that the sister analyze-implementation spec's persistence layer
-    handles via `exclude={'confidence'}` or model_validator(mode='before')
-    coercion; out of foundation scope).
+    uses to persist state.
     """
     state = ReviewState(
         review_id=uuid4(),
@@ -159,6 +153,66 @@ def test_review_state_json_dump_includes_new_state_slots() -> None:
     # Tuples become JSON arrays.
     assert isinstance(parsed["analysis_rounds"], list)
     assert isinstance(parsed["trace_candidates"], list)
+    # Computed `confidence` IS in the dump (Pydantic v2 default). The
+    # `ReviewFinding._strip_computed_confidence_on_input` validator drops
+    # it back out on model_validate — see the round-trip test below for
+    # the load-bearing checkpoint contract.
+    assert "confidence" in parsed["analysis_rounds"][0]["findings"][0]
+
+
+def test_review_state_checkpoint_roundtrip_with_analysis_rounds() -> None:
+    """Real dump→validate roundtrip: prove `analysis_rounds` survives
+    the langgraph-checkpoint-postgres path end-to-end.
+
+    Post-PR review (HIGH): the previous test stopped at the JSON dump
+    and explicitly avoided re-validation because `ReviewFinding.confidence`
+    is a computed_field that conflicts with `extra="forbid"`. That
+    leaves the new state slot unproven on the load-bearing replay
+    contract. The `_strip_computed_confidence_on_input` validator on
+    ReviewFinding closes the gap — round-tripped payloads with
+    `confidence` keys validate cleanly because the validator drops
+    them back out, and the value is re-derived from `evidence_tier`
+    at attribute access. This test pins that end-to-end behavior so a
+    future refactor that removes the stripper (or makes confidence a
+    settable field) fails loud on the actual replay scenario rather
+    than silently regressing the checkpointer contract.
+    """
+    original = ReviewState(
+        review_id=uuid4(),
+        pr_context=_empty_pr_context(),
+        received_at=datetime.now(UTC),
+        analysis_rounds=[_round(0), _round(1)],
+        trace_candidates=[_candidate("a"), _candidate("b")],
+    )
+
+    # Dump → JSON → parse → model_validate. This is the path
+    # langgraph-checkpoint-postgres takes: dump to JSON for storage,
+    # parse back to dict at read time, validate into the typed model.
+    as_json = original.model_dump_json()
+    parsed = json.loads(as_json)
+    restored = ReviewState.model_validate(parsed)
+
+    # State-level slots intact.
+    assert restored.review_id == original.review_id
+    assert len(restored.analysis_rounds) == 2
+    assert len(restored.trace_candidates) == 2
+
+    # Content-derived ids match (proves the payload-binding validators
+    # ran successfully on the restored model).
+    assert restored.analysis_rounds[0].round_id == original.analysis_rounds[0].round_id
+    assert restored.trace_candidates[0].candidate_id == original.trace_candidates[0].candidate_id
+
+    # Nested findings round-trip. `confidence` re-derives from
+    # `evidence_tier` after the validator stripped it from the input.
+    for i, original_round in enumerate(original.analysis_rounds):
+        restored_round = restored.analysis_rounds[i]
+        assert len(restored_round.findings) == len(original_round.findings)
+        for j, original_finding in enumerate(original_round.findings):
+            restored_finding = restored_round.findings[j]
+            assert restored_finding.finding_id == original_finding.finding_id
+            assert restored_finding.evidence_tier == original_finding.evidence_tier
+            # Re-derived from evidence_tier, not from the input.
+            assert restored_finding.confidence == original_finding.confidence
 
 
 def test_review_state_replay_collapse_for_analysis_rounds() -> None:

@@ -27,7 +27,7 @@ EvidenceTier / FindingType / FindingSeverity.
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final, Self
+from typing import Any, Final, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
@@ -124,6 +124,35 @@ class ReviewFinding(BaseModel):
     publish_destination: PublishDestination | None = None
     # Dedup (analyze sets at construction time per spec §8.5):
     content_hash: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_computed_confidence_on_input(cls, data: Any) -> Any:
+        """Drop a stray `confidence` key from input dicts before validation.
+
+        Pydantic v2 includes `@computed_field` properties in
+        `model_dump(mode='json')`, so a round-tripped payload —
+        langgraph-checkpoint-postgres persists state via that path —
+        carries `confidence` as a regular dict key. Without this
+        stripper, `model_validate` on the round-tripped payload would
+        fail under `extra="forbid"` because `confidence` isn't a
+        regular field.
+
+        The fix is "tolerate computed-field reappearance on input."
+        The value gets re-derived from `evidence_tier` at attribute
+        access time, so dropping it loses nothing and lets ReviewState
+        checkpoint replay round-trip cleanly. Post-PR review fold (the
+        "ReviewState lacks a real dump→validate checkpoint test for
+        analysis_rounds because confidence conflicts with extra=forbid"
+        finding).
+
+        Operates only on dict inputs (Pydantic v2 also accepts other
+        model instances + raw shapes — those don't carry the computed
+        field in their attribute namespace).
+        """
+        if isinstance(data, dict) and "confidence" in data:
+            data = {k: v for k, v in data.items() if k != "confidence"}
+        return data
 
     @computed_field  # type: ignore[prop-decorator]
     @property
