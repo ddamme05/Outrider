@@ -4,6 +4,12 @@
 Constructs at startup, in dependency order:
 
   1. `AsyncEngine` from `DATABASE_URL` env var.
+  1b. Severity-policy fingerprint check: compares the DB row at
+     `severity_policies.version=ACTIVE_POLICY_VERSION` to the live
+     `SEVERITY_POLICY` mapping; raises `StartupError` on miss or
+     mismatch BEFORE the rest of dependency wiring, so a drifted
+     policy never initializes downstream consumers (per §0c of
+     specs/2026-05-19-analyze-foundation.md).
   2. `async_sessionmaker` over the engine (`expire_on_commit=False` so
      post-commit attribute access on returned rows doesn't lazy-refresh).
   3. `RetentionSettings()` — reads `OUTRIDER_AUDIT_*` env vars.
@@ -50,7 +56,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -73,14 +79,88 @@ from outrider.github.config import GitHubAppSettings
 from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.logging import register_filter_on_all_handlers
+from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
+from outrider.policy.versions import (
+    UnknownPolicyVersionError,
+    load_policy_for_version,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-__all__ = ["build_lifespan", "lifespan"]
+__all__ = ["StartupError", "build_lifespan", "lifespan"]
 
 
 _LOGGER = logging.getLogger("outrider.api.lifespan")
+
+
+class StartupError(RuntimeError):
+    """Raised when a lifespan startup gate refuses to allow the app to start.
+
+    Subclasses RuntimeError so uvicorn's default startup-failure path
+    surfaces it cleanly. The current sole site is the severity-policy
+    fingerprint check (§0c per specs/2026-05-19-analyze-foundation.md);
+    additional gates may raise this exception as they are added.
+    """
+
+
+async def _verify_severity_policy_fingerprint(engine: AsyncEngine) -> None:
+    """Compare DB-stored policy at ACTIVE_POLICY_VERSION to live SEVERITY_POLICY.
+
+    Raises StartupError on miss (no row for ACTIVE_POLICY_VERSION) or
+    mismatch (row exists but doesn't equal the live mapping). Closes the
+    partial-deploy / drift window per §0c:
+
+      (a) edited SEVERITY_POLICY but forgot to bump ACTIVE_POLICY_VERSION
+          and add a migration → DB row at the constant's version differs
+          from the live mapping → mismatch raises.
+      (b) bumped ACTIVE_POLICY_VERSION but forgot the migration → no row
+          exists at the constant's version → UnknownPolicyVersionError
+          raises, surfaced as StartupError.
+      (c) bumped constant + landed migration but live SEVERITY_POLICY in
+          source still has the old mapping → DB row matches the new
+          version but differs from the stale live mapping → mismatch
+          raises.
+
+    Fails LOUD at lifespan, BEFORE accepting webhooks; without this check
+    the divergence would silently surface as wrong severities on findings
+    until a replay caught it.
+    """
+    # READ COMMITTED is sufficient: only the row at ACTIVE_POLICY_VERSION
+    # matters; concurrent INSERTs of NEW versions don't affect this check.
+    async with engine.connect() as conn:
+        try:
+            db_policy = await load_policy_for_version(ACTIVE_POLICY_VERSION, conn)
+        except UnknownPolicyVersionError as e:
+            raise StartupError(
+                f"ACTIVE_POLICY_VERSION={ACTIVE_POLICY_VERSION!r} has no row in "
+                f"severity_policies. A migration adding this version must run before "
+                f"app startup."
+            ) from e
+
+    live_policy = dict(SEVERITY_POLICY)
+    if db_policy != live_policy:
+        # Per §0c sharp-edges audit #6 + DevEx M-1: include a per-key
+        # diff so the operator can distinguish case (a) keys differ
+        # (forgot the migration / wrong constant) from case (c) values
+        # differ (live mapping is stale relative to the seeded row).
+        live_keys = set(live_policy)
+        db_keys = set(db_policy)
+        only_live = live_keys - db_keys
+        only_db = db_keys - live_keys
+        value_diffs = {
+            k: (live_policy[k], db_policy[k])
+            for k in live_keys & db_keys
+            if live_policy[k] != db_policy[k]
+        }
+        raise StartupError(
+            f"Policy drift detected: ACTIVE_POLICY_VERSION={ACTIVE_POLICY_VERSION!r} "
+            f"loads a DB policy that differs from the live SEVERITY_POLICY mapping. "
+            f"Diff: only-in-live={sorted(only_live)}, only-in-db={sorted(only_db)}, "
+            f"value-mismatches={value_diffs}. "
+            f"Either the constant was bumped without a matching migration, or the "
+            f"migration ran but the live mapping is stale. Refusing to start."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +179,13 @@ EngineFactory = Callable[[], AsyncEngine]
 # the whole graph; constructing the same Settings class twice defeats
 # the "lifespan-validated once" guarantee.
 ProviderFactory = Callable[[AuditPersister, ModelConfig], AnthropicProvider]
+# `SeverityPolicyFingerprintCheck` is the injectable seam for §0c's
+# fingerprint check. Production runs `_verify_severity_policy_fingerprint`
+# (real DB query against severity_policies); lifespan tests that inject a
+# MagicMock engine (no DB connection) pass a no-op via this seam. The
+# fingerprint-behavior tests (`test_lifespan_startup_fingerprint.py`)
+# use a real `migrated_db` engine + the default check.
+SeverityPolicyFingerprintCheck = Callable[[AsyncEngine], "Awaitable[None]"]
 
 
 def _default_engine_factory() -> AsyncEngine:
@@ -206,6 +293,9 @@ def build_lifespan(
     *,
     engine_factory: EngineFactory = _default_engine_factory,
     provider_factory: ProviderFactory = _default_provider_factory,
+    severity_policy_fingerprint_check: SeverityPolicyFingerprintCheck = (
+        _verify_severity_policy_fingerprint
+    ),
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     """Construct a FastAPI lifespan callable with injectable factories.
 
@@ -214,6 +304,11 @@ def build_lifespan(
     `provider_factory=` to inject mocks — the teardown-ordering test
     injects a provider whose `aclose()` raises; the filter-re-registration
     test patches the engine factory to return a mock engine; etc.
+
+    `severity_policy_fingerprint_check` is the §0c seam: defaults to the
+    real DB-query check (`_verify_severity_policy_fingerprint`); tests
+    that inject a MagicMock engine (no DB connection) pass an async
+    no-op. The fingerprint-behavior tests use a real engine + the default.
     """
 
     @asynccontextmanager
@@ -269,6 +364,24 @@ def build_lifespan(
                     "exception strings per DECISIONS#016 logs-stay-metadata-only "
                     "(strict `is True` check — non-bool truthy values rejected)"
                 )
+
+            # Step 1b: severity-policy fingerprint check. Compares the DB
+            # row at `severity_policies.version=ACTIVE_POLICY_VERSION` to
+            # the live `SEVERITY_POLICY` mapping. Raises `StartupError`
+            # on miss or mismatch BEFORE the rest of dependency wiring,
+            # so a drifted policy never initializes downstream consumers
+            # (provider, build_graph). Per §0c of
+            # specs/2026-05-19-analyze-foundation.md.
+            #
+            # Runs AFTER engine construction because the check requires a
+            # live DB connection; runs BEFORE persister/provider so a
+            # drifted policy short-circuits before any LLM/audit wiring
+            # exists. A refactorer tempted to move this above Step 1
+            # thinking "fail loudest first" would break the contract —
+            # the engine must exist for the check to run. Injectable via
+            # `severity_policy_fingerprint_check=` so MagicMock-engine
+            # lifespan tests can bypass with a no-op (§0c devex M-4).
+            await severity_policy_fingerprint_check(engine)
 
             # Step 2: session factory. `expire_on_commit=False` so callers
             # can access returned ORM attributes after commit without a

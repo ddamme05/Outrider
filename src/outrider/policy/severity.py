@@ -14,8 +14,17 @@ time T uses the version in effect at T, not the current one. The
 versioned loader lives in `policy/versions.py`. Mutating SEVERITY_POLICY
 in place would invalidate every historical review's replay; mapping
 changes ship as new policy versions seeded by new migrations.
+
+`ACTIVE_POLICY_VERSION` is the write-time source: it identifies which
+row in `severity_policies` the live `SEVERITY_POLICY` mapping
+corresponds to. Whenever `SEVERITY_POLICY` changes, `ACTIVE_POLICY_VERSION`
+bumps in the same commit AND a migration seeds the new row. The startup
+fingerprint check in `api/lifespan.py` compares the live mapping to the
+DB row keyed by this constant at lifespan; mismatches fail loud before
+accepting webhooks.
 """
 
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
@@ -81,6 +90,25 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
         FindingType.DEPRECATED_API: FindingSeverity.INFO,
     }
 )
+
+
+# `re.ASCII` is load-bearing: without it, `\d` matches Unicode digits
+# (Arabic-Indic, etc.), and the Python guard would accept values that the
+# DB's `~ '^[0-9]+\.[0-9]+\.[0-9]+$'` CHECK rejects — silent divergence
+# between the two halves of the belt-and-suspenders. Leading zeros are
+# disallowed (semver §2 forbids `01.0.0`) so future numeric ordering doesn't
+# desync from string-eq lookups. §0c sharp-edges audit finding #2.
+_SEMVER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$",
+    re.ASCII,
+)
+
+ACTIVE_POLICY_VERSION: Final[str] = "1.0.0"
+if not _SEMVER_RE.fullmatch(ACTIVE_POLICY_VERSION):
+    raise RuntimeError(
+        f"ACTIVE_POLICY_VERSION must be bare ASCII semver (no v prefix, no "
+        f"leading zeros, no pre-release/build suffix); got {ACTIVE_POLICY_VERSION!r}"
+    )
 
 
 _DEFAULT_SEVERITY: Final[FindingSeverity] = FindingSeverity.MEDIUM

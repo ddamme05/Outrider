@@ -64,8 +64,13 @@ GENESIS_REVISION = "af138edd4b57"
 async def test_genesis_upgrade_creates_full_schema(
     fresh_db: str, alembic_runner: AlembicRunner
 ) -> None:
-    """upgrade head against a fresh DB produces the full V1 schema."""
-    await alembic_runner("upgrade", "head", fresh_db)
+    """upgrade to the genesis revision produces the full V1 schema.
+
+    Scoped to GENESIS_REVISION (not "head") so the test stays a smoke
+    test of genesis even as later migrations land on top — downstream
+    migrations have their own behavioral tests.
+    """
+    await alembic_runner("upgrade", GENESIS_REVISION, fresh_db)
 
     engine = create_async_engine(fresh_db)
     try:
@@ -129,8 +134,13 @@ async def test_genesis_upgrade_creates_full_schema(
 async def test_genesis_downgrade_round_trips_clean(
     fresh_db: str, alembic_runner: AlembicRunner
 ) -> None:
-    """upgrade head + downgrade base leaves no Outrider-owned objects behind."""
-    await alembic_runner("upgrade", "head", fresh_db)
+    """upgrade to genesis + downgrade base leaves no Outrider-owned objects behind.
+
+    Scoped to GENESIS_REVISION (not "head") so the round-trip is the
+    genesis-specific cycle — downstream migrations have their own
+    behavioral tests.
+    """
+    await alembic_runner("upgrade", GENESIS_REVISION, fresh_db)
     await alembic_runner("downgrade", "base", fresh_db)
 
     engine = create_async_engine(fresh_db)

@@ -74,8 +74,8 @@ async def test_load_unknown_version_raises(migrated_db: str) -> None:
     engine = create_async_engine(migrated_db)
     try:
         async with engine.connect() as conn:
-            with pytest.raises(UnknownPolicyVersionError, match="9.9.9-nonexistent"):
-                await load_policy_for_version("9.9.9-nonexistent", conn)
+            with pytest.raises(UnknownPolicyVersionError, match="9.9.9"):
+                await load_policy_for_version("9.9.9", conn)
     finally:
         await engine.dispose()
 
@@ -83,7 +83,7 @@ async def test_load_unknown_version_raises(migrated_db: str) -> None:
 async def test_load_malformed_policy_raises_shape_error(migrated_db: str) -> None:
     """JSONB with a key that isn't a valid FindingType raises PolicyVersionShapeError.
 
-    Inserts a fake "9.9.9-malformed" version with a key that doesn't
+    Inserts a fake "9.9.0" version with a key that doesn't
     match any FindingType. The loader's type-system gate catches it.
     """
     engine = create_async_engine(migrated_db)
@@ -92,14 +92,14 @@ async def test_load_malformed_policy_raises_shape_error(migrated_db: str) -> Non
             await conn.execute(
                 text(
                     "INSERT INTO severity_policies (version, policy) "
-                    "VALUES ('9.9.9-malformed', "
+                    "VALUES ('9.9.0', "
                     '\'{"not_a_real_finding_type": "medium"}\'::jsonb)'
                 )
             )
 
         async with engine.connect() as conn:
             with pytest.raises(PolicyVersionShapeError, match="not a valid FindingType"):
-                await load_policy_for_version("9.9.9-malformed", conn)
+                await load_policy_for_version("9.9.0", conn)
     finally:
         await engine.dispose()
 
@@ -114,14 +114,14 @@ async def test_load_malformed_severity_value_raises_shape_error(
             await conn.execute(
                 text(
                     "INSERT INTO severity_policies (version, policy) "
-                    "VALUES ('9.9.9-bad-severity', "
+                    "VALUES ('9.9.1', "
                     '\'{"sql_injection": "catastrophic"}\'::jsonb)'
                 )
             )
 
         async with engine.connect() as conn:
             with pytest.raises(PolicyVersionShapeError, match="not a valid FindingSeverity"):
-                await load_policy_for_version("9.9.9-bad-severity", conn)
+                await load_policy_for_version("9.9.1", conn)
     finally:
         await engine.dispose()
 
@@ -152,11 +152,11 @@ async def test_load_incomplete_policy_raises_shape_error(migrated_db: str) -> No
                     "INSERT INTO severity_policies (version, policy) "
                     "VALUES (:version, CAST(:policy AS jsonb))"
                 ),
-                {"version": "9.9.9-incomplete", "policy": incomplete_json},
+                {"version": "9.9.2", "policy": incomplete_json},
             )
 
         async with engine.connect() as conn:
             with pytest.raises(PolicyVersionShapeError, match="missing entries for"):
-                await load_policy_for_version("9.9.9-incomplete", conn)
+                await load_policy_for_version("9.9.2", conn)
     finally:
         await engine.dispose()

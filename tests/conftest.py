@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -11,9 +12,65 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import outrider.policy.severity as _policy_severity
+
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from outrider.audit.events import LLMCallEvent, ReviewPhaseEvent
     from outrider.llm.base import LLMRequest, LLMResponse
+
+
+# Captured at import time. Any test that mutates the module attribute
+# (`unittest.mock.patch`, `monkeypatch.setattr`, direct assignment) breaks
+# the startup-fingerprint-check invariant — the live mapping would no
+# longer match the DB row at ACTIVE_POLICY_VERSION. The autouse fixture
+# below fails-loud at teardown so the offending test surfaces immediately.
+# Per §0c of specs/2026-05-19-analyze-foundation.md (also DI-M3 from the
+# round-2 crazy audit). To exercise alternate policies:
+#   - for replay-tier tests: seed an additional row in severity_policies
+#     with a distinct version and pass that version through the
+#     `policy_version` injection path used by `load_policy_for_version`.
+#   - for unit-tier tests of `lookup_severity`: construct a separate dict
+#     and test against it directly without mutating the module attribute.
+#
+# Per §0c data-integrity audit M-4: also check that nothing rebound
+# `outrider.api.lifespan.SEVERITY_POLICY` (the lifespan module's own
+# `from outrider.policy.severity import SEVERITY_POLICY` creates an
+# independent binding which `monkeypatch.setattr("outrider.api.lifespan.SEVERITY_POLICY", ...)`
+# can swap without tripping the severity-module check).
+_ORIGINAL_SEVERITY_POLICY = _policy_severity.SEVERITY_POLICY
+
+
+@pytest.fixture(autouse=True)
+def _no_severity_policy_patching() -> Iterator[None]:
+    """Assert SEVERITY_POLICY identity at teardown (production + lifespan re-export)."""
+    yield
+    # `if/raise` (not `assert`) so the guard survives `python -O` which
+    # strips `assert` statements; same rationale as the lifespan
+    # `hide_parameters` gate (§0c sharp-edges audit #3).
+    if _policy_severity.SEVERITY_POLICY is not _ORIGINAL_SEVERITY_POLICY:
+        raise RuntimeError(
+            "outrider.policy.severity.SEVERITY_POLICY was rebound during this test. "
+            "Patching/monkeypatching SEVERITY_POLICY breaks the lifespan startup "
+            "fingerprint check (live mapping no longer matches the DB row at "
+            "ACTIVE_POLICY_VERSION). For replay tests, seed an additional "
+            "severity_policies row and use load_policy_for_version; for unit tests "
+            "of lookup_severity, construct a separate dict locally and test against "
+            "it directly. See specs/2026-05-19-analyze-foundation.md §0c."
+        )
+    # Lifespan's own `from outrider.policy.severity import SEVERITY_POLICY`
+    # creates a second binding; check it too if the module was imported.
+    lifespan_mod = sys.modules.get("outrider.api.lifespan")
+    if lifespan_mod is not None:
+        lifespan_bound = getattr(lifespan_mod, "SEVERITY_POLICY", _ORIGINAL_SEVERITY_POLICY)
+        if lifespan_bound is not _ORIGINAL_SEVERITY_POLICY:
+            raise RuntimeError(
+                "outrider.api.lifespan.SEVERITY_POLICY was rebound during this test "
+                "(the lifespan module's own re-export, distinct from the "
+                "outrider.policy.severity binding). Same rule applies: never "
+                "patch this binding either. See §0c data-integrity audit M-4."
+            )
 
 
 @pytest.fixture(scope="session")

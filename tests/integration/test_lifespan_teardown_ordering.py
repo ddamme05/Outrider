@@ -15,12 +15,17 @@ from fastapi import FastAPI
 
 from outrider.api.lifespan import build_lifespan
 
+# §0c fingerprint-bypass helper (`noop_severity_policy_fingerprint_check`)
+# is in `tests/integration/conftest.py` per §0c-devex-H2.
+
 
 class _SyntheticACloseError(RuntimeError):
     """Synthetic exception raised by the test's mock aclose."""
 
 
-async def test_engine_dispose_runs_when_provider_aclose_raises() -> None:
+async def test_engine_dispose_runs_when_provider_aclose_raises(
+    noop_severity_policy_fingerprint_check: object,
+) -> None:
     """provider.aclose() raises during teardown; engine.dispose() still runs.
 
     AsyncExitStack pushes callbacks in order: engine.dispose first, then
@@ -43,6 +48,7 @@ async def test_engine_dispose_runs_when_provider_aclose_raises() -> None:
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: mock_provider,
+        severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
     )
 
     app = FastAPI()
@@ -175,7 +181,9 @@ async def test_lifespan_rejects_engine_with_truthy_non_bool_hide_parameters() ->
             pass
 
 
-async def test_engine_dispose_runs_when_provider_constructor_fails() -> None:
+async def test_engine_dispose_runs_when_provider_constructor_fails(
+    noop_severity_policy_fingerprint_check: object,
+) -> None:
     """If `provider_factory` raises DURING lifespan startup (after engine
     construction), the AsyncExitStack still runs the engine.dispose
     callback that was already pushed before the failure.
@@ -192,6 +200,7 @@ async def test_engine_dispose_runs_when_provider_constructor_fails() -> None:
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
         provider_factory=_failing_provider_factory,
+        severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
     )
 
     app = FastAPI()
