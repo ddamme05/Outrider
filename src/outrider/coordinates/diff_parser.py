@@ -273,8 +273,7 @@ def validate_diff_path(file_path: str) -> str:
         raise CoordinateError("file_path is empty")
     # NFC normalization FIRST, before any other check, so all downstream
     # validators (Trojan-Source, metachars, traversal) see the same byte
-    # sequence the hash recipes will see. Post-foundation audit (high
-    # confidence): spec §1 promised NFC; implementation initially
+    # sequence the hash recipes will see. spec §1 promised NFC; implementation initially
     # omitted it. Pure-ASCII paths are NFC-idempotent so the change
     # affects only multibyte paths — which is exactly the surface where
     # the hash drift would manifest.

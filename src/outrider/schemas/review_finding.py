@@ -181,10 +181,7 @@ class ReviewFinding(BaseModel):
         The fix is "tolerate computed-field reappearance on input."
         The value gets re-derived from `evidence_tier` at attribute
         access time, so dropping it loses nothing and lets ReviewState
-        checkpoint replay round-trip cleanly. Post-PR review fold (the
-        "ReviewState lacks a real dump→validate checkpoint test for
-        analysis_rounds because confidence conflicts with extra=forbid"
-        finding).
+        checkpoint replay round-trip cleanly.
 
         Operates only on dict inputs (Pydantic v2 also accepts other
         model instances + raw shapes — those don't carry the computed
@@ -229,7 +226,7 @@ class ReviewFinding(BaseModel):
     def _enforce_dimension_lockstep(self) -> Self:
         """`dimension` must equal `FINDING_TYPE_TO_DIMENSION[finding_type]`.
 
-        Foundation-wide data-integrity audit F2: dimension is a stored
+        dimension is a stored
         field (not computed), so a stale serialized payload could survive
         replay under an old mapping. The module-load lockstep guard in
         `outrider.policy.dimensions` fires only at import — it cannot

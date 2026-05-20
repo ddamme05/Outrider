@@ -10,7 +10,7 @@ This module is the boundary between agent nodes and concrete LLM SDKs:
   imports confined to `src/outrider/llm/`), not file-scoped — supporting
   modules within `llm/` may legitimately import SDK metadata too (e.g.,
   `config.py` imports `anthropic.resources.messages.DEPRECATED_MODELS`
-  for eager deprecation validation; round-27 cleanup per Copilot).
+  for eager deprecation validation; cleanup per Copilot).
 
 Round 13 design + round 14/15 corrections; see spec for the full audit
 chain. Two abstract-base enforcement notes worth pinning here:
@@ -31,7 +31,7 @@ chain. Two abstract-base enforcement notes worth pinning here:
     side-table, bypassing both the redaction serializer AND the audit
     payload entirely. The sentinel remains as a utility for any future
     caller that genuinely needs serialized-with-content form; today no
-    production code path uses it (verified round-30 codex audit).
+    production code path uses it (verified ).
 """
 
 import hashlib
@@ -97,7 +97,7 @@ class _IncludeTextOptIn:
     The serializer uses identity (`info.context is INCLUDE_TEXT_OPT_IN`),
     NOT dict-key lookup — there is no string to typo.
 
-    **Round-42 reconciliation:** the older provider-wrapper spec at
+    **reconciliation:** the older provider-wrapper spec at
     `specs/2026-05-05-llm-provider-wrapper.md` described this sentinel
     as the ONLY way to retrieve raw content (e.g., persister calling
     `request.model_dump(context=INCLUDE_TEXT_OPT_IN)`). That was the
@@ -113,7 +113,7 @@ class _IncludeTextOptIn:
     discipline (the `field_serializer` redaction guards the
     `model_dump()` path; the direct-attribute-access path bypasses the
     serializer entirely and writes only to the dedicated content
-    side-table). See round-30/round-34/round-42 entries in the
+    side-table). See //entries in the
     audit-persister spec's Actual Outcome for the contract history.
     """
 
@@ -163,7 +163,7 @@ class LLMProviderError(Exception):
           inheritance lookup);
           value — must be one of `RetryLayer`'s allowed literals.
 
-    Round-18 audit clarification: `cls.__dict__` is intentional and
+    `cls.__dict__` is intentional and
     stricter than `getattr(cls, ...)`. A sub-subclass like
     `class TimeoutWithRetryAfter(LLMTimeoutError): pass` MUST also set
     `retry_at_layer` in its own body, even though inheritance would
@@ -181,14 +181,14 @@ class LLMProviderError(Exception):
         retry-eligible classes — `LLMTimeoutError` / `LLMRateLimitError`
         / `LLMConflictError` / `LLMUpstreamError`. The 4-class set
         mirrors Anthropic SDK 0.100's default-retry set 408/429/409/5xx
-        — see the round-14 + round-21 FUP-025 corrections for the
+        — see the + corrections for the
         history. Omitting any of the four here would silently invite
         the class-omission bug pattern FUP-025 has been defending
         against; pinned by both
         `tests/unit/test_llm_error_taxonomy.py::test_recoverable_subclasses_are_node_layer`
         (every named class IS `"node"`) and
         `::test_provider_error_docstring_names_every_node_layer_class`
-        (every `"node"`-layer class IS named in THIS docstring — round-30
+        (every `"node"`-layer class IS named in THIS docstring —
         codex audit fold)).
       - `"graph"`: LangGraph-level retry policy handles it (unused in V1).
       - `"wrapper"`: reserved for future use (currently the wrapper sets
@@ -238,7 +238,7 @@ class LLMRateLimitError(LLMProviderError):
 class LLMConflictError(LLMProviderError):
     """Resource conflict (HTTP 409); translated from `anthropic.ConflictError`.
 
-    Per Anthropic SDK 0.100 docs (round-21 fold): 409 is in the
+    Per Anthropic SDK 0.100 docs (): 409 is in the
     SDK's default-retry set alongside 408/429/5xx. We disable SDK
     retries (`max_retries=0`), so the calling node owns retry — same
     layer as Timeout/RateLimit/Upstream.
@@ -253,7 +253,7 @@ class LLMUpstreamError(LLMProviderError):
     Translated from BOTH `anthropic.InternalServerError` (5xx with
     HTTP response) AND `anthropic.APIConnectionError` (no HTTP
     response — connect refused, DNS, SSL handshake). Per Anthropic SDK
-    0.100 docs (round-22 FUP-025 fold), connection errors are in the
+    0.100 docs , connection errors are in the
     SDK's documented retry-eligible set alongside 5xx. SDK auto-retries
     are disabled in the wrapper (`max_retries=0`), so the calling node
     owns retry for both cases — same `retry_at_layer="node"` semantic
@@ -261,7 +261,7 @@ class LLMUpstreamError(LLMProviderError):
 
     The earlier docstring "5xx after SDK retries" was doubly wrong:
     (a) SDK retries are not enabled, and (b) it omitted the
-    connection-error branch. Both corrected in round-30 codex audit.
+    connection-error branch. Both corrected in
     """
 
     retry_at_layer: ClassVar[RetryLayer] = "node"
@@ -394,14 +394,13 @@ class LLMRequest(BaseModel):
 
     # Transport fields.
     #
-    # V1 packing convention (round-24/25 folds per Codex audit-cadence
-    # finding): V1 has exactly ONE cacheable block — `system_prompt`.
+    # V1 packing convention V1 has exactly ONE cacheable block — `system_prompt`.
     # Calling nodes pack STABLE content (prompt template + scope-unit
     # context that's reused across the analyze ⇄ trace loop on the same
     # file) into `system_prompt`, and VOLATILE content (the diff under
     # review, finding-generation instructions) into `user_prompt`. The
     # wrapper marks `system_prompt` with `cache_control: ephemeral`
-    # (per round-21 per-block placement), so reusing the same
+    # , so reusing the same
     # `system_prompt` across calls produces cache hits; `user_prompt`
     # stays outside the cache boundary by design. Canonical
     # `docs/spec.md` §9.5 explicitly stages this V1 single-block packing
@@ -415,9 +414,7 @@ class LLMRequest(BaseModel):
     model: str
     max_tokens: int = Field(gt=0, le=8192)
     # `cache_control` defaults to True per DECISIONS#013 point 4 + spec
-    # §9.5 ("prompt-caching-always-on" convention). Round-20 fold per
-    # Codex finding: previous default of False conflicted with the
-    # canonical commitment to use Anthropic prompt caching by default.
+    # §9.5 ("prompt-caching-always-on" convention).
     cache_control: bool = True
     temperature: float = Field(ge=0.0, le=1.0)
 
@@ -428,21 +425,16 @@ class LLMRequest(BaseModel):
     context_summary: tuple[ContextManifestEntry, ...] = ()
     prompt_template_version: str = Field(min_length=1)
     degraded_mode: bool
-    # Pins the provenance of `degraded_mode=True`. Per §0b of
-    # `specs/2026-05-19-analyze-foundation.md` and the post-split audit
-    # S5 finding: `degraded_mode=True` was an unauthenticated bypass
-    # flag that any analyze caller could set to skip the context
-    # validator. The typed reason makes `degraded_mode` un-bypassable
-    # without naming a documented degradation cause. The Literal is
+    # Pins the provenance of `degraded_mode=True` so the bool can't be
+    # set without naming a documented degradation cause. The Literal is
     # narrow on purpose: new reasons require expanding it (deliberate
     # friction so degraded-mode causes stay enumerable). V1 reasons
-    # match the sister spec's parse-failure / has_error_in_changed_regions
+    # match the parser's parse-failure / has_error_in_changed_regions
     # branches.
     #
-    # Sibling-sweep checklist when adding a new value here (per §0b
-    # sharp-edges SE-4): (1) extend this Literal; (2) extend
-    # `LLMCallEvent.degradation_reason` Literal in lockstep at
-    # `outrider.audit.events`; (3) add a sister-spec parser branch
+    # Sibling-sweep checklist when adding a new value: (1) extend this
+    # Literal; (2) extend `LLMCallEvent.degradation_reason` Literal in
+    # lockstep at `outrider.audit.events`; (3) add a parser branch
     # mapping the new ast_facts outcome to this reason; (4) extend
     # `tests/unit/test_llm_request_schema.py`'s truth-table tests.
     degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
@@ -469,12 +461,11 @@ class LLMRequest(BaseModel):
 
     # Provenance validator runs FIRST (declared before
     # `_enforce_context_for_scope_nodes`) so its more-informative error
-    # fires before the context validator on conflicting requests. Per
-    # §0b of `specs/2026-05-19-analyze-foundation.md` (sharp-edges
-    # SE-M4): a request with `degraded_mode=True` on a non-analyze node
-    # AND empty context_summary should report the analyze-only scoping
-    # violation, not the context-required violation. Pydantic runs
-    # model validators in declaration order.
+    # fires before the context validator on conflicting requests: a
+    # request with `degraded_mode=True` on a non-analyze node AND empty
+    # context_summary should report the analyze-only scoping violation,
+    # not the context-required violation. Pydantic runs model validators
+    # in declaration order.
     @model_validator(mode="after")
     def _enforce_degradation_provenance(self) -> Self:
         """`degraded_mode` requires `node_id == "analyze"` AND a typed
@@ -485,9 +476,7 @@ class LLMRequest(BaseModel):
               also naming a documented degradation cause;
           (b) a non-analyze request (trace/synthesize/triage) cannot
               carry analyze-specific degradation semantics at all
-              (round-2-post-split audit F3: prior framing only enforced
-              bool/reason coupling, letting trace requests carry
-              `degraded_mode=True` + an analyze-specific reason).
+              .
         """
         # Rule 1: only analyze can be degraded in V1. Other nodes have
         # no degraded-mode contract; allowing degraded_mode=True
@@ -520,7 +509,7 @@ class LLMRequest(BaseModel):
     def _enforce_context_for_scope_nodes(self) -> Self:
         """`analyze` and `synthesize` always pack scope context; an empty
         `context_summary` from those nodes is a node-side bug worth
-        catching at request construction (round 11 sharp-edges H1).
+        catching at request construction (round 11 .
 
         Per §0b: analyze admits empty `context_summary` ONLY when
         `degraded_mode=True` AND a typed `degradation_reason` is supplied

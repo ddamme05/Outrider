@@ -59,7 +59,7 @@ class TraceCandidate(BaseModel):
     def _enforce_canonical_path(cls, path: str) -> str:
         """Reject paths that aren't `coordinates.validate_diff_path` output.
 
-        Foundation-wide data-integrity audit F1: `candidate_id` is
+        `candidate_id` is
         content-derived from the candidate's payload. Non-canonical
         paths produce non-deterministic IDs across producers, defeating
         replay idempotency of the dedup-by-`candidate_id` reducer.
@@ -74,7 +74,7 @@ class TraceCandidate(BaseModel):
         candidate's payload.
 
         Mirror of `AnalysisRound._enforce_round_id_matches_payload`
-        (post-PR review fold). Without this, `candidate_id` was only
+        . Without this, `candidate_id` was only
         pattern-checked — a caller could supply ANY 64-char hex string
         and Pydantic accepted it. The dedup-by-key reducer would then
         admit two logically-equivalent candidates under different

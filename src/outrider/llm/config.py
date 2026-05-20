@@ -14,7 +14,7 @@ Validators:
     `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?(-\\d{8})?$`. Catches typos
     at construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`). The
     optional 8-digit `YYYYMMDD` suffix accepts dated SDK-catalog pins
-    (round-21); dated forms normalize to their undated alias for
+    ; dated forms normalize to their undated alias for
     pricing lookup (see `outrider.llm.pricing.normalize_to_pricing_key`).
   - deprecation: rejects any model string in
     `anthropic.resources.messages.DEPRECATED_MODELS` (a `dict[str, str]`
@@ -40,7 +40,7 @@ __all__ = ["ModelConfig"]
 #     form, e.g., `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-opus-4-7`)
 #   - `claude-{haiku,sonnet,opus}-{major}-{minor}-{YYYYMMDD}` (the dated
 #     "exact pin" form, e.g., `claude-haiku-4-5-20251001`)
-# Round-21 fold per Codex finding: previous regex rejected the dated form
+# previous regex rejected the dated form
 # even though the SDK catalog publishes it as the precise model id.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
 
@@ -60,7 +60,7 @@ class ModelConfig(BaseSettings):
         frozen=True,
     )
 
-    # Round-20 fold per Codex finding: corrected to current Anthropic
+    # corrected to current Anthropic
     # model family per SDK 0.100 docs. Previous defaults named
     # `claude-sonnet-4-7` which doesn't exist in the SDK; current
     # active models are Opus 4.7, Sonnet 4.6, Haiku 4.5.

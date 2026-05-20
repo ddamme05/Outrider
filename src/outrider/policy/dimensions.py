@@ -11,8 +11,8 @@ The model never proposes a dimension directly — same architectural
 pattern as severity: deterministic systems map LLM identification to
 review-pipeline values; the model only identifies, never sets policy.
 
-**Module-load lockstep assertion** (per post-split audit C4+S9
-convergent finding): test-only totality enforcement can be bypassed
+**Module-load lockstep assertion** (
+): test-only totality enforcement can be bypassed
 when CI is skipped or tests are not run locally. The module-import
 assertion below fails-loud at app startup or test collection if the
 three sets (`FindingType` members, `SEVERITY_POLICY` keys,
@@ -61,7 +61,7 @@ FINDING_TYPE_TO_DIMENSION: Final[Mapping[FindingType, ReviewDimension]] = Mappin
 # collection, BEFORE any analyze code runs. CI tests cover the
 # set-equality assertion at the unit-test layer; this guard is the
 # deterministic floor that fires even when `git commit --no-verify`
-# bypasses CI (per post-split audit C4+S9).
+# bypasses CI ().
 def verify_lockstep() -> None:
     """Assert lockstep across the three sets at import time.
 
@@ -69,7 +69,7 @@ def verify_lockstep() -> None:
     future contributor adding test-side guard logic has a single
     surface to import + call, and so the subprocess-isolated CI test
     pinning the import-time failure can call this wrapper directly.
-    Foundation-wide sharp-edges audit I-7: dropped the leading underscore
+    dropped the leading underscore
     because the function is called from `outrider/__init__.py` as a
     load-bearing public entry point.
     """
@@ -89,7 +89,7 @@ def verify_lockstep() -> None:
             "verify the live SEVERITY_POLICY mapping against the DB-stored row "
             "at ACTIVE_POLICY_VERSION (api/lifespan.py Step 1b) — bump "
             "ACTIVE_POLICY_VERSION and add a severity_policies migration row if "
-            "the policy values changed. Foundation-wide data-integrity audit F5."
+            "the policy values changed. "
         )
 
 

@@ -11,7 +11,7 @@ on an external version-effective-range map (matches the
 `severity-policy-versioned-for-replay` precedent from DECISIONS#001).
 
 Four billable token classes per Anthropic's billing surface (round 14
-fold of Codex finding F2):
+fold of ):
   - regular input (uncached portion)
   - cache write (`cache_creation_input_tokens` — premium over input)
   - cache read (`cache_read_input_tokens` — discount under input)
@@ -44,15 +44,15 @@ __all__ = [
 ]
 
 
-# Round-27 fold (Copilot) — dated model IDs (e.g., `claude-haiku-4-5-20251001`)
-# are accepted by `ModelConfig`'s widened regex (round-21) but `RATE_TABLE` is
+# — dated model IDs (e.g., `claude-haiku-4-5-20251001`)
+# are accepted by `ModelConfig`'s widened regex  but `RATE_TABLE` is
 # keyed only by undated aliases (`claude-haiku-4-5`). Without normalization,
 # `AnthropicProvider`'s eager pricing-coverage check would reject every dated
 # pin and step-8 cost computation would `KeyError`. The dated form is the SDK
 # catalog's exact-pin shape; pricing is identical to the alias.
 #
 # Pattern: trailing `-YYYYMMDD` (8 digits, anchored to end). Matches the
-# round-21 regex exactly. Does NOT match `-1` or `-2025` (wrong digit count).
+# regex exactly. Does NOT match `-1` or `-2025` (wrong digit count).
 _DATED_SUFFIX_PATTERN: Final = re.compile(r"-\d{8}$")
 
 
@@ -92,8 +92,8 @@ version-keyed cost aggregation.
 # `test_llm_pricing.py` fails if rates change without a version bump,
 # preventing silent replay drift.
 #
-# v1 (initial): claude-sonnet-4-7 + claude-haiku-4-5 (round-13)
-# v2 (round-20): replaced claude-sonnet-4-7 with claude-sonnet-4-6
+# v1 (initial): claude-sonnet-4-7 + claude-haiku-4-5
+# v2 : replaced claude-sonnet-4-7 with claude-sonnet-4-6
 #   (the 4-7 model didn't exist in the Anthropic SDK 0.100 catalog;
 #   canonical model name correction)
 PRICING_VERSION: Final[str] = "v2"
@@ -125,8 +125,7 @@ class ModelPricing(NamedTuple):
 
 
 # Anthropic per-token rates as of the V1 PRICING_VERSION bump.
-# Sources (round-20 update — corrected to current Anthropic 0.100 model
-# family per SDK docs; `claude-sonnet-4-7` doesn't exist):
+# Sources :
 #   - claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output,
 #     $0.30/MTok cache read, $3.75/MTok cache write (1.25× input premium).
 #   - claude-haiku-4-5: $1.00/MTok input, $5.00/MTok output,
@@ -134,13 +133,13 @@ class ModelPricing(NamedTuple):
 # Per-token = per-MTok / 1_000_000.
 #
 # Wrapped in `MappingProxyType` so runtime mutation raises `TypeError`
-# (round-16 sharp-edges M2 fold + round-27 defense-in-depth tightening).
+# .
 # The `Final` annotation alone is a type-checker hint; `MappingProxyType`
 # enforces immutability at runtime. A test fixture that does
 # `RATE_TABLE["X"] = cheap_pricing` fails loudly instead of silently
 # mutating module state for the rest of the pytest session.
 #
-# Round-27 fold (sweep against round-27 patterns): the dict literal is
+# (sweep against patterns): the dict literal is
 # inlined directly into `MappingProxyType(...)` rather than bound to a
 # module-level `_RATE_TABLE_RAW` name. The underscore-prefix convention
 # alone doesn't prevent `from outrider.llm.pricing import _RATE_TABLE_RAW`
@@ -184,7 +183,7 @@ def compute_cost_usd(
     by an order of magnitude. Same misuse-resistance pattern as
     `coordinates.tree_sitter_to_github` (round-N keyword-only barrier).
 
-    Four-term sum per spec round-14 fold (Codex finding F2 — earlier
+    Four-term sum per spec (— earlier
     designs missed cache-write tokens, undercounting Anthropic's actual
     bill since cache writes are premium-rated).
 
@@ -194,10 +193,10 @@ def compute_cost_usd(
     eager pricing-coverage validation should make this unreachable
     in production (see AC#24).
 
-    **Round-18 fold (variant audit) + round-27 correction (Copilot):**
+    **(variant audit) + :**
     wraps in `decimal.localcontext()` AND explicitly resets
     `ctx.prec = 28` so the computation is self-contained against
-    ambient `decimal.getcontext().prec` mutations. Round-18 used a bare
+    ambient `decimal.getcontext().prec` mutations. used a bare
     `decimal.localcontext()` which copies the caller's thread context —
     a caller that set `prec=5` before calling would still run cost
     arithmetic at precision 5 and silently truncate. Resetting prec to

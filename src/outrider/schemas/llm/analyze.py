@@ -13,7 +13,7 @@ enum would fail Pydantic at `AnalyzeResponseRaw.model_validate(...)`
 BEFORE the parser could emit the rejection event — losing the audit
 signal that the model produced an invalid type.
 
-**Span byte-for-byte invariant** (per post-split audit S6):
+**Span byte-for-byte invariant.**
 `AnalyzeFindingProposal.span` (admitted) MUST equal
 `AnalyzeFindingProposalRaw.span` (raw) byte-for-byte. The parser MAY
 reject a proposal whose span fails containment, but MUST NOT normalize/
@@ -25,8 +25,8 @@ same hash, breaking replay reconstruction. Tests pin this invariant.
 
 The byte-for-byte rule does NOT apply to `candidate_path` — that field
 IS deliberately normalized between layers (raw has `candidate_path_raw`,
-admitted has `candidate_path` post-`coordinates.validate_diff_path` per
-post-split S4). `span` is identity-preserved because rejection-event
+admitted has `candidate_path` post-`coordinates.validate_diff_path`).
+`span` is identity-preserved because rejection-event
 hashes depend on it; `candidate_path` is normalized because downstream
 consumers (trace node fetching the file) need the validated form.
 """
@@ -54,14 +54,13 @@ class TraceCandidateProposalRaw(BaseModel):
 
     Parser admits/rejects these alongside their parent finding proposals.
 
-    Per post-split audit S4 + user adjudication: raw and admitted
-    layers must be materially distinct (not just default markers), so
-    a downstream variable typed as the raw layer cannot be silently
-    passed where the admitted layer is expected. The distinction is in
-    the path field: raw layer carries `candidate_path_raw` (the model's
-    claimed path, unvalidated bounded string); admitted layer carries
-    `candidate_path` (already passed through
-    `coordinates.validate_diff_path` — repo-relative POSIX, no
+    Raw and admitted layers must be materially distinct (not just
+    default markers), so a downstream variable typed as the raw layer
+    cannot be silently passed where the admitted layer is expected.
+    The distinction is in the path field: raw layer carries
+    `candidate_path_raw` (the model's claimed path, unvalidated bounded
+    string); admitted layer carries `candidate_path` (already passed
+    through `coordinates.validate_diff_path` — repo-relative POSIX, no
     traversal, no shell metacharacters).
     """
 
@@ -121,18 +120,16 @@ class TraceCandidateProposal(BaseModel):
     Distinct field name (`candidate_path` vs raw's `candidate_path_raw`)
     means a `TraceCandidateProposal(**raw.model_dump())` swap fails
     Pydantic construction under `extra="forbid"` — the raw layer's
-    `candidate_path_raw` is not a valid admitted field. Post-split
-    audit S4 + user adjudication: structural distinction is the
-    pit-of-success fix; provenance markers (Literal["admitted"]) are
-    belt only, validation-derived field shape is the load-bearing
-    prevention.
+    `candidate_path_raw` is not a valid admitted field. Structural
+    distinction is the pit-of-success fix; provenance markers
+    (Literal["admitted"]) are belt only, validation-derived field
+    shape is the load-bearing prevention.
 
     The `candidate_path` field validator below enforces the documented
     "already passed validate_diff_path" invariant at the schema layer
-    (post-PR review fold) — without it, the admitted-vs-raw distinction
-    rested on parser flow alone; with it, the schema is the durable
-    floor and any future producer / replay reconstruction validates
-    against the same rule.
+    — without it, the admitted-vs-raw distinction rested on parser
+    flow alone; with it, the schema is the durable floor and any future
+    producer / replay reconstruction validates against the same rule.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

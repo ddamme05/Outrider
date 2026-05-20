@@ -61,7 +61,7 @@ class AnalysisRound(BaseModel):
     def _enforce_canonical_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
         """Reject paths that aren't `coordinates.validate_diff_path` output.
 
-        Foundation-wide data-integrity audit F1: `round_id` is content-
+        `round_id` is content-
         derived from this round's payload (per spec §1). If callers pass
         non-canonical paths (`./src/a.py` vs `src/a.py`, trailing slash,
         unvalidated metachars), the resulting `round_id` is non-
@@ -77,8 +77,7 @@ class AnalysisRound(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_time_ordering(self) -> Self:
-        """`ended_at >= started_at` per coherence-guard fold (Copilot/CodeRabbit
-        convergent on PR review). A round whose end precedes its start is
+        """`ended_at >= started_at` A round whose end precedes its start is
         an impossible timing that would otherwise leak into replay /
         reporting and confuse latency aggregates.
         """
@@ -90,17 +89,23 @@ class AnalysisRound(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _enforce_files_examined_skipped_disjoint(self) -> Self:
-        """A file is either examined or skipped per pass — never both.
-
-        Sharp-edges audit M-2 (low confidence, real): without this check
-        a caller could construct an `AnalysisRound` with the same path
-        in both tuples; the canonical id computation would produce a
-        valid `round_id` for the contradictory payload, masking the
-        semantic invariant at the recipe layer. Fail at the schema
-        boundary instead — the file-status accounting downstream
-        (per-file metrics, skip-reason aggregates) presumes the split.
+    def _enforce_files_examined_skipped_set_semantics(self) -> Self:
+        """`files_examined` and `files_skipped` are set-semantic: each tuple
+        carries distinct paths, and the two tuples are disjoint. Duplicate
+        paths inside one tuple let logically identical rounds hash to
+        different `round_id` values (one producer emits `("a.py",)`,
+        another emits `("a.py", "a.py")`), defeating the dedup contract.
+        Cross-tuple overlap is a separate semantic error: a file is either
+        examined or skipped per pass, never both.
         """
+        if len(self.files_examined) != len(set(self.files_examined)):
+            raise ValueError(
+                f"AnalysisRound.files_examined contains duplicates: {sorted(self.files_examined)!r}"
+            )
+        if len(self.files_skipped) != len(set(self.files_skipped)):
+            raise ValueError(
+                f"AnalysisRound.files_skipped contains duplicates: {sorted(self.files_skipped)!r}"
+            )
         overlap = set(self.files_examined) & set(self.files_skipped)
         if overlap:
             raise ValueError(
@@ -113,7 +118,7 @@ class AnalysisRound(BaseModel):
     def _enforce_round_id_matches_payload(self) -> Self:
         """Assert `round_id == compute_round_id(...)` over this round's payload.
 
-        Post-foundation audit (high confidence): without this validator,
+        without this validator,
         `round_id` was only pattern-checked — a caller could supply ANY
         64-char hex string and Pydantic accepted it. The dedup-by-key
         reducer would then admit two logically-equivalent rounds under
