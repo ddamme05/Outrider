@@ -186,18 +186,43 @@ def test_canonical_prompt_hash_pinned_digest() -> None:
     equivalence. Pinning a known (system, user) pair to a known hex digest
     fails loud if any future change introduces normalization, trimming, or
     delimiter drift.
+
+    Re-pinned: the canonicalization switched from a fixed `\\x1e`
+    delimiter to length-prefixed encoding to close a collision class
+    where `\\x1e`-bearing payloads could move the prompt boundary
+    across two distinct (system, user) pairs and share a digest. The
+    new digest is the SHA-256 of
+    `f"{len(sp)}:".encode() + sp + f"{len(up)}:".encode() + up` for the
+    inputs below. Replay equivalence is preserved for events written
+    after this re-pin; any historical events still reference the old
+    digest under their original recipe and replay through the
+    persister/replay layer (which is the canonical replay path, not
+    this re-computation).
     """
     sys_prompt = "You are a code reviewer."
     user_prompt = "Review this PR."
     digest = _canonical_prompt_hash(system_prompt=sys_prompt, user_prompt=user_prompt)
-    expected = "06a3f1c3ed69f279e780742b5762f8609818741d0c3408beb61c80111d2c7709"
-    # If this digest changes, EITHER the canonicalization changed (which
-    # breaks replay — bug), OR you intentionally re-pinned and need to
-    # update the expected digest with a same-commit comment justifying
-    # why replay-equivalence guarantees are intact.
+    expected = "39bb3fcd4b56c0cf833ce282503c47603ece6f482694932e1d09cd5ef1665834"
     assert digest == expected, (
         f"Canonicalization drifted: got {digest}, expected {expected}. "
-        f"This breaks replay equivalence. Investigate before re-pinning."
+        f"If this drift is intentional, re-pin with a justification."
+    )
+
+
+def test_canonical_prompt_hash_rejects_delimiter_smuggle() -> None:
+    """Length-prefix encoding resists the collision class where a fixed
+    delimiter inside the prompt body could move the boundary across two
+    distinct (system, user) pairs that share a digest.
+
+    Under the OLD `\\x1e`-delimiter recipe, these two pairs collided.
+    Under the length-prefix recipe, they produce distinct digests.
+    """
+    digest_a = _canonical_prompt_hash(system_prompt="A\x1eB", user_prompt="C")
+    digest_b = _canonical_prompt_hash(system_prompt="A", user_prompt="B\x1eC")
+    assert digest_a != digest_b, (
+        "Length-prefix encoding must produce distinct digests for "
+        "different (system, user) pairs even when their bytes contain "
+        "the historical delimiter character."
     )
 
 

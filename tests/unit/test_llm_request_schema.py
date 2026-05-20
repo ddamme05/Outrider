@@ -170,7 +170,18 @@ def test_context_summary_defaults_empty_tuple() -> None:
 
 
 def test_context_summary_admits_tuple_of_entries() -> None:
-    entries = (_entry(), _entry())
+    """Two distinct entries (different scope_unit_name) admit; the
+    set-semantic dup check fires only on (file_path, scope_unit_name)
+    collisions."""
+    e1 = _entry()
+    e2 = ContextManifestEntry(
+        file_path=e1.file_path,
+        scope_unit_name=f"{e1.scope_unit_name}.nested",
+        line_start=e1.line_start + 100,
+        line_end=e1.line_end + 100,
+        inclusion_reason="same_file_context",
+    )
+    entries = (e1, e2)
     req = LLMRequest(**_kwargs(context_summary=entries, node_id="analyze"))
     assert req.context_summary == entries
 
@@ -476,4 +487,65 @@ def test_provenance_validator_fires_before_context_on_conflict() -> None:
     assert "non-empty context_summary" not in error_str, (
         f"Context validator fired despite provenance violation; "
         f"declaration order may have inverted. Got: {error_str}"
+    )
+
+
+def test_llm_request_rejects_duplicate_context_summary_entries() -> None:
+    """`context_summary` is set-semantic by `(file_path, scope_unit_name)`.
+    Catching at request construction means the failure fires BEFORE the
+    paid SDK call rather than after, when the audit-event mirror runs.
+    """
+    entry = _entry()
+    with pytest.raises(ValidationError, match="duplicate"):
+        LLMRequest(
+            **_kwargs(
+                node_id="analyze",
+                degraded_mode=False,
+                context_summary=(entry, entry),  # same (file_path, scope_unit_name)
+            )
+        )
+
+
+def test_llm_request_admits_distinct_context_summary_entries() -> None:
+    """Two entries differing in scope_unit_name admit cleanly."""
+    e1 = _entry()
+    e2 = ContextManifestEntry(
+        file_path="src/foo.py",
+        scope_unit_name="Foo.baz",  # different scope unit, same file — OK
+        line_start=20,
+        line_end=30,
+        inclusion_reason="same_file_context",
+    )
+    req = LLMRequest(
+        **_kwargs(
+            node_id="analyze",
+            degraded_mode=False,
+            context_summary=(e1, e2),
+        )
+    )
+    assert len(req.context_summary) == 2
+
+
+def test_llm_request_validator_declaration_order() -> None:
+    """The provenance validator MUST be declared before the
+    `context_for_scope_nodes` validator so the provenance error fires
+    first on a `synthesize + degraded_mode=True + empty context_summary`
+    request. Pydantic runs `model_validator(mode="after")` in declaration
+    order; a future refactor that reorders them alphabetically (or any
+    other rule) silently inverts the error precedence.
+    """
+    import inspect
+
+    source = inspect.getsource(LLMRequest)
+    # Match the `def NAME(` line specifically — string mentions inside
+    # leading comments and other docstrings would otherwise confuse the
+    # source.find() position.
+    provenance_def = source.find("def _enforce_degradation_provenance(")
+    context_def = source.find("def _enforce_context_for_scope_nodes(")
+    assert provenance_def != -1, "provenance validator def missing"
+    assert context_def != -1, "context validator def missing"
+    assert provenance_def < context_def, (
+        "_enforce_degradation_provenance must be declared before "
+        "_enforce_context_for_scope_nodes so provenance errors fire first; "
+        f"got provenance@{provenance_def}, context@{context_def}"
     )

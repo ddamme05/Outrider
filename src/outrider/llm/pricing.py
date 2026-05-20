@@ -2,16 +2,15 @@
 # See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #016 Amended 2026-05-05.
 """Per-model token-cost rate table + `PRICING_VERSION` constant.
 
-Backs `LLMCallEvent.cost_usd` provider-side computation per round 13's
-canonical contract: `AnthropicProvider.complete()` step 8 reads this
-table, multiplies token counts × rates, and produces `cost_usd`. Step 9
+Backs `LLMCallEvent.cost_usd` provider-side computation per the canonical
+contract: `AnthropicProvider.complete()` step 8 reads this table,
+multiplies token counts × rates, and produces `cost_usd`. Step 9
 populates `LLMCallEvent.pricing_version` from `PRICING_VERSION` so
 historical-row replay reads the version directly rather than depending
 on an external version-effective-range map (matches the
 `severity-policy-versioned-for-replay` precedent from DECISIONS#001).
 
-Four billable token classes per Anthropic's billing surface (round 14
-fold of ):
+Four billable token classes per Anthropic's billing surface:
   - regular input (uncached portion)
   - cache write (`cache_creation_input_tokens` — premium over input)
   - cache read (`cache_read_input_tokens` — discount under input)

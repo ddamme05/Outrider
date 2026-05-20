@@ -297,6 +297,79 @@ def test_compute_proposal_hash_rejects_traversal_in_source_file_path() -> None:
         )
 
 
+def test_compute_finding_content_hash_canonicalizes_aliased_paths() -> None:
+    """`compute_finding_content_hash` canonicalizes `file_path` via
+    `validate_diff_path` BEFORE entering the payload. Without this,
+    `src/foo.py` and `./src/foo.py` produce different content_hash digests
+    for the same logical finding, breaking finding-dedup at the
+    `FindingEvent.finding_content_hash` reducer key.
+    """
+    h_canonical = compute_finding_content_hash(
+        file_path="src/foo.py",
+        line_start=10,
+        line_end=12,
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    h_dot_slash = compute_finding_content_hash(
+        file_path="./src/foo.py",
+        line_start=10,
+        line_end=12,
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    h_double_slash = compute_finding_content_hash(
+        file_path="src//foo.py",
+        line_start=10,
+        line_end=12,
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    assert h_canonical == h_dot_slash == h_double_slash, (
+        "compute_finding_content_hash must canonicalize file_path via "
+        "validate_diff_path BEFORE hashing — alias paths to the same "
+        "file must produce identical content_hash digests."
+    )
+
+
+def test_compute_finding_content_hash_rejects_traversal() -> None:
+    """`..` traversal must be rejected at the recipe boundary, not
+    silently hashed. Closes the producer-side bug where an attacker-
+    controlled path could land in the append-only audit log."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((CoordinateError, ValueError)):
+        compute_finding_content_hash(
+            file_path="../escape.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
+        )
+
+
+def test_compute_proposal_hash_normalizes_none_and_empty_trace_path() -> None:
+    """`trace_path=None` and `trace_path=()` represent the same logical
+    state — the proposal has no trace metadata. Without normalization,
+    producers that build their tuple from `getattr(raw, 'trace_path', ())`
+    would collide with producers that pass `None`, producing distinct
+    digests for proposals that are semantically identical.
+    """
+    base_kwargs: dict[str, object] = {
+        "source_file_path": "src/foo.py",
+        "finding_type": "sql_injection",
+        "evidence_tier": "JUDGED",
+        "query_match_id": None,
+        "title": "t",
+        "description": "d",
+        "evidence": "e",
+        "byte_start": 100,
+        "byte_end": 120,
+    }
+    h_none = compute_proposal_hash(trace_path=None, **base_kwargs)  # type: ignore[arg-type]
+    h_empty = compute_proposal_hash(trace_path=(), **base_kwargs)  # type: ignore[arg-type]
+    assert h_none == h_empty, (
+        "trace_path=None and trace_path=() must produce identical digests — "
+        "they are the same logical 'no trace metadata' state."
+    )
+
+
 def test_compute_response_hash_full_text() -> None:
     """Response hash is sha256 of the FULL response, not a prefix."""
     short = "short response"

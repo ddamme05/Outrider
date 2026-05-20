@@ -50,7 +50,7 @@ because the AwareDatetime validator fires; `state.pr_context = "string"`
 raises because PRContext is not str-coercible; `state.pr_context = {...}`
 with an INVALID/INCOMPLETE dict shape raises because PRContext's own
 construction validators fire on the dict. Important Pydantic 2.12 nuance
-(corrected Round 19 — earlier docstring overclaimed): a VALID dict-shaped
+a VALID dict-shaped
 payload that matches PRContext's schema IS validated and constructed into
 a fresh PRContext instance on assignment — that's reconstructive
 validation, not bypass. Tests pin the rejection cases (string-rejection,
@@ -65,8 +65,8 @@ across the post-first-input lifetime (catches direct attribute mutation
 post-merge); callers needing typed-validated post-reducer state must
 construct via `ReviewState.model_validate({**state.model_dump(), **delta})`
 rather than bare `model_copy(update=...)` (Pydantic 2 docs explicitly say
-`model_copy` does NOT revalidate the update payload). Round 7 corrected
-an earlier Round 5 docstring claim that the framework constructs a fresh
+`model_copy` does NOT revalidate the update payload).
+An earlier docstring claim that the framework constructs a fresh
 `model_validate`d instance per super-step — the local LangGraph docs
 confirm that's false.
 

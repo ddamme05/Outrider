@@ -305,13 +305,20 @@ def compute_proposal_hash(
     from outrider.coordinates import validate_diff_path  # noqa: PLC0415
 
     canonical_source_file_path = validate_diff_path(source_file_path)
+    # Normalize "no trace path" to None — `trace_path=()` and
+    # `trace_path=None` represent the same logical state ("the proposal
+    # did not name a trace path") but would otherwise produce distinct
+    # digests because `[]` and `None` serialize differently. Producers
+    # that build their tuple from `getattr(raw, "trace_path", ())` would
+    # disagree with producers that use the raw `None` directly.
+    normalized_trace_path = list(trace_path) if trace_path else None
     return compute_identity_hash(
         {
             "source_file_path": canonical_source_file_path,
             "finding_type": finding_type,
             "evidence_tier": evidence_tier,
             "query_match_id": query_match_id,
-            "trace_path": list(trace_path) if trace_path is not None else None,
+            "trace_path": normalized_trace_path,
             "title": title,
             "description": description,
             "evidence": evidence,

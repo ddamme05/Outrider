@@ -126,6 +126,17 @@ def compute_finding_content_hash(
     file paths with special characters deterministically; compact separators
     `(",", ":")` produce a single canonical byte sequence per input tuple.
 
+    `file_path` runs through `coordinates.validate_diff_path` BEFORE
+    entering the hash payload — same shape as `compute_proposal_hash`
+    and the path-canonicalization rule in spec.md §1. Without this,
+    a caller that pre-computes the hash from a non-canonical path
+    (`"./src/foo.py"`) and then constructs a `ReviewFinding` (which
+    normalizes via the same validator) produces a `_verify_content_hash`
+    mismatch — the wrapper recomputes from the canonical form and
+    diverges from the caller's pre-computed hash. Pinning the
+    canonical floor at the recipe means alias paths to the same file
+    produce a SINGLE digest.
+
     `line_start`, `line_end`, and `finding_type` are keyword-only —
     `line_start`/`line_end` are adjacent same-typed `int` parameters, and
     a positional swap would silently produce a different hash, which IS
@@ -144,8 +155,9 @@ def compute_finding_content_hash(
     finding_type)" with informal `+` notation; this helper pins down the
     encoding choice so type and event agree.
     """
+    canonical_file_path = validate_diff_path(file_path)
     payload = json.dumps(
-        [file_path, line_start, line_end, finding_type.value],
+        [canonical_file_path, line_start, line_end, finding_type.value],
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -298,10 +310,9 @@ class LLMCallEvent(AuditEventBase):
     prompt_template_version: str
     system_prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     degraded_mode: bool
-    # Per §0b of `specs/2026-05-19-analyze-foundation.md` + the audit's
-    # `degraded_mode: bool` alone loses provenance on
-    # metadata-only replay (post-retention or partial-content). The two
-    # reasons (`parse_failed` vs `tree_has_error_in_changed_regions`)
+    # `degraded_mode: bool` alone loses provenance on metadata-only
+    # replay (post-retention or partial-content). The two reasons
+    # (`parse_failed` vs `tree_has_error_in_changed_regions`)
     # imply structurally different prompt content; collapsing them into
     # the bool means audit-stream queries like "how many parse_failed
     # analyze calls did we make this month" become unanswerable. Same

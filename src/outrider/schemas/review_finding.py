@@ -98,6 +98,15 @@ class ReviewFinding(BaseModel):
     # bypass the proof boundary, the line constraint, or the typed-enum
     # gates. Without this, `finding.severity = "garbage"` would silently
     # admit; with it, the assignment raises.
+    #
+    # WARNING — DO NOT USE `model_copy(update={...})` on a ReviewFinding.
+    # Pydantic v2's `model_copy` skips ALL model_validators even when
+    # `validate_assignment=True`, so a copy-with-update that flips
+    # severity silently bypasses `_enforce_severity_matches_policy`,
+    # `_enforce_dimension_lockstep`, `_enforce_override_triplet_coherence`,
+    # and `_verify_content_hash`. For multi-field lifecycle updates,
+    # use `ReviewFinding.model_validate({**finding.model_dump(), **delta})`
+    # which routes through the full validator chain.
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     finding_id: UUID = Field(default_factory=uuid4)
