@@ -214,3 +214,90 @@ def test_analysis_round_rejects_duplicate_in_files_skipped() -> None:
             started_at=now,
             ended_at=now,
         )
+
+
+def test_analysis_round_rejects_duplicate_finding_ids() -> None:
+    """Two ReviewFindings with the same finding_id is a producer bug —
+    `findings` is set-semantic by finding_id."""
+    f1 = _finding()
+    # Same finding_id, otherwise valid (different content_hash via file_path).
+    duplicate = ReviewFinding(
+        finding_id=f1.finding_id,  # same id — bug
+        review_id=uuid4(),
+        installation_id=12345,
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.CRITICAL,
+        file_path="src/other.py",
+        line_start=1,
+        line_end=2,
+        title="x",
+        description="y",
+        evidence="z",
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version="1.0.0",
+        content_hash=compute_finding_content_hash(
+            file_path="src/other.py",
+            line_start=1,
+            line_end=2,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+    )
+    now = datetime.now(UTC)
+    bad_round_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py", "src/other.py"),
+        files_skipped=(),
+        finding_content_hashes=(f1.content_hash, duplicate.content_hash),
+    )
+    with pytest.raises(ValidationError, match="duplicate finding_ids"):
+        AnalysisRound(
+            round_id=bad_round_id,
+            pass_index=0,
+            findings=(f1, duplicate),
+            files_examined=("src/foo.py", "src/other.py"),
+            files_skipped=(),
+            started_at=now,
+            ended_at=now,
+        )
+
+
+def test_analysis_round_rejects_duplicate_content_hashes() -> None:
+    """Two findings with the same content_hash collapse the finding-
+    content-hash tuple's sorted form, changing the round_id digest."""
+    f1 = _finding()
+    # Same content_hash inputs => same hash, but different finding_id.
+    duplicate = ReviewFinding(
+        finding_id=uuid4(),  # different id...
+        review_id=uuid4(),
+        installation_id=12345,
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.CRITICAL,
+        file_path="src/foo.py",  # ...but same file_path, line range, finding_type
+        line_start=10,
+        line_end=12,
+        title="x",
+        description="y",
+        evidence="z",
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version="1.0.0",
+        content_hash=f1.content_hash,
+    )
+    now = datetime.now(UTC)
+    bad_round_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py",),
+        files_skipped=(),
+        finding_content_hashes=(f1.content_hash, duplicate.content_hash),
+    )
+    with pytest.raises(ValidationError, match="duplicate content_hashes"):
+        AnalysisRound(
+            round_id=bad_round_id,
+            pass_index=0,
+            findings=(f1, duplicate),
+            files_examined=("src/foo.py",),
+            files_skipped=(),
+            started_at=now,
+            ended_at=now,
+        )

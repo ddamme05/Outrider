@@ -115,6 +115,27 @@ class AnalysisRound(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _enforce_findings_unique(self) -> Self:
+        """`findings` is set-semantic by `finding_id`. Two ReviewFindings
+        with the same `finding_id` is a producer bug — and the same
+        `content_hash` collision changes the `round_id` digest (which
+        sorts content_hashes), breaking dedup-by-round_id.
+        """
+        finding_ids = [f.finding_id for f in self.findings]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError(
+                f"AnalysisRound.findings contains duplicate finding_ids: "
+                f"{sorted(str(fid) for fid in finding_ids)!r}"
+            )
+        content_hashes = [f.content_hash for f in self.findings]
+        if len(content_hashes) != len(set(content_hashes)):
+            raise ValueError(
+                f"AnalysisRound.findings contains duplicate content_hashes: "
+                f"{sorted(content_hashes)!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_round_id_matches_payload(self) -> Self:
         """Assert `round_id == compute_round_id(...)` over this round's payload.
 
