@@ -94,10 +94,14 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
 
 # `re.ASCII` is load-bearing: without it, `\d` matches Unicode digits
 # (Arabic-Indic, etc.), and the Python guard would accept values that the
-# DB's `~ '^[0-9]+\.[0-9]+\.[0-9]+$'` CHECK rejects — silent divergence
-# between the two halves of the belt-and-suspenders. Leading zeros are
-# disallowed (semver §2 forbids `01.0.0`) so future numeric ordering doesn't
-# desync from string-eq lookups. §0c sharp-edges audit finding #2.
+# DB's
+# `~ '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'`
+# CHECK rejects — silent divergence between the two halves of the
+# belt-and-suspenders. Leading zeros are disallowed (semver §2 forbids
+# `01.0.0`) so future numeric ordering doesn't desync from string-eq
+# lookups. §0c sharp-edges audit finding #2 (regex tightened to the
+# strict no-leading-zero shape; comment updated post-PR review to match
+# the actual DB CHECK in migration `3d03bca7f2be`).
 _SEMVER_RE: Final[re.Pattern[str]] = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$",
     re.ASCII,
