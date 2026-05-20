@@ -1,0 +1,289 @@
+# See specs/2026-05-19-analyze-foundation.md §4.
+"""Span-based coordinate helper tests.
+
+Five helpers, one file. Pins the half-open interval semantics
+(byte_end exclusive), the file-size safety floor, the addable-diff
+intersection rule for degraded-mode admission, the byte→1-indexed-line
+conversion (including multibyte UTF-8 safety), and the scope-unit-
+bounded hunk clipping.
+"""
+
+from __future__ import annotations
+
+import pytest
+from unidiff import PatchSet
+
+from outrider.ast_facts.models import ScopeUnit, Span
+from outrider.coordinates import (
+    CoordinateError,
+    scope_unit_diff_hunks,
+    span_to_line_range,
+    span_within_degraded_context,
+    span_within_file,
+    span_within_scope_unit,
+)
+
+
+def _scope_unit(
+    *, byte_start: int = 100, byte_end: int = 200, line_start: int = 10, line_end: int = 20
+) -> ScopeUnit:
+    return ScopeUnit(
+        unit_id="a" * 64,
+        kind="function",
+        name="foo",
+        qualified_name="module.foo",
+        file_path="src/foo.py",
+        line_start=line_start,
+        line_end=line_end,
+        byte_start=byte_start,
+        byte_end=byte_end,
+    )
+
+
+# ---------------------------------------------------------------------------
+# span_within_scope_unit
+# ---------------------------------------------------------------------------
+
+
+def test_span_within_scope_unit_strictly_inside() -> None:
+    su = _scope_unit(byte_start=100, byte_end=200)
+    assert span_within_scope_unit(Span(byte_start=120, byte_end=180), su) is True
+
+
+def test_span_within_scope_unit_equal_bounds() -> None:
+    """Span equal to scope unit bounds is contained (half-open: end is exclusive)."""
+    su = _scope_unit(byte_start=100, byte_end=200)
+    assert span_within_scope_unit(Span(byte_start=100, byte_end=200), su) is True
+
+
+def test_span_within_scope_unit_extends_past_end_rejected() -> None:
+    su = _scope_unit(byte_start=100, byte_end=200)
+    assert span_within_scope_unit(Span(byte_start=100, byte_end=201), su) is False
+
+
+def test_span_within_scope_unit_starts_before_start_rejected() -> None:
+    su = _scope_unit(byte_start=100, byte_end=200)
+    assert span_within_scope_unit(Span(byte_start=99, byte_end=150), su) is False
+
+
+def test_span_within_scope_unit_empty_span_inside() -> None:
+    """Empty span [a, a) at any point inside the scope: contained."""
+    su = _scope_unit(byte_start=100, byte_end=200)
+    assert span_within_scope_unit(Span(byte_start=150, byte_end=150), su) is True
+
+
+# ---------------------------------------------------------------------------
+# span_within_file
+# ---------------------------------------------------------------------------
+
+
+def test_span_within_file_exact_end_admitted() -> None:
+    assert span_within_file(Span(byte_start=0, byte_end=100), file_byte_length=100) is True
+
+
+def test_span_within_file_past_end_rejected() -> None:
+    assert span_within_file(Span(byte_start=0, byte_end=101), file_byte_length=100) is False
+
+
+def test_span_within_file_rejects_negative_file_length() -> None:
+    """Defensive: a negative file size is a caller bug."""
+    with pytest.raises(CoordinateError, match="non-negative"):
+        span_within_file(Span(byte_start=0, byte_end=10), file_byte_length=-1)
+
+
+# ---------------------------------------------------------------------------
+# span_within_degraded_context
+# ---------------------------------------------------------------------------
+
+
+def test_span_within_degraded_context_intersects_single_range() -> None:
+    assert (
+        span_within_degraded_context(
+            Span(byte_start=50, byte_end=70),
+            addable_diff_byte_ranges=((40, 80),),
+        )
+        is True
+    )
+
+
+def test_span_within_degraded_context_intersects_one_of_many() -> None:
+    """Multiple addable hunks — span hits one."""
+    ranges = ((10, 20), (50, 70), (200, 250))
+    assert span_within_degraded_context(Span(byte_start=60, byte_end=65), ranges) is True
+
+
+def test_span_within_degraded_context_no_intersection() -> None:
+    """Span sits entirely in a gap between addable ranges."""
+    ranges = ((10, 20), (50, 70))
+    assert span_within_degraded_context(Span(byte_start=25, byte_end=40), ranges) is False
+
+
+def test_span_within_degraded_context_empty_ranges() -> None:
+    """No addable hunks → no degraded context to anchor against."""
+    assert span_within_degraded_context(Span(byte_start=0, byte_end=100), ()) is False
+
+
+def test_span_within_degraded_context_boundary_touch_right_excluded() -> None:
+    """Half-open: span ending exactly at range start does NOT intersect.
+
+    Span [10, 50) and range [50, 100): the boundary touches but
+    overlap is empty. Per §4 locked semantics, this is rejected.
+    """
+    assert (
+        span_within_degraded_context(
+            Span(byte_start=10, byte_end=50),
+            addable_diff_byte_ranges=((50, 100),),
+        )
+        is False
+    )
+
+
+def test_span_within_degraded_context_boundary_touch_left_excluded() -> None:
+    """Span [50, 100) and range [10, 50): boundary touches but empty overlap."""
+    assert (
+        span_within_degraded_context(
+            Span(byte_start=50, byte_end=100),
+            addable_diff_byte_ranges=((10, 50),),
+        )
+        is False
+    )
+
+
+def test_span_within_degraded_context_span_fully_equal_range() -> None:
+    """Span == range: same half-open interval, full overlap, admitted."""
+    assert (
+        span_within_degraded_context(
+            Span(byte_start=10, byte_end=50),
+            addable_diff_byte_ranges=((10, 50),),
+        )
+        is True
+    )
+
+
+def test_span_within_degraded_context_empty_span_inside_range() -> None:
+    """An empty span [a, a) where a is inside (c, d) — the half-open
+    intersection check `a < d AND c < b` becomes `a < d AND c < a`,
+    which holds when c < a < d. So empty span strictly inside a range
+    intersects."""
+    assert (
+        span_within_degraded_context(
+            Span(byte_start=20, byte_end=20),
+            addable_diff_byte_ranges=((10, 50),),
+        )
+        is True
+    )
+
+
+# ---------------------------------------------------------------------------
+# span_to_line_range
+# ---------------------------------------------------------------------------
+
+
+def test_span_to_line_range_single_line() -> None:
+    source = "line one\nline two\nline three\n"
+    # Bytes 0-7 are "line one"; line_start = line_end = 1.
+    assert span_to_line_range(Span(byte_start=0, byte_end=8), source) == (1, 1)
+
+
+def test_span_to_line_range_multi_line() -> None:
+    source = "line one\nline two\nline three\n"
+    # Bytes 5-15 span "ne\nline t" — lines 1 to 2.
+    assert span_to_line_range(Span(byte_start=5, byte_end=15), source) == (1, 2)
+
+
+def test_span_to_line_range_starts_at_newline_boundary() -> None:
+    source = "aaa\nbbb\nccc\n"
+    # Byte 4 is 'b' (first byte of line 2); span (4, 7) = "bbb" on line 2.
+    assert span_to_line_range(Span(byte_start=4, byte_end=7), source) == (2, 2)
+
+
+def test_span_to_line_range_empty_span_returns_single_line() -> None:
+    source = "aaa\nbbb\nccc\n"
+    # Empty span at byte 5 (inside "bbb" on line 2).
+    assert span_to_line_range(Span(byte_start=5, byte_end=5), source) == (2, 2)
+
+
+def test_span_to_line_range_past_end_raises() -> None:
+    source = "short\n"
+    with pytest.raises(CoordinateError, match="exceeds source length"):
+        span_to_line_range(Span(byte_start=0, byte_end=999), source)
+
+
+def test_span_to_line_range_multibyte_safe() -> None:
+    """Span bytes must be counted against UTF-8 encoded source.
+
+    "café" is 4 chars / 5 bytes (é is 0xC3 0xA9). A naive `source[start:end]`
+    str-index would miscount; this test ensures byte counting is correct.
+    """
+    source = "café\nbar\n"  # bytes: "c","a","f", 0xC3,0xA9, "\n", "b","a","r","\n"
+    # Total source bytes = 10 (caf=3, é=2, \n=1, bar=3, \n=1).
+    # Byte 6 is 'b' (first byte of line 2).
+    assert span_to_line_range(Span(byte_start=6, byte_end=9), source) == (2, 2)
+
+
+def test_span_to_line_range_includes_trailing_newline() -> None:
+    """A span ending exactly at end-of-source is admitted (boundary, not past)."""
+    source = "abc\n"
+    # Length = 4 bytes. Span (0, 4) is admitted.
+    line_range = span_to_line_range(Span(byte_start=0, byte_end=4), source)
+    # Byte 3 is '\n' — still on line 1 (the newline terminates it).
+    assert line_range == (1, 1)
+
+
+# ---------------------------------------------------------------------------
+# scope_unit_diff_hunks
+# ---------------------------------------------------------------------------
+
+
+_PATCH_TEXT = """\
+diff --git a/src/foo.py b/src/foo.py
+index abc..def 100644
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -1,3 +1,4 @@
+ def first():
+     return 1
++    raise NotImplementedError
+
+@@ -10,3 +11,4 @@
+ def second():
+     return 2
++    # added
+
+"""
+
+
+def _patched_file() -> object:
+    """Build a unidiff PatchedFile from the canned _PATCH_TEXT."""
+    patch = PatchSet.from_string(_PATCH_TEXT)
+    return patch[0]
+
+
+def test_scope_unit_diff_hunks_keeps_overlapping() -> None:
+    """A scope unit covering target lines 1–5 keeps the first hunk only."""
+    su = _scope_unit(line_start=1, line_end=5)
+    hunks = scope_unit_diff_hunks(su, _patched_file())  # type: ignore[arg-type]
+    assert len(hunks) == 1
+    assert "first()" in hunks[0]
+
+
+def test_scope_unit_diff_hunks_keeps_both_when_scope_spans_both() -> None:
+    """A scope unit covering target lines 1–20 keeps both hunks."""
+    su = _scope_unit(line_start=1, line_end=20)
+    hunks = scope_unit_diff_hunks(su, _patched_file())  # type: ignore[arg-type]
+    assert len(hunks) == 2
+
+
+def test_scope_unit_diff_hunks_keeps_second_only() -> None:
+    """A scope unit covering target lines 10–14 keeps the second hunk only."""
+    su = _scope_unit(line_start=10, line_end=14)
+    hunks = scope_unit_diff_hunks(su, _patched_file())  # type: ignore[arg-type]
+    assert len(hunks) == 1
+    assert "second()" in hunks[0]
+
+
+def test_scope_unit_diff_hunks_empty_when_disjoint() -> None:
+    """A scope unit covering target lines 100–110 has no overlapping hunks."""
+    su = _scope_unit(line_start=100, line_end=110)
+    hunks = scope_unit_diff_hunks(su, _patched_file())  # type: ignore[arg-type]
+    assert hunks == ()

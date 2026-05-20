@@ -20,6 +20,16 @@ V1 public surface:
 - `file_in_patch(...)` — file-membership helper consumed by the publisher
   to distinguish unchanged-region from non-diffed-file routing
   (publish-routes-through-coordinates, docs/spec.md §4.1.7).
+- `span_within_scope_unit(...)` — span containment in a ScopeUnit's byte
+  range (analyze-foundation §4).
+- `span_within_file(...)` — safety-floor file-bounds check (§4). NOT
+  sufficient for degraded-mode admission; pair with `span_within_degraded_context`.
+- `span_within_degraded_context(...)` — degraded-mode admission gate;
+  intersection with addable diff hunks' byte ranges (§4).
+- `span_to_line_range(...)` — byte Span → 1-indexed `(line_start, line_end)`
+  over source text (§4).
+- `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to hunks
+  inside a ScopeUnit (§4).
 
 V1 boundary types:
 - `GitHubCommentLocation` — Pydantic model per docs/spec.md §7.2.
@@ -33,6 +43,13 @@ from outrider.coordinates.diff_parser import (
     validate_diff_path,
 )
 from outrider.coordinates.errors import CoordinateError
+from outrider.coordinates.spans import (
+    scope_unit_diff_hunks,
+    span_to_line_range,
+    span_within_degraded_context,
+    span_within_file,
+    span_within_scope_unit,
+)
 from outrider.coordinates.translator import (
     GitHubCommentLocation,
     tree_sitter_to_github,
@@ -44,6 +61,11 @@ __all__ = [
     "diff_line_to_scope",
     "file_in_patch",
     "resolve_candidate_paths",
+    "scope_unit_diff_hunks",
+    "span_to_line_range",
+    "span_within_degraded_context",
+    "span_within_file",
+    "span_within_scope_unit",
     "tree_sitter_to_github",
     "validate_diff_path",
 ]
