@@ -276,7 +276,16 @@ def test_review_finding_override_reason_max_length() -> None:
 
 
 def test_review_finding_override_reason_admits_at_max() -> None:
-    finding = _build_finding(override_reason="x" * 1000)
+    """1000-char cap admits at the boundary. The HITL override triplet
+    (`original_severity` + `override_reason` + `overrider_id`) must
+    ALL be set together per the new triplet-coherence validator —
+    a partial override gets caught by `_enforce_override_triplet_coherence`."""
+    finding = _build_finding(
+        override_reason="x" * 1000,
+        original_severity=FindingSeverity.CRITICAL,
+        severity=FindingSeverity.MEDIUM,  # reviewer's override
+        overrider_id=uuid4(),
+    )
     assert finding.override_reason is not None
     assert len(finding.override_reason) == 1000
 
@@ -359,16 +368,21 @@ def test_review_finding_rejects_hitl_override_with_wrong_original_severity() -> 
         )
 
 
-def test_review_finding_admits_historical_policy_version() -> None:
-    """Under a non-live `policy_version`, the validator skips —
-    historical events under a frozen policy carry severity correct at
-    write-time per `severity-policy-versioned-for-replay`."""
-    finding = _build_finding(
-        finding_type=FindingType.SQL_INJECTION,
-        severity=FindingSeverity.LOW,  # would fail under live policy
-        policy_version="0.9.0",  # not ACTIVE_POLICY_VERSION
-    )
-    assert finding.severity == FindingSeverity.LOW
+def test_review_finding_rejects_non_active_policy_version() -> None:
+    """Codex round-6 audit (HIGH): the previous "skip if non-ACTIVE"
+    path was a quiet bypass — a fresh-write attacker could smuggle
+    `policy_version="0.9.0"` and dodge the live-policy check. Fresh
+    schema construction now REJECTS any non-ACTIVE policy_version.
+    Historical-event replay belongs in the persister/replay layer,
+    which is a separate code path that runs against
+    `load_policy_for_version(...)`, NOT fresh ReviewFinding
+    construction. Per `severity-policy-versioned-for-replay`."""
+    with pytest.raises(ValidationError, match="ACTIVE_POLICY_VERSION"):
+        _build_finding(
+            finding_type=FindingType.SQL_INJECTION,
+            severity=FindingSeverity.CRITICAL,
+            policy_version="0.9.0",  # not ACTIVE
+        )
 
 
 def test_review_finding_rejects_drifted_content_hash() -> None:
@@ -384,3 +398,73 @@ def test_review_finding_rejects_drifted_content_hash() -> None:
     bad_hash = "f" * 64  # right shape, wrong content
     with pytest.raises(ValidationError, match="content_hash"):
         _build_finding(content_hash=bad_hash)
+
+
+# ---------------------------------------------------------------------------
+# Codex round-6 audit: HITL override triplet coherence + non-ACTIVE
+# policy_version rejection. Same backing invariants as round-5 but the
+# round-5 fold left two HIGH-confidence bypasses open.
+# ---------------------------------------------------------------------------
+
+
+def test_review_finding_rejects_partial_override_original_only() -> None:
+    """`original_severity` set but `override_reason` and `overrider_id`
+    None — partial override. The triplet must be all-set-or-all-None.
+
+    Codex round-6 audit (HIGH): without this, a caller could set
+    original_severity=CRITICAL + severity=LOW + override_reason=None +
+    overrider_id=None — the policy-baseline check PASSES (CRITICAL
+    matches policy) but no real HITL decision backs the downgrade.
+    Severity drops to LOW with no reason, no reviewer."""
+    with pytest.raises(ValidationError, match="all-set-or-all-None"):
+        _build_finding(
+            original_severity=FindingSeverity.CRITICAL,
+            severity=FindingSeverity.LOW,
+            override_reason=None,
+            overrider_id=None,
+        )
+
+
+def test_review_finding_rejects_partial_override_missing_reason() -> None:
+    """Two of three set, override_reason missing."""
+    with pytest.raises(ValidationError, match="all-set-or-all-None"):
+        _build_finding(
+            original_severity=FindingSeverity.CRITICAL,
+            severity=FindingSeverity.LOW,
+            override_reason=None,
+            overrider_id=uuid4(),
+        )
+
+
+def test_review_finding_rejects_partial_override_missing_overrider() -> None:
+    """Two of three set, overrider_id missing."""
+    with pytest.raises(ValidationError, match="all-set-or-all-None"):
+        _build_finding(
+            original_severity=FindingSeverity.CRITICAL,
+            severity=FindingSeverity.LOW,
+            override_reason="reviewer disagrees",
+            overrider_id=None,
+        )
+
+
+def test_review_finding_admits_complete_override_triplet() -> None:
+    """The happy path: all three override fields set together."""
+    overrider_id = uuid4()
+    finding = _build_finding(
+        original_severity=FindingSeverity.CRITICAL,
+        severity=FindingSeverity.MEDIUM,
+        override_reason="reviewer disagrees with severity",
+        overrider_id=overrider_id,
+    )
+    assert finding.original_severity == FindingSeverity.CRITICAL
+    assert finding.severity == FindingSeverity.MEDIUM
+    assert finding.override_reason == "reviewer disagrees with severity"
+    assert finding.overrider_id == overrider_id
+
+
+def test_review_finding_admits_no_override_state() -> None:
+    """Baseline finding with no override — all three fields None."""
+    finding = _build_finding()
+    assert finding.original_severity is None
+    assert finding.override_reason is None
+    assert finding.overrider_id is None

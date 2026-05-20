@@ -251,17 +251,18 @@ def test_finding_event_admits_severity_matching_policy() -> None:
     assert event.severity == FindingSeverity.CRITICAL
 
 
-def test_finding_event_admits_historical_policy_version() -> None:
-    """Under a non-live `policy_version`, the validator skips —
-    historical events under a frozen policy carry severity correct at
-    write-time per `severity-policy-versioned-for-replay`. Schema layer
-    cannot do versioned-replay lookup; that's the persister's job."""
-    event = _build_event(
-        finding_type=FindingType.SQL_INJECTION,
-        severity=FindingSeverity.LOW,  # would fail under live policy
-        policy_version="0.9.0",  # not ACTIVE_POLICY_VERSION
-    )
-    assert event.severity == FindingSeverity.LOW
+def test_finding_event_rejects_non_active_policy_version() -> None:
+    """Codex round-6 audit (HIGH): fresh writes MUST use
+    ACTIVE_POLICY_VERSION. The previous "skip if non-ACTIVE" branch
+    was a quiet bypass. Historical-event replay loads via the
+    persister/replay layer's `load_policy_for_version` path, NOT
+    through fresh schema construction with a backdated version."""
+    with pytest.raises(ValidationError, match="ACTIVE_POLICY_VERSION"):
+        _build_event(
+            finding_type=FindingType.SQL_INJECTION,
+            severity=FindingSeverity.CRITICAL,
+            policy_version="0.9.0",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +368,33 @@ def test_llm_call_event_rejects_cache_hit_false_with_positive_cached_tokens() ->
             system_prompt_hash="b" * 64,
             degraded_mode=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Codex round-6 audit: validate_diff_path on FindingEvent.file_path.
+# ---------------------------------------------------------------------------
+
+
+def test_finding_event_rejects_traversal_in_file_path() -> None:
+    """`FindingEvent.file_path` must pass `validate_diff_path`, mirror of
+    the in-memory `ReviewFinding.file_path` validator. Codex round-6
+    audit (HIGH): pre-fold the audit shadow was weaker than the
+    schemas-side check."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_event(file_path="../escape.py")
+
+
+def test_finding_event_rejects_absolute_file_path() -> None:
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_event(file_path="/etc/passwd")
+
+
+def test_finding_event_rejects_nul_in_file_path() -> None:
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_event(file_path="src/foo.py\x00")
