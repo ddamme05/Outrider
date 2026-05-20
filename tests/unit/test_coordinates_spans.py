@@ -287,3 +287,93 @@ def test_scope_unit_diff_hunks_empty_when_disjoint() -> None:
     su = _scope_unit(line_start=100, line_end=110)
     hunks = scope_unit_diff_hunks(su, _patched_file())  # type: ignore[arg-type]
     assert hunks == ()
+
+
+# ---------------------------------------------------------------------------
+# Post-foundation push/PR review fold: pure-added clipped subset must NOT
+# emit `@@ -0,0 +N,M @@` (the new-file shape) for an in-file insertion.
+# Convention is `@@ -K,0 +N,M @@` where K names the source line BEFORE
+# which the insertion happens.
+# ---------------------------------------------------------------------------
+
+
+# Patch with a hunk whose body mixes context + an inserted line. Scope-
+# unit clipping that drops the context (because it's outside the scope
+# unit's line range) and keeps ONLY the added line produces a
+# pure-added clipped subset — the case the residual fix targets.
+_PATCH_WITH_INSERTION_MID_HUNK = """\
+diff --git a/src/foo.py b/src/foo.py
+index abc..def 100644
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -10,3 +10,4 @@ def context_header():
+     existing_line_one
++    inserted_line
+     existing_line_two
+     existing_line_three
+"""
+
+
+def test_scope_unit_diff_hunks_pure_added_clip_uses_correct_src_start() -> None:
+    """Clipped hunk keeping only added lines must emit `@@ -K,0 +N,M @@`
+    where K is the source line BEFORE the insertion — NOT 0 (which is
+    the new-file shape).
+
+    Post-foundation push/PR review (medium confidence): the prior
+    fallback `src_start = 0` would silently emit `@@ -0,0 +N,M @@` for
+    any clipped subset that retained only added lines, contradicting the
+    helper's "valid unified diff" contract for in-file insertions.
+
+    Setup: original hunk at `@@ -10,3 +10,4 @@` with body
+      ` existing_line_one     (source 10, target 10)`
+      `+inserted_line         (target 11)`
+      ` existing_line_two     (source 11, target 12)`
+      ` existing_line_three   (source 12, target 13)`
+    Scope covers target line 11 only — drops the context lines, keeps
+    only the inserted line. Walking the original hunk forward stops
+    at the `+inserted_line`; the last source_line_no seen before it is
+    10 (the first context line). So src_start MUST be 10, src_len = 0.
+    """
+    patched = PatchSet.from_string(_PATCH_WITH_INSERTION_MID_HUNK)[0]
+    su = _scope_unit(line_start=11, line_end=11)
+    hunks = scope_unit_diff_hunks(su, patched)  # type: ignore[arg-type]
+    assert len(hunks) == 1, f"expected one clipped hunk, got {hunks!r}"
+    header = hunks[0].splitlines()[0]
+    # The header must NOT be the new-file shape.
+    assert header.startswith("@@ -10,0 +"), (
+        f"pure-added clipped hunk must anchor src to the line before the "
+        f"insertion (10), not 0; got header={header!r}"
+    )
+    # src_len must be 0; tgt_len must be 1 (one inserted line).
+    assert ",0 " in header, f"src_len must be 0 for pure-added clip; got {header!r}"
+
+
+def test_scope_unit_diff_hunks_pure_added_clip_at_hunk_start_uses_pre_hunk_anchor() -> None:
+    """If the first kept added line is at the very START of the original
+    hunk (no preceding source line in the hunk's body), src_start falls
+    back to `hunk.source_start - 1` — the line just BEFORE the hunk
+    began. Defends the boundary case the regression-fix init handles.
+    """
+    patch_text = """\
+diff --git a/src/foo.py b/src/foo.py
+index abc..def 100644
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -10,3 +10,4 @@ def context_header():
++    inserted_at_top
+     existing_line_one
+     existing_line_two
+     existing_line_three
+"""
+    patched = PatchSet.from_string(patch_text)[0]
+    # Scope covers ONLY the inserted line's target (line 10).
+    su = _scope_unit(line_start=10, line_end=10)
+    hunks = scope_unit_diff_hunks(su, patched)  # type: ignore[arg-type]
+    assert len(hunks) == 1
+    header = hunks[0].splitlines()[0]
+    # Original hunk source_start=10; line just before = 9. Clipped
+    # pure-added hunk anchors at src=9, src_len=0.
+    assert header.startswith("@@ -9,0 +"), (
+        f"clipped pure-added hunk with no preceding source line in body must "
+        f"anchor at source_start - 1 = 9; got header={header!r}"
+    )

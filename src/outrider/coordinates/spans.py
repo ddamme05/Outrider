@@ -248,10 +248,47 @@ def _clip_hunk_to_line_range(
     tgt_lines = [
         ln for ln in kept if getattr(ln, "is_added", False) or getattr(ln, "is_context", False)
     ]
-    src_start = src_lines[0].source_line_no if src_lines else 0  # type: ignore[attr-defined]
     tgt_start = tgt_lines[0].target_line_no if tgt_lines else 0  # type: ignore[attr-defined]
     src_len = len(src_lines)
     tgt_len = len(tgt_lines)
+
+    if src_lines:
+        src_start = src_lines[0].source_line_no  # type: ignore[attr-defined]
+    else:
+        # Pure-added clipped subset: there are no source-side lines in
+        # the kept set, so `src_lines[0]` isn't available. Post-foundation
+        # push/PR review caught the prior `src_start = 0` fallback as a
+        # forbidden coordinate for in-file insertions — `@@ -0,0 +N,M @@`
+        # is the new-file shape, NOT the in-file-insertion shape. For an
+        # in-file insertion the unidiff convention is `@@ -K,0 +N,M @@`
+        # where K is the source line BEFORE which the insertion happens
+        # (so the inserted content shows as added after source line K).
+        #
+        # Derive K by walking the ORIGINAL hunk forward up to the first
+        # kept added line, tracking the most recent source_line_no
+        # encountered. That value is the source line that immediately
+        # precedes the insertion point.
+        #
+        # Init value: for a parent hunk with source-side lines
+        # (`source_length > 0`), the line "before the hunk" is
+        # `source_start - 1`. For a parent hunk that is itself a pure
+        # insertion (`source_length == 0`), `hunk.source_start` already
+        # names the insertion anchor (no -1 — there's no "first source
+        # line in hunk" to subtract from).
+        hunk_source_length = getattr(hunk, "source_length", 0)
+        hunk_source_start = getattr(hunk, "source_start", 0)
+        if hunk_source_length == 0:
+            last_src_seen = hunk_source_start
+        else:
+            last_src_seen = max(0, hunk_source_start - 1)
+        first_kept_added = kept[0]
+        for original_line in hunk_lines:
+            if original_line is first_kept_added:
+                break
+            src_no = getattr(original_line, "source_line_no", None)
+            if src_no is not None:
+                last_src_seen = src_no
+        src_start = last_src_seen
 
     header = f"@@ -{src_start},{src_len} +{tgt_start},{tgt_len} @@"
     section_header = getattr(hunk, "section_header", "")
