@@ -290,3 +290,80 @@ def test_finding_event_admits_canonical_dimension() -> None:
         dimension=ReviewDimension.SECURITY,
     )
     assert event.dimension == ReviewDimension.SECURITY
+
+
+# ---------------------------------------------------------------------------
+# Category F sweep continuation: LLMCallEvent.cache_hit ↔ cached_tokens
+# bidirectional coupling.
+# ---------------------------------------------------------------------------
+
+
+def test_llm_call_event_rejects_cache_hit_true_with_zero_cached_tokens() -> None:
+    """cache_hit MUST equal (cached_tokens > 0). The producer computes
+    cache_hit FROM cached_tokens; a divergent event means wrapper drift."""
+    from datetime import UTC, datetime
+
+    from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+
+    with pytest.raises(ValidationError, match="cache_hit"):
+        LLMCallEvent(
+            review_id=uuid4(),
+            timestamp=datetime.now(UTC),
+            model="claude-sonnet-4-6",
+            node_id="analyze",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            cost_usd=0.01,
+            pricing_version="v2",
+            latency_ms=1000,
+            prompt_hash="a" * 64,
+            cache_hit=True,  # WRONG — cached_tokens is 0
+            context_summary=(
+                ContextManifestEntry(
+                    file_path="src/foo.py",
+                    scope_unit_name="foo",
+                    line_start=1,
+                    line_end=10,
+                    inclusion_reason="changed_scope",
+                ),
+            ),
+            prompt_template_version="v1",
+            system_prompt_hash="b" * 64,
+            degraded_mode=False,
+        )
+
+
+def test_llm_call_event_rejects_cache_hit_false_with_positive_cached_tokens() -> None:
+    """The other direction: cache_hit=False with cached_tokens>0."""
+    from datetime import UTC, datetime
+
+    from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+
+    with pytest.raises(ValidationError, match="cache_hit"):
+        LLMCallEvent(
+            review_id=uuid4(),
+            timestamp=datetime.now(UTC),
+            model="claude-sonnet-4-6",
+            node_id="analyze",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=42,  # > 0
+            cost_usd=0.01,
+            pricing_version="v2",
+            latency_ms=1000,
+            prompt_hash="a" * 64,
+            cache_hit=False,  # WRONG — cached_tokens > 0
+            context_summary=(
+                ContextManifestEntry(
+                    file_path="src/foo.py",
+                    scope_unit_name="foo",
+                    line_start=1,
+                    line_end=10,
+                    inclusion_reason="changed_scope",
+                ),
+            ),
+            prompt_template_version="v1",
+            system_prompt_hash="b" * 64,
+            degraded_mode=False,
+        )

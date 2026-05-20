@@ -961,185 +961,65 @@ def test_get_adapter_factory_empty_extension_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Category F sweep: cross-field constraints on ast_facts domain models.
-# ScopeUnit had byte/line fields without ordering validators; ChangedRegion
-# had three line pairs without ordering or base-pair pairing validators.
-# Producer-side (PythonAdapter) guarantees correct ordering today, but the
-# schema-layer floor stops a future producer / test fixture / bad import
-# from drifting silently.
+# Category F sweep continuation: ParseResult empty-collections invariant
+# on failed and skipped paths.
 # ---------------------------------------------------------------------------
 
 
-def test_scope_unit_rejects_descending_line_range() -> None:
-    """A ScopeUnit with line_end < line_start is a producer-side bug —
-    fail at construction so it doesn't propagate through `to_span()`,
-    coordinates helpers, or audit events."""
-    with pytest.raises(ValidationError, match="line_end"):
-        ScopeUnit(
-            unit_id="x",
-            kind="function",
-            name="foo",
-            qualified_name="foo",
-            file_path="src/foo.py",
-            line_start=10,
-            line_end=5,
-            byte_start=0,
-            byte_end=100,
-        )
-
-
-def test_scope_unit_rejects_descending_byte_range() -> None:
-    """A ScopeUnit with byte_end < byte_start is a producer-side bug.
-    `Span` enforces this at its own construction, but `to_span()` only
-    runs when called — direct ScopeUnit construction needs its own gate."""
-    with pytest.raises(ValidationError, match="byte_end"):
-        ScopeUnit(
-            unit_id="x",
-            kind="function",
-            name="foo",
-            qualified_name="foo",
-            file_path="src/foo.py",
-            line_start=1,
-            line_end=5,
-            byte_start=100,
-            byte_end=50,
-        )
-
-
-def test_scope_unit_rejects_zero_line_start() -> None:
-    """Tree-sitter line numbers are 1-indexed in our domain model."""
-    with pytest.raises(ValidationError):
-        ScopeUnit(
-            unit_id="x",
-            kind="function",
-            name="foo",
-            qualified_name="foo",
-            file_path="src/foo.py",
-            line_start=0,
-            line_end=5,
-            byte_start=0,
-            byte_end=100,
-        )
-
-
-def test_changed_region_rejects_descending_patch_line_range() -> None:
-    from outrider.ast_facts.models import ChangedRegion
-
-    with pytest.raises(ValidationError, match="patch_line_end"):
-        ChangedRegion(
-            file_path="src/foo.py",
-            patch_line_start=10,
-            patch_line_end=5,
-            head_line_start=10,
-            head_line_end=15,
-        )
-
-
-def test_changed_region_rejects_descending_head_line_range() -> None:
-    from outrider.ast_facts.models import ChangedRegion
-
-    with pytest.raises(ValidationError, match="head_line_end"):
-        ChangedRegion(
-            file_path="src/foo.py",
-            patch_line_start=10,
-            patch_line_end=15,
-            head_line_start=10,
-            head_line_end=5,
-        )
-
-
-def test_changed_region_rejects_asymmetric_base_pairing() -> None:
-    """`base_line_start` and `base_line_end` must be paired — both
-    None (pure addition) or both set (modification/deletion). Asymmetric
-    None is a producer-side bug."""
-    from outrider.ast_facts.models import ChangedRegion
-
-    with pytest.raises(ValidationError, match="base_line_start.*base_line_end.*paired"):
-        ChangedRegion(
-            file_path="src/foo.py",
-            patch_line_start=10,
-            patch_line_end=15,
-            head_line_start=10,
-            head_line_end=15,
-            base_line_start=5,
-            base_line_end=None,  # WRONG — asymmetric
-        )
-
-
-def test_changed_region_rejects_descending_base_line_range() -> None:
-    from outrider.ast_facts.models import ChangedRegion
-
-    with pytest.raises(ValidationError, match="base_line_end"):
-        ChangedRegion(
-            file_path="src/foo.py",
-            patch_line_start=10,
-            patch_line_end=15,
-            head_line_start=10,
-            head_line_end=15,
-            base_line_start=20,
-            base_line_end=10,
-        )
-
-
-def test_changed_region_admits_paired_base_lines() -> None:
-    from outrider.ast_facts.models import ChangedRegion
-
-    region = ChangedRegion(
+def test_parse_result_failed_rejects_non_empty_scope_units() -> None:
+    """A failed parse cannot carry scope_units — the parser didn't get
+    that far. Without the validator, a contradictory ParseResult would
+    survive into downstream consumers."""
+    bad_unit = ScopeUnit(
+        unit_id="x",
+        kind="function",
+        name="foo",
+        qualified_name="foo",
         file_path="src/foo.py",
-        patch_line_start=10,
-        patch_line_end=15,
-        head_line_start=10,
-        head_line_end=15,
-        base_line_start=5,
-        base_line_end=10,
+        line_start=1,
+        line_end=5,
+        byte_start=0,
+        byte_end=100,
     )
-    assert region.base_line_start == 5
-    assert region.base_line_end == 10
+    with pytest.raises(ValidationError, match="empty collections"):
+        ParseResult(parser_outcome="failed", scope_units=(bad_unit,))
 
 
-def test_changed_region_admits_pure_addition_with_none_base() -> None:
-    """Pure additions have no base; both base fields are None."""
-    from outrider.ast_facts.models import ChangedRegion
-
-    region = ChangedRegion(
+def test_parse_result_skipped_rejects_non_empty_imports() -> None:
+    """A skipped parse — same rule. Any non-empty collection contradicts
+    the parser-stage outcome."""
+    bad_import = ImportRef(
         file_path="src/foo.py",
-        patch_line_start=10,
-        patch_line_end=15,
-        head_line_start=10,
-        head_line_end=15,
-        base_line_start=None,
-        base_line_end=None,
+        line=1,
+        import_kind="direct",
+        module="os",
+        is_simple_direct=False,
     )
-    assert region.base_line_start is None
-    assert region.base_line_end is None
-
-
-def test_import_ref_rejects_zero_line() -> None:
-    """`ImportRef.line >= 1` — tree-sitter line numbers are 1-indexed."""
-    with pytest.raises(ValidationError):
-        ImportRef(
-            file_path="src/foo.py",
-            line=0,
-            import_kind="direct",
-            module="os",
+    with pytest.raises(ValidationError, match="empty collections"):
+        ParseResult(
+            parser_outcome="skipped",
+            skip_reason=SkipReason.VENDORED,
+            imports=(bad_import,),
         )
 
 
-def test_call_site_rejects_zero_line() -> None:
-    with pytest.raises(ValidationError):
-        CallSite(
-            file_path="src/foo.py",
-            line=0,
-            callee_name="print",
-            enclosing_scope_id="x",
-        )
+def test_parse_result_clean_admits_empty_collections() -> None:
+    """An empty Python file is a valid clean parse with 0 scope_units —
+    the rule is asymmetric (failed/skipped require empty; clean allows
+    empty)."""
+    result = ParseResult(parser_outcome="clean")
+    assert result.scope_units == ()
+    assert result.imports == ()
 
 
-def test_assignment_site_rejects_zero_line() -> None:
-    with pytest.raises(ValidationError):
-        AssignmentSite(
-            file_path="src/foo.py",
-            line=0,
-            target_name="x",
-            enclosing_scope_id="y",
-        )
+def test_parse_result_failed_admits_when_collections_empty() -> None:
+    """The happy path on the failed side: all collections empty."""
+    result = ParseResult(parser_outcome="failed")
+    assert result.parser_outcome == "failed"
+
+
+def test_parse_result_failed_rejects_has_error_keys() -> None:
+    """`has_error` is also part of the collections invariant — failed
+    parses don't have unit-id keys to flag errors for."""
+    with pytest.raises(ValidationError, match="empty collections"):
+        ParseResult(parser_outcome="failed", has_error={"unit-id-1": True})

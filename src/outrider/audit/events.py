@@ -345,6 +345,29 @@ class LLMCallEvent(AuditEventBase):
             )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_cache_hit_matches_cached_tokens(self) -> Self:
+        """`cache_hit == (cached_tokens > 0)` — bidirectional coupling.
+
+        Category F sweep — the producer (`anthropic_provider.py:520`)
+        computes `cache_hit = (response.cache_read_tokens > 0)` and
+        stores both fields on the event independently. Without this
+        validator, the two could drift via a test fixture, a producer
+        bug, or a partial replay-row corruption; downstream cache-rate
+        metrics would silently report the wrong number. Same shape as
+        the degraded_mode ↔ degradation_reason coupling above.
+        """
+        expected_hit = self.cached_tokens > 0
+        if self.cache_hit != expected_hit:
+            raise ValueError(
+                f"LLMCallEvent.cache_hit={self.cache_hit!r} disagrees with "
+                f"cached_tokens={self.cached_tokens!r} — `cache_hit` MUST equal "
+                f"`cached_tokens > 0`. Producer (`anthropic_provider`) computes "
+                f"cache_hit from cached_tokens; a divergent event row means the "
+                f"wrapper drifted mid-pipeline."
+            )
+        return self
+
 
 class FileExaminationEvent(AuditEventBase):
     """Records that a file was examined (parse status + node).
