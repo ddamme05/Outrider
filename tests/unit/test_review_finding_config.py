@@ -485,3 +485,30 @@ def test_review_finding_rejects_no_op_override() -> None:
             override_reason="reviewer pressed override but didn't change anything",
             overrider_id=uuid4(),
         )
+
+
+def test_review_finding_rejects_empty_override_reason() -> None:
+    """Codex round-7 (HIGH): the triplet's `is None` check admitted
+    `override_reason=""`. An override with no substantive reason is
+    the bug class `hitl-gates-high-severity` defends against.
+    `PerFindingDecision` already rejects empty reasons; the carrier
+    ReviewFinding now matches."""
+    with pytest.raises(ValidationError, match="blank override_reason"):
+        _build_finding(
+            original_severity=FindingSeverity.CRITICAL,
+            severity=FindingSeverity.MEDIUM,
+            override_reason="",  # empty — blank
+            overrider_id=uuid4(),
+        )
+
+
+def test_review_finding_rejects_whitespace_only_override_reason() -> None:
+    """Whitespace-only reason is also blank — `.strip() == ""` catches
+    both empty strings AND spaces-only strings."""
+    with pytest.raises(ValidationError, match="blank override_reason"):
+        _build_finding(
+            original_severity=FindingSeverity.CRITICAL,
+            severity=FindingSeverity.MEDIUM,
+            override_reason="   \t\n  ",  # whitespace-only
+            overrider_id=uuid4(),
+        )

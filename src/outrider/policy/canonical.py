@@ -278,10 +278,20 @@ def compute_proposal_hash(
     (not enum-coerced) because the hash is computed AT the raw layer,
     BEFORE admission.
 
-    `source_file_path` leads the dict so future readers see "file is
-    part of identity" immediately. The canonical encoding sorts keys,
-    so position is hash-irrelevant; the leading placement is purely a
-    pedagogical signal.
+    `source_file_path` runs through `coordinates.validate_diff_path`
+    BEFORE entering the hash payload. Per the round-2-crazy-audit DI-H1
+    path-canonicalization rule (spec.md §1: "All `files_examined`,
+    `files_skipped`, and `candidate_path` strings entering identity
+    hashes MUST be in canonical form"), `source_file_path` is now the
+    fourth path-bearing input to a hash recipe and inherits the same
+    rule. Without this gate, `"src/foo.py"` and `"./src/foo.py"` and
+    `"src//foo.py"` (the same file under different aliases) would
+    produce distinct `proposal_hash` values — reopening exactly the
+    dedup false-negative Codex round-7 caught. Canonicalization here
+    + at the carrier-schema layers means alias paths produce a SINGLE
+    canonical hash. The pedagogical placement of `source_file_path`
+    as the first dict key remains — `canonicalize_for_hash`'s
+    `sort_keys=True` makes position hash-irrelevant.
 
     Used by `FindingProposalRejectedEvent.proposal_hash` and by
     `TraceCandidate.source_proposal_hash`. Two analyze passes over
@@ -291,9 +301,12 @@ def compute_proposal_hash(
     fetches by `candidate_path` at execution time; the candidate-identity
     model preserves the per-source-file causal edges either way.
     """
+    from outrider.coordinates import validate_diff_path  # noqa: PLC0415
+
+    canonical_source_file_path = validate_diff_path(source_file_path)
     return compute_identity_hash(
         {
-            "source_file_path": source_file_path,
+            "source_file_path": canonical_source_file_path,
             "finding_type": finding_type,
             "evidence_tier": evidence_tier,
             "query_match_id": query_match_id,
