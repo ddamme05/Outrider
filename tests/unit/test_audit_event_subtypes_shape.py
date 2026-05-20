@@ -87,7 +87,7 @@ def _llm_call_kwargs() -> dict[str, Any]:
 def _file_examination_kwargs() -> dict[str, Any]:
     return {
         "file_path": "src/foo.py",
-        "examination_type": "deep",
+        "examination_type": "analyze",
         "node_id": "analyze",
         "parse_status": "clean",
     }

@@ -36,7 +36,12 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "evidence": 'cursor.execute("SELECT * FROM users WHERE id = " + user_id)',
         "query_match_id": "py.security.sql_injection.string_concat",
         "trace_path": None,
-        "content_hash": "sha256-abc123",
+        # Real SHA-256 hex digest shape (64 lowercase-hex chars) per
+        # `SHA256_HEX_PATTERN`. Pre-PR-review-round-5 fixtures used a
+        # `sha256-abc123` placeholder that the schema admitted because
+        # `content_hash` had no pattern check; the pattern was added in
+        # round-5 (commit 4dedda7..HEAD), so fixtures now must match.
+        "content_hash": "a" * 64,
     }
     fields.update(overrides)
     return ReviewFinding(**fields)

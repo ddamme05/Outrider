@@ -40,7 +40,8 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        "content_hash": "h",
+        # Real SHA-256 hex digest shape per `SHA256_HEX_PATTERN`.
+        "content_hash": "a" * 64,
     }
     fields.update(overrides)
     return ReviewFinding(**fields)
@@ -142,3 +143,90 @@ def test_review_finding_validate_assignment_runs_line_constraint() -> None:
     finding = _build_finding(line_start=10, line_end=20)
     with pytest.raises(ValidationError, match="line_end"):
         finding.line_end = 5
+
+
+# ---------------------------------------------------------------------------
+# PR-review round 5: convergent input-boundary tightening on ReviewFinding.
+# ---------------------------------------------------------------------------
+
+
+def test_review_finding_policy_version_rejects_non_semver() -> None:
+    """`policy_version` must match the strict bare-semver pattern matching
+    the audit-event side + the DB CHECK; without this, a finding could
+    carry a `policy_version` that the audit-event for the same finding
+    refuses, breaking the in-memory/audit-row coherence."""
+    with pytest.raises(ValidationError, match="policy_version"):
+        _build_finding(policy_version="banana")
+
+
+def test_review_finding_policy_version_rejects_leading_zero() -> None:
+    """No leading zeros (`01.0.0`) — sibling of the DB CHECK + Python
+    `_SEMVER_RE` in `policy.severity`."""
+    with pytest.raises(ValidationError, match="policy_version"):
+        _build_finding(policy_version="01.0.0")
+
+
+def test_review_finding_content_hash_rejects_non_sha256_hex() -> None:
+    """`content_hash` must be 64 lowercase-hex chars. Without the
+    pattern, the FindingEvent dedup join would silently admit a
+    malformed hash."""
+    with pytest.raises(ValidationError, match="content_hash"):
+        _build_finding(content_hash="sha256-abc123")
+
+
+def test_review_finding_content_hash_rejects_short_hex() -> None:
+    """A 63-hex string fails (`{64}` exact)."""
+    with pytest.raises(ValidationError, match="content_hash"):
+        _build_finding(content_hash="a" * 63)
+
+
+def test_review_finding_content_hash_rejects_uppercase() -> None:
+    """Lowercase-hex only — same canonical-encoding rule the audit
+    side enforces."""
+    with pytest.raises(ValidationError, match="content_hash"):
+        _build_finding(content_hash="A" * 64)
+
+
+def test_review_finding_file_path_rejects_traversal() -> None:
+    """`..` traversal in `file_path` raises at construction via the
+    `validate_diff_path` field validator. Without this, a traversal-bearing
+    finding could be persisted and only fail at publish boundary."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_finding(file_path="../escape.py")
+
+
+def test_review_finding_file_path_rejects_absolute() -> None:
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_finding(file_path="/etc/passwd")
+
+
+def test_review_finding_evidence_max_length() -> None:
+    """2000-char cap on model-emitted evidence text."""
+    with pytest.raises(ValidationError, match="evidence"):
+        _build_finding(evidence="x" * 2001)
+
+
+def test_review_finding_suggested_fix_max_length() -> None:
+    """2000-char cap on model-emitted suggested fix."""
+    with pytest.raises(ValidationError, match="suggested_fix"):
+        _build_finding(suggested_fix="x" * 2001)
+
+
+def test_review_finding_override_reason_max_length() -> None:
+    """1000-char cap on HITL-supplied override reason — matches the
+    other reviewer-prose caps on `description` + below `evidence`."""
+    with pytest.raises(ValidationError, match="override_reason"):
+        _build_finding(override_reason="x" * 1001)
+
+
+def test_review_finding_query_match_id_max_length() -> None:
+    """200-char cap on query-registry id (well above realistic max)."""
+    with pytest.raises(ValidationError, match="query_match_id"):
+        _build_finding(
+            evidence_tier=EvidenceTier.OBSERVED,
+            query_match_id="x" * 201,
+        )
