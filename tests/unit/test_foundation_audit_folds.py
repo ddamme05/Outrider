@@ -230,6 +230,73 @@ def test_compute_proposal_hash_distinct_across_source_files() -> None:
     )
 
 
+def test_compute_proposal_hash_canonicalizes_aliased_paths() -> None:
+    """Codex round-7 (HIGH): the recipe canonicalizes `source_file_path`
+    through `coordinates.validate_diff_path` BEFORE entering the hash
+    payload. Alias paths that name the same file (`src/foo.py` vs
+    `./src/foo.py`) produce IDENTICAL hashes, NOT distinct ones —
+    otherwise the per-source-file dedup contract becomes a per-alias
+    contract and the same logical file gets multiple proposal_hash
+    rows on the audit trail.
+
+    Per the round-2-crazy-audit DI-H1 path-canonicalization rule
+    (spec.md §1): all path-bearing inputs to identity hashes go
+    through `validate_diff_path` first.
+    """
+    base_kwargs: dict[str, object] = {
+        "finding_type": "sql_injection",
+        "evidence_tier": "JUDGED",
+        "query_match_id": None,
+        "trace_path": None,
+        "title": "t",
+        "description": "d",
+        "evidence": "e",
+        "byte_start": 100,
+        "byte_end": 120,
+    }
+    h_canonical = compute_proposal_hash(
+        source_file_path="src/foo.py",
+        **base_kwargs,  # type: ignore[arg-type]
+    )
+    h_dot_slash = compute_proposal_hash(
+        source_file_path="./src/foo.py",  # alias — same file
+        **base_kwargs,  # type: ignore[arg-type]
+    )
+    h_double_slash = compute_proposal_hash(
+        source_file_path="src//foo.py",  # alias — same file
+        **base_kwargs,  # type: ignore[arg-type]
+    )
+    assert h_canonical == h_dot_slash == h_double_slash, (
+        "compute_proposal_hash must canonicalize source_file_path via "
+        "validate_diff_path BEFORE hashing — alias paths to the same "
+        "file must produce identical digests."
+    )
+
+
+def test_compute_proposal_hash_rejects_traversal_in_source_file_path() -> None:
+    """The canonicalization gate is the same `validate_diff_path` that
+    rejects `..` traversal, absolute paths, NUL bytes, shell-metachars,
+    Trojan-Source bidi overrides, etc. on the carrier-schema side.
+    A traversal path entering the hash recipe is producer-side bug;
+    fail loud at the recipe rather than hash an attacker-controlled
+    string."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((CoordinateError, ValueError)):
+        compute_proposal_hash(
+            source_file_path="../escape.py",
+            finding_type="sql_injection",
+            evidence_tier="JUDGED",
+            query_match_id=None,
+            trace_path=None,
+            title="t",
+            description="d",
+            evidence="e",
+            byte_start=100,
+            byte_end=120,
+        )
+
+
 def test_compute_response_hash_full_text() -> None:
     """Response hash is sha256 of the FULL response, not a prefix."""
     short = "short response"

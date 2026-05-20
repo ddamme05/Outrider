@@ -539,15 +539,18 @@ class FindingEvent(AuditEventBase):
         severity must always match SEVERITY_POLICY[finding_type] at
         write time, no override case to consider.
 
-        Only fires when `policy_version == ACTIVE_POLICY_VERSION` —
-        historical events under a frozen policy carry severity correct
-        at write-time per `severity-policy-versioned-for-replay`.
-        Versioned-replay enforcement is the persister / replay layer's
-        job; this schema-layer check covers the live-write path.
+        Per Codex round-6 (HIGH): fresh writes MUST use
+        `ACTIVE_POLICY_VERSION`. Any non-ACTIVE `policy_version` is
+        REJECTED below — the previous "skip if non-ACTIVE" branch was a
+        quiet bypass that let a fresh-write attacker dodge live-policy
+        enforcement by smuggling a backdated semver. Historical-event
+        replay loads via the persister/replay layer's
+        `policy/versions.py::load_policy_for_version` path, NOT fresh
+        schema construction. Per `severity-policy-versioned-for-replay`.
 
         Codex round-5 audit (HIGH-confidence valid finding) — without
-        this gate a row like (SQL_INJECTION, LOW) lands in the
-        append-only audit stream.
+        the SEVERITY_POLICY match check below, a row like (SQL_INJECTION,
+        LOW) lands in the append-only audit stream.
         """
         # Local import: policy modules cannot import from audit.events
         # at top-level (they don't), so this could move up; kept local

@@ -275,18 +275,19 @@ class ReviewFinding(BaseModel):
         `severity` directly. Either way, the policy-computed value is
         what we check.
 
-        Only fires when `policy_version == ACTIVE_POLICY_VERSION` —
-        historical events written under an older policy carry the
-        severity correct at write-time; recomputing under the live
-        policy would violate `severity-policy-versioned-for-replay`.
-        Audit-time replay re-validates events under their original
-        policy via `policy/versions.py::load_policy_for_version`, which
-        is the versioned-replay seam; the schema-layer check covers the
-        live-write path.
+        Per Codex round-6 (HIGH): fresh writes MUST use
+        `ACTIVE_POLICY_VERSION`. Any non-ACTIVE `policy_version` is
+        REJECTED below — the previous "skip if non-ACTIVE" branch was a
+        quiet bypass that let a fresh-write attacker dodge live-policy
+        enforcement by smuggling a backdated semver. Historical-event
+        replay loads via the persister/replay layer's
+        `policy/versions.py::load_policy_for_version` path, NOT fresh
+        schema construction. Per `severity-policy-versioned-for-replay`.
 
         Codex round-5 audit (HIGH-confidence valid finding): without
-        this gate a row like (SQL_INJECTION, LOW) admits cleanly even
-        though SEVERITY_POLICY[SQL_INJECTION] == CRITICAL.
+        the SEVERITY_POLICY match check, a row like (SQL_INJECTION, LOW)
+        admits cleanly even though SEVERITY_POLICY[SQL_INJECTION] ==
+        CRITICAL.
         """
         # Local imports to avoid a circular import: `policy.severity`
         # transitively imports nothing from schemas, but `policy/__init__`
@@ -389,6 +390,25 @@ class ReviewFinding(BaseModel):
                 f"overrides are not valid. The reviewer's intent to ACK without "
                 f"change is the `PerFindingDecision.APPROVE` outcome, not a "
                 f"SEVERITY_OVERRIDE with identical values."
+            )
+        # Non-blank override_reason when envelope is set. Codex round-7
+        # caught: the triplet's `is None` check admits `override_reason=""`
+        # and `override_reason="   "` because they're not None. But
+        # `PerFindingDecision` (the cross-boundary HITL decision shape)
+        # already rejects empty reasons via `Field(max_length=500)` +
+        # the non-APPROVE-needs-reason validator. The ReviewFinding's
+        # carrier-side check must align: an override without a substantive
+        # reason is the bug class the `PerFindingDecision.outcome !=
+        # APPROVE requires reason` rule defends against. `strip() == ""`
+        # catches both empty and whitespace-only strings.
+        if all_set and self.override_reason is not None and not self.override_reason.strip():
+            raise ValueError(
+                f"ReviewFinding HITL override has blank override_reason "
+                f"({self.override_reason!r}); the override envelope requires "
+                f"a non-blank justification matching the "
+                f"`PerFindingDecision.SEVERITY_OVERRIDE` contract. An override "
+                f"with no real reason is the bug class `hitl-gates-high-severity` "
+                f"defends against."
             )
         return self
 
