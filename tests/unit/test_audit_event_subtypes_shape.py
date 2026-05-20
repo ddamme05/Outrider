@@ -345,3 +345,65 @@ def test_hitl_decision_event_reviewer_id_admits_at_max() -> None:
     kwargs["reviewer_id"] = "x" * 100
     event = HITLDecisionEvent(review_id=uuid4(), **kwargs)
     assert event.reviewer_id == "x" * 100
+
+
+# ---------------------------------------------------------------------------
+# Pre-emptive sweep #4: ReviewPhaseEvent node_id + ContextManifestEntry caps.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "node_id",
+    ["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"],
+)
+def test_review_phase_event_admits_all_seven_graph_nodes(node_id: str) -> None:
+    """All seven graph nodes per spec §4. V1 only intake + triage emit
+    today; the other five land with their respective node specs."""
+    kwargs = _review_phase_kwargs()
+    kwargs["node_id"] = node_id
+    event = ReviewPhaseEvent(review_id=uuid4(), **kwargs)
+    assert event.node_id == node_id
+
+
+@pytest.mark.parametrize("bad_node_id", ["webhook", "analyse", "INTAKE", "Hitl", "synthesise", ""])
+def test_review_phase_event_rejects_non_canonical_node_id(bad_node_id: str) -> None:
+    """Synthetic webhook source (used by AgentTransitionEvent, not Phase),
+    typos, wrong-case all rejected."""
+    kwargs = _review_phase_kwargs()
+    kwargs["node_id"] = bad_node_id
+    with pytest.raises(ValidationError):
+        ReviewPhaseEvent(review_id=uuid4(), **kwargs)
+
+
+def test_context_manifest_entry_file_path_max_length() -> None:
+    """1024-char per-element cap matches AnalysisRound.files_examined."""
+    with pytest.raises(ValidationError, match="file_path"):
+        ContextManifestEntry(
+            file_path="x" * 1025,
+            scope_unit_name="foo",
+            line_start=1,
+            line_end=2,
+            inclusion_reason="changed_scope",
+        )
+
+
+def test_context_manifest_entry_file_path_admits_at_max() -> None:
+    entry = ContextManifestEntry(
+        file_path="x" * 1024,
+        scope_unit_name="foo",
+        line_start=1,
+        line_end=2,
+        inclusion_reason="changed_scope",
+    )
+    assert len(entry.file_path) == 1024
+
+
+def test_context_manifest_entry_scope_unit_name_max_length() -> None:
+    with pytest.raises(ValidationError, match="scope_unit_name"):
+        ContextManifestEntry(
+            file_path="src/foo.py",
+            scope_unit_name="x" * 1025,
+            line_start=1,
+            line_end=2,
+            inclusion_reason="changed_scope",
+        )
