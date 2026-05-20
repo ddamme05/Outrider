@@ -298,12 +298,30 @@ class ReviewFinding(BaseModel):
         )
 
         if self.policy_version != ACTIVE_POLICY_VERSION:
-            # Historical event under a frozen policy — trust the audit
-            # log. Versioned-replay enforcement is the persister /
-            # replay layer's job, not the schema layer's.
-            return self
+            # The schema CANNOT distinguish a legitimate historical
+            # replay from a fresh-write attacker / buggy producer that
+            # smuggles `policy_version="0.9.0"` to bypass live-policy
+            # enforcement. Codex round-6 audit (HIGH): the previous
+            # "skip if non-ACTIVE" path was a quiet bypass. Fresh writes
+            # MUST use ACTIVE_POLICY_VERSION; the persister/replay layer
+            # is responsible for loading historical events via
+            # `policy/versions.py::load_policy_for_version` and
+            # validating them against the policy in effect AT WRITE TIME
+            # (NOT the live policy). Until that replay path lands and
+            # adds a `KNOWN_POLICY_VERSIONS` registry to differentiate
+            # "valid historical version" from "smuggled non-existent
+            # version", the schema rejects any non-ACTIVE write.
+            raise ValueError(
+                f"ReviewFinding.policy_version={self.policy_version!r} is not "
+                f"ACTIVE_POLICY_VERSION ({ACTIVE_POLICY_VERSION!r}). Fresh writes "
+                f"must use the active policy. Historical-event replay loads "
+                f"events from the audit log under the policy in effect at write "
+                f"time and goes through the persister/replay layer — NOT through "
+                f"fresh schema construction with a backdated policy_version. Per "
+                f"`severity-policy-versioned-for-replay` (docs/invariants.md)."
+            )
 
-        baseline = self.original_severity or self.severity
+        baseline = self.original_severity if self.original_severity is not None else self.severity
         expected = SEVERITY_POLICY.get(self.finding_type)
         if expected is None or baseline != expected:
             raise ValueError(
@@ -315,6 +333,44 @@ class ReviewFinding(BaseModel):
                 f"keyed by finding_type, never from caller or model output. If a HITL "
                 f"override is in flight, set `original_severity` to the policy "
                 f"baseline and put the override on `severity`."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_override_triplet_coherence(self) -> Self:
+        """HITL override is a triplet: original_severity + override_reason
+        + overrider_id. All three or none. Backs `hitl-gates-high-severity`
+        + `severity-set-by-policy`.
+
+        Codex round-6 audit (HIGH): without this gate, a caller could set
+        `original_severity=CRITICAL, severity=LOW, override_reason=None,
+        overrider_id=None` and bypass the HITL gate. The policy-baseline
+        check at `_enforce_severity_matches_policy` PASSES (CRITICAL
+        matches policy) but the override path has no real
+        `PerFindingDecision.SEVERITY_OVERRIDE` backing it — no reason,
+        no reviewer identity. The finding lands with a downgraded
+        severity that has no audit trail.
+
+        The rule: the three override fields are bound. Either all None
+        (no override in effect) or all set (override happened, with a
+        reason and a reviewer). A partial state is a producer bug.
+        """
+        override_fields = (
+            self.original_severity,
+            self.override_reason,
+            self.overrider_id,
+        )
+        all_none = all(field is None for field in override_fields)
+        all_set = all(field is not None for field in override_fields)
+        if not (all_none or all_set):
+            raise ValueError(
+                f"ReviewFinding HITL override fields must be all-set-or-all-None: "
+                f"original_severity={self.original_severity!r}, "
+                f"override_reason={self.override_reason!r}, "
+                f"overrider_id={self.overrider_id!r}. A real HITL override produces "
+                f"a `PerFindingDecision.SEVERITY_OVERRIDE` with all three; a "
+                f"partial state is a producer bug that would bypass `hitl-gates-"
+                f"high-severity` by claiming an override that never happened."
             )
         return self
 

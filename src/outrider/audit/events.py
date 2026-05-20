@@ -72,10 +72,12 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    field_validator,
     model_validator,
 )
 
 from outrider.ast_facts.models import SkipReason
+from outrider.coordinates import validate_diff_path
 from outrider.llm.pricing import PRICING_VERSION_PATTERN
 from outrider.policy import (
     EvidenceTier,
@@ -209,6 +211,19 @@ class ContextManifestEntry(BaseModel):
         "same_file_context",
         "trace_expansion",
     ]
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Re-run `validate_diff_path` so the audit-event side enforces the
+        same repo-relative-POSIX invariant `AnalysisRound.files_examined`
+        does. Codex round-6 audit (HIGH): pre-fold the audit-event shadow
+        was weaker than the schemas-side validation — a traversal-bearing
+        or shell-metacharacter path on a ContextManifestEntry inside
+        LLMCallEvent.context_summary could ride into the append-only audit
+        log without going through the canonical gate.
+        """
+        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_line_constraint(self) -> Self:
@@ -381,7 +396,7 @@ class FileExaminationEvent(AuditEventBase):
     """
 
     event_type: Literal["file_examination"] = "file_examination"
-    file_path: str
+    file_path: Annotated[str, Field(max_length=1024)]
     # Bounded to the two actually-emitted values today (intake's per-file
     # fetch record at `agent/nodes/intake.py:703,737` and analyze's
     # per-file examination at the sister-spec node body). Adding a third
@@ -398,6 +413,14 @@ class FileExaminationEvent(AuditEventBase):
     node_id: Literal["intake", "analyze"]
     parse_status: Literal["clean", "degraded", "failed", "skipped"]
     skip_reason: SkipReason | None = None
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use`. Codex round-6
+        audit (HIGH): the audit-event side was weaker than the
+        `AnalysisRound.files_examined` validator at the schemas side."""
+        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_skip_reason_outcome(self) -> Self:
@@ -429,7 +452,7 @@ class FindingEvent(AuditEventBase):
     finding_id: UUID
     finding_type: FindingType
     severity: FindingSeverity
-    file_path: str
+    file_path: Annotated[str, Field(max_length=1024)]
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     dimension: ReviewDimension
@@ -439,6 +462,17 @@ class FindingEvent(AuditEventBase):
     query_match_id: str | None = None
     trace_path: tuple[str, ...] | None = None
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use`. Codex round-6
+        audit (HIGH): pre-fold `FindingEvent.file_path` was raw `str` while
+        `ReviewFinding.file_path` already ran `validate_diff_path`. The
+        audit shadow must be at least as strict as the in-memory shape;
+        otherwise a traversal-bearing file_path could ride into the
+        append-only log."""
+        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_proof_boundary(self) -> Self:
@@ -524,7 +558,21 @@ class FindingEvent(AuditEventBase):
         )
 
         if self.policy_version != ACTIVE_POLICY_VERSION:
-            return self
+            # Codex round-6 audit (HIGH): the previous "skip if non-ACTIVE"
+            # path was a quiet bypass. Fresh writes MUST use ACTIVE; the
+            # persister/replay layer handles historical events via
+            # `policy/versions.py::load_policy_for_version` (NOT through
+            # fresh schema construction). Until a KNOWN_POLICY_VERSIONS
+            # registry differentiates "valid historical version" from
+            # "smuggled non-existent version", reject any non-ACTIVE write
+            # at the schema layer.
+            raise ValueError(
+                f"FindingEvent.policy_version={self.policy_version!r} is not "
+                f"ACTIVE_POLICY_VERSION ({ACTIVE_POLICY_VERSION!r}). Fresh writes "
+                f"must use the active policy. Historical-event replay goes through "
+                f"the persister/replay layer, NOT fresh schema construction. Per "
+                f"`severity-policy-versioned-for-replay` (docs/invariants.md)."
+            )
         expected = SEVERITY_POLICY.get(self.finding_type)
         if expected is None or self.severity != expected:
             raise ValueError(
@@ -764,6 +812,15 @@ class FindingProposalRejectedEvent(AuditEventBase):
     ]
     rejection_detail: Annotated[str, Field(max_length=500)]
 
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow `paths-validated-before-use`. Codex round-6 (HIGH).
+        Even rejected proposals carry a file_path that names the analyze
+        target; a traversal-bearing path here would land in the audit log
+        with no in-memory ReviewFinding to gate it."""
+        return validate_diff_path(path)
+
     @model_validator(mode="after")
     def _enforce_claimed_evidence_tier_coupling(self) -> Self:
         """`claimed_evidence_tier is None` iff `rejection_reason == "evidence_tier_not_in_enum"`.
@@ -809,6 +866,13 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     file_path: Annotated[str, Field(max_length=1024)]
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     rejection_reason: Literal["raw_response_unparseable"]
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow `paths-validated-before-use`. Codex round-6 (HIGH)."""
+        return validate_diff_path(path)
+
     rejection_detail: Annotated[str, Field(max_length=500)]
 
 
