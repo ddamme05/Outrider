@@ -186,3 +186,65 @@ def test_llm_call_event_hash_fields_reject_non_hex(field_name: str) -> None:
     kwargs[field_name] = "sha256-abc"  # legacy literal; not lowercase hex
     with pytest.raises(ValidationError):
         LLMCallEvent(review_id=uuid4(), **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# §0b crazy-audit fold: LLMCallEvent.degradation_reason provenance pairing.
+# Mirrors the LLMRequest._enforce_degradation_provenance bidirectional rule
+# at the event boundary. Without these tests the wrapper could silently drop
+# the reason mid-pipeline (sharp-edges SE-1 + adversarial HIGH + data-int F1
+# — three-agent convergent finding).
+# ---------------------------------------------------------------------------
+
+
+def test_llm_call_event_degradation_reason_defaults_none() -> None:
+    """Backward-compat (F4): historical rows without `degradation_reason`
+    still validate under the new schema. The field defaults to None and
+    `degraded_mode=False` in the kwargs helper, so existing fixtures
+    construct cleanly without explicit pass-through."""
+    event = LLMCallEvent(review_id=uuid4(), **_llm_call_kwargs())
+    assert event.degraded_mode is False
+    assert event.degradation_reason is None
+
+
+def test_llm_call_event_degraded_without_reason_raises() -> None:
+    """`degraded_mode=True` + `degradation_reason=None` fails the mirror
+    validator — same shape as the LLMRequest provenance rule. Prevents
+    wrapper drift dropping the typed cause."""
+    kwargs = _llm_call_kwargs()
+    kwargs["degraded_mode"] = True
+    kwargs["degradation_reason"] = None
+    with pytest.raises(ValidationError, match="degraded_mode=True requires"):
+        LLMCallEvent(review_id=uuid4(), **kwargs)
+
+
+def test_llm_call_event_reason_without_degraded_raises() -> None:
+    """`degraded_mode=False` + `degradation_reason='parse_failed'` fails —
+    reason-without-mode is the inverse asymmetry. Either flag set without
+    the other is a wrapper-drift signal."""
+    kwargs = _llm_call_kwargs()
+    kwargs["degraded_mode"] = False
+    kwargs["degradation_reason"] = "parse_failed"
+    with pytest.raises(ValidationError, match="degradation_reason requires"):
+        LLMCallEvent(review_id=uuid4(), **kwargs)
+
+
+@pytest.mark.parametrize("reason", ["parse_failed", "tree_has_error_in_changed_regions"])
+def test_llm_call_event_degraded_with_typed_reason_admits(reason: str) -> None:
+    """The happy path: both flags set consistently."""
+    kwargs = _llm_call_kwargs()
+    kwargs["degraded_mode"] = True
+    kwargs["degradation_reason"] = reason
+    event = LLMCallEvent(review_id=uuid4(), **kwargs)
+    assert event.degraded_mode is True
+    assert event.degradation_reason == reason
+
+
+def test_llm_call_event_degradation_reason_rejects_arbitrary_string() -> None:
+    """Same narrow-Literal contract as LLMRequest — extending the reason
+    enumeration must happen in lockstep across LLMRequest AND LLMCallEvent."""
+    kwargs = _llm_call_kwargs()
+    kwargs["degraded_mode"] = True
+    kwargs["degradation_reason"] = "some_new_reason"
+    with pytest.raises(ValidationError):
+        LLMCallEvent(review_id=uuid4(), **kwargs)
