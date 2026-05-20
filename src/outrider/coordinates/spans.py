@@ -150,26 +150,113 @@ def scope_unit_diff_hunks(scope_unit: ScopeUnit, patched_file: PatchedFile) -> t
     keeps the model focused on changes inside the function it's
     reviewing.
 
-    A hunk survives only if at least one of its target-side lines falls
-    within `[scope_unit.line_start, scope_unit.line_end]` (inclusive,
-    1-indexed). The returned text reproduces the unidiff format
-    (`@@ ... @@` header + body) but only for surviving hunks; if a
-    hunk straddles the scope boundary, its full body is kept (clipping
-    INSIDE a hunk's body would corrupt the diff format).
+    A hunk's body lines are FILTERED to those whose target-side line
+    number falls within `[scope_unit.line_start, scope_unit.line_end]`
+    (inclusive, 1-indexed). The hunk header (`@@ -A,B +C,D @@`) is
+    rewritten to reflect the clipped body's source/target line counts
+    so the emitted text remains a valid unified diff. Post-foundation
+    audit (high confidence): keeping the full overlapping hunk leaked
+    changed lines outside the eligible scope unit into the analyze
+    prompt — true scope-unit-bounded clipping requires this in-hunk
+    filter, not just hunk-level overlap.
+
+    Removed-side (`-` prefix) lines have no target line number; they
+    are kept iff at least one neighboring target-side line in the same
+    contiguous chunk falls in range. The simpler equivalent that this
+    implementation uses: keep a removed line iff the next kept-or-
+    skippable target line is in range, OR the previous one was — i.e.,
+    they ride along with the surrounding target context. Context (` `
+    prefix) lines have a target line number; they get the standard
+    in-range filter.
 
     Empty tuple return means the scope unit has no overlapping diff
     changes — caller handles that case (e.g., skips the file).
     """
     surviving: list[str] = []
     for hunk in patched_file:
-        # `hunk.target_start` is the first line of the hunk on the head
-        # side (1-indexed); `hunk.target_length` is the number of lines.
-        hunk_first_line = hunk.target_start
-        hunk_last_line = hunk.target_start + hunk.target_length - 1
-        # Inclusive overlap with scope range:
-        overlaps = (
-            hunk_first_line <= scope_unit.line_end and scope_unit.line_start <= hunk_last_line
+        clipped = _clip_hunk_to_line_range(
+            hunk,
+            line_start=scope_unit.line_start,
+            line_end=scope_unit.line_end,
         )
-        if overlaps:
-            surviving.append(str(hunk))
+        if clipped is not None:
+            surviving.append(clipped)
     return tuple(surviving)
+
+
+def _clip_hunk_to_line_range(
+    hunk: object,
+    *,
+    line_start: int,
+    line_end: int,
+) -> str | None:
+    """Return a clipped hunk text with header recomputed, or None if empty.
+
+    Filters body lines by target-side line number. Removed lines carry
+    along with adjacent in-range target lines: a removed line is
+    included iff the surrounding context puts it inside the kept block
+    (in practice: between two kept lines, or adjacent to a kept added/
+    context line). Header `@@ -src_start,src_len +tgt_start,tgt_len @@`
+    is rewritten to match the surviving line counts.
+    """
+    # unidiff's Hunk is iterable over Line objects; each Line has
+    # `is_added`, `is_removed`, `is_context`, `source_line_no`,
+    # `target_line_no`, and `value`.
+    hunk_lines: list[object] = list(hunk)  # type: ignore[call-overload]
+
+    # First pass: decide which lines to keep, walking forward. A removed
+    # line is kept iff its immediate target neighbor (next kept added/
+    # context line forward, or previous one backward) was kept.
+    kept: list[object] = []
+    pending_removed: list[object] = []
+    any_kept_in_block = False
+    for line in hunk_lines:
+        target_no: int | None = getattr(line, "target_line_no", None)
+        if target_no is not None:
+            # Added or context line — has a target line number.
+            in_range = line_start <= target_no <= line_end
+            if in_range:
+                # Flush pending removed-lines that rode along this block.
+                kept.extend(pending_removed)
+                pending_removed = []
+                kept.append(line)
+                any_kept_in_block = True
+            else:
+                # Out of range — flush pending removed-lines IFF any
+                # earlier kept neighbor in this contiguous block exists
+                # (they rode along that block's tail context).
+                if any_kept_in_block:
+                    kept.extend(pending_removed)
+                pending_removed = []
+                any_kept_in_block = False
+        else:
+            # Removed line — defer; ride with the next neighbor's verdict.
+            pending_removed.append(line)
+    # Trailing removed lines without a following target neighbor: include
+    # iff the last contiguous block ended with kept lines.
+    if any_kept_in_block:
+        kept.extend(pending_removed)
+
+    if not kept:
+        return None
+
+    # Recompute header counts. Source side counts removed + context;
+    # target side counts added + context.
+    src_lines = [
+        ln for ln in kept if getattr(ln, "is_removed", False) or getattr(ln, "is_context", False)
+    ]
+    tgt_lines = [
+        ln for ln in kept if getattr(ln, "is_added", False) or getattr(ln, "is_context", False)
+    ]
+    src_start = src_lines[0].source_line_no if src_lines else 0  # type: ignore[attr-defined]
+    tgt_start = tgt_lines[0].target_line_no if tgt_lines else 0  # type: ignore[attr-defined]
+    src_len = len(src_lines)
+    tgt_len = len(tgt_lines)
+
+    header = f"@@ -{src_start},{src_len} +{tgt_start},{tgt_len} @@"
+    section_header = getattr(hunk, "section_header", "")
+    if section_header:
+        header = f"{header} {section_header}"
+    body = "".join(str(ln) for ln in kept)
+    # str(Line) typically includes the trailing newline; header gets one too.
+    return f"{header}\n{body}"

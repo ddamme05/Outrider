@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
-from outrider.policy.canonical import compute_identity_hash
+from outrider.policy.canonical import compute_identity_hash, compute_round_id
 from outrider.schemas import (
     AnalysisRound,
     PRContext,
@@ -68,12 +68,22 @@ def _finding() -> ReviewFinding:
 
 
 def _round(pass_index: int = 0) -> AnalysisRound:
+    """Construct an AnalysisRound with a canonical round_id derived from
+    its actual payload — required by `_enforce_round_id_matches_payload`.
+    Vary `pass_index` to get distinct round_ids."""
     now = datetime.now(UTC)
+    file_path = f"src/foo_{pass_index}.py"
+    finding = _finding()
     return AnalysisRound(
-        round_id=compute_identity_hash({"pass": pass_index, "fixture": "test"}),
+        round_id=compute_round_id(
+            pass_index=pass_index,
+            files_examined=(file_path,),
+            files_skipped=(),
+            finding_content_hashes=(finding.content_hash,),
+        ),
         pass_index=pass_index,
-        findings=(_finding(),),
-        files_examined=("src/foo.py",),
+        findings=(finding,),
+        files_examined=(file_path,),
         files_skipped=(),
         started_at=now,
         ended_at=now,

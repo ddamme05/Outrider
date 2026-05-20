@@ -407,3 +407,133 @@ def test_analyze_completed_event_pricing_version_remains_free_form() -> None:
         **_completed_kwargs_minimum(),
     )
     assert event.pricing_version == "v2"
+
+
+# ---------------------------------------------------------------------------
+# Post-foundation push/PR audit folds.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_round_id_is_order_insensitive() -> None:
+    """compute_round_id sorts inputs internally so two producers emitting
+    the same logical round in different orders get the same id. Without
+    this, dedup-by-round_id admits both as distinct rounds on replay."""
+    from outrider.policy.canonical import compute_round_id
+
+    h_a = compute_round_id(
+        pass_index=0,
+        files_examined=("src/a.py", "src/b.py"),
+        files_skipped=(),
+        finding_content_hashes=("a" * 64, "b" * 64),
+    )
+    h_b = compute_round_id(
+        pass_index=0,
+        files_examined=("src/b.py", "src/a.py"),
+        files_skipped=(),
+        finding_content_hashes=("b" * 64, "a" * 64),
+    )
+    assert h_a == h_b
+
+
+def test_analysis_round_round_id_bound_to_payload() -> None:
+    """Arbitrary 64-hex round_id rejected even though it matches the
+    pattern — the validator re-derives the canonical id and asserts
+    equality. Closes the bypass-replay-dedup risk."""
+    from outrider.policy.canonical import compute_round_id
+
+    now = datetime.now(UTC)
+    finding = _valid_finding()
+    with pytest.raises(ValidationError, match="does not match the canonical id"):
+        AnalysisRound(
+            round_id="0" * 64,
+            pass_index=0,
+            findings=(finding,),
+            files_examined=("src/foo.py",),
+            files_skipped=(),
+            started_at=now,
+            ended_at=now,
+        )
+    # Canonical id is admitted.
+    canonical_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py",),
+        files_skipped=(),
+        finding_content_hashes=(finding.content_hash,),
+    )
+    AnalysisRound(
+        round_id=canonical_id,
+        pass_index=0,
+        findings=(finding,),
+        files_examined=("src/foo.py",),
+        files_skipped=(),
+        started_at=now,
+        ended_at=now,
+    )
+
+
+def test_validate_diff_path_normalizes_nfc() -> None:
+    """NFC normalization per spec §1: NFD and NFC forms collapse to the
+    same canonical output so downstream identity hashes don't diverge
+    across systems with different default normalization.
+
+    Constructs the NFD form at runtime via unicodedata so source-file
+    save-time normalization can't silently collapse the test literals.
+    """
+    import unicodedata
+
+    from outrider.coordinates import validate_diff_path
+
+    # NFC: 'é' as single code point U+00E9.
+    nfc_path = unicodedata.normalize("NFC", "src/cafe\u0301/foo.py")
+    # NFD: 'e' + combining acute U+0301.
+    nfd_path = unicodedata.normalize("NFD", nfc_path)
+    assert nfc_path != nfd_path
+    assert unicodedata.normalize("NFC", nfd_path) == nfc_path
+
+    # validate_diff_path collapses them to the same canonical output.
+    assert validate_diff_path(nfc_path) == validate_diff_path(nfd_path)
+    assert validate_diff_path(nfd_path) == nfc_path
+
+
+def test_validate_diff_path_ascii_is_idempotent_under_nfc() -> None:
+    """Pure-ASCII paths are NFC-idempotent; pin so a refactor dropping
+    the step doesn't slip past."""
+    from outrider.coordinates import validate_diff_path
+
+    assert validate_diff_path("src/foo.py") == "src/foo.py"
+
+
+def test_llm_call_event_rejects_degraded_mode_on_non_analyze_node() -> None:
+    """LLMCallEvent mirrors LLMRequest's analyze-only scoping. Closes the
+    read-boundary asymmetry where the audit-event schema admitted
+    `trace + degraded_mode=True` even though the request rejected it."""
+    from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+
+    ctx = (
+        ContextManifestEntry(
+            file_path="src/foo.py",
+            scope_unit_name="Foo.bar",
+            line_start=1,
+            line_end=10,
+            inclusion_reason="changed_scope",
+        ),
+    )
+    with pytest.raises(ValidationError, match="only valid for node_id='analyze'"):
+        LLMCallEvent(
+            review_id=uuid4(),
+            model="claude-haiku-4-5",
+            node_id="trace",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            cost_usd=0.01,
+            pricing_version="v2",
+            latency_ms=250,
+            prompt_hash="a" * 64,
+            cache_hit=False,
+            context_summary=ctx,
+            prompt_template_version="trace:1",
+            system_prompt_hash="b" * 64,
+            degraded_mode=True,
+            degradation_reason="parse_failed",
+        )

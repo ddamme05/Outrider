@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import keyword
 import re
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final
 
@@ -253,8 +254,16 @@ def validate_diff_path(file_path: str) -> str:
     - shell metacharacters (`;`, `&`, `|`, `` ` ``, `$`, `(`, `)`, `<`, `>`,
       `\\n`, `\\r`, NUL, `*`, `?`, `~`, `[`, `]`, `{`, `}`, `'`, `"`)
 
-    Returns the validated path in repo-relative POSIX form (str). No
-    `.resolve()` and no prefix-validation here — those apply to the
+    Returns the validated path in repo-relative POSIX form, normalized
+    to Unicode NFC. The NFC normalization is the load-bearing step for
+    identity-hash stability per spec §1: two filesystems / two clients
+    that submit the same logical path under different normalization
+    forms (NFC `café` vs NFD `cafe + combining-acute`) would otherwise
+    produce different byte sequences and different content-derived
+    hashes (round_id, candidate_id), defeating the dedup-by-key
+    reducer's idempotency promise on replay.
+
+    No `.resolve()` and no prefix-validation here — those apply to the
     root-aware surface (`resolve_candidate_paths`), per the amended
     canonical's two-surface split. The GitHub comment API consumes string
     paths, and there is no host filesystem to resolve against in this
@@ -262,6 +271,14 @@ def validate_diff_path(file_path: str) -> str:
     """
     if not file_path:
         raise CoordinateError("file_path is empty")
+    # NFC normalization FIRST, before any other check, so all downstream
+    # validators (Trojan-Source, metachars, traversal) see the same byte
+    # sequence the hash recipes will see. Post-foundation audit (high
+    # confidence): spec §1 promised NFC; implementation initially
+    # omitted it. Pure-ASCII paths are NFC-idempotent so the change
+    # affects only multibyte paths — which is exactly the surface where
+    # the hash drift would manifest.
+    file_path = unicodedata.normalize("NFC", file_path)
     if "\\" in file_path:
         raise CoordinateError(
             f"file_path {file_path!r} contains a backslash (POSIX separators only)"

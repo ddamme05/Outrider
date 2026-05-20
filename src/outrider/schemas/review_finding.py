@@ -186,11 +186,13 @@ class ReviewFinding(BaseModel):
             raise ValueError(
                 f"ReviewFinding.dimension={self.dimension.value!r} drifted from "
                 f"FINDING_TYPE_TO_DIMENSION[{self.finding_type.value!r}]="
-                f"{expected.value!r}. Either the mapping changed since this "
-                f"finding was constructed (replay-time drift; bump "
-                f"FINDING_TYPE_TO_DIMENSION_VERSION if mappings are versioning) "
-                f"or the caller is constructing a finding without going "
-                f"through the canonical lookup (use lookup_dimension)."
+                f"{expected.value!r}. Per DECISIONS.md#021, FINDING_TYPE_TO_DIMENSION "
+                f"is append-only for existing FindingType members: a mapping change "
+                f"is a DECISIONS-level ontology rewrite, not a quiet code edit. "
+                f"If this is a stored audit row hitting replay-time drift, revert "
+                f"the mapping change OR land a new DECISIONS entry covering the "
+                f"backfill plan. If this is fresh construction, the caller is not "
+                f"going through the canonical lookup — use `lookup_dimension(finding_type)`."
             )
         return self
 

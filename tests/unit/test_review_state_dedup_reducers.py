@@ -21,7 +21,7 @@ from typing import Any, get_args, get_type_hints
 from uuid import uuid4
 
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
-from outrider.policy.canonical import compute_identity_hash
+from outrider.policy.canonical import compute_identity_hash, compute_round_id
 from outrider.schemas import (
     AnalysisRound,
     ReviewDimension,
@@ -59,12 +59,25 @@ def _finding() -> ReviewFinding:
 
 
 def _round(pass_index: int = 0, *, distinct: str = "") -> AnalysisRound:
+    """Construct an AnalysisRound with a canonical round_id.
+
+    `distinct` parameterizes the file path so different rounds get
+    different content-derived ids (canonical recipe is content-keyed,
+    so we vary the content to vary the id).
+    """
     now = datetime.now(UTC)
+    file_path = f"src/foo_{distinct}.py" if distinct else "src/foo.py"
+    finding = _finding()
     return AnalysisRound(
-        round_id=compute_identity_hash({"pass": pass_index, "distinct": distinct}),
+        round_id=compute_round_id(
+            pass_index=pass_index,
+            files_examined=(file_path,),
+            files_skipped=(),
+            finding_content_hashes=(finding.content_hash,),
+        ),
         pass_index=pass_index,
-        findings=(_finding(),),
-        files_examined=("src/foo.py",),
+        findings=(finding,),
+        files_examined=(file_path,),
         files_skipped=(),
         started_at=now,
         ended_at=now,
