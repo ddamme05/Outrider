@@ -262,3 +262,31 @@ def test_finding_event_admits_historical_policy_version() -> None:
         policy_version="0.9.0",  # not ACTIVE_POLICY_VERSION
     )
     assert event.severity == FindingSeverity.LOW
+
+
+# ---------------------------------------------------------------------------
+# Category F sweep: FindingEvent.dimension lockstep (mirror of
+# ReviewFinding._enforce_dimension_lockstep at the audit-event layer).
+# Same gap class as severity-set-by-policy — would have been caught by
+# Codex in a follow-up round.
+# ---------------------------------------------------------------------------
+
+
+def test_finding_event_rejects_drifted_dimension() -> None:
+    """`(SQL_INJECTION, dimension=PERFORMANCE)` fails because
+    FINDING_TYPE_TO_DIMENSION[SQL_INJECTION] == SECURITY. Same shape as
+    the existing ReviewFinding test."""
+    with pytest.raises(ValidationError, match="drifted from"):
+        _build_event(
+            finding_type=FindingType.SQL_INJECTION,
+            dimension=ReviewDimension.PERFORMANCE,  # WRONG
+        )
+
+
+def test_finding_event_admits_canonical_dimension() -> None:
+    """The happy path: dimension matches FINDING_TYPE_TO_DIMENSION."""
+    event = _build_event(
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+    )
+    assert event.dimension == ReviewDimension.SECURITY

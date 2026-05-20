@@ -437,6 +437,40 @@ class FindingEvent(AuditEventBase):
         return self
 
     @model_validator(mode="after")
+    def _enforce_dimension_lockstep(self) -> Self:
+        """`dimension` must equal `FINDING_TYPE_TO_DIMENSION[finding_type]`.
+
+        Mirror of `ReviewFinding._enforce_dimension_lockstep` at the
+        audit-event layer. Without this, a row like
+        `(finding_type=SQL_INJECTION, dimension=PERFORMANCE)` admits even
+        though `FINDING_TYPE_TO_DIMENSION[SQL_INJECTION] == SECURITY` —
+        same gap class Codex round-5 caught on `severity`. The
+        module-load lockstep guard in `outrider.policy.dimensions` fires
+        only at import; it can't detect an audit row ALREADY in
+        `audit_events.payload` carrying a drifted dimension. This
+        validator closes that hole at the audit-event layer too.
+
+        Imported locally to avoid a circular import: `policy.dimensions`
+        imports `ReviewDimension` from `schemas.review_finding`; this
+        module imports `ReviewDimension` via the schemas re-export.
+        """
+        from outrider.policy.dimensions import (  # noqa: PLC0415
+            FINDING_TYPE_TO_DIMENSION,
+        )
+
+        expected = FINDING_TYPE_TO_DIMENSION[self.finding_type]
+        if self.dimension != expected:
+            raise ValueError(
+                f"FindingEvent.dimension={self.dimension.value!r} drifted from "
+                f"FINDING_TYPE_TO_DIMENSION[{self.finding_type.value!r}]="
+                f"{expected.value!r}. Same canonical rule as `ReviewFinding`. "
+                f"Per DECISIONS.md#021, `FINDING_TYPE_TO_DIMENSION` is append-only "
+                f"for existing FindingType members; a mapping change is a "
+                f"DECISIONS-level ontology rewrite, not a quiet code edit."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_severity_matches_policy(self) -> Self:
         """`severity` must equal `SEVERITY_POLICY[finding_type]` under the
         live policy version. Backs `severity-set-by-policy`.
