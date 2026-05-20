@@ -65,10 +65,21 @@ SHA256_HEX_PATTERN_SHORT: Final[str] = r"^[a-f0-9]{16}$"
 #   under retention. Re-canonicalizing would break those.
 #
 # Both stay independent of this module to preserve wire-format
-# compatibility on historical rows. New identity-bearing hashes added
-# from the foundation onward (round_id, candidate_id, proposal_hash,
-# response_hash) MUST go through `compute_identity_hash` below —
-# avoiding per-call-site recipe drift is the load-bearing property.
+# compatibility on historical rows. New STRUCTURED identity-bearing
+# hashes added from the foundation onward (round_id, candidate_id,
+# proposal_hash) go through `compute_identity_hash` below — avoiding
+# per-call-site recipe drift on structured payloads is the load-bearing
+# property.
+#
+# `response_hash` (on `AnalyzeResponseRejectedEvent`) is a separate
+# case: it hashes the FULL raw response BYTES (UTF-8 encoded) directly
+# via `sha256(text.encode("utf-8")).hexdigest()`, NOT through
+# `canonicalize_for_hash` — the input shape isn't a structured dict but
+# a single text blob, so JSON canonicalization doesn't apply. The
+# `compute_response_hash` wrapper below implements that recipe. Post-PR
+# review fold: prior comment claimed `response_hash` used
+# `compute_identity_hash`; that was prose drift — the implementation is
+# correct, the comment is being corrected here.
 
 
 def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
@@ -184,8 +195,31 @@ def _validate_hash_payload(value: Any, path: str) -> None:
         for i, item in enumerate(value):
             _validate_hash_payload(item, f"{path}[{i}]")
         return
-    # Leaf: str/int/bool/None/float — let json.dumps's allow_nan=False
-    # handle NaN/Inf rejection.
+    # Reject `float` even though it's JSON-native: float serialization
+    # is implementation-dependent in subtle ways (trailing zero
+    # truncation, exponent vs decimal notation, locale-sensitive
+    # libraries) and `0.1 + 0.2 != 0.3` means content-derived hashes
+    # over float arithmetic results are unstable across producers.
+    # `allow_nan=False` catches NaN/Inf but not finite floats. The
+    # contract says str/int/bool/None/list/dict only; callers with a
+    # float MUST convert via `str(...)` (or `Decimal(str(value))`) so
+    # the encoding decision is explicit at the call site. Post-PR
+    # review fold (high confidence, runtime-contract issue).
+    #
+    # `bool` is a subclass of `int` in Python; `isinstance(True, float)`
+    # is False — so this rejection doesn't accidentally reject booleans.
+    if isinstance(value, float):
+        raise TypeError(
+            f"canonicalize_for_hash got a float at {path}: {value!r}. "
+            f"Floats are NOT part of the JSON-native value contract "
+            f"(str/int/bool/None/list/dict) because float serialization "
+            f"is implementation-dependent (trailing zero truncation, "
+            f"exponent notation, 0.1 + 0.2 vs 0.3 representations). "
+            f"Convert to a stable string representation (e.g., "
+            f"`str(value)` or `Decimal(str(value))`) before hashing so "
+            f"the encoding choice is explicit at the call site."
+        )
+    # Leaf: str/int/bool/None — allowed.
 
 
 def compute_identity_hash(payload: dict[str, Any]) -> str:

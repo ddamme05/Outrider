@@ -1,9 +1,21 @@
-"""Every audit subtype admits with valid fields + has correct event_type literal.
+"""Every spec §8.2 audit subtype admits with valid fields + correct event_type.
 
-Parametrized over all 10 V1 event types per spec §8.2. Each tuple is
-(event_class, expected_literal, minimal_kwargs); construction must succeed
-and `event.event_type` must equal the literal — confirms the discriminator
+Parametrized over the 10 V1 event types per spec §8.2 (`AgentTransitionEvent`,
+`ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`, `FindingEvent`,
+`TraceDecisionEvent`, `HITLRequestEvent`, `HITLDecisionEvent`,
+`PublishEvent`, `PublishRoutingEvent`). Each tuple is `(event_class,
+expected_literal, minimal_kwargs)`; construction must succeed and
+`event.event_type` must equal the literal — confirms the discriminator
 value is wired correctly on every subtype.
+
+**Scope note (post-PR review fold):** the three analyze-foundation
+event additions (`AnalyzeCompletedEvent`, `FindingProposalRejectedEvent`,
+`AnalyzeResponseRejectedEvent` per `specs/2026-05-19-analyze-foundation.md`
+§5) are NOT in this parametrized SUBTYPES tuple — they have their own
+dedicated test file at `tests/unit/test_analyze_audit_events.py` that
+exercises their validators end-to-end. This file's central parametrize
+covers §8.2 only; "all subtypes" framings on the file's docstring used
+to overclaim and were corrected here.
 """
 
 from datetime import UTC, datetime, timedelta

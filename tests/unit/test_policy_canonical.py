@@ -109,18 +109,24 @@ def test_compute_identity_hash_value_sensitivity() -> None:
 
 
 def test_canonical_bytes_rejects_nan() -> None:
-    """HIGH fold: NaN != NaN — a payload containing NaN would produce a
-    digest no semantically-equal payload can reproduce. `allow_nan=False`
-    fails loud at hash time, not at downstream JSON-consumer time."""
-    with pytest.raises(ValueError, match="Out of range float"):
+    """NaN != NaN — a payload containing NaN would produce a digest no
+    semantically-equal payload can reproduce. Caught by the float
+    rejection that fires for ANY float (post-PR review HIGH fold), so
+    the previous `allow_nan=False` fallback is now unreachable but kept
+    as a belt-and-suspenders second gate against any future refactor
+    that loosens the float rejection.
+    """
+    with pytest.raises(TypeError, match="Floats are NOT part of the JSON-native"):
         canonicalize_for_hash({"x": float("nan")})
 
 
 @pytest.mark.parametrize("bad_value", [float("inf"), float("-inf")])
 def test_canonical_bytes_rejects_infinity(bad_value: float) -> None:
-    """HIGH fold: Infinity tokens are non-RFC-8259 — downstream consumers
-    (V1.5 JS dashboard, V2 archival pipelines) can't re-parse them."""
-    with pytest.raises(ValueError, match="Out of range float"):
+    """Infinity values are also floats — same rejection path as NaN +
+    finite floats. Pre-PR-review-fold the message keyed on
+    json.dumps's "Out of range float"; now the broader "JSON-native"
+    contract is the first gate."""
+    with pytest.raises(TypeError, match="Floats are NOT part of the JSON-native"):
         canonicalize_for_hash({"x": bad_value})
 
 

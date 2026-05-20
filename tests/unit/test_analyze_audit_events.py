@@ -29,7 +29,7 @@ from outrider.audit.events import (
     FindingProposalRejectedEvent,
 )
 from outrider.policy import EvidenceTier
-from outrider.policy.canonical import compute_identity_hash
+from outrider.policy.canonical import compute_identity_hash, compute_response_hash
 
 
 def _completed_kwargs(**overrides: Any) -> dict[str, Any]:
@@ -72,10 +72,15 @@ def _rejected_proposal_kwargs(**overrides: Any) -> dict[str, Any]:
 
 
 def _rejected_response_kwargs(**overrides: Any) -> dict[str, Any]:
+    """Fixture for AnalyzeResponseRejectedEvent. `response_hash` is
+    derived via `compute_response_hash` (the canonical text-bytes
+    recipe), NOT via `compute_identity_hash` (the structured-dict
+    recipe). Post-PR review fixture-drift fix.
+    """
     base: dict[str, Any] = {
         "review_id": uuid4(),
         "file_path": "src/foo.py",
-        "response_hash": compute_identity_hash({"x": 1}),
+        "response_hash": compute_response_hash("unparseable response text"),
         "rejection_reason": "raw_response_unparseable",
         "rejection_detail": "findings[0].finding_type x1",
     }

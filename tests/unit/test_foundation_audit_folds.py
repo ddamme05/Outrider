@@ -598,6 +598,40 @@ def test_canonicalize_for_hash_rejects_nested_tuple() -> None:
         canonicalize_for_hash({"items": [("a", 1)]})  # type: ignore[list-item]
 
 
+def test_canonicalize_for_hash_rejects_finite_float() -> None:
+    """Float serialization is implementation-dependent (trailing-zero
+    truncation, exponent notation, 0.1 + 0.2 representations) — even
+    finite floats can produce divergent canonical bytes across
+    producers. `allow_nan=False` only catches NaN/Inf; this guard
+    enforces the documented JSON-native value contract
+    (str/int/bool/None/list/dict). Post-PR review (HIGH).
+    """
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    with pytest.raises(TypeError, match="Floats are NOT part of the JSON-native"):
+        canonicalize_for_hash({"k": 1.25})  # type: ignore[dict-item]
+
+
+def test_canonicalize_for_hash_rejects_nested_float() -> None:
+    """Recursive guard catches a float buried inside a list value."""
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    with pytest.raises(TypeError, match="Floats are NOT part of the JSON-native"):
+        canonicalize_for_hash({"items": [0.5]})  # type: ignore[list-item]
+
+
+def test_canonicalize_for_hash_admits_bool_despite_subclassing_int() -> None:
+    """`bool` is an `int` subclass in Python — and `isinstance(True, float)`
+    is False — so the float guard correctly admits booleans (which the
+    contract names as JSON-native)."""
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    out = canonicalize_for_hash({"flag": True, "other": False})
+    # JSON encoding: true/false (compact, sorted keys).
+    assert b'"flag":true' in out
+    assert b'"other":false' in out
+
+
 def test_analyze_completed_event_rejects_non_analyze_node_id() -> None:
     """Literal['analyze'] rejects bad node_id at construction.
 
