@@ -105,6 +105,31 @@ class SkipReason(StrEnum):
     NO_REVIEWABLE_CONTEXT = "NO_REVIEWABLE_CONTEXT"
     NO_CHANGED_SCOPE_UNITS = "NO_CHANGED_SCOPE_UNITS"
 
+    def stage(self) -> Literal["parser", "analyze"]:
+        """Return which decision stage produced this skip reason.
+
+        Foundation-wide sharp-edges audit I-3: the enum mixes two
+        semantic axes (parser rule rooted in file content vs analyze
+        rule rooted in decision rationale). Downstream consumers
+        (dashboard skip-panel, anomaly scanner, operator alerts) need
+        a type-level discriminator to render or filter without string-
+        parsing the value name.
+        """
+        if self in _ANALYZE_STAGE_SKIP_REASONS:
+            return "analyze"
+        return "parser"
+
+
+# Module-private — drives `SkipReason.stage()`. Keep in lockstep with
+# the analyze-stage value additions per DECISIONS.md#018 Amended 2026-05-20.
+_ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
+    {
+        SkipReason.COST_BUDGET_EXHAUSTED,
+        SkipReason.NO_REVIEWABLE_CONTEXT,
+        SkipReason.NO_CHANGED_SCOPE_UNITS,
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Canonical §5.4 domain models — verbatim per spec-fidelity discipline
@@ -127,6 +152,18 @@ class ScopeUnit(BaseModel):
     byte_end: int
     decorators: tuple[str, ...] = ()
     parent_scope_id: str | None = None
+
+    def to_span(self) -> "Span":
+        """Return a `Span` covering this scope unit's byte range.
+
+        Foundation-wide DevEx audit F1: callers need to bridge from
+        `ScopeUnit.byte_start/byte_end` (raw int) to `Span` (Pydantic
+        model used by the analyze proposal schemas + coordinate
+        helpers). Without this helper, every call site reinvents
+        `Span(byte_start=su.byte_start, byte_end=su.byte_end)`,
+        defeating the "single chokepoint for span shape" property.
+        """
+        return Span(byte_start=self.byte_start, byte_end=self.byte_end)
 
 
 class ImportRef(BaseModel):

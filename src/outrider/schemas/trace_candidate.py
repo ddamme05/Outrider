@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from outrider.coordinates import validate_diff_path
 from outrider.policy.canonical import SHA256_HEX_PATTERN
 
 
@@ -45,3 +46,17 @@ class TraceCandidate(BaseModel):
     source_proposal_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
     reason: Annotated[str, Field(max_length=500)]
     candidate_path: Annotated[str, Field(max_length=1024)]
+
+    @field_validator("candidate_path")
+    @classmethod
+    def _enforce_canonical_path(cls, path: str) -> str:
+        """Reject paths that aren't `coordinates.validate_diff_path` output.
+
+        Foundation-wide data-integrity audit F1: `candidate_id` is
+        content-derived from the candidate's payload. Non-canonical
+        paths produce non-deterministic IDs across producers, defeating
+        replay idempotency of the dedup-by-`candidate_id` reducer.
+        Pushing the rule down to the schema floor catches drift at
+        every construction site.
+        """
+        return validate_diff_path(path)
