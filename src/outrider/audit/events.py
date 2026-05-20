@@ -61,6 +61,7 @@ from outrider.policy import (
     FindingType,
     enforce_proof_boundary,
 )
+from outrider.policy.canonical import SHA256_HEX_PATTERN
 from outrider.schemas import (
     PerFindingDecision,
     PublishDestination,
@@ -71,8 +72,11 @@ from outrider.schemas import (
 # (FindingEvent.finding_content_hash = SHA-256(file_path + line_start +
 # line_end + finding_type)). Lowercase-hex is the canonical encoding;
 # enforce at the schema layer so the audit log's deduplication contract
-# can rely on a deterministic format.
-_SHA256_HEX_PATTERN: Final = r"^[a-f0-9]{64}$"
+# can rely on a deterministic format. Lifted to `outrider.policy.canonical`
+# per §1 of the analyze-foundation spec so both `schemas/` and `audit/`
+# can consume without circular import; module-local alias preserved for
+# the existing references below.
+_SHA256_HEX_PATTERN: Final = SHA256_HEX_PATTERN
 
 
 def compute_finding_content_hash(

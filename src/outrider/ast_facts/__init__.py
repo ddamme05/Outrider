@@ -41,6 +41,7 @@ from outrider.ast_facts.models import (
     ResolutionStatus,
     ScopeUnit,
     SkipReason,
+    Span,
     SymbolCandidate,
     compute_unit_id,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "QueryCaptureSpan",
     "QueryMatchSpan",
     "ScopeUnit",
+    "Span",
     "SymbolCandidate",
     # Literal types and enums
     "ComputedParserOutcome",
