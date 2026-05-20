@@ -12,12 +12,18 @@ from uuid import uuid4
 
 import pytest
 
+from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension, ReviewFinding
 
 
 def _build_finding(**overrides: Any) -> ReviewFinding:
-    """Construct a valid finding; overrides replace defaults."""
+    """Construct a valid finding; overrides replace defaults.
+
+    `content_hash` is computed from the canonical recipe over the
+    post-override payload so the `_verify_content_hash` validator
+    doesn't fire on tests that override identity-tuple fields.
+    """
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "installation_id": 12345,
@@ -32,10 +38,15 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        # Real SHA-256 hex digest shape per `SHA256_HEX_PATTERN`.
-        "content_hash": "a" * 64,
     }
     fields.update(overrides)
+    if "content_hash" not in overrides:
+        fields["content_hash"] = compute_finding_content_hash(
+            file_path=fields["file_path"],
+            line_start=fields["line_start"],
+            line_end=fields["line_end"],
+            finding_type=fields["finding_type"],
+        )
     return ReviewFinding(**fields)
 
 

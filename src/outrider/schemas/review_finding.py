@@ -265,6 +265,102 @@ class ReviewFinding(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_severity_matches_policy(self) -> Self:
+        """Baseline severity must equal `SEVERITY_POLICY[finding_type]`
+        under the live policy version. Backs `severity-set-by-policy`.
+
+        Baseline = `original_severity` if a HITL override is in effect
+        (then `severity` carries the reviewer's override), else
+        `severity` directly. Either way, the policy-computed value is
+        what we check.
+
+        Only fires when `policy_version == ACTIVE_POLICY_VERSION` —
+        historical events written under an older policy carry the
+        severity correct at write-time; recomputing under the live
+        policy would violate `severity-policy-versioned-for-replay`.
+        Audit-time replay re-validates events under their original
+        policy via `policy/versions.py::load_policy_for_version`, which
+        is the versioned-replay seam; the schema-layer check covers the
+        live-write path.
+
+        Codex round-5 audit (HIGH-confidence valid finding): without
+        this gate a row like (SQL_INJECTION, LOW) admits cleanly even
+        though SEVERITY_POLICY[SQL_INJECTION] == CRITICAL.
+        """
+        # Local imports to avoid a circular import: `policy.severity`
+        # transitively imports nothing from schemas, but `policy/__init__`
+        # re-exports from review_finding for the proof-boundary helper,
+        # so top-level imports route through the deep paths.
+        from outrider.policy.severity import (  # noqa: PLC0415
+            ACTIVE_POLICY_VERSION,
+            SEVERITY_POLICY,
+        )
+
+        if self.policy_version != ACTIVE_POLICY_VERSION:
+            # Historical event under a frozen policy — trust the audit
+            # log. Versioned-replay enforcement is the persister /
+            # replay layer's job, not the schema layer's.
+            return self
+
+        baseline = self.original_severity or self.severity
+        expected = SEVERITY_POLICY.get(self.finding_type)
+        if expected is None or baseline != expected:
+            raise ValueError(
+                f"ReviewFinding.severity baseline={baseline.value!r} does not match "
+                f"SEVERITY_POLICY[{self.finding_type.value!r}]="
+                f"{(expected.value if expected else None)!r} under policy_version "
+                f"{self.policy_version!r}. Per `severity-set-by-policy` "
+                f"(docs/invariants.md), baseline severity comes from SEVERITY_POLICY "
+                f"keyed by finding_type, never from caller or model output. If a HITL "
+                f"override is in flight, set `original_severity` to the policy "
+                f"baseline and put the override on `severity`."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_content_hash(self) -> Self:
+        """`content_hash` must equal the canonical
+        `compute_finding_content_hash` over (`file_path`, `line_start`,
+        `line_end`, `finding_type`).
+
+        Mirror of `FindingEvent._verify_content_hash` at the in-memory
+        layer. Format gating alone (the Field pattern) accepts any
+        64-hex string for any input tuple, so an emitter bug producing
+        a mis-computed hash would land on the finding AND survive into
+        `AnalysisRound.round_id` (which folds `f.content_hash` into the
+        round id at `analysis_round.py::compute_round_id`). The reducer
+        would dedup under the bad key on replay.
+
+        Codex round-5 audit (MEDIUM-confidence valid finding): pinning
+        the hash recipe at the in-memory layer makes ReviewFinding's
+        dedup contract identical to FindingEvent's append-only contract.
+        """
+        # Local import: `audit.events` imports from schemas for
+        # PerFindingDecision / PublishDestination / ReviewDimension,
+        # so a top-level import would cycle.
+        from outrider.audit.events import (  # noqa: PLC0415
+            compute_finding_content_hash,
+        )
+
+        expected = compute_finding_content_hash(
+            file_path=self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.finding_type,
+        )
+        if self.content_hash != expected:
+            raise ValueError(
+                f"ReviewFinding.content_hash={self.content_hash!r} does not match "
+                f"compute_finding_content_hash(file_path={self.file_path!r}, "
+                f"line_start={self.line_start}, line_end={self.line_end}, "
+                f"finding_type={self.finding_type.value!r})={expected!r}. "
+                f"Use audit.events.compute_finding_content_hash() to compute "
+                f"the hash at construction; fixture code using "
+                f"`compute_identity_hash({{...}})` is on the wrong recipe."
+            )
+        return self
+
 
 __all__ = [
     "PublishDestination",

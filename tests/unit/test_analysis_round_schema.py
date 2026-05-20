@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import compute_identity_hash, compute_round_id
 from outrider.schemas import AnalysisRound, ReviewDimension, ReviewFinding
@@ -36,13 +37,11 @@ def _finding() -> ReviewFinding:
         evidence="raw SQL string concatenation at src/foo.py:11",
         evidence_tier=EvidenceTier.JUDGED,
         policy_version="1.0.0",
-        content_hash=compute_identity_hash(
-            {
-                "file_path": "src/foo.py",
-                "line_start": 10,
-                "line_end": 12,
-                "finding_type": "sql_injection",
-            }
+        content_hash=compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
         ),
     )
 

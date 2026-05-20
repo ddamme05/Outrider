@@ -25,7 +25,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from outrider.ast_facts.models import ScopeUnit, SkipReason, Span
-from outrider.audit.events import AnalyzeCompletedEvent
+from outrider.audit.events import AnalyzeCompletedEvent, compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import (
     canonicalize_for_hash,
@@ -256,13 +256,11 @@ def _valid_finding() -> ReviewFinding:
         evidence="z",
         evidence_tier=EvidenceTier.JUDGED,
         policy_version="1.0.0",
-        content_hash=compute_identity_hash(
-            {
-                "file_path": "src/foo.py",
-                "line_start": 10,
-                "line_end": 12,
-                "finding_type": "sql_injection",
-            }
+        content_hash=compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
         ),
     )
 
