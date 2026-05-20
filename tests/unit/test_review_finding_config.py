@@ -468,3 +468,20 @@ def test_review_finding_admits_no_override_state() -> None:
     assert finding.original_severity is None
     assert finding.override_reason is None
     assert finding.overrider_id is None
+
+
+def test_review_finding_rejects_no_op_override() -> None:
+    """An override envelope with `severity == original_severity` is a
+    producer bug — the reviewer's intent to ACK without change is
+    `PerFindingDecision.APPROVE`, not `SEVERITY_OVERRIDE` with
+    identical values. Codex round-6 user-suggested check: cheap to
+    pin, catches a HITL UI submitting the override path without
+    actually changing the value.
+    """
+    with pytest.raises(ValidationError, match="no-op overrides are not valid"):
+        _build_finding(
+            original_severity=FindingSeverity.CRITICAL,
+            severity=FindingSeverity.CRITICAL,  # same — no-op
+            override_reason="reviewer pressed override but didn't change anything",
+            overrider_id=uuid4(),
+        )

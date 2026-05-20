@@ -143,6 +143,7 @@ def test_compute_proposal_hash_deterministic_on_same_inputs() -> None:
     """Same kwargs → same digest. Wrapper builds the canonical payload
     internally so callers can't drift on field order."""
     h1 = compute_proposal_hash(
+        source_file_path="src/foo.py",
         finding_type="sql_injection",
         evidence_tier="JUDGED",
         query_match_id=None,
@@ -154,6 +155,7 @@ def test_compute_proposal_hash_deterministic_on_same_inputs() -> None:
         byte_end=120,
     )
     h2 = compute_proposal_hash(
+        source_file_path="src/foo.py",
         finding_type="sql_injection",
         evidence_tier="JUDGED",
         query_match_id=None,
@@ -171,6 +173,7 @@ def test_compute_proposal_hash_deterministic_on_same_inputs() -> None:
 def test_compute_proposal_hash_field_sensitive() -> None:
     """Different inputs produce different digests."""
     h_a = compute_proposal_hash(
+        source_file_path="src/foo.py",
         finding_type="sql_injection",
         evidence_tier="JUDGED",
         query_match_id=None,
@@ -182,6 +185,7 @@ def test_compute_proposal_hash_field_sensitive() -> None:
         byte_end=120,
     )
     h_b = compute_proposal_hash(
+        source_file_path="src/foo.py",
         finding_type="xss",  # different
         evidence_tier="JUDGED",
         query_match_id=None,
@@ -193,6 +197,37 @@ def test_compute_proposal_hash_field_sensitive() -> None:
         byte_end=120,
     )
     assert h_a != h_b
+
+
+def test_compute_proposal_hash_distinct_across_source_files() -> None:
+    """Per `DECISIONS.md#022`: two identical proposals from DIFFERENT
+    source files produce DISTINCT hashes. Pre-#022 the recipe omitted
+    `source_file_path` and these collapsed, defeating per-source-file
+    audit provenance on the `TraceCandidate` trail.
+    """
+    base_kwargs: dict[str, object] = {
+        "finding_type": "sql_injection",
+        "evidence_tier": "JUDGED",
+        "query_match_id": None,
+        "trace_path": None,
+        "title": "Identical title",
+        "description": "Identical description",
+        "evidence": "Identical evidence snippet",
+        "byte_start": 100,
+        "byte_end": 120,
+    }
+    h_file_a = compute_proposal_hash(
+        source_file_path="src/foo.py",
+        **base_kwargs,  # type: ignore[arg-type]
+    )
+    h_file_b = compute_proposal_hash(
+        source_file_path="src/bar.py",  # only difference
+        **base_kwargs,  # type: ignore[arg-type]
+    )
+    assert h_file_a != h_file_b, (
+        "proposal_hash must differ across source files even with "
+        "identical proposal shape — per DECISIONS.md#022."
+    )
 
 
 def test_compute_response_hash_full_text() -> None:

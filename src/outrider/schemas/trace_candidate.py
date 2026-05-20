@@ -17,7 +17,14 @@ collapses on merge.
 `source_proposal_hash` matches `FindingProposalRejectedEvent.proposal_hash`
 (sister spec §5) so candidates and rejection events join in the audit
 stream — a JUDGED-tier rejected proposal might still surface a
-legitimate cross-file-to-look-at signal.
+legitimate cross-file-to-look-at signal. Per `DECISIONS.md#022`
+(Accepted 2026-05-20) the underlying `compute_proposal_hash` recipe
+is PR/file-scoped, so two analyze passes over different source files
+emitting logically-identical proposals produce DISTINCT
+`source_proposal_hash` values — preserving the per-source-file causal
+edge on the candidate provenance trail. The trace node dedups actual
+file fetches by `candidate_path` at execution time; the candidate-
+identity model preserves the causal edges either way.
 """
 
 from __future__ import annotations

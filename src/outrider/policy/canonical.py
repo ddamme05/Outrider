@@ -253,6 +253,7 @@ def compute_identity_hash(payload: dict[str, Any]) -> str:
 
 def compute_proposal_hash(
     *,
+    source_file_path: str,
     finding_type: str,
     evidence_tier: str,
     query_match_id: str | None,
@@ -263,22 +264,36 @@ def compute_proposal_hash(
     byte_start: int,
     byte_end: int,
 ) -> str:
-    """SHA-256 hex of an `AnalyzeFindingProposalRaw`'s identity payload.
+    """SHA-256 hex of an `AnalyzeFindingProposalRaw`'s file-scoped identity.
 
-    Per spec §1 "Canonical identity encoding" — 8 keys from the raw
-    proposal: finding_type, evidence_tier, query_match_id, trace_path,
-    title, description, evidence, span (as `{byte_start, byte_end}`).
-    `trace_candidates` deliberately excluded (model child-output, not
-    parent identity). All keyword-only — finding_type/evidence_tier
-    are both raw `str` (not enum-coerced) because the hash is computed
-    AT the raw layer, BEFORE admission.
+    Per `DECISIONS.md#022` (Accepted 2026-05-20): proposal identity is
+    PR/file-scoped, not raw-proposal-shape-global. The recipe folds 9
+    keys: `source_file_path` (the file the proposal came from), plus
+    the 8 raw-proposal keys (finding_type, evidence_tier, query_match_id,
+    trace_path, title, description, evidence, span as
+    `{byte_start, byte_end}`). `trace_candidates` is deliberately
+    excluded (model child-output, not parent identity).
+
+    All keyword-only — finding_type/evidence_tier are both raw `str`
+    (not enum-coerced) because the hash is computed AT the raw layer,
+    BEFORE admission.
+
+    `source_file_path` leads the dict so future readers see "file is
+    part of identity" immediately. The canonical encoding sorts keys,
+    so position is hash-irrelevant; the leading placement is purely a
+    pedagogical signal.
 
     Used by `FindingProposalRejectedEvent.proposal_hash` and by
-    `TraceCandidate.source_proposal_hash` so candidates join with
-    rejected proposals in the audit stream.
+    `TraceCandidate.source_proposal_hash`. Two analyze passes over
+    DIFFERENT source files emitting logically-identical proposals now
+    produce DISTINCT hashes (the old recipe collapsed them — a real
+    Codex round-6 audit finding). The trace node still dedups actual
+    fetches by `candidate_path` at execution time; the candidate-identity
+    model preserves the per-source-file causal edges either way.
     """
     return compute_identity_hash(
         {
+            "source_file_path": source_file_path,
             "finding_type": finding_type,
             "evidence_tier": evidence_tier,
             "query_match_id": query_match_id,
