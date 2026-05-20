@@ -103,14 +103,13 @@ from outrider.schemas import (
 # the existing references below.
 _SHA256_HEX_PATTERN: Final = SHA256_HEX_PATTERN
 
-# `BARE_SEMVER_PATTERN` (re-exported via the `from outrider.policy.severity`
-# import above) gates the bare-semver shape on every `policy_version`
-# field below. Single source of truth — the runtime `_SEMVER_RE` in
-# `policy.severity` AND the DB CHECK constraint added by migration
-# `3d03bca7f2be` derive from the same string. Foundation-wide adversarial
-# audit M1, narrowed to policy_version only: `pricing_version` carries
-# `PRICING_VERSION` which uses a distinct versioning scheme (`"v2"` not
-# bare semver) per `llm/pricing.py`.
+# `BARE_SEMVER_PATTERN` (re-exported via `outrider.policy.severity`)
+# gates the bare-semver shape on every `policy_version` field below.
+# Single source of truth — the runtime `_SEMVER_RE` in `policy.severity`
+# AND the DB CHECK constraint added by migration `3d03bca7f2be` derive
+# from the same string. `pricing_version` carries `PRICING_VERSION`
+# which uses a distinct versioning scheme (`"v2"` not bare semver) per
+# `llm/pricing.py`.
 
 
 def compute_finding_content_hash(
@@ -300,7 +299,7 @@ class LLMCallEvent(AuditEventBase):
     system_prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     degraded_mode: bool
     # Per §0b of `specs/2026-05-19-analyze-foundation.md` + the audit's
-    # convergent finding: `degraded_mode: bool` alone loses provenance on
+    # `degraded_mode: bool` alone loses provenance on
     # metadata-only replay (post-retention or partial-content). The two
     # reasons (`parse_failed` vs `tree_has_error_in_changed_regions`)
     # imply structurally different prompt content; collapsing them into
@@ -308,7 +307,7 @@ class LLMCallEvent(AuditEventBase):
     # analyze calls did we make this month" become unanswerable. Same
     # bidirectional coupling as `LLMRequest.degradation_reason` enforced
     # by `_enforce_degradation_reason_consistency` below. Spec gap
-    # surfaced by the §0b crazy-audit; landing in the same commit per
+    # surfaced by the §0b ; landing in the same commit per
     # `feedback_spec_gaps_surface_as_suggestions` since omission would
     # corrupt replay reconstruction.
     degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
@@ -330,7 +329,7 @@ class LLMCallEvent(AuditEventBase):
         field mid-pipeline — a class of bug the persister's
         `_CHECKED_FIELDS` also catches but this validator surfaces at
         event-construction time, before any DB write AND at replay-time
-        re-validation (post-foundation audit: the read/replay boundary
+        re-validation (the read/replay boundary
         was unguarded — request rejected `trace + degraded_mode=True`
         but the event admitted it).
         """
@@ -726,7 +725,7 @@ class AnalyzeCompletedEvent(AuditEventBase):
     Counter fields are cross-validated by two model validators so a counter
     that lies (`n_findings_emitted=5` with only 3 findings actually fired)
     fails Pydantic construction, not just reads weird. Per §5 of
-    `specs/2026-05-19-analyze-foundation.md` and post-split audit S7.
+    `specs/2026-05-19-analyze-foundation.md` and
     """
 
     event_type: Literal["analyze_completed"] = "analyze_completed"
@@ -867,7 +866,7 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     presupposes a proposal; no proposal exists when the raw response
     itself fails to parse. `response_hash` is the SHA-256 of the FULL
     raw response text encoded as UTF-8 bytes (no 8 KiB prefix per
-    post-split audit S11). Hash-only — no content leak per
+    ). Hash-only — no content leak per
     `DECISIONS.md#014`.
     """
 

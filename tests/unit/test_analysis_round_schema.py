@@ -150,10 +150,7 @@ def test_analysis_round_files_examined_path_length_bounded() -> None:
 
 
 def test_analysis_round_rejects_file_in_both_examined_and_skipped() -> None:
-    """A file can be EITHER examined or skipped per pass, never both —
-    the file-status accounting downstream presumes the split. Sharp-edges
-    audit M-2 surfaced the recipe-layer admit; the schema validator
-    rejects the contradictory payload."""
+    """A file is either examined or skipped per pass, never both."""
     finding = _finding()
     bad_round_id = compute_round_id(
         pass_index=0,
@@ -169,6 +166,51 @@ def test_analysis_round_rejects_file_in_both_examined_and_skipped() -> None:
             findings=(finding,),
             files_examined=("src/foo.py",),
             files_skipped=("src/foo.py",),
+            started_at=now,
+            ended_at=now,
+        )
+
+
+def test_analysis_round_rejects_duplicate_in_files_examined() -> None:
+    """Set-semantic field: duplicates let logically identical rounds hash
+    to different `round_id` values, defeating dedup."""
+    finding = _finding()
+    bad_round_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py", "src/foo.py"),
+        files_skipped=(),
+        finding_content_hashes=(finding.content_hash,),
+    )
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="files_examined contains duplicates"):
+        AnalysisRound(
+            round_id=bad_round_id,
+            pass_index=0,
+            findings=(finding,),
+            files_examined=("src/foo.py", "src/foo.py"),
+            files_skipped=(),
+            started_at=now,
+            ended_at=now,
+        )
+
+
+def test_analysis_round_rejects_duplicate_in_files_skipped() -> None:
+    """Symmetric check on the skipped tuple."""
+    finding = _finding()
+    bad_round_id = compute_round_id(
+        pass_index=0,
+        files_examined=(),
+        files_skipped=("src/bar.py", "src/bar.py"),
+        finding_content_hashes=(finding.content_hash,),
+    )
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="files_skipped contains duplicates"):
+        AnalysisRound(
+            round_id=bad_round_id,
+            pass_index=0,
+            findings=(finding,),
+            files_examined=(),
+            files_skipped=("src/bar.py", "src/bar.py"),
             started_at=now,
             ended_at=now,
         )

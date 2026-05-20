@@ -25,7 +25,7 @@ Constructor performs eager validation:
   5. Validate response shape: exactly one TextBlock or fail-loud.
   6. Construct LLMResponse + measure latency_ms.
   7. Compute prompt_hash + system_prompt_hash.
-  7a. Round-22 diagnostic: if `cache_control=True` AND both
+  7a. diagnostic: if `cache_control=True` AND both
       cache_creation_input_tokens=0 AND cache_read_input_tokens=0, log a
       WARN once per (model, system_prompt_hash) per process — the SDK
       silently rejected caching, typically because the prompt is below
@@ -33,7 +33,7 @@ Constructor performs eager validation:
       Haiku 4.5: 4096 tokens). Diagnostic only; does not raise.
   8. Compute cost_usd via pricing.compute_cost_usd() (uses
      `normalize_to_pricing_key` so dated SDK-catalog model pins resolve
-     to their undated alias for RATE_TABLE lookup, per round-27).
+     to their undated alias for RATE_TABLE lookup, ).
   9. Build LLMCallEvent; await persister.persist(...); wrap failures as
      LLMPersisterError.
  10. Return LLMResponse.
@@ -92,14 +92,14 @@ _LOGGER = logging.getLogger("outrider.llm.anthropic_provider")
 _ZDR_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes"})
 _ZDR_FALSY: Final[frozenset[str]] = frozenset({"", "0", "false", "no"})
 
-# Round-17 fold per audit-agent finding M2: warn once per misconfigured
-# raw value per process. V1.5 parallel-analyze constructs N providers per
+# Warn once per misconfigured raw value per process. V1.5 parallel-analyze
+# constructs N providers per
 # review — without this guard, a typo'd env var spams thousands of WARNING
 # records per day. The set is process-local so each worker still warns
 # once, which is the diagnostic signal we want without the spam.
 _WARNED_RAW_VALUES: set[str] = set()
 
-# Round-22 fold per Anthropic SDK 0.100 prompt-caching docs: silently-
+# per Anthropic SDK 0.100 prompt-caching docs: silently-
 # disabled-cache diagnostic. Per the docs, prompts shorter than the
 # model's min-cacheable threshold (Sonnet 4.6: 2048 tokens; Haiku 4.5:
 # 4096 tokens) are processed without caching, with NO error returned.
@@ -129,11 +129,9 @@ def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     Falsy values (case-insensitive): `""`, `"0"`, `"false"`, `"no"`.
     Unrecognized values fail closed (no ZDR attestation) AND log a
     WARNING on `outrider.llm.privacy_notice` so the operator sees the
-    misconfiguration at construction time (round-16 sharp-edges M1
-    fold — silent fail-closed-on-typo means the operator who *thought*
-    they enabled ZDR ships with retention claims they didn't intend).
+    misconfiguration at construction time .
     The warning fires once per distinct raw value per process to avoid
-    log spam under V1.5's parallel-analyze fanout (round-17 audit fold).
+    log spam under V1.5's parallel-analyze fanout .
     """
     if zdr_enabled is not None:
         return zdr_enabled
@@ -194,7 +192,7 @@ class AnthropicProvider:
 
         # Eager pricing-coverage validation — eliminates step 8's
         # KeyError path between SDK success and persister write per AC#24.
-        # Round-27 fold (Copilot): dated model IDs (e.g.,
+        # : dated model IDs (e.g.,
         # `claude-haiku-4-5-20251001`) accepted by ModelConfig must
         # normalize to their undated alias for pricing lookup; otherwise
         # every dated env pin would fail this check despite RATE_TABLE
@@ -261,7 +259,7 @@ class AnthropicProvider:
 
         # Privacy startup notice — canonical text per DECISIONS#015
         # point 4. Operator-attestation only; never a per-request header.
-        # Round-20 audit fold per Codex: previous emit had only structured
+        # previous emit had only structured
         # fields, missing the mandatory message text that names the
         # 30-day default / 2-year content / 7-year classification
         # retention exceptions and the contract-arrangement requirement.
@@ -525,8 +523,8 @@ class AnthropicProvider:
             # §0b: forward the typed degradation cause so metadata-only
             # replay (post-retention or partial-content) can distinguish
             # `parse_failed` from `tree_has_error_in_changed_regions`.
-            # Convergent finding from §0b crazy-audit (adversarial HIGH,
-            # sharp-edges SE-1, data-integrity F1): without this pass-
+            # Convergent finding from §0b (adversarial HIGH,
+            # , data-integrity F1): without this pass-
             # through, the wrapper drops the typed cause that
             # `LLMRequest._enforce_degradation_provenance` mandates.
             degradation_reason=request.degradation_reason,
@@ -562,7 +560,7 @@ class AnthropicProvider:
             #   sets `__suppress_context__ = True`, which also hides the
             #   implicit `__context__`. Defense in depth alongside the
             #   engine-level `hide_parameters=True` setting; closes the
-            #   traceback-chain leak path Codex flagged in round 9.
+            #   traceback-chain leak path.
             from outrider.audit.persister import METADATA_ONLY_EXCEPTION_TYPES
 
             if isinstance(exc, METADATA_ONLY_EXCEPTION_TYPES):
@@ -706,7 +704,7 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
       - `request.system_prompt` → SDK kwarg `system` (NOT `system_prompt`)
       - `request.user_prompt` → single user-role message
       - `request.cache_control=True` → **per-block** `cache_control` on
-        the system block. Round-21 fold per Codex finding: round-20's
+        the system block. 's
         top-level "Automatic Caching" kwarg was a regression for V1's
         single-turn shape. Per spec.md §9.5 (Prompt caching for cost
         reduction), the system prompt is the cache boundary; the
@@ -763,7 +761,7 @@ def _extract_single_text_block(message: Message) -> str:
 
 def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderError:
     """Map an Anthropic SDK exception to the typed `LLMProviderError`
-    subclass per the round-13 mapping table.
+    subclass per the mapping table.
 
     Accepts `anthropic.AnthropicError` (the SDK exception root), not
     just `APIError`. The broader signature catches `WorkloadIdentityError`
@@ -782,8 +780,7 @@ def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderErro
         doesn't matter, but they must all precede any `APIStatusError`
         fallback (none exists today, but flagged for future).
 
-    The fall-through is `LLMUnknownError` (per round-13/14 abstract-base
-    redesign — bare `LLMProviderError` is no longer raisable).
+    The fall-through is `LLMUnknownError` .
     """
     # Metadata-only by contract: NEVER pass `str(exc)` or any other text
     # extracted from the SDK exception body to the wrapper class
@@ -803,9 +800,9 @@ def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderErro
     if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
         return LLMAuthError()
     if isinstance(exc, anthropic.ConflictError):
-        # Round-21 fold per Codex finding: 409 is in Anthropic SDK's
+        # 409 is in Anthropic SDK's
         # default-retry set (alongside 408/429/5xx), so the right
-        # taxonomy is `retry_at_layer="node"`, not terminal. Round-20
+        # taxonomy is `retry_at_layer="node"`, not terminal.
         # incorrectly bucketed it with 404 as terminal.
         return LLMConflictError()
     if isinstance(
@@ -816,7 +813,7 @@ def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderErro
             anthropic.NotFoundError,
         ),
     ):
-        # Round-20 fold per Codex finding: 404 (NotFoundError — e.g., a
+        # 404 (NotFoundError — e.g., a
         # configured model id that the Anthropic catalog doesn't know)
         # is a documented terminal request/config error. 400/422 are
         # also terminal (request shape errors). Mapping all three to

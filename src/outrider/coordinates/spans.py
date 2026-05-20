@@ -73,7 +73,7 @@ def span_within_degraded_context(
 ) -> bool:
     """True iff `span` intersects at least one of the addable diff hunks.
 
-    Required for degraded-mode admission per post-split audit S8: a
+    Required for degraded-mode admission a
     JUDGED-tier degraded finding's span MUST land within content the
     patch actually added/modified, not arbitrary in-file bytes the
     model fabricates from prompt-included context.
@@ -165,8 +165,7 @@ def scope_unit_diff_hunks(scope_unit: ScopeUnit, patched_file: PatchedFile) -> t
     number falls within `[scope_unit.line_start, scope_unit.line_end]`
     (inclusive, 1-indexed). The hunk header (`@@ -A,B +C,D @@`) is
     rewritten to reflect the clipped body's source/target line counts
-    so the emitted text remains a valid unified diff. Post-foundation
-    audit (high confidence): keeping the full overlapping hunk leaked
+    so the emitted text remains a valid unified diff. keeping the full overlapping hunk leaked
     changed lines outside the eligible scope unit into the analyze
     prompt — true scope-unit-bounded clipping requires this in-hunk
     filter, not just hunk-level overlap.

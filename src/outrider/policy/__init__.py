@@ -21,7 +21,7 @@ from outrider.policy.versions import (
     load_policy_for_version,
 )
 
-# Deliberately NOT re-exported (per §1 crazy-audit LOW + §6 implementation
+# Deliberately NOT re-exported (per §1 LOW + §6 implementation
 # discovery): `outrider.policy.canonical` and `outrider.policy.dimensions`
 # are consumed via deep import paths (`from outrider.policy.canonical
 # import SHA256_HEX_PATTERN`, `from outrider.policy.dimensions import

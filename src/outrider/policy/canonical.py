@@ -4,7 +4,7 @@
 Per the spec's "Canonical identity encoding" recipe, all identity hashes
 use canonical JSON serialization (sort_keys=True, compact separators,
 ensure_ascii=False) encoded as UTF-8. Defining the recipe in ONE module
-prevents per-call-site drift — the round-1-crazy-audit C1 finding
+prevents per-call-site drift — the C1 finding
 (\\n-separator collisions) recurred because the recipe was repeated
 in each schema's prose. This module is the durable fix.
 
@@ -45,15 +45,13 @@ SHA256_HEX_PATTERN: Final[str] = r"^[a-f0-9]{64}$"
 # fingerprinting per `DECISIONS.md#014` point 1: store
 # `sha256(raw_value)[:16]` instead of the raw model-controlled value, so
 # audit consumers can dedup + detect length-class anomalies without
-# leaking content. Lifted from `audit/events.py` per the foundation-wide
-# sharp-edges audit I-2 — same chokepoint discipline as the full
-# pattern above; per-call-site `_SHA256_HEX_PATTERN_PREFIX_N` literals
-# are the same drift class the canonical recipe is designed to prevent.
+# leaking content. Single-sourced here so per-call-site
+# `_SHA256_HEX_PATTERN_PREFIX_N` literals can't drift.
 SHA256_HEX_PATTERN_SHORT: Final[str] = r"^[a-f0-9]{16}$"
 
 
 # Pre-existing canonical encodings NOT routed through this module
-# (foundation-wide sharp-edges audit I-6, accepted-asymmetry option):
+# (, accepted-asymmetry option):
 #
 # - `outrider.audit.events.compute_finding_content_hash` — JSON-array
 #   payload `[file_path, line_start, line_end, finding_type.value]`,
@@ -89,7 +87,7 @@ def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     dependence), `separators=(",", ":")` (eliminates whitespace ambiguity),
     `ensure_ascii=False` (preserves multibyte content; paired with
     `.encode("utf-8")`), `allow_nan=False` (rejects NaN/Infinity — the
-    §1 crazy-audit HIGH finding: `NaN != NaN` breaks idempotent identity
+    §1 HIGH finding: `NaN != NaN` breaks idempotent identity
     hashes AND emits non-RFC-8259 tokens that downstream consumers can't
     re-parse). Returns bytes, NOT a digest — callers chain
     `compute_identity_hash` (or call `hashlib.sha256(...).hexdigest()`)
@@ -99,7 +97,7 @@ def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     `UnicodeEncodeError` from `.encode("utf-8")` — fail-loud at hash
     time, not at DB insert time. Tests pin this.
 
-    **Caller contract (§1 crazy-audit MEDIUM-2):** `payload` must be
+    **Caller contract (§1 MEDIUM-2):** `payload` must be
     pre-serialized to JSON-native values — `str` keys only (int keys
     silently coerce under `sort_keys=True`, producing collisions across
     `{1: "a"}` and `{"1": "a"}`), and values must be `str`/`int`/`bool`/
@@ -115,7 +113,7 @@ def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     # past the chokepoint. Walk the entire payload tree once before
     # `json.dumps`, surfacing typed errors that name the offending path
     # rather than letting json.dumps's default raise from deep in the
-    # stack. Copilot/CodeRabbit/Codex review convergent fold.
+    # stack.
     _validate_hash_payload(payload, "$")
     return json.dumps(
         payload,
@@ -241,7 +239,7 @@ def compute_identity_hash(payload: dict[str, Any]) -> str:
 
 # ---------------------------------------------------------------------------
 # Typed wrappers for the four foundation-defined identity hashes.
-# Per foundation-wide DevEx audit F3: the proposal_hash / response_hash /
+# Per the proposal_hash / response_hash /
 # round_id / candidate_id payload shapes are in spec prose only — without
 # typed wrappers, a sister-spec parser author can typo a field name,
 # forget a key, or stringify a Span incorrectly and the resulting hash
@@ -325,7 +323,7 @@ def compute_proposal_hash(
 def compute_response_hash(response_text: str) -> str:
     """SHA-256 hex of the FULL raw analyze response text, UTF-8 encoded.
 
-    Per spec §5 + post-split S11: full text, NO 8 KiB prefix. The
+    Per spec §5: full text, NO 8 KiB prefix. The
     SHA-256 output is 64 hex chars carrying no recoverable completion
     text — hash-only, no content leak per `DECISIONS.md#014`.
 

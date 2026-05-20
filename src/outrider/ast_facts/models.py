@@ -108,19 +108,13 @@ class SkipReason(StrEnum):
     def stage(self) -> Literal["parser", "analyze"]:
         """Return which decision stage produced this skip reason.
 
-        Foundation-wide sharp-edges audit I-3: the enum mixes two
-        semantic axes (parser rule rooted in file content vs analyze
-        rule rooted in decision rationale). Downstream consumers
-        (dashboard skip-panel, anomaly scanner, operator alerts) need
-        a type-level discriminator to render or filter without string-
-        parsing the value name.
-
-        Post-PR review fold (Copilot/CodeRabbit/Codex convergent):
-        explicit two-set membership instead of a "default to parser"
-        fallback. The two sets are checked at import time against the
-        full enum to fail loud on a future addition that forgets to
-        update one of them — a missing value would otherwise silently
-        misclassify as parser-stage.
+        The enum mixes two semantic axes (parser rule rooted in file
+        content vs analyze rule rooted in decision rationale). Downstream
+        consumers need a type-level discriminator to render or filter
+        without string-parsing the value name. Two-set membership; the
+        module-load check below asserts every enum value lives in
+        exactly one set, so a future addition that forgets the membership
+        update fails loud at import.
         """
         if self in _PARSER_STAGE_SKIP_REASONS:
             return "parser"
@@ -159,7 +153,7 @@ _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
 # Import-time totality + disjointness check. A new SkipReason value
 # added without an entry in one of the two sets fails this assertion
 # at module load, BEFORE any code path can call `stage()` and get a
-# silent fallback misclassification. Post-PR review fold.
+# silent fallback misclassification.
 if _PARSER_STAGE_SKIP_REASONS & _ANALYZE_STAGE_SKIP_REASONS:
     raise AssertionError(
         f"SkipReason stage sets must be disjoint; overlap: "
@@ -201,7 +195,7 @@ class ScopeUnit(BaseModel):
     def to_span(self) -> "Span":
         """Return a `Span` covering this scope unit's byte range.
 
-        Foundation-wide DevEx audit F1: callers need to bridge from
+        callers need to bridge from
         `ScopeUnit.byte_start/byte_end` (raw int) to `Span` (Pydantic
         model used by the analyze proposal schemas + coordinate
         helpers). Without this helper, every call site reinvents
@@ -294,7 +288,7 @@ class Span(BaseModel):
     coordinates span-containment helpers can pass the same shape end-to-end.
     Per §1 of `specs/2026-05-19-analyze-foundation.md`.
 
-    Upper bound is the JS-safe-int ceiling (2^53 - 1) per the round-2-crazy-
+    Upper bound is the JS-safe-int ceiling (2^53 - 1) per the -crazy-
     audit DI-L5: source files >9 PB are exotic enough to make fail-loud the
     right default, and the bound also makes the boundary citable for JS
     dashboard consumers.

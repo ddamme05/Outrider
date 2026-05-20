@@ -84,7 +84,7 @@ _TIER_1_KEYS: Final[frozenset[str]] = frozenset(
 _TIER_2_KEYS: Final[frozenset[str]] = frozenset({"text", "content"})
 
 # Bound to prevent pathological self-referential structures from hanging
-# the filter. Round-16 fold per Codex: records nesting deeper than this
+# the filter. records nesting deeper than this
 # are REJECTED (fail-closed) — defense-in-depth means we'd rather drop a
 # record than ship content from beyond the recursion bound. The earlier
 # fail-open behavior was the real bug.
@@ -132,7 +132,7 @@ def _walk(obj: Any, active_keys: frozenset[str], depth: int) -> bool:
     """Return True if `obj` contains a rejected element at any depth.
 
     Recursion bound: `_RECURSION_DEPTH_LIMIT`. **At the bound, return True
-    (REJECT).** Round-16 fold per Codex finding: returning False would
+    (REJECT).** returning False would
     fail-open — content nested at exactly depth 8 would pass the filter
     silently. The defense-in-depth role demands fail-closed at the bound,
     so a record with deeply-nested rejected content (or a pathological
@@ -152,7 +152,7 @@ def _walk(obj: Any, active_keys: frozenset[str], depth: int) -> bool:
     # what would actually appear in a serialized record, which is the
     # default-redacted form.
     #
-    # Round-27 fold (Copilot): a third-party model with a broken
+    # : a third-party model with a broken
     # serializer (custom `__get_pydantic_core_schema__`, unsupported
     # types in nested fields, etc.) could raise from `model_dump()`. A
     # logging filter that raises during emission disrupts logging and
@@ -195,7 +195,7 @@ def register_filter_on_all_handlers(
     handler reachable via propagation OR directly attached, and calls
     `handler.addFilter(...)` on each.
 
-    Round-16 fold per Codex finding: walking only root + `outrider` missed
+    walking only root + `outrider` missed
     handlers attached directly to `outrider.agent.*`, `outrider.llm.*`,
     `outrider.audit.*` etc. when those loggers had `propagate=False` set
     (test fixtures using `caplog`, third-party adapters, structlog).
@@ -227,7 +227,7 @@ def register_filter_on_all_handlers(
     # logging Manager keeps a flat dict of all loggers ever created via
     # `getLogger(name)`; we pick out our project's namespace only so we
     # don't accidentally addFilter to third-party handlers we don't own.
-    # **Snapshot via `list(...)` first** (round-17 fold per audit-agent
+    # **Snapshot via `list(...)` first** (per audit-agent
     # finding M3): walking the live dict races concurrent
     # `getLogger(...)` calls (RuntimeError: dict changed size during
     # iteration). V1.5's parallel-analyze workers will create child

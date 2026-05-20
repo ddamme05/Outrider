@@ -140,10 +140,10 @@ async def _verify_severity_policy_fingerprint(engine: AsyncEngine) -> None:
 
     live_policy = dict(SEVERITY_POLICY)
     if db_policy != live_policy:
-        # Per §0c sharp-edges audit #6 + DevEx M-1: include a per-key
-        # diff so the operator can distinguish case (a) keys differ
-        # (forgot the migration / wrong constant) from case (c) values
-        # differ (live mapping is stale relative to the seeded row).
+        # Include a per-key diff so the operator can distinguish case
+        # (a) keys differ (forgot the migration / wrong constant) from
+        # case (c) values differ (live mapping is stale relative to the
+        # seeded row).
         live_keys = set(live_policy)
         db_keys = set(db_policy)
         only_live = live_keys - db_keys
@@ -210,7 +210,7 @@ def _default_engine_factory() -> AsyncEngine:
     diagnostics without leaking content.
 
     NOTE on the wrapper-chain leak vector (now closed at the wrapper):
-    the round-9 + round-26 hardening of `anthropic_provider.py` no
+    the + hardening of `anthropic_provider.py` no
     longer leaks unknown exception text via the wrapper chain. For ANY
     exception type not in `METADATA_ONLY_EXCEPTION_TYPES`, the wrapper
     renders only `<TypeName>` and raises with `from None`
@@ -334,7 +334,7 @@ def build_lifespan(
             # MagicMock engines used in lifespan tests MUST explicitly set
             # `mock_engine.sync_engine.hide_parameters = True` (the bool)
             # to pass — MagicMock's default truthy attribute fails the
-            # round-39 strict `is not True` check below. Real misconfigured
+            # strict `is not True` check below. Real misconfigured
             # engines fail loud.
             #
             # Explicit `if not / raise` rather than `assert`: `assert`
@@ -355,7 +355,7 @@ def build_lifespan(
             # version. Production path (`create_async_engine(...,
             # hide_parameters=True)`) always sets a bool, so the
             # production gate is unaffected; the strict check closes a
-            # test-injection vector flagged by the round-39 adversarial
+            # test-injection vector flagged by the adversarial
             # threat-model.
             if engine.sync_engine.hide_parameters is not True:
                 raise RuntimeError(
