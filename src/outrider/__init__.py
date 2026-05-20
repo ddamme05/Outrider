@@ -24,6 +24,16 @@ from outrider.llm.logging import register_filter_on_all_handlers
 # before any review work begins.
 register_filter_on_all_handlers()
 
+# Forced-import side effect per §6 of
+# `specs/2026-05-19-analyze-foundation.md`: `outrider.policy.dimensions`
+# runs a module-load lockstep assertion across `FindingType`,
+# `SEVERITY_POLICY`, and `FINDING_TYPE_TO_DIMENSION`. Importing it here
+# guarantees the assertion fires at app startup / test collection even
+# when no analyze code is on the import path — the deterministic floor
+# below CI's set-equality unit test (which may be bypassed via
+# `git commit --no-verify`). Per post-split audit C4+S9.
+import outrider.policy.dimensions  # noqa: F401, E402 — forced import for lockstep guard
+
 
 def main() -> None:
     print("Hello from outrider!")
