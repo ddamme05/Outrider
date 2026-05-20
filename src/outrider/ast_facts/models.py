@@ -190,6 +190,39 @@ class ChangedRegion(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class Span(BaseModel):
+    """Byte-range over a parsed source file.
+
+    Matches the `byte_start` / `byte_end` pattern used by `ScopeUnit` and the
+    query-span models, lifted to a shared type so analyze proposals and the
+    coordinates span-containment helpers can pass the same shape end-to-end.
+    Per §1 of `specs/2026-05-19-analyze-foundation.md`.
+
+    Upper bound is the JS-safe-int ceiling (2^53 - 1) per the round-2-crazy-
+    audit DI-L5: source files >9 PB are exotic enough to make fail-loud the
+    right default, and the bound also makes the boundary citable for JS
+    dashboard consumers.
+
+    Interval semantics: half-open `[byte_start, byte_end)` — `byte_end` is
+    exclusive. A 4-byte span starting at 0 has `byte_start=0, byte_end=4`,
+    covering bytes 0/1/2/3. `coordinates.span_within_degraded_context` (§4)
+    relies on this convention for intersection math.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    byte_start: int = Field(ge=0, le=2**53 - 1)
+    byte_end: int = Field(ge=0, le=2**53 - 1)
+
+    @model_validator(mode="after")
+    def _enforce_byte_range(self) -> Self:
+        if self.byte_end < self.byte_start:
+            raise ValueError(
+                f"byte_end ({self.byte_end}) must be >= byte_start ({self.byte_start})"
+            )
+        return self
+
+
 class QueryCaptureSpan(BaseModel):
     """One named capture from a tree-sitter query match.
 
