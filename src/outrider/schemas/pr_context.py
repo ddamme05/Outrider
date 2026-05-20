@@ -21,9 +21,7 @@ Resolved by canonical amendment + implementation in this commit.
 convention in `docs/schema.md` — eval factories use synthetic non-colliding
 IDs that may include negative values. Production webhook validation enforces
 real GitHub installation-ID semantics at the input boundary (webhook-receiver
-spec); this shared schema supports both production and eval contexts. The
-constraint was tried-and-removed in after an external reviewer
-flagged the eval-factory conflict.
+spec); this shared schema supports both production and eval contexts.
 
 Both models use frozen=True: PRContext round-trips through LangGraph state
 JSON on every checkpoint; immutability prevents mid-graph mutation by any

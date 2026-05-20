@@ -946,9 +946,8 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     Distinct event from `FindingProposalRejectedEvent` because that event
     presupposes a proposal; no proposal exists when the raw response
     itself fails to parse. `response_hash` is the SHA-256 of the FULL
-    raw response text encoded as UTF-8 bytes (no 8 KiB prefix per
-    ). Hash-only — no content leak per
-    `DECISIONS.md#014`.
+    raw response text encoded as UTF-8 bytes (no truncation prefix).
+    Hash-only — no content leak per `DECISIONS.md#014`.
     """
 
     event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
@@ -956,6 +955,7 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     file_path: Annotated[str, Field(max_length=1024)]
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     rejection_reason: Literal["raw_response_unparseable"]
+    rejection_detail: Annotated[str, Field(max_length=500)]
 
     @field_validator("file_path")
     @classmethod
@@ -963,8 +963,6 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
         """Audit-shadow `paths-validated-before-use`. Same canonical
         gate as `FindingProposalRejectedEvent.file_path` above."""
         return validate_diff_path(path)
-
-    rejection_detail: Annotated[str, Field(max_length=500)]
 
 
 # Discriminated union for replay: TypeAdapter(AuditEvent).validate_python({...})

@@ -526,26 +526,7 @@ def test_llm_request_admits_distinct_context_summary_entries() -> None:
     assert len(req.context_summary) == 2
 
 
-def test_llm_request_validator_declaration_order() -> None:
-    """The provenance validator MUST be declared before the
-    `context_for_scope_nodes` validator so the provenance error fires
-    first on a `synthesize + degraded_mode=True + empty context_summary`
-    request. Pydantic runs `model_validator(mode="after")` in declaration
-    order; a future refactor that reorders them alphabetically (or any
-    other rule) silently inverts the error precedence.
-    """
-    import inspect
-
-    source = inspect.getsource(LLMRequest)
-    # Match the `def NAME(` line specifically — string mentions inside
-    # leading comments and other docstrings would otherwise confuse the
-    # source.find() position.
-    provenance_def = source.find("def _enforce_degradation_provenance(")
-    context_def = source.find("def _enforce_context_for_scope_nodes(")
-    assert provenance_def != -1, "provenance validator def missing"
-    assert context_def != -1, "context validator def missing"
-    assert provenance_def < context_def, (
-        "_enforce_degradation_provenance must be declared before "
-        "_enforce_context_for_scope_nodes so provenance errors fire first; "
-        f"got provenance@{provenance_def}, context@{context_def}"
-    )
+# Declaration-order precedence is already covered behaviorally by
+# `test_provenance_validator_fires_before_context_on_conflict` above —
+# a source-text introspection test would couple to private method names
+# and break on harmless renames while runtime behavior is unchanged.

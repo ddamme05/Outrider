@@ -32,7 +32,7 @@ it. `relevant_dimensions` is `tuple[ReviewDimension, ...]` not
 delivers true immutability). `file_tiers` is `Mapping[str, ReviewTier]` with
 a `field_validator` that wraps the dict input in `MappingProxyType` so post-
 construction mutation (`triage.file_tiers["x"] = ...`) raises `TypeError`
-— in . JSON round-trip is preserved by a paired
+(closes FUP-018). JSON round-trip is preserved by a paired
 `field_serializer` that dumps the MappingProxyType as a regular dict (via
 `dict(value)`); StrEnum values serialize via Pydantic's default StrEnum
 handling. Spec.md §7.2 was amended same-day (2026-05-08) to widen the field
