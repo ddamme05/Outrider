@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any, get_args, get_type_hints
 from uuid import uuid4
 
+from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import (
     compute_candidate_id,
@@ -51,13 +52,11 @@ def _finding() -> ReviewFinding:
         evidence="concat at src/foo.py:11",
         evidence_tier=EvidenceTier.JUDGED,
         policy_version="1.0.0",
-        content_hash=compute_identity_hash(
-            {
-                "file_path": "src/foo.py",
-                "line_start": 10,
-                "line_end": 12,
-                "finding_type": "sql_injection",
-            }
+        content_hash=compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
         ),
     )
 

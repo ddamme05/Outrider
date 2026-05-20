@@ -21,11 +21,19 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import PublishDestination, ReviewDimension, ReviewFinding
 
 
 def _build_finding(**overrides: Any) -> ReviewFinding:
+    """Construct a valid finding; overrides replace defaults.
+
+    `content_hash` recomputed from the post-override payload so the
+    `_verify_content_hash` validator doesn't fire on tests that
+    override identity-tuple fields. Tests that DELIBERATELY exercise
+    hash drift override `content_hash` directly.
+    """
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "installation_id": 12345,
@@ -40,10 +48,26 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        # Real SHA-256 hex digest shape per `SHA256_HEX_PATTERN`.
-        "content_hash": "a" * 64,
     }
     fields.update(overrides)
+    if "content_hash" not in overrides and isinstance(fields["finding_type"], FindingType):
+        # Only auto-compute when finding_type is a real enum member —
+        # tests that exercise invalid `finding_type=<str>` rejection
+        # need Pydantic's field validator to fire FIRST, not crash in
+        # the helper. The placeholder hash below fails the new
+        # `_verify_content_hash` validator, but Pydantic catches the
+        # invalid finding_type at the field layer before the model
+        # validator runs.
+        fields["content_hash"] = compute_finding_content_hash(
+            file_path=fields["file_path"],
+            line_start=fields["line_start"],
+            line_end=fields["line_end"],
+            finding_type=fields["finding_type"],
+        )
+    elif "content_hash" not in overrides:
+        # finding_type override is invalid — Pydantic will reject; the
+        # helper just supplies any valid-shape hash to get there.
+        fields["content_hash"] = "a" * 64
     return ReviewFinding(**fields)
 
 
@@ -75,8 +99,21 @@ def test_review_finding_severity_rejects_invalid_string() -> None:
 
 
 def test_review_finding_severity_accepts_enum_member() -> None:
-    """FindingSeverity enum member admits cleanly."""
-    finding = _build_finding(severity=FindingSeverity.HIGH)
+    """FindingSeverity enum member admits cleanly when it matches the
+    policy baseline for the finding_type.
+
+    Codex round-5 audit caught this test admitting `SQL_INJECTION +
+    HIGH` even though SEVERITY_POLICY[SQL_INJECTION] == CRITICAL — the
+    test was checking enum-typing without checking the policy gate.
+    Switched to HARDCODED_SECRET (whose policy severity IS HIGH) so the
+    severity field exercise stays meaningful while passing the new
+    `_enforce_severity_matches_policy` validator.
+    """
+    finding = _build_finding(
+        finding_type=FindingType.HARDCODED_SECRET,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.HIGH,
+    )
     assert finding.severity == FindingSeverity.HIGH
 
 
@@ -260,3 +297,90 @@ def test_review_finding_query_match_id_admits_at_max() -> None:
     )
     assert finding.query_match_id is not None
     assert len(finding.query_match_id) == 200
+
+
+# ---------------------------------------------------------------------------
+# Codex round-5 audit folds: severity-policy gate + content-hash recipe gate.
+# Backs invariants `severity-set-by-policy` (docs/invariants.md §237) and the
+# in-memory mirror of FindingEvent._verify_content_hash.
+# ---------------------------------------------------------------------------
+
+
+def test_review_finding_rejects_severity_drifted_from_policy() -> None:
+    """A finding constructed with severity != SEVERITY_POLICY[finding_type]
+    under the LIVE policy must fail.
+
+    Codex round-5 audit: pre-fold a row like
+    `(SQL_INJECTION, LOW, policy_version="1.0.0")` admitted even though
+    SEVERITY_POLICY[SQL_INJECTION] == CRITICAL under policy_version 1.0.0.
+    """
+    with pytest.raises(ValidationError, match="severity-set-by-policy"):
+        _build_finding(
+            finding_type=FindingType.SQL_INJECTION,
+            severity=FindingSeverity.LOW,  # policy says CRITICAL
+        )
+
+
+def test_review_finding_admits_severity_matching_policy() -> None:
+    """The happy path: severity matches SEVERITY_POLICY[finding_type]."""
+    finding = _build_finding(
+        finding_type=FindingType.SQL_INJECTION,
+        severity=FindingSeverity.CRITICAL,
+    )
+    assert finding.severity == FindingSeverity.CRITICAL
+
+
+def test_review_finding_admits_hitl_override_with_original_severity() -> None:
+    """HITL-overridden finding: baseline goes in `original_severity`,
+    reviewer's choice in `severity`. The validator checks the baseline
+    (original_severity) against policy, not the override."""
+    finding = _build_finding(
+        finding_type=FindingType.SQL_INJECTION,
+        severity=FindingSeverity.MEDIUM,  # reviewer's override
+        original_severity=FindingSeverity.CRITICAL,  # policy baseline
+        override_reason="reviewer disagrees with severity",
+        overrider_id=uuid4(),
+    )
+    assert finding.severity == FindingSeverity.MEDIUM
+    assert finding.original_severity == FindingSeverity.CRITICAL
+
+
+def test_review_finding_rejects_hitl_override_with_wrong_original_severity() -> None:
+    """If `original_severity` is set, it (the baseline) must match
+    SEVERITY_POLICY[finding_type]. An override path that falsifies the
+    pre-override value gets caught."""
+    with pytest.raises(ValidationError, match="severity-set-by-policy"):
+        _build_finding(
+            finding_type=FindingType.SQL_INJECTION,
+            severity=FindingSeverity.MEDIUM,
+            original_severity=FindingSeverity.LOW,  # WRONG — policy is CRITICAL
+            override_reason="reviewer disagrees",
+            overrider_id=uuid4(),
+        )
+
+
+def test_review_finding_admits_historical_policy_version() -> None:
+    """Under a non-live `policy_version`, the validator skips —
+    historical events under a frozen policy carry severity correct at
+    write-time per `severity-policy-versioned-for-replay`."""
+    finding = _build_finding(
+        finding_type=FindingType.SQL_INJECTION,
+        severity=FindingSeverity.LOW,  # would fail under live policy
+        policy_version="0.9.0",  # not ACTIVE_POLICY_VERSION
+    )
+    assert finding.severity == FindingSeverity.LOW
+
+
+def test_review_finding_rejects_drifted_content_hash() -> None:
+    """`content_hash` must equal `compute_finding_content_hash(...)` for
+    the identity tuple. Without the validator, a drifted hash would
+    survive into `AnalysisRound.round_id` and the reducer would dedup
+    under the bad key on replay.
+
+    Codex round-5 audit: pre-fold ReviewFinding.content_hash was only
+    shape-validated. Several fixtures seeded it with
+    `compute_identity_hash(...)` instead of the canonical recipe.
+    """
+    bad_hash = "f" * 64  # right shape, wrong content
+    with pytest.raises(ValidationError, match="content_hash"):
+        _build_finding(content_hash=bad_hash)

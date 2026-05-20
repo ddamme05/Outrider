@@ -14,12 +14,21 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension, ReviewFinding
 
 
 def _build_finding(**overrides: Any) -> ReviewFinding:
-    """Construct a valid OBSERVED ReviewFinding; overrides replace defaults."""
+    """Construct a valid OBSERVED ReviewFinding; overrides replace defaults.
+
+    `content_hash` is computed from the canonical recipe over the
+    finalized payload (post-override), so any override of
+    `file_path` / `line_start` / `line_end` / `finding_type`
+    automatically recomputes — otherwise the new
+    `_verify_content_hash` validator rejects construction. Tests that
+    DELIBERATELY exercise hash drift override `content_hash` directly.
+    """
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "installation_id": 12345,
@@ -36,14 +45,15 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "evidence": 'cursor.execute("SELECT * FROM users WHERE id = " + user_id)',
         "query_match_id": "py.security.sql_injection.string_concat",
         "trace_path": None,
-        # Real SHA-256 hex digest shape (64 lowercase-hex chars) per
-        # `SHA256_HEX_PATTERN`. Pre-PR-review-round-5 fixtures used a
-        # `sha256-abc123` placeholder that the schema admitted because
-        # `content_hash` had no pattern check; the pattern was added in
-        # round-5 (commit 4dedda7..HEAD), so fixtures now must match.
-        "content_hash": "a" * 64,
     }
     fields.update(overrides)
+    if "content_hash" not in overrides:
+        fields["content_hash"] = compute_finding_content_hash(
+            file_path=fields["file_path"],
+            line_start=fields["line_start"],
+            line_end=fields["line_end"],
+            finding_type=fields["finding_type"],
+        )
     return ReviewFinding(**fields)
 
 

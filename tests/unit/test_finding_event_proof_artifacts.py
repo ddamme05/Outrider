@@ -219,3 +219,46 @@ def test_finding_event_line_end_equal_line_start_admits() -> None:
     """Single-line findings (line_start == line_end) admit."""
     event = _build_event(line_start=42, line_end=42)
     assert event.line_start == event.line_end == 42
+
+
+# ---------------------------------------------------------------------------
+# Codex round-5 audit fold: severity-set-by-policy gate on FindingEvent.
+# ---------------------------------------------------------------------------
+
+
+def test_finding_event_rejects_severity_drifted_from_policy() -> None:
+    """`FindingEvent.severity` must equal SEVERITY_POLICY[finding_type]
+    under live policy. Backs `severity-set-by-policy`.
+
+    Codex round-5 audit: pre-fold a row like
+    `(SQL_INJECTION, LOW, policy_version="1.0.0")` admitted even though
+    SEVERITY_POLICY[SQL_INJECTION] == CRITICAL under policy_version 1.0.0,
+    so a policy-invalid event could enter the append-only audit stream.
+    """
+    with pytest.raises(ValidationError, match="severity-set-by-policy"):
+        _build_event(
+            finding_type=FindingType.SQL_INJECTION,
+            severity=FindingSeverity.LOW,  # policy says CRITICAL
+        )
+
+
+def test_finding_event_admits_severity_matching_policy() -> None:
+    """The happy path: severity matches SEVERITY_POLICY[finding_type]."""
+    event = _build_event(
+        finding_type=FindingType.SQL_INJECTION,
+        severity=FindingSeverity.CRITICAL,
+    )
+    assert event.severity == FindingSeverity.CRITICAL
+
+
+def test_finding_event_admits_historical_policy_version() -> None:
+    """Under a non-live `policy_version`, the validator skips —
+    historical events under a frozen policy carry severity correct at
+    write-time per `severity-policy-versioned-for-replay`. Schema layer
+    cannot do versioned-replay lookup; that's the persister's job."""
+    event = _build_event(
+        finding_type=FindingType.SQL_INJECTION,
+        severity=FindingSeverity.LOW,  # would fail under live policy
+        policy_version="0.9.0",  # not ACTIVE_POLICY_VERSION
+    )
+    assert event.severity == FindingSeverity.LOW

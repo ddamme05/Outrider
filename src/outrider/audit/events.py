@@ -437,6 +437,50 @@ class FindingEvent(AuditEventBase):
         return self
 
     @model_validator(mode="after")
+    def _enforce_severity_matches_policy(self) -> Self:
+        """`severity` must equal `SEVERITY_POLICY[finding_type]` under the
+        live policy version. Backs `severity-set-by-policy`.
+
+        FindingEvent is emitted by the analyze node BEFORE HITL; it
+        carries the policy-computed baseline. HITL overrides do not
+        rewrite FindingEvent — they emit a separate HITLDecisionEvent
+        with `override_severity` + `original_severity`. So this event's
+        severity must always match SEVERITY_POLICY[finding_type] at
+        write time, no override case to consider.
+
+        Only fires when `policy_version == ACTIVE_POLICY_VERSION` —
+        historical events under a frozen policy carry severity correct
+        at write-time per `severity-policy-versioned-for-replay`.
+        Versioned-replay enforcement is the persister / replay layer's
+        job; this schema-layer check covers the live-write path.
+
+        Codex round-5 audit (HIGH-confidence valid finding) — without
+        this gate a row like (SQL_INJECTION, LOW) lands in the
+        append-only audit stream.
+        """
+        # Local import: policy modules cannot import from audit.events
+        # at top-level (they don't), so this could move up; kept local
+        # for symmetry with the schemas-side validator.
+        from outrider.policy.severity import (  # noqa: PLC0415
+            ACTIVE_POLICY_VERSION,
+            SEVERITY_POLICY,
+        )
+
+        if self.policy_version != ACTIVE_POLICY_VERSION:
+            return self
+        expected = SEVERITY_POLICY.get(self.finding_type)
+        if expected is None or self.severity != expected:
+            raise ValueError(
+                f"FindingEvent.severity={self.severity.value!r} does not match "
+                f"SEVERITY_POLICY[{self.finding_type.value!r}]="
+                f"{(expected.value if expected else None)!r} under policy_version "
+                f"{self.policy_version!r}. Per `severity-set-by-policy` "
+                f"(docs/invariants.md), baseline severity comes from SEVERITY_POLICY "
+                f"keyed by finding_type, never from caller or model output."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _verify_content_hash(self) -> Self:
         """Spec §8.5: finding_content_hash MUST equal the canonical computation.
 
