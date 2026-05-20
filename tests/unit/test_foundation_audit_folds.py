@@ -424,13 +424,29 @@ def test_analyze_completed_event_admits_semver_policy_version() -> None:
     assert event.policy_version == "1.0.0"
 
 
-def test_analyze_completed_event_pricing_version_remains_free_form() -> None:
-    """Pricing has its own scheme (`v2`); the semver pattern is policy-only."""
+def test_analyze_completed_event_pricing_version_uses_v_n_scheme() -> None:
+    """Pricing has its own scheme (`vN` per `llm.pricing.PRICING_VERSION_PATTERN`);
+    distinct from the bare-semver `policy_version` pattern. The vN
+    constraint landed in the pre-emptive review sweep — without it the
+    field was free-form `str` and admitted any value into the
+    append-only audit log."""
     event = AnalyzeCompletedEvent(
         policy_version="1.0.0",
         **_completed_kwargs_minimum(),
     )
     assert event.pricing_version == "v2"
+
+
+def test_analyze_completed_event_pricing_version_rejects_non_v_n() -> None:
+    """`v` prefix + positive integer required. `v0`, `1`, semver, empty
+    string all rejected."""
+    from pydantic import ValidationError as _PydanticValidationError
+
+    for bad in ["v0", "1", "1.0.0", "", "vv1", "v1.0"]:
+        kwargs = _completed_kwargs_minimum()
+        kwargs["pricing_version"] = bad
+        with pytest.raises(_PydanticValidationError):
+            AnalyzeCompletedEvent(policy_version="1.0.0", **kwargs)
 
 
 # ---------------------------------------------------------------------------
