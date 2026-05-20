@@ -792,6 +792,12 @@ class FindingProposalRejectedEvent(AuditEventBase):
     rows must not carry user code or prompt/completion content.
     Cross-field validator pairs `claimed_evidence_tier` with the
     `evidence_tier_not_in_enum` reason bidirectionally.
+
+    `proposal_hash` carries the PR/file-scoped `compute_proposal_hash`
+    digest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT
+    source files that emit logically-identical proposals produce
+    DISTINCT `proposal_hash` values — preserving per-source-file
+    audit provenance on the join with `TraceCandidate.source_proposal_hash`.
     """
 
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"

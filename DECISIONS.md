@@ -672,3 +672,37 @@ The post-foundation review surfaced the question explicitly: keep the validator 
 - The audit-trail story stays clean: every `FindingEvent.dimension` at every point in audit history is the dimension the finding had at emission time AND matches the current mapping, because the mapping hasn't changed.
 
 **Referenced from.** `src/outrider/policy/dimensions.py` (`FINDING_TYPE_TO_DIMENSION` + `verify_lockstep` + `lookup_dimension`), `src/outrider/schemas/review_finding.py::_enforce_dimension_lockstep` (the validator this entry justifies), `specs/2026-05-19-analyze-foundation.md` §6 (foundation spec section that originally introduced the mapping), foundation-wide data-integrity audit F2 (the audit finding that surfaced the immutability-vs-versioning question).
+
+## 022. Proposal identity is PR/file-scoped, not raw-proposal-shape-global
+
+**Status:** Accepted, 2026-05-20.
+
+**Context.** The original `compute_proposal_hash` recipe in `policy/canonical.py` (added by the foundation §1 schemas commit) folded 8 keys from `AnalyzeFindingProposalRaw` — finding_type, evidence_tier, query_match_id, trace_path, title, description, evidence, span (byte_start/byte_end) — but **omitted** the source file the proposal came from. Codex round-6 audit (medium confidence) surfaced the consequence: two analyze passes over different source files that emit logically-identical proposals (same finding_type, same span coordinates, same description text) produce **identical** `proposal_hash`. `TraceCandidate.source_proposal_hash` inherits the hash. `candidate_id = compute_candidate_id(source_proposal_hash, candidate_path, reason)` then collapses two distinct causal edges (File A → target T, File B → target T) into one row under the `append_with_dedup_by(candidate_id)` reducer.
+
+Two readings of "what is a proposal":
+
+- **Reading A — raw-proposal-shape-global (original behavior):** A proposal is "this shape of finding"; trace candidates dedup across source files so the trace node fetches the target file once even when multiple source files request it. Audit-trail loses the per-source-file causal edge as a known trade-off.
+- **Reading B — PR/file-scoped (this decision):** A proposal is "this finding in this file." Trace candidates preserve per-source-file provenance; the trace node can still dedup actual fetches by `candidate_path` at execution time, but the candidate-identity model carries the causal edges intact.
+
+**Decision.** Proposal identity is **PR/file-scoped, not raw-proposal-shape-global**. `compute_proposal_hash` gains a `source_file_path` parameter; the recipe folds 9 keys instead of 8. `TraceCandidate.source_proposal_hash` inherits the file-scoped hash; `candidate_id`'s derivation stays unchanged (`source_proposal_hash + candidate_path + reason`) because `source_proposal_hash` now carries source-file identity intrinsically.
+
+The reasoning:
+
+1. **`TraceCandidate` is provenance, not a fetch directive.** The audit trail's "which finding caused this trace request" question must remain answerable. If File A and File B independently raise findings that both point to `src/auth/middleware.py`, both causal edges belong in the audit log. Dedup that collapses them optimizes one read (avoiding double-fetch of the target) at the cost of losing the audit-grade record of two findings — that's the wrong trade-off for a system whose primary value-prop is audit-trail integrity.
+
+2. **Fetch dedup belongs in trace execution, not in candidate identity.** The trace node can, after preserving candidate provenance, group candidates by `candidate_path` and fetch each target file once per analyze ⇄ trace iteration. That's a separate concern from how the audit layer records why the fetch happened. Conflating the two was the original mistake.
+
+3. **Reading A was internally consistent but optimized away audit provenance.** The default for this project is "preserve audit provenance whenever the choice arises." That's a higher-order constraint than the local-optimization argument for global dedup.
+
+4. **The recipe change is small and additive.** Adding `source_file_path` to `compute_proposal_hash` is a one-key recipe extension; the existing 8 keys are unchanged. Existing audit rows (none in production yet — this is the foundation arc, pre-V1-launch) are not affected because the foundation arc is still pre-production. Post-launch, the same shape would require a `proposal_hash_version` field or a migration; we land the right shape now while no production data exists.
+
+**Consequences.**
+
+- `compute_proposal_hash` signature gains `source_file_path: str` (keyword-only, leading the spec ordering since it's the new identity-scope key). The recipe folds it as the first key in the canonical-encoding dict so future readers see "file is part of identity" immediately.
+- `FindingProposalRejectedEvent.proposal_hash` carries the new file-scoped digest. The event already stores `file_path` separately, so the AUDIT JOIN against the hash is unambiguous; this change tightens the dedup-key contract that consumers may rely on.
+- `TraceCandidate.source_proposal_hash` carries the new file-scoped digest. The dedup-by-candidate_id reducer now collapses only candidates that came from the **same source file AND same proposal shape AND same target AND same reason** — the four-tuple that genuinely represents "the same causal edge."
+- Trace execution gains an explicit responsibility: after the dedup-by-candidate_id reducer admits the candidates list, the trace node groups by `candidate_path` and fetches each target once per round. That logic lives in the trace-node spec (not the foundation arc), but the candidate-identity model is now shaped to enable it without conflating concerns.
+- The fetch-optimization story for trace doesn't degrade: two findings from different source files pointing at the same target produce two `TraceCandidate` rows with distinct `candidate_id`s, but the trace node sees `candidate_path == src/auth/middleware.py` for both and fetches once. The audit log retains both causal edges; the GitHub API call count is unchanged.
+- The original (Reading A) behavior is superseded; no historical audit rows exist that depend on it. Future contributors reading the recipe see the file-scoped shape in code AND the rationale here.
+
+**Referenced from.** `src/outrider/policy/canonical.py::compute_proposal_hash` (the recipe this entry shapes), `src/outrider/schemas/trace_candidate.py` (`source_proposal_hash` field — inherits the file-scoped digest), `src/outrider/audit/events.py::FindingProposalRejectedEvent.proposal_hash` (audit-row carrier of the file-scoped digest), Codex round-6 audit MEDIUM #4 (the audit finding that surfaced the identity-scope question), the audit-the-audit user response confirming Reading B as the canonical position.

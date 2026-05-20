@@ -372,6 +372,24 @@ class ReviewFinding(BaseModel):
                 f"partial state is a producer bug that would bypass `hitl-gates-"
                 f"high-severity` by claiming an override that never happened."
             )
+        # No-op override rejection: when the override envelope is set,
+        # `severity` MUST differ from `original_severity` — otherwise the
+        # override claims a reviewer-changed-the-severity event that did
+        # nothing. A reviewer's intent to ACK-without-change is the
+        # `APPROVE` outcome on `PerFindingDecision`, NOT a SEVERITY_OVERRIDE
+        # with identical values. Codex round-6 user-suggested fold: cheap
+        # to pin, catches a real producer-bug class (HITL UI submits the
+        # override path without checking whether the reviewer actually
+        # changed the value).
+        if all_set and self.severity == self.original_severity:
+            raise ValueError(
+                f"ReviewFinding HITL override claims SEVERITY_OVERRIDE but "
+                f"severity={self.severity.value!r} equals "
+                f"original_severity={self.original_severity.value!r} — no-op "
+                f"overrides are not valid. The reviewer's intent to ACK without "
+                f"change is the `PerFindingDecision.APPROVE` outcome, not a "
+                f"SEVERITY_OVERRIDE with identical values."
+            )
         return self
 
     @model_validator(mode="after")
