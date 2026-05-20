@@ -260,3 +260,88 @@ def test_llm_call_event_degradation_reason_rejects_arbitrary_string() -> None:
     kwargs["degradation_reason"] = "some_new_reason"
     with pytest.raises(ValidationError):
         LLMCallEvent(review_id=uuid4(), **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Pre-emptive sweep #3: cross-file constraint coherence on node_id /
+# review_status / reviewer_id. Each rejection test pairs with an admit test
+# at the inclusive boundary so a future tightening shifts both sides loudly.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("node_id", ["triage", "analyze", "synthesize", "trace"])
+def test_llm_call_event_admits_canonical_node_ids(node_id: str) -> None:
+    """The four LLM-calling nodes per spec §4.1 — matches the
+    `LLMRequest.node_id` Literal in `llm/base.py`."""
+    kwargs = _llm_call_kwargs()
+    kwargs["node_id"] = node_id
+    event = LLMCallEvent(review_id=uuid4(), **kwargs)
+    assert event.node_id == node_id
+
+
+@pytest.mark.parametrize("bad_node_id", ["intake", "hitl", "publish", "TRIAGE", "", "analyse"])
+def test_llm_call_event_rejects_non_llm_calling_node_id(bad_node_id: str) -> None:
+    """A non-LLM-calling node (intake/hitl/publish), wrong casing, empty
+    string, or typo (analyse) — all rejected. Pre-sweep this field was
+    `str` and admitted any value."""
+    kwargs = _llm_call_kwargs()
+    kwargs["node_id"] = bad_node_id
+    with pytest.raises(ValidationError):
+        LLMCallEvent(review_id=uuid4(), **kwargs)
+
+
+@pytest.mark.parametrize("node_id", ["intake", "analyze"])
+def test_file_examination_event_admits_canonical_node_ids(node_id: str) -> None:
+    """FileExaminationEvent fires from intake (per-file fetch) and analyze
+    (per-file examination). Other graph nodes do not emit it in V1."""
+    kwargs = _file_examination_kwargs()
+    kwargs["node_id"] = node_id
+    event = FileExaminationEvent(review_id=uuid4(), **kwargs)
+    assert event.node_id == node_id
+
+
+@pytest.mark.parametrize("bad_node_id", ["triage", "trace", "hitl", "INTAKE", ""])
+def test_file_examination_event_rejects_non_canonical_node_id(bad_node_id: str) -> None:
+    kwargs = _file_examination_kwargs()
+    kwargs["node_id"] = bad_node_id
+    with pytest.raises(ValidationError):
+        FileExaminationEvent(review_id=uuid4(), **kwargs)
+
+
+@pytest.mark.parametrize("status", ["APPROVE", "REQUEST_CHANGES", "COMMENT"])
+def test_publish_event_admits_canonical_review_status(status: str) -> None:
+    """The three GitHub-side `event` parameter values for the create-review
+    REST endpoint. V1 omits PENDING (draft state) deliberately."""
+    kwargs = _publish_kwargs()
+    kwargs["review_status"] = status
+    event = PublishEvent(review_id=uuid4(), **kwargs)
+    assert event.review_status == status
+
+
+@pytest.mark.parametrize("bad_status", ["approve", "PENDING", "MERGED", "CLOSED", ""])
+def test_publish_event_rejects_non_github_review_status(bad_status: str) -> None:
+    """Wrong casing, GitHub draft state (PENDING), or non-review states
+    (MERGED/CLOSED come from the PR-merge endpoint, not the review one) —
+    all rejected at the schema layer."""
+    kwargs = _publish_kwargs()
+    kwargs["review_status"] = bad_status
+    with pytest.raises(ValidationError):
+        PublishEvent(review_id=uuid4(), **kwargs)
+
+
+def test_hitl_decision_event_reviewer_id_max_length() -> None:
+    """100-char cap on `reviewer_id`. Without the bound, a malformed or
+    attacker-supplied reviewer id could fill the audit row arbitrarily."""
+    kwargs = _hitl_decision_kwargs()
+    kwargs["reviewer_id"] = "x" * 101
+    with pytest.raises(ValidationError, match="reviewer_id"):
+        HITLDecisionEvent(review_id=uuid4(), **kwargs)
+
+
+def test_hitl_decision_event_reviewer_id_admits_at_max() -> None:
+    """Inclusive boundary admits — a future tightening to 99 shifts BOTH
+    the admit and reject sides loudly."""
+    kwargs = _hitl_decision_kwargs()
+    kwargs["reviewer_id"] = "x" * 100
+    event = HITLDecisionEvent(review_id=uuid4(), **kwargs)
+    assert event.reviewer_id == "x" * 100

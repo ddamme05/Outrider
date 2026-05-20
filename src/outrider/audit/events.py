@@ -255,7 +255,12 @@ class LLMCallEvent(AuditEventBase):
 
     event_type: Literal["llm_call"] = "llm_call"
     model: str
-    node_id: str
+    # The four nodes that actually make LLM calls per spec §4.1. Mirrors
+    # `LLMRequest.node_id` (`llm/base.py`) verbatim — the wrapper passes
+    # `request.node_id` through unchanged, so the event field must admit
+    # exactly the same set. Pre-sweep this was `str` and admitted any
+    # value including typos that would land in the append-only audit log.
+    node_id: Literal["triage", "analyze", "synthesize", "trace"]
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
@@ -349,7 +354,13 @@ class FileExaminationEvent(AuditEventBase):
     # the discriminator-like field to be widened deliberately rather than
     # drifting on a string typo from a future contributor.
     examination_type: Literal["intake_fetch", "analyze"]
-    node_id: str
+    # `node_id` is the graph-node that emitted this event; for V1
+    # FileExaminationEvent fires only from intake (per-file fetch) and
+    # analyze (per-file examination). Wider than examination_type only
+    # because a future node might emit with a NEW examination_type while
+    # sharing a node_id with an existing emitter — keep them independent
+    # constants so widening one doesn't force widening the other.
+    node_id: Literal["intake", "analyze"]
     parse_status: Literal["clean", "degraded", "failed", "skipped"]
     skip_reason: SkipReason | None = None
 
@@ -498,7 +509,11 @@ class HITLDecisionEvent(AuditEventBase):
     """
 
     event_type: Literal["hitl_decision"] = "hitl_decision"
-    reviewer_id: str
+    # GitHub usernames are <=39 chars; SSO logins or future auth sources
+    # might be longer, so 100 is generous-but-bounded. Without the cap a
+    # malformed or attacker-supplied reviewer id could fill the audit row
+    # arbitrarily and break replay aggregations keyed by reviewer.
+    reviewer_id: str = Field(max_length=100)
     decisions: tuple[PerFindingDecision, ...]
     decision_latency_seconds: float = Field(ge=0)
 
@@ -509,7 +524,13 @@ class PublishEvent(AuditEventBase):
     event_type: Literal["publish"] = "publish"
     github_review_id: int = Field(ge=1)  # GitHub review IDs are positive integers
     comments_posted: int = Field(ge=0)
-    review_status: str
+    # The three GitHub PR review states — `event` param values on the
+    # GitHub `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`
+    # endpoint. Bounded so an emission-site typo or a stale snake_case
+    # value can't drift into the append-only audit log. PENDING is a
+    # GitHub-side draft state and is NEVER published from V1, so it's
+    # deliberately omitted.
+    review_status: Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"]
 
 
 class PublishRoutingEvent(AuditEventBase):
