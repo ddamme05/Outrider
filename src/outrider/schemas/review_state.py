@@ -19,9 +19,14 @@ arc. Adding them here would force the spec to introduce reducers it does
 not yet exercise, and a partial-reducer surface would silently regress
 when the analyze/trace specs land.
 
-Deferred slots — landing with their respective node specs:
-- `analysis_rounds: list[AnalysisRound]` (analyze-node spec) — append-with-
-  dedup-by(round_id) reducer, idempotent under checkpoint replay.
+Slots populated by analyze/trace/synthesize/hitl/publish are landing
+with their respective node specs as those land. The current set
+includes `analysis_rounds` + `trace_candidates` per §3 of
+`specs/2026-05-19-analyze-foundation.md` — both consume the
+`append_with_dedup_by` reducer from `outrider.agent.reducers`, which is
+idempotent under LangGraph checkpoint replay.
+
+Still deferred:
 - `trace_decisions: list[TraceDecision]` (trace-node spec) — append-with-
   dedup-by(source_finding_id) reducer per DECISIONS.md#017.
 - `review_report: ReviewReport | None` (synthesize-node spec).
@@ -71,11 +76,15 @@ runtime dependencies (DB sessions, HTTP clients) are NOT in state — they
 are injected at build_graph(...) time and closed over in node functions.
 """
 
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from outrider.agent.reducers import append_with_dedup_by
+from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.pr_context import PRContext
+from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.triage_result import TriageResult
 
 
@@ -108,6 +117,29 @@ class ReviewState(BaseModel):
 
     # Populated by triage node (separate spec)
     triage_result: TriageResult | None = None
+
+    # Populated by analyze ⇄ trace loop iterations per §3 of
+    # `specs/2026-05-19-analyze-foundation.md`. Sister analyze-
+    # implementation spec wires the producer; this foundation spec
+    # provides the slot + reducer so checkpoint replay is idempotent
+    # the moment producers begin emitting. Annotated with
+    # `append_with_dedup_by(key_fn)` per the canonical reducer shape in
+    # `docs/spec.md` §7.1 — same pattern downstream slots will adopt.
+    # Merge key is content-derived (`round_id` is SHA-256 hex over the
+    # round's content via `compute_identity_hash`), so re-emission of
+    # the same logical round collapses on replay.
+    analysis_rounds: Annotated[
+        list[AnalysisRound],
+        append_with_dedup_by(lambda r: r.round_id),
+    ] = Field(default_factory=list)
+
+    # Analyze's deterministic request channel for the trace node. Same
+    # reducer shape; merge key is `candidate_id`. Trace consumes the
+    # accumulated list. Per §3.
+    trace_candidates: Annotated[
+        list[TraceCandidate],
+        append_with_dedup_by(lambda c: c.candidate_id),
+    ] = Field(default_factory=list)
 
 
 __all__ = [
