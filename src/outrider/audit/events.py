@@ -381,6 +381,21 @@ class LLMCallEvent(AuditEventBase):
             )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_context_summary_unique(self) -> Self:
+        """`context_summary` is set-semantic by `(file_path, scope_unit_name)`.
+        The same scope unit shouldn't appear twice in one prompt's manifest;
+        duplicates would inflate the audit row and confuse the
+        context-attribution view (which scope grounded which finding).
+        """
+        keys = [(e.file_path, e.scope_unit_name) for e in self.context_summary]
+        if len(keys) != len(set(keys)):
+            raise ValueError(
+                f"LLMCallEvent.context_summary contains duplicate "
+                f"(file_path, scope_unit_name) entries: {sorted(keys)!r}"
+            )
+        return self
+
 
 class FileExaminationEvent(AuditEventBase):
     """Records that a file was examined (parse status + node).
@@ -653,14 +668,56 @@ class TraceDecisionEvent(AuditEventBase):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_candidates_considered_unique(self) -> Self:
+        """`candidates_considered` is set-semantic: each candidate is one
+        consideration, not many. Duplicates would let the same logical
+        trace decision hash differently (any future content-derived id
+        over this field) and confuse audit-stream consumers.
+        """
+        if len(self.candidates_considered) != len(set(self.candidates_considered)):
+            raise ValueError(
+                f"TraceDecisionEvent.candidates_considered contains duplicates: "
+                f"{sorted(self.candidates_considered)!r}"
+            )
+        return self
+
 
 class HITLRequestEvent(AuditEventBase):
-    """Records the HITL gate envelope at interrupt time."""
+    """Records the HITL gate envelope at interrupt time.
+
+    Audit-shadow mirror of `HITLRequest`: set-semantic partition of
+    findings across the two tuples.
+    """
 
     event_type: Literal["hitl_request"] = "hitl_request"
     findings_requiring_approval: tuple[UUID, ...]
     auto_post_findings: tuple[UUID, ...]
     expires_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def _enforce_finding_partition(self) -> Self:
+        """Each finding appears at most once across the two tuples — mirror
+        of `HITLRequest._enforce_finding_partition` at the audit-event layer.
+        """
+        if len(self.findings_requiring_approval) != len(set(self.findings_requiring_approval)):
+            raise ValueError(
+                f"HITLRequestEvent.findings_requiring_approval contains duplicate ids: "
+                f"{sorted(str(u) for u in self.findings_requiring_approval)!r}"
+            )
+        if len(self.auto_post_findings) != len(set(self.auto_post_findings)):
+            raise ValueError(
+                f"HITLRequestEvent.auto_post_findings contains duplicate ids: "
+                f"{sorted(str(u) for u in self.auto_post_findings)!r}"
+            )
+        overlap = set(self.findings_requiring_approval) & set(self.auto_post_findings)
+        if overlap:
+            raise ValueError(
+                f"HITLRequestEvent: a finding cannot be in both "
+                f"findings_requiring_approval and auto_post_findings; "
+                f"overlap: {sorted(str(u) for u in overlap)!r}"
+            )
+        return self
 
 
 class HITLDecisionEvent(AuditEventBase):
@@ -679,6 +736,19 @@ class HITLDecisionEvent(AuditEventBase):
     reviewer_id: str = Field(max_length=100)
     decisions: tuple[PerFindingDecision, ...]
     decision_latency_seconds: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _enforce_one_decision_per_finding(self) -> Self:
+        """Mirror of `HITLDecision._enforce_one_decision_per_finding`: at
+        most one `PerFindingDecision` per `finding_id` on the audit row.
+        """
+        finding_ids = [d.finding_id for d in self.decisions]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError(
+                f"HITLDecisionEvent.decisions contains multiple decisions for the "
+                f"same finding_id: {sorted(str(fid) for fid in finding_ids)!r}"
+            )
+        return self
 
 
 class PublishEvent(AuditEventBase):

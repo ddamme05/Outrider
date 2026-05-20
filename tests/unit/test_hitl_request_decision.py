@@ -149,3 +149,48 @@ def test_hitl_request_extra_forbid() -> None:
             expires_at=now + timedelta(minutes=30),
             unknown_field="oops",  # type: ignore[call-arg]
         )
+
+
+def test_hitl_request_rejects_duplicate_in_findings_requiring_approval() -> None:
+    """Set-semantic: each finding listed once."""
+    now = datetime.now(UTC)
+    finding_id = uuid4()
+    with pytest.raises(ValidationError, match="duplicate ids"):
+        HITLRequest(
+            findings_requiring_approval=[finding_id, finding_id],
+            auto_post_findings=[],
+            created_at=now,
+            expires_at=now + timedelta(minutes=30),
+        )
+
+
+def test_hitl_request_rejects_finding_in_both_tuples() -> None:
+    """Each finding is either approval-gated or auto-postable, never both."""
+    now = datetime.now(UTC)
+    finding_id = uuid4()
+    with pytest.raises(ValidationError, match="both"):
+        HITLRequest(
+            findings_requiring_approval=[finding_id],
+            auto_post_findings=[finding_id],
+            created_at=now,
+            expires_at=now + timedelta(minutes=30),
+        )
+
+
+def test_hitl_decision_rejects_multiple_decisions_for_same_finding() -> None:
+    """One decision per finding — duplicates are conflicting verdicts."""
+    shared = uuid4()
+    decisions = [
+        PerFindingDecision(
+            finding_id=shared,
+            outcome=PerFindingOutcome.APPROVE,
+            reason="lgtm",
+        ),
+        PerFindingDecision(
+            finding_id=shared,  # same finding — second verdict
+            outcome=PerFindingOutcome.REJECT,
+            reason="changed mind",
+        ),
+    ]
+    with pytest.raises(ValidationError, match="multiple decisions"):
+        _build_decision(decisions=decisions)

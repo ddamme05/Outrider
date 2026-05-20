@@ -407,3 +407,99 @@ def test_context_manifest_entry_scope_unit_name_max_length() -> None:
             line_end=2,
             inclusion_reason="changed_scope",
         )
+
+
+# ---------------------------------------------------------------------------
+# Set-semantic tuple-field duplicates: rejected at the schema layer so
+# logically identical rows can't hash to distinct shapes.
+# ---------------------------------------------------------------------------
+
+
+def test_hitl_request_event_rejects_duplicate_in_findings_requiring_approval() -> None:
+    """Each finding appears once across the two tuples."""
+    finding_id = uuid4()
+    kwargs = _hitl_request_kwargs()
+    kwargs["findings_requiring_approval"] = (finding_id, finding_id)
+    kwargs["auto_post_findings"] = ()
+    with pytest.raises(ValidationError, match="duplicate ids"):
+        HITLRequestEvent(review_id=uuid4(), **kwargs)
+
+
+def test_hitl_request_event_rejects_finding_in_both_tuples() -> None:
+    finding_id = uuid4()
+    kwargs = _hitl_request_kwargs()
+    kwargs["findings_requiring_approval"] = (finding_id,)
+    kwargs["auto_post_findings"] = (finding_id,)
+    with pytest.raises(ValidationError, match="both"):
+        HITLRequestEvent(review_id=uuid4(), **kwargs)
+
+
+def test_hitl_decision_event_rejects_multiple_decisions_for_same_finding() -> None:
+    """One decision per finding_id — duplicates are conflicting verdicts."""
+    from outrider.policy import FindingSeverity
+    from outrider.schemas import PerFindingDecision
+    from outrider.schemas.hitl import PerFindingOutcome
+
+    shared_finding_id = uuid4()
+    decision_a = PerFindingDecision(
+        finding_id=shared_finding_id,
+        outcome=PerFindingOutcome.APPROVE,
+        reason="lgtm",
+    )
+    decision_b = PerFindingDecision(
+        finding_id=shared_finding_id,  # same finding — two verdicts
+        outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+        reason="changed mind",
+        override_severity=FindingSeverity.LOW,
+        original_severity=FindingSeverity.HIGH,
+    )
+    kwargs = _hitl_decision_kwargs()
+    kwargs["decisions"] = (decision_a, decision_b)
+    with pytest.raises(ValidationError, match="multiple decisions"):
+        HITLDecisionEvent(review_id=uuid4(), **kwargs)
+
+
+def test_trace_decision_event_rejects_duplicate_candidates() -> None:
+    """`candidates_considered` is set-semantic — each candidate is one
+    consideration, not many."""
+    kwargs = _trace_decision_kwargs()
+    kwargs["candidates_considered"] = ("src/a.py", "src/a.py")
+    kwargs["resolution_status"] = "unresolved"
+    kwargs["target_file"] = None
+    with pytest.raises(ValidationError, match="candidates_considered contains duplicates"):
+        TraceDecisionEvent(review_id=uuid4(), **kwargs)
+
+
+def test_llm_call_event_rejects_duplicate_context_summary_entries() -> None:
+    """Same (file_path, scope_unit_name) twice in one prompt's manifest
+    is a producer bug — context attribution becomes ambiguous."""
+    from datetime import UTC, datetime
+
+    from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+
+    entry = ContextManifestEntry(
+        file_path="src/foo.py",
+        scope_unit_name="bar",
+        line_start=1,
+        line_end=10,
+        inclusion_reason="changed_scope",
+    )
+    with pytest.raises(ValidationError, match="duplicate"):
+        LLMCallEvent(
+            review_id=uuid4(),
+            timestamp=datetime.now(UTC),
+            model="claude-sonnet-4-6",
+            node_id="analyze",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            cost_usd=0.01,
+            pricing_version="v2",
+            latency_ms=1000,
+            prompt_hash="a" * 64,
+            cache_hit=False,
+            context_summary=(entry, entry),  # same (file_path, scope_unit_name)
+            prompt_template_version="v1",
+            system_prompt_hash="b" * 64,
+            degraded_mode=False,
+        )
