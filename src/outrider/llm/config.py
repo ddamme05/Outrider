@@ -13,9 +13,9 @@ Validators:
   - regex: model strings must match the V1 Anthropic family pattern
     `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?(-\\d{8})?$`. Catches typos
     at construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`). The
-    optional 8-digit `YYYYMMDD` suffix accepts dated SDK-catalog pins
-    ; dated forms normalize to their undated alias for
-    pricing lookup (see `outrider.llm.pricing.normalize_to_pricing_key`).
+    optional 8-digit `YYYYMMDD` suffix accepts dated SDK-catalog pins;
+    dated forms normalize to their undated alias for pricing lookup
+    (see `outrider.llm.pricing.normalize_to_pricing_key`).
   - deprecation: rejects any model string in
     `anthropic.resources.messages.DEPRECATED_MODELS` (a `dict[str, str]`
     of model id → deprecation date). The SDK would otherwise emit a

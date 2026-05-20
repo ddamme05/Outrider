@@ -73,10 +73,10 @@ def span_within_degraded_context(
 ) -> bool:
     """True iff `span` intersects at least one of the addable diff hunks.
 
-    Required for degraded-mode admission a
-    JUDGED-tier degraded finding's span MUST land within content the
-    patch actually added/modified, not arbitrary in-file bytes the
-    model fabricates from prompt-included context.
+    Required for degraded-mode admission: a JUDGED-tier degraded
+    finding's span MUST land within content the patch actually
+    added/modified, not arbitrary in-file bytes the model fabricates
+    from prompt-included context.
 
     Each entry in `addable_diff_byte_ranges` is a half-open
     `(byte_start, byte_end)` tuple matching `Span`'s native semantics.

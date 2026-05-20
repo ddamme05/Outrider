@@ -42,7 +42,11 @@ _VALID_POLICY_JSONB = """{
 
 
 async def test_check_constraint_exists(migrated_db: str) -> None:
-    """The CHECK constraint exists with the documented name post-migration."""
+    """The CHECK constraint exists with the documented name post-migration.
+
+    Scoped to the `severity_policies` table via `conrelid` so a same-named
+    CHECK on a different table cannot make this assertion pass spuriously.
+    """
     engine = create_async_engine(migrated_db)
     try:
         async with engine.connect() as conn:
@@ -50,7 +54,8 @@ async def test_check_constraint_exists(migrated_db: str) -> None:
                 text(
                     "SELECT conname FROM pg_constraint "
                     "WHERE conname = 'ck_severity_policies_version_semver' "
-                    "AND contype = 'c'"
+                    "AND contype = 'c' "
+                    "AND conrelid = 'severity_policies'::regclass"
                 )
             )
             assert row.scalar_one() == "ck_severity_policies_version_semver"

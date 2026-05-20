@@ -11,12 +11,11 @@ The model never proposes a dimension directly — same architectural
 pattern as severity: deterministic systems map LLM identification to
 review-pipeline values; the model only identifies, never sets policy.
 
-**Module-load lockstep assertion** (
-): test-only totality enforcement can be bypassed
-when CI is skipped or tests are not run locally. The module-import
-assertion below fails-loud at app startup or test collection if the
-three sets (`FindingType` members, `SEVERITY_POLICY` keys,
-`FINDING_TYPE_TO_DIMENSION` keys) ever drift apart.
+**Module-load lockstep assertion.** Test-only totality enforcement
+can be bypassed when CI is skipped or tests are not run locally. The
+module-import assertion below fails-loud at app startup or test
+collection if the three sets (`FindingType` members, `SEVERITY_POLICY`
+keys, `FINDING_TYPE_TO_DIMENSION` keys) ever drift apart.
 """
 
 from __future__ import annotations
@@ -61,7 +60,7 @@ FINDING_TYPE_TO_DIMENSION: Final[Mapping[FindingType, ReviewDimension]] = Mappin
 # collection, BEFORE any analyze code runs. CI tests cover the
 # set-equality assertion at the unit-test layer; this guard is the
 # deterministic floor that fires even when `git commit --no-verify`
-# bypasses CI ().
+# bypasses CI.
 def verify_lockstep() -> None:
     """Assert lockstep across the three sets at import time.
 
@@ -69,9 +68,9 @@ def verify_lockstep() -> None:
     future contributor adding test-side guard logic has a single
     surface to import + call, and so the subprocess-isolated CI test
     pinning the import-time failure can call this wrapper directly.
-    dropped the leading underscore
-    because the function is called from `outrider/__init__.py` as a
-    load-bearing public entry point.
+    The name is public (no leading underscore) because
+    `outrider/__init__.py` imports + calls it as a load-bearing entry
+    point.
     """
     finding_type_set = set(FindingType)
     severity_set = set(SEVERITY_POLICY)

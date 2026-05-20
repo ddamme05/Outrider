@@ -84,10 +84,10 @@ _TIER_1_KEYS: Final[frozenset[str]] = frozenset(
 _TIER_2_KEYS: Final[frozenset[str]] = frozenset({"text", "content"})
 
 # Bound to prevent pathological self-referential structures from hanging
-# the filter. records nesting deeper than this
-# are REJECTED (fail-closed) — defense-in-depth means we'd rather drop a
-# record than ship content from beyond the recursion bound. The earlier
-# fail-open behavior was the real bug.
+# the filter. Records nesting deeper than this are REJECTED
+# (fail-closed) — defense-in-depth means we'd rather drop a record than
+# ship content from beyond the recursion bound. The earlier fail-open
+# behavior was the real bug.
 _RECURSION_DEPTH_LIMIT: Final[int] = 8
 
 _LLM_LOGGER_PREFIX: Final[str] = "outrider.llm"

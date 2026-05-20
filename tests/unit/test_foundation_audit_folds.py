@@ -509,6 +509,10 @@ def test_review_finding_rejects_drifted_dimension() -> None:
     """A finding constructed with the wrong dimension for its finding_type
     must fail at validation. Closes the stored-vs-computed gap that would
     otherwise let a stale audit-events payload survive replay reconstruction.
+
+    `content_hash` is computed canonically so a future content-hash
+    validator can't shadow the dimension-drift assertion this test exists
+    to pin.
     """
     with pytest.raises(ValidationError, match="drifted from"):
         ReviewFinding(
@@ -526,7 +530,12 @@ def test_review_finding_rejects_drifted_dimension() -> None:
             evidence="z",
             evidence_tier=EvidenceTier.JUDGED,
             policy_version="1.0.0",
-            content_hash="a" * 64,
+            content_hash=compute_finding_content_hash(
+                file_path="src/foo.py",
+                line_start=10,
+                line_end=12,
+                finding_type=FindingType.SQL_INJECTION,
+            ),
         )
 
 

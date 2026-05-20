@@ -31,7 +31,7 @@ register_filter_on_all_handlers()
 # guarantees the assertion fires at app startup / test collection even
 # when no analyze code is on the import path — the deterministic floor
 # below CI's set-equality unit test (which may be bypassed via
-# `git commit --no-verify`). Per
+# `git commit --no-verify`).
 import outrider.policy.dimensions  # noqa: F401, E402 — forced import for lockstep guard
 
 

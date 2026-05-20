@@ -180,11 +180,11 @@ def compute_cost_usd(
     OPPOSITE rates (1.25× input premium for writes vs 0.10× input
     discount for reads), so a swap silently overcharges or undercharges
     by an order of magnitude. Same misuse-resistance pattern as
-    `coordinates.tree_sitter_to_github` (round-N keyword-only barrier).
+    `coordinates.tree_sitter_to_github`'s keyword-only barrier.
 
-    Four-term sum per spec (— earlier
-    designs missed cache-write tokens, undercounting Anthropic's actual
-    bill since cache writes are premium-rated).
+    Four-term sum per spec — earlier designs missed cache-write tokens,
+    undercounting Anthropic's actual bill since cache writes are
+    premium-rated.
 
     Returns a `Decimal`; the caller (provider's complete() step 9)
     casts to `float` for `LLMCallEvent.cost_usd`. Raising `KeyError`
@@ -192,11 +192,10 @@ def compute_cost_usd(
     eager pricing-coverage validation should make this unreachable
     in production (see AC#24).
 
-    **(variant audit) + :**
-    wraps in `decimal.localcontext()` AND explicitly resets
+    The body wraps in `decimal.localcontext()` AND explicitly resets
     `ctx.prec = 28` so the computation is self-contained against
-    ambient `decimal.getcontext().prec` mutations. used a bare
-    `decimal.localcontext()` which copies the caller's thread context —
+    ambient `decimal.getcontext().prec` mutations. A bare
+    `decimal.localcontext()` copies the caller's thread context —
     a caller that set `prec=5` before calling would still run cost
     arithmetic at precision 5 and silently truncate. Resetting prec to
     Python's documented default (28) inside the local context produces

@@ -31,7 +31,7 @@ notes worth pinning here:
     side-table, bypassing both the redaction serializer AND the audit
     payload entirely. The sentinel remains as a utility for any future
     caller that genuinely needs serialized-with-content form; today no
-    production code path uses it (verified ).
+    production code path uses it.
 """
 
 import hashlib
@@ -113,8 +113,8 @@ class _IncludeTextOptIn:
     discipline (the `field_serializer` redaction guards the
     `model_dump()` path; the direct-attribute-access path bypasses the
     serializer entirely and writes only to the dedicated content
-    side-table). See //entries in the
-    audit-persister spec's Actual Outcome for the contract history.
+    side-table). See `specs/2026-05-16-audit-persister.md` Actual
+    Outcome for the contract history.
     """
 
     _CONSTRUCT_TOKEN: ClassVar[object] = object()
@@ -187,8 +187,7 @@ class LLMProviderError(Exception):
         `tests/unit/test_llm_error_taxonomy.py::test_recoverable_subclasses_are_node_layer`
         (every named class IS `"node"`) and
         `::test_provider_error_docstring_names_every_node_layer_class`
-        (every `"node"`-layer class IS named in THIS docstring —
-        codex audit fold)).
+        (every `"node"`-layer class IS named in THIS docstring).
       - `"graph"`: LangGraph-level retry policy handles it (unused in V1).
       - `"wrapper"`: reserved for future use (currently the wrapper sets
         `max_retries=0` on the SDK so this is unused in V1).
