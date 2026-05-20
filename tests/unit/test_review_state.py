@@ -153,13 +153,19 @@ def test_review_state_received_at_rejects_naive_datetime() -> None:
 
 
 def test_review_state_extra_forbid() -> None:
-    """Unknown fields raise — guards against silently growing the V1 skeleton."""
+    """Unknown fields raise — guards against silently growing the V1 skeleton.
+
+    `analysis_rounds` / `trace_candidates` ARE now valid slots per §3 of
+    the analyze-foundation spec; this test uses a still-deferred slot
+    name (`review_report` per the schema docstring's deferred-slots
+    list) so the assertion stays meaningful.
+    """
     with pytest.raises(ValidationError, match="extra"):
         ReviewState(  # type: ignore[call-arg]
             review_id=uuid4(),
             pr_context=_minimal_pr_context(),
             received_at=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC),
-            analysis_rounds=[],  # canonical-deferred slot, not in V1 skeleton
+            review_report=None,  # canonical-deferred slot, not in current state
         )
 
 
