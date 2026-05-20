@@ -222,7 +222,7 @@ def test_finding_event_line_end_equal_line_start_admits() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Codex round-5 audit fold: severity-set-by-policy gate on FindingEvent.
+# severity-set-by-policy gate on FindingEvent.
 # ---------------------------------------------------------------------------
 
 
@@ -230,7 +230,7 @@ def test_finding_event_rejects_severity_drifted_from_policy() -> None:
     """`FindingEvent.severity` must equal SEVERITY_POLICY[finding_type]
     under live policy. Backs `severity-set-by-policy`.
 
-    Codex round-5 audit: pre-fold a row like
+    pre-fold a row like
     `(SQL_INJECTION, LOW, policy_version="1.0.0")` admitted even though
     SEVERITY_POLICY[SQL_INJECTION] == CRITICAL under policy_version 1.0.0,
     so a policy-invalid event could enter the append-only audit stream.
@@ -251,18 +251,28 @@ def test_finding_event_admits_severity_matching_policy() -> None:
     assert event.severity == FindingSeverity.CRITICAL
 
 
-def test_finding_event_rejects_non_active_policy_version() -> None:
-    """Codex round-6 audit (HIGH): fresh writes MUST use
-    ACTIVE_POLICY_VERSION. The previous "skip if non-ACTIVE" branch
-    was a quiet bypass. Historical-event replay loads via the
-    persister/replay layer's `load_policy_for_version` path, NOT
-    through fresh schema construction with a backdated version."""
-    with pytest.raises(ValidationError, match="ACTIVE_POLICY_VERSION"):
-        _build_event(
-            finding_type=FindingType.SQL_INJECTION,
-            severity=FindingSeverity.CRITICAL,
-            policy_version="0.9.0",
-        )
+def test_finding_event_admits_historical_policy_version() -> None:
+    """Replay-aware scoping. `TypeAdapter(AuditEvent).validate_python`
+    is the canonical reconstruction path; a historical event under an
+    older `policy_version` MUST validate cleanly. The severity check
+    only fires when `policy_version == ACTIVE_POLICY_VERSION`; older
+    versions skip and trust the row (the persister/replay layer is
+    the seam responsible for cross-checking against the historical
+    policy).
+
+    The earlier hard-block on non-ACTIVE policy_version broke replay
+    — `model_validate` can't differentiate a fresh write from a
+    historical rehydration, and there's no synchronous loader for the
+    historical mapping here. The smuggle defense moves to the
+    producer/persister layer.
+    """
+    event = _build_event(
+        finding_type=FindingType.SQL_INJECTION,
+        severity=FindingSeverity.LOW,  # correct under historical policy
+        policy_version="0.9.0",  # not ACTIVE — replay scenario
+    )
+    assert event.policy_version == "0.9.0"
+    assert event.severity == FindingSeverity.LOW
 
 
 # ---------------------------------------------------------------------------
@@ -371,15 +381,15 @@ def test_llm_call_event_rejects_cache_hit_false_with_positive_cached_tokens() ->
 
 
 # ---------------------------------------------------------------------------
-# Codex round-6 audit: validate_diff_path on FindingEvent.file_path.
+# validate_diff_path on FindingEvent.file_path.
 # ---------------------------------------------------------------------------
 
 
 def test_finding_event_rejects_traversal_in_file_path() -> None:
-    """`FindingEvent.file_path` must pass `validate_diff_path`, mirror of
-    the in-memory `ReviewFinding.file_path` validator. Codex round-6
-    audit (HIGH): pre-fold the audit shadow was weaker than the
-    schemas-side check."""
+    """`FindingEvent.file_path` must pass `validate_diff_path`, mirror
+    of the in-memory `ReviewFinding.file_path` validator. The audit
+    shadow must be at least as strict as the schemas-side check.
+    """
     from outrider.coordinates import CoordinateError
 
     with pytest.raises((ValidationError, CoordinateError)):

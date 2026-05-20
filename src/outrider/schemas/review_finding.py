@@ -275,19 +275,31 @@ class ReviewFinding(BaseModel):
         `severity` directly. Either way, the policy-computed value is
         what we check.
 
-        Per Codex round-6 (HIGH): fresh writes MUST use
-        `ACTIVE_POLICY_VERSION`. Any non-ACTIVE `policy_version` is
-        REJECTED below — the previous "skip if non-ACTIVE" branch was a
-        quiet bypass that let a fresh-write attacker dodge live-policy
-        enforcement by smuggling a backdated semver. Historical-event
-        replay loads via the persister/replay layer's
-        `policy/versions.py::load_policy_for_version` path, NOT fresh
-        schema construction. Per `severity-policy-versioned-for-replay`.
+        Replay-aware scoping. `model_validate` is the SAME path
+        `TypeAdapter(AuditEvent).validate_python(...)` and equivalent
+        ReviewFinding reconstructors use to rehydrate historical
+        records. A historical finding under an older `policy_version`
+        MUST validate cleanly — the severity it carries was correct
+        AT WRITE TIME under its frozen policy, and there's no
+        synchronous loader for the historical mapping here
+        (`policy/versions.py::load_policy_for_version` is async; it's
+        the persister/replay layer's job, not the schema's).
 
-        Codex round-5 audit (HIGH-confidence valid finding): without
-        the SEVERITY_POLICY match check, a row like (SQL_INJECTION, LOW)
-        admits cleanly even though SEVERITY_POLICY[SQL_INJECTION] ==
-        CRITICAL.
+        Scope: the live-policy match check below fires ONLY when
+        `policy_version == ACTIVE_POLICY_VERSION`. Older versions
+        skip and trust the historical row. The "fresh-write smuggle"
+        concern (a producer setting `policy_version="0.9.0"` to dodge
+        the live check) is NOT defended here — it's a producer-side
+        discipline enforced by the emitter and, when the replay/
+        persister spec lands, by the persister's write-time check
+        that incoming records carry the active version. The schema
+        layer cannot distinguish fresh writes from replay
+        reconstruction inside `model_validate`.
+
+        Without the SEVERITY_POLICY match check below, a fresh row
+        like (SQL_INJECTION, LOW) admits cleanly even though
+        SEVERITY_POLICY[SQL_INJECTION] == CRITICAL — the schema-layer
+        defense against caller-supplied severity drift.
         """
         # Local imports to avoid a circular import: `policy.severity`
         # transitively imports nothing from schemas, but `policy/__init__`
@@ -299,28 +311,9 @@ class ReviewFinding(BaseModel):
         )
 
         if self.policy_version != ACTIVE_POLICY_VERSION:
-            # The schema CANNOT distinguish a legitimate historical
-            # replay from a fresh-write attacker / buggy producer that
-            # smuggles `policy_version="0.9.0"` to bypass live-policy
-            # enforcement. Codex round-6 audit (HIGH): the previous
-            # "skip if non-ACTIVE" path was a quiet bypass. Fresh writes
-            # MUST use ACTIVE_POLICY_VERSION; the persister/replay layer
-            # is responsible for loading historical events via
-            # `policy/versions.py::load_policy_for_version` and
-            # validating them against the policy in effect AT WRITE TIME
-            # (NOT the live policy). Until that replay path lands and
-            # adds a `KNOWN_POLICY_VERSIONS` registry to differentiate
-            # "valid historical version" from "smuggled non-existent
-            # version", the schema rejects any non-ACTIVE write.
-            raise ValueError(
-                f"ReviewFinding.policy_version={self.policy_version!r} is not "
-                f"ACTIVE_POLICY_VERSION ({ACTIVE_POLICY_VERSION!r}). Fresh writes "
-                f"must use the active policy. Historical-event replay loads "
-                f"events from the audit log under the policy in effect at write "
-                f"time and goes through the persister/replay layer — NOT through "
-                f"fresh schema construction with a backdated policy_version. Per "
-                f"`severity-policy-versioned-for-replay` (docs/invariants.md)."
-            )
+            # Historical record: trust the row. Versioned-replay
+            # cross-check belongs in the persister/replay layer.
+            return self
 
         baseline = self.original_severity if self.original_severity is not None else self.severity
         expected = SEVERITY_POLICY.get(self.finding_type)
@@ -343,7 +336,7 @@ class ReviewFinding(BaseModel):
         + overrider_id. All three or none. Backs `hitl-gates-high-severity`
         + `severity-set-by-policy`.
 
-        Codex round-6 audit (HIGH): without this gate, a caller could set
+        Without this gate, a caller could set
         `original_severity=CRITICAL, severity=LOW, override_reason=None,
         overrider_id=None` and bypass the HITL gate. The policy-baseline
         check at `_enforce_severity_matches_policy` PASSES (CRITICAL
@@ -378,10 +371,9 @@ class ReviewFinding(BaseModel):
         # override claims a reviewer-changed-the-severity event that did
         # nothing. A reviewer's intent to ACK-without-change is the
         # `APPROVE` outcome on `PerFindingDecision`, NOT a SEVERITY_OVERRIDE
-        # with identical values. Codex round-6 user-suggested fold: cheap
-        # to pin, catches a real producer-bug class (HITL UI submits the
-        # override path without checking whether the reviewer actually
-        # changed the value).
+        # with identical values. Catches the producer-bug class where a
+        # HITL UI submits the override path without checking whether the
+        # reviewer actually changed the value.
         if all_set and self.severity == self.original_severity:
             raise ValueError(
                 f"ReviewFinding HITL override claims SEVERITY_OVERRIDE but "
@@ -391,9 +383,9 @@ class ReviewFinding(BaseModel):
                 f"change is the `PerFindingDecision.APPROVE` outcome, not a "
                 f"SEVERITY_OVERRIDE with identical values."
             )
-        # Non-blank override_reason when envelope is set. Codex round-7
-        # caught: the triplet's `is None` check admits `override_reason=""`
-        # and `override_reason="   "` because they're not None. But
+        # Non-blank override_reason when envelope is set. The triplet's
+        # `is None` check admits `override_reason=""` and
+        # `override_reason="   "` because they're not None. But
         # `PerFindingDecision` (the cross-boundary HITL decision shape)
         # already rejects empty reasons via `Field(max_length=500)` +
         # the non-APPROVE-needs-reason validator. The ReviewFinding's
@@ -426,9 +418,11 @@ class ReviewFinding(BaseModel):
         round id at `analysis_round.py::compute_round_id`). The reducer
         would dedup under the bad key on replay.
 
-        Codex round-5 audit (MEDIUM-confidence valid finding): pinning
-        the hash recipe at the in-memory layer makes ReviewFinding's
-        dedup contract identical to FindingEvent's append-only contract.
+        Pinning the hash recipe at the in-memory layer makes
+        `ReviewFinding`'s dedup contract identical to `FindingEvent`'s
+        append-only contract — fixture code using
+        `compute_identity_hash({...})` is on the wrong recipe and
+        fails here loud.
         """
         # Local import: `audit.events` imports from schemas for
         # PerFindingDecision / PublishDestination / ReviewDimension,

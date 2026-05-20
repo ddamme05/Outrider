@@ -102,12 +102,11 @@ def test_review_finding_severity_accepts_enum_member() -> None:
     """FindingSeverity enum member admits cleanly when it matches the
     policy baseline for the finding_type.
 
-    Codex round-5 audit caught this test admitting `SQL_INJECTION +
-    HIGH` even though SEVERITY_POLICY[SQL_INJECTION] == CRITICAL — the
-    test was checking enum-typing without checking the policy gate.
-    Switched to HARDCODED_SECRET (whose policy severity IS HIGH) so the
-    severity field exercise stays meaningful while passing the new
-    `_enforce_severity_matches_policy` validator.
+    Uses HARDCODED_SECRET (whose policy severity IS HIGH) so the
+    severity field exercise stays meaningful while passing the
+    `_enforce_severity_matches_policy` validator. An earlier shape of
+    this test used `SQL_INJECTION + HIGH`, which the policy gate
+    correctly rejects.
     """
     finding = _build_finding(
         finding_type=FindingType.HARDCODED_SECRET,
@@ -309,9 +308,9 @@ def test_review_finding_query_match_id_admits_at_max() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Codex round-5 audit folds: severity-policy gate + content-hash recipe gate.
-# Backs invariants `severity-set-by-policy` (docs/invariants.md §237) and the
-# in-memory mirror of FindingEvent._verify_content_hash.
+# Severity-policy gate + content-hash recipe gate. Backs invariants
+# `severity-set-by-policy` (docs/invariants.md §237) and the in-memory
+# mirror of FindingEvent._verify_content_hash.
 # ---------------------------------------------------------------------------
 
 
@@ -319,7 +318,7 @@ def test_review_finding_rejects_severity_drifted_from_policy() -> None:
     """A finding constructed with severity != SEVERITY_POLICY[finding_type]
     under the LIVE policy must fail.
 
-    Codex round-5 audit: pre-fold a row like
+    pre-fold a row like
     `(SQL_INJECTION, LOW, policy_version="1.0.0")` admitted even though
     SEVERITY_POLICY[SQL_INJECTION] == CRITICAL under policy_version 1.0.0.
     """
@@ -368,21 +367,29 @@ def test_review_finding_rejects_hitl_override_with_wrong_original_severity() -> 
         )
 
 
-def test_review_finding_rejects_non_active_policy_version() -> None:
-    """Codex round-6 audit (HIGH): the previous "skip if non-ACTIVE"
-    path was a quiet bypass — a fresh-write attacker could smuggle
-    `policy_version="0.9.0"` and dodge the live-policy check. Fresh
-    schema construction now REJECTS any non-ACTIVE policy_version.
-    Historical-event replay belongs in the persister/replay layer,
-    which is a separate code path that runs against
-    `load_policy_for_version(...)`, NOT fresh ReviewFinding
-    construction. Per `severity-policy-versioned-for-replay`."""
-    with pytest.raises(ValidationError, match="ACTIVE_POLICY_VERSION"):
-        _build_finding(
-            finding_type=FindingType.SQL_INJECTION,
-            severity=FindingSeverity.CRITICAL,
-            policy_version="0.9.0",  # not ACTIVE
-        )
+def test_review_finding_admits_historical_policy_version() -> None:
+    """Replay-aware scoping. `model_validate` is the same code path
+    that reconstructs historical findings; a historical row under an
+    older `policy_version` MUST validate cleanly. The schema's
+    SEVERITY_POLICY match check only fires when `policy_version ==
+    ACTIVE_POLICY_VERSION`; older versions skip and trust the row.
+
+    The earlier hard-block on non-ACTIVE policy_version (intended as
+    a fresh-write smuggle defense) broke replay reconstruction —
+    `TypeAdapter.validate_python` runs the same validators, can't
+    distinguish a fresh write from a historical rehydration, and has
+    no synchronous historical-policy loader. The smuggle defense
+    belongs in the producer/persister layer, not the schema layer.
+    """
+    finding = _build_finding(
+        finding_type=FindingType.SQL_INJECTION,
+        # Under a historical policy "0.9.0" the severity could
+        # legitimately be anything that was correct AT WRITE TIME.
+        severity=FindingSeverity.LOW,
+        policy_version="0.9.0",  # not ACTIVE — replay scenario
+    )
+    assert finding.policy_version == "0.9.0"
+    assert finding.severity == FindingSeverity.LOW
 
 
 def test_review_finding_rejects_drifted_content_hash() -> None:
@@ -391,7 +398,7 @@ def test_review_finding_rejects_drifted_content_hash() -> None:
     survive into `AnalysisRound.round_id` and the reducer would dedup
     under the bad key on replay.
 
-    Codex round-5 audit: pre-fold ReviewFinding.content_hash was only
+    pre-fold ReviewFinding.content_hash was only
     shape-validated. Several fixtures seeded it with
     `compute_identity_hash(...)` instead of the canonical recipe.
     """
@@ -401,9 +408,7 @@ def test_review_finding_rejects_drifted_content_hash() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Codex round-6 audit: HITL override triplet coherence + non-ACTIVE
-# policy_version rejection. Same backing invariants as round-5 but the
-# round-5 fold left two HIGH-confidence bypasses open.
+# HITL override triplet coherence + replay-aware policy_version scoping.
 # ---------------------------------------------------------------------------
 
 
@@ -411,7 +416,7 @@ def test_review_finding_rejects_partial_override_original_only() -> None:
     """`original_severity` set but `override_reason` and `overrider_id`
     None — partial override. The triplet must be all-set-or-all-None.
 
-    Codex round-6 audit (HIGH): without this, a caller could set
+    without this, a caller could set
     original_severity=CRITICAL + severity=LOW + override_reason=None +
     overrider_id=None — the policy-baseline check PASSES (CRITICAL
     matches policy) but no real HITL decision backs the downgrade.
@@ -474,7 +479,7 @@ def test_review_finding_rejects_no_op_override() -> None:
     """An override envelope with `severity == original_severity` is a
     producer bug — the reviewer's intent to ACK without change is
     `PerFindingDecision.APPROVE`, not `SEVERITY_OVERRIDE` with
-    identical values. Codex round-6 user-suggested check: cheap to
+    identical values. cheap to
     pin, catches a HITL UI submitting the override path without
     actually changing the value.
     """
@@ -488,7 +493,7 @@ def test_review_finding_rejects_no_op_override() -> None:
 
 
 def test_review_finding_rejects_empty_override_reason() -> None:
-    """Codex round-7 (HIGH): the triplet's `is None` check admitted
+    """the triplet's `is None` check admitted
     `override_reason=""`. An override with no substantive reason is
     the bug class `hitl-gates-high-severity` defends against.
     `PerFindingDecision` already rejects empty reasons; the carrier
