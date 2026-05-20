@@ -576,6 +576,28 @@ def test_canonicalize_for_hash_rejects_basemodel_in_list() -> None:
         canonicalize_for_hash({"items": [_Inner(x=1)]})
 
 
+def test_canonicalize_for_hash_rejects_tuple_value() -> None:
+    """Tuples are NOT part of the JSON-native contract this module
+    enforces, even though `json.dumps` would silently serialize them
+    as arrays. Implicit shape coercion is the kind of bug class the
+    chokepoint is designed to prevent. Callers convert tuple→list
+    explicitly so the shape decision is intentional at the call site.
+    Post-PR review fold (CodeRabbit + Copilot convergent).
+    """
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    with pytest.raises(TypeError, match="tuples are not part of the canonical"):
+        canonicalize_for_hash({"k": ("a", "b")})  # type: ignore[dict-item]
+
+
+def test_canonicalize_for_hash_rejects_nested_tuple() -> None:
+    """Recursive guard catches a tuple buried inside a list."""
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    with pytest.raises(TypeError, match="tuples are not part of the canonical"):
+        canonicalize_for_hash({"items": [("a", 1)]})  # type: ignore[list-item]
+
+
 def test_analyze_completed_event_rejects_non_analyze_node_id() -> None:
     """Literal['analyze'] rejects bad node_id at construction.
 

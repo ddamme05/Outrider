@@ -151,6 +151,21 @@ def _validate_hash_payload(value: Any, path: str) -> None:
             f"promise. Pass `sorted(...)` as a list to make the order "
             f"explicit + reproducible."
         )
+    if isinstance(value, tuple):
+        # Tuples are not part of the JSON-native value contract this
+        # module enforces. `json.dumps` silently serializes them as
+        # arrays, which is exactly the implicit shape coercion this
+        # module is trying to prevent. Callers MUST convert via
+        # `list(...)` (or `sorted(...)` for set-derived input) so the
+        # shape decision is explicit at the call site. Post-PR review
+        # fold (CodeRabbit + Copilot convergent).
+        raise TypeError(
+            f"canonicalize_for_hash got a tuple at {path}; tuples are not "
+            f"part of the canonical payload contract (JSON-native: "
+            f"str/int/bool/None/list/dict). Convert to list explicitly "
+            f"so shape decisions are intentional — json.dumps would "
+            f"silently serialize tuples as arrays."
+        )
     if isinstance(value, dict):
         bad_keys = [k for k in value if not isinstance(k, str)]
         if bad_keys:
