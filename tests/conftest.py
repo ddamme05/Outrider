@@ -12,6 +12,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import outrider.policy.dimensions as _policy_dimensions
 import outrider.policy.severity as _policy_severity
 
 if TYPE_CHECKING:
@@ -40,11 +41,21 @@ if TYPE_CHECKING:
 # independent binding which `monkeypatch.setattr("outrider.api.lifespan.SEVERITY_POLICY", ...)`
 # can swap without tripping the severity-module check).
 _ORIGINAL_SEVERITY_POLICY = _policy_severity.SEVERITY_POLICY
+_ORIGINAL_FINDING_TYPE_TO_DIMENSION = _policy_dimensions.FINDING_TYPE_TO_DIMENSION
 
 
 @pytest.fixture(autouse=True)
 def _no_severity_policy_patching() -> Iterator[None]:
-    """Assert SEVERITY_POLICY identity at teardown (production + lifespan re-export)."""
+    """Assert SEVERITY_POLICY identity at teardown (production + lifespan re-export).
+
+    Per §8 of `specs/2026-05-19-analyze-foundation.md`: also guards
+    `outrider.policy.dimensions.FINDING_TYPE_TO_DIMENSION` identity.
+    Patching the dimension mapping breaks the module-load lockstep
+    guard in `outrider.policy.dimensions._verify_lockstep` and would
+    silently misroute findings to the wrong dimension at classification
+    time. Same rule applies: never patch the module attribute. Construct
+    a separate dict locally if you need to test alternate mappings.
+    """
     yield
     # `if/raise` (not `assert`) so the guard survives `python -O` which
     # strips `assert` statements; same rationale as the lifespan
@@ -71,6 +82,16 @@ def _no_severity_policy_patching() -> Iterator[None]:
                 "outrider.policy.severity binding). Same rule applies: never "
                 "patch this binding either. See §0c data-integrity audit M-4."
             )
+    # Per §8: dimension mapping identity must hold too.
+    if _policy_dimensions.FINDING_TYPE_TO_DIMENSION is not _ORIGINAL_FINDING_TYPE_TO_DIMENSION:
+        raise RuntimeError(
+            "outrider.policy.dimensions.FINDING_TYPE_TO_DIMENSION was rebound "
+            "during this test. Patching the dimension mapping breaks the "
+            "module-load lockstep guard and would silently misroute findings "
+            "to wrong dimensions at classification time. Construct a separate "
+            "dict locally if you need alternate mappings. See "
+            "specs/2026-05-19-analyze-foundation.md §8."
+        )
 
 
 @pytest.fixture(scope="session")
