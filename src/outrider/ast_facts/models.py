@@ -191,12 +191,33 @@ class ScopeUnit(BaseModel):
     name: str
     qualified_name: str
     file_path: str
-    line_start: int
-    line_end: int
-    byte_start: int
-    byte_end: int
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    byte_start: int = Field(ge=0)
+    byte_end: int = Field(ge=0)
     decorators: tuple[str, ...] = ()
     parent_scope_id: str | None = None
+
+    @model_validator(mode="after")
+    def _enforce_line_and_byte_ordering(self) -> Self:
+        """`line_end >= line_start` and `byte_end >= byte_start`.
+
+        Category F sweep — `Span` enforces the byte ordering at its own
+        construction, but `ScopeUnit` did not, and `to_span()` constructs
+        a Span only when callers ASK for one. A producer-side bug (or a
+        test fixture) that built a ScopeUnit with descending byte/line
+        order would survive into the analyze prompt, coordinates spans,
+        and audit events without ever passing through Span's validator.
+        """
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"ScopeUnit.line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        if self.byte_end < self.byte_start:
+            raise ValueError(
+                f"ScopeUnit.byte_end ({self.byte_end}) must be >= byte_start ({self.byte_start})"
+            )
+        return self
 
     def to_span(self) -> "Span":
         """Return a `Span` covering this scope unit's byte range.
@@ -217,7 +238,7 @@ class ImportRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    line: int
+    line: int = Field(ge=1)
     import_kind: Literal["direct", "from", "relative", "star"]
     module: str
     names: tuple[str, ...] = ()
@@ -236,7 +257,7 @@ class CallSite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    line: int
+    line: int = Field(ge=1)
     callee_name: str
     enclosing_scope_id: str
 
@@ -247,7 +268,7 @@ class AssignmentSite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    line: int
+    line: int = Field(ge=1)
     target_name: str
     enclosing_scope_id: str
 
@@ -272,13 +293,58 @@ class ChangedRegion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str
-    patch_line_start: int
-    patch_line_end: int
-    head_line_start: int
-    head_line_end: int
+    patch_line_start: int = Field(ge=1)
+    patch_line_end: int = Field(ge=1)
+    head_line_start: int = Field(ge=1)
+    head_line_end: int = Field(ge=1)
     base_line_start: int | None = None
     base_line_end: int | None = None
     owning_scope_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _enforce_line_ordering_and_base_pairing(self) -> Self:
+        """Cross-field constraints on the three (start, end) line pairs.
+
+        Category F sweep — three line-pair invariants:
+
+        1. `patch_line_end >= patch_line_start`
+        2. `head_line_end >= head_line_start`
+        3. `base_line_start is None ↔ base_line_end is None`
+           AND when both non-None, `base_line_end >= base_line_start`.
+
+        The base pair is optional (pure additions don't have a base) but
+        must be paired — None on one side and not the other is a bug
+        in the producer that would propagate to downstream coordinates
+        translation as a silently asymmetric region.
+        """
+        if self.patch_line_end < self.patch_line_start:
+            raise ValueError(
+                f"ChangedRegion.patch_line_end ({self.patch_line_end}) must be >= "
+                f"patch_line_start ({self.patch_line_start})"
+            )
+        if self.head_line_end < self.head_line_start:
+            raise ValueError(
+                f"ChangedRegion.head_line_end ({self.head_line_end}) must be >= "
+                f"head_line_start ({self.head_line_start})"
+            )
+        base_start_none = self.base_line_start is None
+        base_end_none = self.base_line_end is None
+        if base_start_none != base_end_none:
+            raise ValueError(
+                f"ChangedRegion.base_line_start={self.base_line_start!r} and "
+                f"base_line_end={self.base_line_end!r} must be paired — both None "
+                f"(pure addition) or both set (modification/deletion)"
+            )
+        if (
+            self.base_line_start is not None
+            and self.base_line_end is not None
+            and self.base_line_end < self.base_line_start
+        ):
+            raise ValueError(
+                f"ChangedRegion.base_line_end ({self.base_line_end}) must be >= "
+                f"base_line_start ({self.base_line_start})"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
