@@ -537,3 +537,150 @@ def test_llm_call_event_rejects_degraded_mode_on_non_analyze_node() -> None:
             degraded_mode=True,
             degradation_reason="parse_failed",
         )
+
+
+# ---------------------------------------------------------------------------
+# Post-PR review folds.
+# ---------------------------------------------------------------------------
+
+
+def test_canonicalize_for_hash_rejects_nested_int_keys() -> None:
+    """Nested-dict int keys hit the same int→str coercion collision
+    class as top-level int keys. Post-PR review fold: validation is
+    now recursive, so a buried `{1: ...}` inside a list-of-dicts payload
+    fails at canonicalize time, not silently at json.dumps."""
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    with pytest.raises(TypeError, match="str keys at every dict level"):
+        canonicalize_for_hash({"outer": [{"a": 1}, {2: "bad"}]})  # type: ignore[dict-item]
+
+
+def test_canonicalize_for_hash_rejects_set_values() -> None:
+    """Set iteration is insertion-derived, not stable across processes —
+    treating it as canonical would defeat deterministic encoding."""
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    with pytest.raises(TypeError, match="set iteration is insertion-derived"):
+        canonicalize_for_hash({"k": {"a", "b", "c"}})  # type: ignore[dict-item]
+
+
+def test_canonicalize_for_hash_rejects_basemodel_in_list() -> None:
+    """Recursive guard catches a BaseModel buried inside a list (the
+    previous one-level check missed this)."""
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    class _Inner(BaseModel):
+        x: int
+
+    with pytest.raises(TypeError, match="Pydantic BaseModel"):
+        canonicalize_for_hash({"items": [_Inner(x=1)]})
+
+
+def test_analyze_completed_event_rejects_non_analyze_node_id() -> None:
+    """Literal['analyze'] rejects bad node_id at construction.
+
+    The earlier `str` default 'analyze' admitted construction with
+    `node_id='trace'`; post-PR review fold tightens to Literal so the
+    schema enforces what the class name already promises.
+    """
+    with pytest.raises(ValidationError):
+        AnalyzeCompletedEvent(
+            policy_version="1.0.0",
+            **{**_completed_kwargs_minimum(), "node_id": "trace"},  # type: ignore[arg-type]
+        )
+
+
+def test_trace_candidate_candidate_id_bound_to_payload() -> None:
+    """Mirror of AnalysisRound's payload-binding validator — arbitrary
+    64-hex candidate_id rejected even though it matches the pattern.
+    Closes the dedup-bypass risk for TraceCandidate the same way #1
+    closed it for AnalysisRound."""
+    from outrider.policy.canonical import compute_candidate_id, compute_identity_hash
+    from outrider.schemas import TraceCandidate
+
+    prop = compute_identity_hash({"x": 1})
+    path = "src/foo.py"
+    reason = "r"
+    with pytest.raises(ValidationError, match="does not match the canonical id"):
+        TraceCandidate(
+            candidate_id="0" * 64,  # pattern-valid but wrong
+            source_proposal_hash=prop,
+            reason=reason,
+            candidate_path=path,
+        )
+    # Canonical id is admitted:
+    canonical = compute_candidate_id(
+        source_proposal_hash=prop,
+        candidate_path=path,
+        reason=reason,
+    )
+    c = TraceCandidate(
+        candidate_id=canonical,
+        source_proposal_hash=prop,
+        reason=reason,
+        candidate_path=path,
+    )
+    assert c.candidate_id == canonical
+
+
+def test_trace_candidate_proposal_admitted_layer_enforces_path_validation() -> None:
+    """Admitted-layer schema validator rejects un-canonicalized paths.
+
+    The raw layer (TraceCandidateProposalRaw) stays loose by design —
+    it admits the model's unvalidated string long enough for the parser
+    to emit a rejection event. The admitted layer is where the
+    'already passed validate_diff_path' invariant becomes structural.
+    Pydantic V2 surfaces non-ValueError exceptions raised inside
+    field_validators directly, so the CoordinateError propagates
+    without being wrapped.
+    """
+    from outrider.coordinates import CoordinateError
+    from outrider.schemas.llm import TraceCandidateProposal
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        TraceCandidateProposal(candidate_path="../escape.py", reason="r")
+
+
+def test_skip_reason_stage_totality_at_import() -> None:
+    """Every SkipReason value is in exactly one stage set. The module-
+    load assertion below fails-loud on a future enum addition that
+    forgets to update one of the two sets. This test pins behavior."""
+    from outrider.ast_facts.models import (
+        _ANALYZE_STAGE_SKIP_REASONS,
+        _PARSER_STAGE_SKIP_REASONS,
+        SkipReason,
+    )
+
+    # Disjoint.
+    assert not (_PARSER_STAGE_SKIP_REASONS & _ANALYZE_STAGE_SKIP_REASONS)
+    # Together cover every enum member.
+    assert frozenset(SkipReason) == _PARSER_STAGE_SKIP_REASONS | _ANALYZE_STAGE_SKIP_REASONS
+
+
+def test_analysis_round_rejects_ended_before_started() -> None:
+    """Coherence guard: an ended_at earlier than started_at fails at
+    construction. Pre-fold this would have admitted impossible timing
+    and leaked into latency aggregates."""
+    from datetime import timedelta
+
+    from outrider.policy.canonical import compute_round_id
+
+    finding = _valid_finding()
+    started = datetime.now(UTC)
+    ended = started - timedelta(minutes=5)
+    round_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py",),
+        files_skipped=(),
+        finding_content_hashes=(finding.content_hash,),
+    )
+    with pytest.raises(ValidationError, match="must be >= started_at"):
+        AnalysisRound(
+            round_id=round_id,
+            pass_index=0,
+            findings=(finding,),
+            files_examined=("src/foo.py",),
+            files_skipped=(),
+            started_at=started,
+            ended_at=ended,
+        )

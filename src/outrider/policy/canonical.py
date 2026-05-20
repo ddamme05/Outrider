@@ -11,7 +11,7 @@ in each schema's prose. This module is the durable fix.
 Consumed by `AnalysisRound.round_id`, `TraceCandidate.candidate_id`,
 and downstream proposal/response hashes in the analyze-implementation
 sister spec. Callers chain `compute_identity_hash(payload)` for a hex
-digest; `_canonicalize_for_hash(payload)` is exposed for tests that
+digest; `canonicalize_for_hash(payload)` is exposed for tests that
 pin the BYTE OUTPUT (not just digest) so a future `json.dumps`
 semantics change fails loudly with a visible diff.
 """
@@ -99,23 +99,13 @@ def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     violations rather than coercing silently — a coercion contract would
     create the same encoding-collision class.
     """
-    if not all(isinstance(k, str) for k in payload):
-        bad_keys = [k for k in payload if not isinstance(k, str)]
-        raise TypeError(
-            f"canonicalize_for_hash requires str keys; got {len(bad_keys)} "
-            f"non-str: {bad_keys[:5]!r}. Convert keys via `str(...)` before "
-            f"hashing (silent int→str coercion under sort_keys=True is the "
-            f"encoding-collision class the canonical recipe is designed to "
-            f"prevent)."
-        )
-    # Foundation-wide data-integrity audit F4: reject Pydantic BaseModel
-    # instances as values. Without this, a caller passing a model directly
-    # (e.g., `payload["span"] = raw.span`) hits `json.dumps`'s default
-    # serializer which raises `TypeError` deep in the stack — the
-    # diagnostic message points at `json.dumps`, not at the caller's
-    # contract violation. Explicit rejection here surfaces the right
-    # escape hatch (`model.model_dump(mode='json')`).
-    _reject_basemodel_values(payload)
+    # Recursive validation: nested dict keys can still hit the int-to-str
+    # collision class, and nested values can still smuggle a BaseModel
+    # past the chokepoint. Walk the entire payload tree once before
+    # `json.dumps`, surfacing typed errors that name the offending path
+    # rather than letting json.dumps's default raise from deep in the
+    # stack. Copilot/CodeRabbit/Codex review convergent fold.
+    _validate_hash_payload(payload, "$")
     return json.dumps(
         payload,
         sort_keys=True,
@@ -125,33 +115,62 @@ def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def _reject_basemodel_values(payload: dict[str, Any]) -> None:
-    """Walk one level deep; fail-loud on Pydantic BaseModel instances.
+def _validate_hash_payload(value: Any, path: str) -> None:
+    """Recursively enforce the canonical-hash payload contract.
 
-    The canonical recipe documents the value contract as JSON-native
-    primitives. A model instance silently breaks that — `json.dumps`'s
-    default raises `TypeError` with a message pointing at `dumps`, not
-    at the caller. Naming the surface here keeps the diagnostic
-    actionable: "convert via model_dump(mode='json') first".
+    Per `canonicalize_for_hash`'s docstring contract: values must be
+    JSON-native primitives (`str` / `int` / `bool` / `None` / `list` /
+    `dict`), `dict` keys at EVERY level must be `str`, and Pydantic
+    BaseModel instances are rejected with a typed pointer at the
+    `model_dump(mode='json')` escape hatch.
 
-    Only walks one level — nested lists/dicts of plain primitives are
-    fine. Deeper nesting of BaseModel inside lists/dicts is a sister-
-    spec concern (the foundation never constructs payloads that nest
-    models deeper than one level).
+    Non-JSON-native containers like `set` / `frozenset` are rejected
+    explicitly here even though `json.dumps` would also reject them:
+    the diagnostic message naming the offending path is more actionable
+    than the stack trace `json.dumps` produces, AND `set` carries a
+    silent reordering risk because Python's set iteration order is
+    insertion-derived but not stable across processes. Treating sets as
+    canonical inputs would defeat the deterministic-encoding promise.
     """
-    # Local import to keep `policy/canonical.py` import-light for the
-    # `schemas/ → audit/ → policy/` import graph; pydantic is a runtime
-    # dep but not needed at module-load time.
+    # Local import keeps the module load light — see `_validate_hash_payload`
+    # invocation site for rationale.
     from pydantic import BaseModel  # noqa: PLC0415
 
-    for k, v in payload.items():
-        if isinstance(v, BaseModel):
+    if isinstance(value, BaseModel):
+        raise TypeError(
+            f"canonicalize_for_hash got a Pydantic BaseModel at {path}: "
+            f"{type(value).__name__}. Convert via `model.model_dump(mode='json')` "
+            f"before hashing — the canonical recipe requires JSON-native "
+            f"primitives (str/int/bool/None/list/dict)."
+        )
+    if isinstance(value, (set, frozenset)):
+        raise TypeError(
+            f"canonicalize_for_hash got a {type(value).__name__} at {path}; "
+            f"set iteration is insertion-derived and not stable across "
+            f"processes, so set values defeat the deterministic-encoding "
+            f"promise. Pass `sorted(...)` as a list to make the order "
+            f"explicit + reproducible."
+        )
+    if isinstance(value, dict):
+        bad_keys = [k for k in value if not isinstance(k, str)]
+        if bad_keys:
             raise TypeError(
-                f"canonicalize_for_hash got a Pydantic BaseModel at key {k!r}: "
-                f"{type(v).__name__}. Convert via `model.model_dump(mode='json')` "
-                f"before hashing — the canonical recipe requires JSON-native "
-                f"primitives (str/int/bool/None/list/dict)."
+                f"canonicalize_for_hash requires str keys at every dict "
+                f"level; found {len(bad_keys)} non-str at {path}: "
+                f"{bad_keys[:5]!r}. Convert keys via `str(...)` before "
+                f"hashing (silent int→str coercion under sort_keys=True "
+                f"is the encoding-collision class the canonical recipe is "
+                f"designed to prevent)."
             )
+        for k, v in value.items():
+            _validate_hash_payload(v, f"{path}.{k}")
+        return
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            _validate_hash_payload(item, f"{path}[{i}]")
+        return
+    # Leaf: str/int/bool/None/float — let json.dumps's allow_nan=False
+    # handle NaN/Inf rejection.
 
 
 def compute_identity_hash(payload: dict[str, Any]) -> str:
