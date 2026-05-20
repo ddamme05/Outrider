@@ -462,6 +462,160 @@ class PublishRoutingEvent(AuditEventBase):
     reason: Literal["reviewable_diff_line", "unchanged_region", "non_diffed_file"]
 
 
+# ---------------------------------------------------------------------------
+# Analyze-foundation §5: three new event subclasses for the analyze node.
+# Schema-only — emission semantics live in the analyze-implementation
+# sister spec.
+# ---------------------------------------------------------------------------
+
+
+# Short SHA-256-hex prefix pattern for hostile-string fingerprinting per
+# `specs/2026-05-19-analyze-foundation.md` §5 (FindingProposalRejectedEvent).
+# `_SHA256_HEX_PATTERN` matches the full 64-char digest; this matches the
+# 16-char prefix used when storing `sha256(raw_value)[:16]` to dedup audit
+# rows without leaking model-controlled raw values per `DECISIONS.md#014`.
+_SHA256_HEX_PATTERN_SHORT: Final = r"^[a-f0-9]{16}$"
+
+
+class AnalyzeCompletedEvent(AuditEventBase):
+    """Per-pass aggregate emitted at the end of each analyze ⇄ trace iteration.
+
+    Counter fields are cross-validated by two model validators so a counter
+    that lies (`n_findings_emitted=5` with only 3 findings actually fired)
+    fails Pydantic construction, not just reads weird. Per §5 of
+    `specs/2026-05-19-analyze-foundation.md` and post-split audit S7.
+    """
+
+    event_type: Literal["analyze_completed"] = "analyze_completed"
+    pass_index: int = Field(ge=0)
+    node_id: str = "analyze"
+    n_files_analyzed: int = Field(ge=0)
+    n_files_skipped: int = Field(ge=0)
+    n_llm_calls: int = Field(ge=0)
+    n_proposals_seen: int = Field(ge=0)
+    n_findings_emitted: int = Field(ge=0)
+    n_proposals_rejected: int = Field(ge=0)
+    n_responses_rejected: int = Field(ge=0)
+    n_trace_candidates_emitted: int = Field(ge=0)
+    total_input_tokens: int = Field(ge=0)
+    total_cached_tokens: int = Field(ge=0)
+    total_output_tokens: int = Field(ge=0)
+    total_cost_usd: float = Field(ge=0)
+    pricing_version: str
+    policy_version: str
+    analyze_model: str
+
+    @model_validator(mode="after")
+    def _enforce_proposal_accounting(self) -> Self:
+        """`n_proposals_seen == n_findings_emitted + n_proposals_rejected`.
+
+        Every raw proposal either becomes a finding or gets rejected; total
+        accounting must hold. Response-level rejections (`n_responses_rejected`)
+        are separate — those don't have a proposal to count, so they don't
+        enter this equation.
+        """
+        expected = self.n_findings_emitted + self.n_proposals_rejected
+        if self.n_proposals_seen != expected:
+            raise ValueError(
+                f"Proposal accounting mismatch: n_proposals_seen={self.n_proposals_seen} "
+                f"!= n_findings_emitted({self.n_findings_emitted}) + "
+                f"n_proposals_rejected({self.n_proposals_rejected}) = {expected}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_response_accounting(self) -> Self:
+        """`n_responses_rejected <= n_llm_calls`.
+
+        Rejected responses are a subset of LLM calls: a response only
+        exists if the call succeeded enough to return text. More
+        rejected-responses than calls is incoherent.
+        """
+        if self.n_responses_rejected > self.n_llm_calls:
+            raise ValueError(
+                f"n_responses_rejected={self.n_responses_rejected} cannot exceed "
+                f"n_llm_calls={self.n_llm_calls}; rejected responses are a subset of calls"
+            )
+        return self
+
+
+class FindingProposalRejectedEvent(AuditEventBase):
+    """Proposal-level rejection — one per model proposal that failed admission.
+
+    Stores `claimed_finding_type_hash` (SHA-256 short prefix) + length
+    rather than the raw model string per `DECISIONS.md#014` point 1:
+    every model-originated value is hostile until validated, so audit
+    rows must not carry user code or prompt/completion content.
+    Cross-field validator pairs `claimed_evidence_tier` with the
+    `evidence_tier_not_in_enum` reason bidirectionally.
+    """
+
+    event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
+    node_id: str = "analyze"
+    file_path: Annotated[str, Field(max_length=1024)]
+    proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    claimed_evidence_tier: EvidenceTier | None = None
+    claimed_finding_type_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN_SHORT)]
+    claimed_finding_type_len: int = Field(ge=0, le=128)
+    rejection_reason: Literal[
+        "query_match_id_not_in_registry",
+        "trace_path_not_admissible",
+        "finding_type_not_in_enum",
+        "evidence_tier_not_in_enum",
+        "span_outside_scope_unit",
+        "span_outside_file",
+        "schema_construction_failed",
+    ]
+    rejection_detail: Annotated[str, Field(max_length=500)]
+
+    @model_validator(mode="after")
+    def _enforce_claimed_evidence_tier_coupling(self) -> Self:
+        """`claimed_evidence_tier is None` iff `rejection_reason == "evidence_tier_not_in_enum"`.
+
+        Bidirectional rule per §5: when the model returned a tier value
+        that didn't parse to `EvidenceTier`, there's no admitted tier to
+        record (the field is None and the reason names that exact case).
+        For ALL other rejection reasons, the model's claimed tier DID
+        parse (the rejection happened on a different axis — bad
+        query_match_id, bad span, etc.), so the parsed tier MUST be
+        recorded.
+        """
+        is_tier_failure = self.rejection_reason == "evidence_tier_not_in_enum"
+        tier_is_none = self.claimed_evidence_tier is None
+        if is_tier_failure and not tier_is_none:
+            raise ValueError(
+                f"rejection_reason='evidence_tier_not_in_enum' requires "
+                f"claimed_evidence_tier is None (the model's tier didn't parse); "
+                f"got claimed_evidence_tier={self.claimed_evidence_tier!r}"
+            )
+        if (not is_tier_failure) and tier_is_none:
+            raise ValueError(
+                f"rejection_reason={self.rejection_reason!r} requires a non-None "
+                f"claimed_evidence_tier (the model's tier parsed successfully on "
+                f"this code path; rejection happened on a different axis)"
+            )
+        return self
+
+
+class AnalyzeResponseRejectedEvent(AuditEventBase):
+    """Response-level rejection — the LLM response failed to parse as `AnalyzeResponseRaw`.
+
+    Distinct event from `FindingProposalRejectedEvent` because that event
+    presupposes a proposal; no proposal exists when the raw response
+    itself fails to parse. `response_hash` is the SHA-256 of the FULL
+    raw response text encoded as UTF-8 bytes (no 8 KiB prefix per
+    post-split audit S11). Hash-only — no content leak per
+    `DECISIONS.md#014`.
+    """
+
+    event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
+    node_id: str = "analyze"
+    file_path: Annotated[str, Field(max_length=1024)]
+    response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    rejection_reason: Literal["raw_response_unparseable"]
+    rejection_detail: Annotated[str, Field(max_length=500)]
+
+
 # Discriminated union for replay: TypeAdapter(AuditEvent).validate_python({...})
 # selects the right concrete subtype using the event_type field.
 AuditEvent = Annotated[
@@ -474,7 +628,10 @@ AuditEvent = Annotated[
     | HITLRequestEvent
     | HITLDecisionEvent
     | PublishEvent
-    | PublishRoutingEvent,
+    | PublishRoutingEvent
+    | AnalyzeCompletedEvent
+    | FindingProposalRejectedEvent
+    | AnalyzeResponseRejectedEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -493,18 +650,24 @@ AuditEventAdapter: Final[
         | HITLDecisionEvent
         | PublishEvent
         | PublishRoutingEvent
+        | AnalyzeCompletedEvent
+        | FindingProposalRejectedEvent
+        | AnalyzeResponseRejectedEvent
     ]
 ] = TypeAdapter(AuditEvent)
 
 
 __all__ = [
     "AgentTransitionEvent",
+    "AnalyzeCompletedEvent",
+    "AnalyzeResponseRejectedEvent",
     "AuditEvent",
     "AuditEventAdapter",
     "AuditEventBase",
     "ContextManifestEntry",
     "FileExaminationEvent",
     "FindingEvent",
+    "FindingProposalRejectedEvent",
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
