@@ -67,9 +67,16 @@ class PerFindingDecision(BaseModel):
 
     @model_validator(mode="after")
     def enforce_override_fields(self) -> Self:
-        """Spec §7.4: bidirectional override-fields gate + non-APPROVE needs reason."""
+        """Spec §7.4: bidirectional override-fields gate + non-APPROVE needs reason.
+
+        `is None` / `is not None` rather than truthiness — `FindingSeverity`
+        is a `StrEnum` where members today are all truthy strings, but
+        any future member with value `""` (e.g., a `NONE = ""` placeholder)
+        would silently round-trip past a `not self.override_severity`
+        truthy-check. Identity comparison is the documented intent.
+        """
         if self.outcome == PerFindingOutcome.SEVERITY_OVERRIDE and (
-            not self.override_severity or not self.original_severity
+            self.override_severity is None or self.original_severity is None
         ):
             raise ValueError("severity_override requires override_severity and original_severity")
         if self.outcome != PerFindingOutcome.SEVERITY_OVERRIDE and (
@@ -79,8 +86,8 @@ class PerFindingDecision(BaseModel):
                 f"{self.outcome.value} must not carry override_severity or original_severity "
                 "(those fields are severity_override-specific)"
             )
-        if self.outcome != PerFindingOutcome.APPROVE and not self.reason:
-            raise ValueError(f"{self.outcome.value} requires a reason")
+        if self.outcome != PerFindingOutcome.APPROVE and not self.reason.strip():
+            raise ValueError(f"{self.outcome.value} requires a non-blank reason")
         return self
 
 

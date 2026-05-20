@@ -50,7 +50,13 @@ class AnalysisRound(BaseModel):
     # produces same id, so replay re-application collapses duplicates.
     round_id: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
     pass_index: int = Field(ge=0)
-    findings: tuple[ReviewFinding, ...]
+    # Per-round finding ceiling. `AnalyzeResponseRaw.findings` already
+    # caps at 50; the admitted-layer mirror here defends against a future
+    # producer (e.g., V1.5 parallel-analyze fan-out aggregator) that
+    # constructs the round from multiple raw responses and exceeds the
+    # per-call ceiling. Also bounds checkpoint serialization size and
+    # protects the audit-event row payload from runaway emission.
+    findings: tuple[ReviewFinding, ...] = Field(max_length=50)
     files_examined: tuple[Annotated[str, Field(max_length=1024)], ...]
     files_skipped: tuple[Annotated[str, Field(max_length=1024)], ...]
     started_at: AwareDatetime

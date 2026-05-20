@@ -22,7 +22,7 @@ convention in `docs/schema.md` — eval factories use synthetic non-colliding
 IDs that may include negative values. Production webhook validation enforces
 real GitHub installation-ID semantics at the input boundary (webhook-receiver
 spec); this shared schema supports both production and eval contexts. The
-constraint was tried-and-removed in Round 7 after an external reviewer
+constraint was tried-and-removed in after an external reviewer
 flagged the eval-factory conflict.
 
 Both models use frozen=True: PRContext round-trips through LangGraph state
@@ -45,11 +45,11 @@ content sides set, `modified` with both None); the post-intake
 `enforce_status_invariants` model_validator rejects all
 GitHub-API-impossible shapes. Four invariant classes are enforced:
 
-- Status↔content (Round 14): the side-that-doesn't-exist is None;
+- Status↔content : the side-that-doesn't-exist is None;
   the side-that-does-exist is non-None.
-- Status↔count (Round 15): `added` requires deletions=0; `removed`
+- Status↔count : `added` requires deletions=0; `removed`
   requires additions=0 (GitHub-impossible otherwise).
-- Rename path-shape (Round 16): `status="renamed"` requires
+- Rename path-shape : `status="renamed"` requires
   `previous_path` set AND `previous_path != path` (a same-path
   rename is GitHub-impossible).
 - Cross-status (Rounds 14, 16): non-`renamed` statuses must NOT
@@ -74,19 +74,19 @@ class ChangedFile(BaseModel):
     rejects every GitHub-API-impossible shape so a buggy intake or
     fixture can't silently produce a malformed instance:
 
-    Status↔content (Round 14):
+    Status↔content :
     - `added`     → `content_head` set, `content_base` None
     - `removed`   → `content_base` set, `content_head` None
     - `modified`  → both `content_base` and `content_head` set
     - `renamed`   → both set, plus `previous_path` set to the old path
 
-    Status↔count (Round 15):
+    Status↔count :
     - `added`     → `deletions == 0` (added file has no pre-existing
                     content to delete from)
     - `removed`   → `additions == 0` (removed file has nothing being
                     added)
 
-    Rename path-shape (Round 16):
+    Rename path-shape :
     - `renamed`   → `previous_path != path` (a same-path rename is
                     GitHub-impossible — that would be modified or
                     no change)

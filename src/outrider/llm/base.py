@@ -12,13 +12,13 @@ This module is the boundary between agent nodes and concrete LLM SDKs:
   `config.py` imports `anthropic.resources.messages.DEPRECATED_MODELS`
   for eager deprecation validation; cleanup per Copilot).
 
-Round 13 design + round 14/15 corrections; see spec for the full audit
-chain. Two abstract-base enforcement notes worth pinning here:
+See spec for the full design chain. Two abstract-base enforcement
+notes worth pinning here:
 
   - `LLMProviderError(Exception, ABC)` does NOT prevent instantiation
     because `Exception.__new__` bypasses ABC's `__abstractmethods__`
     check. We use `__init__` type-guard + `__init_subclass__`
-    presence + value-membership enforcement instead (rounds 13–15).
+    presence + value-membership enforcement instead.
   - `INCLUDE_TEXT_OPT_IN` is a typed sentinel, not a string key. ANY
     caller that intentionally needs to serialize `LLMRequest` or
     `LLMResponse` with raw content (rather than the default redacted
@@ -180,9 +180,8 @@ class LLMProviderError(Exception):
       - `"node"`: the calling agent node should retry (used for ALL FOUR
         retry-eligible classes — `LLMTimeoutError` / `LLMRateLimitError`
         / `LLMConflictError` / `LLMUpstreamError`. The 4-class set
-        mirrors Anthropic SDK 0.100's default-retry set 408/429/409/5xx
-        — see the + corrections for the
-        history. Omitting any of the four here would silently invite
+        mirrors Anthropic SDK 0.100's default-retry set 408/429/409/5xx.
+        Omitting any of the four here would silently invite
         the class-omission bug pattern FUP-025 has been defending
         against; pinned by both
         `tests/unit/test_llm_error_taxonomy.py::test_recoverable_subclasses_are_node_layer`
@@ -315,7 +314,7 @@ class LLMMissingAPIKeyError(LLMProviderError):
 
 class LLMPersisterNotWiredError(LLMProviderError):
     """Fail-closed pre-call: `persister=None` on `AnthropicProvider`
-    construction (round 13 fail-closed-not-stubbed design)."""
+    construction (fail-closed-not-stubbed design)."""
 
     retry_at_layer: ClassVar[RetryLayer] = "none"
 
@@ -509,7 +508,7 @@ class LLMRequest(BaseModel):
     def _enforce_context_for_scope_nodes(self) -> Self:
         """`analyze` and `synthesize` always pack scope context; an empty
         `context_summary` from those nodes is a node-side bug worth
-        catching at request construction (round 11 .
+        catching at request construction.
 
         Per §0b: analyze admits empty `context_summary` ONLY when
         `degraded_mode=True` AND a typed `degradation_reason` is supplied
@@ -521,15 +520,35 @@ class LLMRequest(BaseModel):
         """
         nodes_requiring_context = frozenset({"analyze", "synthesize"})
         if self.node_id in nodes_requiring_context and len(self.context_summary) == 0:
-            # Audit S5: degraded analyze admits empty context, but the
-            # provenance validator above already required degradation_reason
-            # to be set when degraded_mode is True — so checking either
-            # flag is sufficient.
+            # Degraded analyze admits empty context, but the provenance
+            # validator above already required degradation_reason to be
+            # set when degraded_mode is True — so checking either flag
+            # is sufficient.
             if self.node_id == "analyze" and self.degraded_mode:
                 return self
             raise ValueError(
                 f"node_id={self.node_id!r} requires non-empty context_summary; "
                 f"the analyze/synthesize node always packs scope context"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_context_summary_unique(self) -> Self:
+        """`context_summary` is set-semantic by `(file_path, scope_unit_name)`.
+        The same scope unit shouldn't appear twice in one prompt's manifest.
+
+        Mirror of `LLMCallEvent._enforce_context_summary_unique`. Validating
+        here means a producer bug surfaces at request construction —
+        BEFORE the paid SDK call — instead of after the side effect when
+        `LLMCallEvent` rejects the duplicate. The wrapper passes
+        `request.context_summary` through to the event verbatim, so
+        an audit-shadow-only check would always fire too late.
+        """
+        keys = [(e.file_path, e.scope_unit_name) for e in self.context_summary]
+        if len(keys) != len(set(keys)):
+            raise ValueError(
+                f"LLMRequest.context_summary contains duplicate "
+                f"(file_path, scope_unit_name) entries: {sorted(keys)!r}"
             )
         return self
 
@@ -651,28 +670,38 @@ class LLMProvider(Protocol):
 # ---------------------------------------------------------------------------
 
 
-# `\x1e` = ASCII Information Separator Two; fixed delimiter so prompts that
-# happen to contain "system_prompt"-like substrings cannot collide with the
-# delimiter sequence.
-_PROMPT_HASH_DELIMITER: Final[bytes] = b"\x1e"
-
-
 def _canonical_prompt_hash(*, system_prompt: str, user_prompt: str) -> str:
     """Replay-equivalence canonicalization for `LLMCallEvent.prompt_hash`.
 
-    SHA-256 over `system_prompt.encode("utf-8") + b"\\x1e" +
-    user_prompt.encode("utf-8")`. No Unicode normalization, no whitespace
-    trimming, no line-ending conversion. Pinned by AC#15: a known
-    (system_prompt, user_prompt) pair produces a known hex digest.
+    Length-prefixed SHA-256 — the input bytes are
+    `f"{len(sp_bytes)}:".encode() + sp_bytes + f"{len(up_bytes)}:".encode() + up_bytes`,
+    where `sp_bytes = system_prompt.encode("utf-8")` and similar for user.
+    The length prefix makes the prompt-boundary unambiguous regardless of
+    delimiter characters appearing inside either string. A fixed-delimiter
+    recipe collides whenever the delimiter character can appear in the
+    prompt body — PR content (which can flow into either prompt via
+    template substitution) is attacker-controlled, so a `\\x1e`-bearing
+    payload could move the boundary across two distinct (system, user)
+    pairs that share a digest. Length-prefix encoding is collision-resistant
+    by structure.
+
+    No Unicode normalization, no whitespace trimming, no line-ending
+    conversion — the hash is over the BYTES the LLM provider received.
 
     Keyword-only because both args are `str` and adjacent; positional
     swap would silently produce a different valid SHA-256 with no type
     signal. Sibling pattern matches `compute_finding_content_hash` in
     `audit/events.py`.
     """
-    return hashlib.sha256(
-        system_prompt.encode("utf-8") + _PROMPT_HASH_DELIMITER + user_prompt.encode("utf-8")
-    ).hexdigest()
+    sp_bytes = system_prompt.encode("utf-8")
+    up_bytes = user_prompt.encode("utf-8")
+    payload = (
+        f"{len(sp_bytes)}:".encode("ascii")
+        + sp_bytes
+        + f"{len(up_bytes)}:".encode("ascii")
+        + up_bytes
+    )
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _canonical_system_prompt_hash(system_prompt: str) -> str:

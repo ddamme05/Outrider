@@ -700,7 +700,7 @@ class AnthropicProvider:
 def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
     """Translate `LLMRequest` to Anthropic SDK `messages.create()` kwargs.
 
-    Key mappings (round 12 + 14 + 21 corrections):
+    Key mappings (+ 21 corrections):
       - `request.system_prompt` → SDK kwarg `system` (NOT `system_prompt`)
       - `request.user_prompt` → single user-role message
       - `request.cache_control=True` → **per-block** `cache_control` on

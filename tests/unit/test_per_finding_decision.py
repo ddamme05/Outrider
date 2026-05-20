@@ -59,7 +59,7 @@ def test_severity_override_admits_with_both_severities() -> None:
 
 def test_reject_requires_reason() -> None:
     """REJECT with empty reason raises (non-APPROVE rule)."""
-    with pytest.raises(ValidationError, match="requires a reason"):
+    with pytest.raises(ValidationError, match="requires a non-blank reason"):
         PerFindingDecision(
             finding_id=uuid4(),
             outcome=PerFindingOutcome.REJECT,
@@ -69,7 +69,7 @@ def test_reject_requires_reason() -> None:
 
 def test_suppress_requires_reason() -> None:
     """SUPPRESS with empty reason raises (non-APPROVE rule)."""
-    with pytest.raises(ValidationError, match="requires a reason"):
+    with pytest.raises(ValidationError, match="requires a non-blank reason"):
         PerFindingDecision(
             finding_id=uuid4(),
             outcome=PerFindingOutcome.SUPPRESS,
@@ -79,7 +79,7 @@ def test_suppress_requires_reason() -> None:
 
 def test_severity_override_requires_reason() -> None:
     """SEVERITY_OVERRIDE with empty reason raises (third leg of the non-APPROVE rule)."""
-    with pytest.raises(ValidationError, match="requires a reason"):
+    with pytest.raises(ValidationError, match="requires a non-blank reason"):
         PerFindingDecision(
             finding_id=uuid4(),
             outcome=PerFindingOutcome.SEVERITY_OVERRIDE,

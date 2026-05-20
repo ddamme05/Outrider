@@ -85,7 +85,13 @@ class AnalyzeFindingProposalRaw(BaseModel):
     finding_type: Annotated[str, Field(max_length=128)]
     evidence_tier: Annotated[str, Field(max_length=32)]
     query_match_id: Annotated[str, Field(max_length=256)] | None = None
-    trace_path: tuple[Annotated[str, Field(max_length=256, min_length=1)], ...] | None = None
+    trace_path: (
+        Annotated[
+            tuple[Annotated[str, Field(max_length=256, min_length=1)], ...],
+            Field(max_length=32),
+        ]
+        | None
+    ) = None
     title: Annotated[str, Field(max_length=120)]
     description: Annotated[str, Field(max_length=1000)]
     evidence: Annotated[str, Field(max_length=2000)]
@@ -161,7 +167,13 @@ class AnalyzeFindingProposal(BaseModel):
     finding_type: FindingType
     evidence_tier: EvidenceTier
     query_match_id: Annotated[str, Field(max_length=256)] | None = None
-    trace_path: tuple[Annotated[str, Field(max_length=256, min_length=1)], ...] | None = None
+    trace_path: (
+        Annotated[
+            tuple[Annotated[str, Field(max_length=256, min_length=1)], ...],
+            Field(max_length=32),
+        ]
+        | None
+    ) = None
     title: Annotated[str, Field(max_length=120)]
     description: Annotated[str, Field(max_length=1000)]
     evidence: Annotated[str, Field(max_length=2000)]
