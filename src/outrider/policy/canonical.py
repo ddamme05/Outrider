@@ -253,20 +253,24 @@ def compute_round_id(
     of the same logical round (e.g., from a checkpoint replay) produces
     the same id and collapses on the dedup-by-round_id reducer.
 
+    **Inputs sorted internally** per spec §1 ("hashed inputs are sorted
+    for cross-process determinism") so two producers that enumerate
+    files / findings in different orders still produce the same id.
+    Without this, the dedup-by-round_id reducer would admit both
+    orderings as distinct rounds and double-accumulate state on replay.
+
     `finding_content_hashes` is the sequence of `ReviewFinding.content_hash`
     values from this round's findings (not the full finding payloads —
     the content_hash already captures finding identity).
     `files_examined`/`files_skipped` MUST be the canonical
     `validate_diff_path` output per `AnalysisRound._enforce_canonical_paths`.
-    Caller responsibility: pass them sorted if cross-process determinism
-    is required across non-deterministic enumeration orders.
     """
     return compute_identity_hash(
         {
             "pass_index": pass_index,
-            "files_examined": list(files_examined),
-            "files_skipped": list(files_skipped),
-            "finding_content_hashes": list(finding_content_hashes),
+            "files_examined": sorted(files_examined),
+            "files_skipped": sorted(files_skipped),
+            "finding_content_hashes": sorted(finding_content_hashes),
         }
     )
 

@@ -262,17 +262,38 @@ class LLMCallEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_degradation_reason_consistency(self) -> Self:
-        """`degraded_mode == (degradation_reason is not None)` bidirectionally,
-        mirroring `LLMRequest._enforce_degradation_provenance`.
+        """Three-way coupling, mirroring `LLMRequest._enforce_degradation_provenance`:
+
+          (a) analyze-only scoping: `degraded_mode=True` AND `degradation_reason`
+              non-None are valid ONLY when `node_id == "analyze"`. Other nodes
+              (triage/synthesize/trace) have no degraded-mode contract in V1.
+          (b) bidirectional bool/reason coupling within analyze:
+              `degraded_mode == (degradation_reason is not None)`.
 
         Provenance pairing across the request → event boundary: the
-        wrapper copies these two fields verbatim, so if a request was
-        admissible (bool/reason coupled), the event must be too. A
-        divergent event would mean the wrapper lost the field mid-pipeline
-        — a class of bug the persister's `_CHECKED_FIELDS` also catches
-        but this validator surfaces at event-construction time, before
-        any DB write.
+        wrapper copies these fields verbatim, so if a request was
+        admissible (analyze-scoped AND bool/reason coupled), the event
+        must be too. A divergent event would mean the wrapper lost the
+        field mid-pipeline — a class of bug the persister's
+        `_CHECKED_FIELDS` also catches but this validator surfaces at
+        event-construction time, before any DB write AND at replay-time
+        re-validation (post-foundation audit: the read/replay boundary
+        was unguarded — request rejected `trace + degraded_mode=True`
+        but the event admitted it).
         """
+        # Rule (a): analyze-only scoping. Mirrors LLMRequest validator.
+        if self.degraded_mode and self.node_id != "analyze":
+            raise ValueError(
+                f"LLMCallEvent.degraded_mode=True only valid for node_id='analyze' "
+                f"in V1; got node_id={self.node_id!r}. Synthesize/trace/triage "
+                f"have no degraded-mode contract."
+            )
+        if self.degradation_reason is not None and self.node_id != "analyze":
+            raise ValueError(
+                f"LLMCallEvent.degradation_reason is only valid for node_id='analyze' "
+                f"in V1; got node_id={self.node_id!r}."
+            )
+        # Rule (b): bidirectional bool/reason coupling within analyze.
         if self.degraded_mode and self.degradation_reason is None:
             raise ValueError(
                 "LLMCallEvent.degraded_mode=True requires a non-None degradation_reason; "

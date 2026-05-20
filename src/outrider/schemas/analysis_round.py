@@ -15,12 +15,19 @@ id across processes, and duplicate rounds collapse on merge.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from outrider.coordinates import validate_diff_path
-from outrider.policy.canonical import SHA256_HEX_PATTERN
+from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_round_id
 from outrider.schemas.review_finding import (
     ReviewFinding,  # noqa: TC001 — Pydantic field type, needs runtime import
 )
@@ -67,3 +74,41 @@ class AnalysisRound(BaseModel):
         on invalid input — Pydantic surfaces that as `ValidationError`.
         """
         return tuple(validate_diff_path(p) for p in paths)
+
+    @model_validator(mode="after")
+    def _enforce_round_id_matches_payload(self) -> Self:
+        """Assert `round_id == compute_round_id(...)` over this round's payload.
+
+        Post-foundation audit (high confidence): without this validator,
+        `round_id` was only pattern-checked — a caller could supply ANY
+        64-char hex string and Pydantic accepted it. The dedup-by-key
+        reducer would then admit two logically-equivalent rounds under
+        different `round_id`s and double-accumulate state on replay.
+
+        The validator re-derives the canonical id from this round's
+        actual payload and rejects mismatch. `compute_round_id` sorts
+        inputs internally, so caller-side enumeration order doesn't
+        matter — the validator is robust to the same loose-order risk
+        the §1 spec named.
+
+        Replay rehydrates `AnalysisRound` via `model_validate`, so this
+        validator fires there too — a future change to the round-id
+        recipe would surface as a loud replay failure rather than a
+        silent dedup-key drift.
+        """
+        expected = compute_round_id(
+            pass_index=self.pass_index,
+            files_examined=self.files_examined,
+            files_skipped=self.files_skipped,
+            finding_content_hashes=tuple(f.content_hash for f in self.findings),
+        )
+        if self.round_id != expected:
+            raise ValueError(
+                f"AnalysisRound.round_id={self.round_id!r} does not match the "
+                f"canonical id computed from this round's payload "
+                f"({expected!r}). Construct via `compute_round_id(...)` rather "
+                f"than passing an arbitrary hex string. If the recipe genuinely "
+                f"changed, the change is a DECISIONS-level event — old audit "
+                f"rows would otherwise fail replay validation here."
+            )
+        return self

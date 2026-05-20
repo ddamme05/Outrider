@@ -16,7 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
-from outrider.policy.canonical import compute_identity_hash
+from outrider.policy.canonical import compute_identity_hash, compute_round_id
 from outrider.schemas import AnalysisRound, ReviewDimension, ReviewFinding
 
 
@@ -49,10 +49,18 @@ def _finding() -> ReviewFinding:
 
 def _round_kwargs(**overrides: object) -> dict[str, object]:
     now = datetime.now(UTC)
+    finding = _finding()
+    # Derive round_id from the canonical recipe so the model validator
+    # passes. Tests that DELIBERATELY exercise drift override round_id.
     base: dict[str, object] = {
-        "round_id": compute_identity_hash({"pass_index": 0, "fixture": "test"}),
+        "round_id": compute_round_id(
+            pass_index=0,
+            files_examined=("src/foo.py",),
+            files_skipped=(),
+            finding_content_hashes=(finding.content_hash,),
+        ),
         "pass_index": 0,
-        "findings": (_finding(),),
+        "findings": (finding,),
         "files_examined": ("src/foo.py",),
         "files_skipped": (),
         "started_at": now,
@@ -80,11 +88,24 @@ def test_analysis_round_round_id_rejects_short_hex() -> None:
         AnalysisRound(**_round_kwargs(round_id="a" * 63))  # type: ignore[arg-type]
 
 
-def test_analysis_round_round_id_admits_canonical_hash() -> None:
+def test_analysis_round_round_id_must_match_payload() -> None:
+    """Post-foundation audit: round_id is bound to the payload by
+    model_validator. An arbitrary 64-hex string fails even though it
+    matches `SHA256_HEX_PATTERN`; the only admissible round_id is the
+    canonical `compute_round_id(...)` output for this round's actual
+    content."""
+    arbitrary_hash = compute_identity_hash({"any": "payload"})
+    with pytest.raises(ValidationError, match="does not match the canonical id"):
+        AnalysisRound(**_round_kwargs(round_id=arbitrary_hash))  # type: ignore[arg-type]
+
+
+def test_analysis_round_admits_canonical_round_id() -> None:
     """The canonical recipe produces a valid round_id."""
-    rid = compute_identity_hash({"any": "payload"})
-    r = AnalysisRound(**_round_kwargs(round_id=rid))  # type: ignore[arg-type]
-    assert r.round_id == rid
+    # _round_kwargs() already builds with canonical round_id; verify.
+    kwargs = _round_kwargs()
+    r = AnalysisRound(**kwargs)  # type: ignore[arg-type]
+    assert isinstance(r.round_id, str)
+    assert len(r.round_id) == 64
 
 
 def test_analysis_round_pass_index_must_be_non_negative() -> None:
