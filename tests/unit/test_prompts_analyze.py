@@ -220,25 +220,54 @@ def test_system_prompt_forbids_inferred_in_v1() -> None:
 def test_system_prompt_prohibits_severity_proposal() -> None:
     """Per `severity-set-by-policy`, the model must NEVER propose
     severity — the deterministic table assigns it. The prompt must
-    explicitly forbid the field so the model doesn't include it."""
-    lowered = SYSTEM_PROMPT_INVARIANTS.lower()
-    assert "severity" in lowered
-    # Must explicitly forbid proposing it, not just mention the concept
-    assert "do not" in lowered or "never" in lowered or "rejected" in lowered, (
-        "SYSTEM_PROMPT must explicitly forbid model-proposed severity"
+    explicitly forbid the field at field-local resolution: a prohibition
+    verb (`propose`, `do not`, `never`) must appear within 80 chars of
+    the `severity` field name, AND the prompt must state that a
+    `severity` field in the model's output is rejected."""
+    import re
+
+    text = SYSTEM_PROMPT_INVARIANTS.lower()
+    assert re.search(r"(propose|do not|never)[^\n]{0,80}severity", text), (
+        "SYSTEM_PROMPT must forbid `severity` within an 80-char window "
+        "of a prohibition verb (propose / do not / never)"
+    )
+    assert re.search(r"`?severity`?[^\n]{0,80}rejected", text), (
+        "SYSTEM_PROMPT must state that a model-supplied `severity` field is rejected"
     )
 
 
 def test_system_prompt_prohibits_confidence_proposal() -> None:
     """Per `confidence-is-computed-not-assigned`, confidence is computed
-    deterministically from evidence_tier. Model must not propose it."""
-    assert "confidence" in SYSTEM_PROMPT_INVARIANTS.lower()
+    deterministically from evidence_tier. Model must not propose it.
+    Field-local prohibition: a prohibition verb within 80 chars of
+    `confidence` AND the rejection contract."""
+    import re
+
+    text = SYSTEM_PROMPT_INVARIANTS.lower()
+    assert re.search(r"(propose|do not|never)[^\n]{0,80}confidence", text), (
+        "SYSTEM_PROMPT must forbid `confidence` within an 80-char window "
+        "of a prohibition verb (propose / do not / never)"
+    )
+    assert re.search(r"`?confidence`?[^\n]{0,80}rejected", text), (
+        "SYSTEM_PROMPT must state that a model-supplied `confidence` field is rejected"
+    )
 
 
 def test_system_prompt_prohibits_dimension_proposal() -> None:
     """Per `evidence-tier-schema-enforced` + `FINDING_TYPE_TO_DIMENSION`,
-    dimension is looked up deterministically from finding_type."""
-    assert "dimension" in SYSTEM_PROMPT_INVARIANTS.lower()
+    dimension is looked up deterministically from finding_type. Field-
+    local prohibition: a prohibition verb within 80 chars of `dimension`
+    AND the rejection contract."""
+    import re
+
+    text = SYSTEM_PROMPT_INVARIANTS.lower()
+    assert re.search(r"(propose|do not|never)[^\n]{0,80}dimension", text), (
+        "SYSTEM_PROMPT must forbid `dimension` within an 80-char window "
+        "of a prohibition verb (propose / do not / never)"
+    )
+    assert re.search(r"`?dimension`?[^\n]{0,80}rejected", text), (
+        "SYSTEM_PROMPT must state that a model-supplied `dimension` field is rejected"
+    )
 
 
 def test_system_prompt_prohibits_markdown_fenced_json() -> None:
@@ -495,6 +524,49 @@ def test_render_user_prompt_contains_diff_hunks() -> None:
         pass_index=0,
     )
     assert sentinel in parts.user_prompt
+
+
+def test_render_user_prompt_diff_hunks_are_fenced() -> None:
+    """Sibling to `render_degraded`: clean-mode diff_hunks are PR-controlled
+    and must be wrapped in a `safe_code_fence(lang="diff")` block so a
+    diff line containing `## Heading` or ` ``` ` markdown can't forge
+    sections that mimic the prompt's own structure.
+
+    Pin: the rendered user_prompt MUST contain a ```diff opening fence
+    immediately before the diff content (or a dynamic-length variant if
+    the content itself has triple-backtick runs).
+    """
+    sentinel = "@@ -1,1 +1,2 @@\n+    return 42"
+    parts = render(
+        file_path="src/x.py",
+        scope_unit_context="",
+        query_match_id_list="",
+        diff_hunks=sentinel,
+        pass_index=0,
+    )
+    # Default 3-backtick fence opens with `\n```diff\n` before content
+    # and closes with `\n```\n`.
+    assert "```diff\n" in parts.user_prompt
+    assert sentinel in parts.user_prompt
+
+
+def test_render_user_prompt_fence_escapes_hostile_diff_hunks() -> None:
+    """If the diff hunk itself contains a triple-backtick run (e.g., a
+    docstring with embedded markdown), `safe_code_fence` must grow the
+    surrounding fence so the content can't close it early."""
+    hostile = "@@ -1,1 +1,1 @@\n+    '''\n+    Example: ```\n+    '''"
+    parts = render(
+        file_path="src/x.py",
+        scope_unit_context="",
+        query_match_id_list="",
+        diff_hunks=hostile,
+        pass_index=0,
+    )
+    # The fence must be at least 4 backticks long since the body has a
+    # 3-backtick run.
+    assert "````diff\n" in parts.user_prompt
+    # Hostile content preserved verbatim, not stripped.
+    assert hostile in parts.user_prompt
 
 
 # ---------------------------------------------------------------------------

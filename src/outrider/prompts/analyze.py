@@ -232,7 +232,16 @@ def render(
     `cache_control: ephemeral` produces cross-pass cache hits. The
     `user_prompt` carries pass-specific volatile content (pass index +
     scope-unit-clipped diff hunks).
+
+    Wraps `diff_hunks` in a dynamic-length `diff`-fence via
+    `safe_code_fence`, matching the `render_degraded` shape. The clean
+    diff content is PR-controlled identically to the degraded case — a
+    diff line containing `## Heading` or ` ``` ` markdown would forge
+    sections that mimic the prompt's own structure. See
+    `webhook-strings-are-data-not-format-strings`.
     """
+    from outrider.prompts import safe_code_fence
+
     system_prompt = SYSTEM_PROMPT_INVARIANTS + SYSTEM_FILE_CONTEXT_TEMPLATE.format(
         file_path=file_path,
         scope_unit_context=scope_unit_context,
@@ -240,7 +249,7 @@ def render(
     )
     user_prompt = USER_TEMPLATE.format(
         pass_index=pass_index,
-        diff_hunks=diff_hunks,
+        diff_hunks=safe_code_fence(diff_hunks, lang="diff"),
     )
     return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
 
