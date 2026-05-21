@@ -749,6 +749,49 @@ def test_str_to_utf8_roundtrip_cannot_produce_invalid_utf8() -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_python_file_routed_to_skip_without_calling_provider(
+    deps: dict[str, Any],
+) -> None:
+    """V1 language gate: a non-`.py` file classified DEEP/STANDARD by
+    triage must NOT reach `parse_python` or the Python query registry.
+    Routes through `SkipReason.OVERSIZED` per the FUP-033 precedent
+    (the canonical `SkipReason.UNSUPPORTED_LANGUAGE` is bundled with
+    the DECISIONS#018 amendment). Pin: no LLM call, no FindingEvent,
+    and a single skip-shaped FileExaminationEvent.
+    """
+    js_file = _build_changed_file(
+        path="src/example.js",
+        content=b"export function hello() {\n  return 42;\n}\n",
+        patch=(
+            "--- a/src/example.js\n+++ b/src/example.js\n@@ -1,1 +1,2 @@\n"
+            " export function hello() {\n+  return 42;\n"
+        ),
+        content_base="export function hello() {\n  return 0;\n}\n",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(js_file,)),
+        triage_result=TriageResult(
+            file_tiers={"src/example.js": ReviewTier.DEEP},
+            overall_risk=RiskLevel.MEDIUM,
+            relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
+            reasoning="js file forced through analyze for the language-gate test",
+        ),
+    )
+
+    await analyze(state, **deps)
+
+    # No LLM call: the gate fires before content selection / parse.
+    assert deps["provider"].calls == []
+    # No findings (the file never reached the parser).
+    assert deps["analyze_event_sink"].findings == []
+    # One skip-shaped FileExaminationEvent for the non-Python file.
+    skip_events = [e for e in deps["file_examination_sink"].events if e.parse_status == "skipped"]
+    assert len(skip_events) == 1
+    assert skip_events[0].file_path == "src/example.js"
+    assert skip_events[0].skip_reason == SkipReason.OVERSIZED
+
+
+@pytest.mark.asyncio
 async def test_no_changed_scope_units_when_patch_targets_outside_scopes(
     deps: dict[str, Any],
 ) -> None:

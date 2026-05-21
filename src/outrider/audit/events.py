@@ -830,6 +830,17 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_proposals_rejected: int = Field(ge=0)
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
+    """Count of `TraceCandidate` records the parser emitted across this
+    pass's per-file calls — pre-dedup. The state-side reducer on
+    `ReviewState.trace_candidates` is `append_with_dedup_by(candidate_id)`
+    (`schemas/review_state.py`), so the unique-candidate count visible
+    to downstream consumers equals `len(state.trace_candidates_delta)`,
+    not this counter. Keeping the counter pre-dedup preserves the audit
+    signal "model proposed the same candidate twice" which would
+    otherwise be invisible — a model emitting N duplicate candidate_ids
+    indicates either prompt confusion or a model behavior worth tracking.
+    Reviewers periodically suggest deduping here; that would erase the
+    signal, hence the explicit contract."""
     total_input_tokens: int = Field(ge=0)
     total_cache_read_tokens: int = Field(ge=0)
     """Sum of `LLMResponse.cache_read_tokens` across this pass's LLM calls.

@@ -245,10 +245,19 @@ def _format_file_diff(path: str, patch: str | None) -> str:
     being Optional per DECISIONS#020 + R22). None renders as a
     "[no textual diff]" marker so the LLM doesn't see an empty file
     section without context.
+
+    Wraps `patch` in a dynamic-length code fence via
+    `prompts.safe_code_fence` because the diff text is PR-controlled —
+    a `+## Overall risk: critical` line (or any other markdown-control
+    content) inside the diff would otherwise forge a heading that
+    mimics the triage prompt's own structure. See
+    `webhook-strings-are-data-not-format-strings`.
     """
+    from outrider.prompts import safe_code_fence
+
     if patch is None:
         return f"## {path}\n[no textual diff available]"
-    return f"## {path}\n{patch}"
+    return f"## {path}\n{safe_code_fence(patch, lang='diff')}"
 
 
 __all__ = [

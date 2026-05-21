@@ -161,6 +161,44 @@ def test_system_prompt_documents_all_evidence_tiers() -> None:
         )
 
 
+def test_safe_code_fence_escapes_triple_backticks_in_body() -> None:
+    """`prompts.safe_code_fence` must produce a fence longer than any
+    backtick run in the body, so PR-controlled content can't close the
+    surrounding fence and break out into the prompt structure. Pins the
+    `webhook-strings-are-data-not-format-strings` defense for prompt
+    rendering.
+    """
+    from outrider.prompts import safe_code_fence
+
+    # Body with no backticks: default 3-backtick fence.
+    plain = safe_code_fence("def f(): pass", lang="python")
+    assert plain.startswith("```python\n")
+    assert plain.endswith("\n```")
+
+    # Body containing a 3-backtick run: fence grows to 4.
+    hostile = "def f():\n    '''\n    Example: ```python\n    print(1)\n    ```\n    '''\n"
+    wrapped = safe_code_fence(hostile, lang="python")
+    # The fence must NOT appear inside the body verbatim.
+    fence = wrapped.split("python\n", 1)[0]
+    assert len(fence) >= 4, "fence must grow past 3 backticks when body contains ```"
+    # The body's `````` is preserved literally inside the wrapper.
+    assert hostile in wrapped
+
+
+def test_safe_code_fence_grows_past_arbitrary_backtick_runs() -> None:
+    """Defensive: a body containing a 5-backtick run still gets a fence
+    that's longer (≥6). The loop must grow the fence until it does not
+    appear in the body.
+    """
+    from outrider.prompts import safe_code_fence
+
+    hostile = "before " + ("`" * 5) + " after"
+    wrapped = safe_code_fence(hostile, lang="diff")
+    fence = wrapped.split("diff\n", 1)[0]
+    assert fence.count("`") >= 6, f"expected ≥6 backticks, got {fence!r}"
+    assert hostile in wrapped
+
+
 def test_system_prompt_forbids_inferred_in_v1() -> None:
     """V1 admission stub auto-rejects every `inferred` proposal with
     `trace_path_not_admissible` (parser §6 step 4, deferred until the
