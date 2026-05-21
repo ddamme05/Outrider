@@ -362,22 +362,34 @@ def parse_analyze_response(
             continue
         # JUDGED falls through to step 5 (span admission).
 
-        # Step 5: span admission (per-outcome branch).
+        # Step 5: span admission (per-outcome branch). The
+        # `byte_start < byte_end` predicate is part of admission on both
+        # paths — `Span` itself admits zero-width (`byte_end >= byte_start`)
+        # so the parser carries the prompt's stricter rule. A zero-width
+        # finding anchors to no bytes; the rejection_detail prefix
+        # `zero_width:` distinguishes it from EOF-overflow on the same
+        # rejection reason.
+        is_nonempty_span = raw_proposal.span.byte_start < raw_proposal.span.byte_end
         if degraded_mode:
             # Degraded outcomes have no scope-unit context (the file
             # didn't parse, or had has_error nodes in changed regions).
             # The deterministic guard is "within file" — model can't
             # fabricate a span pointing past EOF or before BOF.
-            if not span_within_file(raw_proposal.span, file_byte_length=file_byte_length):
+            if not is_nonempty_span or not span_within_file(
+                raw_proposal.span, file_byte_length=file_byte_length
+            ):
+                detail = (
+                    f"zero_width:({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                    if not is_nonempty_span
+                    else f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                )
                 proposal_rejections.append(
                     _build_proposal_rejection(
                         raw_proposal,
                         proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="span_outside_file",
-                        rejection_detail=(
-                            f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
-                        ),
+                        rejection_detail=detail,
                         claimed_evidence_tier=evidence_tier,
                     )
                 )
@@ -387,18 +399,21 @@ def parse_analyze_response(
             # Clean outcome — span must land inside one of the file's
             # included scope units. `any(...)` over the included set;
             # rejection if none match.
-            if not any(
+            if not is_nonempty_span or not any(
                 span_within_scope_unit(raw_proposal.span, su) for su in included_scope_units
             ):
+                detail = (
+                    f"zero_width:({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                    if not is_nonempty_span
+                    else f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                )
                 proposal_rejections.append(
                     _build_proposal_rejection(
                         raw_proposal,
                         proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="span_outside_scope_unit",
-                        rejection_detail=(
-                            f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
-                        ),
+                        rejection_detail=detail,
                         claimed_evidence_tier=evidence_tier,
                     )
                 )

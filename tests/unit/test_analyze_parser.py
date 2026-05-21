@@ -866,6 +866,54 @@ def test_step5_degraded_does_not_consult_scope_units() -> None:
     assert len(result.admitted_findings) == 1
 
 
+def test_step5_clean_rejects_zero_width_span() -> None:
+    """Clean outcome: a zero-width span (`byte_start == byte_end`) anchors
+    to no bytes, so it cannot serve as proof for any finding tier. Parser
+    rejects with `span_outside_scope_unit` and `rejection_detail` carries
+    the `zero_width:` prefix so the audit row distinguishes it from an
+    EOF-overflow rejection on the same reason. `Span` itself admits
+    zero-width (`byte_end >= byte_start`); the parser enforces the
+    prompt's stricter `byte_start < byte_end` rule.
+    """
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            span={"byte_start": 100, "byte_end": 100},
+        )
+    )
+    # Scope unit covers the zero-width span's byte position; admission
+    # rejects on the zero-width predicate alone, not on containment.
+    scope = _build_scope_unit(byte_start=0, byte_end=200)
+    result = _call_parser(response, included_scope_units=(scope,))
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "span_outside_scope_unit"
+    assert rej.rejection_detail.startswith("zero_width:")
+
+
+def test_step5_degraded_rejects_zero_width_span() -> None:
+    """Degraded outcome: same zero-width rejection on the `span_outside_file`
+    rejection reason with the same `zero_width:` detail prefix. Span is
+    well within file bounds; rejection fires on the zero-width predicate
+    alone.
+    """
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            span={"byte_start": 50, "byte_end": 50},
+        )
+    )
+    result = _call_parser(
+        response,
+        degraded_mode=True,
+        file_byte_length=100,
+    )
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "span_outside_file"
+    assert rej.rejection_detail.startswith("zero_width:")
+
+
 def test_step5_degraded_rejects_independent_of_query_match_id() -> None:
     """Degraded outcome: even if the model claimed `observed` with an
     id, the producer-admission step rejects FIRST (no registry-fired

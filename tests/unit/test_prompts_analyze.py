@@ -276,6 +276,55 @@ def test_system_prompt_output_example_is_strict_json() -> None:
         assert span["byte_start"] < span["byte_end"]
 
 
+def test_system_prompt_field_char_bounds_match_raw_schema() -> None:
+    """The prompt advertises `title ≤120`, `description ≤1000`,
+    `evidence ≤2000`. The raw schema enforces those exact bounds via
+    `Field(max_length=...)`. If schema changes but prompt doesn't, the
+    model produces output the schema rejects — pin the numbers as a
+    cross-source agreement so future edits fail loudly.
+    """
+    from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
+
+    fields = AnalyzeFindingProposalRaw.model_fields
+    expected = {
+        "title": 120,
+        "description": 1000,
+        "evidence": 2000,
+    }
+    for field_name, max_len in expected.items():
+        # The prompt advertises the bound in the example placeholder
+        # like `<short summary, ≤120 chars>` or `<explanation, ≤1000 chars>`.
+        assert f"≤{max_len}" in SYSTEM_PROMPT_INVARIANTS, (
+            f"prompt missing `≤{max_len}` for {field_name}"
+        )
+        # Schema's actual max_length matches the prompt claim.
+        annotated_meta = fields[field_name].metadata
+        max_length_values = [getattr(m, "max_length", None) for m in annotated_meta]
+        assert max_len in max_length_values, (
+            f"schema {field_name} max_length doesn't match prompt's {max_len}"
+        )
+
+
+def test_system_prompt_findings_cap_matches_raw_schema() -> None:
+    """Prompt states 'Up to 50 findings per response' and 'Up to 20
+    trace_candidates per finding'. Schema enforces both. Pin so a
+    silent schema bump (e.g., 50 → 60) doesn't drift the prompt.
+    """
+    from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw, AnalyzeResponseRaw
+
+    # findings cap (top-level)
+    findings_field = AnalyzeResponseRaw.model_fields["findings"]
+    findings_caps = [getattr(m, "max_length", None) for m in findings_field.metadata]
+    assert 50 in findings_caps
+    assert "50 findings" in SYSTEM_PROMPT_INVARIANTS
+
+    # trace_candidates cap (per finding)
+    tc_field = AnalyzeFindingProposalRaw.model_fields["trace_candidates"]
+    tc_caps = [getattr(m, "max_length", None) for m in tc_field.metadata]
+    assert 20 in tc_caps
+    assert "20 trace_candidates" in SYSTEM_PROMPT_INVARIANTS
+
+
 # ---------------------------------------------------------------------------
 # Swap-impossibility (the M1 fix mirroring triage)
 # ---------------------------------------------------------------------------

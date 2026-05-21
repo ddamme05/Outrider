@@ -116,19 +116,26 @@ doesn't need a style review. Choose what's load-bearing.
 
 ## Output
 
-Return exactly this JSON shape and nothing else. Do NOT wrap the JSON
+Return exactly one JSON object and nothing else. Do NOT wrap the JSON
 in markdown code fences (no ```json, no ```). Do NOT add explanatory
-prose before or after. Your output starts with `{` and ends with `}`.
+prose before or after. Output starts with `{` and ends with `}`. Every
+value must be valid JSON literally — placeholders like `<...>` in this
+example are illustrative and must be replaced with real values.
 
 {
   "file_tiers": {
-    "<path/from/changed_files>": "<deep|standard|skim>",
-    ...
+    "<path/from/changed_files>": "<deep|standard|skim>"
   },
   "overall_risk": "<low|medium|high|critical>",
-  "relevant_dimensions": ["<dimension>", ...],
+  "relevant_dimensions": ["<dimension>"],
   "reasoning": "<two short sentences explaining the classification>"
 }
+
+`file_tiers` is an object keyed by each changed file's path; include
+every changed file as its own key (the example shows one key — your
+output should have one entry per file). `relevant_dimensions` is an
+array of `code_quality` / `security` / `performance` / `test_coverage`
+/ `best_practices` strings.
 
 Keep "reasoning" to two short sentences (hard upper bound: 500 chars).
 Every changed file MUST appear in file_tiers with a tier value. Do not

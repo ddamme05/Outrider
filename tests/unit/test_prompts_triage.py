@@ -205,6 +205,58 @@ def test_system_prompt_describes_reasoning_length_cap() -> None:
     )
 
 
+def test_system_prompt_output_example_is_strict_json() -> None:
+    """The prompt says 'Return exactly one JSON object' and shows an
+    example. The example must itself be strict JSON, or a model that
+    follows it literally produces unparseable output. Non-JSON literals
+    like trailing `...` (a placeholder for "more entries follow") had
+    previously slipped in.
+    """
+    import json
+    import re
+
+    text = SYSTEM_PROMPT
+    # Anchor on the multi-line `{\n  "file_tiers"` pattern so inline
+    # `{` characters in prose (e.g., "Output starts with `{`") don't
+    # confuse the extractor. Walk brace depth from there, treating
+    # string literals as opaque.
+    anchor = re.search(r'\{\s*\n\s*"file_tiers"', text)
+    assert anchor is not None, "no JSON example anchor found in prompt"
+    start = anchor.start()
+    depth = 0
+    end = -1
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    assert end > start, "could not locate a balanced JSON object in the prompt"
+    json_block = text[start:end]
+    # json.loads must succeed; if it raises, the example is not JSON.
+    parsed = json.loads(json_block)
+    assert "file_tiers" in parsed
+    assert "overall_risk" in parsed
+    assert "relevant_dimensions" in parsed
+    assert "reasoning" in parsed
+
+
 def test_system_prompt_prohibits_markdown_fenced_json() -> None:
     """Haiku has a well-known habit of wrapping structured output in
     ```json ... ``` blocks 'to be helpful'. `TriageResult.model_validate_json`
