@@ -600,6 +600,38 @@ def test_compute_per_file_cap_tiny_budget_yields_tiny_cap() -> None:
     assert _compute_per_file_cap(100) == 25
 
 
+def test_compute_per_file_cap_tie_point_picks_absolute() -> None:
+    """At the exact tie (budget × 0.25 == MAX_PER_FILE_TOKENS_ABSOLUTE,
+    i.e., budget=240_000 → both ceilings yield 60_000), `min(a, b)`
+    returns either value since they're equal — the observable result is
+    60_000 either way. Pin so a future refactor to a branched
+    `if fraction > ABSOLUTE: ...` doesn't accidentally pick the wrong
+    branch at the tie point and drift to off-by-one."""
+    tie_budget = MAX_PER_FILE_TOKENS_ABSOLUTE * 4  # budget where 0.25*budget == ABSOLUTE
+    assert tie_budget == 240_000  # sanity: pins the arithmetic relationship
+    assert _compute_per_file_cap(tie_budget) == MAX_PER_FILE_TOKENS_ABSOLUTE
+
+
+def test_compute_per_file_cap_zero_budget_is_kill_switch() -> None:
+    """Budget = 0 → cap = 0. Every prompt's `estimated_tokens > 0`
+    (since `analyze_prompt.MAX_TOKENS` is positive), so every file
+    skips with `COST_BUDGET_EXHAUSTED`. This is a kill-switch by
+    construction — not a bug. Pin so the kill-switch semantics are
+    documented as part of the contract, not just emergent."""
+    assert _compute_per_file_cap(0) == 0
+
+
+def test_compute_per_file_cap_negative_budget_is_kill_switch() -> None:
+    """Negative budget produces a negative cap (mathematically valid
+    but operationally a stricter kill-switch — `estimated_tokens > -N`
+    is always True). Pin the documented contract: invalid/sentinel
+    budget values produce the safe outcome (skip everything), not a
+    permissive cap that admits LLM calls under bogus configuration."""
+    assert _compute_per_file_cap(-1) == 0  # int(-1 * 0.25) = 0 (Python int truncates toward zero)
+    # At very-negative budgets the fraction goes negative AND min picks it.
+    assert _compute_per_file_cap(-100) == -25
+
+
 def test_estimate_tokens_counts_bytes_not_codepoints() -> None:
     """Anthropic's BPE tokenizer operates on UTF-8 bytes. Counting
     Python codepoints (`len(str)`) under-counts multi-byte sequences:
