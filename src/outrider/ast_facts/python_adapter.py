@@ -526,6 +526,12 @@ class PythonAdapter:
         # the OUTERMOST scope-defining node enclosed by the ScopeUnit.
         # `decorated_definition` is in target_types so a decorator-region
         # syntax error propagates to the wrapping scope's `has_error`.
+        # NOTE: this currently always returns `"clean"` — syntax errors
+        # surface as per-scope-unit `has_error[unit_id] == True`, not as
+        # a file-wide "failed" outcome. A future syntax-fatal classifier
+        # (e.g., "more than N% of root children are ERROR nodes") could
+        # return `"failed"` and would feed analyze's `failed+degraded_llm`
+        # outcome alongside the FUP-053 raw-bytes path. Not in V1 scope.
         has_error: dict[str, bool] = {}
         for scope in scope_units:
             inner_start, inner_end = self._inner_span(scope)
@@ -670,6 +676,11 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
         rule in `EXCLUSION_RULES` matches.
       * `ParseResult(parser_outcome="failed")` if UTF-8 decode fails or
         if `compute_parser_outcome` returns `"failed"` after extraction.
+        BOTH paths are V1-unreachable through analyze — see the step-2
+        comment below for the decode path and the
+        `_compute_parser_outcome_from_tree` comment for the extraction
+        path. Future raw-bytes intake (FUP-053) and a future syntax-fatal
+        classifier are the respective triggers.
       * `ParseResult(parser_outcome="clean", scope_units=..., ...,
         has_error=...)` on the clean path.
 
@@ -691,6 +702,12 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
         return ParseResult(parser_outcome="skipped", skip_reason=skip_reason)
     # Step 2: UTF-8 strict decode (validity gate; we do not retain the
     # decoded str, since tree-sitter accepts bytes directly).
+    # NOTE: V1 callers (analyze) re-encode a Python `str` to bytes
+    # before reaching this gate, and intake's `_classify_or_reserve_decode`
+    # rejects invalid UTF-8 upstream with SkipReason.OVERSIZED. The
+    # `parser_outcome="failed"` return is therefore V1-unreachable
+    # through analyze; kept for the raw-bytes intake path (FUP-053) and
+    # for direct `parse_python` consumers that hand it untrusted bytes.
     try:
         source.decode("utf-8")
     except UnicodeDecodeError:
