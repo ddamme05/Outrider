@@ -43,12 +43,13 @@ the code scaffold only creates the surface that later commits fill.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import ValidationError
 
-from outrider.policy.canonical import compute_response_hash
+from outrider.policy.canonical import compute_proposal_hash, compute_response_hash
 from outrider.schemas.llm.analyze import AnalyzeResponseRaw
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from outrider.ast_facts.models import ScopeUnit
     from outrider.policy.findings import EvidenceTier
     from outrider.schemas import ReviewFinding, TraceCandidate
+    from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal at
 # `audit/events.py:893`. Duplicated here so this module doesn't depend
@@ -230,12 +232,16 @@ def parse_analyze_response(
             ),
         )
 
-    # Proposal iteration lands in the next commit. An empty `findings`
-    # array produces the trivial zero-counter result; a non-empty array
-    # raises NotImplementedError so the next commit can land its body
-    # without the partial result silently shipping.
-    if len(raw.findings) > 0:
-        raise NotImplementedError("parse_analyze_response: proposal iteration not yet implemented")
+    # Per-proposal admission lands incrementally. Each iteration must
+    # decide the proposal's fate (admitted → ReviewFinding; rejected →
+    # ProposalRejection). Until the admission checks land, the loop
+    # raises NotImplementedError with the proposal index so the next
+    # commit's insertion point is obvious. The empty-findings happy
+    # path returns the zero-counter result without entering the loop.
+    for idx, _raw_proposal in enumerate(raw.findings):
+        raise NotImplementedError(
+            f"parse_analyze_response: admission for findings[{idx}] not yet implemented"
+        )
     return ParserResult(
         admitted_findings=(),
         trace_candidates=(),
@@ -248,6 +254,68 @@ def parse_analyze_response(
             n_responses_rejected=0,
             n_trace_candidates_emitted=0,
         ),
+    )
+
+
+# `claimed_finding_type_hash` width matches the schema's pattern at
+# `audit/events.py:891` (`_SHA256_HEX_PATTERN_SHORT` — 16 hex chars).
+# Per `DECISIONS.md#014` point 1, the raw model string never lands in
+# the audit row; the hash+length pair lets operators reason about
+# identity without admitting content.
+_CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
+
+
+def _hash_claimed_finding_type(raw_value: str) -> str:
+    """sha256(raw_value.encode("utf-8")).hexdigest()[:16] — short-prefix
+    hash for `ProposalRejection.claimed_finding_type_hash`. Lifted to
+    `FindingProposalRejectedEvent.claimed_finding_type_hash` by the
+    node body."""
+    return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()[:_CLAIMED_FINDING_TYPE_HASH_WIDTH]
+
+
+def _build_proposal_rejection(
+    raw: AnalyzeFindingProposalRaw,
+    *,
+    file_path: str,
+    rejection_reason: _ProposalRejectionReason,
+    rejection_detail: str,
+    claimed_evidence_tier: EvidenceTier | None,
+) -> ProposalRejection:
+    """Construct a `ProposalRejection` from a raw proposal + admission outcome.
+
+    Computes the identity-bearing fields shared by every rejection
+    branch (proposal_hash via the canonical wrapper; claimed
+    finding-type hash + length per `DECISIONS.md#014`). The caller
+    supplies the branch-specific fields (reason, detail, claimed
+    evidence-tier where parsed).
+
+    `proposal_hash` runs through `policy.canonical.compute_proposal_hash`
+    so `source_file_path` canonicalizes via `coordinates.validate_diff_path`
+    before folding (alias-equivalence per DECISIONS#022), and
+    `trace_path=None`/`()` normalize to the same logical state. Caller
+    MUST pass `file_path` already canonicalized at intake — the wrapper
+    runs it through `validate_diff_path` again as defense-in-depth.
+    """
+    proposal_hash = compute_proposal_hash(
+        source_file_path=file_path,
+        finding_type=raw.finding_type,
+        evidence_tier=raw.evidence_tier,
+        query_match_id=raw.query_match_id,
+        trace_path=raw.trace_path,
+        title=raw.title,
+        description=raw.description,
+        evidence=raw.evidence,
+        byte_start=raw.span.byte_start,
+        byte_end=raw.span.byte_end,
+    )
+    return ProposalRejection(
+        proposal_hash=proposal_hash,
+        file_path=file_path,
+        claimed_finding_type_hash=_hash_claimed_finding_type(raw.finding_type),
+        claimed_finding_type_len=len(raw.finding_type),
+        claimed_evidence_tier=claimed_evidence_tier,
+        rejection_reason=rejection_reason,
+        rejection_detail=rejection_detail,
     )
 
 

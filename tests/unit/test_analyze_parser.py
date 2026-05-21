@@ -450,19 +450,149 @@ def test_step0_valid_empty_findings_returns_clean_zero_result() -> None:
     assert result.counters.n_trace_candidates_emitted == 0
 
 
-def test_step0_valid_non_empty_findings_raises_not_implemented_until_step1() -> None:
-    """Step 1 (proposal iteration) is not yet implemented. A response
-    with non-empty findings must raise `NotImplementedError` rather
-    than silently shipping the partial step-0 result; the next commit
-    replaces this guard with the iteration body."""
-    # A response that's well-formed enough to parse but carries 1
-    # proposal — uses minimum required fields per AnalyzeFindingProposalRaw.
+# ---------------------------------------------------------------------------
+# Spec §6 commit-2 scaffold — proposal iteration + rejection-payload helper
+# (no admission decisions yet; commit 3 wires the admission checks)
+# ---------------------------------------------------------------------------
+
+
+def _build_raw_proposal(**overrides: object):  # type: ignore[no-untyped-def]
+    """Build a minimal valid AnalyzeFindingProposalRaw for helper tests."""
+    from outrider.ast_facts.models import Span
+    from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
+
+    defaults: dict[str, object] = {
+        "finding_type": "sql_injection",
+        "evidence_tier": "JUDGED",
+        "query_match_id": None,
+        "trace_path": None,
+        "title": "t",
+        "description": "d",
+        "evidence": "e",
+        "span": Span(byte_start=0, byte_end=10),
+    }
+    defaults.update(overrides)
+    return AnalyzeFindingProposalRaw(**defaults)  # type: ignore[arg-type]
+
+
+def test_build_proposal_rejection_populates_identity_fields() -> None:
+    """`_build_proposal_rejection` computes `proposal_hash` via the
+    canonical wrapper and `claimed_finding_type_hash` + `_len` per
+    `DECISIONS.md#014`. Caller supplies the branch-specific fields."""
+    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
+
+    raw = _build_raw_proposal()
+    rej = _build_proposal_rejection(
+        raw,
+        file_path="src/x.py",
+        rejection_reason="finding_type_not_in_enum",
+        rejection_detail="no_near_enum_match",
+        claimed_evidence_tier=EvidenceTier.JUDGED,
+    )
+    assert len(rej.proposal_hash) == 64  # SHA-256 hex
+    assert len(rej.claimed_finding_type_hash) == 16  # short prefix
+    assert rej.claimed_finding_type_len == len("sql_injection")
+    assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
+    assert rej.rejection_reason == "finding_type_not_in_enum"
+    assert rej.rejection_detail == "no_near_enum_match"
+    assert rej.file_path == "src/x.py"
+
+
+def test_build_proposal_rejection_claimed_evidence_tier_can_be_none() -> None:
+    """For `rejection_reason="evidence_tier_not_in_enum"`, no parsed
+    enum exists, so `claimed_evidence_tier=None` is the valid shape.
+    The lifted event's cross-field validator enforces this iff."""
+    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
+
+    raw = _build_raw_proposal(evidence_tier="WRONG_TIER_VALUE")
+    rej = _build_proposal_rejection(
+        raw,
+        file_path="src/x.py",
+        rejection_reason="evidence_tier_not_in_enum",
+        rejection_detail="no_near_enum_match",
+        claimed_evidence_tier=None,
+    )
+    assert rej.claimed_evidence_tier is None
+
+
+def test_build_proposal_rejection_hash_canonicalizes_path() -> None:
+    """`compute_proposal_hash` wrapper canonicalizes `source_file_path`
+    via `validate_diff_path` BEFORE folding. Alias paths (`src/foo.py`
+    vs `./src/foo.py`) MUST produce identical `proposal_hash`."""
+    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
+
+    raw = _build_raw_proposal()
+    rej_canonical = _build_proposal_rejection(
+        raw,
+        file_path="src/foo.py",
+        rejection_reason="finding_type_not_in_enum",
+        rejection_detail="",
+        claimed_evidence_tier=EvidenceTier.JUDGED,
+    )
+    rej_alias = _build_proposal_rejection(
+        raw,
+        file_path="./src/foo.py",  # same logical file
+        rejection_reason="finding_type_not_in_enum",
+        rejection_detail="",
+        claimed_evidence_tier=EvidenceTier.JUDGED,
+    )
+    assert rej_canonical.proposal_hash == rej_alias.proposal_hash
+
+
+def test_build_proposal_rejection_hash_distinct_across_files() -> None:
+    """Per `DECISIONS.md#022`: proposal identity is PR/file-scoped.
+    Same proposal shape from two DIFFERENT files produces DISTINCT
+    hashes."""
+    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
+
+    raw = _build_raw_proposal()
+    rej_a = _build_proposal_rejection(
+        raw,
+        file_path="src/foo.py",
+        rejection_reason="finding_type_not_in_enum",
+        rejection_detail="",
+        claimed_evidence_tier=EvidenceTier.JUDGED,
+    )
+    rej_b = _build_proposal_rejection(
+        raw,
+        file_path="src/bar.py",
+        rejection_reason="finding_type_not_in_enum",
+        rejection_detail="",
+        claimed_evidence_tier=EvidenceTier.JUDGED,
+    )
+    assert rej_a.proposal_hash != rej_b.proposal_hash
+
+
+def test_build_proposal_rejection_claimed_finding_type_hash_matches_recipe() -> None:
+    """The hash recipe is pinned: sha256(raw.finding_type.encode())[:16].
+    Drift here would mean event-side and parser-side claims disagree."""
+    import hashlib
+
+    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
+
+    raw = _build_raw_proposal(finding_type="some_bogus_type")
+    rej = _build_proposal_rejection(
+        raw,
+        file_path="src/x.py",
+        rejection_reason="finding_type_not_in_enum",
+        rejection_detail="",
+        claimed_evidence_tier=None,
+    )
+    expected = hashlib.sha256(b"some_bogus_type").hexdigest()[:16]
+    assert rej.claimed_finding_type_hash == expected
+
+
+def test_step1_iteration_raises_not_implemented_with_index() -> None:
+    """Until the admission checks land (commit 3), iteration over
+    `raw.findings` raises `NotImplementedError` with the proposal
+    index in the message. The next commit replaces the body with
+    per-proposal admission decisions."""
     response = (
         '{"findings": [{"finding_type": "sql_injection", '
         '"evidence_tier": "JUDGED", "title": "t", "description": "d", '
         '"evidence": "e", "span": {"byte_start": 0, "byte_end": 1}}]}'
     )
-    with pytest.raises(NotImplementedError, match="proposal iteration not yet implemented"):
+    with pytest.raises(NotImplementedError, match=r"findings\[0\]"):
         _call_parser(response)
 
 
