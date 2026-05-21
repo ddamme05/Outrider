@@ -151,6 +151,81 @@ def span_to_line_range(span: Span, source: str) -> tuple[int, int]:
     return (line_start, line_end)
 
 
+def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile) -> bool:
+    """True iff `patched_file` contains at least one added line whose
+    target line number falls within `scope_unit`'s 1-indexed line range.
+
+    `scope_unit_diff_hunks` clips by `target_line_no` and keeps context
+    lines in range; a scope unit that contains ONLY context lines (no
+    actual changes) yields a non-empty clipped result. Callers that
+    drive changed-region intersection need the stronger "has added
+    lines in range" check so a comment-line edit doesn't drag a
+    neighboring untouched function into the prompt.
+
+    V1 limitation: removed-only changes (pure deletion within an
+    otherwise-unchanged function, no added text) are not detected by
+    this rule. The common case (modifications + additions) is. A
+    future head-side line mapping for pure deletions lives at this
+    surface alongside `scope_unit_diff_hunks` because both depend on
+    the same unidiff Line-attribute semantics.
+    """
+    return any(
+        line.is_added
+        and line.target_line_no is not None
+        and scope_unit.line_start <= line.target_line_no <= scope_unit.line_end
+        for hunk in patched_file
+        for line in hunk
+    )
+
+
+def bound_diff_hunks_text(
+    patched_file: PatchedFile,
+    *,
+    max_lines: int,
+    max_chars: int,
+) -> str:
+    """Concatenate `patched_file`'s lines as text, truncated at the
+    first cap hit.
+
+    `max_lines` caps the total `unidiff.Line` object count (added +
+    removed + context combined); `max_chars` caps the character total.
+    Either cap closes the gate via early-return — the line cap
+    prevents many-tiny-lines fan-out, the char cap prevents pathological
+    few-very-long-lines blowup.
+
+    Used by the analyze node body's degraded-mode prompt assembly,
+    where the spec pins both caps (≤100 Line, ≤8192 chars). Caps are
+    kwargs rather than module constants because the coordinates layer
+    is policy-free — the analyze layer pins the cap values per its
+    spec §7 step 3c.
+    """
+    pieces: list[str] = []
+    total_chars = 0
+    line_count = 0
+    truncation_sentinel = "\n[truncated: prompt budget cap reached]\n"
+    for hunk in patched_file:
+        for line in hunk:
+            if line_count >= max_lines:
+                pieces.append(truncation_sentinel)
+                return "".join(pieces)
+            line_text = str(line)
+            if total_chars + len(line_text) > max_chars:
+                # Truncate to remaining budget rather than silently emit
+                # empty bounded_hunks — a single >max_chars line at first
+                # iteration would otherwise return "" with no audit signal
+                # that the diff was lost, and the degraded LLM call would
+                # see "no changes to review" instead of "diff was too big."
+                remaining = max_chars - total_chars
+                if remaining > 0:
+                    pieces.append(line_text[:remaining])
+                pieces.append(truncation_sentinel)
+                return "".join(pieces)
+            pieces.append(line_text)
+            total_chars += len(line_text)
+            line_count += 1
+    return "".join(pieces)
+
+
 def scope_unit_diff_hunks(scope_unit: ScopeUnit, patched_file: PatchedFile) -> tuple[str, ...]:
     """Clip a unified-diff `PatchedFile`'s hunks to lines inside `scope_unit`.
 

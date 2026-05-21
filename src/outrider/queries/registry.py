@@ -165,6 +165,16 @@ def _all_known_ids() -> set[str]:
     return set(_QUERY_ID_TO_FILENAME) | set(_DEPRECATED_QUERY_ID_TO_BODY)
 
 
+# Public surface: the set of `query_match_id` strings the analyze node
+# fires for OBSERVED-tier admission. Deprecated ids are intentionally
+# excluded — they exist for replay of historical reviews, NOT for live
+# OBSERVED claims. Adding a new query to `_QUERY_ID_TO_FILENAME` extends
+# this set automatically; deprecating an id moves it to
+# `_DEPRECATED_QUERY_ID_TO_BODY` and removes it from this surface in the
+# same commit, mirroring the registry's Internal-contracts split.
+REGISTERED_QUERY_IDS: Final[frozenset[str]] = frozenset(_QUERY_ID_TO_FILENAME)
+
+
 # ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------

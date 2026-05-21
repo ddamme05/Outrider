@@ -16,7 +16,9 @@ from unidiff import PatchSet
 from outrider.ast_facts.models import ScopeUnit, Span
 from outrider.coordinates import (
     CoordinateError,
+    bound_diff_hunks_text,
     scope_unit_diff_hunks,
+    scope_unit_has_added_lines,
     span_to_line_range,
     span_within_degraded_context,
     span_within_file,
@@ -396,3 +398,78 @@ index abc..def 100644
         f"clipped pure-added hunk with no preceding source line in body must "
         f"anchor at source_start - 1 = 9; got header={header!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# scope_unit_has_added_lines
+# ---------------------------------------------------------------------------
+
+
+def test_scope_unit_has_added_lines_true_when_added_in_range() -> None:
+    """Default fixture: hunks add lines at target 3 (first) and target 13
+    (second). A scope unit covering 1-5 sees added line 3 → True."""
+    su = _scope_unit(line_start=1, line_end=5)
+    assert scope_unit_has_added_lines(su, _patched_file()) is True  # type: ignore[arg-type]
+
+
+def test_scope_unit_has_added_lines_false_when_only_context_in_range() -> None:
+    """A scope unit covering target lines 1-2 sees only the context
+    lines (`def first():`, `return 1`) — no added line in that subrange.
+    `scope_unit_diff_hunks` would return non-empty (kept the context),
+    but the stricter check returns False so the unit doesn't enter the
+    intersection set."""
+    su = _scope_unit(line_start=1, line_end=2)
+    assert scope_unit_has_added_lines(su, _patched_file()) is False  # type: ignore[arg-type]
+
+
+def test_scope_unit_has_added_lines_false_when_disjoint() -> None:
+    """A scope unit covering target lines 100-110 has nothing in range."""
+    su = _scope_unit(line_start=100, line_end=110)
+    assert scope_unit_has_added_lines(su, _patched_file()) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# bound_diff_hunks_text
+# ---------------------------------------------------------------------------
+
+
+def test_bound_diff_hunks_text_under_cap_returns_full_text() -> None:
+    """Both caps far above content → entire patch text returned."""
+    text = bound_diff_hunks_text(_patched_file(), max_lines=100, max_chars=8192)  # type: ignore[arg-type]
+    # Both hunks present.
+    assert "first()" in text
+    assert "second()" in text
+
+
+def test_bound_diff_hunks_text_truncates_when_line_cap_exceeded() -> None:
+    """`max_lines` cap closes the gate when reached; a sentinel marks
+    the truncation so the audit/prompt isn't a silent empty."""
+    text = bound_diff_hunks_text(_patched_file(), max_lines=2, max_chars=8192)  # type: ignore[arg-type]
+    assert "truncated" in text
+    # First two lines present; later lines absent.
+    assert "second()" not in text
+
+
+def test_bound_diff_hunks_text_first_line_exceeding_char_cap_is_partial_not_empty() -> None:
+    """Regression: a single hunk line exceeding `max_chars` used to
+    return `""` silently. Behavior now: emit the line truncated to the
+    remaining char budget + a sentinel. The audit row reflects "diff was
+    too big to fit" rather than "no diff to review."""
+    # Construct a patch with a single hunk line > max_chars.
+    huge_line = "a" * 200
+    patch_text = f"""\
+diff --git a/src/foo.py b/src/foo.py
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -1,1 +1,2 @@
+ def first():
++{huge_line}
+"""
+    patched = PatchSet.from_string(patch_text)[0]
+    text = bound_diff_hunks_text(patched, max_lines=100, max_chars=50)  # type: ignore[arg-type]
+    # Result is NOT empty (the prior silent-fail behavior).
+    assert text != ""
+    # Truncation sentinel present.
+    assert "truncated" in text
+    # Some content of the bounded prefix is present.
+    assert text != "\n[truncated: prompt budget cap reached]\n"
