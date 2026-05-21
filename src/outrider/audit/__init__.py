@@ -7,6 +7,9 @@ The durable persister (`audit/persister.py`) implements four Protocol
 contracts atomically per `DECISIONS.md#016`: `LLMExchangePersister`
 (`llm/base.py`) plus `PhaseEventSink`, `FileExaminationSink`, and
 `AnalyzeEventSink` (all in `audit/sinks.py`).
+
+Also re-exports `RetentionSettings` from `audit/config.py` for callers
+that wire retention-aware persisters at lifespan-construction time.
 """
 
 from outrider.audit.config import RetentionSettings

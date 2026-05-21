@@ -74,19 +74,19 @@ def test_finding_event_carries_evidence_tier() -> None:
         ),
         "policy_version": "1.0.0",
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="evidence_tier"):
         FindingEvent(**fields)
 
 
 def test_finding_event_severity_is_finding_severity_enum() -> None:
     """Bare invalid string raises (severity-set-by-policy gate)."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="severity"):
         _build_event(severity="catastrophic")
 
 
 def test_finding_event_finding_type_is_constrained_enum() -> None:
     """Bare invalid string raises (finding-type-enum-constrained)."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="finding_type"):
         _build_event(finding_type="not_a_real_finding_type")
 
 
@@ -98,7 +98,7 @@ def test_finding_event_has_no_confidence_field() -> None:
     """
     event = _build_event()
     assert "confidence" not in event.model_dump()
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         _build_event(confidence=0.9)
 
 
@@ -202,13 +202,14 @@ def test_finding_event_finding_content_hash_format() -> None:
     length) all raise via the Field pattern before the canonical-hash
     verifier even runs.
     """
-    with pytest.raises(ValidationError):
+    match_pat = "(?s)finding_content_hash.*String should match pattern"
+    with pytest.raises(ValidationError, match=match_pat):
         _build_event(finding_content_hash="sha256-h")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=match_pat):
         _build_event(finding_content_hash="A" * 64)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=match_pat):
         _build_event(finding_content_hash="g" * 64)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=match_pat):
         _build_event(finding_content_hash="a" * 63)
 
 
@@ -260,7 +261,7 @@ def test_compute_finding_content_hash_is_deterministic() -> None:
 
 def test_finding_event_line_start_ge_1() -> None:
     """line_start = 0 raises (1-indexed per coordinates/)."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
         _build_event(line_start=0, line_end=5)
 
 

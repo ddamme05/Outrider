@@ -156,18 +156,18 @@ def test_analyze_completed_admits_zero_calls_zero_rejected() -> None:
 
 
 def test_analyze_completed_rejects_negative_counter() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
         AnalyzeCompletedEvent(**_completed_kwargs(n_files_analyzed=-1))
 
 
 def test_analyze_completed_frozen() -> None:
     event = AnalyzeCompletedEvent(**_completed_kwargs())
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Instance is frozen"):
         event.pass_index = 99  # type: ignore[misc]
 
 
 def test_analyze_completed_extra_forbid() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         AnalyzeCompletedEvent(**_completed_kwargs(unexpected_field="bad"))
 
 
@@ -229,13 +229,15 @@ def test_finding_proposal_rejected_non_tier_failure_with_none_tier_raises() -> N
 
 def test_finding_proposal_rejected_proposal_hash_pattern() -> None:
     """`proposal_hash` must match SHA-256 64-hex pattern."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="(?s)proposal_hash.*String should match pattern"):
         FindingProposalRejectedEvent(**_rejected_proposal_kwargs(proposal_hash="not-a-hash"))
 
 
 def test_finding_proposal_rejected_finding_type_hash_short_pattern() -> None:
     """`claimed_finding_type_hash` must match the 16-hex SHORT pattern."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="(?s)claimed_finding_type_hash.*String should match pattern"
+    ):
         FindingProposalRejectedEvent(
             **_rejected_proposal_kwargs(claimed_finding_type_hash="a" * 64)
         )
@@ -243,24 +245,24 @@ def test_finding_proposal_rejected_finding_type_hash_short_pattern() -> None:
 
 def test_finding_proposal_rejected_finding_type_len_bounded() -> None:
     """`claimed_finding_type_len <= 128` per raw layer cap."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="less than or equal to 128"):
         FindingProposalRejectedEvent(**_rejected_proposal_kwargs(claimed_finding_type_len=129))
 
 
 def test_finding_proposal_rejected_detail_length_bounded() -> None:
     """`rejection_detail` capped at 500 chars."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="at most 500 characters"):
         FindingProposalRejectedEvent(**_rejected_proposal_kwargs(rejection_detail="x" * 501))
 
 
 def test_finding_proposal_rejected_frozen() -> None:
     event = FindingProposalRejectedEvent(**_rejected_proposal_kwargs())
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Instance is frozen"):
         event.file_path = "other.py"  # type: ignore[misc]
 
 
 def test_finding_proposal_rejected_extra_forbid() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         FindingProposalRejectedEvent(**_rejected_proposal_kwargs(unexpected="bad"))
 
 
@@ -276,26 +278,26 @@ def test_analyze_response_rejected_admits_well_formed() -> None:
 
 
 def test_analyze_response_rejected_response_hash_pattern() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="(?s)response_hash.*String should match pattern"):
         AnalyzeResponseRejectedEvent(**_rejected_response_kwargs(response_hash="bad"))
 
 
 def test_analyze_response_rejected_rejects_other_reasons() -> None:
     """Literal accepts only the one value."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Input should be 'raw_response_unparseable'"):
         AnalyzeResponseRejectedEvent(
             **_rejected_response_kwargs(rejection_reason="some_other_reason")
         )
 
 
 def test_analyze_response_rejected_detail_length_bounded() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="at most 500 characters"):
         AnalyzeResponseRejectedEvent(**_rejected_response_kwargs(rejection_detail="x" * 501))
 
 
 def test_analyze_response_rejected_frozen() -> None:
     event = AnalyzeResponseRejectedEvent(**_rejected_response_kwargs())
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Instance is frozen"):
         event.file_path = "other.py"  # type: ignore[misc]
 
 
