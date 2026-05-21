@@ -21,7 +21,7 @@ domain models. No `tree_sitter`, no `coordinates/`, no `audit/`.
 """
 
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from outrider.ast_facts.models import (
     AssignmentSite,
@@ -79,6 +79,7 @@ class LanguageAdapter(Protocol):
         (skip-classification is `parse_python`'s job, not this method's)."""
 
 
+@runtime_checkable
 class ImportPathResolver(Protocol):
     """Path-string-to-validated-path construction contract.
 
@@ -93,6 +94,11 @@ class ImportPathResolver(Protocol):
     The Protocol is shipped from `ast_facts/base.py`; the V1
     implementation lives elsewhere (eventually `coordinates/`) and is
     out of scope for this module.
+
+    `@runtime_checkable` matches the audit-sink Protocols' precedent so
+    `build_graph` can `isinstance`-reject implementations lacking the
+    `resolve_candidate_paths` member at construction time. PEP 544 caveat
+    per `docs/trust-boundaries.md`: member-presence only, not signature.
     """
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]: ...

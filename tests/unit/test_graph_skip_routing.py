@@ -33,7 +33,16 @@ from langgraph.graph import START
 from outrider.agent.graph import build_graph
 
 if TYPE_CHECKING:
-    from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
+    from pathlib import Path
+
+    from outrider.audit.events import (
+        AnalyzeCompletedEvent,
+        AnalyzeResponseRejectedEvent,
+        FileExaminationEvent,
+        FindingEvent,
+        FindingProposalRejectedEvent,
+        ReviewPhaseEvent,
+    )
     from outrider.llm.base import LLMRequest, LLMResponse
 
 
@@ -60,8 +69,28 @@ class _StubFileSink:
         return None
 
 
+class _StubAnalyzeEventSink:
+    async def emit_finding(self, event: FindingEvent) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_analyze_response_rejected(self, event: AnalyzeResponseRejectedEvent) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubImportPathResolver:
+    def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:  # noqa: ARG002
+        return []
+
+
 class _StubModelConfig:
     triage_model = "stub-model"
+    analyze_model = "stub-analyze-model"
 
 
 def _stub_db_factory() -> Any:
@@ -89,6 +118,8 @@ def compiled_graph() -> Any:
         model_config=_StubModelConfig(),  # type: ignore[arg-type]
         phase_event_sink=_StubPhaseSink(),
         file_examination_sink=_StubFileSink(),
+        analyze_event_sink=_StubAnalyzeEventSink(),
+        import_path_resolver=_StubImportPathResolver(),
     )
 
 

@@ -1,19 +1,20 @@
-"""build_graph guard tests per the triage-node + intake-and-webhook specs.
+"""build_graph guard tests per the triage-node + intake-and-webhook + analyze-node specs.
 
 Narrowly scoped to dependency / None guards on `agent/graph.py::build_graph`.
 Functional behavior (the compiled graph actually runs) is covered by the
-integration tests in `tests/integration/test_review_state_langgraph_merge.py`.
+integration tests in `tests/integration/test_review_state_langgraph_merge.py`
+and the analyze-wiring tests in `tests/unit/test_agent_graph_analyze_wiring.py`.
 
-Rejection contracts pinned here (six gates after intake-and-webhook landed):
+Rejection contracts pinned here (eight None gates after analyze-node landed):
   1. provider=None → BuildGraphError
   2. model_config=None → BuildGraphError
   3. phase_event_sink=None → BuildGraphError
   4. file_examination_sink=None → BuildGraphError
-  5. db_factory=None → BuildGraphError
-  6. github_factory=None → BuildGraphError
-  7. provider lacking `complete` member → BuildGraphError (isinstance gate)
-  8. phase_event_sink lacking `emit_phase` member → BuildGraphError (isinstance gate)
-  9. file_examination_sink lacking `emit_file_examination` member → BuildGraphError
+  5. analyze_event_sink=None → BuildGraphError
+  6. import_path_resolver=None → BuildGraphError
+  7. db_factory=None → BuildGraphError
+  8. github_factory=None → BuildGraphError
+  Plus five Protocol-structural gates and two callable() gates.
 
 PEP 544 caveat: the isinstance gates check MEMBER PRESENCE only — wrong
 signature or async-shape falls through to fail at the first call. Tests
@@ -31,9 +32,18 @@ from outrider.agent.graph import BuildGraphError, build_graph
 from outrider.llm.config import ModelConfig
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
+    from outrider.audit.events import (
+        AnalyzeCompletedEvent,
+        AnalyzeResponseRejectedEvent,
+        FileExaminationEvent,
+        FindingEvent,
+        FindingProposalRejectedEvent,
+        ReviewPhaseEvent,
+    )
     from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
 
@@ -64,6 +74,29 @@ class _StubFileExaminationSink:
         return None
 
 
+class _StubAnalyzeEventSink:
+    """Satisfies AnalyzeEventSink Protocol structurally (has all 4 emit_* members)."""
+
+    async def emit_finding(self, event: FindingEvent) -> None:
+        return None
+
+    async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
+        return None
+
+    async def emit_analyze_response_rejected(self, event: AnalyzeResponseRejectedEvent) -> None:
+        return None
+
+    async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
+        return None
+
+
+class _StubImportPathResolver:
+    """Satisfies ImportPathResolver Protocol structurally (has `resolve_candidate_paths`)."""
+
+    def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
+        return []
+
+
 def _stub_db_factory() -> async_sessionmaker[AsyncSession]:
     """A callable stub satisfying both the None-check and the
     `callable()` check at construction time. The duck-typed runtime
@@ -90,6 +123,8 @@ def _valid_args() -> dict[str, Any]:
         "model_config": ModelConfig(),
         "phase_event_sink": _StubPhaseSink(),
         "file_examination_sink": _StubFileExaminationSink(),
+        "analyze_event_sink": _StubAnalyzeEventSink(),
+        "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),
         "github_factory": _stub_github_factory,
     }
@@ -139,6 +174,20 @@ def test_build_graph_rejects_file_examination_sink_none() -> None:
     args = _valid_args()
     args["file_examination_sink"] = None
     with pytest.raises(BuildGraphError, match="file_examination_sink must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_analyze_event_sink_none() -> None:
+    args = _valid_args()
+    args["analyze_event_sink"] = None
+    with pytest.raises(BuildGraphError, match="analyze_event_sink must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_import_path_resolver_none() -> None:
+    args = _valid_args()
+    args["import_path_resolver"] = None
+    with pytest.raises(BuildGraphError, match="import_path_resolver must not be None"):
         build_graph(**args)
 
 
@@ -209,6 +258,30 @@ def test_build_graph_rejects_file_examination_sink_missing_member() -> None:
     with pytest.raises(
         BuildGraphError,
         match="file_examination_sink does not satisfy FileExaminationSink",
+    ):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_analyze_event_sink_missing_member() -> None:
+    """`isinstance(sink, AnalyzeEventSink)` fails on objects lacking any of
+    the four `emit_*` methods. PEP 544 member-presence semantics."""
+    args = _valid_args()
+    args["analyze_event_sink"] = object()
+    with pytest.raises(
+        BuildGraphError,
+        match="analyze_event_sink does not satisfy AnalyzeEventSink",
+    ):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_import_path_resolver_missing_member() -> None:
+    """`isinstance(resolver, ImportPathResolver)` fails on objects without
+    `resolve_candidate_paths`. PEP 544 member-presence semantics."""
+    args = _valid_args()
+    args["import_path_resolver"] = object()
+    with pytest.raises(
+        BuildGraphError,
+        match="import_path_resolver does not satisfy ImportPathResolver",
     ):
         build_graph(**args)
 

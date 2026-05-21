@@ -105,7 +105,11 @@ if TYPE_CHECKING:
     from outrider.audit.config import RetentionSettings
     from outrider.audit.events import (
         AgentTransitionEvent,
+        AnalyzeCompletedEvent,
+        AnalyzeResponseRejectedEvent,
         FileExaminationEvent,
+        FindingEvent,
+        FindingProposalRejectedEvent,
         LLMCallEvent,
         ReviewPhaseEvent,
     )
@@ -779,7 +783,16 @@ def _compute_content_field_digests(
 
 
 def _serialize_event_payload(
-    event: LLMCallEvent | ReviewPhaseEvent | FileExaminationEvent | AgentTransitionEvent,
+    event: (
+        LLMCallEvent
+        | ReviewPhaseEvent
+        | FileExaminationEvent
+        | AgentTransitionEvent
+        | FindingEvent
+        | FindingProposalRejectedEvent
+        | AnalyzeResponseRejectedEvent
+        | AnalyzeCompletedEvent
+    ),
 ) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
 
@@ -1245,6 +1258,31 @@ class AuditPersister:
         the fan-out is safe under the per-call session discipline shared
         with `emit_phase`.
         """
+        await self._persist_non_phase_event(event)
+
+    # -- AnalyzeEventSink surface -------------------------------------------
+
+    async def _persist_non_phase_event(
+        self,
+        event: (
+            FileExaminationEvent
+            | FindingEvent
+            | FindingProposalRejectedEvent
+            | AnalyzeResponseRejectedEvent
+            | AnalyzeCompletedEvent
+        ),
+    ) -> None:
+        """Persist any non-phase audit event row to audit_events.
+
+        Shared body for `FileExaminationSink` + `AnalyzeEventSink`
+        emit_* methods — every event whose `phase_key` is NULL. Mirrors
+        `emit_phase`'s idempotency + payload-mismatch discipline.
+
+        Per-call session discipline: each emission opens its own
+        `AsyncSession` (no concurrent reuse). Safe under the V1.5
+        parallel-analyze fan-out per the `phase-events-bound-work`
+        sibling-sink rule.
+        """
         payload = _serialize_event_payload(event)
 
         async with self._session_factory() as session, session.begin():
@@ -1278,3 +1316,19 @@ class AuditPersister:
                         mismatched_fields=_diff_field_names(existing_payload, payload),
                         field_digests=_compute_field_digests(existing_payload, payload),
                     )
+
+    async def emit_finding(self, event: FindingEvent) -> None:
+        """Persist a `FindingEvent` row to audit_events (analyze admitted finding)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
+        """Persist a `FindingProposalRejectedEvent` row (parser rejection)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_analyze_response_rejected(self, event: AnalyzeResponseRejectedEvent) -> None:
+        """Persist an `AnalyzeResponseRejectedEvent` row (response-level parse failure)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
+        """Persist an `AnalyzeCompletedEvent` row (per-pass aggregate)."""
+        await self._persist_non_phase_event(event)

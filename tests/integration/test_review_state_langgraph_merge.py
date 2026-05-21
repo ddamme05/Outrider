@@ -35,7 +35,16 @@ from outrider.schemas.review_state import ReviewState
 from outrider.schemas.triage_result import TriageResult
 
 if TYPE_CHECKING:
-    from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
+    from pathlib import Path
+
+    from outrider.audit.events import (
+        AnalyzeCompletedEvent,
+        AnalyzeResponseRejectedEvent,
+        FileExaminationEvent,
+        FindingEvent,
+        FindingProposalRejectedEvent,
+        ReviewPhaseEvent,
+    )
     from outrider.llm.base import LLMRequest, LLMResponse
 
 
@@ -56,23 +65,36 @@ class _RecordingPhaseEventSinkLike(Protocol):
 
 
 class _MockLLMProvider:
-    """Returns a canned valid TriageResult JSON; no transport failures."""
+    """Routes by `request.node_id` to a canned response per node.
 
-    def __init__(self, *, canned_response: str | None = None) -> None:
-        self.canned_response = canned_response or json.dumps(
+    Triage gets a valid TriageResult JSON; analyze gets a canned
+    `{"findings": []}` so the analyze node body iterates without emitting
+    findings (consistent with the all-SKIP tier map below — the analyze
+    body's triage gate excludes the file before the LLM call fires; the
+    canned analyze response is defense-in-depth in case a future test
+    sets a non-SKIP tier and accidentally invokes the provider).
+    """
+
+    def __init__(self, *, triage_response: str | None = None) -> None:
+        # Use SKIM (analyze excludes it from iteration) rather than SKIP
+        # (triage's policy forbids LLM-emitted SKIP per the size-cap-gate
+        # contract; SKIP is reserved for the deterministic upstream gate).
+        self.triage_response = triage_response or json.dumps(
             {
-                "file_tiers": {"src/example.py": "standard"},
+                "file_tiers": {"src/example.py": "skim"},
                 "overall_risk": "low",
                 "relevant_dimensions": ["code_quality"],
-                "reasoning": "Standard refactor.",
+                "reasoning": "Test mock: SKIM tier so analyze iterates zero files.",
             }
         )
+        self.analyze_response = json.dumps({"findings": []})
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.llm.base import LLMResponse
 
+        text = self.triage_response if request.node_id == "triage" else self.analyze_response
         return LLMResponse(
-            text=self.canned_response,
+            text=text,
             model=request.model,
             input_tokens=100,
             output_tokens=50,
@@ -241,14 +263,54 @@ class _RecordingFileExaminationSink:
         self.events.append(event)
 
 
-def _intake_kwargs(
+class _RecordingAnalyzeEventSink:
+    """No-op sink satisfying AnalyzeEventSink Protocol structurally.
+
+    Test bodies in this file don't assert on analyze events directly
+    (analyze iterates zero files under the all-SKIP tier map); the
+    recorder satisfies build_graph's structural Protocol check and
+    captures any analyze emissions for future assertions.
+    """
+
+    def __init__(self) -> None:
+        self.findings: list[FindingEvent] = []
+        self.proposal_rejections: list[FindingProposalRejectedEvent] = []
+        self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
+        self.completed: list[AnalyzeCompletedEvent] = []
+
+    async def emit_finding(self, event: FindingEvent) -> None:
+        self.findings.append(event)
+
+    async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
+        self.proposal_rejections.append(event)
+
+    async def emit_analyze_response_rejected(self, event: AnalyzeResponseRejectedEvent) -> None:
+        self.response_rejections.append(event)
+
+    async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
+        self.completed.append(event)
+
+
+class _StubImportPathResolver:
+    """No-op `ImportPathResolver` for tests where analyze iterates zero
+    files. The stub satisfies the structural Protocol check; the body
+    is never invoked because parse_python isn't called when no file
+    reaches analyze."""
+
+    def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
+        return []
+
+
+def _graph_kwargs(
     *,
     phase_event_sink: _RecordingPhaseEventSinkLike,
     file_examination_sink: _RecordingFileExaminationSink | None = None,
 ) -> dict[str, Any]:
-    """Build the new build_graph kwargs introduced by intake-and-webhook.
+    """Build the full set of build_graph kwargs (intake + triage + analyze).
 
-    Encapsulates the four new deps so test bodies stay readable.
+    Encapsulates the seven deps so test bodies stay readable. Renamed
+    from `_graph_kwargs` after the analyze-node spec landed and added
+    `analyze_event_sink` + `import_path_resolver`.
     """
     return {
         "db_factory": _stub_db_factory,  # type: ignore[arg-type]
@@ -257,6 +319,8 @@ def _intake_kwargs(
         "model_config": ModelConfig(),
         "phase_event_sink": phase_event_sink,
         "file_examination_sink": file_examination_sink or _RecordingFileExaminationSink(),
+        "analyze_event_sink": _RecordingAnalyzeEventSink(),
+        "import_path_resolver": _StubImportPathResolver(),
     }
 
 
@@ -314,7 +378,7 @@ def _build_seed_dict_with_naive_datetime() -> dict[str, object]:
 #
 # Rebuilt 2026-05-17 for the two-node intake → triage graph: each test
 # now passes the cooperative intake deps (stub github_factory + stub
-# db_factory + recording file_examination_sink) via the `_intake_kwargs`
+# db_factory + recording file_examination_sink) via the `_graph_kwargs`
 # helper. The intake-side stubs are designed so that the produced
 # `ChangedFile` tuple is byte-identical to the seed's pr_context.changed_files,
 # preserving each test's original assertions about pr_context survival.
@@ -333,7 +397,7 @@ async def test_naive_datetime_seed_raises_validation_error_at_first_node_input(
     ReviewState is the post-first-input lifetime defense; the construction-
     time validator (AwareDatetime → reject naive) is the first-input gate.
     """
-    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
+    graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
     bad_seed = _build_seed_dict_with_naive_datetime()
     with pytest.raises(ValidationError):
         await graph.ainvoke(bad_seed)
@@ -357,7 +421,7 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
     already passed for the sink; this test verifies the runtime contract.
     """
     state = _build_valid_seed_state()
-    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
+    graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
 
     result = await graph.ainvoke(state)
 
@@ -379,11 +443,20 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
         # dict-shaped — direct compare after re-serializing the original
         assert result_pr_context == original_pr_context_dump
 
-    # Phase events were emitted: two start+end pairs (intake, then triage).
+    # Phase events were emitted: three start+end pairs (intake, triage, analyze).
+    # Analyze fires its pair even when the all-SKIP tier map sends zero files
+    # into the per-file loop (phase-events-bound-work guarantees the pair).
     events = recording_phase_event_sink.events
-    assert len(events) == 4
-    assert [e.node_id for e in events] == ["intake", "intake", "triage", "triage"]
-    assert [e.marker for e in events] == ["start", "end", "start", "end"]
+    assert len(events) == 6
+    assert [e.node_id for e in events] == [
+        "intake",
+        "intake",
+        "triage",
+        "triage",
+        "analyze",
+        "analyze",
+    ]
+    assert [e.marker for e in events] == ["start", "end", "start", "end", "start", "end"]
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +478,7 @@ async def test_result_dict_rehydrates_as_review_state(
     contract documented in `review_state.py`.
     """
     state = _build_valid_seed_state()
-    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
+    graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
 
     result = await graph.ainvoke(state)
     rehydrated = ReviewState(**result)
@@ -443,7 +516,7 @@ async def test_is_eval_survives_langgraph_merge(
     pinning both surfaces together prevents a regression where the
     reducer drops the flag from one but not the other."""
     # Graph construction does not depend on eval_flag — hoist out of the loop.
-    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
+    graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
     for eval_flag in (True, False):
         state = _build_valid_seed_state()
         state.is_eval = eval_flag  # validate_assignment=True validates this
@@ -466,10 +539,10 @@ async def test_is_eval_survives_langgraph_merge(
         # Phase events emitted during THIS iteration must carry the same flag.
         # Slicing from events_before isolates per-iteration emissions since
         # the recording sink is function-scoped and accumulates across the loop.
-        # Two-node graph: intake start/end + triage start/end = 4 events.
+        # Three-node graph: intake + triage + analyze start/end pairs = 6 events.
         new_events = recording_phase_event_sink.events[events_before:]
-        assert len(new_events) == 4, (
-            f"expected intake+triage start/end pairs for is_eval={eval_flag} "
+        assert len(new_events) == 6, (
+            f"expected intake+triage+analyze start/end pairs for is_eval={eval_flag} "
             f"iteration, got {len(new_events)}"
         )
         for ev in new_events:
@@ -486,24 +559,29 @@ async def test_phase_events_have_matching_phase_id_through_graph(
 ) -> None:
     """End-to-end: each node's start/end pair shares the same phase_id.
     Validates the closure correctly threads phase_id through both emit_phase
-    calls inside the LangGraph-managed node invocation. Two-node graph:
-    intake produces one start/end pair, triage produces a second.
+    calls inside the LangGraph-managed node invocation. Three-node graph:
+    intake, triage, and analyze each produce a start/end pair, each with a
+    distinct phase_id.
 
     The unit test pins this at the node level; the integration test
     confirms the full graph orchestration doesn't break the contract."""
     state = _build_valid_seed_state()
-    graph = build_graph(**_intake_kwargs(phase_event_sink=recording_phase_event_sink))
+    graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
 
     await graph.ainvoke(state)
 
     events = recording_phase_event_sink.events
-    assert len(events) == 4
-    # Intake start/end share a phase_id; triage start/end share a phase_id;
-    # the two pairs use DIFFERENT phase_ids (one per node invocation).
+    assert len(events) == 6
+    # Intake / triage / analyze each share a phase_id internally; the three
+    # pairs use distinct phase_ids (one per node invocation).
     assert events[0].node_id == "intake" and events[1].node_id == "intake"
     assert events[2].node_id == "triage" and events[3].node_id == "triage"
+    assert events[4].node_id == "analyze" and events[5].node_id == "analyze"
     assert events[0].phase_id == events[1].phase_id  # intake pair
     assert events[2].phase_id == events[3].phase_id  # triage pair
-    assert events[0].phase_id != events[2].phase_id  # different pairs
+    assert events[4].phase_id == events[5].phase_id  # analyze pair
+    assert events[0].phase_id != events[2].phase_id  # intake vs triage
+    assert events[2].phase_id != events[4].phase_id  # triage vs analyze
+    assert events[0].phase_id != events[4].phase_id  # intake vs analyze
     for ev in events:
         assert ev.review_id == state.review_id

@@ -371,6 +371,35 @@ def file_in_patch(file_path: str, patch: str) -> bool:
     return bool(matches)
 
 
+class _CoordinatesImportPathResolver:
+    """`ImportPathResolver` Protocol implementation wrapping the
+    module-level `resolve_candidate_paths` function.
+
+    The standalone function is the actual implementation (and the
+    public surface readers reach for); this class is the
+    Protocol-satisfying bridge so `build_graph`'s `isinstance(...)`
+    gate accepts a stateless singleton resolver. Stateless by design —
+    one instance per process is sufficient; constructed at module
+    import time as `COORDINATES_IMPORT_PATH_RESOLVER`.
+
+    Per `docs/trust-boundaries.md §5.3`: `ast_facts/` consumes
+    already-validated paths via this Protocol; the validation
+    (relative-only, no `..` traversal, prefix-validation, no symlinks)
+    lives in the function this class wraps. Two-surface path-validation
+    rule preserved.
+    """
+
+    def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
+        return resolve_candidate_paths(import_string, import_root)
+
+
+COORDINATES_IMPORT_PATH_RESOLVER: Final = _CoordinatesImportPathResolver()
+"""Process-wide singleton `ImportPathResolver` instance. Used by
+`lifespan.py` to wire `build_graph(import_path_resolver=...)` against
+the canonical coordinates implementation. Stateless; safe to share
+across concurrent reviews."""
+
+
 def lookup_patched_file(patch: str | None, file_path: str) -> PatchedFile | None:
     """Return the `PatchedFile` matching `file_path` in `patch`, or None if absent.
 
