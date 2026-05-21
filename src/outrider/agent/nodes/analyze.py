@@ -232,6 +232,16 @@ def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
     indirectly tested via the cost-gate path; pinning the helper's return
     value directly catches drift in either ceiling without LLM-flow
     setup).
+
+    **Kill-switch semantics at budget ≤ 0.** The helper does NOT raise
+    on non-positive budget — it returns a non-positive cap, which
+    downstream produces `estimated_tokens > cap` for every prompt
+    (since `analyze_prompt.MAX_TOKENS` is positive). Effect: every
+    file skips with `COST_BUDGET_EXHAUSTED`, no LLM call fires for the
+    pass. This is the safe outcome for a misconfigured budget — fail
+    closed, not fail open. Pinned by
+    `test_compute_per_file_cap_zero_budget_is_kill_switch` and
+    `_negative_budget_is_kill_switch`.
     """
     return min(
         int(total_review_budget_tokens * PER_FILE_CAP_FRACTION),
@@ -571,9 +581,15 @@ def _assemble_scope_unit_context(
 
     The body extract is taken via UTF-8 byte slicing (`ScopeUnit.byte_start`
     / `byte_end`) because tree-sitter byte offsets land on char
-    boundaries per `parse_python`'s contract. `errors="replace"` would
-    only fire under producer bug (byte offsets misaligned); we treat
-    the bytes as already-validated UTF-8 from `content.encode("utf-8")`.
+    boundaries per `parse_python`'s contract. The decode uses
+    `errors="replace"` as defense-in-depth: under the producer contract
+    the bytes ARE valid UTF-8 (they came from `content.encode("utf-8")`
+    + tree-sitter offsets that land on char boundaries), so `errors=
+    "strict"` would also work. The replace policy surfaces a producer
+    bug as a U+FFFD placeholder in the prompt rather than crashing the
+    pass mid-render — preserving the audit signal (FileExaminationEvent
+    + provider call) is preferable to losing the per-file decision row
+    on a parser-internal edge case.
     """
     source_bytes = file_content.encode("utf-8")
     blocks: list[str] = []

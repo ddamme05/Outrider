@@ -1,9 +1,12 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of both Protocols.
+"""AuditPersister — durable single-class implementation of four sink Protocols.
 
-Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`
-(`audit/sinks.py`) from one body, sharing transaction lifecycle and
-session-per-call discipline.
+Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
+`FileExaminationSink`, and `AnalyzeEventSink` (`audit/sinks.py`) from one
+body, sharing transaction lifecycle and session-per-call discipline. The
+non-phase events route through a shared `_persist_non_phase_event`
+helper so the idempotency + payload-mismatch discipline is uniform
+across event types.
 
 Key invariants:
 
@@ -828,7 +831,8 @@ def _serialize_event_payload(
 
 
 class AuditPersister:
-    """Durable persister; implements `LLMExchangePersister` + `PhaseEventSink`.
+    """Durable persister; implements `LLMExchangePersister` + `PhaseEventSink`
+    + `FileExaminationSink` + `AnalyzeEventSink`.
 
     Constructor accepts dependencies via keyword args:
 
