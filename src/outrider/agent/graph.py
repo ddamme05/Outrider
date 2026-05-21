@@ -1,13 +1,15 @@
-# Two-node StateGraph(ReviewState) factory per specs/2026-05-17-intake-and-webhook.md.
-"""Two-node `StateGraph(ReviewState)` factory: intake → triage.
+# Three-node StateGraph(ReviewState) factory per specs/2026-05-19-analyze-node.md §8.
+"""Three-node `StateGraph(ReviewState)` factory: intake → triage → analyze.
 
-V1.x ships TWO nodes: `intake` and `triage`. Intake enriches
+V1.x ships THREE nodes: `intake`, `triage`, `analyze`. Intake enriches
 `pr_context.changed_files` per `DECISIONS.md#020`; triage runs a fast
-LLM pass for tier classification. The factory produces a
+LLM pass for tier classification; analyze runs one Sonnet call per
+DEEP/STANDARD-tier file, emits findings, and returns analysis-round +
+trace-candidate state deltas. The factory produces a
 `CompiledStateGraph` that consumers invoke via
 `await graph.ainvoke(seed_state)`.
 
-Multi-node graph topology beyond intake → triage (analyze ⇄ trace →
+Multi-node graph topology beyond intake → triage → analyze (trace →
 synthesize → hitl → publish) is downstream of this spec.
 
 ## Routing: Command, not static or conditional edges from intake
@@ -31,13 +33,20 @@ top-level slots from intake).
 
 Required keyword arguments per `nodes-receive-deps-via-closure`:
 
-  - `provider: LLMProvider` — LLM transport for triage.
-  - `model_config: ModelConfig` — `triage_model` only is captured at
-    callsite (per `model-strings-from-config-not-hardcoded`).
-  - `phase_event_sink: PhaseEventSink` — required for both nodes; both
-    emit start/end phase markers.
+  - `provider: LLMProvider` — LLM transport for triage AND analyze.
+  - `model_config: ModelConfig` — `triage_model` and `analyze_model` are
+    captured at callsite (per `model-strings-from-config-not-hardcoded`).
+  - `phase_event_sink: PhaseEventSink` — required for all three nodes;
+    each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
-    per-file `FileExaminationEvent` emissions.
+    per-file content-fetch events AND analyze's per-file examination
+    outcome events (one per kept file).
+  - `analyze_event_sink: AnalyzeEventSink` — required for analyze's
+    `FindingEvent` / `FindingProposalRejectedEvent` /
+    `AnalyzeResponseRejectedEvent` / `AnalyzeCompletedEvent` emissions.
+  - `import_path_resolver: ImportPathResolver` — required for analyze's
+    `parse_python(...)` call (passed through to `ast_facts/`); resolves
+    same-file import paths for the registry walk.
   - `db_factory: async_sessionmaker[AsyncSession]` — required for intake's
     `reviews.status='skipped'` / `'failed'` writes. Per canonical
     `docs/spec.md §9.3`, `db_factory` is the first parameter; this spec
@@ -68,10 +77,12 @@ from typing import TYPE_CHECKING, Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.intake import intake
 from outrider.agent.nodes.triage import triage
 from outrider.agent.state import ReviewState
-from outrider.audit.sinks import FileExaminationSink, PhaseEventSink
+from outrider.ast_facts.base import ImportPathResolver
+from outrider.audit.sinks import AnalyzeEventSink, FileExaminationSink, PhaseEventSink
 from outrider.llm.base import LLMProvider
 
 if TYPE_CHECKING:
@@ -109,8 +120,11 @@ def build_graph(
     model_config: ModelConfig,
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    import_path_resolver: ImportPathResolver,
+    total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
 ) -> _CompiledTriageGraph:
-    """Build the two-node intake → triage graph.
+    """Build the three-node intake → triage → analyze graph.
 
     Keyword-only arguments to prevent positional-confusion bugs at
     callsites with multiple deps. Validation order: None checks first
@@ -133,6 +147,10 @@ def build_graph(
         raise BuildGraphError("phase_event_sink must not be None")
     if file_examination_sink is None:
         raise BuildGraphError("file_examination_sink must not be None")
+    if analyze_event_sink is None:
+        raise BuildGraphError("analyze_event_sink must not be None")
+    if import_path_resolver is None:
+        raise BuildGraphError("import_path_resolver must not be None")
     if db_factory is None:
         raise BuildGraphError("db_factory must not be None")
     if github_factory is None:
@@ -174,6 +192,21 @@ def build_graph(
             f"(passed type: {type(file_examination_sink).__name__}; "
             f"missing `emit_file_examination` member; see PEP 544 runtime-checkable semantics)"
         )
+    if not isinstance(analyze_event_sink, AnalyzeEventSink):
+        raise BuildGraphError(
+            f"analyze_event_sink does not satisfy AnalyzeEventSink Protocol "
+            f"(passed type: {type(analyze_event_sink).__name__}; "
+            f"missing one of `emit_finding` / `emit_finding_proposal_rejected` / "
+            f"`emit_analyze_response_rejected` / `emit_analyze_completed`; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
+    if not isinstance(import_path_resolver, ImportPathResolver):
+        raise BuildGraphError(
+            f"import_path_resolver does not satisfy ImportPathResolver Protocol "
+            f"(passed type: {type(import_path_resolver).__name__}; "
+            f"missing `resolve_candidate_paths` member; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
 
     # Close over the per-tier model id, not the whole ModelConfig.
     triage_callable = functools.partial(
@@ -189,17 +222,33 @@ def build_graph(
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
     )
+    analyze_callable = functools.partial(
+        analyze,
+        provider=provider,
+        analyze_model=model_config.analyze_model,
+        phase_event_sink=phase_event_sink,
+        file_examination_sink=file_examination_sink,
+        analyze_event_sink=analyze_event_sink,
+        import_path_resolver=import_path_resolver,
+        total_review_budget_tokens=total_review_budget_tokens,
+    )
 
     builder = StateGraph(ReviewState)
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
+    builder.add_node("analyze", analyze_callable)
     builder.add_edge(START, "intake")
     # NO `builder.add_edge("intake", "triage")` here, and NO
     # `builder.add_conditional_edges("intake", ...)`. Intake routes via
     # `Command(goto=...)` per LangGraph 1.1.6 semantics — a static edge
     # would fire alongside the Command and send to BOTH destinations.
     # See module docstring "Routing" section for the full rationale.
-    builder.add_edge("triage", END)
+    builder.add_edge("triage", "analyze")
+    # Per analyze-node spec §8: V1 wires `analyze → END` unconditionally.
+    # The future `analyze ⇄ trace` loop replaces this edge when the trace
+    # spec lands; pre-wiring it now would produce an un-buildable graph
+    # since trace doesn't exist as a registered node.
+    builder.add_edge("analyze", END)
     return builder.compile()
 
 

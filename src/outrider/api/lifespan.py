@@ -74,6 +74,7 @@ from sqlalchemy.ext.asyncio import (
 from outrider.agent.graph import build_graph
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
+from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
 from outrider.github.auth import make_installation_client_factory
 from outrider.github.config import GitHubAppSettings
 from outrider.llm.anthropic_provider import AnthropicProvider
@@ -427,17 +428,22 @@ def build_lifespan(
             # defeat the env-validation gate at startup.
             github_factory = make_installation_client_factory(github_app_settings)
 
-            # Step 8: build the compiled graph with all six deps injected
+            # Step 8: build the compiled graph with all deps injected
             # at construction time. `db_factory` is the canonical first
             # parameter per `docs/spec.md §9.3`; the order here mirrors
             # the spec's signature. `model_config` is the SAME instance
             # already passed to the provider at step 5b — single-source
-            # guarantee.
+            # guarantee. The analyze node body (added 2026-05-20) takes
+            # an additional `analyze_event_sink` (the same `persister`
+            # implements all four AnalyzeEventSink methods) and an
+            # `import_path_resolver` (the stateless coordinates singleton).
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
                 phase_event_sink=persister,
                 file_examination_sink=persister,
+                analyze_event_sink=persister,
+                import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,
                 github_factory=github_factory,
             )

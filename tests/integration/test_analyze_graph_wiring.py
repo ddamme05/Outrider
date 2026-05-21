@@ -1,0 +1,551 @@
+"""Analyze-node graph wiring integration tests per spec §8.
+
+Four gates pinned by user direction (2026-05-21):
+
+1. **`triage → analyze → END` wires correctly.** Build the compiled graph;
+   assert the edge set and node membership.
+2. **One clean eligible file flows through analyze.** Tier=DEEP file →
+   analyze runs → AnalysisRound populated with at least one finding;
+   FindingEvent emitted.
+3. **One triage-excluded file does not enter analyze.** Tier=SKIM file →
+   analyze iterates zero files for it; FileExaminationEvent with that
+   file's path does NOT fire from analyze.
+4. **One budget-skip file remains audited and does not look like 'clean'.**
+   Tier=DEEP file + tiny `total_review_budget_tokens` → cost gate fires →
+   `FileExaminationEvent(parse_status="skipped",
+   skip_reason=COST_BUDGET_EXHAUSTED)` emitted; the file appears in
+   `AnalysisRound.files_skipped` (not `files_examined`).
+
+These exercise the COMPILED graph end-to-end (intake → triage → analyze).
+The unit tests in `tests/unit/test_analyze_node.py` cover the node body
+in isolation; this file covers the wiring.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
+
+import pytest
+from langgraph.graph import START
+
+from outrider.agent.graph import build_graph
+from outrider.ast_facts.models import SkipReason
+from outrider.llm.config import ModelConfig
+from outrider.schemas.pr_context import ChangedFile, PRContext
+from outrider.schemas.review_state import ReviewState
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from outrider.audit.events import (
+        AnalyzeCompletedEvent,
+        AnalyzeResponseRejectedEvent,
+        FileExaminationEvent,
+        FindingEvent,
+        FindingProposalRejectedEvent,
+        ReviewPhaseEvent,
+    )
+    from outrider.llm.base import LLMRequest, LLMResponse
+
+
+# ---------------------------------------------------------------------------
+# Cross-conftest fixture protocol (mirrors test_review_state_langgraph_merge)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingPhaseEventSinkLike(Protocol):
+    events: list[ReviewPhaseEvent]
+
+    async def emit_phase(self, event: ReviewPhaseEvent) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# Mock LLM provider: routes by node_id
+# ---------------------------------------------------------------------------
+
+
+class _RoutingMockLLMProvider:
+    """Returns canned responses keyed by `request.node_id`.
+
+    Triage gets a configurable tier map; analyze gets a configurable
+    findings payload. Tests construct one provider per scenario with the
+    right pair of canned responses.
+    """
+
+    def __init__(self, *, triage_response: str, analyze_response: str) -> None:
+        self.triage_response = triage_response
+        self.analyze_response = analyze_response
+        self.calls: list[LLMRequest] = []
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        from outrider.llm.base import LLMResponse
+
+        self.calls.append(request)
+        text = self.triage_response if request.node_id == "triage" else self.analyze_response
+        return LLMResponse(
+            text=text,
+            model=request.model,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            finish_reason="end_turn",
+            latency_ms=42,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Intake stubs (cooperative — return the seed's file structure unchanged)
+# ---------------------------------------------------------------------------
+
+
+_SEED_INSTALLATION_ID = 12345
+_SEED_OWNER = "acme"
+_SEED_REPO = "widget"
+_SEED_PULL_NUMBER = 42
+
+# Two functions so analyze has scope units to intersect with.
+_DEEP_FILE_PATH = "src/clean.py"
+_DEEP_FILE_HEAD = b"def my_function():\n    return 42\n\ndef another(x):\n    return x + 1\n"
+_DEEP_FILE_BASE = b"def my_function():\n    return 0\n\ndef another(x):\n    return x + 1\n"
+_DEEP_FILE_PATCH = (
+    f"--- a/{_DEEP_FILE_PATH}\n"
+    f"+++ b/{_DEEP_FILE_PATH}\n"
+    "@@ -1,2 +1,2 @@\n"
+    " def my_function():\n"
+    "-    return 0\n"
+    "+    return 42\n"
+)
+
+
+@dataclass
+class _StubFileMeta:
+    filename: str
+    status: str
+    additions: int
+    deletions: int
+    patch: str | None = None
+    previous_filename: str | None = None
+
+
+@dataclass
+class _StubContentFile:
+    encoding: str
+    content: str
+
+
+@dataclass
+class _StubResponse:
+    parsed_data: Any
+
+
+class _StubReposAPI:
+    async def async_get_content(
+        self, owner: str, repo: str, path: str, *, ref: str
+    ) -> _StubResponse:
+        if ref == "a" * 40:
+            content_bytes = _DEEP_FILE_BASE
+        elif ref == "b" * 40:
+            content_bytes = _DEEP_FILE_HEAD
+        else:
+            content_bytes = b""
+        return _StubResponse(
+            parsed_data=_StubContentFile(
+                encoding="base64",
+                content=base64.b64encode(content_bytes).decode("ascii"),
+            )
+        )
+
+
+class _StubPullsAPI:
+    async def async_list_files(
+        self, owner: str, repo: str, pull_number: int, **kwargs: Any
+    ) -> _StubResponse:
+        return _StubResponse(
+            parsed_data=[
+                _StubFileMeta(
+                    filename=_DEEP_FILE_PATH,
+                    status="modified",
+                    additions=1,
+                    deletions=1,
+                    patch=_DEEP_FILE_PATCH,
+                )
+            ]
+        )
+
+
+class _StubRestAPI:
+    def __init__(self) -> None:
+        self.repos = _StubReposAPI()
+        self.pulls = _StubPullsAPI()
+
+
+class _StubGitHub:
+    def __init__(self) -> None:
+        self.rest = _StubRestAPI()
+
+
+def _stub_github_factory(installation_id: int) -> Any:
+    return _StubGitHub()
+
+
+class _NeverCalledSession:
+    async def __aenter__(self) -> _NeverCalledSession:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    def begin(self) -> _NeverCalledSession:
+        return self
+
+    async def execute(self, stmt: Any) -> Any:
+        raise AssertionError("intake happy-path should not write to reviews table here")
+
+
+def _stub_db_factory() -> _NeverCalledSession:
+    return _NeverCalledSession()
+
+
+# ---------------------------------------------------------------------------
+# Recording sinks
+# ---------------------------------------------------------------------------
+
+
+class _RecordingFileExaminationSink:
+    def __init__(self) -> None:
+        self.events: list[FileExaminationEvent] = []
+
+    async def emit_file_examination(self, event: FileExaminationEvent) -> None:
+        self.events.append(event)
+
+
+class _RecordingAnalyzeEventSink:
+    def __init__(self) -> None:
+        self.findings: list[FindingEvent] = []
+        self.proposal_rejections: list[FindingProposalRejectedEvent] = []
+        self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
+        self.completed: list[AnalyzeCompletedEvent] = []
+
+    async def emit_finding(self, event: FindingEvent) -> None:
+        self.findings.append(event)
+
+    async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
+        self.proposal_rejections.append(event)
+
+    async def emit_analyze_response_rejected(self, event: AnalyzeResponseRejectedEvent) -> None:
+        self.response_rejections.append(event)
+
+    async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
+        self.completed.append(event)
+
+
+class _StubImportPathResolver:
+    def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Canned LLM payload builders
+# ---------------------------------------------------------------------------
+
+
+def _triage_response(*, tier: str) -> str:
+    return json.dumps(
+        {
+            "file_tiers": {_DEEP_FILE_PATH: tier},
+            "overall_risk": "medium",
+            "relevant_dimensions": ["security"],
+            "reasoning": f"test mock: {tier} tier.",
+        }
+    )
+
+
+def _analyze_response_one_finding() -> str:
+    return json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "sql_injection",
+                    "evidence_tier": "judged",
+                    "query_match_id": None,
+                    "trace_path": None,
+                    "title": "Test finding",
+                    "description": "Wired analyze-graph finding.",
+                    "evidence": "def my_function():\n    return 42",
+                    "span": {"byte_start": 0, "byte_end": 18},
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Seed builders
+# ---------------------------------------------------------------------------
+
+
+def _build_seed_state() -> ReviewState:
+    return ReviewState(
+        review_id=uuid4(),
+        received_at=datetime.now(UTC),
+        pr_context=PRContext(
+            installation_id=_SEED_INSTALLATION_ID,
+            owner=_SEED_OWNER,
+            repo=_SEED_REPO,
+            pr_number=_SEED_PULL_NUMBER,
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            pr_title="Test PR",
+            pr_body=None,
+            author="someone",
+            total_additions=1,
+            total_deletions=1,
+            changed_files=(
+                ChangedFile(
+                    path=_DEEP_FILE_PATH,
+                    status="modified",
+                    additions=1,
+                    deletions=1,
+                    patch=_DEEP_FILE_PATCH,
+                    content_base=_DEEP_FILE_BASE.decode("utf-8"),
+                    content_head=_DEEP_FILE_HEAD.decode("utf-8"),
+                    previous_path=None,
+                    language="python",
+                ),
+            ),
+        ),
+        is_eval=True,
+    )
+
+
+def _build_kwargs(
+    *,
+    provider: _RoutingMockLLMProvider,
+    phase_event_sink: _RecordingPhaseEventSinkLike,
+    file_examination_sink: _RecordingFileExaminationSink,
+    analyze_event_sink: _RecordingAnalyzeEventSink,
+    total_review_budget_tokens: int | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "db_factory": _stub_db_factory,
+        "github_factory": _stub_github_factory,
+        "provider": provider,
+        "model_config": ModelConfig(),
+        "phase_event_sink": phase_event_sink,
+        "file_examination_sink": file_examination_sink,
+        "analyze_event_sink": analyze_event_sink,
+        "import_path_resolver": _StubImportPathResolver(),
+    }
+    if total_review_budget_tokens is not None:
+        kwargs["total_review_budget_tokens"] = total_review_budget_tokens
+    return kwargs
+
+
+# ---------------------------------------------------------------------------
+# Gate 1 — triage → analyze → END wires correctly
+# ---------------------------------------------------------------------------
+
+
+def test_compiled_graph_has_analyze_node_and_correct_edges(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Build the compiled graph; assert node membership includes intake,
+    triage, and analyze (no pre-wired trace), and that the only
+    statically-renderable edge starts at START and lands at intake.
+
+    LangGraph's `get_graph()` renders only static edges visible from
+    START's static reachability. Since intake routes via
+    `Command(goto=...)` (dynamic), `get_graph().edges` shows just
+    `(START, "intake")` plus a fall-through `(intake, END)` placeholder
+    — the `triage → analyze` and `analyze → END` static edges I added
+    are technically present in the builder but pruned from the rendered
+    graph as "unreachable from START via static edges." The functional
+    `triage → analyze → END` wiring is proven by gates 2-4 below
+    exercising the compiled graph end-to-end.
+    """
+    provider = _RoutingMockLLMProvider(
+        triage_response=_triage_response(tier="deep"),
+        analyze_response=_analyze_response_one_finding(),
+    )
+    graph = build_graph(
+        **_build_kwargs(
+            provider=provider,
+            phase_event_sink=recording_phase_event_sink,
+            file_examination_sink=_RecordingFileExaminationSink(),
+            analyze_event_sink=_RecordingAnalyzeEventSink(),
+        )
+    )
+    nodes = set(graph.get_graph().nodes)
+    assert "intake" in nodes
+    assert "triage" in nodes
+    assert "analyze" in nodes
+    assert "trace" not in nodes  # trace spec hasn't landed; must NOT be pre-wired
+
+    edges = {(e.source, e.target) for e in graph.get_graph().edges}
+    # START → intake is the only statically-visible START-reachable edge;
+    # the rest of the topology surfaces only through `ainvoke` (gates 2-4).
+    assert (START, "intake") in edges
+
+
+# ---------------------------------------------------------------------------
+# Gate 2 — one clean eligible file flows through analyze
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clean_eligible_file_flows_through_analyze(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Tier=DEEP file → analyze runs → AnalysisRound populated;
+    FindingEvent emitted from analyze; AnalyzeCompletedEvent shows
+    n_findings_emitted=1."""
+    provider = _RoutingMockLLMProvider(
+        triage_response=_triage_response(tier="deep"),
+        analyze_response=_analyze_response_one_finding(),
+    )
+    fe_sink = _RecordingFileExaminationSink()
+    ae_sink = _RecordingAnalyzeEventSink()
+    state = _build_seed_state()
+    graph = build_graph(
+        **_build_kwargs(
+            provider=provider,
+            phase_event_sink=recording_phase_event_sink,
+            file_examination_sink=fe_sink,
+            analyze_event_sink=ae_sink,
+        )
+    )
+
+    result = await graph.ainvoke(state)
+
+    # AnalysisRound landed in state.
+    rounds = result["analysis_rounds"]
+    assert len(rounds) == 1
+    assert rounds[0].files_examined == (_DEEP_FILE_PATH,)
+    assert rounds[0].files_skipped == ()
+    assert len(rounds[0].findings) == 1
+
+    # FindingEvent emitted from analyze.
+    assert len(ae_sink.findings) == 1
+    assert ae_sink.findings[0].file_path == _DEEP_FILE_PATH
+    assert ae_sink.completed[0].n_findings_emitted == 1
+
+    # FileExaminationEvent shows clean parse_status for analyze.
+    analyze_fe = [e for e in fe_sink.events if e.node_id == "analyze"]
+    assert len(analyze_fe) == 1
+    assert analyze_fe[0].parse_status == "clean"
+    assert analyze_fe[0].skip_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 — one triage-excluded file does not enter analyze
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_excluded_file_does_not_enter_analyze(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Tier=SKIM file → analyze's triage gate excludes it BEFORE any
+    per-file work. The file does NOT appear in `files_examined` or
+    `files_skipped`; no analyze-emitted FileExaminationEvent fires for
+    that path. The analyze provider is NEVER called."""
+    provider = _RoutingMockLLMProvider(
+        triage_response=_triage_response(tier="skim"),
+        analyze_response=_analyze_response_one_finding(),
+    )
+    fe_sink = _RecordingFileExaminationSink()
+    ae_sink = _RecordingAnalyzeEventSink()
+    state = _build_seed_state()
+    graph = build_graph(
+        **_build_kwargs(
+            provider=provider,
+            phase_event_sink=recording_phase_event_sink,
+            file_examination_sink=fe_sink,
+            analyze_event_sink=ae_sink,
+        )
+    )
+
+    result = await graph.ainvoke(state)
+
+    rounds = result["analysis_rounds"]
+    assert len(rounds) == 1
+    assert rounds[0].files_examined == ()
+    assert rounds[0].files_skipped == ()
+    assert len(rounds[0].findings) == 0
+
+    # NO FileExaminationEvent emitted from analyze for this file.
+    analyze_fe = [e for e in fe_sink.events if e.node_id == "analyze"]
+    assert analyze_fe == []
+
+    # Provider was called once (triage) — NOT twice.
+    analyze_calls = [c for c in provider.calls if c.node_id == "analyze"]
+    assert analyze_calls == []
+
+    # AnalyzeCompletedEvent fires with zero counters.
+    assert len(ae_sink.completed) == 1
+    assert ae_sink.completed[0].n_llm_calls == 0
+    assert ae_sink.completed[0].n_files_analyzed == 0
+
+
+# ---------------------------------------------------------------------------
+# Gate 4 — budget-skip file is audited as skipped, NOT clean
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_budget_skip_file_is_audited_as_skipped_not_clean(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Tier=DEEP file + tiny `total_review_budget_tokens` → cost gate
+    fires → FileExaminationEvent(skipped, COST_BUDGET_EXHAUSTED) emitted;
+    file appears in `AnalysisRound.files_skipped` (not `files_examined`).
+    The analyze provider is NOT called for that file."""
+    provider = _RoutingMockLLMProvider(
+        triage_response=_triage_response(tier="deep"),
+        analyze_response=_analyze_response_one_finding(),
+    )
+    fe_sink = _RecordingFileExaminationSink()
+    ae_sink = _RecordingAnalyzeEventSink()
+    state = _build_seed_state()
+    graph = build_graph(
+        **_build_kwargs(
+            provider=provider,
+            phase_event_sink=recording_phase_event_sink,
+            file_examination_sink=fe_sink,
+            analyze_event_sink=ae_sink,
+            total_review_budget_tokens=100,  # per-file cap = 25 tokens
+        )
+    )
+
+    result = await graph.ainvoke(state)
+
+    rounds = result["analysis_rounds"]
+    assert len(rounds) == 1
+    assert rounds[0].files_examined == ()
+    assert rounds[0].files_skipped == (_DEEP_FILE_PATH,)
+
+    # FileExaminationEvent from analyze: parse_status=skipped, skip_reason=COST_BUDGET_EXHAUSTED.
+    analyze_fe = [e for e in fe_sink.events if e.node_id == "analyze"]
+    assert len(analyze_fe) == 1
+    assert analyze_fe[0].parse_status == "skipped"
+    assert analyze_fe[0].skip_reason == SkipReason.COST_BUDGET_EXHAUSTED
+    # The audit row's parse_status is explicitly NOT "clean" — the user's
+    # gate language was "does not look like 'clean'".
+    assert analyze_fe[0].parse_status != "clean"
+
+    # Provider was NOT called for analyze.
+    analyze_calls = [c for c in provider.calls if c.node_id == "analyze"]
+    assert analyze_calls == []
+
+    # AnalyzeCompletedEvent shows zero LLM calls + one skipped file.
+    assert len(ae_sink.completed) == 1
+    assert ae_sink.completed[0].n_llm_calls == 0
+    assert ae_sink.completed[0].n_files_analyzed == 0
+    assert ae_sink.completed[0].n_files_skipped == 1

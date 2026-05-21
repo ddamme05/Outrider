@@ -37,6 +37,7 @@ V1 boundary types:
 """
 
 from outrider.coordinates.diff_parser import (
+    COORDINATES_IMPORT_PATH_RESOLVER,
     diff_line_to_scope,
     file_in_patch,
     lookup_patched_file,
@@ -59,6 +60,7 @@ from outrider.coordinates.translator import (
 )
 
 __all__ = [
+    "COORDINATES_IMPORT_PATH_RESOLVER",
     "CoordinateError",
     "GitHubCommentLocation",
     "bound_diff_hunks_text",
