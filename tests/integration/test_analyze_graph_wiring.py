@@ -291,7 +291,7 @@ def _analyze_response_one_finding() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_seed_state() -> ReviewState:
+def _build_seed_state(*, is_eval: bool = True) -> ReviewState:
     return ReviewState(
         review_id=uuid4(),
         received_at=datetime.now(UTC),
@@ -321,7 +321,7 @@ def _build_seed_state() -> ReviewState:
                 ),
             ),
         ),
-        is_eval=True,
+        is_eval=is_eval,
     )
 
 
@@ -549,3 +549,68 @@ async def test_budget_skip_file_is_audited_as_skipped_not_clean(
     assert ae_sink.completed[0].n_llm_calls == 0
     assert ae_sink.completed[0].n_files_analyzed == 0
     assert ae_sink.completed[0].n_files_skipped == 1
+
+
+# ---------------------------------------------------------------------------
+# Gate 5 — is_eval propagation through the full 3-node graph (production AND eval)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eval_flag", [True, False])
+async def test_is_eval_propagates_through_three_node_graph(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+    eval_flag: bool,
+) -> None:
+    """`is_eval` from the seed `ReviewState` must reach every emitted
+    event — phase events (intake/triage/analyze pairs), FileExaminationEvents
+    (intake's per-file fetch + analyze's per-file outcome), and the four
+    analyze-specific event types (FindingEvent +
+    FindingProposalRejectedEvent + AnalyzeResponseRejectedEvent +
+    AnalyzeCompletedEvent).
+
+    Parametrized over `is_eval=True` AND `is_eval=False` so the
+    production-side propagation (`is_eval=False`) doesn't silently break
+    while eval-tagged tests stay green. Eval-isolation contract is
+    bidirectional: an eval-tagged row in production audit OR a
+    production-tagged row in eval audit both pollute the stream.
+    """
+    provider = _RoutingMockLLMProvider(
+        triage_response=_triage_response(tier="deep"),
+        analyze_response=_analyze_response_one_finding(),
+    )
+    fe_sink = _RecordingFileExaminationSink()
+    ae_sink = _RecordingAnalyzeEventSink()
+    state = _build_seed_state(is_eval=eval_flag)
+    graph = build_graph(
+        **_build_kwargs(
+            provider=provider,
+            phase_event_sink=recording_phase_event_sink,
+            file_examination_sink=fe_sink,
+            analyze_event_sink=ae_sink,
+        )
+    )
+
+    await graph.ainvoke(state)
+
+    # Every phase event (intake/triage/analyze, start+end) carries the flag.
+    assert all(e.is_eval is eval_flag for e in recording_phase_event_sink.events), (
+        f"Phase event leaked the wrong is_eval flag (expected {eval_flag})"
+    )
+
+    # Every FileExaminationEvent (intake's fetch + analyze's outcome).
+    assert all(e.is_eval is eval_flag for e in fe_sink.events), (
+        f"FileExaminationEvent leaked the wrong is_eval flag (expected {eval_flag})"
+    )
+
+    # Every analyze-emitted event type.
+    assert all(e.is_eval is eval_flag for e in ae_sink.findings), (
+        f"FindingEvent leaked the wrong is_eval flag (expected {eval_flag})"
+    )
+    assert all(e.is_eval is eval_flag for e in ae_sink.completed), (
+        f"AnalyzeCompletedEvent leaked the wrong is_eval flag (expected {eval_flag})"
+    )
+    # proposal_rejections / response_rejections are empty for this scenario;
+    # the loop-all-types property still holds vacuously and doesn't need a
+    # separate assertion. The structural assertion is "every recorded event
+    # carries the flag," which the above three checks cover.
