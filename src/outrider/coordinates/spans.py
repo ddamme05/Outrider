@@ -178,6 +178,20 @@ def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile)
     )
 
 
+def span_is_nonempty(span: Span) -> bool:
+    """True iff `span` covers at least one byte (`byte_start < byte_end`).
+
+    `Span` admits `byte_end >= byte_start` at construction (half-open
+    interval, zero-width spans are schema-legal because `ScopeUnit`-like
+    consumers can have legitimate empty ranges). For finding admission
+    the analyze parser requires a span that actually anchors to bytes —
+    a zero-width finding doesn't point at any code. Lives here so the
+    span-shape decision is owned by `coordinates/` per
+    `coordinates-module-is-sole-translator`.
+    """
+    return span.byte_start < span.byte_end
+
+
 def patched_file_has_added_lines(patched_file: PatchedFile) -> bool:
     """True iff any hunk in `patched_file` carries at least one added line.
 
