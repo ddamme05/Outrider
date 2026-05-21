@@ -15,8 +15,14 @@ from typing import Literal
 
 import pytest
 
+from outrider.ast_facts.base import ImportPathResolver
 from outrider.ast_facts.models import ScopeUnit
-from outrider.coordinates import CoordinateError, diff_line_to_scope
+from outrider.coordinates import (
+    COORDINATES_IMPORT_PATH_RESOLVER,
+    CoordinateError,
+    diff_line_to_scope,
+    lookup_patched_file,
+)
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -502,3 +508,81 @@ def test_innermost_when_scope_order_in_list_is_inner_first() -> None:
     result = diff_line_to_scope(file_path="x.py", diff_line=2, scope_units=scope_units)
     assert result is not None
     assert result.unit_id == "inner"
+
+
+# ---------------------------------------------------------------------------
+# lookup_patched_file: three None branches + happy path + duplicate-entry raise
+# ---------------------------------------------------------------------------
+
+
+_VALID_PATCH = "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1,1 +1,2 @@\n def foo():\n+    return 42\n"
+
+
+def test_lookup_patched_file_empty_patch_returns_none() -> None:
+    """Empty string + None patch input → None (boolean-helper policy)."""
+    assert lookup_patched_file("", "src/foo.py") is None
+    assert lookup_patched_file(None, "src/foo.py") is None
+
+
+def test_lookup_patched_file_invalid_path_returns_none() -> None:
+    """validate_diff_path failure (`..` traversal, shell metachar, absolute,
+    `.git/` first-component) collapses to None rather than raising. Matches
+    the `file_in_patch` boolean-helper policy so a malformed caller path
+    routes downstream as "not in patch" — the security gate lives at
+    `validate_diff_path`, not at this membership query."""
+    assert lookup_patched_file(_VALID_PATCH, "../etc/passwd") is None
+    assert lookup_patched_file(_VALID_PATCH, "/abs/path.py") is None
+    assert lookup_patched_file(_VALID_PATCH, "foo;rm -rf /.py") is None
+    assert lookup_patched_file(_VALID_PATCH, ".git/HEAD") is None
+
+
+def test_lookup_patched_file_absent_from_patch_returns_none() -> None:
+    """Well-formed patch + valid path BUT file is not in the patch → None.
+    Distinguishes the "no diff content for this file" case from the
+    "couldn't validate path" case in downstream control flow (both collapse
+    to None per the documented boolean-helper policy)."""
+    assert lookup_patched_file(_VALID_PATCH, "src/bar.py") is None
+
+
+def test_lookup_patched_file_present_returns_patched_file() -> None:
+    """Happy path: well-formed patch + path that IS present returns the
+    unidiff PatchedFile object so the caller can iterate its hunks."""
+    result = lookup_patched_file(_VALID_PATCH, "src/foo.py")
+    assert result is not None
+    # PatchedFile.path is the canonical (target-side) path for additions/
+    # modifications/renames.
+    assert result.path == "src/foo.py"
+
+
+# NOTE: The two defensive error paths in `lookup_patched_file` —
+# malformed-unidiff wrap (`UnidiffParseError → CoordinateError`) and
+# duplicate-entries detection — are NOT pinned here because `unidiff`
+# is extremely lenient on garbage text input (silently produces an
+# empty/single PatchSet rather than raising) and consolidates duplicate
+# paths during parsing. The defensive code is correct shape but the
+# triggering inputs require lower-level injection (e.g., monkeypatching
+# `PatchSet` or constructing a `PatchSet` programmatically) rather
+# than text fixtures. The same discipline applies to `file_in_patch`
+# in `test_coordinates_file_in_patch.py`, which also doesn't try to
+# exercise those branches from text input.
+
+
+# ---------------------------------------------------------------------------
+# COORDINATES_IMPORT_PATH_RESOLVER: Protocol satisfaction + statelessness
+# ---------------------------------------------------------------------------
+
+
+def test_coordinates_import_path_resolver_satisfies_protocol() -> None:
+    """Singleton instance satisfies `ImportPathResolver` Protocol via
+    `isinstance` (PEP 544 runtime-checkable). `build_graph` uses this
+    check as the structural gate; pinning here catches a regression
+    that would otherwise surface only at lifespan start."""
+    assert isinstance(COORDINATES_IMPORT_PATH_RESOLVER, ImportPathResolver)
+
+
+def test_coordinates_import_path_resolver_is_stateless() -> None:
+    """Singleton docstring claims 'Stateless; safe to share across
+    concurrent reviews.' Pin: no instance attributes. If a future
+    refactor adds per-instance state, this fails — at which point the
+    concurrent-safety claim needs re-evaluation."""
+    assert vars(COORDINATES_IMPORT_PATH_RESOLVER) == {}

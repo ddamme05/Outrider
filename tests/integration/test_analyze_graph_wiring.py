@@ -593,24 +593,45 @@ async def test_is_eval_propagates_through_three_node_graph(
 
     await graph.ainvoke(state)
 
-    # Every phase event (intake/triage/analyze, start+end) carries the flag.
+    # Vacuous-pass guards: `all(...)` over an empty iterable is True, so
+    # `assert all(e.is_eval is eval_flag for e in [])` passes regardless
+    # of the propagation property. Pin non-empty lengths first so a
+    # future fixture/schema break that empties an event list surfaces
+    # the breakage rather than silently passing the propagation check.
+
+    # Phase events: 6 expected (intake + triage + analyze, each start+end pair).
+    assert len(recording_phase_event_sink.events) == 6, (
+        f"expected 6 phase events (3 nodes × start+end), "
+        f"got {len(recording_phase_event_sink.events)}"
+    )
     assert all(e.is_eval is eval_flag for e in recording_phase_event_sink.events), (
         f"Phase event leaked the wrong is_eval flag (expected {eval_flag})"
     )
 
-    # Every FileExaminationEvent (intake's fetch + analyze's outcome).
+    # FileExaminationEvents: at least intake's fetch + analyze's outcome.
+    assert len(fe_sink.events) >= 2, (
+        f"expected at least 2 FileExaminationEvents (intake fetch + analyze outcome), "
+        f"got {len(fe_sink.events)}"
+    )
     assert all(e.is_eval is eval_flag for e in fe_sink.events), (
         f"FileExaminationEvent leaked the wrong is_eval flag (expected {eval_flag})"
     )
 
-    # Every analyze-emitted event type.
+    # Exactly one admitted finding + one AnalyzeCompletedEvent under this fixture.
+    assert len(ae_sink.findings) == 1, (
+        f"expected 1 FindingEvent (one admitted JUDGED finding), got {len(ae_sink.findings)}"
+    )
+    assert len(ae_sink.completed) == 1, (
+        f"expected 1 AnalyzeCompletedEvent per pass, got {len(ae_sink.completed)}"
+    )
     assert all(e.is_eval is eval_flag for e in ae_sink.findings), (
         f"FindingEvent leaked the wrong is_eval flag (expected {eval_flag})"
     )
     assert all(e.is_eval is eval_flag for e in ae_sink.completed), (
         f"AnalyzeCompletedEvent leaked the wrong is_eval flag (expected {eval_flag})"
     )
-    # proposal_rejections / response_rejections are empty for this scenario;
-    # the loop-all-types property still holds vacuously and doesn't need a
-    # separate assertion. The structural assertion is "every recorded event
-    # carries the flag," which the above three checks cover.
+    # proposal_rejections / response_rejections are empty for this scenario
+    # (clean DEEP file admits its sole JUDGED finding); the vacuous-pass on
+    # `all(...) over empty` doesn't bite for them because there's no
+    # contract that they MUST emit for this fixture — pinning their
+    # length would over-specify.
