@@ -120,7 +120,7 @@ are illustrative and must be replaced with real values.
       "title": "<short summary, ≤120 chars>",
       "description": "<explanation, ≤1000 chars>",
       "evidence": "<verbatim quote from the code, ≤2000 chars>",
-      "span": {"byte_start": 0, "byte_end": 0},
+      "span": {"byte_start": 0, "byte_end": 1},
       "trace_candidates": [
         {"candidate_path_raw": "<repo-relative path>", "reason": "<text>"}
       ]

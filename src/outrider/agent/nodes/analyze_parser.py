@@ -181,40 +181,39 @@ def parse_analyze_response(
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
-        Pure function — no IO. All inputs are passed; outputs go into the
-        returned `ParserResult`. The node body owns persistence and state
-        updates.
+    Pure function — no IO. All inputs are passed; outputs go into the
+    returned `ParserResult`. The node body owns persistence and state
+    updates.
 
-        Inputs:
+    Inputs:
 
-        - `response_text` — raw text from `LLMResponse.text` for this file.
-        - `review_id` — for `ReviewFinding.review_id` on admitted proposals.
-        - `installation_id` — for `ReviewFinding.installation_id`.
-        - `file_path` — repo-relative path; goes into every emitted
-          payload, already canonicalized at intake.
-        - `file_content` — full file source as `str`. Needed for
-          `coordinates.span_to_line_range(...)` translation.
-        - `file_byte_length` — `len(file_content.encode("utf-8"))`
-          computed ONCE in the node body and passed here; the parser does
-          NOT recompute per proposal.
-        - `included_scope_units` — the scope units this call's prompt
-          included (their byte ranges define the `span_within_scope_unit`
-          check for clean outcomes).
-        - `query_match_id_set` — the pre-fired registry IDs the prompt
-          supplied; OBSERVED admission rejects any claimed id not in this
-          set. Empty for degraded outcomes.
-        - `degraded_mode` — branches parser step 5: clean uses
-          `span_within_scope_unit`, degraded uses `span_within_file`.
-        - `active_policy_version` — closure-captured per
-          `nodes-receive-deps-via-closure`; goes into
-          `ReviewFinding.policy_version` on admitted proposals.
-    .
+    - `response_text` — raw text from `LLMResponse.text` for this file.
+    - `review_id` — for `ReviewFinding.review_id` on admitted proposals.
+    - `installation_id` — for `ReviewFinding.installation_id`.
+    - `file_path` — repo-relative path; goes into every emitted
+      payload, already canonicalized at intake.
+    - `file_content` — full file source as `str`. Needed for
+      `coordinates.span_to_line_range(...)` translation.
+    - `file_byte_length` — `len(file_content.encode("utf-8"))`
+      computed ONCE in the node body and passed here; the parser does
+      NOT recompute per proposal.
+    - `included_scope_units` — the scope units this call's prompt
+      included (their byte ranges define the `span_within_scope_unit`
+      check for clean outcomes).
+    - `query_match_id_set` — the pre-fired registry IDs the prompt
+      supplied; OBSERVED admission rejects any claimed id not in this
+      set. Empty for degraded outcomes.
+    - `degraded_mode` — branches parser step 5: clean uses
+      `span_within_scope_unit`, degraded uses `span_within_file`.
+    - `active_policy_version` — closure-captured per
+      `nodes-receive-deps-via-closure`; goes into
+      `ReviewFinding.policy_version` on admitted proposals.
 
-        The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
-        — the parser doesn't reference it (admission decisions are
-        pass-agnostic). Removing the parameter from this signature avoids
-        an unused-input footgun where a future caller might assume the
-        parser threads `pass_index` into rejection_detail.
+    The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
+    — the parser doesn't reference it (admission decisions are
+    pass-agnostic). Removing the parameter from this signature avoids
+    an unused-input footgun where a future caller might assume the
+    parser threads `pass_index` into rejection_detail.
     """
     try:
         raw = AnalyzeResponseRaw.model_validate_json(response_text)
@@ -278,7 +277,7 @@ def parse_analyze_response(
             raw_proposal, proposal_hash=proposal_hash
         )
 
-        # Step 3: evidence_tier enum admission (runs first per the
+        # Step 2: evidence_tier enum admission (runs first per the
         # bidirectional-validator requirement above).
         try:
             evidence_tier = EvidenceTier(raw_proposal.evidence_tier)
@@ -296,7 +295,7 @@ def parse_analyze_response(
             trace_candidates.extend(proposal_trace_candidates)
             continue
 
-        # Step 2: finding_type enum admission (runs second so
+        # Step 3: finding_type enum admission (runs second so
         # claimed_evidence_tier carries the parsed enum value).
         try:
             finding_type = FindingType(raw_proposal.finding_type)
