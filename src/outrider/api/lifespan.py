@@ -430,13 +430,11 @@ def build_lifespan(
 
             # Step 8: build the compiled graph with all deps injected
             # at construction time. `db_factory` is the canonical first
-            # parameter per `docs/spec.md §9.3`; the order here mirrors
-            # the spec's signature. `model_config` is the SAME instance
-            # already passed to the provider at step 5b — single-source
-            # guarantee. The analyze node body (added 2026-05-20) takes
-            # an additional `analyze_event_sink` (the same `persister`
-            # implements all four AnalyzeEventSink methods) and an
-            # `import_path_resolver` (the stateless coordinates singleton).
+            # parameter per `docs/spec.md §9.3`. `model_config` is the
+            # SAME instance already passed to the provider at step 5b —
+            # single-source guarantee. The same `persister` implements
+            # all four sink Protocols; `import_path_resolver` is the
+            # stateless coordinates singleton.
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,

@@ -341,13 +341,12 @@ def _clip_hunk_to_line_range(
         src_start = src_lines[0].source_line_no  # type: ignore[attr-defined]
     else:
         # Pure-added clipped subset: there are no source-side lines in
-        # the kept set, so `src_lines[0]` isn't available. Post-foundation
-        # push/PR review caught the prior `src_start = 0` fallback as a
-        # forbidden coordinate for in-file insertions — `@@ -0,0 +N,M @@`
-        # is the new-file shape, NOT the in-file-insertion shape. For an
-        # in-file insertion the unidiff convention is `@@ -K,0 +N,M @@`
-        # where K is the source line BEFORE which the insertion happens
-        # (so the inserted content shows as added after source line K).
+        # the kept set, so `src_lines[0]` isn't available. `src_start = 0`
+        # is a forbidden coordinate for in-file insertions —
+        # `@@ -0,0 +N,M @@` is the new-file shape, NOT the in-file
+        # insertion shape. For an in-file insertion the unidiff
+        # convention is `@@ -K,0 +N,M @@` where K is the source line
+        # BEFORE which the insertion happens.
         #
         # Derive K by walking the ORIGINAL hunk forward up to the first
         # kept added line, tracking the most recent source_line_no

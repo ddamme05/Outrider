@@ -28,9 +28,7 @@ Six event types carry validators (plus `PerFindingDecision` inherited
 by `HITLDecisionEvent.decisions`):
 
   - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
-    per `DECISIONS.md#016` Amended 2026-05-19: non-None iff
-    `degraded_mode is True`. The audit-driven spec extension landed
-    with the foundation arc.
+    per `DECISIONS.md#016`: non-None iff `degraded_mode is True`.
   - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
     per `DECISIONS.md#018`: `skip_reason is not None` ↔
     `parse_status == "skipped"`.

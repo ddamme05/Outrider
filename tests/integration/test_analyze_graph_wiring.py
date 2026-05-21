@@ -1,6 +1,6 @@
 """Analyze-node graph wiring integration tests per spec §8.
 
-Four gates pinned by user direction (2026-05-21):
+Four gates:
 
 1. **`triage → analyze → END` wires correctly.** Build the compiled graph;
    assert the edge set and node membership.
