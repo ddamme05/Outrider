@@ -28,13 +28,20 @@ backstops drift; producer-side correctness is the contract.
   nodes intersect a changed scope unit. `degradation_reason=
   "tree_has_error_in_changed_regions"`; parser admits JUDGED only
   via `span_within_file`.
-- `skipped+NO_REVIEWABLE_CONTEXT` — no content available OR (per the
-  V1-unreachable note below) parse failure with no added text. No LLM
-  call.
+- `skipped+NO_REVIEWABLE_CONTEXT` — both `content_head` and
+  `content_base` are None (V1-unreachable: `ChangedFile.enforce_status_invariants`
+  guarantees every valid status has ≥1 content side) OR parse failure
+  with no added text (V1-unreachable per the `failed+degraded_llm` note
+  below). Branch kept as a structural slot for the future
+  schema-relaxation / raw-bytes paths. No LLM call.
 - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope unit
   intersects the changed regions, OR clean parse with no patch.
 - `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
   call.
+- `skipped+OVERSIZED` — non-Python file path routed through the
+  existing `OVERSIZED` value per FUP-033 (the canonical
+  `UNSUPPORTED_LANGUAGE` value lands with the DECISIONS#018
+  amendment).
 
 **V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
 outcome; the analyze code path is wired to handle it, but in V1 the

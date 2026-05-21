@@ -1050,11 +1050,19 @@ def test_step8_line_range_derived_from_span() -> None:
     """`line_start`/`line_end` come from `coordinates.span_to_line_range`,
     not from the raw proposal. The model proposes a byte span; the
     parser deterministically translates to 1-indexed lines via the
-    coordinate-translator boundary."""
+    coordinate-translator boundary. Pins the exact mapping so a shift
+    in `span_to_line_range` fails here, not silently downstream.
+
+    `file_content = "line1\\nline2\\nline3\\n"` byte layout:
+      bytes 0-4 "line1", byte 5 "\\n", bytes 6-10 "line2", byte 11 "\\n",
+      bytes 12-16 "line3", byte 17 "\\n".
+    Span byte_start=6, byte_end=10 is half-open; the covered bytes are
+    6,7,8,9 ("line") — all on 1-indexed line 2.
+    """
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="judged",
-            span={"byte_start": 6, "byte_end": 10},  # second line of "line1\nline2\n..."
+            span={"byte_start": 6, "byte_end": 10},
         )
     )
     result = _call_parser(
@@ -1063,10 +1071,9 @@ def test_step8_line_range_derived_from_span() -> None:
         file_content="line1\nline2\nline3\n",
     )
     finding = result.admitted_findings[0]
-    # Bytes 6-10 span "line2" (assuming "line1\n" = 6 chars). Pin the
-    # translation outcome — drift in span_to_line_range would surface here.
-    assert finding.line_start >= 1
-    assert finding.line_end >= finding.line_start
+    # Exact mapping: bytes 6..9 are entirely on line 2.
+    assert finding.line_start == 2
+    assert finding.line_end == 2
 
 
 def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
@@ -1305,21 +1312,30 @@ def test_query_match_id_rejection_detail_preserves_safe_chars() -> None:
     assert result.proposal_rejections[0].rejection_detail == benign
 
 
-def test_narrow_exception_handler_lets_unexpected_propagate() -> None:
-    """Sharp-edges M4 + adversarial M2: the two `except Exception`
-    blocks used to catch every exception class (MemoryError,
+def test_narrow_exception_handler_lets_unexpected_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sharp-edges M4 + adversarial M2: the `except ValidationError`
+    block used to catch every exception class (MemoryError,
     RecursionError, etc.) and fold them into
-    `schema_construction_failed`. Narrowed to `CoordinateError` /
-    `ValidationError` so genuinely-unexpected failures propagate as
-    bugs rather than as misleading rejections.
+    `schema_construction_failed`. Narrowed so genuinely-unexpected
+    failures propagate as bugs rather than as misleading rejections.
 
-    Smoke test: a normal `ValidationError` from a hypothetical
-    schema-constructor failure still folds correctly (no propagation
-    on the documented path); the pin against re-broadening lives in
-    code-review discipline, since asserting non-catch of a
-    hypothetical `RuntimeError` would require monkeypatching.
+    To prove narrowing actually narrows: monkeypatch the
+    `compute_finding_content_hash` call (which fires inside the
+    try-block during `ReviewFinding` construction) to raise a
+    `RuntimeError`. The parser MUST propagate it instead of folding
+    to `schema_construction_failed`. A re-broadening to
+    `except Exception` would catch the RuntimeError and produce a
+    rejection event — this test would fail with `RuntimeError` not
+    raised, naming the regression precisely.
+
+    Companion smoke assertion preserves the happy path.
     """
-    # Smoke: a clean admission path still works (no Exception fired).
+    from outrider.agent.nodes import analyze_parser
+
+    # Smoke: clean admission still works (sanity that the test setup
+    # is otherwise valid).
     response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
     result = _call_parser(
         response,
@@ -1327,6 +1343,21 @@ def test_narrow_exception_handler_lets_unexpected_propagate() -> None:
         file_content="x" * 200,
     )
     assert len(result.admitted_findings) == 1
+
+    # Force a non-narrowed exception inside the try-block. If the
+    # parser re-broadens its except, this RuntimeError gets folded
+    # to a rejection and `pytest.raises` would fail.
+    def _explode(**_kwargs: object) -> str:
+        msg = "synthetic RuntimeError from monkeypatched compute_finding_content_hash"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(analyze_parser, "compute_finding_content_hash", _explode)
+    with pytest.raises(RuntimeError, match="synthetic RuntimeError"):
+        _call_parser(
+            response,
+            included_scope_units=(_build_scope_unit(),),
+            file_content="x" * 200,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -9,31 +9,51 @@
 # =============================================================================
 """Coordinates module — translation surface per docs/spec.md §5.6.
 
-V1 public surface:
+V1 public translation surface (the four named in §5.6):
+
 - `tree_sitter_to_github(...)` — byte-span → GitHub comment location (§5.6).
 - `diff_line_to_scope(...)` — diff line → owning ScopeUnit or None (§5.6).
+- `validate_diff_path(...)` — diff-side path validator (publisher-facing,
+  before any reach the GitHub comment API per docs/spec.md §10.1).
 - `resolve_candidate_paths(...)` — ImportPathResolver Protocol implementation
   per `src/outrider/ast_facts/base.py`; trust-boundary #5 places the
   implementation here (docs/trust-boundaries.md §5.3).
-- `validate_diff_path(...)` — diff-side path validator (publisher-facing,
-  before any reach the GitHub comment API per docs/spec.md §10.1).
-- `file_in_patch(...)` — file-membership helper consumed by the publisher
-  to distinguish unchanged-region from non-diffed-file routing
-  (publish-routes-through-coordinates, docs/spec.md §4.1.7).
-- `span_within_scope_unit(...)` — span containment in a ScopeUnit's byte
-  range (analyze-foundation §4).
-- `span_within_file(...)` — safety-floor file-bounds check (§4). NOT
-  sufficient for degraded-mode admission; pair with `span_within_degraded_context`.
-- `span_within_degraded_context(...)` — degraded-mode admission gate;
-  intersection with addable diff hunks' byte ranges (§4).
-- `span_to_line_range(...)` — byte Span → 1-indexed `(line_start, line_end)`
-  over source text (§4).
-- `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to hunks
-  inside a ScopeUnit (§4).
 
-V1 boundary types:
+V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
+
+- `file_in_patch(...)` — file-membership helper for the publisher's
+  routing decision (`publish-routes-through-coordinates`).
+- `lookup_patched_file(...)` — locate a `PatchedFile` by path inside a
+  raw unified-diff string; returns None on absence (analyze §7 step 3a).
+- `span_within_scope_unit(...)` / `span_within_file(...)` /
+  `span_within_degraded_context(...)` — three span-containment checks
+  the parser composes for the clean / degraded / file-bound admission
+  paths (§4).
+- `span_is_nonempty(...)` — predicate enforcing the prompt's stricter
+  `byte_start < byte_end` rule (§4; the `Span` carrier admits
+  zero-width by design for non-finding consumers).
+- `span_to_line_range(...)` — byte Span → 1-indexed `(line_start,
+  line_end)` over source text (§4).
+- `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to
+  hunks inside a ScopeUnit (§4).
+- `scope_unit_has_added_lines(...)` / `patched_file_has_added_lines(...)`
+  — addable-line predicates that own `unidiff.Line` attribute reads
+  (§4 + analyze-node post-fold).
+- `extract_scope_unit_body(...)` — UTF-8 byte slice of a ScopeUnit's
+  byte range, returned as decoded `str`; owns the slice + decode +
+  `errors="replace"` policy (analyze-node post-fold).
+- `bound_diff_hunks_text(...)` — concatenate a `PatchedFile`'s lines
+  under joint `max_lines` + `max_chars` caps, with a truncation
+  sentinel that always fits inside `max_chars` (analyze-node §7).
+
+V1 boundary types + constants:
+
 - `GitHubCommentLocation` — Pydantic model per docs/spec.md §7.2.
 - `CoordinateError` — single failure-mode exception (§5.6).
+- `COORDINATES_IMPORT_PATH_RESOLVER` — module-level singleton
+  `ImportPathResolver` implementation; wired into `build_graph` so
+  nodes consume the singleton via closure injection rather than each
+  constructing one.
 """
 
 from outrider.coordinates.diff_parser import (
