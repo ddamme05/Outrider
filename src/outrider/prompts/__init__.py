@@ -16,3 +16,30 @@ pure `render(...)` function. Direct module import is the supported
 access pattern (`from outrider.prompts import analyze as
 analyze_prompt`).
 """
+
+
+def safe_code_fence(body: str, *, lang: str = "") -> str:
+    """Wrap `body` in a markdown code fence longer than any backtick run
+    inside it.
+
+    Markdown closes a fence when the same-or-longer backtick run appears.
+    PR-controlled `body` containing ` ``` ` (e.g., a docstring with
+    embedded markdown examples, a diff line that quotes another file's
+    fence) would close a fixed `` ``` `` fence and let attacker content
+    escape the renderer's structure — exactly the
+    `webhook-strings-are-data-not-format-strings` invariant. Returns
+    `f"{fence}{lang}\\n{body}\\n{fence}"` where `fence` is the shortest
+    string of ≥3 backticks not appearing in `body`.
+
+    Use for every PR-controlled body the analyze/triage prompts wrap in
+    a fence (scope-unit bodies, diff patches, bounded hunks). Producer-
+    internal strings (e.g., `query_match_id` from the registry, enum
+    values) do not need this helper.
+    """
+    fence = "```"
+    while fence in body:
+        fence += "`"
+    return f"{fence}{lang}\n{body}\n{fence}"
+
+
+__all__ = ["safe_code_fence"]

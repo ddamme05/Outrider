@@ -261,13 +261,21 @@ def render_degraded(
     `bounded_hunks` MUST already satisfy the per-file degraded budget
     cap (≤100 unidiff Line objects AND ≤8192 chars). The node body
     bounds before calling; this function does not re-enforce.
+
+    Wraps `bounded_hunks` in a dynamic-length `diff`-fence via
+    `safe_code_fence` because diff content is PR-controlled — a diff
+    line containing `## Heading` or ` ``` ` markdown would otherwise
+    forge sections that mimic the prompt's own structure. See
+    `webhook-strings-are-data-not-format-strings`.
     """
+    from outrider.prompts import safe_code_fence
+
     system_prompt = SYSTEM_PROMPT_INVARIANTS
     user_prompt = DEGRADED_USER_TEMPLATE.format(
         file_path=file_path,
         pass_index=pass_index,
         degradation_reason=degradation_reason,
-        bounded_hunks=bounded_hunks,
+        bounded_hunks=safe_code_fence(bounded_hunks, lang="diff"),
     )
     return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
 

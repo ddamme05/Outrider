@@ -109,6 +109,7 @@ from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 from outrider.policy.canonical import compute_round_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
+from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
 from outrider.schemas import AnalysisRound
 from outrider.schemas.triage_result import ReviewTier
@@ -167,6 +168,20 @@ def _estimate_tokens(text: str) -> int:
     """
     byte_len = len(text.encode("utf-8"))
     return (byte_len + _BYTES_PER_TOKEN - 1) // _BYTES_PER_TOKEN
+
+
+def _is_python_file(path: str) -> bool:
+    """True iff `path` is a Python source file analyze can process.
+
+    V1 ships only the Python adapter (`ast_facts/python_adapter.py`,
+    `queries/python/*.scm`). `.py` and `.pyi` are the two file
+    extensions tree-sitter Python parses meaningfully; everything else
+    routes to a skip outcome. The check is path-based because intake
+    does not populate `ChangedFile.language`. Future V1.5 multi-language
+    adapters move this gate to a registry lookup; the same path check
+    stays as the cheap pre-filter.
+    """
+    return path.endswith((".py", ".pyi"))
 
 
 def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
@@ -504,7 +519,8 @@ def _assemble_scope_unit_context(
         body = extract_scope_unit_body(su, source_bytes)
         name = su.qualified_name or su.name
         blocks.append(
-            f"### {su.kind} `{name}` (lines {su.line_start}-{su.line_end})\n```python\n{body}\n```"
+            f"### {su.kind} `{name}` (lines {su.line_start}-{su.line_end})\n"
+            f"{safe_code_fence(body, lang='python')}"
         )
     return "\n\n".join(blocks)
 
@@ -612,6 +628,25 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       "skipped"` (`OVERSIZED`, `VENDORED`, etc.); the parser's
       `skip_reason` is the audit value.
     """
+    # Language gate: V1 only handles Python. Triage doesn't filter by
+    # language and `ChangedFile.language` is currently unpopulated, so a
+    # `.js`/`.go`/`.ts`/`.rs` file classified DEEP/STANDARD would
+    # otherwise reach `parse_python` (tree-sitter Python parser) and the
+    # `queries/python/` registry. Route non-Python through
+    # `SkipReason.OVERSIZED` per the FUP-033 precedent (intake's
+    # binary/malformed-UTF-8 routing shares the same temporary
+    # mapping); FUP-033 bundles `UNSUPPORTED_LANGUAGE` into the
+    # DECISIONS#018 amendment that will give this case its own audit
+    # value.
+    if not _is_python_file(changed_file.path):
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=changed_file.path,
+            skip_reason=SkipReason.OVERSIZED,
+        )
+
     # Explicit `is not None` (not `or`) so an empty `content_head` ("")
     # doesn't fall through to `content_base` and analyze stale content.
     if changed_file.content_head is not None:
