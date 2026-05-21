@@ -20,7 +20,14 @@ implementations (`NoOpPersister`, `RecordingPhaseEventSink`) live in
 
 from typing import Protocol, runtime_checkable
 
-from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
+from outrider.audit.events import (
+    AnalyzeCompletedEvent,
+    AnalyzeResponseRejectedEvent,
+    FileExaminationEvent,
+    FindingEvent,
+    FindingProposalRejectedEvent,
+    ReviewPhaseEvent,
+)
 
 
 @runtime_checkable
@@ -120,7 +127,69 @@ class FileExaminationSink(Protocol):
         ...
 
 
+@runtime_checkable
+class AnalyzeEventSink(Protocol):
+    """Sink for the four audit event types the analyze node emits.
+
+    The analyze-node spec (`specs/2026-05-19-analyze-node.md` §7) bundles
+    four event types under one Protocol rather than four separate sinks
+    because:
+
+    - All four are emitted by ONE node body in one transaction window;
+      the durable `AuditPersister` implements them under one session
+      lifecycle.
+    - The node body's local-bookkeeping counter discipline (per
+      `_enforce_proposal_accounting` on `AnalyzeCompletedEvent`) treats
+      these four events as cardinal-related: one
+      `AnalyzeCompletedEvent` per pass, N `FindingEvent`s + M
+      `FindingProposalRejectedEvent`s + at-most-one
+      `AnalyzeResponseRejectedEvent` per per-file LLM call.
+    - Four separate kwargs on the analyze function signature would
+      crowd the deps surface and invite test-time mock proliferation;
+      one sink keeps the test setup focused.
+
+    `LLMCallEvent` is NOT here — the provider's
+    `LLMExchangePersister` emits it autonomously inside
+    `LLMProvider.complete()`.
+
+    Production / durable implementations MUST:
+      - Be idempotent on `event.event_id`. Retry / checkpoint replay
+        must not duplicate rows.
+      - Be safe under concurrent invocations. V1.5's parallel-analyze
+        fan-out emits per-file events concurrently.
+      - Persist before returning, OR raise. Silent drop is never
+        acceptable.
+
+    Test recorders (e.g., `RecordingAnalyzeEventSink`) record every
+    emission into per-type lists for assertion; they are deliberately
+    exempt from the idempotency rule (so double-emit bugs surface in
+    tests rather than being silently deduped).
+
+    `@runtime_checkable` matches the sibling-Protocol precedent —
+    `build_graph` can reject sinks lacking any of the four `emit_*`
+    members at construction time. PEP 544 caveat: member-presence
+    only, not signature shape; mypy strict is the write-time gate.
+    """
+
+    async def emit_finding(self, event: FindingEvent) -> None:
+        """Persist a `FindingEvent` for an admitted `ReviewFinding`."""
+        ...
+
+    async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
+        """Persist a per-proposal admission-failure event."""
+        ...
+
+    async def emit_analyze_response_rejected(self, event: AnalyzeResponseRejectedEvent) -> None:
+        """Persist a per-response parse-failure event."""
+        ...
+
+    async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
+        """Persist the per-pass aggregate event."""
+        ...
+
+
 __all__ = [
+    "AnalyzeEventSink",
     "FileExaminationSink",
     "PhaseEventSink",
 ]
