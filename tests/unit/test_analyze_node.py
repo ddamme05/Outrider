@@ -754,10 +754,9 @@ async def test_non_python_file_routed_to_skip_without_calling_provider(
 ) -> None:
     """V1 language gate: a non-`.py` file classified DEEP/STANDARD by
     triage must NOT reach `parse_python` or the Python query registry.
-    Routes through `SkipReason.OVERSIZED` per the FUP-033 precedent
-    (the canonical `SkipReason.UNSUPPORTED_LANGUAGE` is bundled with
-    the DECISIONS#018 amendment). Pin: no LLM call, no FindingEvent,
-    and a single skip-shaped FileExaminationEvent.
+    Routes through `SkipReason.UNSUPPORTED_LANGUAGE` per
+    `DECISIONS.md#018` Amended 2026-05-21. Pin: no LLM call, no
+    FindingEvent, and a single skip-shaped FileExaminationEvent.
     """
     js_file = _build_changed_file(
         path="src/example.js",
@@ -788,7 +787,7 @@ async def test_non_python_file_routed_to_skip_without_calling_provider(
     skip_events = [e for e in deps["file_examination_sink"].events if e.parse_status == "skipped"]
     assert len(skip_events) == 1
     assert skip_events[0].file_path == "src/example.js"
-    assert skip_events[0].skip_reason == SkipReason.OVERSIZED
+    assert skip_events[0].skip_reason == SkipReason.UNSUPPORTED_LANGUAGE
 
 
 @pytest.mark.asyncio

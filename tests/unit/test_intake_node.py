@@ -487,8 +487,8 @@ async def test_per_file_oversize_emits_skipped_event_drops_from_changed_files() 
 
 
 # ===========================================================================
-# Per-file binary / malformed-UTF-8 content → SkipReason.OVERSIZED
-# (FUP-033 will split out SkipReason.BINARY pending DECISIONS#018 amendment)
+# Per-file binary / malformed-UTF-8 content → SkipReason.BINARY
+# (per `DECISIONS.md#018` Amended 2026-05-21)
 # ===========================================================================
 
 
@@ -499,12 +499,8 @@ async def test_per_file_binary_content_skipped_not_silently_corrupted() -> None:
     triage/analyze as 'clean'.
 
     `_classify_or_reserve_decode` checks `b'\\x00' in content_bytes`
-    BEFORE the UTF-8 decode. Skip is emitted with `SkipReason.OVERSIZED`
-    because DECISIONS#018 fixes the V1 enum to five values (no
-    `BINARY`); the canonical amendment is tracked at FUP-033. The
-    load-bearing assertion is the behavior (binary blobs skipped, not
-    corrupted); the OVERSIZED routing is a canonical-conformant
-    intermediate.
+    BEFORE the UTF-8 decode. Skip is emitted with `SkipReason.BINARY`
+    per `DECISIONS.md#018` Amended 2026-05-21.
     """
     from outrider.ast_facts.models import SkipReason
 
@@ -539,11 +535,11 @@ async def test_per_file_binary_content_skipped_not_silently_corrupted() -> None:
     # Only the text file survives; the binary blob is dropped.
     assert [cf.path for cf in new_ctx.changed_files] == ["text.py"]
 
-    # Two FileExaminationEvents: clean (text.py), skipped+OVERSIZED (blob.bin).
+    # Two FileExaminationEvents: clean (text.py), skipped+BINARY (blob.bin).
     by_path = {e.file_path: e for e in file_sink.events}
     assert by_path["text.py"].parse_status == "clean"
     assert by_path["blob.bin"].parse_status == "skipped"
-    assert by_path["blob.bin"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["blob.bin"].skip_reason == SkipReason.BINARY
 
 
 @pytest.mark.asyncio
@@ -553,8 +549,10 @@ async def test_per_file_malformed_utf8_emits_skip_not_corruption() -> None:
     corrupted text get the same operator-visible outcome — neither
     reaches the LLM as clean content.
 
-    Skip reason is OVERSIZED for the same DECISIONS#018-conformance
-    reason as the binary case (see FUP-033 for the canonical amendment).
+    Skip reason is `SkipReason.BINARY` per `DECISIONS.md#018` Amended
+    2026-05-21 — `BINARY` is defined by the intake producer decision
+    (refused to decode), not by a content-ontology claim that this is
+    a "binary" file in any universal sense.
     """
     from outrider.ast_facts.models import SkipReason
 
@@ -566,8 +564,7 @@ async def test_per_file_malformed_utf8_emits_skip_not_corruption() -> None:
         # No NUL byte, but the second byte (0x80) is an invalid UTF-8
         # continuation byte without a leading 0xC0/0xE0/0xF0 — strict
         # UTF-8 decode raises UnicodeDecodeError → classifier returns
-        # SkipReason.OVERSIZED (binary/malformed routed through the
-        # same reason pending FUP-033's canonical-amendment).
+        # SkipReason.BINARY (producer-decision: intake refused to decode).
         ("garbled.txt", "h" * 40): b"a\x80\x81b",
     }
     gh = _StubGitHub(files_metadata=files, content_by_key=content)
@@ -589,7 +586,7 @@ async def test_per_file_malformed_utf8_emits_skip_not_corruption() -> None:
     assert len(file_sink.events) == 1
     skipped = file_sink.events[0]
     assert skipped.parse_status == "skipped"
-    assert skipped.skip_reason == SkipReason.OVERSIZED
+    assert skipped.skip_reason == SkipReason.BINARY
 
 
 # ===========================================================================
@@ -734,10 +731,11 @@ async def test_modified_file_releases_clean_side_when_other_side_binary() -> Non
     paths = [cf.path for cf in new_ctx.changed_files]
     assert paths == ["clean.py"]
 
-    # Audit events: `dirty.py` skipped+OVERSIZED (binary), `clean.py` clean.
+    # Audit events: `dirty.py` skipped+BINARY (NUL byte in head),
+    # `clean.py` clean.
     by_path = {e.file_path: e for e in file_sink.events}
     assert by_path["dirty.py"].parse_status == "skipped"
-    assert by_path["dirty.py"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["dirty.py"].skip_reason == SkipReason.BINARY
     assert by_path["clean.py"].parse_status == "clean"
 
 
@@ -810,13 +808,13 @@ async def test_renamed_file_releases_clean_side_when_other_side_binary() -> None
     paths = [cf.path for cf in new_ctx.changed_files]
     assert paths == ["clean.py"]
 
-    # Audit events: `new_path.py` skipped+OVERSIZED (binary head),
+    # Audit events: `new_path.py` skipped+BINARY (binary head),
     # `clean.py` clean. The renamed file's `file_path` in the audit
     # event is the NEW path per the FileExaminationEvent contract
     # (canonical "where the file lives now" form).
     by_path = {e.file_path: e for e in file_sink.events}
     assert by_path["new_path.py"].parse_status == "skipped"
-    assert by_path["new_path.py"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["new_path.py"].skip_reason == SkipReason.BINARY
     assert by_path["clean.py"].parse_status == "clean"
 
 
@@ -1005,7 +1003,7 @@ async def test_binary_blob_does_not_consume_budget_before_text(
 
     by_path = {e.file_path: e for e in file_sink.events}
     assert by_path["binary.py"].parse_status == "skipped"
-    assert by_path["binary.py"].skip_reason == SkipReason.OVERSIZED
+    assert by_path["binary.py"].skip_reason == SkipReason.BINARY
     assert by_path["text.py"].parse_status == "clean"
 
 
