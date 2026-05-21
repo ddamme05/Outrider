@@ -44,7 +44,12 @@ the code scaffold only creates the surface that later commits fill.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
+
+from pydantic import ValidationError
+
+from outrider.policy.canonical import compute_response_hash
+from outrider.schemas.llm.analyze import AnalyzeResponseRaw
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -203,7 +208,101 @@ def parse_analyze_response(
     - `pass_index` — for any rejection-detail metadata that names the
       pass; the node body uses it for `AnalyzeCompletedEvent.pass_index`.
     """
-    raise NotImplementedError("parse_analyze_response: parser admission flow not implemented")
+    try:
+        raw = AnalyzeResponseRaw.model_validate_json(response_text)
+    except ValidationError as e:
+        return ParserResult(
+            admitted_findings=(),
+            trace_candidates=(),
+            proposal_rejections=(),
+            response_rejection=ResponseRejection(
+                file_path=file_path,
+                response_hash=compute_response_hash(response_text),
+                rejection_reason="raw_response_unparseable",
+                rejection_detail=_format_validation_error_detail(e),
+            ),
+            counters=ParserCounters(
+                n_proposals_seen=0,
+                n_findings_emitted=0,
+                n_proposals_rejected=0,
+                n_responses_rejected=1,
+                n_trace_candidates_emitted=0,
+            ),
+        )
+
+    # Proposal iteration lands in the next commit. An empty `findings`
+    # array produces the trivial zero-counter result; a non-empty array
+    # raises NotImplementedError so the next commit can land its body
+    # without the partial result silently shipping.
+    if len(raw.findings) > 0:
+        raise NotImplementedError("parse_analyze_response: proposal iteration not yet implemented")
+    return ParserResult(
+        admitted_findings=(),
+        trace_candidates=(),
+        proposal_rejections=(),
+        response_rejection=None,
+        counters=ParserCounters(
+            n_proposals_seen=0,
+            n_findings_emitted=0,
+            n_proposals_rejected=0,
+            n_responses_rejected=0,
+            n_trace_candidates_emitted=0,
+        ),
+    )
+
+
+# Max length matches `Field(max_length=500)` on
+# `AnalyzeResponseRejectedEvent.rejection_detail`. Truncate just under
+# the schema cap so the lifted event constructs cleanly even when the
+# Pydantic error count is pathological.
+_REJECTION_DETAIL_MAX_LEN: Final[int] = 500
+
+
+def _format_validation_error_detail(error: ValidationError) -> str:
+    """Render a `ValidationError` as JSON-pointer paths + per-path counts.
+
+    Per `DECISIONS.md#014` point 1: audit rows must not carry user code
+    or prompt/completion content. The standard `str(error)` rendering
+    includes `input_value=` snippets of the model response — exactly
+    the leak this gate exists to close. This formatter walks
+    `error.errors()` and emits only the location path + count — never
+    the `input` field — for every error grouped by JSON pointer.
+
+    Output shape matches the spec §3 example:
+    `findings[0].finding_type x1, findings[0].evidence_tier x1`.
+    Result is truncated to `_REJECTION_DETAIL_MAX_LEN` chars (with a
+    trailing `"..."` marker when truncation fires) so the lifted
+    `AnalyzeResponseRejectedEvent.rejection_detail` Field(max_length=500)
+    accepts it.
+    """
+    path_counts: dict[str, int] = {}
+    for err in error.errors():
+        loc = _format_loc(err["loc"])
+        path_counts[loc] = path_counts.get(loc, 0) + 1
+    parts = [f"{path} x{count}" for path, count in sorted(path_counts.items())]
+    rendered = ", ".join(parts) if parts else "no_errors"
+    if len(rendered) > _REJECTION_DETAIL_MAX_LEN:
+        rendered = rendered[: _REJECTION_DETAIL_MAX_LEN - 3] + "..."
+    return rendered
+
+
+def _format_loc(loc: tuple[str | int, ...]) -> str:
+    """Render a Pydantic error location tuple as a JSON-pointer path.
+
+    `("findings", 0, "finding_type")` → `"findings[0].finding_type"`.
+    Integer segments attach to the preceding string as `[N]`; string
+    segments separate with `.`. Pure formatter; no IO.
+    """
+    parts: list[str] = []
+    for seg in loc:
+        if isinstance(seg, int):
+            if parts:
+                parts[-1] = parts[-1] + f"[{seg}]"
+            else:
+                parts.append(f"[{seg}]")
+        else:
+            parts.append(str(seg))
+    return ".".join(parts)
 
 
 __all__ = [
