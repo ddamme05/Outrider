@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import ValidationError
 
+from outrider.coordinates.spans import span_within_file, span_within_scope_unit
 from outrider.policy.canonical import compute_proposal_hash, compute_response_hash
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingType
@@ -312,12 +313,51 @@ def parse_analyze_response(
             continue
         # JUDGED falls through to step 5 (span admission).
 
-        # Steps 5+ (span admission, admitted-layer construction,
-        # ReviewFinding emission, TraceCandidate collection) land in
-        # commits 4 and 5.
+        # Step 5: span admission (per-outcome branch).
+        if degraded_mode:
+            # Degraded outcomes have no scope-unit context (the file
+            # didn't parse, or had has_error nodes in changed regions).
+            # The deterministic guard is "within file" — model can't
+            # fabricate a span pointing past EOF or before BOF.
+            if not span_within_file(raw_proposal.span, file_byte_length=file_byte_length):
+                proposal_rejections.append(
+                    _build_proposal_rejection(
+                        raw_proposal,
+                        file_path=file_path,
+                        rejection_reason="span_outside_file",
+                        rejection_detail=(
+                            f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                        ),
+                        claimed_evidence_tier=evidence_tier,
+                    )
+                )
+                continue
+        else:
+            # Clean outcome — span must land inside one of the file's
+            # included scope units. `any(...)` over the included set;
+            # rejection if none match.
+            if not any(
+                span_within_scope_unit(raw_proposal.span, su) for su in included_scope_units
+            ):
+                proposal_rejections.append(
+                    _build_proposal_rejection(
+                        raw_proposal,
+                        file_path=file_path,
+                        rejection_reason="span_outside_scope_unit",
+                        rejection_detail=(
+                            f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                        ),
+                        claimed_evidence_tier=evidence_tier,
+                    )
+                )
+                continue
+
+        # Steps 6-10 (admitted-layer construction, ReviewFinding
+        # emission, TraceCandidate collection, counters) land in
+        # commit 5.
         raise NotImplementedError(
-            f"parse_analyze_response: span admission for findings[{idx}] "
-            f"not yet implemented (proposal passed enum + producer admission)"
+            f"parse_analyze_response: ReviewFinding construction for findings[{idx}] "
+            f"not yet implemented (proposal passed every admission check)"
         )
 
     # Every proposal was rejected (or `raw.findings` was empty). Build
