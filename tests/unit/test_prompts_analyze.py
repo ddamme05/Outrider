@@ -150,9 +150,13 @@ def test_system_prompt_documents_all_finding_types() -> None:
 
 
 def test_system_prompt_documents_all_evidence_tiers() -> None:
-    """Same pinning for EvidenceTier — the three tiers must be named so
-    the LLM picks from the constrained set."""
-    for tier in ("OBSERVED", "INFERRED", "JUDGED"):
+    """Same pinning for EvidenceTier — the three tier values must be
+    named so the LLM picks from the constrained set. Values are
+    lowercase per `docs/spec.md` §7.3 (matches `FindingType`,
+    `FindingSeverity`, `ReviewTier`); a prior version of this prompt
+    used uppercase and the parser would reject every proposal with
+    `evidence_tier_not_in_enum`."""
+    for tier in ("observed", "inferred", "judged"):
         assert f"`{tier}`" in SYSTEM_PROMPT_INVARIANTS, (
             f"EvidenceTier `{tier}` missing from SYSTEM_PROMPT_INVARIANTS"
         )
@@ -296,7 +300,7 @@ def test_render_user_prompt_contains_scope_unit_context() -> None:
 
 def test_render_user_prompt_contains_query_match_id_list() -> None:
     """Pre-fired query matches must appear so the model can cite real
-    IDs when claiming OBSERVED."""
+    IDs when claiming `observed`."""
     sentinel = "python.security.sql_injection:42"
     parts = render(
         file_path="src/x.py",
@@ -343,7 +347,10 @@ def test_render_degraded_returns_static_system_prompt_unchanged() -> None:
 
 def test_render_degraded_user_prompt_signals_degraded_mode() -> None:
     """User prompt must mark itself as DEGRADED so the model knows
-    OBSERVED/INFERRED claims will be rejected."""
+    `observed`/`inferred` claims will be rejected. The "DEGRADED"
+    marker is a section header (uppercase by convention for prompt
+    section labels); the enum-VALUE references in the prose stay
+    lowercase to match the constrained vocabulary."""
     parts = render_degraded(
         file_path="src/x.py",
         bounded_hunks="",
@@ -355,8 +362,8 @@ def test_render_degraded_user_prompt_signals_degraded_mode() -> None:
 
 
 def test_render_degraded_user_prompt_admits_only_judged() -> None:
-    """The degraded path must instruct the model to use JUDGED only.
-    Without this, the model emits OBSERVED/INFERRED and the parser
+    """The degraded path must instruct the model to use `judged` only.
+    Without this, the model emits `observed`/`inferred` and the parser
     rejects every proposal — a halt surface that's avoidable here."""
     parts = render_degraded(
         file_path="src/x.py",
@@ -364,7 +371,7 @@ def test_render_degraded_user_prompt_admits_only_judged() -> None:
         pass_index=0,
         degradation_reason="tree_has_error_in_changed_regions",
     )
-    assert "JUDGED" in parts.user_prompt
+    assert "judged" in parts.user_prompt
 
 
 def test_render_degraded_user_prompt_contains_bounded_hunks() -> None:

@@ -17,7 +17,7 @@ analyze-node spec §5, prompts decompose into:
 
 For files that hit the degraded path (parse failure or `has_error`
 nodes intersecting changed regions per `parse-errors-degrade-to-judged`),
-the prompt swaps to a JUDGED-only directive set; the registry/walk
+the prompt swaps to a `judged`-only directive set; the registry/walk
 context is empty by construction, so the system prompt for degraded
 calls is shorter and the user prompt carries the bounded changed
 hunks instead of scope-unit-clipped ones.
@@ -30,7 +30,7 @@ Surfaces (per the analyze-node spec's Reference Reconciliation):
   template for clean-outcome calls. `str.format`-style placeholders.
 - `DEGRADED_USER_TEMPLATE: Final[str]` — pass-specific directives +
   bounded changed hunks for degraded-outcome calls. Admits only
-  `evidence_tier=JUDGED` proposals.
+  `evidence_tier="judged"` proposals.
 - `TEMPLATE: Final[str] = USER_TEMPLATE` — spec-named alias.
 - `VERSION: Final[str] = "analyze-v1"` — flows to
   `LLMRequest.prompt_template_version`. Bump on any template change.
@@ -47,7 +47,7 @@ Surfaces (per the analyze-node spec's Reference Reconciliation):
   static invariants + file-scoped context and user prompt from
   pass-specific directives + scope-unit-clipped diff hunks.
 - `render_degraded(...)` — degraded-outcome render; builds the
-  JUDGED-only system + degraded user prompts.
+  `judged`-only system + degraded user prompts.
 
 Per `webhook-strings-are-data-not-format-strings`: PR-sourced content
 (file paths, scope-unit names, diff hunks, query match IDs) enters the
@@ -110,19 +110,19 @@ causes the proposal to be rejected with audit reason
 Pick exactly one value for `evidence_tier`. Each tier carries different
 admission rules:
 
-- `OBSERVED` — a tree-sitter query in our registry matched a structural
+- `observed` — a tree-sitter query in our registry matched a structural
   pattern. You MUST cite a real `query_match_id` from the pre-supplied
   registry set below; a fabricated id causes rejection with reason
   "query_match_id_not_in_registry".
-- `INFERRED` — a deterministic walk through our import/call/symbol
+- `inferred` — a deterministic walk through our import/call/symbol
   registry resolves the steps in `trace_path`. The trace resolver
   validates each step; unwalkable steps cause rejection with reason
   "trace_path_not_admissible".
-- `JUDGED` — your own interpretation; no structural artifact required.
+- `judged` — your own interpretation; no structural artifact required.
   Use this for findings without an available query match or trace walk.
 
 Failed admission DROPS the proposal — it does not downgrade to a lower
-tier. Pick JUDGED upfront if you cannot cite structural evidence.
+tier. Pick `judged` upfront if you cannot cite structural evidence.
 
 ## Output shape
 
@@ -133,7 +133,7 @@ before or after. Output starts with `{` and ends with `}`.
   "findings": [
     {
       "finding_type": "<enum value>",
-      "evidence_tier": "<OBSERVED|INFERRED|JUDGED>",
+      "evidence_tier": "<observed|inferred|judged>",
       "query_match_id": "<id from registry, or null>",
       "trace_path": ["<step>", "..."] | null,
       "title": "<short summary, ≤120 chars>",
@@ -168,7 +168,7 @@ below. Findings should land within the byte ranges of these units.
 
 ## Pre-fired query matches
 
-Use these `query_match_id` values when claiming `evidence_tier=OBSERVED`:
+Use these `query_match_id` values when claiming `evidence_tier="observed"`:
 
 {query_match_id_list}
 
@@ -190,8 +190,8 @@ This file could not be parsed structurally (or has tree-sitter errors
 intersecting the changed regions). The pre-fired query-match registry
 and import/call walks are unavailable for this call.
 
-You MAY emit findings only with `evidence_tier=JUDGED`. Any OBSERVED
-or INFERRED claims will be rejected.
+You MAY emit findings only with `evidence_tier="judged"`. Any `observed`
+or `inferred` claims will be rejected.
 
 ## Bounded changed hunks
 
