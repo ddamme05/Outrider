@@ -39,12 +39,15 @@ V1 boundary types:
 from outrider.coordinates.diff_parser import (
     diff_line_to_scope,
     file_in_patch,
+    lookup_patched_file,
     resolve_candidate_paths,
     validate_diff_path,
 )
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
+    bound_diff_hunks_text,
     scope_unit_diff_hunks,
+    scope_unit_has_added_lines,
     span_to_line_range,
     span_within_degraded_context,
     span_within_file,
@@ -58,10 +61,13 @@ from outrider.coordinates.translator import (
 __all__ = [
     "CoordinateError",
     "GitHubCommentLocation",
+    "bound_diff_hunks_text",
     "diff_line_to_scope",
     "file_in_patch",
+    "lookup_patched_file",
     "resolve_candidate_paths",
     "scope_unit_diff_hunks",
+    "scope_unit_has_added_lines",
     "span_to_line_range",
     "span_within_degraded_context",
     "span_within_file",

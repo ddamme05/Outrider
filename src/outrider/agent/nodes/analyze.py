@@ -35,41 +35,66 @@ accumulators — never from re-reading the audit stream. The shipped
 producer-side accounting is required to be correct, not just
 catch-on-construction.
 
-**Commit-7 scope (locked).** This first landing handles two outcomes:
+**Landing scope (second landing, 2026-05-20).** Five file outcomes
+land per spec §7 step 3a:
 
 - `clean+full_llm` — file parses cleanly, has scope units in the
-  changed regions, cost gate passes; full LLM call + parser invocation.
-- `skipped+COST_BUDGET_EXHAUSTED` — file parses cleanly, has scope
-  units, but cost gate's per-file ceiling OR remaining-budget check
-  fails; no LLM call.
+  changed regions, no `has_error` in those units, cost gate passes;
+  full LLM call + parser invocation with the included scope units +
+  pre-fired registry query-match-id set.
+- `degraded+degraded_llm` — clean parse but tree-sitter `has_error`
+  ERROR nodes intersect a changed scope unit; degraded LLM call with
+  `degradation_reason="tree_has_error_in_changed_regions"`. Registry
+  queries skipped (no structurally-trustworthy tree); parser admits
+  only JUDGED via `span_within_file`.
+- `failed+degraded_llm` — `parse_python` returned `parser_outcome=
+  "failed"` (V1: UTF-8 decode failure) AND the patch contains added
+  text; degraded LLM call with `degradation_reason="parse_failed"`.
+- `skipped+NO_REVIEWABLE_CONTEXT` — no content at all (binary,
+  unfetchable both sides), OR parse failure with no added text
+  (pure deletion). No LLM call.
+- `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope unit
+  intersects the changed regions (comment-only / whitespace-only /
+  module-level changes), OR clean parse with no patch info. No LLM call.
+- `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an LLM
+  call but the cost gate's per-file ceiling OR remaining-budget
+  check failed; no LLM call.
 
-The other outcomes documented in spec §7 step 3a — `failed+degraded_llm`,
-`degraded+degraded_llm`, `skipped+NO_REVIEWABLE_CONTEXT`,
-`skipped+NO_CHANGED_SCOPE_UNITS` — raise `NotImplementedError` with
-a stable message naming the deferred outcome. Subsequent commits
-land them incrementally.
+Parser-stage skips returned by `parse_python` (`OVERSIZED`,
+`VENDORED`, `GENERATED_FILENAME`, `MINIFIED`, `GENERATED_BANNER`) are
+passed through as `FileExaminationEvent(parse_status="skipped",
+skip_reason=<parser's reason>)`. Spec §7 doesn't enumerate these —
+the spec assumes upstream filtering — but `parse_python` returns
+them, so analyze must route them rather than crash.
 
-**Per-file context simplifications (commit-7 only, deferred to commit-8):**
+**Changed-region intersection.** Performed via
+`coordinates.lookup_patched_file` (parse the patch and find this
+file's `PatchedFile`) plus `coordinates.scope_unit_diff_hunks` (clip
+to scope-unit line range, returning the clipped hunk text). A scope
+unit is "included" iff `scope_unit_diff_hunks` returns non-empty;
+both intersection and clipped-hunk text come from the same call.
+Empty patch / file absent from patch → `None`, which short-circuits
+to `NO_CHANGED_SCOPE_UNITS` for clean parses (no addable hunks to
+analyze).
 
-- `included_scope_units` = all scope units from the parse result (no
-  changed-region intersection). Over-broad but admission-correct.
-- `query_match_id_set` = `frozenset()` (no registry queries fired).
-  Every OBSERVED proposal will reject at producer admission;
-  `JUDGED` is the V1 supported tier.
-- Scope-unit context block + query-match-id list = empty strings (the
-  prompt's structural placeholders fill cleanly but carry no per-
-  scope-unit detail). The model receives only the file path + pass
-  index + raw patch as user-prompt content.
-- Diff hunks = `cf.patch or ""` (no scope-unit clipping; full patch
-  content if available).
+**Registry-query firing.** For clean+full_llm outcomes, every id in
+`queries.registry.REGISTERED_QUERY_IDS` is fired against the file
+content; the set of ids that produce at least one match becomes
+`query_match_id_set` passed to the parser. The parser's OBSERVED
+admission rejects any claim whose id isn't in this set.
 
-Each simplification has a TODO marker at its insertion site.
+**Token estimation.** `_CHARS_PER_TOKEN = 3` (code-leaning).
+Anthropic's published heuristic is 1 token ≈ 4 chars for English
+prose; code-heavy text has more punctuation and tighter token
+boundaries, so 3 over-estimates token count and the cost gate fails
+safer. The estimator's job is order-of-magnitude blowup detection,
+not a tight count; a `tiktoken`-grade estimate is FUP-049 scope.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import uuid4
 
 from outrider.agent.nodes.analyze_parser import (
@@ -89,18 +114,28 @@ from outrider.audit.events import (
     FindingProposalRejectedEvent,
     ReviewPhaseEvent,
 )
+from outrider.coordinates import (
+    bound_diff_hunks_text,
+    lookup_patched_file,
+    scope_unit_diff_hunks,
+    scope_unit_has_added_lines,
+)
 from outrider.llm.base import LLMRequest
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 from outrider.policy.canonical import compute_round_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
+from outrider.queries import registry as query_registry
 from outrider.schemas import AnalysisRound
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from unidiff import PatchedFile
+
     from outrider.ast_facts.base import ImportPathResolver
+    from outrider.ast_facts.models import ParseResult, ScopeUnit
     from outrider.audit.sinks import (
         AnalyzeEventSink,
         FileExaminationSink,
@@ -123,15 +158,39 @@ PER_FILE_CAP_FRACTION: Final[float] = 0.25
 # prompts); production wires a tighter value from settings.
 DEFAULT_REVIEW_BUDGET_TOKENS: Final[int] = 200_000
 
+# Hard ceiling on the per-file pre-flight token estimate, applied
+# alongside `PER_FILE_CAP_FRACTION * total_review_budget_tokens`. With
+# `PER_FILE_CAP_FRACTION = 0.25`, a caller passing
+# `total_review_budget_tokens=2_000_000` (e.g., a "monorepo PR" knob)
+# would silently lift the per-file cap to 500K tokens — well past any
+# reasonable Sonnet-call envelope. The absolute ceiling closes that
+# gate independently of caller configuration; tuning headroom remains
+# in `PER_FILE_CAP_FRACTION`.
+MAX_PER_FILE_TOKENS_ABSOLUTE: Final[int] = 60_000
+
+# Token-estimate divisor for `_estimate_tokens`. Code-leaning ratio
+# (1 token ≈ 3 chars) over-estimates token count vs Anthropic's
+# published 1:4 prose heuristic, which makes the cost gate fail safer
+# for code-heavy prompts. A `tiktoken`-grade estimate is FUP-049.
+_CHARS_PER_TOKEN: Final[int] = 3
+
+# Degraded-context bounds per spec §7 step 3c: ≤100 unidiff Line
+# objects total AND ≤8192 chars of text content. Either cap closes
+# the gate; the line count prevents many-tiny-lines fan-out, the byte
+# cap prevents pathological few-very-long-lines blowup.
+_DEGRADED_HUNK_LINE_CAP: Final[int] = 100
+_DEGRADED_HUNK_CHAR_CAP: Final[int] = 8192
+
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate for the cost gate. `len(text) // 4` is the
-    canonical Anthropic-shaped heuristic. Tighter estimators (e.g.,
-    tiktoken on Sonnet's BPE) are a measured optimization for later;
-    the cost gate's job is to catch order-of-magnitude blowup, and
-    `//4` is accurate enough for that. The first per-file landing
-    refines this; commit-7 uses the heuristic."""
-    return len(text) // 4
+    """Rough token estimate for the cost gate.
+
+    `len(text) // _CHARS_PER_TOKEN` over-estimates for code-heavy
+    prompts, which is the safety direction for a cost gate. The
+    estimator's job is order-of-magnitude blowup detection, not a
+    tight count.
+    """
+    return len(text) // _CHARS_PER_TOKEN
 
 
 async def analyze(
@@ -172,7 +231,10 @@ async def analyze(
     pass_index = 0
     phase_id = str(uuid4())
     started_at = datetime.now(UTC)
-    per_file_cap_tokens = int(total_review_budget_tokens * PER_FILE_CAP_FRACTION)
+    per_file_cap_tokens = min(
+        int(total_review_budget_tokens * PER_FILE_CAP_FRACTION),
+        MAX_PER_FILE_TOKENS_ABSOLUTE,
+    )
 
     # Step 1: start phase event. If this raises (audit infra outage),
     # the node fails before any work — no dangling start.
@@ -366,7 +428,177 @@ class _FileOutcome:
         self.estimated_tokens = estimated_tokens
 
 
-async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchestration boundary
+# Spec §7 step 3f: `LLMRequest.degradation_reason` literal values per
+# `_enforce_degradation_provenance` at `llm/base.py`. Aliased here so
+# the outcome-determination block in `_process_one_file` carries the
+# narrow type rather than `str`.
+_DegradationReason = Literal["parse_failed", "tree_has_error_in_changed_regions"]
+
+# Spec §7 step 3e: `FileExaminationEvent.parse_status` literal values.
+# Aliased so the outcome-determination block carries the narrow type
+# rather than `str`.
+_ParseStatus = Literal["clean", "failed", "degraded", "skipped"]
+
+
+def _has_addable_lines(patched_file: PatchedFile) -> bool:
+    """True iff any hunk in `patched_file` carries at least one added line.
+
+    Used by `_process_one_file` to distinguish
+    `skipped+NO_REVIEWABLE_CONTEXT` (parse failure with no addable
+    text — binary file or pure deletion) from `failed+degraded_llm`
+    (parse failure with addable text — degraded LLM call needed). The
+    discriminator is "the patch has `+` lines to analyze," not just
+    "the patch exists."
+    """
+    return any(line.is_added for hunk in patched_file for line in hunk)
+
+
+def _intersect_changed_scope_units(
+    scope_units: tuple[ScopeUnit, ...],
+    patched_file: PatchedFile,
+) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[str, ...], ...]]:
+    """Return `(included_units, clipped_hunks_per_unit)` for the intersection.
+
+    A scope unit is "included" iff
+    `coordinates.scope_unit_has_added_lines` returns True AND
+    `coordinates.scope_unit_diff_hunks` returns non-empty. The two
+    tuples share indices: `included_units[i]` has clipped hunks
+    `clipped_hunks_per_unit[i]`. Empty inputs / no intersection
+    returns `((), ())`.
+
+    Composition of two coordinates surfaces — the orchestration lives
+    here (analyze decides which units feed which prompt), the
+    coordinate math lives there. Backs the spec's
+    `outcome="skipped+NO_CHANGED_SCOPE_UNITS"` discriminator and the
+    `clean+full_llm` prompt's `diff_hunks` block.
+    """
+    included: list[ScopeUnit] = []
+    hunks: list[tuple[str, ...]] = []
+    for su in scope_units:
+        if not scope_unit_has_added_lines(su, patched_file):
+            continue
+        clipped = scope_unit_diff_hunks(su, patched_file)
+        if not clipped:
+            continue
+        included.append(su)
+        hunks.append(clipped)
+    return tuple(included), tuple(hunks)
+
+
+def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
+    """Fire every registered query against `file_content_bytes`; return
+    the set of ids that produced at least one match.
+
+    Iterates `queries.registry.REGISTERED_QUERY_IDS` (current
+    non-deprecated ids only). Per spec §7 step 3b, this set is passed
+    to the parser's OBSERVED admission — a model claim whose
+    `query_match_id` isn't in this set rejects with
+    `query_match_id_not_in_registry`. Empty set means no registry
+    query fired against this file → every OBSERVED claim rejects;
+    only JUDGED proposals can land.
+    """
+    fired: set[str] = set()
+    for query_id in query_registry.REGISTERED_QUERY_IDS:
+        if query_registry.match(query_id, file_content_bytes):
+            fired.add(query_id)
+    return frozenset(fired)
+
+
+# `coordinates.bound_diff_hunks_text` does the bounded-render math;
+# this module pins the cap values per spec §7 step 3c.
+
+
+def _assemble_scope_unit_context(
+    *,
+    included_scope_units: tuple[ScopeUnit, ...],
+    file_content: str,
+) -> str:
+    """Render the included scope units as the prompt's `scope_unit_context` block.
+
+    V1 minimum-viable shape: per-unit kind + qualified name + line
+    range + raw body extract. Same-file callers/callees/imports/
+    decorators (spec §5's full file-scoped context) are deferred to
+    the trace-spec landing; this commit's intersection alone is the
+    structural defense against the over-broad-context cost issue the
+    user flagged.
+
+    The body extract is taken via UTF-8 byte slicing (`ScopeUnit.byte_start`
+    / `byte_end`) because tree-sitter byte offsets land on char
+    boundaries per `parse_python`'s contract. `errors="replace"` would
+    only fire under producer bug (byte offsets misaligned); we treat
+    the bytes as already-validated UTF-8 from `content.encode("utf-8")`.
+    """
+    source_bytes = file_content.encode("utf-8")
+    blocks: list[str] = []
+    for su in included_scope_units:
+        body = source_bytes[su.byte_start : su.byte_end].decode("utf-8", errors="replace")
+        name = su.qualified_name or su.name
+        blocks.append(
+            f"### {su.kind} `{name}` (lines {su.line_start}-{su.line_end})\n```python\n{body}\n```"
+        )
+    return "\n\n".join(blocks)
+
+
+def _assemble_query_match_id_list(query_match_id_set: frozenset[str]) -> str:
+    """Render the registry-fired ids as the prompt's `query_match_id_list` block.
+
+    Sorted for determinism (replay equivalence depends on the prompt
+    bytes being identical across runs with the same inputs). Empty set
+    renders an explicit "no matches" line rather than a blank
+    placeholder so the model sees the structural cue and falls back to
+    JUDGED rather than guessing an OBSERVED id.
+    """
+    if not query_match_id_set:
+        return "(no registry query matches fired for these scope units; do not claim `observed`)"
+    return "\n".join(f"- `{qid}`" for qid in sorted(query_match_id_set))
+
+
+def _concat_clipped_hunks(clipped_per_unit: tuple[tuple[str, ...], ...]) -> str:
+    """Concatenate the per-scope-unit clipped hunks into the prompt's `diff_hunks` block.
+
+    Per-unit hunks join with single newlines; per-unit blocks separate
+    with blank lines so the model can visually tell where one unit's
+    diff ends and the next begins. The full PR diff is never in this
+    string — only hunks already clipped to included scope unit lines.
+    """
+    return "\n\n".join("\n".join(hunks) for hunks in clipped_per_unit)
+
+
+async def _emit_skip(
+    *,
+    file_examination_sink: FileExaminationSink,
+    review_id: UUID,
+    is_eval: bool,
+    file_path: str,
+    skip_reason: SkipReason,
+) -> _FileOutcome:
+    """Emit a single `FileExaminationEvent(parse_status="skipped", skip_reason=...)`
+    and return a zero-cost `_FileOutcome`. Used by every skip path in
+    `_process_one_file` to keep the emission point uniform per spec §7
+    step 3e (single emission per kept file)."""
+    await file_examination_sink.emit_file_examination(
+        FileExaminationEvent(
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=file_path,
+            examination_type="analyze",
+            node_id="analyze",
+            parse_status="skipped",
+            skip_reason=skip_reason,
+        )
+    )
+    return _FileOutcome(
+        parse_status="skipped",
+        parser_result=None,
+        input_tokens=0,
+        output_tokens=0,
+        cached_tokens=0,
+        cost_usd=0.0,
+        estimated_tokens=0,
+    )
+
+
+async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orchestration boundary; outcome branches resist further extraction without losing audit clarity
     *,
     changed_file: ChangedFile,
     review_id: UUID,
@@ -382,76 +614,170 @@ async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchest
     per_file_cap_tokens: int,
     remaining_budget_tokens: int,
 ) -> _FileOutcome:
-    """Process one triage-kept file through parse → cost gate → LLM
-    call → parser → audit events. Returns a `_FileOutcome` carrying
-    the per-file counters the main loop sums.
+    """Process one triage-kept file through parse → outcome → cost
+    gate → LLM call → parser → audit events.
 
-    Commit-7 scope: clean+full_llm and skipped+COST_BUDGET_EXHAUSTED
-    only. Other outcomes raise `NotImplementedError` with a stable
-    message naming the deferred outcome.
+    Five outcomes per spec §7 step 3a (with parser-stage skip passed
+    through as a sixth):
+
+    - `skipped+NO_REVIEWABLE_CONTEXT` — no content at all OR parse
+      failure with no addable diff text.
+    - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope
+      unit intersects the changed regions.
+    - `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an
+      LLM call but cost gate failed.
+    - `failed+degraded_llm` — parse failure with addable text;
+      degraded LLM call (`degradation_reason="parse_failed"`).
+    - `degraded+degraded_llm` — clean parse but `has_error` ERROR
+      nodes intersect a changed scope unit; degraded LLM call
+      (`degradation_reason="tree_has_error_in_changed_regions"`).
+    - `clean+full_llm` — clean parse, scope units intersect changed
+      regions, no `has_error` in those units.
+    - Parser-stage skip — `parse_python` returned `parser_outcome=
+      "skipped"` (`OVERSIZED`, `VENDORED`, etc.); the parser's
+      `skip_reason` is the audit value.
     """
-    # Step 3a: parse + outcome determination.
+    # Step 3a: content selection + outcome determination.
     content = changed_file.content_head or changed_file.content_base
     if content is None:
-        raise NotImplementedError(
-            f"analyze: skipped+NO_REVIEWABLE_CONTEXT outcome not yet implemented "
-            f"(file_path={changed_file.path!r} has neither content_head nor content_base)"
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=changed_file.path,
+            skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
-    file_byte_length = len(content.encode("utf-8"))
 
-    # parse_python returns a ParseResult; raises on adapter-level
-    # failure but tolerates source-level errors via `has_error`.
-    parse_result = parse_python(
-        source=content.encode("utf-8"),
+    # `file_byte_length` computed ONCE here per spec §7 step 3a;
+    # passed to parser §5 unchanged so it never recomputes per
+    # proposal.
+    content_bytes = content.encode("utf-8")
+    file_byte_length = len(content_bytes)
+
+    parse_result: ParseResult = parse_python(
+        source=content_bytes,
         file_path=changed_file.path,
         resolver=import_path_resolver,
     )
-    # TODO(commit-8): tree-sitter `has_error` detection + degraded
-    # outcomes (`failed+degraded_llm`, `degraded+degraded_llm`).
-    # `has_error` is a per-scope-unit dict; the value (not the key
-    # presence) signals whether that unit's parse tree carries an
-    # ERROR node. Until commit-8 wires the changed-region
-    # intersection, treat ANY has-error scope unit as degraded
-    # (over-conservative; tightens in the next commit).
-    if any(parse_result.has_error.values()):
-        raise NotImplementedError(
-            f"analyze: degraded+degraded_llm outcome not yet implemented "
-            f"(has_error scope unit ids="
-            f"{sorted(uid for uid, has in parse_result.has_error.items() if has)})"
+
+    # Parser-stage skip (VENDORED, OVERSIZED, GENERATED_FILENAME,
+    # MINIFIED, GENERATED_BANNER). The parser already decided. Pass
+    # through with its skip_reason — spec §7 doesn't enumerate this
+    # path but `parse_python` returns it; routing rather than
+    # crashing preserves audit visibility.
+    if parse_result.parser_outcome == "skipped":
+        # ParseResult validator guarantees skip_reason non-None when
+        # parser_outcome="skipped"; the local rebind narrows for mypy
+        # and the runtime check is documentation of an upstream
+        # invariant rather than a defensive gate.
+        parser_skip_reason = parse_result.skip_reason
+        if parser_skip_reason is None:  # validator-impossible, kept for type narrowing
+            raise RuntimeError(
+                "ParseResult invariant violated: parser_outcome='skipped' "
+                "requires non-None skip_reason"
+            )
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=changed_file.path,
+            skip_reason=parser_skip_reason,
         )
 
-    # TODO(commit-8): NO_CHANGED_SCOPE_UNITS detection. If the changed
-    # regions don't intersect any scope unit, the outcome is
-    # skipped+NO_CHANGED_SCOPE_UNITS (no LLM call). Commit-7 treats
-    # every clean-parsed file with scope units as full_llm; if there
-    # are no scope units at all, raise.
-    if not parse_result.scope_units:
-        raise NotImplementedError(
-            f"analyze: skipped+NO_CHANGED_SCOPE_UNITS outcome not yet implemented "
-            f"(parse_result.scope_units is empty for {changed_file.path!r})"
+    # Locate the file's `PatchedFile` for the changed-region
+    # intersection. None covers three cases: no patch (binary /
+    # oversized GitHub response), file absent from a well-formed
+    # patch, or path-validation failure on `changed_file.path` (the
+    # `coordinates` helper returns None rather than raising for
+    # these per its boolean-helper policy).
+    patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
+
+    # Outcome branch: parser_outcome == "failed" (V1: UTF-8 decode failure).
+    if parse_result.parser_outcome == "failed":
+        if patched_file is None or not _has_addable_lines(patched_file):
+            return await _emit_skip(
+                file_examination_sink=file_examination_sink,
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
+            )
+        # failed+degraded_llm
+        degradation_reason: _DegradationReason | None = "parse_failed"
+        parse_status_for_event: _ParseStatus = "failed"
+        included_scope_units: tuple[ScopeUnit, ...] = ()
+        included_clipped_hunks: tuple[tuple[str, ...], ...] = ()
+    else:
+        # parser_outcome == "clean".
+        if patched_file is None:
+            return await _emit_skip(
+                file_examination_sink=file_examination_sink,
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS,
+            )
+        included_scope_units, included_clipped_hunks = _intersect_changed_scope_units(
+            tuple(parse_result.scope_units), patched_file
         )
+        if not included_scope_units:
+            return await _emit_skip(
+                file_examination_sink=file_examination_sink,
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS,
+            )
+        if any(parse_result.has_error.get(su.unit_id, False) for su in included_scope_units):
+            degradation_reason = "tree_has_error_in_changed_regions"
+            parse_status_for_event = "degraded"
+        else:
+            degradation_reason = None
+            parse_status_for_event = "clean"
 
-    # TODO(commit-8): changed-region intersection. Commit-7 passes ALL
-    # scope units as included; the prompt is over-broad but admission-
-    # correct.
-    included_scope_units = tuple(parse_result.scope_units)
+    degraded_mode = degradation_reason is not None
 
-    # TODO(commit-8): registry-query firing. Commit-7 passes an empty
-    # set; OBSERVED proposals will reject at producer admission. V1
-    # supported tier is JUDGED until commit-8 wires the registry.
-    query_match_id_set: frozenset[str] = frozenset()
-
-    # Step 3c: build prompt context. Commit-7 simplification: empty
-    # scope-unit context block + empty query-match-id list; the patch
-    # text fills the diff_hunks slot. TODO(commit-8): per-scope-unit
-    # context assembly + scope-unit-clipped diff hunks.
-    parts = analyze_prompt.render(
-        file_path=changed_file.path,
-        scope_unit_context="",
-        query_match_id_list="",
-        diff_hunks=changed_file.patch or "",
-        pass_index=pass_index,
+    # Step 3b: registry-query firing (skip for degraded mode).
+    query_match_id_set: frozenset[str] = (
+        frozenset() if degraded_mode else _build_query_match_id_set(content_bytes)
     )
+
+    # Step 3c: assemble the (system, user) prompt pair.
+    if degraded_mode:
+        # `patched_file` is non-None on both degraded branches by
+        # construction: the failed path required `_has_addable_lines`
+        # (None would have AttributeError'd inside the helper), and
+        # the clean path early-returned NO_CHANGED_SCOPE_UNITS when
+        # patched_file was None. Same for `degradation_reason`: the
+        # `degraded_mode = degradation_reason is not None` derivation
+        # above pins the implication. The runtime checks below narrow
+        # for mypy without re-asserting upstream invariants as
+        # adversarial-input gates.
+        if degradation_reason is None or patched_file is None:
+            raise RuntimeError(
+                "analyze: degraded_mode true with degradation_reason/patched_file None "
+                "— upstream outcome-determination invariant violated"
+            )
+        parts = analyze_prompt.render_degraded(
+            file_path=changed_file.path,
+            bounded_hunks=bound_diff_hunks_text(
+                patched_file,
+                max_lines=_DEGRADED_HUNK_LINE_CAP,
+                max_chars=_DEGRADED_HUNK_CHAR_CAP,
+            ),
+            pass_index=pass_index,
+            degradation_reason=degradation_reason,
+        )
+    else:
+        parts = analyze_prompt.render(
+            file_path=changed_file.path,
+            scope_unit_context=_assemble_scope_unit_context(
+                included_scope_units=included_scope_units, file_content=content
+            ),
+            query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
+            diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
+            pass_index=pass_index,
+        )
 
     # Step 3d: cost gate.
     estimated_tokens = (
@@ -459,35 +785,16 @@ async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchest
         + _estimate_tokens(parts.user_prompt)
         + analyze_prompt.MAX_TOKENS
     )
-    cost_exhausted = (
-        estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens
-    )
-
-    # Step 3e: SINGLE FileExaminationEvent emission point. Outcome is
-    # finalized at this step; no event fires before here, no event
-    # fires after.
-    if cost_exhausted:
-        await file_examination_sink.emit_file_examination(
-            FileExaminationEvent(
-                review_id=review_id,
-                is_eval=is_eval,
-                file_path=changed_file.path,
-                examination_type="analyze",
-                node_id="analyze",
-                parse_status="skipped",
-                skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
-            )
-        )
-        return _FileOutcome(
-            parse_status="skipped",
-            parser_result=None,
-            input_tokens=0,
-            output_tokens=0,
-            cached_tokens=0,
-            cost_usd=0.0,
-            estimated_tokens=0,
+    if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=changed_file.path,
+            skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
         )
 
+    # Step 3e: SINGLE FileExaminationEvent emission point.
     await file_examination_sink.emit_file_examination(
         FileExaminationEvent(
             review_id=review_id,
@@ -495,27 +802,29 @@ async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchest
             file_path=changed_file.path,
             examination_type="analyze",
             node_id="analyze",
-            parse_status="clean",
+            parse_status=parse_status_for_event,
             skip_reason=None,
         )
     )
 
     # Step 3f: LLM call + response parse.
     # Build context_summary per spec §7: one ContextManifestEntry per
-    # included scope unit. Commit-7 stamps every entry with
-    # `inclusion_reason="changed_scope"` because the changed-region
-    # intersection isn't implemented yet (TODO commit-8). Once the
-    # intersection lands, units outside the changed regions become
-    # `"same_file_context"`.
-    context_summary = tuple(
-        ContextManifestEntry(
-            file_path=changed_file.path,
-            scope_unit_name=su.qualified_name or su.name,
-            line_start=su.line_start,
-            line_end=su.line_end,
-            inclusion_reason="changed_scope",
+    # included scope unit for clean+full_llm. Empty tuple for degraded
+    # — `_enforce_context_for_scope_nodes` special-cases this per
+    # spec §7 step 3f.
+    context_summary: tuple[ContextManifestEntry, ...] = (
+        ()
+        if degraded_mode
+        else tuple(
+            ContextManifestEntry(
+                file_path=changed_file.path,
+                scope_unit_name=su.qualified_name or su.name,
+                line_start=su.line_start,
+                line_end=su.line_end,
+                inclusion_reason="changed_scope",
+            )
+            for su in included_scope_units
         )
-        for su in included_scope_units
     )
     request = LLMRequest(
         model=analyze_model,
@@ -527,7 +836,8 @@ async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchest
         node_id="analyze",
         is_eval=is_eval,
         prompt_template_version=analyze_prompt.VERSION,
-        degraded_mode=False,
+        degraded_mode=degraded_mode,
+        degradation_reason=degradation_reason,
         context_summary=context_summary,
     )
     # Provider failure (LLMProviderError subclasses) propagates per the
@@ -556,7 +866,7 @@ async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchest
         file_byte_length=file_byte_length,
         included_scope_units=included_scope_units,
         query_match_id_set=query_match_id_set,
-        degraded_mode=False,
+        degraded_mode=degraded_mode,
         active_policy_version=active_policy_version,
     )
 
@@ -579,7 +889,7 @@ async def _process_one_file(  # noqa: PLR0913 — explicit kwargs at the orchest
         await analyze_event_sink.emit_finding(_lift_admitted_finding(finding, is_eval=is_eval))
 
     return _FileOutcome(
-        parse_status="clean",
+        parse_status=parse_status_for_event,
         parser_result=parser_result,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,

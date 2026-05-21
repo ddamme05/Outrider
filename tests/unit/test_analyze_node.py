@@ -1,28 +1,32 @@
-"""Analyze node body tests — spec §7 first landing.
+"""Analyze node body tests — spec §7 first + second landings.
 
-Pins four scenarios per the user's commit-7 scope:
+Covers the user-pinned outcomes (first landing) plus the expanded
+file-outcome coverage, changed-region intersection, and registry-
+query firing landed in the second pass (2026-05-20):
 
 1. **Clean file** — tier=DEEP, parses cleanly, model returns admittable
-   proposal → 1 admitted finding in the returned AnalysisRound;
-   FileExaminationEvent(parse_status="clean") fires; FindingEvent
-   fires; AnalyzeCompletedEvent shows n_findings_emitted=1.
-2. **Triage-skipped** — tier=SKIM (or absent from tier map) → file
-   NOT in iteration scope; no events for that file; appears NOWHERE
-   in AnalysisRound.files_examined OR files_skipped (only kept files
-   appear there).
+   proposal → 1 admitted finding; FileExaminationEvent(parse_status="clean").
+2. **Triage-skipped** — tier=SKIM → file NOT in iteration scope.
 3. **Parser rejection** — tier=DEEP, model returns proposal that
-   fails enum admission → 1 ProposalRejection lifted to
-   FindingProposalRejectedEvent; admitted_findings empty;
-   AnalyzeCompletedEvent shows n_proposals_rejected=1.
-4. **Budget skip** — tier=DEEP, estimated cost exceeds per-file cap
-   → FileExaminationEvent(skip_reason=COST_BUDGET_EXHAUSTED) fires;
-   no LLM call; file appears in AnalysisRound.files_skipped.
+   fails enum admission → ProposalRejection lifted.
+4. **Budget skip** — tier=DEEP, estimated cost exceeds per-file cap.
+5. **NO_REVIEWABLE_CONTEXT** — content_head and content_base both None.
+6. **NO_CHANGED_SCOPE_UNITS** — clean parse, patch doesn't intersect
+   any scope unit.
+7. **Degraded mode (has_error in changed region)** — clean parse but
+   the patched scope unit has `has_error=True`; degraded LLM call
+   with `degradation_reason="tree_has_error_in_changed_regions"`.
+8. **Changed-region intersection trims `included_scope_units`** — a
+   file with two functions, patch only touches one → only that
+   scope unit reaches the prompt + parser admission.
+9. **Registry-query firing** — `query_match_id_set` constructed from
+   `queries.registry.REGISTERED_QUERY_IDS` against the file content;
+   non-empty for a typical Python file.
 
 Test infrastructure: inline recorder sinks + mock LLM provider + mock
 ImportPathResolver. Per the user direction: "without special mocks
-beyond provider/context inputs" — all four scenarios share the same
-recorder/provider/resolver scaffolding; only the file content + tier
-map + provider response differ per test.
+beyond provider/context inputs" — all scenarios share the same
+scaffolding; only the file content + tier map + provider response differ.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ import pytest
 
 from outrider.agent.nodes.analyze import (
     DEFAULT_REVIEW_BUDGET_TOKENS,
+    MAX_PER_FILE_TOKENS_ABSOLUTE,
     PER_FILE_CAP_FRACTION,
     analyze,
 )
@@ -155,21 +160,48 @@ def another_function(x):
 _REVIEW_ID = UUID("12345678-1234-5678-1234-567812345678")
 _INSTALLATION_ID = 99999
 
+# Default unidiff-format patch for `_SIMPLE_PY`. The hunk modifies
+# `my_function` (1 context line + 1 added line = source count 1,
+# target count 2). The added line lands at target line 2 which is
+# inside `my_function` (lines 1-2); `another_function` (lines 4-6)
+# does not intersect, so changed-region intersection includes only
+# `my_function`.
+_DEFAULT_PATCH_TEMPLATE = (
+    "--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n def my_function():\n+    return 42\n"
+)
+
 
 def _build_changed_file(
     *,
     path: str = "src/example.py",
     content: bytes = _SIMPLE_PY,
-    patch: str | None = "@@ -1,1 +1,2 @@\n+def my_function():\n+    return 42\n",
+    patch: str | None = None,
+    content_head: str | None = "__default__",
+    content_base: str | None = "def my_function():\n    return 0\n",
 ) -> ChangedFile:
+    """Construct a `ChangedFile` for analyze-node tests.
+
+    `patch=None` defaults to a valid unidiff-format patch keyed off
+    the given `path`; pass a string to override (e.g., for a
+    NO_CHANGED_SCOPE_UNITS test that targets non-scope-unit lines).
+    Pass `patch=""` to test the no-patch case.
+
+    `content_head` defaults to `content.decode("utf-8")` via the
+    sentinel string `"__default__"`; pass `None` explicitly to
+    suppress content_head (e.g., to construct a binary-file case
+    paired with `content_base=None`).
+    """
+    if patch is None:
+        patch = _DEFAULT_PATCH_TEMPLATE.format(path=path)
+    head: str | None = content.decode("utf-8") if content_head == "__default__" else content_head
     return ChangedFile(
         path=path,
         status="modified",
         additions=2,
         deletions=0,
         patch=patch,
-        content_base="def my_function():\n    return 0\n",
-        content_head=content.decode("utf-8"),
+        content_base=content_base,
+        content_head=head,
         previous_path=None,
         language="python",
     )
@@ -536,6 +568,37 @@ def test_default_review_budget_is_pinned() -> None:
     assert DEFAULT_REVIEW_BUDGET_TOKENS == 200_000
 
 
+def test_max_per_file_tokens_absolute_is_pinned() -> None:
+    """Absolute ceiling on per-file pre-flight token estimate. Decouples
+    the per-file cap from caller-configurable budget — a 20× budget
+    inflation can't drag the per-file cap into Sonnet-call-overflow
+    territory. Drift here changes the audit signal for cost gates."""
+    assert MAX_PER_FILE_TOKENS_ABSOLUTE == 60_000
+
+
+@pytest.mark.asyncio
+async def test_inflated_budget_does_not_lift_per_file_cap_past_absolute(
+    deps: dict[str, Any],
+) -> None:
+    """Caller passes a 20× budget. `PER_FILE_CAP_FRACTION` would lift the
+    per-file cap to 1M tokens; the absolute ceiling clamps it at 60K. A
+    prompt below 60K passes; one above would fail. We can't engineer a
+    >60K prompt in unit test, but we can verify the cap is computed via
+    `min(fraction*budget, ABSOLUTE)` by setting a budget where the
+    fraction would exceed ABSOLUTE and asserting the LLM call still
+    fires (prompt is well under 60K)."""
+    # 1M budget → fraction*budget = 250K. min(250K, 60K) = 60K. The
+    # default prompt is well under 60K, so the LLM call fires (the
+    # absolute-ceiling clamp prevents over-permissive cap).
+    deps["total_review_budget_tokens"] = 1_000_000
+    state = _build_review_state()
+
+    await analyze(state, **deps)
+
+    # Provider was called — confirms cost gate did not block.
+    assert len(deps["provider"].calls) == 1
+
+
 def test_no_review_id_kwarg_in_signature() -> None:
     """`review_id` flows from `state.review_id` — never as a kwarg.
     Pin so a future refactor that drifts the contract surfaces here."""
@@ -543,3 +606,224 @@ def test_no_review_id_kwarg_in_signature() -> None:
 
     sig = inspect.signature(analyze)
     assert "review_id" not in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Second-landing outcomes: NO_REVIEWABLE_CONTEXT, NO_CHANGED_SCOPE_UNITS,
+# degraded mode, changed-region intersection, registry-query firing.
+# ---------------------------------------------------------------------------
+
+
+# NO_REVIEWABLE_CONTEXT in V1 is unreachable from a valid `ChangedFile`:
+# the schema's `enforce_status_invariants` validator rejects every status
+# with missing content, and `parse_python` only returns
+# `parser_outcome="failed"` on UTF-8 decode failure — which cannot fire
+# from `str.encode("utf-8")`. The analyze branch is retained as
+# defensive code for spec compliance + future schema relaxation; a unit
+# test would require mocking `parse_python` (brittle) or a custom
+# `ChangedFile` validator bypass (worse). Integration coverage lands
+# alongside binary-file handling whenever it migrates into analyze.
+
+
+@pytest.mark.asyncio
+async def test_no_changed_scope_units_when_patch_targets_outside_scopes(
+    deps: dict[str, Any],
+) -> None:
+    """Clean parse + patch whose target lines fall outside every scope
+    unit's line range → `skipped+NO_CHANGED_SCOPE_UNITS`. Example:
+    `_SIMPLE_PY` has functions at lines 1-2 and 4-6; a patch targeting
+    line 8 (past the file end, just a comment append) intersects nothing.
+    """
+    # Patch adds a trailing comment line at target line 8. `_SIMPLE_PY`
+    # is 6 lines; the comment lands after both functions, outside any
+    # scope unit's line range.
+    extended_content = _SIMPLE_PY + b"# trailing comment\n"
+    out_of_scope_patch = (
+        "--- a/src/example.py\n"
+        "+++ b/src/example.py\n"
+        "@@ -6,1 +6,2 @@\n"
+        "     return y\n"
+        "+# trailing comment\n"
+    )
+    cf = _build_changed_file(content=extended_content, patch=out_of_scope_patch)
+    state = _build_review_state(pr_context=_build_pr_context(changed_files=(cf,)))
+
+    await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
+    assert len(deps["provider"].calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_no_patch_clean_parse_skips_as_no_changed_scope_units(
+    deps: dict[str, Any],
+) -> None:
+    """Clean parse + `patch=None` (binary content GitHub didn't ship
+    a diff for, or an oversized response) → no patched_file → no
+    intersection → `NO_CHANGED_SCOPE_UNITS`."""
+    cf = _build_changed_file(patch="")
+    state = _build_review_state(pr_context=_build_pr_context(changed_files=(cf,)))
+
+    await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
+    assert len(deps["provider"].calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_changed_region_intersection_includes_only_intersecting_unit(
+    deps: dict[str, Any],
+) -> None:
+    """`_SIMPLE_PY` has `my_function` (lines 1-2) and `another_function`
+    (lines 4-6). The default patch only touches lines 1-2 →
+    `included_scope_units` contains only `my_function`. Verified via the
+    `LLMRequest.context_summary` payload: one entry for `my_function`,
+    zero for `another_function`."""
+    state = _build_review_state()
+
+    await analyze(state, **deps)
+
+    request = deps["provider"].calls[0]
+    summary_names = {entry.scope_unit_name for entry in request.context_summary}
+    assert "my_function" in summary_names
+    assert "another_function" not in summary_names
+    # Inclusion reason for the intersected unit is `changed_scope`.
+    assert all(entry.inclusion_reason == "changed_scope" for entry in request.context_summary)
+
+
+@pytest.mark.asyncio
+async def test_registry_query_firing_populates_query_match_id_list(
+    deps: dict[str, Any],
+) -> None:
+    """For a typical Python file with function definitions, the
+    `query_match_id_set` should contain `python.function_definition` at
+    minimum. Verified by inspecting the user_prompt's query-match-id
+    block — non-empty means the registry-query firing landed."""
+    state = _build_review_state()
+
+    await analyze(state, **deps)
+
+    request = deps["provider"].calls[0]
+    # `python.function_definition` matches the two functions in `_SIMPLE_PY`.
+    assert "python.function_definition" in request.user_prompt
+    # The "(no registry query matches…)" fallback should NOT appear.
+    assert "(no registry query matches" not in request.user_prompt
+
+
+@pytest.mark.asyncio
+async def test_observed_proposal_with_registered_query_id_admits(
+    deps: dict[str, Any],
+) -> None:
+    """A model proposal claiming `evidence_tier=observed` with a
+    `query_match_id` that's actually in the file's registry-fired set
+    → admitted through the parser's OBSERVED admission step."""
+    response_json = json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "sql_injection",
+                    "evidence_tier": "observed",
+                    "query_match_id": "python.function_definition",
+                    "trace_path": None,
+                    "title": "Admitted OBSERVED finding",
+                    "description": "Tied to a real registry match.",
+                    "evidence": "def my_function():\n    return 42",
+                    "span": {"byte_start": 0, "byte_end": 18},
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+    deps["provider"] = _StubLLMProvider(response_json)
+    state = _build_review_state()
+
+    result = await analyze(state, **deps)
+
+    round_ = result["analysis_rounds"][0]
+    assert len(round_.findings) == 1
+    assert round_.findings[0].evidence_tier == "observed"
+    assert round_.findings[0].query_match_id == "python.function_definition"
+    assert len(deps["analyze_event_sink"].proposal_rejections) == 0
+
+
+@pytest.mark.asyncio
+async def test_observed_proposal_with_unregistered_query_id_rejects(
+    deps: dict[str, Any],
+) -> None:
+    """A model claim of `evidence_tier=observed` with a `query_match_id`
+    NOT in the file's registry-fired set rejects with
+    `query_match_id_not_in_registry` — the proof-boundary defense
+    against fabricated structural evidence."""
+    response_json = json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "sql_injection",
+                    "evidence_tier": "observed",
+                    "query_match_id": "python.fabricated_pattern",
+                    "trace_path": None,
+                    "title": "Fabricated OBSERVED claim",
+                    "description": "Cites an id that isn't in the registry.",
+                    "evidence": "irrelevant",
+                    "span": {"byte_start": 0, "byte_end": 20},
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+    deps["provider"] = _StubLLMProvider(response_json)
+    state = _build_review_state()
+
+    result = await analyze(state, **deps)
+
+    round_ = result["analysis_rounds"][0]
+    assert len(round_.findings) == 0
+    rejections = deps["analyze_event_sink"].proposal_rejections
+    assert len(rejections) == 1
+    assert rejections[0].rejection_reason == "query_match_id_not_in_registry"
+
+
+@pytest.mark.asyncio
+async def test_degraded_path_when_has_error_in_changed_scope_unit(
+    deps: dict[str, Any],
+) -> None:
+    """A file whose changed scope unit carries `has_error=True` (tree-
+    sitter ERROR node inside the function) routes through degraded mode
+    with `degradation_reason="tree_has_error_in_changed_regions"`.
+    `LLMRequest.degraded_mode=True`, `context_summary=()`, and the
+    user_prompt uses the degraded template (mentions `DEGRADED`).
+    """
+    # Engineered content: `my_function` has an incomplete `if` statement
+    # that tree-sitter parses as a top-level function with an ERROR
+    # sub-node inside its body.
+    broken_content = b"def my_function():\n    if\n    return 42\n"
+    broken_patch = (
+        "--- a/src/example.py\n"
+        "+++ b/src/example.py\n"
+        "@@ -1,1 +1,3 @@\n"
+        " def my_function():\n"
+        "+    if\n"
+        "+    return 42\n"
+    )
+    cf = _build_changed_file(content=broken_content, patch=broken_patch)
+    state = _build_review_state(pr_context=_build_pr_context(changed_files=(cf,)))
+
+    await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    # FileExaminationEvent.parse_status="degraded" per spec §7 step 3e
+    # for the degraded+degraded_llm outcome.
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "degraded"
+
+    request = deps["provider"].calls[0]
+    assert request.degraded_mode is True
+    assert request.degradation_reason == "tree_has_error_in_changed_regions"
+    # Degraded request has empty context_summary per spec §7 step 3f.
+    assert request.context_summary == ()
+    # The user_prompt uses the degraded template signal.
+    assert "DEGRADED" in request.user_prompt

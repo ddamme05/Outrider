@@ -20,6 +20,8 @@ from unidiff.errors import UnidiffParseError
 from outrider.coordinates.errors import CoordinateError
 
 if TYPE_CHECKING:
+    from unidiff import PatchedFile
+
     from outrider.ast_facts.models import ScopeUnit
 
 
@@ -367,3 +369,44 @@ def file_in_patch(file_path: str, patch: str) -> bool:
             f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}"
         )
     return bool(matches)
+
+
+def lookup_patched_file(patch: str | None, file_path: str) -> PatchedFile | None:
+    """Return the `PatchedFile` matching `file_path` in `patch`, or None if absent.
+
+    Mirrors `file_in_patch`'s defensive shape but returns the matched
+    `PatchedFile` (or None) rather than a bool. None covers three
+    semantically distinct cases the caller may want to distinguish from
+    "in-patch": empty/None patch input, path that fails
+    `validate_diff_path`, and file absent from a well-formed patch.
+    The boolean-helper policy mirrors `file_in_patch` so a malformed
+    caller path doesn't surface as a routing exception — the consumer
+    interprets None as "no addable-text view of this file."
+
+    Distinguished from `_find_patched_file` (translator.py), which
+    raises `CoordinateError` on missing. Used by the analyze node body
+    for changed-region intersection, where the absent case is a
+    legitimate `skipped+NO_CHANGED_SCOPE_UNITS` outcome rather than an
+    error.
+
+    Raises `CoordinateError` only on malformed patch input (any
+    underlying `unidiff` parse exception is wrapped) and on patches
+    containing duplicate entries for the same normalized path — same
+    discipline as `file_in_patch`.
+    """
+    if not patch:
+        return None
+    try:
+        normalized_file_path = validate_diff_path(file_path)
+    except CoordinateError:
+        return None
+    try:
+        patchset = PatchSet(patch)
+    except UnidiffParseError as e:
+        raise CoordinateError(f"malformed patch input: {e}") from e
+    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
+    if len(matches) > 1:
+        raise CoordinateError(
+            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}"
+        )
+    return matches[0] if matches else None
