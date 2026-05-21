@@ -43,6 +43,8 @@ from outrider.agent.nodes.analyze import (
     DEFAULT_REVIEW_BUDGET_TOKENS,
     MAX_PER_FILE_TOKENS_ABSOLUTE,
     PER_FILE_CAP_FRACTION,
+    _compute_per_file_cap,
+    _estimate_tokens,
     analyze,
 )
 from outrider.ast_facts.models import SkipReason
@@ -574,6 +576,61 @@ def test_max_per_file_tokens_absolute_is_pinned() -> None:
     inflation can't drag the per-file cap into Sonnet-call-overflow
     territory. Drift here changes the audit signal for cost gates."""
     assert MAX_PER_FILE_TOKENS_ABSOLUTE == 60_000
+
+
+def test_compute_per_file_cap_fraction_drives_at_default_budget() -> None:
+    """At the default budget (200K tokens), the fraction (0.25) is the
+    binding constraint: 200K * 0.25 = 50K < 60K absolute ceiling. The
+    helper picks the tighter of the two."""
+    assert _compute_per_file_cap(DEFAULT_REVIEW_BUDGET_TOKENS) == 50_000
+
+
+def test_compute_per_file_cap_absolute_ceiling_clamps_inflated_budget() -> None:
+    """At 1M budget, the fraction would yield 250K but the absolute
+    ceiling clamps to 60K. The min() picks the tighter constraint.
+    Pins the clamp value directly so a future drift in either ceiling
+    surfaces here without needing the full cost-gate flow."""
+    assert _compute_per_file_cap(1_000_000) == MAX_PER_FILE_TOKENS_ABSOLUTE
+
+
+def test_compute_per_file_cap_tiny_budget_yields_tiny_cap() -> None:
+    """Tiny budgets: the fraction still drives. 100 tokens * 0.25 = 25.
+    The fraction-truncating `int(...)` is the runtime; pinning the
+    behavior catches accidental round-vs-truncate changes."""
+    assert _compute_per_file_cap(100) == 25
+
+
+def test_estimate_tokens_counts_bytes_not_codepoints() -> None:
+    """Anthropic's BPE tokenizer operates on UTF-8 bytes. Counting
+    Python codepoints (`len(str)`) under-counts multi-byte sequences:
+    `len("中") == 1` codepoint but `"中".encode("utf-8") == 3` bytes.
+
+    The fix: `_estimate_tokens` encodes to UTF-8 first, then counts.
+    Verified against fixtures the prior implementation would have
+    silently under-counted.
+    """
+    # ASCII baseline: 1 byte → ceiling(1/3) = 1 token.
+    assert _estimate_tokens("a") == 1
+    # CJK character: 3 bytes → ceiling(3/3) = 1 token.
+    # Prior (codepoint-counting) impl would have returned `1 // 3 == 0`.
+    assert _estimate_tokens("中") == 1
+    # Emoji: 4 bytes → ceiling(4/3) = 2 tokens.
+    # Prior impl would have returned `1 // 3 == 0`.
+    assert _estimate_tokens("🎉") == 2
+    # Pure-ASCII over-cap: 6 bytes → ceiling(6/3) = 2 tokens.
+    assert _estimate_tokens("abcdef") == 2
+
+
+def test_estimate_tokens_rounds_up_not_down() -> None:
+    """The cost gate is a pre-flight safety guard; ceiling-division
+    is conservative-up (over-estimates rather than under-estimates).
+    Catch any future refactor that flips back to floor-division."""
+    # 4 bytes → ceiling(4/3) = 2 tokens. Floor-div would yield 1.
+    assert _estimate_tokens("abcd") == 2
+    # 2 bytes → ceiling(2/3) = 1 token. Floor-div would yield 0.
+    assert _estimate_tokens("ab") == 1
+    # Edge: 0 bytes → 0 tokens (no overshoot on empty).
+    assert _estimate_tokens("") == 0
 
 
 @pytest.mark.asyncio

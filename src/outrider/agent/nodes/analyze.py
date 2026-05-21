@@ -83,12 +83,15 @@ content; the set of ids that produce at least one match becomes
 `query_match_id_set` passed to the parser. The parser's OBSERVED
 admission rejects any claim whose id isn't in this set.
 
-**Token estimation.** `_CHARS_PER_TOKEN = 3` (code-leaning).
-Anthropic's published heuristic is 1 token ≈ 4 chars for English
-prose; code-heavy text has more punctuation and tighter token
-boundaries, so 3 over-estimates token count and the cost gate fails
-safer. The estimator's job is order-of-magnitude blowup detection,
-not a tight count; a `tiktoken`-grade estimate is FUP-049 scope.
+**Token estimation.** `_BYTES_PER_TOKEN = 3` (code-leaning).
+Anthropic's BPE tokenizer operates on UTF-8 byte sequences;
+`_estimate_tokens` counts bytes (not Python codepoints) and rounds
+up. Bytes-not-codepoints preserves the over-estimate safety
+direction for multi-byte-heavy files (CJK comments, emoji,
+accented identifiers); ceiling division avoids floor-rounding
+small fragments down to undercount. The estimator's job is
+order-of-magnitude blowup detection, not a tight count; a
+`tiktoken`-grade estimate is FUP-049 scope.
 """
 
 from __future__ import annotations
@@ -169,10 +172,10 @@ DEFAULT_REVIEW_BUDGET_TOKENS: Final[int] = 200_000
 MAX_PER_FILE_TOKENS_ABSOLUTE: Final[int] = 60_000
 
 # Token-estimate divisor for `_estimate_tokens`. Code-leaning ratio
-# (1 token ≈ 3 chars) over-estimates token count vs Anthropic's
+# (1 token ≈ 3 bytes) over-estimates token count vs Anthropic's
 # published 1:4 prose heuristic, which makes the cost gate fail safer
 # for code-heavy prompts. A `tiktoken`-grade estimate is FUP-049.
-_CHARS_PER_TOKEN: Final[int] = 3
+_BYTES_PER_TOKEN: Final[int] = 3
 
 # Degraded-context bounds per spec §7 step 3c: ≤100 unidiff Line
 # objects total AND ≤8192 chars of text content. Either cap closes
@@ -183,14 +186,55 @@ _DEGRADED_HUNK_CHAR_CAP: Final[int] = 8192
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate for the cost gate.
+    """Conservative token estimate for the pre-flight cost gate.
 
-    `len(text) // _CHARS_PER_TOKEN` over-estimates for code-heavy
-    prompts, which is the safety direction for a cost gate. The
-    estimator's job is order-of-magnitude blowup detection, not a
-    tight count.
+    Counts UTF-8 BYTES (not Python codepoints) and rounds up. Both
+    choices preserve the over-estimate safety direction the cost gate
+    needs:
+
+    - Bytes, not codepoints: Anthropic's BPE tokenizer operates on
+      UTF-8 byte sequences. `len(str)` returns codepoint count, so a
+      CJK character (1 codepoint, 3 bytes) under-counts as `1 // 3 == 0`
+      tokens; a 4-byte emoji codepoint under-counts even worse. Switching
+      to bytes restores the documented "over-estimate, fail safer" claim
+      for multi-byte-heavy files (CJK comments, accented identifiers,
+      emoji in tests).
+    - Ceiling division `(n + d - 1) // d`: floor-division would round
+      a 4-byte fragment down to 1 token (`4 // 3 == 1`); ceiling rounds
+      to 2 (`-(-4 // 3) == 2`). Conservative-up is the right direction
+      for a budget guard.
+
+    The estimator's job is order-of-magnitude blowup detection, not a
+    tight count; a `tiktoken`-grade estimator is FUP-049.
     """
-    return len(text) // _CHARS_PER_TOKEN
+    byte_len = len(text.encode("utf-8"))
+    return (byte_len + _BYTES_PER_TOKEN - 1) // _BYTES_PER_TOKEN
+
+
+def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
+    """Per-file token cap for the cost gate.
+
+    Combines two ceilings; the tighter one wins:
+      - Fraction of total review budget (`PER_FILE_CAP_FRACTION * budget`)
+        — bounds budget consumption by any single file so an oversized
+        file at iteration head doesn't drain the per-review budget. With
+        the V1 0.25 fraction, one file can starve at most four others.
+      - Absolute ceiling (`MAX_PER_FILE_TOKENS_ABSOLUTE`) — independent of
+        caller-configurable budget. Guards against budget inflation
+        (e.g., a "monorepo PR" knob setting `total_review_budget_tokens`
+        to 2M tokens) silently lifting the per-file cap into Sonnet-call-
+        overflow territory.
+
+    Extracted to a named helper so the policy is independently testable
+    (the previous inline `min(...)` expression at the call site was
+    indirectly tested via the cost-gate path; pinning the helper's return
+    value directly catches drift in either ceiling without LLM-flow
+    setup).
+    """
+    return min(
+        int(total_review_budget_tokens * PER_FILE_CAP_FRACTION),
+        MAX_PER_FILE_TOKENS_ABSOLUTE,
+    )
 
 
 async def analyze(
@@ -231,10 +275,7 @@ async def analyze(
     pass_index = 0
     phase_id = str(uuid4())
     started_at = datetime.now(UTC)
-    per_file_cap_tokens = min(
-        int(total_review_budget_tokens * PER_FILE_CAP_FRACTION),
-        MAX_PER_FILE_TOKENS_ABSOLUTE,
-    )
+    per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
 
     # Step 1: start phase event. If this raises (audit infra outage),
     # the node fails before any work — no dangling start.
