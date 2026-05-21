@@ -178,6 +178,38 @@ def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile)
     )
 
 
+def patched_file_has_added_lines(patched_file: PatchedFile) -> bool:
+    """True iff any hunk in `patched_file` carries at least one added line.
+
+    Sibling to `scope_unit_has_added_lines` for the case where the caller
+    has a `PatchedFile` but no `ScopeUnit` to scope against (e.g., parse-
+    failed files where the analyze node still wants to know "is there
+    addable diff text worth a degraded LLM call"). Lives in `coordinates/`
+    because reading `unidiff.Line` attributes is the boundary owner's job
+    per `docs/trust-boundaries.md#3-coordinate-translation`.
+    """
+    return any(line.is_added for hunk in patched_file for line in hunk)
+
+
+def extract_scope_unit_body(scope_unit: ScopeUnit, source_bytes: bytes) -> str:
+    """Decode the UTF-8 bytes of `scope_unit`'s byte range from `source_bytes`.
+
+    `parse_python` guarantees `ScopeUnit.byte_start` / `byte_end` land on
+    UTF-8 char boundaries (tree-sitter byte offsets respect the source
+    encoding). `errors="replace"` is defense-in-depth: under the producer
+    contract the decoded text is round-trip valid; if a future producer
+    bug emits a non-boundary offset, the prompt sees U+FFFD rather than
+    crashing the analyze pass mid-render.
+
+    Lives in `coordinates/` because byte-span slicing on `ScopeUnit` is
+    coordinate-translation surface per
+    `coordinates-module-is-sole-translator`.
+    """
+    return source_bytes[scope_unit.byte_start : scope_unit.byte_end].decode(
+        "utf-8", errors="replace"
+    )
+
+
 def bound_diff_hunks_text(
     patched_file: PatchedFile,
     *,
@@ -199,6 +231,14 @@ def bound_diff_hunks_text(
     is policy-free — the analyze layer pins the cap values per its
     spec §7 step 3c.
     """
+    if max_lines < 0:
+        raise CoordinateError(
+            f"bound_diff_hunks_text: max_lines must be non-negative, got {max_lines}"
+        )
+    if max_chars < 0:
+        raise CoordinateError(
+            f"bound_diff_hunks_text: max_chars must be non-negative, got {max_chars}"
+        )
     truncation_sentinel = "\n[truncated: prompt budget cap reached]\n"
     # Reserve sentinel-sized headroom so the marker stays inside
     # max_chars when truncation fires. If max_chars is smaller than the

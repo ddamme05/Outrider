@@ -47,6 +47,8 @@ from outrider.coordinates.diff_parser import (
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     bound_diff_hunks_text,
+    extract_scope_unit_body,
+    patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
     span_to_line_range,
@@ -65,8 +67,10 @@ __all__ = [
     "GitHubCommentLocation",
     "bound_diff_hunks_text",
     "diff_line_to_scope",
+    "extract_scope_unit_body",
     "file_in_patch",
     "lookup_patched_file",
+    "patched_file_has_added_lines",
     "resolve_candidate_paths",
     "scope_unit_diff_hunks",
     "scope_unit_has_added_lines",

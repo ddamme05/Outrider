@@ -17,6 +17,8 @@ from outrider.ast_facts.models import ScopeUnit, Span
 from outrider.coordinates import (
     CoordinateError,
     bound_diff_hunks_text,
+    extract_scope_unit_body,
+    patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
     span_to_line_range,
@@ -429,6 +431,76 @@ def test_scope_unit_has_added_lines_false_when_disjoint() -> None:
 
 
 # ---------------------------------------------------------------------------
+# patched_file_has_added_lines
+# ---------------------------------------------------------------------------
+
+
+def test_patched_file_has_added_lines_true_when_any_addition() -> None:
+    """A patch containing at least one `+` line returns True. Sibling
+    to `scope_unit_has_added_lines` for callers without a scope unit.
+    """
+    text = """\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1,1 +1,2 @@
+ keep
++added
+"""
+    patched = PatchSet.from_string(text)[0]
+    assert patched_file_has_added_lines(patched) is True  # type: ignore[arg-type]
+
+
+def test_patched_file_has_added_lines_false_for_pure_deletion() -> None:
+    """A patch with no added lines (pure deletion or no diff) returns
+    False — the discriminator analyze uses to route between
+    NO_REVIEWABLE_CONTEXT and failed+degraded_llm.
+    """
+    text = """\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1,2 +1,1 @@
+ keep
+-removed
+"""
+    patched = PatchSet.from_string(text)[0]
+    assert patched_file_has_added_lines(patched) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# extract_scope_unit_body
+# ---------------------------------------------------------------------------
+
+
+def test_extract_scope_unit_body_decodes_byte_range() -> None:
+    """Decode the bytes inside a `ScopeUnit`'s `[byte_start, byte_end)`
+    range. Caller passes pre-encoded `source_bytes`; helper returns
+    decoded text.
+    """
+    source = "def first():\n    return 1\n\ndef second():\n    return 2\n"
+    source_bytes = source.encode("utf-8")
+    su = _scope_unit(byte_start=0, byte_end=25)  # covers "def first():\n    return 1"
+    body = extract_scope_unit_body(su, source_bytes)
+    assert body == "def first():\n    return 1"
+
+
+def test_extract_scope_unit_body_handles_invalid_utf8_with_replacement() -> None:
+    """If the producer hands us a byte range that lands on a non-UTF-8
+    boundary, `errors="replace"` surfaces U+FFFD rather than crashing
+    the analyze pass mid-render. Defense-in-depth — under the producer
+    contract, tree-sitter offsets land on char boundaries.
+    """
+    # Construct bytes with a multi-byte UTF-8 char (€ = 0xE2 0x82 0xAC),
+    # then point a ScopeUnit at the middle of that sequence.
+    source_bytes = "€abc".encode()  # 6 bytes: 0xE2 0x82 0xAC 0x61 0x62 0x63
+    su = _scope_unit(byte_start=1, byte_end=4)  # mid-€ to past it
+    body = extract_scope_unit_body(su, source_bytes)
+    # U+FFFD appears somewhere; helper does not raise.
+    assert "�" in body
+
+
+# ---------------------------------------------------------------------------
 # bound_diff_hunks_text
 # ---------------------------------------------------------------------------
 
@@ -517,6 +589,25 @@ diff --git a/src/foo.py b/src/foo.py
         text = bound_diff_hunks_text(patched, max_lines=1, max_chars=cap)  # type: ignore[arg-type]
         assert "truncated" in text, f"cap={cap}: expected line-cap truncation"
         assert len(text) <= cap, f"line-cap fired with cap={cap}, result len={len(text)}"
+
+
+def test_bound_diff_hunks_text_rejects_negative_max_chars() -> None:
+    """Public helper: a negative `max_chars` makes the cap contract
+    nonsensical. The sentinel/headroom math assumes non-negative bounds;
+    fail-fast at the helper boundary rather than producing a garbage
+    return string. Analyze passes positive constants today, but
+    `bound_diff_hunks_text` is part of the coordinates public surface.
+    """
+    patched = PatchSet.from_string("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,0 +1,1 @@\n+x\n")[0]
+    with pytest.raises(CoordinateError, match="max_chars must be non-negative"):
+        bound_diff_hunks_text(patched, max_lines=10, max_chars=-1)  # type: ignore[arg-type]
+
+
+def test_bound_diff_hunks_text_rejects_negative_max_lines() -> None:
+    """Symmetric to max_chars: a negative `max_lines` is nonsensical."""
+    patched = PatchSet.from_string("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,0 +1,1 @@\n+x\n")[0]
+    with pytest.raises(CoordinateError, match="max_lines must be non-negative"):
+        bound_diff_hunks_text(patched, max_lines=-1, max_chars=100)  # type: ignore[arg-type]
 
 
 def test_bound_diff_hunks_text_handles_max_chars_smaller_than_sentinel() -> None:

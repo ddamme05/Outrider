@@ -87,7 +87,9 @@ from outrider.audit.events import (
 )
 from outrider.coordinates import (
     bound_diff_hunks_text,
+    extract_scope_unit_body,
     lookup_patched_file,
+    patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
 )
@@ -408,19 +410,6 @@ _DegradationReason = Literal["parse_failed", "tree_has_error_in_changed_regions"
 _ParseStatus = Literal["clean", "failed", "degraded", "skipped"]
 
 
-def _has_addable_lines(patched_file: PatchedFile) -> bool:
-    """True iff any hunk in `patched_file` carries at least one added line.
-
-    Used by `_process_one_file` to distinguish
-    `skipped+NO_REVIEWABLE_CONTEXT` (parse failure with no addable
-    text — binary file or pure deletion) from `failed+degraded_llm`
-    (parse failure with addable text — degraded LLM call needed). The
-    discriminator is "the patch has `+` lines to analyze," not just
-    "the patch exists."
-    """
-    return any(line.is_added for hunk in patched_file for line in hunk)
-
-
 def _intersect_changed_scope_units(
     scope_units: tuple[ScopeUnit, ...],
     patched_file: PatchedFile,
@@ -485,18 +474,20 @@ def _assemble_scope_unit_context(
 
     V1 shape is per-unit kind + qualified name + line range + raw body
     extract. Same-file callers/callees/imports/decorators land with the
-    trace spec.
+    trace spec. Byte-slicing is delegated to
+    `coordinates.extract_scope_unit_body` because the byte-range →
+    text surface belongs to the coordinates module per
+    `coordinates-module-is-sole-translator`.
 
-    Body extraction uses UTF-8 byte slicing (`ScopeUnit.byte_start` /
-    `byte_end`) because `parse_python` guarantees byte offsets land on
-    char boundaries. `errors="replace"` surfaces a producer bug as
-    U+FFFD in the prompt rather than crashing mid-render — preserving
-    the audit signal is preferable to losing the per-file row.
+    No internal char cap today — the cost gate at the call site is the
+    fail-closed protection. Adding an assembly-time cap parallel to
+    `_DEGRADED_HUNK_CHAR_CAP` for the degraded path is tracked as
+    FUP-052.
     """
     source_bytes = file_content.encode("utf-8")
     blocks: list[str] = []
     for su in included_scope_units:
-        body = source_bytes[su.byte_start : su.byte_end].decode("utf-8", errors="replace")
+        body = extract_scope_unit_body(su, source_bytes)
         name = su.qualified_name or su.name
         blocks.append(
             f"### {su.kind} `{name}` (lines {su.line_start}-{su.line_end})\n```python\n{body}\n```"
@@ -660,7 +651,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
 
     # Outcome branch: parser_outcome == "failed" (V1: UTF-8 decode failure).
     if parse_result.parser_outcome == "failed":
-        if patched_file is None or not _has_addable_lines(patched_file):
+        if patched_file is None or not patched_file_has_added_lines(patched_file):
             return await _emit_skip(
                 file_examination_sink=file_examination_sink,
                 review_id=review_id,

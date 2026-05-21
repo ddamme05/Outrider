@@ -120,6 +120,61 @@ def test_finding_event_observed_rejects_without_query_match_id() -> None:
         )
 
 
+def test_finding_event_query_match_id_max_length_200() -> None:
+    """Audit-shadow contract: `FindingEvent.query_match_id` mirrors the
+    `max_length=200` bound on `ReviewFinding.query_match_id`. Without this
+    pin, a future direct emitter (replay reconstruction, alternate
+    producer) could land an unbounded id in the append-only log.
+    """
+    # 200 chars admits cleanly.
+    event = _build_event(
+        evidence_tier=EvidenceTier.OBSERVED,
+        query_match_id="a" * 200,
+    )
+    assert event.query_match_id == "a" * 200
+
+    # 201 chars rejects.
+    with pytest.raises(ValidationError, match="at most 200 characters"):
+        _build_event(
+            evidence_tier=EvidenceTier.OBSERVED,
+            query_match_id="a" * 201,
+        )
+
+
+def test_finding_event_trace_path_per_element_max_length_256() -> None:
+    """Audit-shadow contract: `FindingEvent.trace_path` per-element cap
+    mirrors the raw layer (256 chars). 257 chars rejects."""
+    with pytest.raises(ValidationError, match="at most 256 characters"):
+        _build_event(
+            evidence_tier=EvidenceTier.INFERRED,
+            trace_path=("a" * 257,),
+            query_match_id=None,
+        )
+
+
+def test_finding_event_trace_path_max_steps_32() -> None:
+    """Audit-shadow contract: `FindingEvent.trace_path` tuple cap is 32
+    elements, mirroring `AnalyzeFindingProposalRaw.trace_path`. 33 steps
+    rejects."""
+    with pytest.raises(ValidationError, match="at most 32 items"):
+        _build_event(
+            evidence_tier=EvidenceTier.INFERRED,
+            trace_path=tuple(f"step_{i}" for i in range(33)),
+            query_match_id=None,
+        )
+
+
+def test_finding_event_trace_path_rejects_empty_string_element() -> None:
+    """Audit-shadow contract: per-element `min_length=1` rejects empty
+    strings in trace_path, mirroring the raw layer."""
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        _build_event(
+            evidence_tier=EvidenceTier.INFERRED,
+            trace_path=("",),
+            query_match_id=None,
+        )
+
+
 def test_finding_event_inferred_rejects_without_trace_path() -> None:
     """INFERRED + None trace_path raises ValidationError via the validator."""
     with pytest.raises(ValidationError, match="non-empty list"):
