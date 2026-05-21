@@ -268,6 +268,12 @@ def test_system_prompt_output_example_is_strict_json() -> None:
     # json.loads must succeed; if it raises, the example is not JSON.
     parsed = json.loads(json_block)
     assert "findings" in parsed
+    # Pin span ordering: the prompt's own rule says byte_start < byte_end,
+    # so the example must not contradict it (a zero-width span teaches
+    # the model an invalid shape).
+    for finding in parsed["findings"]:
+        span = finding["span"]
+        assert span["byte_start"] < span["byte_end"]
 
 
 # ---------------------------------------------------------------------------
