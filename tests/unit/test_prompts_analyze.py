@@ -23,6 +23,7 @@ import pytest
 from outrider.prompts.analyze import (
     DEGRADED_USER_TEMPLATE,
     MAX_TOKENS,
+    SYSTEM_FILE_CONTEXT_TEMPLATE,
     SYSTEM_PROMPT_INVARIANTS,
     TEMPERATURE,
     TEMPLATE,
@@ -67,23 +68,21 @@ def test_template_is_user_template_alias() -> None:
 
 
 def test_user_template_has_required_placeholders() -> None:
-    """The USER_TEMPLATE must carry every placeholder render() supplies.
-    If render() drifts (adds a new {placeholder} not in the template, or
-    vice versa), str.format raises at first call. Pin the placeholder
-    set so additions go through a coordinated edit."""
-    expected_placeholders = {
-        "file_path",
-        "pass_index",
-        "scope_unit_context",
-        "query_match_id_list",
-        "diff_hunks",
-    }
+    """Volatile (pass-specific) placeholders on USER_TEMPLATE. Stable
+    file-scoped placeholders live on SYSTEM_FILE_CONTEXT_TEMPLATE for
+    cross-pass caching."""
+    expected_placeholders = {"pass_index", "diff_hunks"}
     found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", USER_TEMPLATE))
-    assert found == expected_placeholders, (
-        f"USER_TEMPLATE placeholders ({found}) drift from render()'s "
-        f"kwargs ({expected_placeholders}); either rename the template "
-        f"or update render()."
-    )
+    assert found == expected_placeholders
+
+
+def test_system_file_context_template_has_required_placeholders() -> None:
+    """Stable-per-file placeholders. Combined with SYSTEM_PROMPT_INVARIANTS
+    they form the cacheable system_prompt block; reuse across passes for
+    the same file produces cache hits."""
+    expected_placeholders = {"file_path", "scope_unit_context", "query_match_id_list"}
+    found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", SYSTEM_FILE_CONTEXT_TEMPLATE))
+    assert found == expected_placeholders
 
 
 def test_degraded_user_template_has_required_placeholders() -> None:
@@ -243,9 +242,10 @@ def test_analyze_prompt_parts_supports_attribute_access() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_returns_static_system_prompt_unchanged() -> None:
-    """system_prompt must equal SYSTEM_PROMPT_INVARIANTS exactly so the
-    cache-boundary contract (DECISIONS#013 point 4) produces hits."""
+def test_render_system_prompt_starts_with_invariants() -> None:
+    """system_prompt begins with the static SYSTEM_PROMPT_INVARIANTS so
+    the cacheable prefix is byte-identical across calls; the per-file
+    suffix follows it."""
     parts = render(
         file_path="src/example.py",
         scope_unit_context="<scope unit body>",
@@ -253,12 +253,12 @@ def test_render_returns_static_system_prompt_unchanged() -> None:
         diff_hunks="@@ -1,1 +1,1 @@",
         pass_index=0,
     )
-    assert parts.system_prompt == SYSTEM_PROMPT_INVARIANTS
-    assert parts.system_prompt is SYSTEM_PROMPT_INVARIANTS  # same string object
+    assert parts.system_prompt.startswith(SYSTEM_PROMPT_INVARIANTS)
 
 
-def test_render_user_prompt_contains_file_path() -> None:
-    """File path must appear so the model knows which file it's reviewing."""
+def test_render_system_prompt_contains_file_path() -> None:
+    """File path lives in system_prompt (per-file-stable) so the cacheable
+    boundary covers it. Reviews of the same file across passes hit cache."""
     parts = render(
         file_path="src/auth/login.py",
         scope_unit_context="",
@@ -266,13 +266,39 @@ def test_render_user_prompt_contains_file_path() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert "src/auth/login.py" in parts.user_prompt
+    assert "src/auth/login.py" in parts.system_prompt
+
+
+def test_render_system_prompt_contains_scope_unit_context() -> None:
+    """Scope-unit context (bodies + same-file callers/callees + imports +
+    decorators) is per-file-stable — system_prompt block."""
+    sentinel = "def login(user, password):\n    # SENTINEL"
+    parts = render(
+        file_path="src/x.py",
+        scope_unit_context=sentinel,
+        query_match_id_list="",
+        diff_hunks="",
+        pass_index=0,
+    )
+    assert sentinel in parts.system_prompt
+
+
+def test_render_system_prompt_contains_query_match_id_list() -> None:
+    """Pre-fired query matches are file-scoped and stable across passes —
+    system_prompt block."""
+    sentinel = "python.security.sql_injection:42"
+    parts = render(
+        file_path="src/x.py",
+        scope_unit_context="",
+        query_match_id_list=sentinel,
+        diff_hunks="",
+        pass_index=0,
+    )
+    assert sentinel in parts.system_prompt
 
 
 def test_render_user_prompt_contains_pass_index() -> None:
-    """Pass index must appear so the model can distinguish first-analyze
-    from trace-round-2 context. Spec §7 step 1 sets phase_id with the
-    same suffix; the prompt's `analyze-pass-N` mirror keeps them aligned."""
+    """Pass index is volatile per analyze-pass — user_prompt block."""
     parts = render(
         file_path="src/x.py",
         scope_unit_context="",
@@ -283,38 +309,9 @@ def test_render_user_prompt_contains_pass_index() -> None:
     assert "analyze-pass-3" in parts.user_prompt
 
 
-def test_render_user_prompt_contains_scope_unit_context() -> None:
-    """The scope unit context (bodies + callers/callees + imports +
-    decorators) must appear so the model has the structural information
-    to reason about findings."""
-    sentinel = "def login(user, password):\n    # SENTINEL"
-    parts = render(
-        file_path="src/x.py",
-        scope_unit_context=sentinel,
-        query_match_id_list="",
-        diff_hunks="",
-        pass_index=0,
-    )
-    assert sentinel in parts.user_prompt
-
-
-def test_render_user_prompt_contains_query_match_id_list() -> None:
-    """Pre-fired query matches must appear so the model can cite real
-    IDs when claiming `observed`."""
-    sentinel = "python.security.sql_injection:42"
-    parts = render(
-        file_path="src/x.py",
-        scope_unit_context="",
-        query_match_id_list=sentinel,
-        diff_hunks="",
-        pass_index=0,
-    )
-    assert sentinel in parts.user_prompt
-
-
 def test_render_user_prompt_contains_diff_hunks() -> None:
-    """Scope-unit-clipped diff hunks must appear so the model sees what
-    changed."""
+    """Scope-unit-clipped diff hunks are pass-specific (the included
+    units may change between trace-loop iterations) — user_prompt block."""
     sentinel = "@@ -10,3 +10,5 @@\n+    if not user:\n+        raise"
     parts = render(
         file_path="src/x.py",
@@ -393,11 +390,10 @@ def test_render_degraded_user_prompt_contains_bounded_hunks() -> None:
 
 
 def test_render_hostile_scope_unit_context_does_not_escape_template() -> None:
-    """Per `webhook-strings-are-data-not-format-strings`: source-controlled
-    strings entering the prompt via .format(**kwargs) must be DATA, not
-    template control text. `{file_path}` or `{diff_hunks}` literals
-    inside scope_unit_context must survive AS those characters — they
-    must not be substituted by the format() machinery."""
+    """`webhook-strings-are-data-not-format-strings`: PR-sourced strings
+    entering the prompt via .format(**kwargs) survive AS literal data;
+    `{file_path}` / `{diff_hunks}` / `{pass_index}` markers in the input
+    must not interpolate. scope_unit_context lives in system_prompt."""
     hostile = "def f(): {file_path} {diff_hunks} {pass_index}"
     parts = render(
         file_path="src/x.py",
@@ -406,10 +402,9 @@ def test_render_hostile_scope_unit_context_does_not_escape_template() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    # The literal hostile content survives in user_prompt as DATA
-    assert "{file_path}" in parts.user_prompt
-    assert "{diff_hunks}" in parts.user_prompt
-    assert "{pass_index}" in parts.user_prompt
+    assert "{file_path}" in parts.system_prompt
+    assert "{diff_hunks}" in parts.system_prompt
+    assert "{pass_index}" in parts.system_prompt
 
 
 def test_render_hostile_diff_hunks_does_not_escape_template() -> None:
@@ -428,12 +423,9 @@ def test_render_hostile_diff_hunks_does_not_escape_template() -> None:
 
 
 def test_render_hostile_positional_metacharacters_do_not_trip_format() -> None:
-    """Defense-in-depth: a value containing positional format markers
-    (`{}{}{}`) must not be re-interpreted as a format-string. render()
-    uses .format(**kwargs) — kwargs route by name only; positional `{}`
-    markers would raise IndexError if treated as format string. Pin so
-    a future refactor that inadvertently does `template.format(value)`
-    (treating the value AS the format string) fails this test."""
+    """Positional `{}` markers in input must not be re-interpreted as a
+    format string. `template.format(**kwargs)` routes by name only;
+    treating a value AS the format string would raise IndexError."""
     parts = render(
         file_path="src/x.py",
         scope_unit_context="{}{}{}",
@@ -441,7 +433,7 @@ def test_render_hostile_positional_metacharacters_do_not_trip_format() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert "{}{}{}" in parts.user_prompt
+    assert "{}{}{}" in parts.system_prompt
 
 
 def test_render_degraded_hostile_bounded_hunks_does_not_escape() -> None:
@@ -501,6 +493,7 @@ def test_module_exports_all_documented_surfaces() -> None:
     expected = {
         "DEGRADED_USER_TEMPLATE",
         "MAX_TOKENS",
+        "SYSTEM_FILE_CONTEXT_TEMPLATE",
         "SYSTEM_PROMPT_INVARIANTS",
         "TEMPERATURE",
         "TEMPLATE",
