@@ -509,7 +509,7 @@ The two surfaces (logs vs database) need different rules: logs flow to stdout, l
 - `README.md` privacy paragraph ships the revised statement (point 6) in the same commit as this decision per the coupling rule established at #015. `docs/deployment.md` carries the same statement at public flip.
 - The "guard against third-party content exposure" rationale from #013 point 5 is removed; under #011 it never applied. If V1.5+ adopts SaaS, the LLM-content storage decision is revisited as part of that supersession, alongside everything else under "users own their data" — likely either removing local content storage entirely or adding tenant-scoped encryption-at-rest.
 
-**Referenced from.** `llm/anthropic_provider.py` (when written), `audit/events.py` (when written; LLMCallEvent stays metadata-only), `db/models/llm_call_content.py` (when written; new content table per this decision), `db/models/reviews.py` (when written; same content-table pattern), `README.md`, `docs/deployment.md`, `tests/eval/scenarios/replay/` (when written).
+**Referenced from.** `llm/anthropic_provider.py`, `audit/events.py` (`LLMCallEvent` stays metadata-only), `audit/persister.py` (atomic `LLMCallEvent` + `llm_call_content` INSERT per this decision; back-pointer comments at `persister.py:20+`), `audit/sinks.py` (sink Protocols consumed by the persister), `db/models/llm_call_content.py` (when written; new content table per this decision), `db/models/reviews.py` (when written; same content-table pattern), `README.md`, `docs/deployment.md`, `tests/eval/scenarios/replay/` (when written).
 
 ---
 
@@ -640,7 +640,7 @@ The unstated convention the audit-events precedent established is: **a Pydantic 
 - `schemas/` does not become a god-folder of every cross-boundary model; it stays small and reserved for models without an owner.
 - New audit event types continue to land in `audit/events.py`. New provider call-surface types continue to land in `llm/base.py`. New non-owned cross-boundary models still go in `schemas/`.
 
-**Referenced from.** `docs/conventions.md` "File organization" (amended in the local working copy alongside this entry; `docs/` is currently gitignored, so the conventions amendment ships publicly when `docs/` graduates per `FOLLOWUPS.md` FUP-004), `src/outrider/audit/events.py` (existing precedent: `LLMCallEvent` and the V1 audit event hierarchy), `src/outrider/llm/base.py` (when written: `LLMRequest`/`LLMResponse`/`LLMMessage` per `specs/2026-05-05-llm-provider-wrapper.md`), `src/outrider/schemas/*.py` (existing models without an owning subsystem stay; e.g., `PRContext`).
+**Referenced from.** `docs/conventions.md` "File organization" (amended in the local working copy alongside this entry; `docs/` is currently gitignored, so the conventions amendment ships publicly when `docs/` graduates per `FOLLOWUPS.md` FUP-004), `src/outrider/audit/events.py` (existing precedent: `LLMCallEvent` and the V1 audit event hierarchy), `src/outrider/llm/base.py` (`LLMRequest` / `LLMResponse` / `LLMMessage` per `specs/2026-05-05-llm-provider-wrapper.md`), `src/outrider/schemas/*.py` (existing models without an owning subsystem stay; e.g., `PRContext`).
 
 ## 020. Webhook receiver constructs seed PRContext; intake enriches
 
