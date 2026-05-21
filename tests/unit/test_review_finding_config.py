@@ -307,6 +307,34 @@ def test_review_finding_query_match_id_admits_at_max() -> None:
     assert len(finding.query_match_id) == 200
 
 
+def test_review_finding_trace_path_per_element_max_length_256() -> None:
+    """Per-element cap mirrors `AnalyzeFindingProposalRaw.trace_path`
+    (256 chars). 257 chars rejects."""
+    with pytest.raises(ValidationError, match="at most 256 characters"):
+        _build_finding(
+            evidence_tier=EvidenceTier.INFERRED,
+            trace_path=("y" * 257,),
+        )
+
+
+def test_review_finding_trace_path_max_steps_32() -> None:
+    """Tuple cap is 32 elements, mirroring the raw layer. 33 rejects."""
+    with pytest.raises(ValidationError, match="at most 32 items"):
+        _build_finding(
+            evidence_tier=EvidenceTier.INFERRED,
+            trace_path=tuple(f"step_{i}" for i in range(33)),
+        )
+
+
+def test_review_finding_trace_path_rejects_empty_string_element() -> None:
+    """Per-element min_length=1 rejects empty strings in trace_path."""
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        _build_finding(
+            evidence_tier=EvidenceTier.INFERRED,
+            trace_path=("",),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Severity-policy gate + content-hash recipe gate. Backs invariants
 # `severity-set-by-policy` (docs/invariants.md §237) and the in-memory

@@ -147,7 +147,17 @@ class ReviewFinding(BaseModel):
     # tuple, not list: post-construction `.append()` / `.clear()` on a list
     # would bypass validate_assignment (which only fires on attribute
     # rebinding, not in-place mutation). Tuple delivers true immutability.
-    trace_path: tuple[str, ...] | None = None
+    # Per-element + tuple bounds mirror `AnalyzeFindingProposalRaw.trace_path`
+    # so the admitted layer enforces what the raw layer admits — without
+    # this, a bypass path could land an unbounded trace_path in admitted
+    # findings and the FindingEvent audit shadow.
+    trace_path: (
+        Annotated[
+            tuple[Annotated[str, Field(max_length=256, min_length=1)], ...],
+            Field(max_length=32),
+        ]
+        | None
+    ) = None
     # Lifecycle / HITL-set fields (None at analyze-time):
     original_severity: FindingSeverity | None = None
     # Reviewer-supplied; reviewers can be human and HITL UIs can be sloppy,

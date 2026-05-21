@@ -92,7 +92,16 @@ class _MockLLMProvider:
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.llm.base import LLMResponse
 
-        text = self.triage_response if request.node_id == "triage" else self.analyze_response
+        # Strict node-id routing: an unknown `node_id` (rename, typo, new
+        # node) must fail loudly at the mock boundary rather than silently
+        # receiving the analyze response and confusing the failure later.
+        if request.node_id == "triage":
+            text = self.triage_response
+        elif request.node_id == "analyze":
+            text = self.analyze_response
+        else:
+            msg = f"_MockLLMProvider: unexpected node_id {request.node_id!r}"
+            raise AssertionError(msg)
         return LLMResponse(
             text=text,
             model=request.model,

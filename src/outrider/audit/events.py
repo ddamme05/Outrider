@@ -484,8 +484,20 @@ class FindingEvent(AuditEventBase):
     # SHA-256 hex per spec §8.5: SHA-256(file_path + line_start + line_end + finding_type)
     finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     evidence_tier: EvidenceTier
-    query_match_id: str | None = None
-    trace_path: tuple[str, ...] | None = None
+    # `max_length=200` mirrors `ReviewFinding.query_match_id`; the audit
+    # shadow enforces at least the same contract as the source schema so
+    # a future direct emitter (replay reconstruction, alternate producer)
+    # can't land an unbounded id in the append-only log. `trace_path` is
+    # bounded symmetrically per element (256, min 1) and per tuple (32)
+    # mirroring `ReviewFinding.trace_path` and the raw layer.
+    query_match_id: Annotated[str | None, Field(max_length=200)] = None
+    trace_path: (
+        Annotated[
+            tuple[Annotated[str, Field(max_length=256, min_length=1)], ...],
+            Field(max_length=32),
+        ]
+        | None
+    ) = None
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
 
     @field_validator("file_path")
