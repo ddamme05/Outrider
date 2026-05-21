@@ -719,6 +719,33 @@ def test_no_review_id_kwarg_in_signature() -> None:
 # test would require mocking `parse_python` (brittle) or a custom
 # `ChangedFile` validator bypass (worse). Integration coverage lands
 # alongside binary-file handling whenever it migrates into analyze.
+# FUP-053 tracks the raw-bytes intake path that would make
+# `failed+degraded_llm` reachable.
+
+
+def test_str_to_utf8_roundtrip_cannot_produce_invalid_utf8() -> None:
+    """Pin the upstream gate that makes analyze's `failed+degraded_llm`
+    outcome V1-unreachable: any Python `str`, re-encoded with UTF-8,
+    decodes back via strict UTF-8 — which is exactly the gate
+    `parse_python` step 2 runs.
+
+    If this property ever breaks (e.g., the language adds a string
+    flavor that doesn't round-trip), the analyze module docstring's
+    'V1 unreachable' note needs revisiting and FUP-053 may already
+    have a reachable trigger.
+    """
+    samples = [
+        "",
+        "ascii",
+        "café",  # multibyte
+        "𝕳𝖊𝖑𝖑𝖔",  # 4-byte UTF-8 chars
+        "\x00 inline null",  # NUL in str is fine; bytes form is also valid UTF-8
+        "mixed \n\t\r whitespace",
+    ]
+    for s in samples:
+        # Round-trip must succeed (no UnicodeDecodeError).
+        roundtripped = s.encode("utf-8").decode("utf-8")
+        assert roundtripped == s
 
 
 @pytest.mark.asyncio

@@ -28,15 +28,26 @@ backstops drift; producer-side correctness is the contract.
   nodes intersect a changed scope unit. `degradation_reason=
   "tree_has_error_in_changed_regions"`; parser admits JUDGED only
   via `span_within_file`.
-- `failed+degraded_llm` — UTF-8 decode failure (V1 only failed-path
-  trigger) AND patch contains added text. `degradation_reason=
-  "parse_failed"`.
-- `skipped+NO_REVIEWABLE_CONTEXT` — no content available OR parse
-  failure with no added text. No LLM call.
+- `skipped+NO_REVIEWABLE_CONTEXT` — no content available OR (per the
+  V1-unreachable note below) parse failure with no added text. No LLM
+  call.
 - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope unit
   intersects the changed regions, OR clean parse with no patch.
 - `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
   call.
+
+**V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
+outcome; the analyze code path is wired to handle it, but in V1 the
+trigger cannot fire. `parse_python` only produces `parser_outcome=
+"failed"` on a UTF-8 strict-decode failure ([ast_facts/python_adapter.py]
+step 2). Two upstream gates make that branch dead in V1: (a) intake's
+`_classify_or_reserve_decode` rejects invalid-UTF-8 bytes with
+`SkipReason.OVERSIZED` BEFORE analyze sees the file; (b) analyze
+receives content as `str` from `ChangedFile` and re-encodes via
+`content.encode("utf-8")` — a Python `str` round-trips to valid UTF-8
+by definition. The `failed`/`parse_failed` paths remain in code as
+structural slots so adding a raw-bytes intake → state path (FUP-053)
+doesn't require re-introducing them.
 
 Parser-stage skips (`OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`,
 `MINIFIED`, `GENERATED_BANNER`) pass through with the parser's
@@ -403,10 +414,13 @@ class _FileOutcome:
 
 
 # Bidirectionally coupled with `LLMRequest.degraded_mode` per
-# `_enforce_degradation_provenance` (llm/base.py).
+# `_enforce_degradation_provenance` (llm/base.py). `"parse_failed"` is
+# V1-unreachable per the module docstring; kept as a structural slot
+# for the raw-bytes intake path (FUP-053).
 _DegradationReason = Literal["parse_failed", "tree_has_error_in_changed_regions"]
 
 # `FileExaminationEvent.parse_status` values for the analyze node.
+# `"failed"` is V1-unreachable for the same reason as `"parse_failed"` above.
 _ParseStatus = Literal["clean", "failed", "degraded", "skipped"]
 
 
@@ -577,14 +591,18 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     Five outcomes per spec §7 step 3a (with parser-stage skip passed
     through as a sixth):
 
-    - `skipped+NO_REVIEWABLE_CONTEXT` — no content at all OR parse
-      failure with no addable diff text.
+    - `skipped+NO_REVIEWABLE_CONTEXT` — no content at all OR (V1
+      unreachable, see module docstring) parse failure with no addable
+      diff text.
     - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope
       unit intersects the changed regions.
     - `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an
       LLM call but cost gate failed.
-    - `failed+degraded_llm` — parse failure with addable text;
-      degraded LLM call (`degradation_reason="parse_failed"`).
+    - `failed+degraded_llm` — V1 unreachable (intake gates invalid
+      UTF-8; analyze re-encodes valid str). Kept as a structural slot
+      for the future raw-bytes intake path (FUP-053). Would fire on
+      parse failure with addable text; degraded LLM call
+      (`degradation_reason="parse_failed"`).
     - `degraded+degraded_llm` — clean parse but `has_error` ERROR
       nodes intersect a changed scope unit; degraded LLM call
       (`degradation_reason="tree_has_error_in_changed_regions"`).
@@ -649,7 +667,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # boolean-helper policy.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
-    # Outcome branch: parser_outcome == "failed" (V1: UTF-8 decode failure).
+    # Outcome branch: parser_outcome == "failed".
+    # V1 UNREACHABLE per the module docstring — intake gates invalid
+    # UTF-8 with SkipReason.OVERSIZED, and the str → utf-8 round-trip
+    # here cannot produce invalid UTF-8 for `parse_python`'s decode
+    # gate. Branch is retained for the raw-bytes intake path (FUP-053);
+    # mocking `parser_outcome="failed"` in tests exercises the audit /
+    # prompt wiring even though production never enters this branch.
     if parse_result.parser_outcome == "failed":
         if patched_file is None or not patched_file_has_added_lines(patched_file):
             return await _emit_skip(

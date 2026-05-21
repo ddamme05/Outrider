@@ -794,6 +794,12 @@ async def _classify_or_reserve_decode(
       - Bytes are not valid UTF-8 (truncated text, mixed encoding) →
         `(None, SkipReason.OVERSIZED)`. Same routing as binary; refusal
         to flow corrupted text to the LLM. No budget consumed.
+        (Side effect downstream: this gate is one of two reasons
+        analyze's `failed+degraded_llm` outcome is V1-unreachable. The
+        other is the `str`→bytes round-trip in
+        `analyze._process_one_file`. A future raw-bytes intake → state
+        path — FUP-053 — would relax this and make that outcome
+        reachable.)
       - Bytes are valid UTF-8 AND aggregate budget allows →
         `(decoded_str, None)`. Budget is reserved AFTER classification
         passes so a failed classification doesn't crowd out later files.
