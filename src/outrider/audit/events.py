@@ -821,7 +821,21 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
     total_input_tokens: int = Field(ge=0)
-    total_cached_tokens: int = Field(ge=0)
+    total_cache_read_tokens: int = Field(ge=0)
+    """Sum of `LLMResponse.cache_read_tokens` across this pass's LLM calls.
+    Cache reads bill at 0.1× the base input rate (per Anthropic's published
+    pricing); kept separate from writes so a `total_cost_usd` recomputation
+    from raw token counts can reconcile to the per-call `LLMCallEvent` sum.
+    Matches `LLMCallEvent.cached_tokens` semantics (reads-only)."""
+    total_cache_write_tokens: int = Field(ge=0)
+    """Sum of `LLMResponse.cache_write_tokens` across this pass's LLM calls.
+    Cache writes bill at 1.25× the base input rate. Separate from reads
+    because the 12.5× cost differential is material — combining them
+    obscures the cost driver. NOT mirrored on `LLMCallEvent` (which
+    carries only `cached_tokens=reads`); `total_cache_write_tokens` is
+    aggregate-event-only and the divergence is intentional, surfaced
+    here so a reader doesn't expect `sum(LLMCallEvent.cached_tokens) ==
+    total_cache_read_tokens + total_cache_write_tokens`."""
     total_output_tokens: int = Field(ge=0)
     total_cost_usd: float = Field(ge=0)
     pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)

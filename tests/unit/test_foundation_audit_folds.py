@@ -579,7 +579,8 @@ def _completed_kwargs_minimum() -> dict[str, object]:
         "n_responses_rejected": 0,
         "n_trace_candidates_emitted": 0,
         "total_input_tokens": 0,
-        "total_cached_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_write_tokens": 0,
         "total_output_tokens": 0,
         "total_cost_usd": 0.0,
         "pricing_version": "v2",  # NOT bare semver — pricing has its own scheme
