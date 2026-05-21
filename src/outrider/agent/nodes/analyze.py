@@ -96,7 +96,9 @@ order-of-magnitude blowup detection, not a tight count; a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Final, Literal
 from uuid import uuid4
 
@@ -307,8 +309,9 @@ async def analyze(
     n_llm_calls = 0
     total_input_tokens = 0
     total_output_tokens = 0
-    total_cached_tokens = 0
-    total_cost_usd = 0.0
+    total_cache_read_tokens = 0
+    total_cache_write_tokens = 0
+    total_cost_decimal = Decimal("0")
     remaining_budget_tokens = total_review_budget_tokens
 
     # Step 2: triage-gate filter. SKIM/SKIP excluded by construction;
@@ -358,8 +361,9 @@ async def analyze(
 
         total_input_tokens += file_outcome.input_tokens
         total_output_tokens += file_outcome.output_tokens
-        total_cached_tokens += file_outcome.cached_tokens
-        total_cost_usd += file_outcome.cost_usd
+        total_cache_read_tokens += file_outcome.cache_read_tokens
+        total_cache_write_tokens += file_outcome.cache_write_tokens
+        total_cost_decimal += file_outcome.cost_decimal
         remaining_budget_tokens -= file_outcome.estimated_tokens
 
         if file_outcome.parse_status == "skipped":
@@ -405,9 +409,16 @@ async def analyze(
             n_responses_rejected=n_responses_rejected,
             n_trace_candidates_emitted=n_trace_candidates_emitted,
             total_input_tokens=total_input_tokens,
-            total_cached_tokens=total_cached_tokens,
+            total_cache_read_tokens=total_cache_read_tokens,
+            total_cache_write_tokens=total_cache_write_tokens,
             total_output_tokens=total_output_tokens,
-            total_cost_usd=total_cost_usd,
+            # Decimal-accumulated → float-cast ONCE at emission; the per-call
+            # `LLMCallEvent.cost_usd` is the same Decimal cast per call, so
+            # the aggregate matches `sum(LLMCallEvent.cost_usd)` on replay
+            # to within float-representation precision (much tighter than
+            # the prior float-accumulated approach which drifted at ~5e-17
+            # USD per 50 files).
+            total_cost_usd=float(total_cost_decimal),
             pricing_version=PRICING_VERSION,
             policy_version=active_policy_version,
             analyze_model=analyze_model,
@@ -435,38 +446,33 @@ async def analyze(
     }
 
 
+@dataclass(frozen=True, slots=True)
 class _FileOutcome:
     """Per-file processing result. Populated by `_process_one_file` and
-    consumed by the main loop's accumulators."""
+    consumed by the main loop's accumulators.
 
-    __slots__ = (
-        "cached_tokens",
-        "cost_usd",
-        "estimated_tokens",
-        "input_tokens",
-        "output_tokens",
-        "parse_status",
-        "parser_result",
-    )
+    `cache_read_tokens` and `cache_write_tokens` are tracked separately
+    rather than summed into one `cached_tokens` field — the aggregate
+    `AnalyzeCompletedEvent.total_cache_read_tokens` /
+    `total_cache_write_tokens` columns split them per the 12.5× pricing
+    differential (cache_write 1.25× base, cache_read 0.1× base).
 
-    def __init__(
-        self,
-        *,
-        parse_status: str,
-        parser_result: ParserResult | None,
-        input_tokens: int,
-        output_tokens: int,
-        cached_tokens: int,
-        cost_usd: float,
-        estimated_tokens: int,
-    ) -> None:
-        self.parse_status = parse_status
-        self.parser_result = parser_result
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-        self.cached_tokens = cached_tokens
-        self.cost_usd = cost_usd
-        self.estimated_tokens = estimated_tokens
+    `cost_decimal` is the per-file cost as `Decimal` from
+    `compute_cost_usd`; the main loop sums Decimals across files and
+    casts to float ONCE at `AnalyzeCompletedEvent` construction. The
+    prior `cost_usd: float` per-file + float-sum approach drifted at FP
+    noise (5e-17 USD for 50 files) against the per-call `LLMCallEvent.cost_usd`
+    sum on replay; Decimal accumulation eliminates the drift.
+    """
+
+    parse_status: str
+    parser_result: ParserResult | None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cost_decimal: Decimal
+    estimated_tokens: int
 
 
 # Spec §7 step 3f: `LLMRequest.degradation_reason` literal values per
@@ -633,8 +639,9 @@ async def _emit_skip(
         parser_result=None,
         input_tokens=0,
         output_tokens=0,
-        cached_tokens=0,
-        cost_usd=0.0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        cost_decimal=Decimal("0"),
         estimated_tokens=0,
     )
 
@@ -886,9 +893,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # is the audit signal for "this pass was interrupted."
     response: LLMResponse = await provider.complete(request)
 
-    # Cost compute via the canonical wrapper. `total_cost_usd` on
-    # AnalyzeCompletedEvent matches this float; the four-term sum is
-    # the same recipe LLMCallEvent uses internally.
+    # Cost compute via the canonical wrapper. Returns `Decimal`; carried
+    # through `_FileOutcome.cost_decimal` so the main loop can sum across
+    # files in `Decimal` arithmetic and float-cast ONCE at
+    # `AnalyzeCompletedEvent` construction. The four-term recipe matches
+    # what `LLMCallEvent.cost_usd` uses internally (the per-call event
+    # casts the same Decimal to float), so on replay the aggregate
+    # matches `sum(LLMCallEvent.cost_usd)` modulo a single float
+    # representation step rather than per-file FP drift.
     cost_decimal = compute_cost_usd(
         analyze_model,
         input_tokens=response.input_tokens,
@@ -896,7 +908,6 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         cache_read_tokens=response.cache_read_tokens,
         output_tokens=response.output_tokens,
     )
-    cost_usd = float(cost_decimal)
 
     parser_result = parse_analyze_response(
         response.text,
@@ -934,8 +945,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         parser_result=parser_result,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,
-        cached_tokens=response.cache_read_tokens + response.cache_write_tokens,
-        cost_usd=cost_usd,
+        cache_read_tokens=response.cache_read_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        cost_decimal=cost_decimal,
         estimated_tokens=estimated_tokens,
     )
 
