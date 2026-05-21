@@ -582,22 +582,6 @@ def test_build_proposal_rejection_claimed_finding_type_hash_matches_recipe() -> 
     assert rej.claimed_finding_type_hash == expected
 
 
-def test_step1_iteration_raises_not_implemented_with_index() -> None:
-    """Until the admission checks land (commit 3), iteration over
-    `raw.findings` raises `NotImplementedError` with the proposal
-    index in the message. The next commit replaces the body with
-    per-proposal admission decisions."""
-    response = (
-        '{"findings": [{"finding_type": "sql_injection", '
-        '"evidence_tier": "judged", "title": "t", "description": "d", '
-        '"evidence": "e", "span": {"byte_start": 0, "byte_end": 1}}]}'
-    )
-    # JUDGED passes evidence_tier + finding_type + producer admission
-    # (JUDGED skips producer); span admission lands in commit 4.
-    with pytest.raises(NotImplementedError, match=r"span admission for findings\[0\]"):
-        _call_parser(response)
-
-
 # ---------------------------------------------------------------------------
 # Spec §6 commit-3 — producer-admission checks (finding_type / evidence_tier /
 # query_match_id / trace stub)
@@ -625,6 +609,24 @@ def _minimal_proposal(**overrides: object) -> dict[str, object]:
     }
     base.update(overrides)
     return base
+
+
+def _build_scope_unit(*, byte_start: int = 0, byte_end: int = 100):  # type: ignore[no-untyped-def]
+    """Minimal valid `ScopeUnit` for parser tests; byte range chosen
+    to contain the `_minimal_proposal` default span `(0, 1)`."""
+    from outrider.ast_facts.models import ScopeUnit, compute_unit_id
+
+    return ScopeUnit(
+        unit_id=compute_unit_id("src/x.py", kind="function", qualified_name="some_function"),
+        kind="function",
+        name="some_function",
+        qualified_name="some_function",
+        file_path="src/x.py",
+        line_start=1,
+        line_end=10,
+        byte_start=byte_start,
+        byte_end=byte_end,
+    )
 
 
 def test_step3_rejects_unknown_evidence_tier() -> None:
@@ -691,17 +693,22 @@ def test_step4_observed_rejects_fabricated_query_match_id() -> None:
 
 def test_step4_observed_passes_when_query_match_id_in_registry() -> None:
     """Happy path: OBSERVED proposal with a real registry id passes
-    producer admission. Span admission isn't implemented yet so the
-    parser raises `NotImplementedError`; the test pins the rejection
-    didn't fire."""
+    producer admission. Span admission is supplied with a real scope
+    unit containing the span; the proposal then reaches the step-5+
+    `NotImplementedError` (ReviewFinding construction), confirming
+    producer admission passed."""
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="observed",
             query_match_id="real_id",
         )
     )
-    with pytest.raises(NotImplementedError, match=r"span admission for findings\[0\]"):
-        _call_parser(response, query_match_id_set=frozenset({"real_id"}))
+    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction for findings\[0\]"):
+        _call_parser(
+            response,
+            query_match_id_set=frozenset({"real_id"}),
+            included_scope_units=(_build_scope_unit(),),
+        )
 
 
 def test_step4_inferred_always_rejects_in_v1_stub() -> None:
@@ -724,11 +731,12 @@ def test_step4_inferred_always_rejects_in_v1_stub() -> None:
 
 def test_step4_judged_skips_producer_admission() -> None:
     """JUDGED is the only tier the model can claim unilaterally — no
-    structural artifact required. Producer admission is skipped; the
-    proposal advances to span admission (which raises until commit 4)."""
+    structural artifact required. Producer admission is skipped; with
+    span admission supplied a containing scope unit, the proposal
+    reaches the step-5+ `NotImplementedError`."""
     response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
-    with pytest.raises(NotImplementedError, match=r"span admission for findings\[0\]"):
-        _call_parser(response)
+    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction for findings\[0\]"):
+        _call_parser(response, included_scope_units=(_build_scope_unit(),))
 
 
 def test_all_rejected_returns_aggregate_result() -> None:
@@ -779,6 +787,126 @@ def test_proposal_rejection_uses_canonical_proposal_hash() -> None:
         byte_end=1,
     )
     assert rej.proposal_hash == expected
+
+
+# ---------------------------------------------------------------------------
+# Spec §6 commit-4 — span admission (per-outcome branch)
+# ---------------------------------------------------------------------------
+
+
+def test_step5_clean_span_inside_scope_unit_passes_admission() -> None:
+    """Clean-outcome happy path: the proposal's span lies inside one of
+    the file's included scope units → span admission passes → the
+    proposal reaches the step-6+ `NotImplementedError` (ReviewFinding
+    construction)."""
+    response = _build_response_json(_minimal_proposal(span={"byte_start": 10, "byte_end": 30}))
+    scope = _build_scope_unit(byte_start=0, byte_end=100)  # contains (10, 30)
+    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
+        _call_parser(response, included_scope_units=(scope,))
+
+
+def test_step5_clean_span_outside_all_scope_units_rejects() -> None:
+    """Clean outcome: span doesn't land in any included scope unit →
+    `span_outside_scope_unit` rejection with `claimed_evidence_tier`
+    carrying the parsed enum value."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            span={"byte_start": 200, "byte_end": 220},
+        )
+    )
+    scope = _build_scope_unit(byte_start=0, byte_end=100)  # excludes (200, 220)
+    result = _call_parser(response, included_scope_units=(scope,))
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "span_outside_scope_unit"
+    assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
+    assert rej.rejection_detail == "(200,220)"
+
+
+def test_step5_clean_multiple_scope_units_admits_if_any_contains() -> None:
+    """Clean outcome: span landing in the second scope unit of a tuple
+    still admits — the `any(...)` covers every included unit."""
+    response = _build_response_json(_minimal_proposal(span={"byte_start": 150, "byte_end": 160}))
+    scope_a = _build_scope_unit(byte_start=0, byte_end=100)  # excludes
+    scope_b = _build_scope_unit(byte_start=120, byte_end=200)  # contains
+    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
+        _call_parser(response, included_scope_units=(scope_a, scope_b))
+
+
+def test_step5_clean_empty_scope_units_rejects_every_proposal() -> None:
+    """Edge case: a clean-outcome call with no included scope units
+    rejects every proposal at `span_outside_scope_unit`. (The node
+    body shouldn't make this call — outcome would be
+    NO_CHANGED_SCOPE_UNITS in that case — but the parser handles it
+    defensively.)"""
+    response = _build_response_json(_minimal_proposal())
+    result = _call_parser(response, included_scope_units=())
+    assert len(result.proposal_rejections) == 1
+    assert result.proposal_rejections[0].rejection_reason == "span_outside_scope_unit"
+
+
+def test_step5_degraded_span_within_file_passes_admission() -> None:
+    """Degraded-outcome happy path: span lies within file bounds →
+    span admission passes → reaches step-6+ NIE. No scope units
+    consulted in degraded mode."""
+    response = _build_response_json(_minimal_proposal(span={"byte_start": 50, "byte_end": 80}))
+    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
+        _call_parser(response, degraded_mode=True, file_byte_length=100)
+
+
+def test_step5_degraded_span_past_eof_rejects() -> None:
+    """Degraded outcome: `span.byte_end > file_byte_length` →
+    `span_outside_file` rejection with `claimed_evidence_tier`
+    carrying the parsed enum."""
+    response = _build_response_json(_minimal_proposal(span={"byte_start": 90, "byte_end": 150}))
+    result = _call_parser(response, degraded_mode=True, file_byte_length=100)
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "span_outside_file"
+    assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
+    assert rej.rejection_detail == "(90,150)"
+
+
+def test_step5_degraded_does_not_consult_scope_units() -> None:
+    """Degraded outcome ignores `included_scope_units` — the deterministic
+    bound is `span_within_file`, not `span_within_scope_unit`. Even an
+    empty scope-unit tuple doesn't change the outcome when the span is
+    within file bounds."""
+    response = _build_response_json(_minimal_proposal(span={"byte_start": 50, "byte_end": 80}))
+    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
+        _call_parser(
+            response,
+            degraded_mode=True,
+            file_byte_length=100,
+            included_scope_units=(),  # ignored in degraded mode
+        )
+
+
+def test_step5_degraded_rejects_independent_of_query_match_id() -> None:
+    """Degraded outcome: even if the model claimed `observed` with an
+    id, the producer-admission step rejects FIRST (no registry-fired
+    set in degraded mode). The span admission step never runs for an
+    OBSERVED claim in degraded mode. This pin documents the rejection
+    ordering."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="observed",
+            query_match_id="some_id",
+            span={"byte_start": 50, "byte_end": 80},
+        )
+    )
+    # Empty query_match_id_set (typical for degraded mode) → producer
+    # admission rejects with query_match_id_not_in_registry, not
+    # span_outside_file.
+    result = _call_parser(
+        response,
+        degraded_mode=True,
+        file_byte_length=100,
+        query_match_id_set=frozenset(),
+    )
+    assert len(result.proposal_rejections) == 1
+    assert result.proposal_rejections[0].rejection_reason == "query_match_id_not_in_registry"
 
 
 # ---------------------------------------------------------------------------
