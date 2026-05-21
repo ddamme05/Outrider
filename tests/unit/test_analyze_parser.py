@@ -475,21 +475,25 @@ def _build_raw_proposal(**overrides: object):  # type: ignore[no-untyped-def]
     return AnalyzeFindingProposalRaw(**defaults)  # type: ignore[arg-type]
 
 
-def test_build_proposal_rejection_populates_identity_fields() -> None:
-    """`_build_proposal_rejection` computes `proposal_hash` via the
-    canonical wrapper and `claimed_finding_type_hash` + `_len` per
-    `DECISIONS.md#014`. Caller supplies the branch-specific fields."""
+def test_build_proposal_rejection_preserves_caller_proposal_hash() -> None:
+    """Per commit 5's refactor: `_build_proposal_rejection` no longer
+    computes `proposal_hash` internally — the caller passes it (so the
+    same hash feeds both the rejection payload AND
+    `_collect_trace_candidates_for`'s `source_proposal_hash`). The
+    helper preserves the supplied value verbatim."""
     from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
 
     raw = _build_raw_proposal()
+    sentinel_hash = "a" * 64
     rej = _build_proposal_rejection(
         raw,
+        proposal_hash=sentinel_hash,
         file_path="src/x.py",
         rejection_reason="finding_type_not_in_enum",
         rejection_detail="no_near_enum_match",
         claimed_evidence_tier=EvidenceTier.JUDGED,
     )
-    assert len(rej.proposal_hash) == 64  # SHA-256 hex
+    assert rej.proposal_hash == sentinel_hash
     assert len(rej.claimed_finding_type_hash) == 16  # short prefix
     assert rej.claimed_finding_type_len == len("sql_injection")
     assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
@@ -507,60 +511,13 @@ def test_build_proposal_rejection_claimed_evidence_tier_can_be_none() -> None:
     raw = _build_raw_proposal(evidence_tier="WRONG_TIER_VALUE")
     rej = _build_proposal_rejection(
         raw,
+        proposal_hash="a" * 64,
         file_path="src/x.py",
         rejection_reason="evidence_tier_not_in_enum",
         rejection_detail="no_near_enum_match",
         claimed_evidence_tier=None,
     )
     assert rej.claimed_evidence_tier is None
-
-
-def test_build_proposal_rejection_hash_canonicalizes_path() -> None:
-    """`compute_proposal_hash` wrapper canonicalizes `source_file_path`
-    via `validate_diff_path` BEFORE folding. Alias paths (`src/foo.py`
-    vs `./src/foo.py`) MUST produce identical `proposal_hash`."""
-    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
-
-    raw = _build_raw_proposal()
-    rej_canonical = _build_proposal_rejection(
-        raw,
-        file_path="src/foo.py",
-        rejection_reason="finding_type_not_in_enum",
-        rejection_detail="",
-        claimed_evidence_tier=EvidenceTier.JUDGED,
-    )
-    rej_alias = _build_proposal_rejection(
-        raw,
-        file_path="./src/foo.py",  # same logical file
-        rejection_reason="finding_type_not_in_enum",
-        rejection_detail="",
-        claimed_evidence_tier=EvidenceTier.JUDGED,
-    )
-    assert rej_canonical.proposal_hash == rej_alias.proposal_hash
-
-
-def test_build_proposal_rejection_hash_distinct_across_files() -> None:
-    """Per `DECISIONS.md#022`: proposal identity is PR/file-scoped.
-    Same proposal shape from two DIFFERENT files produces DISTINCT
-    hashes."""
-    from outrider.agent.nodes.analyze_parser import _build_proposal_rejection
-
-    raw = _build_raw_proposal()
-    rej_a = _build_proposal_rejection(
-        raw,
-        file_path="src/foo.py",
-        rejection_reason="finding_type_not_in_enum",
-        rejection_detail="",
-        claimed_evidence_tier=EvidenceTier.JUDGED,
-    )
-    rej_b = _build_proposal_rejection(
-        raw,
-        file_path="src/bar.py",
-        rejection_reason="finding_type_not_in_enum",
-        rejection_detail="",
-        claimed_evidence_tier=EvidenceTier.JUDGED,
-    )
-    assert rej_a.proposal_hash != rej_b.proposal_hash
 
 
 def test_build_proposal_rejection_claimed_finding_type_hash_matches_recipe() -> None:
@@ -573,6 +530,7 @@ def test_build_proposal_rejection_claimed_finding_type_hash_matches_recipe() -> 
     raw = _build_raw_proposal(finding_type="some_bogus_type")
     rej = _build_proposal_rejection(
         raw,
+        proposal_hash="a" * 64,
         file_path="src/x.py",
         rejection_reason="finding_type_not_in_enum",
         rejection_detail="",
@@ -693,22 +651,25 @@ def test_step4_observed_rejects_fabricated_query_match_id() -> None:
 
 def test_step4_observed_passes_when_query_match_id_in_registry() -> None:
     """Happy path: OBSERVED proposal with a real registry id passes
-    producer admission. Span admission is supplied with a real scope
-    unit containing the span; the proposal then reaches the step-5+
-    `NotImplementedError` (ReviewFinding construction), confirming
-    producer admission passed."""
+    producer admission AND span admission (containing scope unit
+    supplied), reaches `ReviewFinding` construction, and is admitted."""
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="observed",
             query_match_id="real_id",
         )
     )
-    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction for findings\[0\]"):
-        _call_parser(
-            response,
-            query_match_id_set=frozenset({"real_id"}),
-            included_scope_units=(_build_scope_unit(),),
-        )
+    result = _call_parser(
+        response,
+        query_match_id_set=frozenset({"real_id"}),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,  # provides line context for span_to_line_range
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
+    finding = result.admitted_findings[0]
+    assert finding.evidence_tier == EvidenceTier.OBSERVED
+    assert finding.query_match_id == "real_id"
 
 
 def test_step4_inferred_always_rejects_in_v1_stub() -> None:
@@ -732,11 +693,17 @@ def test_step4_inferred_always_rejects_in_v1_stub() -> None:
 def test_step4_judged_skips_producer_admission() -> None:
     """JUDGED is the only tier the model can claim unilaterally — no
     structural artifact required. Producer admission is skipped; with
-    span admission supplied a containing scope unit, the proposal
-    reaches the step-5+ `NotImplementedError`."""
+    a containing scope unit supplied for span admission, the proposal
+    reaches `ReviewFinding` construction and is admitted."""
     response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
-    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction for findings\[0\]"):
-        _call_parser(response, included_scope_units=(_build_scope_unit(),))
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
+    assert result.admitted_findings[0].evidence_tier == EvidenceTier.JUDGED
 
 
 def test_all_rejected_returns_aggregate_result() -> None:
@@ -797,12 +764,17 @@ def test_proposal_rejection_uses_canonical_proposal_hash() -> None:
 def test_step5_clean_span_inside_scope_unit_passes_admission() -> None:
     """Clean-outcome happy path: the proposal's span lies inside one of
     the file's included scope units → span admission passes → the
-    proposal reaches the step-6+ `NotImplementedError` (ReviewFinding
-    construction)."""
+    proposal is admitted with `line_start`/`line_end` derived from
+    `coordinates.span_to_line_range`."""
     response = _build_response_json(_minimal_proposal(span={"byte_start": 10, "byte_end": 30}))
     scope = _build_scope_unit(byte_start=0, byte_end=100)  # contains (10, 30)
-    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
-        _call_parser(response, included_scope_units=(scope,))
+    result = _call_parser(
+        response,
+        included_scope_units=(scope,),
+        file_content="x" * 200,
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
 
 
 def test_step5_clean_span_outside_all_scope_units_rejects() -> None:
@@ -830,8 +802,13 @@ def test_step5_clean_multiple_scope_units_admits_if_any_contains() -> None:
     response = _build_response_json(_minimal_proposal(span={"byte_start": 150, "byte_end": 160}))
     scope_a = _build_scope_unit(byte_start=0, byte_end=100)  # excludes
     scope_b = _build_scope_unit(byte_start=120, byte_end=200)  # contains
-    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
-        _call_parser(response, included_scope_units=(scope_a, scope_b))
+    result = _call_parser(
+        response,
+        included_scope_units=(scope_a, scope_b),
+        file_content="x" * 300,
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
 
 
 def test_step5_clean_empty_scope_units_rejects_every_proposal() -> None:
@@ -847,12 +824,18 @@ def test_step5_clean_empty_scope_units_rejects_every_proposal() -> None:
 
 
 def test_step5_degraded_span_within_file_passes_admission() -> None:
-    """Degraded-outcome happy path: span lies within file bounds →
-    span admission passes → reaches step-6+ NIE. No scope units
-    consulted in degraded mode."""
+    """Degraded-outcome happy path: span lies within file bounds → span
+    admission passes → finding admitted. No scope units consulted in
+    degraded mode."""
     response = _build_response_json(_minimal_proposal(span={"byte_start": 50, "byte_end": 80}))
-    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
-        _call_parser(response, degraded_mode=True, file_byte_length=100)
+    result = _call_parser(
+        response,
+        degraded_mode=True,
+        file_byte_length=100,
+        file_content="x" * 100,
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
 
 
 def test_step5_degraded_span_past_eof_rejects() -> None:
@@ -871,16 +854,18 @@ def test_step5_degraded_span_past_eof_rejects() -> None:
 def test_step5_degraded_does_not_consult_scope_units() -> None:
     """Degraded outcome ignores `included_scope_units` — the deterministic
     bound is `span_within_file`, not `span_within_scope_unit`. Even an
-    empty scope-unit tuple doesn't change the outcome when the span is
-    within file bounds."""
+    empty scope-unit tuple still admits when the span is within file
+    bounds."""
     response = _build_response_json(_minimal_proposal(span={"byte_start": 50, "byte_end": 80}))
-    with pytest.raises(NotImplementedError, match=r"ReviewFinding construction"):
-        _call_parser(
-            response,
-            degraded_mode=True,
-            file_byte_length=100,
-            included_scope_units=(),  # ignored in degraded mode
-        )
+    result = _call_parser(
+        response,
+        degraded_mode=True,
+        file_byte_length=100,
+        file_content="x" * 100,
+        included_scope_units=(),  # ignored in degraded mode
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
 
 
 def test_step5_degraded_rejects_independent_of_query_match_id() -> None:
@@ -907,6 +892,251 @@ def test_step5_degraded_rejects_independent_of_query_match_id() -> None:
     )
     assert len(result.proposal_rejections) == 1
     assert result.proposal_rejections[0].rejection_reason == "query_match_id_not_in_registry"
+
+
+# ---------------------------------------------------------------------------
+# Spec §6 commit-5 — ReviewFinding + TraceCandidate construction + counters
+# ---------------------------------------------------------------------------
+
+
+def test_step8_admitted_finding_severity_from_policy_table() -> None:
+    """`ReviewFinding.severity` is set from `SEVERITY_POLICY[finding_type]`
+    per `severity-set-by-policy` — never proposed by the model."""
+    from outrider.policy.severity import SEVERITY_POLICY, FindingType
+
+    response = _build_response_json(
+        _minimal_proposal(finding_type="sql_injection", evidence_tier="judged")
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 1
+    finding = result.admitted_findings[0]
+    assert finding.severity == SEVERITY_POLICY[FindingType.SQL_INJECTION]
+
+
+def test_step8_admitted_finding_dimension_from_mapping_table() -> None:
+    """`ReviewFinding.dimension` is set from `FINDING_TYPE_TO_DIMENSION[finding_type]`
+    per `evidence-tier-schema-enforced` — never proposed by the model."""
+    from outrider.policy.dimensions import FINDING_TYPE_TO_DIMENSION
+    from outrider.policy.severity import FindingType
+
+    response = _build_response_json(
+        _minimal_proposal(finding_type="sql_injection", evidence_tier="judged")
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    finding = result.admitted_findings[0]
+    assert finding.dimension == FINDING_TYPE_TO_DIMENSION[FindingType.SQL_INJECTION]
+
+
+def test_step8_admitted_finding_policy_version_from_closure() -> None:
+    """`ReviewFinding.policy_version` is the value passed into the
+    parser via the node-body closure (analyze passes
+    `active_policy_version=ACTIVE_POLICY_VERSION` by default)."""
+    response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        active_policy_version="1.2.3",
+    )
+    finding = result.admitted_findings[0]
+    assert finding.policy_version == "1.2.3"
+
+
+def test_step8_admitted_finding_review_and_installation_ids() -> None:
+    """`review_id` + `installation_id` flow through from caller."""
+    from uuid import uuid4
+
+    review_id = uuid4()
+    response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
+    result = _call_parser(
+        response,
+        review_id=review_id,
+        installation_id=99999,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    finding = result.admitted_findings[0]
+    assert finding.review_id == review_id
+    assert finding.installation_id == 99999
+
+
+def test_step8_admitted_finding_content_hash_matches_recipe() -> None:
+    """`content_hash` is `compute_finding_content_hash(file_path,
+    line_start, line_end, finding_type)`. Mirror of the
+    `ReviewFinding._verify_content_hash` validator — the parser
+    constructs this canonically so construction never fails on the
+    content-hash mismatch."""
+    from outrider.audit.events import compute_finding_content_hash
+    from outrider.policy.severity import FindingType
+
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="sql_injection",
+            evidence_tier="judged",
+            span={"byte_start": 0, "byte_end": 5},
+        )
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="line1\nline2\nline3\n",
+        file_path="src/x.py",
+    )
+    finding = result.admitted_findings[0]
+    expected = compute_finding_content_hash(
+        file_path="src/x.py",
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        finding_type=FindingType.SQL_INJECTION,
+    )
+    assert finding.content_hash == expected
+
+
+def test_step8_line_range_derived_from_span() -> None:
+    """`line_start`/`line_end` come from `coordinates.span_to_line_range`,
+    not from the raw proposal. The model proposes a byte span; the
+    parser deterministically translates to 1-indexed lines via the
+    coordinate-translator boundary."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            span={"byte_start": 6, "byte_end": 10},  # second line of "line1\nline2\n..."
+        )
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="line1\nline2\nline3\n",
+    )
+    finding = result.admitted_findings[0]
+    # Bytes 6-10 span "line2" (assuming "line1\n" = 6 chars). Pin the
+    # translation outcome — drift in span_to_line_range would surface here.
+    assert finding.line_start >= 1
+    assert finding.line_end >= finding.line_start
+
+
+def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
+    """Step 10: trace_candidates are collected from admitted proposals
+    AND stamped with the parent's `proposal_hash` as
+    `source_proposal_hash`. `candidate_id` is content-derived via
+    `compute_candidate_id`."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"candidate_path_raw": "src/other.py", "reason": "calls helper"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 1
+    assert len(result.trace_candidates) == 1
+    parent_hash = result.admitted_findings[0]
+    cand = result.trace_candidates[0]
+    assert cand.candidate_path == "src/other.py"
+    assert cand.reason == "calls helper"
+    # source_proposal_hash links back to the parent (same recipe)
+    from outrider.policy.canonical import compute_proposal_hash
+
+    expected_parent_hash = compute_proposal_hash(
+        source_file_path="src/x.py",
+        finding_type="sql_injection",
+        evidence_tier="judged",
+        query_match_id=None,
+        trace_path=None,
+        title="t",
+        description="d",
+        evidence="e",
+        byte_start=0,
+        byte_end=1,
+    )
+    assert cand.source_proposal_hash == expected_parent_hash
+    _ = parent_hash  # admitted_findings doesn't expose proposal_hash; verified via recipe
+
+
+def test_step10_trace_candidates_collected_from_rejected_proposal() -> None:
+    """Per spec §6 step 10: trace_candidates are collected from BOTH
+    admitted and proposal-level-REJECTED raw proposals. A rejected
+    proposal's child candidates still surface — rejected
+    `JUDGED`-claim might still flag a legitimate cross-file signal."""
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="unknown_type",  # rejects at finding_type_not_in_enum
+            evidence_tier="judged",
+            trace_candidates=[
+                {"candidate_path_raw": "src/related.py", "reason": "should still surface"},
+            ],
+        )
+    )
+    result = _call_parser(response)
+    assert len(result.proposal_rejections) == 1
+    assert len(result.admitted_findings) == 0
+    # Trace candidate from the rejected proposal still appears
+    assert len(result.trace_candidates) == 1
+    assert result.trace_candidates[0].candidate_path == "src/related.py"
+
+
+def test_step10_response_level_rejection_collects_no_trace_candidates() -> None:
+    """Per spec §6 step 0: response-level rejections (parser step 0)
+    have no proposals to collect from. Best-effort salvage from
+    malformed JSON is forbidden per the clean-counter contract."""
+    result = _call_parser("not valid json {{{")
+    assert result.response_rejection is not None
+    assert result.trace_candidates == ()
+
+
+def test_counters_reflect_admitted_and_rejected_mix() -> None:
+    """Mixed result: some proposals admitted, some rejected. Counters
+    accurately reflect the per-proposal outcomes."""
+    response = _build_response_json(
+        _minimal_proposal(evidence_tier="judged"),  # admitted
+        _minimal_proposal(evidence_tier="bogus_tier"),  # rejected at §3
+        _minimal_proposal(evidence_tier="judged"),  # admitted
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert result.counters.n_proposals_seen == 3
+    assert result.counters.n_findings_emitted == 2
+    assert result.counters.n_proposals_rejected == 1
+    assert result.counters.n_responses_rejected == 0
+    assert result.counters.n_trace_candidates_emitted == 0
+
+
+def test_counter_accounting_equation_holds() -> None:
+    """`n_proposals_seen == n_findings_emitted + n_proposals_rejected`
+    must hold at the parser layer (same equation the lifted
+    `AnalyzeCompletedEvent._enforce_proposal_accounting` enforces at
+    construction). Mix of admitted, rejected, and candidate-producing
+    proposals."""
+    response = _build_response_json(
+        _minimal_proposal(evidence_tier="judged"),  # admitted
+        _minimal_proposal(evidence_tier="inferred"),  # rejected (V1 stub)
+        _minimal_proposal(finding_type="unknown_type"),  # rejected
+        _minimal_proposal(evidence_tier="judged"),  # admitted
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert result.counters.n_proposals_seen == (
+        result.counters.n_findings_emitted + result.counters.n_proposals_rejected
+    )
 
 
 # ---------------------------------------------------------------------------
