@@ -611,8 +611,13 @@ async def _process_one_file(
             )
             # Skip if either side is binary/malformed. Release the
             # clean side's reservation so it doesn't crowd out later
-            # valid files.
-            binary_reason = skip_reason_base or skip_reason_head
+            # valid files. When both sides report skip reasons, prefer
+            # `BINARY` over `OVERSIZED` — `BINARY` reflects content
+            # truth (intake refused to decode this side), while
+            # `OVERSIZED` from a concurrent budget rejection on the
+            # other side reflects timing pressure that would mislead
+            # operator triage.
+            binary_reason = _merge_skip_reasons(skip_reason_base, skip_reason_head)
             if binary_reason is not None:
                 if skip_reason_base is None:
                     await byte_budget.release(len(bytes_base))
@@ -662,7 +667,8 @@ async def _process_one_file(
             content_head, skip_reason_head = await _classify_or_reserve_decode(
                 bytes_head, byte_budget
             )
-            binary_reason = skip_reason_base or skip_reason_head
+            # Same prefer-BINARY merge as the modified branch above.
+            binary_reason = _merge_skip_reasons(skip_reason_base, skip_reason_head)
             if binary_reason is not None:
                 if skip_reason_base is None:
                     await byte_budget.release(len(bytes_base))
@@ -775,6 +781,21 @@ async def _set_review_status(
         await session.execute(update(Review).where(Review.id == review_id).values(status=status))
 
 
+def _merge_skip_reasons(base: SkipReason | None, head: SkipReason | None) -> SkipReason | None:
+    """Merge two-side skip reasons for `modified` / `renamed` branches.
+
+    Prefer `BINARY` over any other reason when EITHER side reports it.
+    A naive `base or head` short-circuit would let a concurrent budget
+    rejection on one side (`OVERSIZED`) mask the binary-content signal
+    on the other — misleading the operator who needs to know the file
+    was content-rejected, not budget-pressured. Returns `None` when
+    both sides decoded cleanly.
+    """
+    if base == SkipReason.BINARY or head == SkipReason.BINARY:
+        return SkipReason.BINARY
+    return base or head
+
+
 async def _classify_or_reserve_decode(
     content_bytes: bytes, byte_budget: _ByteBudget
 ) -> tuple[str | None, SkipReason | None]:
@@ -784,16 +805,14 @@ async def _classify_or_reserve_decode(
     Outcomes, returned as `(decoded_or_None, skip_reason_or_None)`:
 
       - Bytes contain a NUL byte (definitive binary marker) →
-        `(None, SkipReason.OVERSIZED)`. The binary content is rejected
-        WITHOUT consuming the byte budget; subsequent valid text files
-        retain their share. (Skip reason routed through OVERSIZED
-        pending a canonical amendment to `DECISIONS.md#018` that would
-        add a `BINARY` value — see FUP-033. The behavior is preserved:
-        binary blobs are skipped, not silently corrupted into
-        U+FFFD-filled strings.)
+        `(None, SkipReason.BINARY)` per `DECISIONS.md#018` Amended
+        2026-05-21. Rejected WITHOUT consuming the byte budget;
+        subsequent valid text files retain their share. Binary blobs
+        are skipped, not silently corrupted into U+FFFD-filled strings.
       - Bytes are not valid UTF-8 (truncated text, mixed encoding) →
-        `(None, SkipReason.OVERSIZED)`. Same routing as binary; refusal
-        to flow corrupted text to the LLM. No budget consumed.
+        `(None, SkipReason.BINARY)`. Same routing as NUL-byte case;
+        the producer decision is "intake refused to decode," so both
+        cases share the `BINARY` audit value. No budget consumed.
         (Side effect downstream: this gate is one of two reasons
         analyze's `failed+degraded_llm` outcome is V1-unreachable. The
         other is the `str`→bytes round-trip in
@@ -812,11 +831,11 @@ async def _classify_or_reserve_decode(
     files into spurious OVERSIZED skips.
     """
     if b"\x00" in content_bytes:
-        return None, SkipReason.OVERSIZED
+        return None, SkipReason.BINARY
     try:
         decoded = content_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
-        return None, SkipReason.OVERSIZED
+        return None, SkipReason.BINARY
     admitted = await byte_budget.try_reserve(len(content_bytes))
     if not admitted:
         return None, SkipReason.OVERSIZED

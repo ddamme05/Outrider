@@ -592,6 +592,27 @@ The `SkipReason` Literal in `FileExaminationEvent` accepts the new values automa
 
 **Naming-axis trade-off (decided 2026-05-20).** The original #018's five values follow a naming convention rooted in the file's content (`OVERSIZED`, `VENDORED`, etc.). The three new values name analyze's decision rationale (`COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`, `NO_CHANGED_SCOPE_UNITS`) — a different naming axis. The mixed-axis cost was weighed against the alternative — a single `SKIPPED_BY_ANALYZE` value with a separate `skip_detail: str` field — and rejected because (a) the three reasons need to be enumerable for dashboard aggregation, and (b) free-text detail would defeat #014's structural-metadata-only audit rule. The mixed naming axis is the accepted cost. Downstream consumers that need to discriminate the two axes use `SkipReason.stage() -> Literal["parser", "analyze"]` (added in foundation-wide sharp-edges fold I-3); the helper lives on the enum class itself so consumers don't string-parse value names.
 
+**Amended 2026-05-21** — two new `SkipReason` enum values for producer-decision skip causes that the analyze arc has been routing through `OVERSIZED` as a temporary mapping.
+
+Adds two values to `ast_facts/models.py::SkipReason`:
+
+- `BINARY` — content rejected as non-reviewable text by the **intake decode gate**: NUL-byte present OR UTF-8 strict-decode failure. Defined by the producer decision (intake's `_classify_or_reserve_decode` refused to route the bytes to downstream nodes), not by a content-ontology claim that the file is "binary" in any universal sense — a corrupted UTF-8 text file is admitted to this category for the same reason GitHub-API-binary files are.
+- `UNSUPPORTED_LANGUAGE` — file path's language is **unsupported by the current analyze implementation**. V1 ships only the Python adapter; `agent/nodes/analyze.py::_process_one_file` admits only `.py` / `.pyi`. Capability-scoped: the value names "today's analyze implementation cannot review this," not "Outrider forever cannot." When V1.5+ adds JS/TS/Go adapters, the analyze gate widens and producer call sites stop using this value; the enum value stays in the catalog for replay-equivalence reconstruction of historical events.
+
+Until 2026-05-21, both cases routed through `SkipReason.OVERSIZED` (per FUP-033's temporary mapping). That alias is no longer tolerable now that producers are shipped enough to appear in audit review — `OVERSIZED` misstates the cause for both binary-decode rejections and non-Python admissions. The 2026-05-20 mixed-axis trade-off accepted "decision rationale" naming for analyze-stage skips; the same axis applies here. `SkipReason.stage()` maps the two new values:
+
+- `BINARY → "parser"` — intake-stage producer decision; `_classify_or_reserve_decode` runs before any parser/analyze admission and shares the bucket with the original five parser-stage values.
+- `UNSUPPORTED_LANGUAGE → "analyze"` — the Python-only `_is_python_file` gate inside the analyze node makes the decision.
+
+The `FileExaminationEvent.skip_reason` Literal accepts the two new values automatically because it inherits from the enum. No Alembic migration (per the original #018 point 5: `audit_events.payload` is JSONB; no schema constraint). No production backfill is required because these producer routes have not shipped — the `audit_events` table contains no `FileExaminationEvent` rows that used the temporary `OVERSIZED` routing.
+
+**Consumer side (lands atomically with this amendment):**
+
+- `ast_facts/models.py::SkipReason` adds `BINARY = "BINARY"` and `UNSUPPORTED_LANGUAGE = "UNSUPPORTED_LANGUAGE"`. The `_PARSER_STAGE_SKIP_REASONS` and `_ANALYZE_STAGE_SKIP_REASONS` sets receive the new values; the import-time totality + disjointness assertion proves every value lives in exactly one stage.
+- `agent/nodes/intake.py::_classify_or_reserve_decode` switches from `SkipReason.OVERSIZED` to `SkipReason.BINARY` on the NUL-byte branch and the `UnicodeDecodeError` branch. Docstring updated to drop the FUP-033 temporary-mapping language.
+- `agent/nodes/analyze.py::_process_one_file` switches the non-`_is_python_file(path)` early-return from `SkipReason.OVERSIZED` to `SkipReason.UNSUPPORTED_LANGUAGE`. Inline comment + module docstring updated to drop the FUP-033 temporary-mapping language.
+- Tests at `tests/unit/test_intake_node.py` (the `_classify_or_reserve_decode` regression tests) and `tests/unit/test_analyze_node.py::test_non_python_file_routed_to_skip_without_calling_provider` assert the specific new values instead of the temporary `OVERSIZED`.
+
 ---
 
 ## 019. `schemas/` is for owner-less cross-boundary models; owned protocol/event surfaces live with their owner

@@ -38,10 +38,10 @@ backstops drift; producer-side correctness is the contract.
   intersects the changed regions, OR clean parse with no patch.
 - `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
   call.
-- `skipped+OVERSIZED` — non-Python file path routed through the
-  existing `OVERSIZED` value per FUP-033 (the canonical
-  `UNSUPPORTED_LANGUAGE` value lands with the DECISIONS#018
-  amendment).
+- `skipped+UNSUPPORTED_LANGUAGE` — non-Python file path; the V1
+  analyze adapter only handles `.py` / `.pyi`. Capability-scoped per
+  `DECISIONS.md#018` Amended 2026-05-21 — the value names "today's
+  analyze cannot review this," not "Outrider forever cannot."
 
 **V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
 outcome; the analyze code path is wired to handle it, but in V1 the
@@ -639,19 +639,17 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # language and `ChangedFile.language` is currently unpopulated, so a
     # `.js`/`.go`/`.ts`/`.rs` file classified DEEP/STANDARD would
     # otherwise reach `parse_python` (tree-sitter Python parser) and the
-    # `queries/python/` registry. Route non-Python through
-    # `SkipReason.OVERSIZED` per the FUP-033 precedent (intake's
-    # binary/malformed-UTF-8 routing shares the same temporary
-    # mapping); FUP-033 bundles `UNSUPPORTED_LANGUAGE` into the
-    # DECISIONS#018 amendment that will give this case its own audit
-    # value.
+    # `queries/python/` registry. Routes through `SkipReason.UNSUPPORTED_LANGUAGE`
+    # per `DECISIONS.md#018` Amended 2026-05-21 — capability-scoped to
+    # the current analyze implementation, not a forever-claim about
+    # Outrider's language support.
     if not _is_python_file(changed_file.path):
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
             is_eval=is_eval,
             file_path=changed_file.path,
-            skip_reason=SkipReason.OVERSIZED,
+            skip_reason=SkipReason.UNSUPPORTED_LANGUAGE,
         )
 
     # Explicit `is not None` (not `or`) so an empty `content_head` ("")

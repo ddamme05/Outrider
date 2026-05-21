@@ -82,15 +82,22 @@ and consumed by the trace node per `DECISIONS.md#017`."""
 class SkipReason(StrEnum):
     """Skip-reason taxonomy across parser AND analyze-node decisions.
 
-    Two naming axes per `DECISIONS.md#018` Amended 2026-05-20:
-    - Parser-stage (rule rooted in file content):
+    Two naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:
+    - Parser-stage (rule rooted in file content OR intake decode gate):
       `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,
-      `GENERATED_BANNER`. See `parser_outcome.EXCLUSION_RULES` for the
-      actual rule tuple (multiple rules may share a reason).
+      `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`
+      for the actual rule tuple (multiple rules may share a reason).
+      `BINARY` is set by intake's `_classify_or_reserve_decode` for
+      NUL-byte / UTF-8-decode-failure content; the other five are set
+      by `should_skip` over file content + path.
     - Analyze-stage (rule rooted in analyze's decision rationale):
       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
-      `NO_CHANGED_SCOPE_UNITS`. Set by the analyze node body when it
-      skips a file mid-pass.
+      `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the
+      analyze node body when it skips a file mid-pass.
+      `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze
+      adapter only handles Python; the value names "today's analyze
+      implementation cannot review this," not "Outrider forever
+      cannot."
 
     Imported by `outrider/audit/events.py` per `DECISIONS.md#018`.
     """
@@ -100,10 +107,13 @@ class SkipReason(StrEnum):
     GENERATED_FILENAME = "GENERATED_FILENAME"
     MINIFIED = "MINIFIED"
     GENERATED_BANNER = "GENERATED_BANNER"
-    # Analyze-stage skip causes per `DECISIONS.md#018` Amended 2026-05-20.
+    # Intake decode-gate skip cause per `DECISIONS.md#018` Amended 2026-05-21.
+    BINARY = "BINARY"
+    # Analyze-stage skip causes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21.
     COST_BUDGET_EXHAUSTED = "COST_BUDGET_EXHAUSTED"
     NO_REVIEWABLE_CONTEXT = "NO_REVIEWABLE_CONTEXT"
     NO_CHANGED_SCOPE_UNITS = "NO_CHANGED_SCOPE_UNITS"
+    UNSUPPORTED_LANGUAGE = "UNSUPPORTED_LANGUAGE"
 
     def stage(self) -> Literal["parser", "analyze"]:
         """Return which decision stage produced this skip reason.
@@ -132,7 +142,7 @@ class SkipReason(StrEnum):
 
 
 # Module-private — drives `SkipReason.stage()`. Keep in lockstep with
-# the analyze-stage value additions per DECISIONS.md#018 Amended 2026-05-20.
+# the analyze-stage value additions per DECISIONS.md#018 Amended 2026-05-20 + 2026-05-21.
 _PARSER_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
     {
         SkipReason.OVERSIZED,
@@ -140,6 +150,7 @@ _PARSER_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
         SkipReason.GENERATED_FILENAME,
         SkipReason.MINIFIED,
         SkipReason.GENERATED_BANNER,
+        SkipReason.BINARY,
     }
 )
 _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
@@ -147,6 +158,7 @@ _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
         SkipReason.COST_BUDGET_EXHAUSTED,
         SkipReason.NO_REVIEWABLE_CONTEXT,
         SkipReason.NO_CHANGED_SCOPE_UNITS,
+        SkipReason.UNSUPPORTED_LANGUAGE,
     }
 )
 
