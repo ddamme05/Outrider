@@ -473,3 +473,58 @@ diff --git a/src/foo.py b/src/foo.py
     assert "truncated" in text
     # Some content of the bounded prefix is present.
     assert text != "\n[truncated: prompt budget cap reached]\n"
+
+
+def test_bound_diff_hunks_text_result_never_exceeds_max_chars_on_char_cap() -> None:
+    """Hard cap: truncation must keep the result within `max_chars`. The
+    sentinel previously appended after the content budget was filled,
+    so output exceeded the cap by the sentinel length.
+    """
+    huge_line = "a" * 1000
+    patch_text = f"""\
+diff --git a/src/foo.py b/src/foo.py
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -1,1 +1,2 @@
+ def first():
++{huge_line}
+"""
+    patched = PatchSet.from_string(patch_text)[0]
+    for cap in (50, 100, 200, 8192):
+        text = bound_diff_hunks_text(patched, max_lines=100, max_chars=cap)  # type: ignore[arg-type]
+        assert len(text) <= cap, f"max_chars={cap}: result len={len(text)}"
+
+
+def test_bound_diff_hunks_text_result_never_exceeds_max_chars_on_line_cap() -> None:
+    """Hard cap: when `max_lines` fires, appending the sentinel must
+    not push the total past `max_chars`. With `max_lines=1` and a small
+    `max_chars` cap, the second-line iteration triggers the line cap;
+    the result is one short line + sentinel and must fit.
+    """
+    patch_text = """\
+diff --git a/src/foo.py b/src/foo.py
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -1,2 +1,4 @@
+ def first():
++    x = 1
++    y = 2
+ def second():
+"""
+    patched = PatchSet.from_string(patch_text)[0]
+    # Small caps to stress the budget; line cap fires on the 2nd line.
+    for cap in (60, 100, 200):
+        text = bound_diff_hunks_text(patched, max_lines=1, max_chars=cap)  # type: ignore[arg-type]
+        assert "truncated" in text, f"cap={cap}: expected line-cap truncation"
+        assert len(text) <= cap, f"line-cap fired with cap={cap}, result len={len(text)}"
+
+
+def test_bound_diff_hunks_text_handles_max_chars_smaller_than_sentinel() -> None:
+    """Defensive edge: if `max_chars` is smaller than the sentinel
+    itself, the sentinel is truncated to fit rather than blowing the
+    cap. Not a production path (caps are >> sentinel length) but the
+    invariant `len(result) <= max_chars` must hold universally.
+    """
+    patched = PatchSet.from_string("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,0 +1,1 @@\n+x\n")[0]
+    text = bound_diff_hunks_text(patched, max_lines=1, max_chars=10)  # type: ignore[arg-type]
+    assert len(text) <= 10

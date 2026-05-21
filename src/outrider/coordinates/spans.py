@@ -199,26 +199,34 @@ def bound_diff_hunks_text(
     is policy-free — the analyze layer pins the cap values per its
     spec §7 step 3c.
     """
+    truncation_sentinel = "\n[truncated: prompt budget cap reached]\n"
+    # Reserve sentinel-sized headroom so the marker stays inside
+    # max_chars when truncation fires. If max_chars is smaller than the
+    # sentinel, the sentinel itself is truncated to fit; the returned
+    # string never exceeds max_chars.
+    sentinel_room = min(len(truncation_sentinel), max_chars)
+    sentinel = truncation_sentinel[:sentinel_room]
+    content_budget = max_chars - sentinel_room
     pieces: list[str] = []
     total_chars = 0
     line_count = 0
-    truncation_sentinel = "\n[truncated: prompt budget cap reached]\n"
     for hunk in patched_file:
         for line in hunk:
             if line_count >= max_lines:
-                pieces.append(truncation_sentinel)
+                pieces.append(sentinel)
                 return "".join(pieces)
             line_text = str(line)
-            if total_chars + len(line_text) > max_chars:
-                # Truncate to remaining budget rather than silently emit
-                # empty bounded_hunks — a single >max_chars line at first
+            if total_chars + len(line_text) > content_budget:
+                # Truncate to remaining content budget (the sentinel space
+                # was reserved above) rather than silently emit empty
+                # bounded_hunks. A single >content_budget line at first
                 # iteration would otherwise return "" with no audit signal
                 # that the diff was lost, and the degraded LLM call would
                 # see "no changes to review" instead of "diff was too big."
-                remaining = max_chars - total_chars
+                remaining = content_budget - total_chars
                 if remaining > 0:
                     pieces.append(line_text[:remaining])
-                pieces.append(truncation_sentinel)
+                pieces.append(sentinel)
                 return "".join(pieces)
             pieces.append(line_text)
             total_chars += len(line_text)
