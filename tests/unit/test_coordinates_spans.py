@@ -603,6 +603,28 @@ diff --git a/src/foo.py b/src/foo.py
         assert len(text) <= cap, f"line-cap fired with cap={cap}, result len={len(text)}"
 
 
+def test_bound_diff_hunks_text_content_uses_full_max_chars_when_no_truncation() -> None:
+    """Content should use the FULL `max_chars` budget when no truncation
+    fires. Previously the impl pre-reserved sentinel space, lowering the
+    real cap by ~46 chars even when content would have fit. CodeRabbit
+    flagged this as premature truncation.
+    """
+    # Patch where the entire text is slightly under max_chars (no
+    # truncation should fire). Verify the sentinel does NOT appear.
+    text = """\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1,1 +1,2 @@
+ keep
++added
+"""
+    patched = PatchSet.from_string(text)[0]
+    full = bound_diff_hunks_text(patched, max_lines=100, max_chars=10_000)  # type: ignore[arg-type]
+    # Sentinel absent when no truncation.
+    assert "[truncated:" not in full
+
+
 def test_bound_diff_hunks_text_rejects_negative_max_chars() -> None:
     """Public helper: a negative `max_chars` makes the cap contract
     nonsensical. The sentinel/headroom math assumes non-negative bounds;

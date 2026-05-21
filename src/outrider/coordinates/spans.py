@@ -254,34 +254,42 @@ def bound_diff_hunks_text(
             f"bound_diff_hunks_text: max_chars must be non-negative, got {max_chars}"
         )
     truncation_sentinel = "\n[truncated: prompt budget cap reached]\n"
-    # Reserve sentinel-sized headroom so the marker stays inside
-    # max_chars when truncation fires. If max_chars is smaller than the
-    # sentinel, the sentinel itself is truncated to fit; the returned
-    # string never exceeds max_chars.
-    sentinel_room = min(len(truncation_sentinel), max_chars)
-    sentinel = truncation_sentinel[:sentinel_room]
-    content_budget = max_chars - sentinel_room
+    # `max_chars` is the hard cap on the returned string. Content uses
+    # the full budget; the sentinel is fitted into whatever room is left
+    # at truncation-time (truncated itself if necessary). When no
+    # truncation fires, the sentinel doesn't appear at all and content
+    # gets the full `max_chars`.
     pieces: list[str] = []
     total_chars = 0
     line_count = 0
+
+    def _append_sentinel_and_return() -> str:
+        remaining = max_chars - total_chars
+        if remaining > 0:
+            sentinel = truncation_sentinel[:remaining]
+            pieces.append(sentinel)
+        return "".join(pieces)
+
     for hunk in patched_file:
         for line in hunk:
             if line_count >= max_lines:
-                pieces.append(sentinel)
-                return "".join(pieces)
+                return _append_sentinel_and_return()
             line_text = str(line)
-            if total_chars + len(line_text) > content_budget:
-                # Truncate to remaining content budget (the sentinel space
-                # was reserved above) rather than silently emit empty
-                # bounded_hunks. A single >content_budget line at first
-                # iteration would otherwise return "" with no audit signal
-                # that the diff was lost, and the degraded LLM call would
-                # see "no changes to review" instead of "diff was too big."
-                remaining = content_budget - total_chars
+            if total_chars + len(line_text) > max_chars:
+                # Fit as much of the truncated line as possible while
+                # leaving room for the full sentinel. If the remaining
+                # budget is smaller than the sentinel, line content
+                # yields to the sentinel — the marker IS the audit signal
+                # that truncation happened, so preserving it beats one
+                # more partial line of content.
+                remaining = max_chars - total_chars
                 if remaining > 0:
-                    pieces.append(line_text[:remaining])
-                pieces.append(sentinel)
-                return "".join(pieces)
+                    marker_room = min(len(truncation_sentinel), remaining)
+                    line_room = remaining - marker_room
+                    if line_room > 0:
+                        pieces.append(line_text[:line_room])
+                        total_chars += line_room
+                return _append_sentinel_and_return()
             pieces.append(line_text)
             total_chars += len(line_text)
             line_count += 1

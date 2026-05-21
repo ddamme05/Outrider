@@ -85,19 +85,19 @@ causes the proposal to be rejected with audit reason
 
 ## Evidence tier (proof rules)
 
-Pick exactly one value for `evidence_tier`. Each tier carries different
-admission rules:
+Pick exactly one value for `evidence_tier`. V1 admits two tiers:
 
 - `observed` — a tree-sitter query in our registry matched a structural
   pattern. You MUST cite a real `query_match_id` from the pre-supplied
   registry set below; a fabricated id causes rejection with reason
   "query_match_id_not_in_registry".
-- `inferred` — a deterministic walk through our import/call/symbol
-  registry resolves the steps in `trace_path`. The trace resolver
-  validates each step; unwalkable steps cause rejection with reason
-  "trace_path_not_admissible".
 - `judged` — your own interpretation; no structural artifact required.
-  Use this for findings without an available query match or trace walk.
+  Use this when you cannot cite a registry query match.
+
+Do NOT emit `evidence_tier="inferred"` in V1. The trace resolver lands
+in a future spec; until then, every `inferred` proposal is rejected
+with `trace_path_not_admissible`. Pick `judged` for cross-file or
+walk-derived reasoning.
 
 Failed admission DROPS the proposal — it does not downgrade to a lower
 tier. Pick `judged` upfront if you cannot cite structural evidence.
@@ -114,7 +114,7 @@ are illustrative and must be replaced with real values.
   "findings": [
     {
       "finding_type": "<enum value>",
-      "evidence_tier": "<observed|inferred|judged>",
+      "evidence_tier": "<observed|judged>",
       "query_match_id": "<id from registry, or null>",
       "trace_path": null,
       "title": "<short summary, ≤120 chars>",
@@ -131,8 +131,8 @@ are illustrative and must be replaced with real values.
 Field semantics:
 - `query_match_id`: a string id from the registry above when
   `evidence_tier="observed"`; `null` otherwise.
-- `trace_path`: an array of step strings when `evidence_tier="inferred"`;
-  `null` otherwise.
+- `trace_path`: always `null` in V1 (the `inferred` tier that consumes
+  it lands with the trace-node spec).
 - `span.byte_start` / `span.byte_end`: integer UTF-8 byte offsets into
   the file. `byte_start` must be less than `byte_end`.
 - `trace_candidates`: an array (possibly empty) of `{candidate_path_raw,

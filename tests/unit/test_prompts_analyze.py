@@ -161,6 +161,24 @@ def test_system_prompt_documents_all_evidence_tiers() -> None:
         )
 
 
+def test_system_prompt_forbids_inferred_in_v1() -> None:
+    """V1 admission stub auto-rejects every `inferred` proposal with
+    `trace_path_not_admissible` (parser §6 step 4, deferred until the
+    trace-node spec lands). Telling the model to emit `inferred` would
+    burn per-file budget on guaranteed-reject calls. Pin the prohibition
+    so a future prompt edit that silently re-permits inferred — before
+    the trace resolver actually exists — fails this test rather than
+    inflating rejection events in production.
+    """
+    # Three load-bearing signals in the prompt:
+    # 1. The output-shape enum union DOES NOT list inferred as an option.
+    # 2. The clean prompt has an explicit "Do NOT emit inferred" sentence.
+    # 3. The degraded-mode reminder continues to say `inferred` is rejected.
+    assert "<observed|judged>" in SYSTEM_PROMPT_INVARIANTS
+    assert "<observed|inferred|judged>" not in SYSTEM_PROMPT_INVARIANTS
+    assert 'Do NOT emit `evidence_tier="inferred"`' in SYSTEM_PROMPT_INVARIANTS
+
+
 def test_system_prompt_prohibits_severity_proposal() -> None:
     """Per `severity-set-by-policy`, the model must NEVER propose
     severity — the deterministic table assigns it. The prompt must

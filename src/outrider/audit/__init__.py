@@ -12,12 +12,15 @@ contracts atomically per `DECISIONS.md#016`: `LLMExchangePersister`
 from outrider.audit.config import RetentionSettings
 from outrider.audit.events import (
     AgentTransitionEvent,
+    AnalyzeCompletedEvent,
+    AnalyzeResponseRejectedEvent,
     AuditEvent,
     AuditEventAdapter,
     AuditEventBase,
     ContextManifestEntry,
     FileExaminationEvent,
     FindingEvent,
+    FindingProposalRejectedEvent,
     HITLDecisionEvent,
     HITLRequestEvent,
     LLMCallEvent,
@@ -39,10 +42,13 @@ from outrider.audit.persister import (
     AuditPersisterSchemaInvariantError,
     FieldDigest,
 )
-from outrider.audit.sinks import PhaseEventSink
+from outrider.audit.sinks import AnalyzeEventSink, FileExaminationSink, PhaseEventSink
 
 __all__ = [
     "AgentTransitionEvent",
+    "AnalyzeCompletedEvent",
+    "AnalyzeEventSink",
+    "AnalyzeResponseRejectedEvent",
     "AuditEvent",
     "AuditEventAdapter",
     "AuditEventBase",
@@ -58,7 +64,9 @@ __all__ = [
     "FieldDigest",
     "METADATA_ONLY_EXCEPTION_TYPES",
     "FileExaminationEvent",
+    "FileExaminationSink",
     "FindingEvent",
+    "FindingProposalRejectedEvent",
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
