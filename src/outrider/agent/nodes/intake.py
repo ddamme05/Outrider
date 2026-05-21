@@ -784,11 +784,25 @@ async def _set_review_status(
 def _merge_skip_reasons(base: SkipReason | None, head: SkipReason | None) -> SkipReason | None:
     """Merge two-side skip reasons for `modified` / `renamed` branches.
 
-    Prefer `BINARY` over any other reason when EITHER side reports it.
-    A naive `base or head` short-circuit would let a concurrent budget
-    rejection on one side (`OVERSIZED`) mask the binary-content signal
-    on the other — misleading the operator who needs to know the file
-    was content-rejected, not budget-pressured. Returns `None` when
+    Precedence rule (narrow by design):
+
+    1. `BINARY` from EITHER side wins. Symmetric — `(BINARY, X)` and
+       `(X, BINARY)` both return `BINARY`. The rule preserves the
+       stronger content-admission fact (intake refused to decode this
+       file's bytes) over the weaker timing fact (the other side hit
+       a concurrent budget rejection), so audit-stream readers and
+       dashboard projections see the content-truth signal rather than
+       being misled into thinking the budget was the cause.
+    2. All other shapes fall through to `base or head` — first
+       non-None wins, no implicit priority among non-BINARY values.
+
+    Future `SkipReason` additions do NOT inherit a precedence position
+    automatically. If a new value semantically should win over another
+    in this two-fetch merge, the precedence chain in this function
+    must be extended explicitly (with a citation of the
+    `DECISIONS.md#018` amendment that authorizes the new value); a
+    silent "the new value sorts first" would be the exact class of
+    bug this helper was extracted to prevent. Returns `None` when
     both sides decoded cleanly.
     """
     if base == SkipReason.BINARY or head == SkipReason.BINARY:

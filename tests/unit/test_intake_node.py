@@ -590,6 +590,90 @@ async def test_per_file_malformed_utf8_emits_skip_not_corruption() -> None:
 
 
 # ===========================================================================
+# `_merge_skip_reasons` precedence — direct unit tests
+# Per `DECISIONS.md#018` Amended 2026-05-21: `BINARY` wins symmetrically
+# over `OVERSIZED` (and any other non-None value) in two-fetch merges so
+# a concurrent budget rejection on one side doesn't mask the content-
+# truth signal on the other. The naive `a or b` short-circuit would
+# leak budget-pressure timing into the audit stream as the apparent
+# cause.
+# ===========================================================================
+
+
+def test_merge_skip_reasons_both_none_returns_none() -> None:
+    """Both sides decoded cleanly — no skip."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+
+    assert _merge_skip_reasons(None, None) is None
+
+
+def test_merge_skip_reasons_binary_base_only() -> None:
+    """`(BINARY, None)` → BINARY."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(SkipReason.BINARY, None) is SkipReason.BINARY
+
+
+def test_merge_skip_reasons_binary_head_only() -> None:
+    """`(None, BINARY)` → BINARY. Symmetric to base-only."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(None, SkipReason.BINARY) is SkipReason.BINARY
+
+
+def test_merge_skip_reasons_binary_wins_over_oversized_base() -> None:
+    """`(BINARY, OVERSIZED)` → BINARY. Pins the precedence rule:
+    content-admission fact wins over concurrent budget timing fact.
+    Without this, an `or` short-circuit on `(BINARY, OVERSIZED)` would
+    return BINARY by luck, but `(OVERSIZED, BINARY)` would return
+    OVERSIZED — non-deterministic under TaskGroup ordering."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(SkipReason.BINARY, SkipReason.OVERSIZED) is SkipReason.BINARY
+
+
+def test_merge_skip_reasons_binary_wins_over_oversized_head() -> None:
+    """`(OVERSIZED, BINARY)` → BINARY. The symmetric case — this is the
+    interleaving the `or` short-circuit got wrong before the fix.
+    `test_modified_file_releases_clean_side_when_other_side_binary`
+    exercised exactly this path under a monkeypatched 27-byte cap."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(SkipReason.OVERSIZED, SkipReason.BINARY) is SkipReason.BINARY
+
+
+def test_merge_skip_reasons_oversized_base_only_falls_through() -> None:
+    """`(OVERSIZED, None)` → OVERSIZED. No BINARY signal anywhere; the
+    fallthrough first-non-None rule selects the only non-None value."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(SkipReason.OVERSIZED, None) is SkipReason.OVERSIZED
+
+
+def test_merge_skip_reasons_oversized_head_only_falls_through() -> None:
+    """`(None, OVERSIZED)` → OVERSIZED."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(None, SkipReason.OVERSIZED) is SkipReason.OVERSIZED
+
+
+def test_merge_skip_reasons_oversized_both_sides_returns_oversized() -> None:
+    """`(OVERSIZED, OVERSIZED)` → OVERSIZED. Both sides hit the budget;
+    the report is the budget. Documents the "no implicit priority among
+    non-BINARY values" half of the precedence rule."""
+    from outrider.agent.nodes.intake import _merge_skip_reasons
+    from outrider.ast_facts.models import SkipReason
+
+    assert _merge_skip_reasons(SkipReason.OVERSIZED, SkipReason.OVERSIZED) is SkipReason.OVERSIZED
+
+
+# ===========================================================================
 # `_ByteBudget` atomicity (audit-the-audit round MEDIUM)
 # ===========================================================================
 
