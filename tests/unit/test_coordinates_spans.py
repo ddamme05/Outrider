@@ -21,6 +21,7 @@ from outrider.coordinates import (
     patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
+    span_is_nonempty,
     span_to_line_range,
     span_within_degraded_context,
     span_within_file,
@@ -79,6 +80,17 @@ def test_span_within_scope_unit_empty_span_inside() -> None:
 # ---------------------------------------------------------------------------
 # span_within_file
 # ---------------------------------------------------------------------------
+
+
+def test_span_is_nonempty_strict_inequality() -> None:
+    """`span_is_nonempty` returns True iff `byte_start < byte_end`. The
+    `Span` carrier admits `byte_end >= byte_start`; this helper carries
+    the parser's stricter rule (a zero-width finding doesn't anchor to
+    bytes) at the coordinates boundary.
+    """
+    assert span_is_nonempty(Span(byte_start=10, byte_end=11)) is True
+    assert span_is_nonempty(Span(byte_start=10, byte_end=10)) is False
+    assert span_is_nonempty(Span(byte_start=0, byte_end=0)) is False
 
 
 def test_span_within_file_exact_end_admitted() -> None:

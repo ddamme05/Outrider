@@ -41,6 +41,7 @@ from outrider.audit.events import compute_finding_content_hash
 from outrider.coordinates import validate_diff_path
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
+    span_is_nonempty,
     span_to_line_range,
     span_within_file,
     span_within_scope_unit,
@@ -369,7 +370,7 @@ def parse_analyze_response(
         # finding anchors to no bytes; the rejection_detail prefix
         # `zero_width:` distinguishes it from EOF-overflow on the same
         # rejection reason.
-        is_nonempty_span = raw_proposal.span.byte_start < raw_proposal.span.byte_end
+        is_nonempty_span = span_is_nonempty(raw_proposal.span)
         if degraded_mode:
             # Degraded outcomes have no scope-unit context (the file
             # didn't parse, or had has_error nodes in changed regions).
