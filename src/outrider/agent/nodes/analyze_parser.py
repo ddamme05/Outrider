@@ -50,13 +50,14 @@ from typing import TYPE_CHECKING, Final, Literal
 from pydantic import ValidationError
 
 from outrider.policy.canonical import compute_proposal_hash, compute_response_hash
+from outrider.policy.findings import EvidenceTier
+from outrider.policy.severity import FindingType
 from outrider.schemas.llm.analyze import AnalyzeResponseRaw
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from outrider.ast_facts.models import ScopeUnit
-    from outrider.policy.findings import EvidenceTier
     from outrider.schemas import ReviewFinding, TraceCandidate
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
@@ -232,25 +233,104 @@ def parse_analyze_response(
             ),
         )
 
-    # Per-proposal admission lands incrementally. Each iteration must
-    # decide the proposal's fate (admitted → ReviewFinding; rejected →
-    # ProposalRejection). Until the admission checks land, the loop
-    # raises NotImplementedError with the proposal index so the next
-    # commit's insertion point is obvious. The empty-findings happy
-    # path returns the zero-counter result without entering the loop.
-    for idx, _raw_proposal in enumerate(raw.findings):
+    # Per-proposal admission. Implementation order swaps spec §6 step
+    # 2 (finding_type) and step 3 (evidence_tier) — evidence_tier MUST
+    # run first so the bidirectional cross-field validator on the
+    # lifted `FindingProposalRejectedEvent` holds: `claimed_evidence_tier
+    # is None` iff `rejection_reason == "evidence_tier_not_in_enum"`.
+    # Spec divergence recorded for Actual Outcome.
+    proposal_rejections: list[ProposalRejection] = []
+    n_proposals_seen = 0
+    for idx, raw_proposal in enumerate(raw.findings):
+        n_proposals_seen += 1
+
+        # Step 3: evidence_tier enum admission (runs first per the
+        # bidirectional-validator requirement above).
+        try:
+            evidence_tier = EvidenceTier(raw_proposal.evidence_tier)
+        except ValueError:
+            proposal_rejections.append(
+                _build_proposal_rejection(
+                    raw_proposal,
+                    file_path=file_path,
+                    rejection_reason="evidence_tier_not_in_enum",
+                    rejection_detail="no_near_enum_match",
+                    claimed_evidence_tier=None,
+                )
+            )
+            continue
+
+        # Step 2: finding_type enum admission (runs second so
+        # claimed_evidence_tier carries the parsed enum value).
+        try:
+            FindingType(raw_proposal.finding_type)
+        except ValueError:
+            proposal_rejections.append(
+                _build_proposal_rejection(
+                    raw_proposal,
+                    file_path=file_path,
+                    rejection_reason="finding_type_not_in_enum",
+                    rejection_detail="no_near_enum_match",
+                    claimed_evidence_tier=evidence_tier,
+                )
+            )
+            continue
+
+        # Step 4: producer admission for OBSERVED / INFERRED. JUDGED
+        # skips the producer check (model can claim JUDGED unilaterally;
+        # carries no structural artifact).
+        if evidence_tier == EvidenceTier.OBSERVED:
+            claimed_id = raw_proposal.query_match_id
+            if claimed_id is None or claimed_id not in query_match_id_set:
+                proposal_rejections.append(
+                    _build_proposal_rejection(
+                        raw_proposal,
+                        file_path=file_path,
+                        rejection_reason="query_match_id_not_in_registry",
+                        # Raw schema constrains `query_match_id` to
+                        # `[A-Za-z0-9_./:-]+` with max_length=256, so
+                        # the value is safe to record verbatim — it's
+                        # a structural identifier, not free-form text.
+                        rejection_detail=claimed_id or "<absent>",
+                        claimed_evidence_tier=evidence_tier,
+                    )
+                )
+                continue
+        elif evidence_tier == EvidenceTier.INFERRED:
+            # V1 stub per spec §6 step 4: until the trace-node spec
+            # lands the resolver, every INFERRED is `Unwalkable` and
+            # rejected. Tracked as Q5 in spec "Open design questions".
+            proposal_rejections.append(
+                _build_proposal_rejection(
+                    raw_proposal,
+                    file_path=file_path,
+                    rejection_reason="trace_path_not_admissible",
+                    rejection_detail="INFERRED tier deferred to trace-node spec (V1 stub)",
+                    claimed_evidence_tier=evidence_tier,
+                )
+            )
+            continue
+        # JUDGED falls through to step 5 (span admission).
+
+        # Steps 5+ (span admission, admitted-layer construction,
+        # ReviewFinding emission, TraceCandidate collection) land in
+        # commits 4 and 5.
         raise NotImplementedError(
-            f"parse_analyze_response: admission for findings[{idx}] not yet implemented"
+            f"parse_analyze_response: span admission for findings[{idx}] "
+            f"not yet implemented (proposal passed enum + producer admission)"
         )
+
+    # Every proposal was rejected (or `raw.findings` was empty). Build
+    # the all-rejected result; admitted_findings stays empty.
     return ParserResult(
         admitted_findings=(),
         trace_candidates=(),
-        proposal_rejections=(),
+        proposal_rejections=tuple(proposal_rejections),
         response_rejection=None,
         counters=ParserCounters(
-            n_proposals_seen=0,
+            n_proposals_seen=n_proposals_seen,
             n_findings_emitted=0,
-            n_proposals_rejected=0,
+            n_proposals_rejected=len(proposal_rejections),
             n_responses_rejected=0,
             n_trace_candidates_emitted=0,
         ),
