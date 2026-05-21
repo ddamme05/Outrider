@@ -49,17 +49,27 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import ValidationError
 
-from outrider.coordinates.spans import span_within_file, span_within_scope_unit
-from outrider.policy.canonical import compute_proposal_hash, compute_response_hash
+from outrider.audit.events import compute_finding_content_hash
+from outrider.coordinates.spans import (
+    span_to_line_range,
+    span_within_file,
+    span_within_scope_unit,
+)
+from outrider.policy.canonical import (
+    compute_candidate_id,
+    compute_proposal_hash,
+    compute_response_hash,
+)
+from outrider.policy.dimensions import FINDING_TYPE_TO_DIMENSION
 from outrider.policy.findings import EvidenceTier
-from outrider.policy.severity import FindingType
+from outrider.policy.severity import SEVERITY_POLICY, FindingType
+from outrider.schemas import ReviewFinding, TraceCandidate
 from outrider.schemas.llm.analyze import AnalyzeResponseRaw
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from outrider.ast_facts.models import ScopeUnit
-    from outrider.schemas import ReviewFinding, TraceCandidate
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal at
@@ -240,10 +250,39 @@ def parse_analyze_response(
     # lifted `FindingProposalRejectedEvent` holds: `claimed_evidence_tier
     # is None` iff `rejection_reason == "evidence_tier_not_in_enum"`.
     # Spec divergence recorded for Actual Outcome.
+    admitted_findings: list[ReviewFinding] = []
     proposal_rejections: list[ProposalRejection] = []
+    trace_candidates: list[TraceCandidate] = []
     n_proposals_seen = 0
-    for idx, raw_proposal in enumerate(raw.findings):
+    for _idx, raw_proposal in enumerate(raw.findings):
         n_proposals_seen += 1
+
+        # Pre-compute `proposal_hash` once per iteration. The same hash
+        # feeds the rejection payload (if any) AND the trace-candidate
+        # collection's `source_proposal_hash` — the audit-trail join
+        # between rejection events and trace candidates depends on
+        # both using the identical hash value.
+        proposal_hash = compute_proposal_hash(
+            source_file_path=file_path,
+            finding_type=raw_proposal.finding_type,
+            evidence_tier=raw_proposal.evidence_tier,
+            query_match_id=raw_proposal.query_match_id,
+            trace_path=raw_proposal.trace_path,
+            title=raw_proposal.title,
+            description=raw_proposal.description,
+            evidence=raw_proposal.evidence,
+            byte_start=raw_proposal.span.byte_start,
+            byte_end=raw_proposal.span.byte_end,
+        )
+
+        # Trace candidates are collected from BOTH admitted and
+        # proposal-level-rejected raw proposals (spec §6 step 10) so
+        # a rejected JUDGED-claim might still surface a legitimate
+        # cross-file signal. Pre-compute here and `.extend(...)` on
+        # whichever branch the iteration takes.
+        proposal_trace_candidates = _collect_trace_candidates_for(
+            raw_proposal, proposal_hash=proposal_hash
+        )
 
         # Step 3: evidence_tier enum admission (runs first per the
         # bidirectional-validator requirement above).
@@ -253,28 +292,32 @@ def parse_analyze_response(
             proposal_rejections.append(
                 _build_proposal_rejection(
                     raw_proposal,
+                    proposal_hash=proposal_hash,
                     file_path=file_path,
                     rejection_reason="evidence_tier_not_in_enum",
                     rejection_detail="no_near_enum_match",
                     claimed_evidence_tier=None,
                 )
             )
+            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         # Step 2: finding_type enum admission (runs second so
         # claimed_evidence_tier carries the parsed enum value).
         try:
-            FindingType(raw_proposal.finding_type)
+            finding_type = FindingType(raw_proposal.finding_type)
         except ValueError:
             proposal_rejections.append(
                 _build_proposal_rejection(
                     raw_proposal,
+                    proposal_hash=proposal_hash,
                     file_path=file_path,
                     rejection_reason="finding_type_not_in_enum",
                     rejection_detail="no_near_enum_match",
                     claimed_evidence_tier=evidence_tier,
                 )
             )
+            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         # Step 4: producer admission for OBSERVED / INFERRED. JUDGED
@@ -286,6 +329,7 @@ def parse_analyze_response(
                 proposal_rejections.append(
                     _build_proposal_rejection(
                         raw_proposal,
+                        proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="query_match_id_not_in_registry",
                         # Raw schema constrains `query_match_id` to
@@ -296,6 +340,7 @@ def parse_analyze_response(
                         claimed_evidence_tier=evidence_tier,
                     )
                 )
+                trace_candidates.extend(proposal_trace_candidates)
                 continue
         elif evidence_tier == EvidenceTier.INFERRED:
             # V1 stub per spec §6 step 4: until the trace-node spec
@@ -304,12 +349,14 @@ def parse_analyze_response(
             proposal_rejections.append(
                 _build_proposal_rejection(
                     raw_proposal,
+                    proposal_hash=proposal_hash,
                     file_path=file_path,
                     rejection_reason="trace_path_not_admissible",
                     rejection_detail="INFERRED tier deferred to trace-node spec (V1 stub)",
                     claimed_evidence_tier=evidence_tier,
                 )
             )
+            trace_candidates.extend(proposal_trace_candidates)
             continue
         # JUDGED falls through to step 5 (span admission).
 
@@ -323,6 +370,7 @@ def parse_analyze_response(
                 proposal_rejections.append(
                     _build_proposal_rejection(
                         raw_proposal,
+                        proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="span_outside_file",
                         rejection_detail=(
@@ -331,6 +379,7 @@ def parse_analyze_response(
                         claimed_evidence_tier=evidence_tier,
                     )
                 )
+                trace_candidates.extend(proposal_trace_candidates)
                 continue
         else:
             # Clean outcome — span must land inside one of the file's
@@ -342,6 +391,7 @@ def parse_analyze_response(
                 proposal_rejections.append(
                     _build_proposal_rejection(
                         raw_proposal,
+                        proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="span_outside_scope_unit",
                         rejection_detail=(
@@ -350,29 +400,103 @@ def parse_analyze_response(
                         claimed_evidence_tier=evidence_tier,
                     )
                 )
+                trace_candidates.extend(proposal_trace_candidates)
                 continue
 
-        # Steps 6-10 (admitted-layer construction, ReviewFinding
-        # emission, TraceCandidate collection, counters) land in
-        # commit 5.
-        raise NotImplementedError(
-            f"parse_analyze_response: ReviewFinding construction for findings[{idx}] "
-            f"not yet implemented (proposal passed every admission check)"
-        )
+        # Steps 6-9: admission succeeded; construct `ReviewFinding`.
+        # `line_start`/`line_end` translate via `coordinates.span_to_line_range`
+        # (coordinate translation lives in `coordinates/` per
+        # `coordinates-module-is-sole-translator`). The byte→line
+        # conversion may raise `CoordinateError` if the span points
+        # past EOF — defense-in-depth, since step-5 admission already
+        # caught EOF-overflow spans. If it does fire, we record a
+        # `schema_construction_failed` rejection (spec §6 step 8
+        # fallback) rather than crashing the entire pass.
+        try:
+            line_start, line_end = span_to_line_range(raw_proposal.span, source=file_content)
+        except Exception as exc:  # noqa: BLE001 — defensive boundary
+            proposal_rejections.append(
+                _build_proposal_rejection(
+                    raw_proposal,
+                    proposal_hash=proposal_hash,
+                    file_path=file_path,
+                    rejection_reason="schema_construction_failed",
+                    rejection_detail=f"{type(exc).__name__} x1",
+                    claimed_evidence_tier=evidence_tier,
+                )
+            )
+            trace_candidates.extend(proposal_trace_candidates)
+            continue
 
-    # Every proposal was rejected (or `raw.findings` was empty). Build
-    # the all-rejected result; admitted_findings stays empty.
+        # Severity from `SEVERITY_POLICY[finding_type]` per
+        # `severity-set-by-policy`. Dimension from
+        # `FINDING_TYPE_TO_DIMENSION[finding_type]` per
+        # `evidence-tier-schema-enforced` + the dimensions table. Both
+        # lookups are total (totality is pinned by
+        # `policy.dimensions.verify_lockstep` at import time) — a
+        # missing key here means the lockstep guard was bypassed,
+        # which is a load-bearing module-load assertion failure, not
+        # a parser fallback.
+        try:
+            finding = ReviewFinding(
+                review_id=review_id,
+                installation_id=installation_id,
+                policy_version=active_policy_version,
+                finding_type=finding_type,
+                dimension=FINDING_TYPE_TO_DIMENSION[finding_type],
+                severity=SEVERITY_POLICY[finding_type],
+                evidence_tier=evidence_tier,
+                file_path=file_path,
+                line_start=line_start,
+                line_end=line_end,
+                title=raw_proposal.title,
+                description=raw_proposal.description,
+                evidence=raw_proposal.evidence,
+                query_match_id=raw_proposal.query_match_id,
+                trace_path=raw_proposal.trace_path,
+                content_hash=compute_finding_content_hash(
+                    file_path=file_path,
+                    line_start=line_start,
+                    line_end=line_end,
+                    finding_type=finding_type,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive boundary
+            # Spec §6 step 8 fallback: a Pydantic `ValidationError`
+            # (or any unexpected constructor failure) after passing
+            # every parser step is structurally unexpected — fold it
+            # as `schema_construction_failed` so the rejection is
+            # auditable rather than crashing the whole pass.
+            proposal_rejections.append(
+                _build_proposal_rejection(
+                    raw_proposal,
+                    proposal_hash=proposal_hash,
+                    file_path=file_path,
+                    rejection_reason="schema_construction_failed",
+                    rejection_detail=f"{type(exc).__name__} x1",
+                    claimed_evidence_tier=evidence_tier,
+                )
+            )
+            trace_candidates.extend(proposal_trace_candidates)
+            continue
+
+        admitted_findings.append(finding)
+        # Step 10: collect trace candidates from THIS admitted proposal.
+        # Same shape as the rejection branches above; only the
+        # accumulator updates differ.
+        trace_candidates.extend(proposal_trace_candidates)
+
     return ParserResult(
-        admitted_findings=(),
-        trace_candidates=(),
+        admitted_findings=tuple(admitted_findings),
+        trace_candidates=tuple(trace_candidates),
         proposal_rejections=tuple(proposal_rejections),
         response_rejection=None,
         counters=ParserCounters(
             n_proposals_seen=n_proposals_seen,
-            n_findings_emitted=0,
+            n_findings_emitted=len(admitted_findings),
             n_proposals_rejected=len(proposal_rejections),
             n_responses_rejected=0,
-            n_trace_candidates_emitted=0,
+            n_trace_candidates_emitted=len(trace_candidates),
         ),
     )
 
@@ -396,6 +520,7 @@ def _hash_claimed_finding_type(raw_value: str) -> str:
 def _build_proposal_rejection(
     raw: AnalyzeFindingProposalRaw,
     *,
+    proposal_hash: str,
     file_path: str,
     rejection_reason: _ProposalRejectionReason,
     rejection_detail: str,
@@ -403,31 +528,14 @@ def _build_proposal_rejection(
 ) -> ProposalRejection:
     """Construct a `ProposalRejection` from a raw proposal + admission outcome.
 
-    Computes the identity-bearing fields shared by every rejection
-    branch (proposal_hash via the canonical wrapper; claimed
-    finding-type hash + length per `DECISIONS.md#014`). The caller
-    supplies the branch-specific fields (reason, detail, claimed
-    evidence-tier where parsed).
-
-    `proposal_hash` runs through `policy.canonical.compute_proposal_hash`
-    so `source_file_path` canonicalizes via `coordinates.validate_diff_path`
-    before folding (alias-equivalence per DECISIONS#022), and
-    `trace_path=None`/`()` normalize to the same logical state. Caller
-    MUST pass `file_path` already canonicalized at intake — the wrapper
-    runs it through `validate_diff_path` again as defense-in-depth.
+    Caller pre-computes `proposal_hash` via `compute_proposal_hash`
+    once per iteration (the same hash feeds
+    `_collect_trace_candidates_for`'s `source_proposal_hash` so the
+    rejection-event-↔-trace-candidate join holds). The helper composes
+    the rejection payload from the raw + branch-specific fields
+    (reason, detail, claimed evidence-tier where parsed) and the
+    `claimed_finding_type_hash` / `_len` per `DECISIONS.md#014`.
     """
-    proposal_hash = compute_proposal_hash(
-        source_file_path=file_path,
-        finding_type=raw.finding_type,
-        evidence_tier=raw.evidence_tier,
-        query_match_id=raw.query_match_id,
-        trace_path=raw.trace_path,
-        title=raw.title,
-        description=raw.description,
-        evidence=raw.evidence,
-        byte_start=raw.span.byte_start,
-        byte_end=raw.span.byte_end,
-    )
     return ProposalRejection(
         proposal_hash=proposal_hash,
         file_path=file_path,
@@ -437,6 +545,45 @@ def _build_proposal_rejection(
         rejection_reason=rejection_reason,
         rejection_detail=rejection_detail,
     )
+
+
+def _collect_trace_candidates_for(
+    raw: AnalyzeFindingProposalRaw,
+    *,
+    proposal_hash: str,
+) -> list[TraceCandidate]:
+    """Build the `TraceCandidate` list from a raw proposal's
+    `trace_candidates`. Each candidate's `candidate_id` is content-
+    derived via `compute_candidate_id`, `source_proposal_hash` is the
+    parent proposal's hash (same value whether the parent was admitted
+    or proposal-level-rejected — the audit-trail join is preserved
+    across both outcomes per spec §6 step 10).
+
+    Returns a list (caller extends its accumulator). Response-level
+    rejections never reach this helper because no proposals exist at
+    that point.
+    """
+    # Raw layer carries `candidate_path_raw` (model's unvalidated
+    # claimed path); admitted `TraceCandidate.candidate_path` runs the
+    # value through `validate_diff_path` via its field validator. The
+    # rename at the layer boundary is what makes a downstream typed
+    # raw-vs-admitted variable mix-up fail at static-type / Pydantic
+    # construction time rather than silently.
+    out: list[TraceCandidate] = []
+    for raw_cand in raw.trace_candidates:
+        out.append(
+            TraceCandidate(
+                candidate_id=compute_candidate_id(
+                    source_proposal_hash=proposal_hash,
+                    candidate_path=raw_cand.candidate_path_raw,
+                    reason=raw_cand.reason,
+                ),
+                source_proposal_hash=proposal_hash,
+                reason=raw_cand.reason,
+                candidate_path=raw_cand.candidate_path_raw,
+            )
+        )
+    return out
 
 
 # Max length matches `Field(max_length=500)` on
