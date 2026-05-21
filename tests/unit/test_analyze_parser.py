@@ -1,26 +1,16 @@
-"""Analyze parser scaffolding contract tests.
+"""Analyze parser contract + step-by-step behavior tests.
 
-Pins the §6 parser module's public surface BEFORE the admission flow
-lands. Subsequent implementation commits replace the
-`NotImplementedError` body with the spec's 10-step flow; the dataclass
-shapes + the `parse_analyze_response(...)` signature stay locked.
+Pins the §6 parser module: the public surface (frozen dataclasses +
+signatures) AND the admission flow as each step lands. Sections marked
+by spec §6 step number.
 
-Coverage:
-- Each frozen dataclass refuses positional unpacking and post-
-  construction mutation (swap-impossibility per the triage M1 rationale).
-- `ParserResult` carries the documented field set with the expected
-  types (admitted findings + trace candidates + proposal rejections +
-  optional response rejection + counters).
-- `ParserCounters` carries the documented counter set.
-- `ProposalRejection` and `ResponseRejection` carry the documented
-  payload sets (audit-context fields like `review_id` / `event_id` /
-  `timestamp` are deliberately ABSENT — added by the node body at
-  lift time).
-- `parse_analyze_response` has the documented signature: one
-  positional `response_text` arg + the documented keyword-only set.
-- Calling `parse_analyze_response` with valid kwargs raises
-  `NotImplementedError` with the documented message.
-- Module `__all__` exports the expected surfaces.
+Earlier scaffolding sections (frozen+slots discipline, signature pin,
+field sets, audit-context exclusion, module `__all__`) stay locked.
+The "parser admission flow not implemented" `NotImplementedError`
+guard from the scaffolding pass is replaced as steps 0+ land — current
+state implements step 0 (response parse + response-level rejection)
+and a NotImplementedError fence for non-empty findings until step 1
+(proposal iteration) lands.
 """
 
 import dataclasses
@@ -321,25 +311,159 @@ def test_parse_analyze_response_returns_parser_result() -> None:
     assert sig.return_annotation == "ParserResult"
 
 
-def test_parse_analyze_response_raises_not_implemented_at_scaffolding_stage() -> None:
-    """Until the admission flow lands, calling the parser raises
-    `NotImplementedError` with a stable message. The first
-    implementation commit deletes this test (or rewrites it to
-    exercise a real input)."""
-    with pytest.raises(NotImplementedError, match="parser admission flow not implemented"):
-        parse_analyze_response(
-            "irrelevant",
-            review_id=uuid4(),
-            installation_id=12345,
-            file_path="src/x.py",
-            file_content="",
-            file_byte_length=0,
-            included_scope_units=(),
-            query_match_id_set=frozenset(),
-            degraded_mode=False,
-            active_policy_version="1.0.0",
-            pass_index=0,
-        )
+# ---------------------------------------------------------------------------
+# Spec §6 step 0 — response parse + response-level rejection
+# ---------------------------------------------------------------------------
+
+
+def _call_parser(response_text: str, **overrides: object) -> ParserResult:
+    """Convenience: invoke `parse_analyze_response` with sane defaults
+    for the per-file kwargs that don't matter for step-0 tests. Overrides
+    supplied per-test."""
+    defaults: dict[str, object] = {
+        "review_id": uuid4(),
+        "installation_id": 12345,
+        "file_path": "src/x.py",
+        "file_content": "",
+        "file_byte_length": 0,
+        "included_scope_units": (),
+        "query_match_id_set": frozenset(),
+        "degraded_mode": False,
+        "active_policy_version": "1.0.0",
+        "pass_index": 0,
+    }
+    defaults.update(overrides)
+    return parse_analyze_response(response_text, **defaults)  # type: ignore[arg-type]
+
+
+def test_step0_malformed_json_returns_response_rejection() -> None:
+    """Raw response that isn't valid JSON at all fails
+    `AnalyzeResponseRaw.model_validate_json` with a JSON-decode error.
+    Parser must record the response-level rejection without raising."""
+    result = _call_parser("not even json {{{")
+    assert result.response_rejection is not None
+    assert result.response_rejection.rejection_reason == "raw_response_unparseable"
+    assert result.admitted_findings == ()
+    assert result.trace_candidates == ()
+    assert result.proposal_rejections == ()
+
+
+def test_step0_valid_json_wrong_shape_returns_response_rejection() -> None:
+    """Valid JSON but wrong shape (missing required `findings` key) also
+    fails parsing and routes to the response-rejection path."""
+    result = _call_parser('{"not_findings": []}')
+    assert result.response_rejection is not None
+    assert result.response_rejection.rejection_reason == "raw_response_unparseable"
+
+
+def test_step0_response_hash_is_full_text_not_truncated() -> None:
+    """`compute_response_hash` hashes the FULL response text (no
+    truncation cap) per the round-3 audit fix. Two responses that
+    differ only past 8 KiB still produce distinct hashes."""
+    import hashlib
+
+    response_text = "x" * 10000  # > 8 KiB; clearly malformed JSON too
+    result = _call_parser(response_text)
+    assert result.response_rejection is not None
+    expected = hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+    assert result.response_rejection.response_hash == expected
+
+
+def test_step0_response_rejection_file_path_matches_input() -> None:
+    """The rejection payload's `file_path` is the one analyze passed in
+    (already canonicalized at intake). Parser doesn't re-canonicalize."""
+    result = _call_parser("malformed", file_path="src/path/to/file.py")
+    assert result.response_rejection is not None
+    assert result.response_rejection.file_path == "src/path/to/file.py"
+
+
+def test_step0_rejection_detail_does_not_contain_response_text() -> None:
+    """Per `DECISIONS.md#014` point 1: audit rows must not carry user
+    code or prompt/completion content. The `rejection_detail` formatter
+    must NEVER include the response text. Send a response with a
+    distinctive sentinel and verify the sentinel does not appear."""
+    sentinel = "SENSITIVE_CONTENT_DO_NOT_LEAK_42"
+    result = _call_parser(f'{{"findings": [{{"evidence": "{sentinel}"}}]}}')
+    assert result.response_rejection is not None
+    detail = result.response_rejection.rejection_detail
+    assert sentinel not in detail, f"rejection_detail leaked response text. Detail: {detail!r}"
+
+
+def test_step0_rejection_detail_is_within_field_max_length() -> None:
+    """`AnalyzeResponseRejectedEvent.rejection_detail` is
+    `Field(max_length=500)`. The formatter must respect this even
+    when many errors fire — pathological case is a response with many
+    findings each carrying many invalid fields. Truncate with `"..."`
+    marker."""
+    # Construct a response with many findings, each missing many fields.
+    bogus_finding = (
+        '{"finding_type": null, "evidence_tier": null, "title": null, '
+        '"description": null, "evidence": null, "span": null}'
+    )
+    response = '{"findings": [' + ",".join([bogus_finding] * 50) + "]}"
+    result = _call_parser(response)
+    assert result.response_rejection is not None
+    assert len(result.response_rejection.rejection_detail) <= 500
+
+
+def test_step0_rejection_detail_uses_json_pointer_format() -> None:
+    """Format pin per spec §3: `findings[0].finding_type x1, ...`. An
+    index segment attaches to its parent with `[N]`; a field segment
+    joins with `.`. Pin the exact shape so the dashboard renderer can
+    parse it deterministically."""
+    # A response where findings[0] has a missing required field — produces
+    # an error with location ("findings", 0, "<field>").
+    result = _call_parser('{"findings": [{}]}')
+    assert result.response_rejection is not None
+    detail = result.response_rejection.rejection_detail
+    # At minimum, the format must show `findings[0].<something>` shape
+    assert "findings[0]" in detail, (
+        f"rejection_detail does not use JSON-pointer format. Got: {detail!r}"
+    )
+
+
+def test_step0_response_rejection_counters() -> None:
+    """On response-level rejection: every counter is zero except
+    `n_responses_rejected == 1`. The node body sums per-file counters
+    into the per-pass `AnalyzeCompletedEvent`."""
+    result = _call_parser("malformed")
+    assert result.counters.n_proposals_seen == 0
+    assert result.counters.n_findings_emitted == 0
+    assert result.counters.n_proposals_rejected == 0
+    assert result.counters.n_responses_rejected == 1
+    assert result.counters.n_trace_candidates_emitted == 0
+
+
+def test_step0_valid_empty_findings_returns_clean_zero_result() -> None:
+    """Valid JSON with `findings: []` is the trivial happy path —
+    parsing succeeded, no proposals to process, zero counters across
+    the board, no rejections."""
+    result = _call_parser('{"findings": []}')
+    assert result.response_rejection is None
+    assert result.admitted_findings == ()
+    assert result.trace_candidates == ()
+    assert result.proposal_rejections == ()
+    assert result.counters.n_proposals_seen == 0
+    assert result.counters.n_findings_emitted == 0
+    assert result.counters.n_proposals_rejected == 0
+    assert result.counters.n_responses_rejected == 0
+    assert result.counters.n_trace_candidates_emitted == 0
+
+
+def test_step0_valid_non_empty_findings_raises_not_implemented_until_step1() -> None:
+    """Step 1 (proposal iteration) is not yet implemented. A response
+    with non-empty findings must raise `NotImplementedError` rather
+    than silently shipping the partial step-0 result; the next commit
+    replaces this guard with the iteration body."""
+    # A response that's well-formed enough to parse but carries 1
+    # proposal — uses minimum required fields per AnalyzeFindingProposalRaw.
+    response = (
+        '{"findings": [{"finding_type": "sql_injection", '
+        '"evidence_tier": "JUDGED", "title": "t", "description": "d", '
+        '"evidence": "e", "span": {"byte_start": 0, "byte_end": 1}}]}'
+    )
+    with pytest.raises(NotImplementedError, match="proposal iteration not yet implemented"):
+        _call_parser(response)
 
 
 # ---------------------------------------------------------------------------
