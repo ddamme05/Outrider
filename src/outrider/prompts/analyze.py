@@ -104,8 +104,11 @@ tier. Pick `judged` upfront if you cannot cite structural evidence.
 
 ## Output shape
 
-Return exactly this JSON, nothing else. No markdown fences, no prose
-before or after. Output starts with `{` and ends with `}`.
+Return exactly one JSON object, nothing else. No markdown fences, no
+prose before or after. Output starts with `{` and ends with `}`. Every
+value must be valid JSON literally (`null`, a string, a number, an
+array, or another object) — placeholders like `<...>` in this example
+are illustrative and must be replaced with real values.
 
 {
   "findings": [
@@ -113,19 +116,28 @@ before or after. Output starts with `{` and ends with `}`.
       "finding_type": "<enum value>",
       "evidence_tier": "<observed|inferred|judged>",
       "query_match_id": "<id from registry, or null>",
-      "trace_path": ["<step>", "..."] | null,
+      "trace_path": null,
       "title": "<short summary, ≤120 chars>",
       "description": "<explanation, ≤1000 chars>",
       "evidence": "<verbatim quote from the code, ≤2000 chars>",
-      "span": {"byte_start": <int>, "byte_end": <int>},
+      "span": {"byte_start": 0, "byte_end": 0},
       "trace_candidates": [
-        {"candidate_path": "<repo-relative path>", "reason": "<text>"},
-        ...
+        {"candidate_path_raw": "<repo-relative path>", "reason": "<text>"}
       ]
-    },
-    ...
+    }
   ]
 }
+
+Field semantics:
+- `query_match_id`: a string id from the registry above when
+  `evidence_tier="observed"`; `null` otherwise.
+- `trace_path`: an array of step strings when `evidence_tier="inferred"`;
+  `null` otherwise.
+- `span.byte_start` / `span.byte_end`: integer UTF-8 byte offsets into
+  the file. `byte_start` must be less than `byte_end`.
+- `trace_candidates`: an array (possibly empty) of `{candidate_path_raw,
+  reason}` objects. The field name is `candidate_path_raw` — the
+  parser canonicalizes it to `candidate_path` after admission.
 
 Up to 50 findings per response (`AnalyzeResponseRaw.findings` is bounded
 at max_length=50). Up to 20 trace_candidates per finding.

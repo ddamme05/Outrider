@@ -207,6 +207,69 @@ def test_system_prompt_names_the_response_schema_top_level_key() -> None:
     assert '"findings"' in SYSTEM_PROMPT_INVARIANTS
 
 
+def test_system_prompt_trace_candidate_field_matches_raw_schema() -> None:
+    """Pin: the prompt's trace_candidates example uses
+    `candidate_path_raw`, not `candidate_path`.
+
+    `TraceCandidateProposalRaw` has `extra="forbid"` and requires the
+    `_raw` suffix; a model that follows the prompt literally and emits
+    `candidate_path` causes `AnalyzeResponseRaw.model_validate_json` to
+    reject the entire response.
+    """
+    assert "candidate_path_raw" in SYSTEM_PROMPT_INVARIANTS
+    # The bare (admitted-layer) field name must not appear as an object
+    # key in the example.
+    assert '"candidate_path":' not in SYSTEM_PROMPT_INVARIANTS
+
+
+def test_system_prompt_output_example_is_strict_json() -> None:
+    """The prompt says 'Return exactly this JSON' and shows an example.
+    The example must itself be strict JSON, or a model that follows it
+    literally produces unparseable output. Non-JSON union syntax like
+    `["step", "..."] | null` had previously slipped in.
+    """
+    # Anchor on the multi-line `{\n  "findings"` pattern so inline
+    # `{` characters in prose (e.g., "Output starts with `{`") don't
+    # confuse the extractor. Walk brace depth from there, treating
+    # string literals as opaque (no nested-brace counting inside).
+    import json
+    import re
+
+    text = SYSTEM_PROMPT_INVARIANTS
+    anchor = re.search(r'\{\s*\n\s*"findings"', text)
+    assert anchor is not None, "no JSON example anchor found in prompt"
+    start = anchor.start()
+    depth = 0
+    end = -1
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    assert end > start, "could not locate a balanced JSON object in the prompt"
+    json_block = text[start:end]
+    # json.loads must succeed; if it raises, the example is not JSON.
+    parsed = json.loads(json_block)
+    assert "findings" in parsed
+
+
 # ---------------------------------------------------------------------------
 # Swap-impossibility (the M1 fix mirroring triage)
 # ---------------------------------------------------------------------------
