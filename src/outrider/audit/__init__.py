@@ -3,9 +3,10 @@
 Re-exports the public symbols of the audit package. The emitter
 (`audit/emitter.py`, separate spec) constructs concrete events; replay
 (`audit/replay.py`, separate spec) reconstructs them via `AuditEvent`.
-The durable persister (`audit/persister.py`) implements both
-`LLMExchangePersister` and `PhaseEventSink` Protocol contracts atomically
-per `DECISIONS.md#016`.
+The durable persister (`audit/persister.py`) implements four Protocol
+contracts atomically per `DECISIONS.md#016`: `LLMExchangePersister`
+(`llm/base.py`) plus `PhaseEventSink`, `FileExaminationSink`, and
+`AnalyzeEventSink` (all in `audit/sinks.py`).
 """
 
 from outrider.audit.config import RetentionSettings

@@ -6,14 +6,20 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships one sink: `PhaseEventSink` for `ReviewPhaseEvent` emission per
-`phase-events-bound-work`. `LLMCallEvent` emission lives inside
-`LLMProvider.complete()` and uses the sibling `LLMExchangePersister`
-Protocol in `llm/base.py` — no node code emits `LLMCallEvent` directly.
+V1 ships three sinks from this module: `PhaseEventSink` for
+`ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
+for `FileExaminationEvent` (per intake + analyze per-file outcomes), and
+`AnalyzeEventSink` bundling the four analyze-emitted event types
+(`FindingEvent`, `FindingProposalRejectedEvent`,
+`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`). `LLMCallEvent`
+emission lives inside `LLMProvider.complete()` and uses the sibling
+`LLMExchangePersister` Protocol in `llm/base.py` — no node code emits
+`LLMCallEvent` directly.
 
 The durable `AuditPersister` in `outrider.audit.persister` implements
-BOTH `PhaseEventSink` and `LLMExchangePersister` from one body, sharing
-DB transaction lifecycle and session-per-call discipline. Test-only no-op
+ALL FOUR (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
++ `LLMExchangePersister`) from one body, sharing DB transaction
+lifecycle and session-per-call discipline. Test-only no-op
 implementations (`NoOpPersister`, `RecordingPhaseEventSink`) live in
 `tests/conftest.py` for fixtures that don't need durable persistence.
 """
@@ -67,7 +73,8 @@ class PhaseEventSink(Protocol):
     Same shape as `LLMExchangePersister` but for phase events only —
     `LLMCallEvent` emission stays inside `LLMProvider.complete()`. The
     durable `AuditPersister` in `outrider.audit.persister` implements
-    BOTH `PhaseEventSink` and `LLMExchangePersister` from one class.
+    `PhaseEventSink` alongside `FileExaminationSink`, `AnalyzeEventSink`,
+    and `LLMExchangePersister` from one class.
 
     `@runtime_checkable` matches the `LLMExchangePersister` precedent and
     enables `build_graph` to reject sinks lacking the `emit_phase` member
@@ -109,10 +116,10 @@ class FileExaminationSink(Protocol):
         replay equivalence.
 
     The durable `AuditPersister` implements this Protocol alongside
-    `PhaseEventSink` and `LLMExchangePersister` — one class, one transaction-
-    lifecycle discipline, three sinks. Test fixtures may record to a list
-    or persist directly per the same recorder-vs-durable split documented
-    on `PhaseEventSink`.
+    `PhaseEventSink`, `AnalyzeEventSink`, and `LLMExchangePersister` —
+    one class, one transaction-lifecycle discipline, four sinks. Test
+    fixtures may record to a list or persist directly per the same
+    recorder-vs-durable split documented on `PhaseEventSink`.
 
     `@runtime_checkable` matches the `PhaseEventSink` precedent and enables
     `build_graph` to reject sinks lacking the `emit_file_examination` member

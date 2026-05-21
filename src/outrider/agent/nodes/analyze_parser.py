@@ -251,12 +251,14 @@ def parse_analyze_response(
             ),
         )
 
-    # Per-proposal admission. Implementation order swaps spec §6 step
-    # 2 (finding_type) and step 3 (evidence_tier) — evidence_tier MUST
-    # run first so the bidirectional cross-field validator on the
-    # lifted `FindingProposalRejectedEvent` holds: `claimed_evidence_tier
-    # is None` iff `rejection_reason == "evidence_tier_not_in_enum"`.
-    # Spec divergence recorded for Actual Outcome.
+    # Per-proposal admission. Evidence-tier admission runs FIRST (spec §6
+    # step 2) so the bidirectional cross-field validator on the lifted
+    # `FindingProposalRejectedEvent` holds: `claimed_evidence_tier is None`
+    # iff `rejection_reason == "evidence_tier_not_in_enum"`. Finding-type
+    # admission runs SECOND (spec §6 step 3) and carries the parsed enum
+    # value through to its rejection event when it fires. The spec section
+    # headers were originally inverted (finding-type as §2, evidence-tier
+    # as §3) and renumbered 2026-05-21 to match this order.
     admitted_findings: list[ReviewFinding] = []
     proposal_rejections: list[ProposalRejection] = []
     trace_candidates: list[TraceCandidate] = []
