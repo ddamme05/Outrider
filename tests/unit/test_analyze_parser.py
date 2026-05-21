@@ -463,7 +463,7 @@ def _build_raw_proposal(**overrides: object):  # type: ignore[no-untyped-def]
 
     defaults: dict[str, object] = {
         "finding_type": "sql_injection",
-        "evidence_tier": "JUDGED",
+        "evidence_tier": "judged",
         "query_match_id": None,
         "trace_path": None,
         "title": "t",
@@ -589,11 +589,196 @@ def test_step1_iteration_raises_not_implemented_with_index() -> None:
     per-proposal admission decisions."""
     response = (
         '{"findings": [{"finding_type": "sql_injection", '
-        '"evidence_tier": "JUDGED", "title": "t", "description": "d", '
+        '"evidence_tier": "judged", "title": "t", "description": "d", '
         '"evidence": "e", "span": {"byte_start": 0, "byte_end": 1}}]}'
     )
-    with pytest.raises(NotImplementedError, match=r"findings\[0\]"):
+    # JUDGED passes evidence_tier + finding_type + producer admission
+    # (JUDGED skips producer); span admission lands in commit 4.
+    with pytest.raises(NotImplementedError, match=r"span admission for findings\[0\]"):
         _call_parser(response)
+
+
+# ---------------------------------------------------------------------------
+# Spec §6 commit-3 — producer-admission checks (finding_type / evidence_tier /
+# query_match_id / trace stub)
+# ---------------------------------------------------------------------------
+
+
+def _build_response_json(*proposals: dict[str, object]) -> str:
+    """Wrap proposal dicts into a JSON `AnalyzeResponseRaw` shape."""
+    import json
+
+    return json.dumps({"findings": list(proposals)})
+
+
+def _minimal_proposal(**overrides: object) -> dict[str, object]:
+    """Minimum-fields raw proposal for parser tests."""
+    base: dict[str, object] = {
+        "finding_type": "sql_injection",
+        "evidence_tier": "judged",
+        "query_match_id": None,
+        "trace_path": None,
+        "title": "t",
+        "description": "d",
+        "evidence": "e",
+        "span": {"byte_start": 0, "byte_end": 1},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_step3_rejects_unknown_evidence_tier() -> None:
+    """Raw evidence_tier outside `EvidenceTier` enum → rejection with
+    `evidence_tier_not_in_enum` and `claimed_evidence_tier=None` (the
+    bidirectional cross-field rule)."""
+    response = _build_response_json(_minimal_proposal(evidence_tier="bogus_tier"))
+    result = _call_parser(response)
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "evidence_tier_not_in_enum"
+    assert rej.claimed_evidence_tier is None
+    assert result.counters.n_proposals_seen == 1
+    assert result.counters.n_proposals_rejected == 1
+    assert result.admitted_findings == ()
+
+
+def test_step2_rejects_unknown_finding_type_with_parsed_tier() -> None:
+    """Raw finding_type outside `FindingType` enum → rejection with
+    `finding_type_not_in_enum` and `claimed_evidence_tier` carrying
+    the parsed enum value (the implementation-order swap ensures
+    evidence_tier was admitted first)."""
+    response = _build_response_json(
+        _minimal_proposal(finding_type="unknown_type", evidence_tier="judged")
+    )
+    result = _call_parser(response)
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "finding_type_not_in_enum"
+    assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
+
+
+def test_step4_observed_rejects_when_query_match_id_absent() -> None:
+    """OBSERVED proposal without a `query_match_id` → producer-
+    admission rejection with `query_match_id_not_in_registry`,
+    `claimed_evidence_tier=OBSERVED`."""
+    response = _build_response_json(
+        _minimal_proposal(evidence_tier="observed", query_match_id=None)
+    )
+    result = _call_parser(response)
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "query_match_id_not_in_registry"
+    assert rej.claimed_evidence_tier == EvidenceTier.OBSERVED
+    assert rej.rejection_detail == "<absent>"
+
+
+def test_step4_observed_rejects_fabricated_query_match_id() -> None:
+    """OBSERVED proposal claiming an id NOT in the pre-supplied
+    registry set → rejection; the claimed id is the rejection_detail
+    (safe because raw schema constrains the pattern + length)."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="observed",
+            query_match_id="fabricated_id",
+        )
+    )
+    result = _call_parser(response, query_match_id_set=frozenset({"real_id"}))
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "query_match_id_not_in_registry"
+    assert rej.rejection_detail == "fabricated_id"
+
+
+def test_step4_observed_passes_when_query_match_id_in_registry() -> None:
+    """Happy path: OBSERVED proposal with a real registry id passes
+    producer admission. Span admission isn't implemented yet so the
+    parser raises `NotImplementedError`; the test pins the rejection
+    didn't fire."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="observed",
+            query_match_id="real_id",
+        )
+    )
+    with pytest.raises(NotImplementedError, match=r"span admission for findings\[0\]"):
+        _call_parser(response, query_match_id_set=frozenset({"real_id"}))
+
+
+def test_step4_inferred_always_rejects_in_v1_stub() -> None:
+    """V1 stub per spec §6 step 4: until the trace-node spec lands
+    the resolver, every INFERRED is `Unwalkable` and gets
+    `trace_path_not_admissible`."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="inferred",
+            trace_path=("some.symbol", "step.two"),
+        )
+    )
+    result = _call_parser(response)
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "trace_path_not_admissible"
+    assert rej.claimed_evidence_tier == EvidenceTier.INFERRED
+    assert "V1 stub" in rej.rejection_detail
+
+
+def test_step4_judged_skips_producer_admission() -> None:
+    """JUDGED is the only tier the model can claim unilaterally — no
+    structural artifact required. Producer admission is skipped; the
+    proposal advances to span admission (which raises until commit 4)."""
+    response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
+    with pytest.raises(NotImplementedError, match=r"span admission for findings\[0\]"):
+        _call_parser(response)
+
+
+def test_all_rejected_returns_aggregate_result() -> None:
+    """Multiple proposals all rejected — each on a different reason —
+    aggregate counters reflect the per-proposal outcomes; result is
+    well-formed (no admitted findings, no trace candidates yet)."""
+    response = _build_response_json(
+        _minimal_proposal(evidence_tier="bogus_tier"),  # rejected at §3
+        _minimal_proposal(finding_type="unknown_type"),  # rejected at §2
+        _minimal_proposal(evidence_tier="inferred"),  # V1 stub rejection at §4
+    )
+    result = _call_parser(response)
+    assert len(result.proposal_rejections) == 3
+    reasons = {rej.rejection_reason for rej in result.proposal_rejections}
+    assert reasons == {
+        "evidence_tier_not_in_enum",
+        "finding_type_not_in_enum",
+        "trace_path_not_admissible",
+    }
+    assert result.counters.n_proposals_seen == 3
+    assert result.counters.n_proposals_rejected == 3
+    assert result.counters.n_findings_emitted == 0
+    assert result.admitted_findings == ()
+
+
+def test_proposal_rejection_uses_canonical_proposal_hash() -> None:
+    """Every rejection's `proposal_hash` is the canonical hash from
+    `compute_proposal_hash` — same recipe whether the proposal is
+    admitted or rejected, so the join with `TraceCandidate.source_proposal_hash`
+    works across both outcomes."""
+    from outrider.policy.canonical import compute_proposal_hash
+
+    response = _build_response_json(
+        _minimal_proposal(finding_type="unknown_type", evidence_tier="judged")
+    )
+    result = _call_parser(response, file_path="src/example.py")
+    rej = result.proposal_rejections[0]
+    expected = compute_proposal_hash(
+        source_file_path="src/example.py",
+        finding_type="unknown_type",
+        evidence_tier="judged",
+        query_match_id=None,
+        trace_path=None,
+        title="t",
+        description="d",
+        evidence="e",
+        byte_start=0,
+        byte_end=1,
+    )
+    assert rej.proposal_hash == expected
 
 
 # ---------------------------------------------------------------------------
