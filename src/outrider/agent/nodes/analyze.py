@@ -67,15 +67,16 @@ skip_reason=<parser's reason>)`. Spec §7 doesn't enumerate these —
 the spec assumes upstream filtering — but `parse_python` returns
 them, so analyze must route them rather than crash.
 
-**Changed-region intersection.** Performed via
-`coordinates.lookup_patched_file` (parse the patch and find this
-file's `PatchedFile`) plus `coordinates.scope_unit_diff_hunks` (clip
-to scope-unit line range, returning the clipped hunk text). A scope
-unit is "included" iff `scope_unit_diff_hunks` returns non-empty;
-both intersection and clipped-hunk text come from the same call.
-Empty patch / file absent from patch → `None`, which short-circuits
-to `NO_CHANGED_SCOPE_UNITS` for clean parses (no addable hunks to
-analyze).
+**Changed-region intersection.** Performed via three coordinates
+surfaces: `lookup_patched_file` (locate this file's `PatchedFile`),
+`scope_unit_has_added_lines` (require at least one added line in the
+scope unit's range), and `scope_unit_diff_hunks` (clip the hunk text
+to that range). A scope unit is "included" iff BOTH checks pass:
+context-only intersections don't include the unit, and deletion-only
+edits inside an otherwise-unchanged function currently route to
+`NO_CHANGED_SCOPE_UNITS` (V1 limitation; tracked as FUP-050). Empty
+patch / file absent from patch → `None`, which short-circuits to
+`NO_CHANGED_SCOPE_UNITS` for clean parses.
 
 **Registry-query firing.** For clean+full_llm outcomes, every id in
 `queries.registry.REGISTERED_QUERY_IDS` is fired against the file
@@ -701,8 +702,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       "skipped"` (`OVERSIZED`, `VENDORED`, etc.); the parser's
       `skip_reason` is the audit value.
     """
-    # Step 3a: content selection + outcome determination.
-    content = changed_file.content_head or changed_file.content_base
+    # Step 3a: content selection + outcome determination. Explicit
+    # `is not None` (not `or`) so an empty `content_head` ("") doesn't
+    # fall through to `content_base` and analyze stale base content.
+    if changed_file.content_head is not None:
+        content = changed_file.content_head
+    elif changed_file.content_base is not None:
+        content = changed_file.content_base
+    else:
+        content = None
     if content is None:
         return await _emit_skip(
             file_examination_sink=file_examination_sink,

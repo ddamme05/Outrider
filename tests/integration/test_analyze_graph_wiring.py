@@ -86,7 +86,13 @@ class _RoutingMockLLMProvider:
         from outrider.llm.base import LLMResponse
 
         self.calls.append(request)
-        text = self.triage_response if request.node_id == "triage" else self.analyze_response
+        if request.node_id == "triage":
+            text = self.triage_response
+        elif request.node_id == "analyze":
+            text = self.analyze_response
+        else:
+            msg = f"unexpected node_id in test mock: {request.node_id!r}"
+            raise AssertionError(msg)
         return LLMResponse(
             text=text,
             model=request.model,
@@ -191,6 +197,10 @@ class _StubGitHub:
 
 
 def _stub_github_factory(installation_id: int) -> Any:
+    # Pin the seed flows through build_graph's closure to the factory call;
+    # a wiring regression that dropped installation_id would silently
+    # produce a client for the wrong installation without this assert.
+    assert installation_id == _SEED_INSTALLATION_ID, f"unexpected installation_id {installation_id}"
     return _StubGitHub()
 
 

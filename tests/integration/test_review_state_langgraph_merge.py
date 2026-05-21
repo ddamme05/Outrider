@@ -309,7 +309,7 @@ def _graph_kwargs(
     """Build the full set of build_graph kwargs (intake + triage + analyze).
 
     Encapsulates the seven deps so test bodies stay readable. Renamed
-    from `_graph_kwargs` after the analyze-node spec landed and added
+    from `_intake_kwargs` when the analyze-node arc added
     `analyze_event_sink` + `import_path_resolver`.
     """
     return {

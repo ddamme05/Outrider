@@ -543,14 +543,21 @@ async def test_phase_events_bracket_the_pass(deps: dict[str, Any]) -> None:
 @pytest.mark.asyncio
 async def test_is_eval_propagates_through_emitted_events(deps: dict[str, Any]) -> None:
     """`is_eval` from `ReviewState` flows to every emitted event so
-    eval runs produce eval-tagged audit rows."""
+    eval runs produce eval-tagged audit rows. Non-empty length asserts
+    guard `all(...)` from passing vacuously when an event list is empty."""
     state = _build_review_state(is_eval=True)
 
     await analyze(state, **deps)
 
-    assert all(e.is_eval for e in deps["phase_event_sink"].events)
-    assert all(e.is_eval for e in deps["file_examination_sink"].events)
-    assert all(e.is_eval for e in deps["analyze_event_sink"].events)
+    phase_events = deps["phase_event_sink"].events
+    fe_events = deps["file_examination_sink"].events
+    analyze_events = deps["analyze_event_sink"].events
+    assert len(phase_events) > 0
+    assert len(fe_events) > 0
+    assert len(analyze_events) > 0
+    assert all(e.is_eval for e in phase_events)
+    assert all(e.is_eval for e in fe_events)
+    assert all(e.is_eval for e in analyze_events)
 
 
 # ---------------------------------------------------------------------------
@@ -789,19 +796,16 @@ async def test_changed_region_intersection_includes_only_intersecting_unit(
 async def test_registry_query_firing_populates_query_match_id_list(
     deps: dict[str, Any],
 ) -> None:
-    """For a typical Python file with function definitions, the
-    `query_match_id_set` should contain `python.function_definition` at
-    minimum. Verified by inspecting the user_prompt's query-match-id
-    block — non-empty means the registry-query firing landed."""
+    """For a Python file with function definitions, `query_match_id_set`
+    contains `python.function_definition`. The registry-query block lives
+    in `system_prompt` (file-scoped, cacheable)."""
     state = _build_review_state()
 
     await analyze(state, **deps)
 
     request = deps["provider"].calls[0]
-    # `python.function_definition` matches the two functions in `_SIMPLE_PY`.
-    assert "python.function_definition" in request.user_prompt
-    # The "(no registry query matches…)" fallback should NOT appear.
-    assert "(no registry query matches" not in request.user_prompt
+    assert "python.function_definition" in request.system_prompt
+    assert "(no registry query matches" not in request.system_prompt
 
 
 @pytest.mark.asyncio

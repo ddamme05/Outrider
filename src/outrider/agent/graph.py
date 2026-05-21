@@ -156,6 +156,19 @@ def build_graph(
     if github_factory is None:
         raise BuildGraphError("github_factory must not be None")
 
+    # `total_review_budget_tokens` is a public-input integer; validate at
+    # construction so a misconfigured caller fails before analyze ever
+    # runs (rather than at first multiplication inside _compute_per_file_cap).
+    # `bool` is rejected because `isinstance(True, int)` is True in Python
+    # but a boolean budget is never intended.
+    if not isinstance(total_review_budget_tokens, int) or isinstance(
+        total_review_budget_tokens, bool
+    ):
+        raise BuildGraphError(
+            f"total_review_budget_tokens must be int "
+            f"(got type: {type(total_review_budget_tokens).__name__})"
+        )
+
     # Non-callable factories would pass the None check but fail at first
     # intake execution with a confusing TypeError. The cost of one
     # `callable()` check now is the cost of avoiding a deferred crash

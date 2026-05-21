@@ -154,9 +154,11 @@ at max_length=50). Up to 20 trace_candidates per finding.
 """
 
 
-USER_TEMPLATE: Final[str] = """\
+SYSTEM_FILE_CONTEXT_TEMPLATE: Final[str] = """\
+
+## File under review
+
 File: {file_path}
-Pass: analyze-pass-{pass_index}
 
 ## Scope-unit context
 
@@ -171,6 +173,11 @@ below. Findings should land within the byte ranges of these units.
 Use these `query_match_id` values when claiming `evidence_tier="observed"`:
 
 {query_match_id_list}
+"""
+
+
+USER_TEMPLATE: Final[str] = """\
+Pass: analyze-pass-{pass_index}
 
 ## Changed diff (scope-unit-clipped)
 
@@ -238,40 +245,22 @@ def render(
 ) -> AnalyzePromptParts:
     """Build the (system, user) prompt pair for a clean-outcome analyze call.
 
-    Pure function. Uses `USER_TEMPLATE.format(**kwargs)` with all
-    placeholder names supplied — missing-key `KeyError` cannot fire under
-    correct programming. The system prompt is `SYSTEM_PROMPT_INVARIANTS`
-    (static) concatenated with no per-file tail at this scaffolding stage;
-    the file-scoped context lives in `scope_unit_context` and goes into
-    the user prompt for now. (Implementation note: the spec §5 packing
-    routes file-scoped context into the system prompt for caching;
-    that move happens when the §7 node body decides the assembly. For
-    scaffolding the contract is: render() takes pre-assembled string
-    blocks, the node body does the cache-aware splitting.)
+    `system_prompt` carries stable-per-file content (invariants +
+    file-scoped scope-unit/query context) so the provider's
+    `cache_control: ephemeral` produces cross-pass cache hits for the
+    same file. `user_prompt` carries pass-specific volatile content
+    (pass index + scope-unit-clipped diff hunks).
 
-    Per `webhook-strings-are-data-not-format-strings`: PR-sourced strings
-    (file_path, scope_unit_context, query_match_id_list, diff_hunks)
-    enter the prompt as values against structural template placeholders.
-    `.format(**kwargs)` cannot reinterpret them as format codes.
-
-    Egress-eligible content (per DECISIONS#013 point 1):
-      - file_path                  ✓ used
-      - scope_unit_context         ✓ used (scope-unit bodies + same-file context)
-      - query_match_id_list        ✓ used (registry IDs)
-      - diff_hunks                 ✓ used (scope-unit-clipped unified-diff text)
-      - pass_index                 ✓ used (analyze ⇄ trace iteration counter)
-
-    What's NOT in this prompt:
-      - the full file source (only included scope units reach the model)
-      - the full PR diff (only scope-unit-clipped hunks reach the model)
-      - operational secrets (installation_id, tokens, etc.)
+    PR-sourced strings enter via `.format(**kwargs)` against structural
+    placeholders per `webhook-strings-are-data-not-format-strings`.
     """
-    system_prompt = SYSTEM_PROMPT_INVARIANTS
-    user_prompt = USER_TEMPLATE.format(
+    system_prompt = SYSTEM_PROMPT_INVARIANTS + SYSTEM_FILE_CONTEXT_TEMPLATE.format(
         file_path=file_path,
-        pass_index=pass_index,
         scope_unit_context=scope_unit_context,
         query_match_id_list=query_match_id_list,
+    )
+    user_prompt = USER_TEMPLATE.format(
+        pass_index=pass_index,
         diff_hunks=diff_hunks,
     )
     return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
@@ -309,6 +298,7 @@ def render_degraded(
 __all__ = [
     "DEGRADED_USER_TEMPLATE",
     "MAX_TOKENS",
+    "SYSTEM_FILE_CONTEXT_TEMPLATE",
     "SYSTEM_PROMPT_INVARIANTS",
     "TEMPERATURE",
     "TEMPLATE",

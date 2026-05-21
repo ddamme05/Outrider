@@ -286,6 +286,26 @@ def test_build_graph_rejects_import_path_resolver_missing_member() -> None:
         build_graph(**args)
 
 
+def test_build_graph_rejects_non_int_total_review_budget_tokens() -> None:
+    """`total_review_budget_tokens` is a public int; non-int input fails
+    fast at construction rather than at first multiplication inside
+    `_compute_per_file_cap`."""
+    args = _valid_args()
+    args["total_review_budget_tokens"] = "200000"  # str, not int
+    with pytest.raises(BuildGraphError, match="total_review_budget_tokens must be int"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_bool_total_review_budget_tokens() -> None:
+    """`bool` is technically an `int` subclass in Python; reject it
+    explicitly so a typo'd `total_review_budget_tokens=True` doesn't
+    silently become `1`."""
+    args = _valid_args()
+    args["total_review_budget_tokens"] = True
+    with pytest.raises(BuildGraphError, match="total_review_budget_tokens must be int"):
+        build_graph(**args)
+
+
 # ---------------------------------------------------------------------------
 # Other shapes: a class that has BOTH missing methods is rejected by the
 # FIRST gate (provider). Documents the gate order.
