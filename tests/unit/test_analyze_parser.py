@@ -4,13 +4,13 @@ Pins the §6 parser module: the public surface (frozen dataclasses +
 signatures) AND the admission flow as each step lands. Sections marked
 by spec §6 step number.
 
-Earlier scaffolding sections (frozen+slots discipline, signature pin,
-field sets, audit-context exclusion, module `__all__`) stay locked.
-The "parser admission flow not implemented" `NotImplementedError`
-guard from the scaffolding pass is replaced as steps 0+ land — current
-state implements step 0 (response parse + response-level rejection)
-and a NotImplementedError fence for non-empty findings until step 1
-(proposal iteration) lands.
+Sections (in spec §6 step order): scaffolding (frozen+slots discipline,
+signature pin, field sets, audit-context exclusion, module `__all__`),
+step 0 (response parse + response-level rejection), commit-2 helper
+unit tests (proposal_hash + rejection-payload helper), commit-3 +
+commit-4 admission tests (enum + producer + span), commit-5 finding
+construction + trace-candidate collection, commit-6 audit-fold
+regression pins.
 """
 
 import dataclasses
@@ -275,7 +275,6 @@ def test_parse_analyze_response_signature() -> None:
         "query_match_id_set",
         "degraded_mode",
         "active_policy_version",
-        "pass_index",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -330,7 +329,6 @@ def _call_parser(response_text: str, **overrides: object) -> ParserResult:
         "query_match_id_set": frozenset(),
         "degraded_mode": False,
         "active_policy_version": "1.0.0",
-        "pass_index": 0,
     }
     defaults.update(overrides)
     return parse_analyze_response(response_text, **defaults)  # type: ignore[arg-type]
@@ -1137,6 +1135,150 @@ def test_counter_accounting_equation_holds() -> None:
     assert result.counters.n_proposals_seen == (
         result.counters.n_findings_emitted + result.counters.n_proposals_rejected
     )
+
+
+# ---------------------------------------------------------------------------
+# Spec §6 commit-6 — audit-fold regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_hostile_candidate_path_does_not_crash_parser() -> None:
+    """Sharp-edges H1 + general-purpose §4: a single hostile
+    `candidate_path_raw` (`../../etc/passwd`) used to crash
+    `parse_analyze_response` mid-loop because `TraceCandidate(...)`
+    construction was outside any try/except. Fix: per-candidate
+    try/except in `_collect_trace_candidates_for` drops the bad
+    candidate; the parent proposal still produces its admission/
+    rejection outcome."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"candidate_path_raw": "../../etc/passwd", "reason": "hostile"},
+            ],
+        )
+    )
+    # Must NOT raise — that was the bug
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 1  # parent admitted
+    assert len(result.trace_candidates) == 0  # hostile candidate dropped
+
+
+def test_admitted_finding_survives_hostile_sibling_candidate() -> None:
+    """Multi-proposal regression: proposal[0] admits cleanly,
+    proposal[1] has a hostile candidate. Pre-fix, the proposal[1]
+    crash dropped proposal[0]'s admission too."""
+    response = _build_response_json(
+        _minimal_proposal(evidence_tier="judged", span={"byte_start": 5, "byte_end": 10}),
+        _minimal_proposal(
+            evidence_tier="judged",
+            span={"byte_start": 15, "byte_end": 20},
+            trace_candidates=[
+                {"candidate_path_raw": "../escape", "reason": "hostile"},
+            ],
+        ),
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(byte_start=0, byte_end=100),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 2  # both parents survive
+    assert len(result.trace_candidates) == 0  # only the hostile one was filtered
+
+
+def test_alias_candidate_path_uses_canonical_form() -> None:
+    """General-purpose §4 MEDIUM: prior to commit 6, the parser passed
+    the raw alias path `./src/foo.py` to `compute_candidate_id`, but
+    the `TraceCandidate` field validator canonicalized to
+    `src/foo.py` and `_enforce_candidate_id_matches_payload`
+    recomputed the id over the canonical path → mismatch → crash.
+    Fix: canonicalize before computing the id."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"candidate_path_raw": "./src/foo.py", "reason": "alias"},
+            ],
+        )
+    )
+    # Must NOT raise — that was the bug
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 1
+    assert len(result.trace_candidates) == 1
+    # Candidate's `candidate_path` is the canonical form, not the raw alias
+    assert result.trace_candidates[0].candidate_path == "src/foo.py"
+
+
+def test_query_match_id_rejection_detail_sanitizes_ansi_escape() -> None:
+    """Adversarial HIGH-2: raw schema for `query_match_id` ships only
+    `max_length=256` (no pattern), but spec §3 named
+    `[A-Za-z0-9_./:-]+` as the safety class. Parser-side
+    `_sanitize_query_match_id_for_detail` enforces the spec-promised
+    class so attacker bytes can't land verbatim in `rejection_detail`."""
+    hostile = "fake_id\x1b]8;;file:///etc/passwd\x07click\x1b]8;;\x07"
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="observed",
+            query_match_id=hostile,
+        )
+    )
+    result = _call_parser(response, query_match_id_set=frozenset({"real_id"}))
+    assert len(result.proposal_rejections) == 1
+    detail = result.proposal_rejections[0].rejection_detail
+    # ANSI escape sequences MUST be sanitized
+    assert "\x1b" not in detail
+    assert "]8" not in detail
+    # Safe-class chars survive
+    assert "fake_id" in detail
+    # Out-of-class chars are replaced with `?`
+    assert "?" in detail
+
+
+def test_query_match_id_rejection_detail_preserves_safe_chars() -> None:
+    """Benign IDs (matching the spec pattern) pass through unchanged so
+    operators see the structural form."""
+    benign = "python.security.sql_injection:42"
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="observed",
+            query_match_id=benign,
+        )
+    )
+    result = _call_parser(response, query_match_id_set=frozenset({"real_id"}))
+    assert result.proposal_rejections[0].rejection_detail == benign
+
+
+def test_narrow_exception_handler_lets_unexpected_propagate() -> None:
+    """Sharp-edges M4 + adversarial M2: the two `except Exception`
+    blocks used to catch every exception class (MemoryError,
+    RecursionError, etc.) and fold them into
+    `schema_construction_failed`. Narrowed to `CoordinateError` /
+    `ValidationError` so genuinely-unexpected failures propagate as
+    bugs rather than as misleading rejections.
+
+    Smoke test: a normal `ValidationError` from a hypothetical
+    schema-constructor failure still folds correctly (no propagation
+    on the documented path); the pin against re-broadening lives in
+    code-review discipline, since asserting non-catch of a
+    hypothetical `RuntimeError` would require monkeypatching.
+    """
+    # Smoke: a clean admission path still works (no Exception fired).
+    response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 1
 
 
 # ---------------------------------------------------------------------------

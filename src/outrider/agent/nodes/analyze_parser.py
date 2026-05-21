@@ -34,22 +34,25 @@ as "produces the event content"; the node body owns persistence per
 the locked "boring node body" framing in the user-direction memo
 2026-05-20.
 
-**Scaffolding status.** This module ships the public surface (frozen
-dataclasses + the `parse_analyze_response` signature) but the
-admission flow itself raises `NotImplementedError`. Subsequent commits
-land the 10 steps. The spec already owns the step-by-step description;
-the code scaffold only creates the surface that later commits fill.
+**Implementation status.** All 10 spec §6 steps (0–10) ship; the
+parser produces complete `ParserResult`s for every input shape. The
+admission flow's source comments cross-reference the spec section
+they implement; see `tests/unit/test_analyze_parser.py` for the
+behavior pins.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import ValidationError
 
 from outrider.audit.events import compute_finding_content_hash
+from outrider.coordinates import validate_diff_path
+from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     span_to_line_range,
     span_within_file,
@@ -188,39 +191,43 @@ def parse_analyze_response(
     query_match_id_set: frozenset[str],
     degraded_mode: bool,
     active_policy_version: str,
-    pass_index: int,
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
-    Pure function — no IO. All inputs are passed; outputs go into the
-    returned `ParserResult`. The node body owns persistence and state
-    updates.
+        Pure function — no IO. All inputs are passed; outputs go into the
+        returned `ParserResult`. The node body owns persistence and state
+        updates.
 
-    Inputs:
+        Inputs:
 
-    - `response_text` — raw text from `LLMResponse.text` for this file.
-    - `review_id` — for `ReviewFinding.review_id` on admitted proposals.
-    - `installation_id` — for `ReviewFinding.installation_id`.
-    - `file_path` — repo-relative path; goes into every emitted
-      payload, already canonicalized at intake.
-    - `file_content` — full file source as `str`. Needed for
-      `coordinates.span_to_line_range(...)` translation.
-    - `file_byte_length` — `len(file_content.encode("utf-8"))`
-      computed ONCE in the node body and passed here; the parser does
-      NOT recompute per proposal.
-    - `included_scope_units` — the scope units this call's prompt
-      included (their byte ranges define the `span_within_scope_unit`
-      check for clean outcomes).
-    - `query_match_id_set` — the pre-fired registry IDs the prompt
-      supplied; OBSERVED admission rejects any claimed id not in this
-      set. Empty for degraded outcomes.
-    - `degraded_mode` — branches parser step 5: clean uses
-      `span_within_scope_unit`, degraded uses `span_within_file`.
-    - `active_policy_version` — closure-captured per
-      `nodes-receive-deps-via-closure`; goes into
-      `ReviewFinding.policy_version` on admitted proposals.
-    - `pass_index` — for any rejection-detail metadata that names the
-      pass; the node body uses it for `AnalyzeCompletedEvent.pass_index`.
+        - `response_text` — raw text from `LLMResponse.text` for this file.
+        - `review_id` — for `ReviewFinding.review_id` on admitted proposals.
+        - `installation_id` — for `ReviewFinding.installation_id`.
+        - `file_path` — repo-relative path; goes into every emitted
+          payload, already canonicalized at intake.
+        - `file_content` — full file source as `str`. Needed for
+          `coordinates.span_to_line_range(...)` translation.
+        - `file_byte_length` — `len(file_content.encode("utf-8"))`
+          computed ONCE in the node body and passed here; the parser does
+          NOT recompute per proposal.
+        - `included_scope_units` — the scope units this call's prompt
+          included (their byte ranges define the `span_within_scope_unit`
+          check for clean outcomes).
+        - `query_match_id_set` — the pre-fired registry IDs the prompt
+          supplied; OBSERVED admission rejects any claimed id not in this
+          set. Empty for degraded outcomes.
+        - `degraded_mode` — branches parser step 5: clean uses
+          `span_within_scope_unit`, degraded uses `span_within_file`.
+        - `active_policy_version` — closure-captured per
+          `nodes-receive-deps-via-closure`; goes into
+          `ReviewFinding.policy_version` on admitted proposals.
+    .
+
+        The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
+        — the parser doesn't reference it (admission decisions are
+        pass-agnostic). Removing the parameter from this signature avoids
+        an unused-input footgun where a future caller might assume the
+        parser threads `pass_index` into rejection_detail.
     """
     try:
         raw = AnalyzeResponseRaw.model_validate_json(response_text)
@@ -254,7 +261,7 @@ def parse_analyze_response(
     proposal_rejections: list[ProposalRejection] = []
     trace_candidates: list[TraceCandidate] = []
     n_proposals_seen = 0
-    for _idx, raw_proposal in enumerate(raw.findings):
+    for raw_proposal in raw.findings:
         n_proposals_seen += 1
 
         # Pre-compute `proposal_hash` once per iteration. The same hash
@@ -332,11 +339,20 @@ def parse_analyze_response(
                         proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="query_match_id_not_in_registry",
-                        # Raw schema constrains `query_match_id` to
-                        # `[A-Za-z0-9_./:-]+` with max_length=256, so
-                        # the value is safe to record verbatim — it's
-                        # a structural identifier, not free-form text.
-                        rejection_detail=claimed_id or "<absent>",
+                        # Spec §3 names `[A-Za-z0-9_./:-]+` as the
+                        # safety pattern for storing query_match_id
+                        # verbatim in rejection_detail, BUT the raw
+                        # schema at `schemas/llm/analyze.py:87` only
+                        # ships `max_length=256` — no pattern. Without
+                        # sanitization, ANSI escapes / Trojan-Source /
+                        # XSS payloads would land verbatim. Apply the
+                        # spec-named pattern here as a sanitization
+                        # step: replace any out-of-class char with
+                        # `?` so the structural shape is preserved for
+                        # operator visibility while the dangerous
+                        # bytes are stripped. Tracked as FUP-046 to
+                        # align the raw schema with spec §3 intent.
+                        rejection_detail=_sanitize_query_match_id_for_detail(claimed_id),
                         claimed_evidence_tier=evidence_tier,
                     )
                 )
@@ -407,14 +423,15 @@ def parse_analyze_response(
         # `line_start`/`line_end` translate via `coordinates.span_to_line_range`
         # (coordinate translation lives in `coordinates/` per
         # `coordinates-module-is-sole-translator`). The byte→line
-        # conversion may raise `CoordinateError` if the span points
-        # past EOF — defense-in-depth, since step-5 admission already
-        # caught EOF-overflow spans. If it does fire, we record a
-        # `schema_construction_failed` rejection (spec §6 step 8
-        # fallback) rather than crashing the entire pass.
+        # conversion can raise `CoordinateError` — defense-in-depth,
+        # since step-5 admission already gated EOF-overflow spans.
+        # Narrow to `CoordinateError` so a `MemoryError` /
+        # `RecursionError` / etc. propagates loud (root-cause
+        # forensics depends on not folding unexpected exceptions into
+        # `schema_construction_failed`).
         try:
             line_start, line_end = span_to_line_range(raw_proposal.span, source=file_content)
-        except Exception as exc:  # noqa: BLE001 — defensive boundary
+        except CoordinateError as exc:
             proposal_rejections.append(
                 _build_proposal_rejection(
                     raw_proposal,
@@ -461,12 +478,13 @@ def parse_analyze_response(
                     finding_type=finding_type,
                 ),
             )
-        except Exception as exc:  # noqa: BLE001 — defensive boundary
-            # Spec §6 step 8 fallback: a Pydantic `ValidationError`
-            # (or any unexpected constructor failure) after passing
-            # every parser step is structurally unexpected — fold it
-            # as `schema_construction_failed` so the rejection is
-            # auditable rather than crashing the whole pass.
+        except ValidationError as exc:
+            # Spec §6 step 8 fallback: Pydantic ValidationError after
+            # passing every parser step is structurally unexpected —
+            # fold to `schema_construction_failed` so the rejection is
+            # auditable rather than crashing the whole pass. Narrowed
+            # to `ValidationError` so genuinely-unexpected failures
+            # (MemoryError, RecursionError, etc.) propagate as bugs.
             proposal_rejections.append(
                 _build_proposal_rejection(
                     raw_proposal,
@@ -507,6 +525,35 @@ def parse_analyze_response(
 # the audit row; the hash+length pair lets operators reason about
 # identity without admitting content.
 _CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
+
+
+# Spec §3 named character class for `query_match_id` (and `trace_path`
+# step values). Raw schema at `schemas/llm/analyze.py:87` ships only
+# `max_length=256` — no pattern. This regex enforces the spec-promised
+# safety class as a parser-side sanitization step.
+_QUERY_MATCH_ID_SAFE_CLASS: Final = re.compile(r"[^A-Za-z0-9_./:\-]")
+
+
+def _sanitize_query_match_id_for_detail(claimed_id: str | None) -> str:
+    """Replace any char outside the spec-named safety class with `?`.
+
+    Per `DECISIONS.md#014` point 1: audit rows must not carry
+    user code or prompt/completion content. Spec §3 cites the
+    `[A-Za-z0-9_./:-]+` pattern as the safety floor that makes the
+    raw value safe to record verbatim — but the raw schema didn't
+    ship the pattern (FUP-046 tracks the alignment). This helper
+    enforces the spec-promised character class so attacker-controlled
+    ANSI escapes / Trojan-Source / shell-metachars cannot land in
+    `FindingProposalRejectedEvent.rejection_detail`.
+
+    The structural shape is preserved (length + safe chars intact),
+    so operators investigating a registry-mismatch rejection still
+    see the structural form. The dropped chars are replaced with `?`
+    rather than stripped to keep the length signal accurate.
+    """
+    if claimed_id is None:
+        return "<absent>"
+    return _QUERY_MATCH_ID_SAFE_CLASS.sub("?", claimed_id)
 
 
 def _hash_claimed_finding_type(raw_value: str) -> str:
@@ -565,24 +612,57 @@ def _collect_trace_candidates_for(
     """
     # Raw layer carries `candidate_path_raw` (model's unvalidated
     # claimed path); admitted `TraceCandidate.candidate_path` runs the
-    # value through `validate_diff_path` via its field validator. The
-    # rename at the layer boundary is what makes a downstream typed
-    # raw-vs-admitted variable mix-up fail at static-type / Pydantic
-    # construction time rather than silently.
+    # value through `validate_diff_path` via its field validator. Two
+    # adversarial cases — both produce a `CoordinateError` /
+    # `ValidationError` mid-iteration if not guarded:
+    #
+    # 1. Hostile path: `candidate_path_raw="../../etc/passwd"` (or
+    #    Trojan-Source / NUL / shell-metachar / absolute) →
+    #    `validate_diff_path` raises `CoordinateError` (a `ValueError`
+    #    subclass; Pydantic re-raises as `ValidationError`).
+    # 2. Alias path: `candidate_path_raw="./src/foo.py"` →
+    #    `validate_diff_path` succeeds and canonicalizes to
+    #    `"src/foo.py"`, but `compute_candidate_id` was called with the
+    #    RAW (alias) path. The schema's
+    #    `_enforce_candidate_id_matches_payload` validator recomputes
+    #    `compute_candidate_id` over the canonical path → mismatch →
+    #    `ValueError` at construction.
+    #
+    # Both crash `parse_analyze_response` mid-iteration, dropping every
+    # prior admitted finding AND breaking the
+    # `n_proposals_seen == admitted + rejected` accounting equation.
+    # Fix: canonicalize the path ONCE, use it for both `compute_candidate_id`
+    # and `TraceCandidate(...)`, and wrap construction in try/except so a
+    # single hostile candidate is dropped rather than crashing the pass.
     out: list[TraceCandidate] = []
     for raw_cand in raw.trace_candidates:
-        out.append(
-            TraceCandidate(
+        try:
+            canonical_path = validate_diff_path(raw_cand.candidate_path_raw)
+        except CoordinateError:
+            # Hostile or invalid candidate path — drop silently. Per
+            # spec §6 step 10 trace candidates are advisory; dropping
+            # one bad candidate is preferable to crashing the whole
+            # parser pass. The dropped candidate's parent proposal
+            # still produces its own rejection/admission outcome
+            # independently.
+            continue
+        try:
+            candidate = TraceCandidate(
                 candidate_id=compute_candidate_id(
                     source_proposal_hash=proposal_hash,
-                    candidate_path=raw_cand.candidate_path_raw,
+                    candidate_path=canonical_path,
                     reason=raw_cand.reason,
                 ),
                 source_proposal_hash=proposal_hash,
                 reason=raw_cand.reason,
-                candidate_path=raw_cand.candidate_path_raw,
+                candidate_path=canonical_path,
             )
-        )
+        except ValidationError:
+            # Defense-in-depth: should not fire given `canonical_path`
+            # just passed `validate_diff_path` AND the candidate_id is
+            # computed canonically. If it does, drop rather than crash.
+            continue
+        out.append(candidate)
     return out
 
 
