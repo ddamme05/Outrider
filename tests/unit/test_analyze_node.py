@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -916,3 +917,195 @@ async def test_degraded_path_when_has_error_in_changed_scope_unit(
     assert request.context_summary == ()
     # The user_prompt uses the degraded template signal.
     assert "DEGRADED" in request.user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Aggregate-accounting regression pins (added 2026-05-21 post-audit-the-audit)
+# ---------------------------------------------------------------------------
+#
+# Two focused tests pin the producer-side aggregate accounting on
+# `AnalyzeCompletedEvent`: cache-token split (reads ≠ writes in the
+# event row, the 12.5× pricing differential motivated the split) AND
+# Decimal cost accumulation (`total_cost_usd` is `float(sum_of_Decimals)`,
+# not `sum_of_floats`).
+#
+# These exercise the node's per-pass aggregation directly — they
+# deliberately do NOT route through the graph builder or test the
+# multi-node wiring; that path is covered in `test_analyze_graph_wiring.py`.
+# Aggregate-accounting drift would otherwise pass the existing tests
+# because the graph-wiring tests use mocks returning zero-valued cache
+# tokens and a single LLM call (so the split + multi-call sum paths
+# never fire).
+
+
+class _ConfigurableTokensStubProvider:
+    """`LLMProvider` stub returning a configurable token-count response.
+
+    Two configurations:
+      - `tokens_per_call`: a single dict applied to every call.
+      - `token_specs`: a list of dicts, one per expected call, returned
+        in order. Raises `IndexError` if calls exceed the list length —
+        a fixture overrun is a test bug.
+
+    Per-call captures live on `self.calls` for assertion. Used only by
+    the two aggregate-accounting regression tests; `_StubLLMProvider`
+    above remains the default scaffolding for outcome tests.
+    """
+
+    def __init__(
+        self,
+        *,
+        response_text: str,
+        tokens_per_call: dict[str, int] | None = None,
+        token_specs: list[dict[str, int]] | None = None,
+    ) -> None:
+        if (tokens_per_call is None) == (token_specs is None):
+            msg = "exactly one of tokens_per_call / token_specs must be set"
+            raise ValueError(msg)
+        self._text = response_text
+        self._tokens_per_call = tokens_per_call
+        self._token_specs = list(token_specs) if token_specs is not None else None
+        self.calls: list[LLMRequest] = []
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self.calls.append(request)
+        if self._token_specs is not None:
+            spec = self._token_specs.pop(0)
+        else:
+            assert self._tokens_per_call is not None  # narrowing for mypy
+            spec = self._tokens_per_call
+        return LLMResponse(
+            text=self._text,
+            model=request.model,
+            input_tokens=spec["input_tokens"],
+            output_tokens=spec["output_tokens"],
+            cache_read_tokens=spec["cache_read_tokens"],
+            cache_write_tokens=spec["cache_write_tokens"],
+            finish_reason="end_turn",
+            latency_ms=250,
+        )
+
+
+@pytest.mark.asyncio
+async def test_aggregate_cache_tokens_keep_read_and_write_distinct(
+    deps: dict[str, Any],
+) -> None:
+    """The aggregate event splits cache reads and cache writes into
+    separate columns because the 12.5× pricing differential makes the
+    lumped field uninformative for cost analysis (cache_write 1.25×
+    base, cache_read 0.1× base). This regression pin would catch a
+    drift that re-lumped them into a single `total_cached_tokens`
+    field.
+
+    Uses values where reads ≠ writes AND both are non-zero — the
+    existing graph-wiring tests' mocks return zero for both, so the
+    split path is uncovered there.
+    """
+    cache_read = 700
+    cache_write = 100
+    assert cache_read != cache_write  # fixture must use distinct values
+
+    deps["provider"] = _ConfigurableTokensStubProvider(
+        response_text=_build_finding_proposal_json(),
+        tokens_per_call={
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+        },
+    )
+    state = _build_review_state()
+
+    await analyze(state, **deps)
+
+    completed = deps["analyze_event_sink"].completed
+    assert len(completed) == 1
+    assert completed[0].total_cache_read_tokens == cache_read
+    assert completed[0].total_cache_write_tokens == cache_write
+
+
+@pytest.mark.asyncio
+async def test_total_cost_usd_is_decimal_sum_then_float_cast(deps: dict[str, Any]) -> None:
+    """`AnalyzeCompletedEvent.total_cost_usd == float(sum_of_per_call_Decimals)`.
+
+    Producer contract: each per-file cost comes back from
+    `compute_cost_usd` as `Decimal`; the main loop accumulates Decimals
+    across files and casts to `float` ONCE at AnalyzeCompletedEvent
+    construction. The prior shape (per-file `float(Decimal)` cast +
+    float-sum) drifted at FP noise (~5e-17 USD per 50 files), and
+    `LLMCallEvent.cost_usd` sum on replay didn't match the aggregate's
+    self-reported `total_cost_usd`.
+
+    Test design: three DEEP files with DIFFERENT token-count tuples per
+    call (so per-call cost Decimals are distinct non-trivial values).
+    Compute the expected aggregate via the same `compute_cost_usd` +
+    Decimal-sum + float-cast path; assert the event's `total_cost_usd`
+    matches exactly. A regression to float-sum-per-call would surface
+    as inequality at FP precision.
+    """
+    paths = ("src/a.py", "src/b.py", "src/c.py")
+    token_specs: list[dict[str, int]] = [
+        {
+            "input_tokens": 1234,
+            "output_tokens": 567,
+            "cache_read_tokens": 89,
+            "cache_write_tokens": 12,
+        },
+        {
+            "input_tokens": 2345,
+            "output_tokens": 678,
+            "cache_read_tokens": 90,
+            "cache_write_tokens": 23,
+        },
+        {
+            "input_tokens": 3456,
+            "output_tokens": 789,
+            "cache_read_tokens": 11,
+            "cache_write_tokens": 34,
+        },
+    ]
+    assert len(paths) == len(token_specs)
+
+    changed_files = tuple(_build_changed_file(path=p) for p in paths)
+    pr_context = _build_pr_context(changed_files=changed_files)
+    triage_result = _build_triage_result(
+        file_tiers=dict.fromkeys(paths, ReviewTier.DEEP),
+    )
+    state = _build_review_state(pr_context=pr_context, triage_result=triage_result)
+
+    provider = _ConfigurableTokensStubProvider(
+        response_text=_build_finding_proposal_json(),
+        token_specs=token_specs,
+    )
+
+    from outrider.llm.pricing import compute_cost_usd
+
+    model = "claude-sonnet-4-6"  # matches the `analyze_model` in default deps
+    expected_decimal_sum = sum(
+        (
+            compute_cost_usd(
+                model,
+                input_tokens=s["input_tokens"],
+                cache_write_tokens=s["cache_write_tokens"],
+                cache_read_tokens=s["cache_read_tokens"],
+                output_tokens=s["output_tokens"],
+            )
+            for s in token_specs
+        ),
+        start=Decimal("0"),
+    )
+    expected_total_cost_usd = float(expected_decimal_sum)
+
+    # Override the default provider with our varying-tokens stub; keep
+    # the rest of the dep bundle.
+    deps_copy: dict[str, Any] = {**deps, "provider": provider}
+
+    await analyze(state, **deps_copy)
+
+    completed = deps_copy["analyze_event_sink"].completed
+    assert len(completed) == 1
+    assert completed[0].n_llm_calls == 3  # all three files fired
+    # The structural equation: aggregate equals one-float-cast of the
+    # Decimal-sum. A float-sum-per-call regression would (occasionally)
+    # produce a different float at FP-noise precision.
+    assert completed[0].total_cost_usd == expected_total_cost_usd
