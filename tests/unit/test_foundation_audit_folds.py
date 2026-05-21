@@ -239,8 +239,7 @@ def test_compute_proposal_hash_canonicalizes_aliased_paths() -> None:
     contract and the same logical file gets multiple proposal_hash
     rows on the audit trail.
 
-    Per the round-2-crazy-audit DI-H1 path-canonicalization rule
-    (spec.md §1): all path-bearing inputs to identity hashes go
+    Per spec.md §1: all path-bearing inputs to identity hashes go
     through `validate_diff_path` first.
     """
     base_kwargs: dict[str, object] = {
@@ -802,10 +801,9 @@ def test_canonicalize_for_hash_rejects_basemodel_in_list() -> None:
 def test_canonicalize_for_hash_rejects_tuple_value() -> None:
     """Tuples are NOT part of the JSON-native contract this module
     enforces, even though `json.dumps` would silently serialize them
-    as arrays. Implicit shape coercion is the kind of bug class the
-    chokepoint is designed to prevent. Callers convert tuple→list
-    explicitly so the shape decision is intentional at the call site.
-    Post-PR review fold (CodeRabbit + Copilot convergent).
+    as arrays. Implicit shape coercion is the bug class the chokepoint
+    prevents. Callers convert tuple→list explicitly so the shape
+    decision is intentional at the call site.
     """
     from outrider.policy.canonical import canonicalize_for_hash
 

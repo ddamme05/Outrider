@@ -1,44 +1,31 @@
-# Analyze response parser per specs/2026-05-19-analyze-node.md §6
+# See specs/2026-05-19-analyze-node.md §6
 """Analyze parser — proof-boundary admission for model proposals.
 
-**Boundary contract.** The parser is a PURE function. It takes a raw
-provider response text plus the per-file context the node body has
-already assembled, applies the spec §6 10-step admission flow, and
-returns a `ParserResult` carrying:
+**Boundary contract.** Pure function. Takes a raw provider response
+plus the per-file context the node body already assembled, applies
+the spec §6 10-step admission flow, and returns a `ParserResult`:
 
-- admitted `ReviewFinding`s (one per proposal that passed every gate),
-- collected `TraceCandidate`s (from both admitted and proposal-level-
-  rejected raw proposals; response-level rejections produce none),
+- admitted `ReviewFinding`s (one per proposal passing every gate),
+- collected `TraceCandidate`s (from both admitted and proposal-rejected
+  raw proposals; response-level rejections produce none),
 - proposal-level rejection payloads (one per proposal that failed
   admission — finding-type-not-in-enum, evidence-tier-not-in-enum,
   query-match-id-not-in-registry, trace-path-not-admissible,
   span-outside-scope-unit, span-outside-file, schema-construction-
   failed),
-- a single optional response-level rejection payload (set iff parser
-  step 0 — `AnalyzeResponseRaw.model_validate_json` — failed),
+- a single optional response-level rejection (set iff step 0 —
+  `AnalyzeResponseRaw.model_validate_json` — failed),
 - counters for `AnalyzeCompletedEvent`.
 
-**No IO.** The parser does NOT call the audit persister and does NOT
-emit events. The node body lifts each `ProposalRejection` to a
+**No IO.** The parser does NOT call the persister and does NOT emit
+events. The node body lifts each `ProposalRejection` to a
 `FindingProposalRejectedEvent` and each `ResponseRejection` to an
-`AnalyzeResponseRejectedEvent` by adding the audit-context fields
-(`review_id`, `event_id`, `timestamp`, `sequence_number`, `is_eval`,
-`node_id`, `event_type`) at construction, then persists. This keeps
-the proof-boundary admission tests independent of the persister
-mock surface — the parser is exercisable as a pure-data
-transformation.
+`AnalyzeResponseRejectedEvent` by adding audit-context fields at
+construction. The parser is exercisable as a pure-data transformation
+independent of the persister mock surface.
 
-Spec divergence (recorded for Actual Outcome): spec §6 uses "emit"
-throughout the step descriptions. The shipped shape interprets that
-as "produces the event content"; the node body owns persistence per
-the locked "boring node body" framing in the user-direction memo
-2026-05-20.
-
-**Implementation status.** All 10 spec §6 steps (0–10) ship; the
-parser produces complete `ParserResult`s for every input shape. The
-admission flow's source comments cross-reference the spec section
-they implement; see `tests/unit/test_analyze_parser.py` for the
-behavior pins.
+Spec uses "emit" in step descriptions; the shipped shape reads that as
+"produces the event content," with persistence owned by the node body.
 """
 
 from __future__ import annotations
@@ -256,9 +243,7 @@ def parse_analyze_response(
     # `FindingProposalRejectedEvent` holds: `claimed_evidence_tier is None`
     # iff `rejection_reason == "evidence_tier_not_in_enum"`. Finding-type
     # admission runs SECOND (spec §6 step 3) and carries the parsed enum
-    # value through to its rejection event when it fires. The spec section
-    # headers were originally inverted (finding-type as §2, evidence-tier
-    # as §3) and renumbered 2026-05-21 to match this order.
+    # value through to its rejection event when it fires.
     admitted_findings: list[ReviewFinding] = []
     proposal_rejections: list[ProposalRejection] = []
     trace_candidates: list[TraceCandidate] = []
@@ -612,30 +597,19 @@ def _collect_trace_candidates_for(
     rejections never reach this helper because no proposals exist at
     that point.
     """
-    # Raw layer carries `candidate_path_raw` (model's unvalidated
-    # claimed path); admitted `TraceCandidate.candidate_path` runs the
-    # value through `validate_diff_path` via its field validator. Two
-    # adversarial cases — both produce a `CoordinateError` /
-    # `ValidationError` mid-iteration if not guarded:
+    # Canonicalize `candidate_path_raw` ONCE up-front and use the result
+    # for both `compute_candidate_id` and `TraceCandidate(...)`. Two
+    # failure shapes are guarded:
     #
-    # 1. Hostile path: `candidate_path_raw="../../etc/passwd"` (or
-    #    Trojan-Source / NUL / shell-metachar / absolute) →
-    #    `validate_diff_path` raises `CoordinateError` (a `ValueError`
-    #    subclass; Pydantic re-raises as `ValidationError`).
-    # 2. Alias path: `candidate_path_raw="./src/foo.py"` →
-    #    `validate_diff_path` succeeds and canonicalizes to
-    #    `"src/foo.py"`, but `compute_candidate_id` was called with the
-    #    RAW (alias) path. The schema's
-    #    `_enforce_candidate_id_matches_payload` validator recomputes
-    #    `compute_candidate_id` over the canonical path → mismatch →
-    #    `ValueError` at construction.
+    # - Hostile path (e.g. `"../../etc/passwd"`, Trojan-Source, NUL,
+    #   absolute) → `validate_diff_path` raises `CoordinateError`.
+    # - Alias path (e.g. `"./src/foo.py"`) canonicalizes successfully,
+    #   but feeding the RAW path to `compute_candidate_id` produces an
+    #   id the schema's recomputation rejects.
     #
-    # Both crash `parse_analyze_response` mid-iteration, dropping every
-    # prior admitted finding AND breaking the
+    # Without the up-front canonicalize + try/except, a single bad
+    # candidate crashes the whole pass and breaks the
     # `n_proposals_seen == admitted + rejected` accounting equation.
-    # Fix: canonicalize the path ONCE, use it for both `compute_candidate_id`
-    # and `TraceCandidate(...)`, and wrap construction in try/except so a
-    # single hostile candidate is dropped rather than crashing the pass.
     out: list[TraceCandidate] = []
     for raw_cand in raw.trace_candidates:
         try:

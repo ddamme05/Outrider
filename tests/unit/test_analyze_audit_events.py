@@ -3,8 +3,7 @@
 
 Pins:
 - `AnalyzeCompletedEvent`: counter cross-field validators
-  (`_enforce_proposal_accounting`, `_enforce_response_accounting`) per
-  post-split audit S7 + round-2-post-split F6.
+  (`_enforce_proposal_accounting`, `_enforce_response_accounting`).
 - `FindingProposalRejectedEvent`: bidirectional
   `claimed_evidence_tier`/`rejection_reason` coupling; all 7 rejection
   reasons accepted; pattern guards on hash fields.

@@ -1,8 +1,7 @@
-"""Analyze node body tests — spec §7 first + second landings.
+"""Analyze node body tests — spec §7.
 
-Covers the user-pinned outcomes (first landing) plus the expanded
-file-outcome coverage, changed-region intersection, and registry-
-query firing landed in the second pass (2026-05-20):
+Covers file-outcome coverage, changed-region intersection, and
+registry-query firing:
 
 1. **Clean file** — tier=DEEP, parses cleanly, model returns admittable
    proposal → 1 admitted finding; FileExaminationEvent(parse_status="clean").
@@ -924,7 +923,7 @@ async def test_degraded_path_when_has_error_in_changed_scope_unit(
 
 
 # ---------------------------------------------------------------------------
-# Aggregate-accounting regression pins (added 2026-05-21 post-audit-the-audit)
+# Aggregate-accounting regression pins
 # ---------------------------------------------------------------------------
 #
 # Two focused tests pin the producer-side aggregate accounting on

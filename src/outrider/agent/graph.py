@@ -48,10 +48,8 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     `parse_python(...)` call (passed through to `ast_facts/`); resolves
     same-file import paths for the registry walk.
   - `db_factory: async_sessionmaker[AsyncSession]` — required for intake's
-    `reviews.status='skipped'` / `'failed'` writes. Per canonical
-    `docs/spec.md §9.3`, `db_factory` is the first parameter; this spec
-    adds it after the existing two sink params for backward-compat with
-    the triage-node spec's signature precedent.
+    `reviews.status='skipped'` / `'failed'` writes. Per `docs/spec.md
+    §9.3`, `db_factory` is the canonical first parameter.
   - `github_factory: Callable[[int], GitHub]` — required for intake to
     construct a per-installation `GitHub` client on-demand. Per
     `DECISIONS.md#020`, minting happens at intake call-site, not at
@@ -126,17 +124,13 @@ def build_graph(
 ) -> _CompiledTriageGraph:
     """Build the three-node intake → triage → analyze graph.
 
-    Keyword-only arguments to prevent positional-confusion bugs at
-    callsites with multiple deps. Validation order: None checks first
-    (cheaper), then Protocol structural checks.
-
-    Parameter order mirrors the canonical `docs/spec.md §9.3` signature:
-    `db_factory` is first, `github_factory` second, then the LLM provider
-    + model_config + sinks. Because all params are keyword-only,
-    reordering is source-compat for every caller.
+    Keyword-only arguments prevent positional-confusion bugs at callsites
+    with multiple deps. Validation order: None checks first (cheaper),
+    then Protocol structural checks. Parameter order mirrors
+    `docs/spec.md §9.3` (`db_factory` first, `github_factory` second).
 
     Returns a compiled `StateGraph(ReviewState)` ready for
-    `await graph.ainvoke(seed_state)` invocation.
+    `await graph.ainvoke(seed_state)`.
     """
     # Fail-closed: None on any required dep.
     if provider is None:
@@ -156,11 +150,10 @@ def build_graph(
     if github_factory is None:
         raise BuildGraphError("github_factory must not be None")
 
-    # `total_review_budget_tokens` is a public-input integer; validate at
-    # construction so a misconfigured caller fails before analyze ever
-    # runs (rather than at first multiplication inside _compute_per_file_cap).
-    # `bool` is rejected because `isinstance(True, int)` is True in Python
-    # but a boolean budget is never intended.
+    # `total_review_budget_tokens` is a public-input int; validate here so
+    # a misconfigured caller fails before analyze ever runs. `bool` is
+    # rejected explicitly: `isinstance(True, int)` is True in Python, but
+    # a boolean budget is never intended.
     if not isinstance(total_review_budget_tokens, int) or isinstance(
         total_review_budget_tokens, bool
     ):
@@ -170,12 +163,8 @@ def build_graph(
         )
 
     # Non-callable factories would pass the None check but fail at first
-    # intake execution with a confusing TypeError. The cost of one
-    # `callable()` check now is the cost of avoiding a deferred crash
-    # that strands the FIRST review the misconfigured app handles.
-    # `async_sessionmaker` is callable (instances act as session factory
-    # via `__call__`); `github_factory` is `Callable[[int], ...]`. Both
-    # satisfy `callable()`.
+    # intake execution with a confusing TypeError. `callable()` here
+    # surfaces the misconfiguration before any review is dispatched.
     if not callable(db_factory):
         raise BuildGraphError(
             f"db_factory must be callable (got type: {type(db_factory).__name__})"
@@ -257,10 +246,8 @@ def build_graph(
     # would fire alongside the Command and send to BOTH destinations.
     # See module docstring "Routing" section for the full rationale.
     builder.add_edge("triage", "analyze")
-    # Per analyze-node spec §8: V1 wires `analyze → END` unconditionally.
-    # The future `analyze ⇄ trace` loop replaces this edge when the trace
-    # spec lands; pre-wiring it now would produce an un-buildable graph
-    # since trace doesn't exist as a registered node.
+    # V1 wires `analyze → END` unconditionally. The `analyze ⇄ trace`
+    # loop replaces this edge when trace lands as a registered node.
     builder.add_edge("analyze", END)
     return builder.compile()
 

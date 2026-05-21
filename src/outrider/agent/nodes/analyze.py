@@ -1,98 +1,63 @@
-# Analyze node body per specs/2026-05-19-analyze-node.md §7.
 """Analyze node body — orchestration around the proof-boundary parser.
 
-The node body is deliberately boring per the user-direction memo
-(2026-05-20, post-§6 audit): assemble inputs, enforce triage gating,
-call provider, hand raw response to the parser, lift parser rejection
-payloads into audit events, return state deltas. Admission logic lives
-in `analyze_parser.py`; the node body does NOT replicate it.
+Assembles inputs, enforces triage gating, calls the provider, hands the
+raw response to `analyze_parser.parse_analyze_response`, lifts parser
+rejection payloads into audit events, returns state deltas. Admission
+logic lives in `analyze_parser.py`; this module does NOT replicate it.
 
-**Convention (matches `agent/nodes/triage.py`):** `async def analyze(...)`
-with kwarg-bound deps wired at graph-construction time via
-`functools.partial`. No `make_analyze_node` factory; the closure
-happens at the partial-application call site. Spec §7 originally
-described a `make_analyze_node(...)` factory shape; shipped follows
-the triage convention. Documented in the spec's Actual Outcome.
+Wiring: `async def analyze(...)` with kwarg-bound deps; `build_graph`
+binds them via `functools.partial` (same convention as triage).
 
-**Provider-failure policy.** `LLMProviderError` subclasses propagate
-out of `provider.complete()` without a try/except wrapper — same as
-triage. If the provider fails on file N of M, files 0..N-1's audit
-events have already landed (FileExaminationEvent, FindingEvent,
-ProposalRejection events); the start `ReviewPhaseEvent` is dangling
-without a matching end. That dangling-start signals "this pass was
-interrupted" in audit replay. Broad `try/except` around the per-file
-loop would silently mask transport failures as some made-up
-skip/degrade outcome — the spec's emission-ordering invariant
-(parser-decision counters from local bookkeeping, not re-read audit
-stream) is what makes the partial-state landing auditable.
+**Provider-failure policy.** `LLMProviderError` propagates without a
+try/except wrapper. On mid-loop failure, files 0..N-1's audit events
+have already landed and the start `ReviewPhaseEvent` is dangling
+without a matching end — that's the audit signal for "pass
+interrupted." A blanket try/except would mask transport failures as
+fake skip outcomes.
 
-**Event ordering / counter source-of-truth.** Local accumulators
-(`admitted_findings`, `proposal_rejections`, counters) are populated
-during the per-file iteration from `ParserResult.counters` returned
-by the parser. `AnalyzeCompletedEvent` at step 5 reads from these
-accumulators — never from re-reading the audit stream. The shipped
-`_enforce_proposal_accounting` validator backstops drift; the
-producer-side accounting is required to be correct, not just
-catch-on-construction.
+**Counter source-of-truth.** Local accumulators (populated from
+`ParserResult.counters`) feed `AnalyzeCompletedEvent` — never re-read
+from the audit stream. `_enforce_proposal_accounting` validator
+backstops drift; producer-side correctness is the contract.
 
-**Landing scope (second landing, 2026-05-20).** Five file outcomes
-land per spec §7 step 3a:
+**File outcomes** (spec §7 step 3a):
 
-- `clean+full_llm` — file parses cleanly, has scope units in the
-  changed regions, no `has_error` in those units, cost gate passes;
-  full LLM call + parser invocation with the included scope units +
-  pre-fired registry query-match-id set.
+- `clean+full_llm` — clean parse, scope units intersect changed
+  regions, no `has_error` in those units, cost gate passes.
 - `degraded+degraded_llm` — clean parse but tree-sitter `has_error`
-  ERROR nodes intersect a changed scope unit; degraded LLM call with
-  `degradation_reason="tree_has_error_in_changed_regions"`. Registry
-  queries skipped (no structurally-trustworthy tree); parser admits
-  only JUDGED via `span_within_file`.
-- `failed+degraded_llm` — `parse_python` returned `parser_outcome=
-  "failed"` (V1: UTF-8 decode failure) AND the patch contains added
-  text; degraded LLM call with `degradation_reason="parse_failed"`.
-- `skipped+NO_REVIEWABLE_CONTEXT` — no content at all (binary,
-  unfetchable both sides), OR parse failure with no added text
-  (pure deletion). No LLM call.
+  nodes intersect a changed scope unit. `degradation_reason=
+  "tree_has_error_in_changed_regions"`; parser admits JUDGED only
+  via `span_within_file`.
+- `failed+degraded_llm` — UTF-8 decode failure (V1 only failed-path
+  trigger) AND patch contains added text. `degradation_reason=
+  "parse_failed"`.
+- `skipped+NO_REVIEWABLE_CONTEXT` — no content available OR parse
+  failure with no added text. No LLM call.
 - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope unit
-  intersects the changed regions (comment-only / whitespace-only /
-  module-level changes), OR clean parse with no patch info. No LLM call.
-- `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an LLM
-  call but the cost gate's per-file ceiling OR remaining-budget
-  check failed; no LLM call.
+  intersects the changed regions, OR clean parse with no patch.
+- `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
+  call.
 
-Parser-stage skips returned by `parse_python` (`OVERSIZED`,
-`VENDORED`, `GENERATED_FILENAME`, `MINIFIED`, `GENERATED_BANNER`) are
-passed through as `FileExaminationEvent(parse_status="skipped",
-skip_reason=<parser's reason>)`. Spec §7 doesn't enumerate these —
-the spec assumes upstream filtering — but `parse_python` returns
-them, so analyze must route them rather than crash.
+Parser-stage skips (`OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`,
+`MINIFIED`, `GENERATED_BANNER`) pass through with the parser's
+`skip_reason` preserved on `FileExaminationEvent`.
 
-**Changed-region intersection.** Performed via three coordinates
-surfaces: `lookup_patched_file` (locate this file's `PatchedFile`),
-`scope_unit_has_added_lines` (require at least one added line in the
-scope unit's range), and `scope_unit_diff_hunks` (clip the hunk text
-to that range). A scope unit is "included" iff BOTH checks pass:
-context-only intersections don't include the unit, and deletion-only
-edits inside an otherwise-unchanged function currently route to
-`NO_CHANGED_SCOPE_UNITS` (V1 limitation; tracked as FUP-050). Empty
-patch / file absent from patch → `None`, which short-circuits to
-`NO_CHANGED_SCOPE_UNITS` for clean parses.
+**Changed-region intersection.** A scope unit is "included" iff BOTH
+`coordinates.scope_unit_has_added_lines` AND
+`coordinates.scope_unit_diff_hunks` return non-empty. Context-only
+intersections don't include the unit. Deletion-only edits inside an
+otherwise-unchanged function currently route to
+`NO_CHANGED_SCOPE_UNITS` — V1 limitation tracked as FUP-050.
 
-**Registry-query firing.** For clean+full_llm outcomes, every id in
+**Registry-query firing.** For clean+full_llm, every id in
 `queries.registry.REGISTERED_QUERY_IDS` is fired against the file
-content; the set of ids that produce at least one match becomes
-`query_match_id_set` passed to the parser. The parser's OBSERVED
-admission rejects any claim whose id isn't in this set.
+content; the matching subset becomes `query_match_id_set` passed to
+the parser. OBSERVED claims with an id outside the set reject.
 
-**Token estimation.** `_BYTES_PER_TOKEN = 3` (code-leaning).
-Anthropic's BPE tokenizer operates on UTF-8 byte sequences;
-`_estimate_tokens` counts bytes (not Python codepoints) and rounds
-up. Bytes-not-codepoints preserves the over-estimate safety
-direction for multi-byte-heavy files (CJK comments, emoji,
-accented identifiers); ceiling division avoids floor-rounding
-small fragments down to undercount. The estimator's job is
-order-of-magnitude blowup detection, not a tight count; a
-`tiktoken`-grade estimate is FUP-049 scope.
+**Token estimation.** `_estimate_tokens` counts UTF-8 bytes with
+ceiling division (`_BYTES_PER_TOKEN = 3`). Conservative-up for code-
+heavy / multi-byte content; over-estimates the budget rather than
+under-estimates. A tokenizer-grade estimate is FUP-049 scope.
 """
 
 from __future__ import annotations
@@ -152,97 +117,56 @@ if TYPE_CHECKING:
     from outrider.schemas.pr_context import ChangedFile
 
 
-# Spec §7 step 3d / FUP-044 V1 guard: one file can starve at most four
-# others. Per-file ceiling = total_review_budget * 0.25. Richer fairness
-# policy (iteration ordering, per-installation budgets) is FUP-044 V1.5
-# scope.
+# One file can starve at most `1 / PER_FILE_CAP_FRACTION` others on the
+# review-wide budget; richer fairness (iteration ordering, per-installation
+# budgets) is FUP-044.
 PER_FILE_CAP_FRACTION: Final[float] = 0.25
 
-# Default per-review token budget. Caller can override via the
-# `total_review_budget_tokens` kwarg. The default is intentionally
-# generous (200K tokens / review ≈ several Sonnet calls of bounded
-# prompts); production wires a tighter value from settings.
+# Default per-review token budget; production wires a tighter value
+# from settings.
 DEFAULT_REVIEW_BUDGET_TOKENS: Final[int] = 200_000
 
-# Hard ceiling on the per-file pre-flight token estimate, applied
-# alongside `PER_FILE_CAP_FRACTION * total_review_budget_tokens`. With
-# `PER_FILE_CAP_FRACTION = 0.25`, a caller passing
-# `total_review_budget_tokens=2_000_000` (e.g., a "monorepo PR" knob)
-# would silently lift the per-file cap to 500K tokens — well past any
-# reasonable Sonnet-call envelope. The absolute ceiling closes that
-# gate independently of caller configuration; tuning headroom remains
-# in `PER_FILE_CAP_FRACTION`.
+# Absolute ceiling on the per-file pre-flight token estimate, applied
+# alongside `PER_FILE_CAP_FRACTION * budget`. Decouples the cap from
+# caller-configurable budget — a "monorepo PR" knob can't lift the
+# per-file cap into call-overflow territory.
 MAX_PER_FILE_TOKENS_ABSOLUTE: Final[int] = 60_000
 
-# Token-estimate divisor for `_estimate_tokens`. Code-leaning ratio
-# (1 token ≈ 3 bytes) over-estimates token count vs Anthropic's
-# published 1:4 prose heuristic, which makes the cost gate fail safer
-# for code-heavy prompts. A `tiktoken`-grade estimate is FUP-049.
+# Bytes-per-token divisor for `_estimate_tokens`. Code-leaning (over-
+# estimates vs Anthropic's prose 1:4 heuristic); the cost gate fails
+# safer. Tokenizer-grade replacement is FUP-049.
 _BYTES_PER_TOKEN: Final[int] = 3
 
-# Degraded-context bounds per spec §7 step 3c: ≤100 unidiff Line
-# objects total AND ≤8192 chars of text content. Either cap closes
-# the gate; the line count prevents many-tiny-lines fan-out, the byte
-# cap prevents pathological few-very-long-lines blowup.
+# Degraded-context bounds per spec §7 step 3c: ≤100 unidiff Line objects
+# AND ≤8192 chars. Either cap closes the gate.
 _DEGRADED_HUNK_LINE_CAP: Final[int] = 100
 _DEGRADED_HUNK_CHAR_CAP: Final[int] = 8192
 
 
 def _estimate_tokens(text: str) -> int:
-    """Conservative token estimate for the pre-flight cost gate.
+    """UTF-8 byte count with ceiling division by `_BYTES_PER_TOKEN`.
 
-    Counts UTF-8 BYTES (not Python codepoints) and rounds up. Both
-    choices preserve the over-estimate safety direction the cost gate
-    needs:
-
-    - Bytes, not codepoints: Anthropic's BPE tokenizer operates on
-      UTF-8 byte sequences. `len(str)` returns codepoint count, so a
-      CJK character (1 codepoint, 3 bytes) under-counts as `1 // 3 == 0`
-      tokens; a 4-byte emoji codepoint under-counts even worse. Switching
-      to bytes restores the documented "over-estimate, fail safer" claim
-      for multi-byte-heavy files (CJK comments, accented identifiers,
-      emoji in tests).
-    - Ceiling division `(n + d - 1) // d`: floor-division would round
-      a 4-byte fragment down to 1 token (`4 // 3 == 1`); ceiling rounds
-      to 2 (`-(-4 // 3) == 2`). Conservative-up is the right direction
-      for a budget guard.
-
-    The estimator's job is order-of-magnitude blowup detection, not a
-    tight count; a `tiktoken`-grade estimator is FUP-049.
+    Conservative-up: over-estimates rather than under-estimates so the
+    cost gate fails safer. Codepoint-counting would under-count multi-
+    byte sequences (a 3-byte CJK char → `1 // 3 == 0` tokens). The
+    estimator's job is order-of-magnitude blowup detection, not a tight
+    count; a tokenizer-grade estimate is FUP-049.
     """
     byte_len = len(text.encode("utf-8"))
     return (byte_len + _BYTES_PER_TOKEN - 1) // _BYTES_PER_TOKEN
 
 
 def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
-    """Per-file token cap for the cost gate.
+    """Min of fractional cap (`budget * PER_FILE_CAP_FRACTION`) and
+    absolute cap (`MAX_PER_FILE_TOKENS_ABSOLUTE`). Budget ≤ 0 returns a
+    non-positive cap, which gates every file to `COST_BUDGET_EXHAUSTED`
+    — fail-closed kill switch for a misconfigured budget.
 
-    Combines two ceilings; the tighter one wins:
-      - Fraction of total review budget (`PER_FILE_CAP_FRACTION * budget`)
-        — bounds budget consumption by any single file so an oversized
-        file at iteration head doesn't drain the per-review budget. With
-        the V1 0.25 fraction, one file can starve at most four others.
-      - Absolute ceiling (`MAX_PER_FILE_TOKENS_ABSOLUTE`) — independent of
-        caller-configurable budget. Guards against budget inflation
-        (e.g., a "monorepo PR" knob setting `total_review_budget_tokens`
-        to 2M tokens) silently lifting the per-file cap into Sonnet-call-
-        overflow territory.
-
-    Extracted to a named helper so the policy is independently testable
-    (the previous inline `min(...)` expression at the call site was
-    indirectly tested via the cost-gate path; pinning the helper's return
-    value directly catches drift in either ceiling without LLM-flow
-    setup).
-
-    **Kill-switch semantics at budget ≤ 0.** The helper does NOT raise
-    on non-positive budget — it returns a non-positive cap, which
-    downstream produces `estimated_tokens > cap` for every prompt
-    (since `analyze_prompt.MAX_TOKENS` is positive). Effect: every
-    file skips with `COST_BUDGET_EXHAUSTED`, no LLM call fires for the
-    pass. This is the safe outcome for a misconfigured budget — fail
-    closed, not fail open. Pinned by
-    `test_compute_per_file_cap_zero_budget_is_kill_switch` and
-    `_negative_budget_is_kill_switch`.
+    The fractional ceiling bounds budget consumption per file
+    (one file can starve at most `1/PER_FILE_CAP_FRACTION` others).
+    The absolute ceiling stays independent of caller-configurable
+    budget, preventing budget inflation from lifting the cap into
+    call-overflow territory.
     """
     return min(
         int(total_review_budget_tokens * PER_FILE_CAP_FRACTION),
@@ -303,11 +227,10 @@ async def analyze(
         )
     )
 
-    # Local accumulators. These are the SINGLE source of truth for the
-    # AnalyzeCompletedEvent counters at step 5. Reading them back from
-    # the audit stream would couple counter correctness to emission
-    # ordering and break the `_enforce_proposal_accounting` equation
-    # under future concurrent-emit refactors.
+    # Local accumulators — single source of truth for AnalyzeCompletedEvent
+    # counters. Re-reading from the audit stream would couple counter
+    # correctness to emission ordering and break the proposal-accounting
+    # equation under concurrent-emit refactors.
     admitted_findings: list[ReviewFinding] = []
     trace_candidates: list[TraceCandidate] = []
     files_examined: list[str] = []
@@ -423,12 +346,9 @@ async def analyze(
             total_cache_read_tokens=total_cache_read_tokens,
             total_cache_write_tokens=total_cache_write_tokens,
             total_output_tokens=total_output_tokens,
-            # Decimal-accumulated → float-cast ONCE at emission; the per-call
-            # `LLMCallEvent.cost_usd` is the same Decimal cast per call, so
-            # the aggregate matches `sum(LLMCallEvent.cost_usd)` on replay
-            # to within float-representation precision (much tighter than
-            # the prior float-accumulated approach which drifted at ~5e-17
-            # USD per 50 files).
+            # Decimal-summed across files, cast to float once. Matches
+            # `sum(LLMCallEvent.cost_usd)` to within one float-cast step
+            # rather than per-file FP drift.
             total_cost_usd=float(total_cost_decimal),
             pricing_version=PRICING_VERSION,
             policy_version=active_policy_version,
@@ -462,18 +382,12 @@ class _FileOutcome:
     """Per-file processing result. Populated by `_process_one_file` and
     consumed by the main loop's accumulators.
 
-    `cache_read_tokens` and `cache_write_tokens` are tracked separately
-    rather than summed into one `cached_tokens` field — the aggregate
-    `AnalyzeCompletedEvent.total_cache_read_tokens` /
-    `total_cache_write_tokens` columns split them per the 12.5× pricing
-    differential (cache_write 1.25× base, cache_read 0.1× base).
-
-    `cost_decimal` is the per-file cost as `Decimal` from
-    `compute_cost_usd`; the main loop sums Decimals across files and
-    casts to float ONCE at `AnalyzeCompletedEvent` construction. The
-    prior `cost_usd: float` per-file + float-sum approach drifted at FP
-    noise (5e-17 USD for 50 files) against the per-call `LLMCallEvent.cost_usd`
-    sum on replay; Decimal accumulation eliminates the drift.
+    Cache reads and writes stay separate (cache_write bills at 1.25×
+    base, cache_read at 0.1×); the 12.5× cost differential would be
+    hidden if summed. `cost_decimal` is the per-file `Decimal` cost;
+    the main loop sums Decimals and casts to float once at the
+    aggregate event, eliminating per-file FP drift against the per-call
+    `LLMCallEvent.cost_usd` sum.
     """
 
     parse_status: str
@@ -486,15 +400,11 @@ class _FileOutcome:
     estimated_tokens: int
 
 
-# Spec §7 step 3f: `LLMRequest.degradation_reason` literal values per
-# `_enforce_degradation_provenance` at `llm/base.py`. Aliased here so
-# the outcome-determination block in `_process_one_file` carries the
-# narrow type rather than `str`.
+# Bidirectionally coupled with `LLMRequest.degraded_mode` per
+# `_enforce_degradation_provenance` (llm/base.py).
 _DegradationReason = Literal["parse_failed", "tree_has_error_in_changed_regions"]
 
-# Spec §7 step 3e: `FileExaminationEvent.parse_status` literal values.
-# Aliased so the outcome-determination block carries the narrow type
-# rather than `str`.
+# `FileExaminationEvent.parse_status` values for the analyze node.
 _ParseStatus = Literal["clean", "failed", "degraded", "skipped"]
 
 
@@ -573,24 +483,15 @@ def _assemble_scope_unit_context(
 ) -> str:
     """Render the included scope units as the prompt's `scope_unit_context` block.
 
-    V1 minimum-viable shape: per-unit kind + qualified name + line
-    range + raw body extract. Same-file callers/callees/imports/
-    decorators (spec §5's full file-scoped context) are deferred to
-    the trace-spec landing; this commit's intersection alone is the
-    structural defense against the over-broad-context cost issue the
-    user flagged.
+    V1 shape is per-unit kind + qualified name + line range + raw body
+    extract. Same-file callers/callees/imports/decorators land with the
+    trace spec.
 
-    The body extract is taken via UTF-8 byte slicing (`ScopeUnit.byte_start`
-    / `byte_end`) because tree-sitter byte offsets land on char
-    boundaries per `parse_python`'s contract. The decode uses
-    `errors="replace"` as defense-in-depth: under the producer contract
-    the bytes ARE valid UTF-8 (they came from `content.encode("utf-8")`
-    + tree-sitter offsets that land on char boundaries), so `errors=
-    "strict"` would also work. The replace policy surfaces a producer
-    bug as a U+FFFD placeholder in the prompt rather than crashing the
-    pass mid-render — preserving the audit signal (FileExaminationEvent
-    + provider call) is preferable to losing the per-file decision row
-    on a parser-internal edge case.
+    Body extraction uses UTF-8 byte slicing (`ScopeUnit.byte_start` /
+    `byte_end`) because `parse_python` guarantees byte offsets land on
+    char boundaries. `errors="replace"` surfaces a producer bug as
+    U+FFFD in the prompt rather than crashing mid-render — preserving
+    the audit signal is preferable to losing the per-file row.
     """
     source_bytes = file_content.encode("utf-8")
     blocks: list[str] = []
@@ -702,9 +603,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       "skipped"` (`OVERSIZED`, `VENDORED`, etc.); the parser's
       `skip_reason` is the audit value.
     """
-    # Step 3a: content selection + outcome determination. Explicit
-    # `is not None` (not `or`) so an empty `content_head` ("") doesn't
-    # fall through to `content_base` and analyze stale base content.
+    # Explicit `is not None` (not `or`) so an empty `content_head` ("")
+    # doesn't fall through to `content_base` and analyze stale content.
     if changed_file.content_head is not None:
         content = changed_file.content_head
     elif changed_file.content_base is not None:
@@ -733,17 +633,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     )
 
     # Parser-stage skip (VENDORED, OVERSIZED, GENERATED_FILENAME,
-    # MINIFIED, GENERATED_BANNER). The parser already decided. Pass
-    # through with its skip_reason — spec §7 doesn't enumerate this
-    # path but `parse_python` returns it; routing rather than
-    # crashing preserves audit visibility.
+    # MINIFIED, GENERATED_BANNER). Pass through the parser's skip_reason
+    # — routing preserves audit visibility vs crashing.
     if parse_result.parser_outcome == "skipped":
         # ParseResult validator guarantees skip_reason non-None when
-        # parser_outcome="skipped"; the local rebind narrows for mypy
-        # and the runtime check is documentation of an upstream
-        # invariant rather than a defensive gate.
+        # parser_outcome="skipped"; rebind narrows for mypy.
         parser_skip_reason = parse_result.skip_reason
-        if parser_skip_reason is None:  # validator-impossible, kept for type narrowing
+        if parser_skip_reason is None:  # validator-impossible; kept for narrowing
             raise RuntimeError(
                 "ParseResult invariant violated: parser_outcome='skipped' "
                 "requires non-None skip_reason"
@@ -756,12 +652,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             skip_reason=parser_skip_reason,
         )
 
-    # Locate the file's `PatchedFile` for the changed-region
-    # intersection. None covers three cases: no patch (binary /
-    # oversized GitHub response), file absent from a well-formed
-    # patch, or path-validation failure on `changed_file.path` (the
-    # `coordinates` helper returns None rather than raising for
-    # these per its boolean-helper policy).
+    # `None` covers three cases: no patch (binary / oversized response),
+    # file absent from a well-formed patch, or path-validation failure.
+    # The `coordinates` helper returns None rather than raising per its
+    # boolean-helper policy.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
     # Outcome branch: parser_outcome == "failed" (V1: UTF-8 decode failure).
@@ -816,15 +710,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
 
     # Step 3c: assemble the (system, user) prompt pair.
     if degraded_mode:
-        # `patched_file` is non-None on both degraded branches by
-        # construction: the failed path required `_has_addable_lines`
-        # (None would have AttributeError'd inside the helper), and
-        # the clean path early-returned NO_CHANGED_SCOPE_UNITS when
-        # patched_file was None. Same for `degradation_reason`: the
-        # `degraded_mode = degradation_reason is not None` derivation
-        # above pins the implication. The runtime checks below narrow
-        # for mypy without re-asserting upstream invariants as
-        # adversarial-input gates.
+        # `patched_file` and `degradation_reason` are both non-None on
+        # this branch by construction. The runtime checks below narrow
+        # for mypy without re-asserting upstream invariants.
         if degradation_reason is None or patched_file is None:
             raise RuntimeError(
                 "analyze: degraded_mode true with degradation_reason/patched_file None "
@@ -880,10 +768,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     )
 
     # Step 3f: LLM call + response parse.
-    # Build context_summary per spec §7: one ContextManifestEntry per
-    # included scope unit for clean+full_llm. Empty tuple for degraded
-    # — `_enforce_context_for_scope_nodes` special-cases this per
-    # spec §7 step 3f.
+    # One ContextManifestEntry per included scope unit for clean+full_llm.
+    # Empty tuple for degraded — `_enforce_context_for_scope_nodes`
+    # special-cases this.
     context_summary: tuple[ContextManifestEntry, ...] = (
         ()
         if degraded_mode
@@ -912,19 +799,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         degradation_reason=degradation_reason,
         context_summary=context_summary,
     )
-    # Provider failure (LLMProviderError subclasses) propagates per the
-    # triage convention. No try/except — the dangling start phase event
-    # is the audit signal for "this pass was interrupted."
+    # Provider failure (LLMProviderError subclasses) propagates. No
+    # try/except — the dangling start phase event is the audit signal
+    # for "this pass was interrupted."
     response: LLMResponse = await provider.complete(request)
 
-    # Cost compute via the canonical wrapper. Returns `Decimal`; carried
-    # through `_FileOutcome.cost_decimal` so the main loop can sum across
-    # files in `Decimal` arithmetic and float-cast ONCE at
-    # `AnalyzeCompletedEvent` construction. The four-term recipe matches
-    # what `LLMCallEvent.cost_usd` uses internally (the per-call event
-    # casts the same Decimal to float), so on replay the aggregate
-    # matches `sum(LLMCallEvent.cost_usd)` modulo a single float
-    # representation step rather than per-file FP drift.
+    # Cost: Decimal per file, summed in Decimal arithmetic, float-cast
+    # once at the aggregate event. Matches sum(LLMCallEvent.cost_usd)
+    # modulo a single float-cast step rather than per-file FP drift.
     cost_decimal = compute_cost_usd(
         analyze_model,
         input_tokens=response.input_tokens,

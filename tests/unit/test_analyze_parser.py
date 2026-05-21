@@ -356,8 +356,8 @@ def test_step0_valid_json_wrong_shape_returns_response_rejection() -> None:
 
 def test_step0_response_hash_is_full_text_not_truncated() -> None:
     """`compute_response_hash` hashes the FULL response text (no
-    truncation cap) per the round-3 audit fix. Two responses that
-    differ only past 8 KiB still produce distinct hashes."""
+    truncation cap). Two responses that differ only past 8 KiB still
+    produce distinct hashes."""
     import hashlib
 
     response_text = "x" * 10000  # > 8 KiB; clearly malformed JSON too

@@ -1,67 +1,45 @@
-# Analyze-node prompt template + render helpers per specs/2026-05-19-analyze-node.md §5
+# See specs/2026-05-19-analyze-node.md §5
 """Analyze prompt template, version, knobs, and render helpers.
 
-The analyze node runs one Sonnet call per eligible file. Per the
-analyze-node spec §5, prompts decompose into:
+The analyze node runs one Sonnet call per eligible file. Prompts split
+into:
 
 - **System prompt** (cacheable): Outrider-wide invariants (output schema,
   `FindingType` enum, `EvidenceTier` proof rules, severity-set-by-policy
-  reminder, confidence-is-computed reminder) PLUS file-scoped context
-  (the file's changed scope units with bodies + same-file callers/callees
-  + imports + decorators + pre-fired `query_match_id` set). The
-  combined string is stable across the analyze ⇄ trace loop for one
-  file, so the wrapper's `cache_control: ephemeral` produces a cache
-  hit on the second pass.
-- **User prompt** (volatile): pass-specific instruction + diff hunks
-  clipped to changed scope-unit boundaries. Outside the cache boundary.
+  and confidence-is-computed reminders) PLUS file-scoped context
+  (changed scope units with bodies + same-file callers/callees + imports
+  + decorators + pre-fired `query_match_id` set). Stable for one file
+  across the analyze ⇄ trace loop, so the provider's
+  `cache_control: ephemeral` produces cross-pass cache hits.
+- **User prompt** (volatile): pass-specific instruction + scope-unit-
+  clipped diff hunks. Outside the cache boundary.
 
-For files that hit the degraded path (parse failure or `has_error`
-nodes intersecting changed regions per `parse-errors-degrade-to-judged`),
-the prompt swaps to a `judged`-only directive set; the registry/walk
-context is empty by construction, so the system prompt for degraded
-calls is shorter and the user prompt carries the bounded changed
-hunks instead of scope-unit-clipped ones.
+For degraded calls (parse failure or `has_error` nodes intersecting
+changed regions), the prompt swaps to a `judged`-only directive set;
+the registry/walk context is empty by construction, so the system
+prompt is shorter and the user prompt carries bounded changed hunks
+instead of scope-unit-clipped ones.
 
-Surfaces (per the analyze-node spec's Reference Reconciliation):
+Surfaces:
 
-- `SYSTEM_PROMPT_INVARIANTS: Final[str]` — fully static head of the
-  system prompt; the file-scoped tail is appended by `render(...)`.
-- `USER_TEMPLATE: Final[str]` — pass-specific directives + diff hunks
-  template for clean-outcome calls. `str.format`-style placeholders.
-- `DEGRADED_USER_TEMPLATE: Final[str]` — pass-specific directives +
-  bounded changed hunks for degraded-outcome calls. Admits only
-  `evidence_tier="judged"` proposals.
-- `TEMPLATE: Final[str] = USER_TEMPLATE` — spec-named alias.
-- `VERSION: Final[str] = "analyze-v1"` — flows to
-  `LLMRequest.prompt_template_version`. Bump on any template change.
-- `MAX_TOKENS: Final[int] = 8192` — fits up to ~50 findings per
-  response (the raw layer's `max_length=50` per `AnalyzeResponseRaw`).
-- `TEMPERATURE: Final[float] = 0.0` — deterministic-leaning; minimizes
-  drift across replay.
-- `AnalyzePromptParts` — frozen dataclass result of `render(...)` /
-  `render_degraded(...)`. Mirrors `TriagePromptParts`'s shape rationale:
-  dataclass not NamedTuple so positional unpacking (`(sys, usr) =
-  render(...)`) fails loud at runtime rather than silently masking a
-  swap.
-- `render(...)` — clean-outcome render; builds system prompt from
-  static invariants + file-scoped context and user prompt from
-  pass-specific directives + scope-unit-clipped diff hunks.
-- `render_degraded(...)` — degraded-outcome render; builds the
-  `judged`-only system + degraded user prompts.
+- `SYSTEM_PROMPT_INVARIANTS` — fully static head of the system prompt.
+- `SYSTEM_FILE_CONTEXT_TEMPLATE` — file-scoped tail appended by `render`.
+- `USER_TEMPLATE` — pass directives + diff hunks for clean calls.
+- `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
+  (admits only `evidence_tier="judged"`).
+- `TEMPLATE = USER_TEMPLATE` — spec-named alias.
+- `VERSION = "analyze-v1"` — flows to `LLMRequest.prompt_template_version`.
+  Bump on any template change.
+- `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
+- `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
+- `AnalyzePromptParts` — frozen dataclass result. NOT a NamedTuple, so
+  positional unpacking `(sys, usr) = render(...)` fails loud rather
+  than silently masking a field swap.
+- `render` / `render_degraded` — build the (system, user) pair.
 
 Per `webhook-strings-are-data-not-format-strings`: PR-sourced content
-(file paths, scope-unit names, diff hunks, query match IDs) enters the
-prompt via `str.format(**kwargs)` against structural placeholders;
+enters via `str.format(**kwargs)` against structural placeholders;
 attacker-controlled content cannot escape the template structure.
-
-Implementation note (spec divergence recorded for Actual Outcome):
-the analyze-node spec §5 originally described a `PromptRegistry` class
-+ a `make_analyze_node` factory. The shipped codebase convention
-(`prompts/triage.py` + `async def triage(...)` + `functools.partial`
-at graph wire time) is followed instead — strictly, no local
-abstraction. Dependencies-via-closure is satisfied by `functools.partial`
-in `build_graph(...)`; the spec invariant is preserved, only the
-syntactic surface differs.
 """
 
 from __future__ import annotations
@@ -210,25 +188,17 @@ max 8192 chars of text) to cap the degraded-path cost.
 
 
 TEMPLATE: Final[str] = USER_TEMPLATE
-"""Spec-named alias of USER_TEMPLATE. The spec lists `TEMPLATE` as the
-public surface; USER_TEMPLATE is the locally-named twin for clarity at
-the call site. They refer to the same string object."""
+"""Spec-named alias of USER_TEMPLATE. Same string object."""
 
 
 @dataclass(frozen=True, slots=True)
 class AnalyzePromptParts:
     """Render output: the (system, user) pair for one analyze LLM call.
 
-    Dataclass (not NamedTuple) because dataclasses do NOT subclass tuple,
-    so the swap-prone shape `(system, user) = render(...)` parses and
-    compiles fine but raises `TypeError` at runtime when the iterator
-    protocol fails. The swap cannot ship silently — attribute access
-    (`parts.system_prompt`, `parts.user_prompt`) is the supported
-    pattern; positional unpacking fails loud on the very first call.
-    Mirrors `TriagePromptParts` exactly.
-
-    Both fields are str (validated downstream by `LLMRequest.system_prompt`
-    and `.user_prompt` which carry `min_length=1`).
+    Dataclass, not NamedTuple — positional unpacking
+    `(system, user) = render(...)` raises `TypeError` at runtime rather
+    than silently masking a field swap. Use attribute access:
+    `parts.system_prompt`, `parts.user_prompt`.
     """
 
     system_prompt: str
@@ -243,16 +213,13 @@ def render(
     diff_hunks: str,
     pass_index: int,
 ) -> AnalyzePromptParts:
-    """Build the (system, user) prompt pair for a clean-outcome analyze call.
+    """Build the (system, user) prompt pair for a clean-outcome call.
 
     `system_prompt` carries stable-per-file content (invariants +
-    file-scoped scope-unit/query context) so the provider's
-    `cache_control: ephemeral` produces cross-pass cache hits for the
-    same file. `user_prompt` carries pass-specific volatile content
-    (pass index + scope-unit-clipped diff hunks).
-
-    PR-sourced strings enter via `.format(**kwargs)` against structural
-    placeholders per `webhook-strings-are-data-not-format-strings`.
+    file-scoped scope-unit/query context); the provider's
+    `cache_control: ephemeral` produces cross-pass cache hits. The
+    `user_prompt` carries pass-specific volatile content (pass index +
+    scope-unit-clipped diff hunks).
     """
     system_prompt = SYSTEM_PROMPT_INVARIANTS + SYSTEM_FILE_CONTEXT_TEMPLATE.format(
         file_path=file_path,
@@ -275,15 +242,13 @@ def render_degraded(
 ) -> AnalyzePromptParts:
     """Build the (system, user) prompt pair for a degraded-outcome call.
 
-    `degradation_reason` is the typed LLMRequest field value
-    ("parse_failed" or "tree_has_error_in_changed_regions"); it appears
-    in the prompt so the model knows why it's in degraded mode and
-    why structural-tier claims will be rejected.
+    `degradation_reason` is the typed `LLMRequest` field value
+    (`parse_failed` or `tree_has_error_in_changed_regions`); it appears
+    in the prompt so the model knows structural-tier claims will reject.
 
-    `bounded_hunks` MUST satisfy the per-file degraded budget cap
-    described in spec §7 step 3c: ≤100 `unidiff.Line` objects total
-    AND ≤8192 chars of text. The caller (node body) bounds before
-    calling render_degraded; this function does not re-enforce the cap.
+    `bounded_hunks` MUST already satisfy the per-file degraded budget
+    cap (≤100 unidiff Line objects AND ≤8192 chars). The node body
+    bounds before calling; this function does not re-enforce.
     """
     system_prompt = SYSTEM_PROMPT_INVARIANTS
     user_prompt = DEGRADED_USER_TEMPLATE.format(
