@@ -29,6 +29,7 @@ PRICING_STRATEGY.md
 TEST_ANALYZE.md
 SMOKE_TEST.md
 SESSION_HANDOFF.md
+SANDBOX_Q6_RUNBOOK.md
 
 # --- Environment and secrets ---
 .env

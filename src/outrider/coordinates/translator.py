@@ -17,8 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
-from outrider.coordinates.diff_parser import validate_diff_path
-from outrider.coordinates.errors import CoordinateError
+from outrider.coordinates.diff_parser import _wrap_github_hunks_with_headers, validate_diff_path
+from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
     from unidiff.patch import PatchedFile
@@ -119,7 +119,8 @@ def tree_sitter_to_github(
 
     raise CoordinateError(
         f"head line {head_line} for file {validated_path!r} is not in any hunk's "
-        f"reviewable range (span is in unchanged code within a diffed file)"
+        f"reviewable range (span is in unchanged code within a diffed file)",
+        kind=CoordinateErrorKind.UNCHANGED_REGION,
     )
 
 
@@ -147,15 +148,18 @@ def _validate_byte_span(byte_start: int, byte_end: int, head_byte_length: int) -
     """
     if byte_start < 0 or byte_start >= head_byte_length:
         raise CoordinateError(
-            f"byte_start {byte_start} out of bounds for head_content ({head_byte_length} bytes)"
+            f"byte_start {byte_start} out of bounds for head_content ({head_byte_length} bytes)",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
     if byte_end > head_byte_length:
         raise CoordinateError(
-            f"byte_end {byte_end} out of bounds for head_content ({head_byte_length} bytes)"
+            f"byte_end {byte_end} out of bounds for head_content ({head_byte_length} bytes)",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
     if byte_end < byte_start:
         raise CoordinateError(
-            f"byte_end {byte_end} must be >= byte_start {byte_start} (half-open interval)"
+            f"byte_end {byte_end} must be >= byte_start {byte_start} (half-open interval)",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
 
 
@@ -188,17 +192,32 @@ def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
     and for patches that contain duplicate file entries with the same
     normalized path (webhook-attacker input per trust boundary #5;
     deterministic systems reject ambiguous routing input).
+
+    Hunks-only normalization (per `vendor-payloads-normalized-at-boundary`):
+    the raw `patch` string is run through `_wrap_github_hunks_with_headers`
+    before `PatchSet` so GitHub's `/pulls/{n}/files` shape (hunks-only,
+    no `--- a/...` headers) parses cleanly. Publish is `tree_sitter_to_github`'s
+    first consumer; without this wrap, every call against the wire shape
+    GitHub actually returns would raise `MALFORMED_PATCH`.
     """
+    wrapped = _wrap_github_hunks_with_headers(patch, file_path)
     try:
-        patchset = PatchSet(patch)
+        patchset = PatchSet(wrapped)
     except UnidiffParseError as e:
-        raise CoordinateError(f"malformed patch input: {e}") from e
+        raise CoordinateError(
+            f"malformed patch input: {e}",
+            kind=CoordinateErrorKind.MALFORMED_PATCH,
+        ) from e
 
     matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == file_path]
     if len(matches) > 1:
-        raise CoordinateError(f"patch contains {len(matches)} duplicate entries for {file_path!r}")
+        raise CoordinateError(
+            f"patch contains {len(matches)} duplicate entries for {file_path!r}",
+            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
+        )
     if not matches:
         raise CoordinateError(
-            f"file_path {file_path!r} is not present in the patch ({len(patchset)} files in patch)"
+            f"file_path {file_path!r} is not present in the patch ({len(patchset)} files in patch)",
+            kind=CoordinateErrorKind.FILE_NOT_IN_PATCH,
         )
     return matches[0]
