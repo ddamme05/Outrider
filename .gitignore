@@ -28,6 +28,7 @@ COST_ANALYSIS.md
 PRICING_STRATEGY.md
 TEST_ANALYZE.md
 SMOKE_TEST.md
+SESSION_HANDOFF.md
 
 # --- Environment and secrets ---
 .env
