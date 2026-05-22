@@ -736,6 +736,55 @@ def test_parse_python_failed_path_non_utf8() -> None:
     assert result.has_error == {}
 
 
+# ---------------------------------------------------------------------------
+# BOM / CRLF tolerance (FUP-058 closure 2026-05-21)
+#
+# Source bytes reaching `parse_python` may carry a UTF-8 BOM (files
+# authored on Windows or by editors that emit one) or CRLF line endings.
+# The strict UTF-8 decode at python_adapter.py:Step-2 accepts the BOM
+# (U+FEFF encoded as 0xEF 0xBB 0xBF is valid UTF-8) and tree-sitter
+# tolerates both BOM and CRLF in practice. These tests pin the contract
+# so a future tree-sitter or grammar update that breaks either shape
+# surfaces here, not in production against a real PR.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_python_handles_utf8_bom_prefix() -> None:
+    """A UTF-8 BOM-prefixed source (`\\xef\\xbb\\xbf` followed by valid
+    Python) must parse cleanly. Confirms the strict UTF-8 decode at
+    python_adapter.py:Step-2 accepts BOM (valid UTF-8 for U+FEFF) and
+    tree-sitter produces a non-failed parser outcome with the expected
+    scope unit extracted."""
+    bom = b"\xef\xbb\xbf"
+    src = bom + b"def greet(name: str) -> str:\n    return f'hi {name}'\n"
+
+    result = parse_python(src, "f.py", MagicMock())
+
+    assert result.parser_outcome == "clean", (
+        "BOM-prefixed source did not parse cleanly — tree-sitter or the "
+        "decode path regressed; FUP-058 contract violated"
+    )
+    qualified_names = {s.qualified_name for s in result.scope_units}
+    assert "greet" in qualified_names
+
+
+def test_parse_python_handles_crlf_line_endings() -> None:
+    """Python source with CRLF line endings (\\r\\n) instead of LF (\\n)
+    must parse cleanly. Files authored on Windows / by editors that emit
+    CRLF would otherwise silently fail; tree-sitter's grammar handles
+    both, and this test pins that assumption."""
+    src = b"def greet(name: str) -> str:\r\n    return f'hi {name}'\r\n"
+
+    result = parse_python(src, "f.py", MagicMock())
+
+    assert result.parser_outcome == "clean", (
+        "CRLF-line-ending source did not parse cleanly — tree-sitter or "
+        "the decode path regressed; FUP-058 contract violated"
+    )
+    qualified_names = {s.qualified_name for s in result.scope_units}
+    assert "greet" in qualified_names
+
+
 def test_parse_python_failed_outcome_discards_extracted_tuples() -> None:
     """Pins the contract that `parser_outcome == "failed"` carries the
     empty-tuples shape regardless of which pipeline stage decided the

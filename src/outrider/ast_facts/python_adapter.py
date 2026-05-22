@@ -708,6 +708,17 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
     # `parser_outcome="failed"` return is therefore V1-unreachable
     # through analyze; kept for the raw-bytes intake path (FUP-053) and
     # for direct `parse_python` consumers that hand it untrusted bytes.
+    #
+    # BOM / CRLF tolerance (FUP-058 closed 2026-05-21): a UTF-8 BOM
+    # (`\xef\xbb\xbf`) is valid UTF-8 (encodes U+FEFF), so strict decode
+    # accepts BOM-prefixed source. CRLF line endings are also accepted —
+    # tree-sitter parses both line-ending conventions correctly and
+    # produces scope-unit byte ranges that include the BOM bytes / CR
+    # bytes as-is. Downstream coordinate translation in `coordinates/`
+    # consumes those byte ranges with the same byte view, so the bytes
+    # round-trip. Pinned by `test_parse_python_handles_utf8_bom_prefix`
+    # and `test_parse_python_handles_crlf_line_endings` in
+    # `tests/unit/test_ast_facts_python.py`.
     try:
         source.decode("utf-8")
     except UnicodeDecodeError:
