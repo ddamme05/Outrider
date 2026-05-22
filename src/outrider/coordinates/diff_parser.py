@@ -314,6 +314,61 @@ def validate_diff_path(file_path: str) -> str:
     return pp.as_posix()
 
 
+def _wrap_github_hunks_with_headers(patch: str, file_path: str) -> str:
+    """Synthesize ``--- a/X`` / ``+++ b/X`` file headers around a hunks-only
+    patch so `unidiff.PatchSet` can parse it.
+
+    Wire-format reality: GitHub's ``/pulls/{number}/files`` API returns
+    each file's ``patch`` field as hunks only — no preceding ``--- a/...``
+    / ``+++ b/...`` headers, no ``diff --git`` line. `unidiff` requires
+    those headers to attach hunks to a file; without them, the first
+    ``@@`` line raises ``UnidiffParseError("Unexpected hunk found")``.
+    This helper detects the hunks-only shape and synthesizes a minimal
+    header pair using ``file_path`` for both source and target sides.
+
+    **Detector policy.** Strictly narrow: the input is treated as
+    hunks-only ONLY when its first non-blank line begins with ``@@``.
+    Anything else (``---`` / ``+++`` already present, ``diff --git ...``
+    prefix, ``Index: ...`` extended header, leading metadata lines) is
+    passed through unchanged — `unidiff` knows how to parse those.
+    A too-narrow detector (e.g. only checking ``startswith("--- ")``)
+    can wrap an already-unified diff and create a malformed hybrid.
+
+    **What the wrap loses.** Using the same ``file_path`` on both header
+    lines is enough for the two current consumers (membership query +
+    path-keyed lookup) but deliberately discards:
+
+    - The rename source path. ``PatchedFile.is_rename`` will report
+      ``False`` even for actually-renamed files.
+    - The ``is_added_file`` / ``is_removed_file`` semantics derived
+      from ``/dev/null`` source/target sides.
+
+    The two callers here don't consult those flags. If a future caller
+    needs rename-aware parsing, this helper must NOT be used — that
+    caller should accept ``(patch, current_path, previous_path)`` and
+    construct the headers accordingly, OR the producer side (intake +
+    ``ChangedFile`` schema) should normalize to full unified-diff form.
+    Both options are deferred to the rules-layer pass; for now this
+    helper stays module-private to discourage misuse.
+    """
+    # First non-blank line: strip leading whitespace/newlines AND the
+    # UTF-8 BOM (U+FEFF) — `str.lstrip()` does not strip BOM, so a
+    # patch beginning `﻿@@ ...` would otherwise survive the
+    # detector unchanged, get passed unwrapped to `unidiff.PatchSet`,
+    # and silently produce an empty PatchSet (no parse error). That
+    # collapses to `lookup_patched_file → None → NO_REVIEWABLE_CONTEXT`
+    # in analyze, i.e. a silent review-tier downgrade for any file
+    # whose patch text echoes a BOM (a file authored with BOM that
+    # GitHub forwards in the diff payload). Strip the BOM ONCE (the
+    # spec allows at most one) so it never reaches unidiff.
+    leading_stripped = patch.lstrip().removeprefix("﻿").lstrip()
+    if leading_stripped.startswith("@@"):
+        # Synthesize headers around the BOM-stripped body so `unidiff`
+        # sees neither BOM nor leading whitespace.
+        return f"--- a/{file_path}\n+++ b/{file_path}\n{leading_stripped}"
+    return patch
+
+
 def file_in_patch(file_path: str, patch: str) -> bool:
     """True if `file_path` matches any normalized `unidiff.PatchedFile.path` in `patch`.
 
@@ -358,7 +413,7 @@ def file_in_patch(file_path: str, patch: str) -> bool:
         # routing-membership queries return False.
         return False
     try:
-        patchset = PatchSet(patch)
+        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
     except UnidiffParseError as e:
         raise CoordinateError(f"malformed patch input: {e}") from e
 
@@ -429,7 +484,7 @@ def lookup_patched_file(patch: str | None, file_path: str) -> PatchedFile | None
     except CoordinateError:
         return None
     try:
-        patchset = PatchSet(patch)
+        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
     except UnidiffParseError as e:
         raise CoordinateError(f"malformed patch input: {e}") from e
     matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]

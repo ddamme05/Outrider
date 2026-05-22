@@ -37,7 +37,15 @@ side-that-doesn't-exist is structurally None for `added` (no base) and
 `/pulls/{number}/files` API omits the `patch` property for binary diffs
 and for diffs too large for the API to include — applies to any status.
 Downstream code that consumes `patch` must treat `None` as "no textual
-diff available from GitHub" (not as an empty unified diff). The carrier's
+diff available from GitHub" (not as an empty unified diff).
+
+The wire format when present is GitHub's hunks-only shape — the value
+begins with one or more ``@@ ...`` hunk headers and contains NO leading
+``--- a/...`` / ``+++ b/...`` file headers and NO ``diff --git`` line.
+Consumers that pass this value to a unified-diff parser (e.g. `unidiff`'s
+`PatchSet`) must synthesize file headers first; see
+`coordinates.diff_parser._wrap_github_hunks_with_headers` for the
+canonical wrap used by `file_in_patch` and `lookup_patched_file`. The carrier's
 Optional typing alone admits malformed shapes (e.g., `added` with both
 content sides set, `modified` with both None); the post-intake
 `enforce_status_invariants` model_validator rejects all

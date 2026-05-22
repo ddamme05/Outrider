@@ -341,3 +341,102 @@ def test_duplicate_patched_file_entries_raise() -> None:
     )
     with pytest.raises(CoordinateError, match="duplicate entries"):
         file_in_patch("foo.py", patch_with_dups)
+
+
+# ----------------------------------------------------------------------------
+# GitHub wire format — hunks-only patch (regression for the
+# UnidiffParseError("Unexpected hunk found") bug surfaced by the
+# analyze smoke test against a real PR. GitHub's /pulls/{number}/files
+# API returns `patch` as hunks only — no `--- a/...` / `+++ b/...`
+# headers, no `diff --git` line. coordinates synthesizes file headers
+# via _wrap_github_hunks_with_headers before passing to unidiff.)
+# ----------------------------------------------------------------------------
+
+
+# Exactly what GitHub's PR-files API returns for `patch`: no `diff --git`,
+# no `--- a/...`, no `+++ b/...` — the value starts with `@@`. The
+# function-context suffix after `@@` is the realistic case (GitHub
+# routinely includes it).
+GITHUB_API_PATCH = (
+    "@@ -30,3 +30,3 @@ def search_users(prefix: str) -> list[dict]:\n"
+    "   context_above\n"
+    "-  old_line\n"
+    "+  new_line\n"
+    "   context_below\n"
+)
+
+
+def test_github_api_patch_returns_true_for_present_path() -> None:
+    """GitHub's hunks-only `patch` value (the actual wire format) must
+    parse successfully after the wrapper synthesizes file headers.
+    Pin the smoke-test regression: previously this raised
+    UnidiffParseError("Unexpected hunk found")."""
+    assert file_in_patch("src/foo.py", GITHUB_API_PATCH) is True
+
+
+def test_github_api_patch_membership_query_is_tautological_documented() -> None:
+    """Documents a wrapper limitation: a hunks-only patch (the GitHub
+    `/pulls/{number}/files` `patch` shape) carries NO file-identity
+    metadata. `_wrap_github_hunks_with_headers` synthesizes the
+    ``--- a/X`` / ``+++ b/X`` header lines using the queried path
+    itself, so `file_in_patch(any_path, hunks_only_patch)` is always
+    True for any non-empty hunks-only patch.
+
+    This is acceptable for the V1 production caller
+    (`lookup_patched_file(changed_file.patch, changed_file.path)` at
+    `analyze.py:708`), which passes a patch BY CONSTRUCTION belonging
+    to the queried path — there's no semantic ambiguity in that
+    direction. The tautology only matters for hypothetical callers
+    that probe a hunks-only patch with a path it doesn't belong to;
+    no such caller exists in V1.
+
+    Locked in as a test so the limitation is discoverable on grep —
+    if a future caller is added that DOES rely on absent-path detection
+    for hunks-only patches, this test will surface the contract gap
+    and force a redesign (likely: pass `(patch_owner_path, query_path)`
+    explicitly to disambiguate)."""
+    # Same patch, two different queried paths: both report True because
+    # the wrapper synthesizes the header using the queried path itself.
+    assert file_in_patch("src/foo.py", GITHUB_API_PATCH) is True
+    assert file_in_patch("src/totally-different.py", GITHUB_API_PATCH) is True
+
+
+def test_full_unified_diff_absent_path_still_misses() -> None:
+    """The membership semantics WORK for full unified diffs (the only
+    case where the patch carries file-identity headers). A multi-file
+    diff with foo.py + bar.py: queries for foo/bar return True, query
+    for baz returns False. Pin that the wrapper's pass-through branch
+    preserves the pre-fix membership semantics."""
+    multifile_patch = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " a\n"
+        "+b\n"
+        "diff --git a/bar.py b/bar.py\n"
+        "--- a/bar.py\n"
+        "+++ b/bar.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " c\n"
+        "+d\n"
+    )
+    assert file_in_patch("foo.py", multifile_patch) is True
+    assert file_in_patch("bar.py", multifile_patch) is True
+    assert file_in_patch("baz.py", multifile_patch) is False
+
+
+def test_already_unified_diff_with_diff_git_prefix_still_parses() -> None:
+    """`diff --git`-prefixed full unified diffs (the existing SIMPLE_PATCH
+    shape) pass through the wrapper unchanged (first non-blank line is
+    `diff`, not `@@`). Regression: ensure the detector doesn't
+    over-trigger on the full-diff shape."""
+    assert file_in_patch("src/foo.py", SIMPLE_PATCH) is True
+    assert file_in_patch("src/other.py", SIMPLE_PATCH) is False
+
+
+def test_unified_diff_starting_with_dashes_still_parses() -> None:
+    """Patch starting with `--- a/...` (no `diff --git` prefix) is also
+    a valid unified diff shape — pass through unchanged."""
+    dashes_only_patch = "--- a/src/baz.py\n+++ b/src/baz.py\n@@ -1,1 +1,2 @@\n original\n+added\n"
+    assert file_in_patch("src/baz.py", dashes_only_patch) is True

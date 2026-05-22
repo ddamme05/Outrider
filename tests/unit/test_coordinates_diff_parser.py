@@ -554,6 +554,104 @@ def test_lookup_patched_file_present_returns_patched_file() -> None:
     assert result.path == "src/foo.py"
 
 
+# ---------------------------------------------------------------------------
+# GitHub wire format — hunks-only patch (regression for the
+# UnidiffParseError surfaced by the analyze smoke test against a real
+# PR. The single V1 production caller is analyze.py:708 — it passes
+# `(changed_file.patch, changed_file.path)` where the patch IS the
+# hunks for that file by construction. The wrapper synthesizes file
+# headers using the queried path; lookup succeeds with the matching
+# PatchedFile.)
+# ---------------------------------------------------------------------------
+
+
+# Exactly what GitHub's PR-files API returns for `patch` (hunks only,
+# no `--- a/...` / `+++ b/...` headers, no `diff --git` line).
+_GITHUB_API_PATCH = (
+    # Hunk-body line counts (3 on each side) must match the header.
+    # Source = context_above + old_line + context_below = 3 lines.
+    # Target = context_above + new_line + context_below = 3 lines.
+    "@@ -30,3 +30,3 @@ def search_users(prefix: str) -> list[dict]:\n"
+    "   context_above\n"
+    "-  old_line\n"
+    "+  new_line\n"
+    "   context_below\n"
+)
+
+
+def test_lookup_patched_file_handles_github_hunks_only_shape() -> None:
+    """Pin the smoke-test regression: previously raised
+    UnidiffParseError('Unexpected hunk found'). The wrapper synthesizes
+    `--- a/<path>` / `+++ b/<path>` headers around the hunks so unidiff
+    can parse them. Returns a PatchedFile whose `.path` matches the
+    queried path."""
+    result = lookup_patched_file(_GITHUB_API_PATCH, "src/foo.py")
+    assert result is not None
+    assert result.path == "src/foo.py"
+
+
+def test_lookup_patched_file_diff_git_prefixed_full_diff_still_parses() -> None:
+    """A `diff --git`-prefixed full unified diff (the existing fixture
+    shape used by other tests) passes through the wrapper unchanged
+    because the first non-blank line starts with `diff`, not `@@`.
+    Pin: the detector doesn't over-trigger on full-diff shapes."""
+    diff_git_patch = (
+        "diff --git a/src/foo.py b/src/foo.py\n"
+        "--- a/src/foo.py\n"
+        "+++ b/src/foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " original\n"
+        "+added\n"
+    )
+    result = lookup_patched_file(diff_git_patch, "src/foo.py")
+    assert result is not None
+    assert result.path == "src/foo.py"
+
+
+def test_lookup_patched_file_malformed_patch_still_raises() -> None:
+    """Pin: the wrapper isn't a recovery mechanism for arbitrarily
+    broken inputs. A patch whose hunk-line counts don't match the body
+    still raises CoordinateError (wrapped from `unidiff.UnidiffParseError`).
+    The wrapper only handles the canonical GitHub hunks-only shape;
+    body-vs-header mismatches are propagated as malformed input."""
+    # Hunk header claims 5 lines on each side but the body has 1 line.
+    # unidiff raises "Hunk is shorter than expected" → wrapped as
+    # CoordinateError("malformed patch input: ...").
+    malformed = "@@ -1,5 +1,5 @@\n one line only\n"
+    with pytest.raises(CoordinateError, match="malformed patch input"):
+        lookup_patched_file(malformed, "src/foo.py")
+
+
+def test_lookup_patched_file_handles_utf8_bom_prefix() -> None:
+    """Pin the adversarial-audit finding: a hunks-only patch beginning
+    with a U+FEFF BOM (a file authored with BOM that GitHub echoes in
+    the diff payload) MUST be detected as hunks-only and wrapped. Before
+    the BOM-strip fix, `str.lstrip()` left the BOM in place; the
+    detector saw `﻿@@` and missed the hunks-only shape, the wrapper
+    passed unchanged, `unidiff.PatchSet` produced an empty PatchSet, and
+    the file silently downgraded to NO_REVIEWABLE_CONTEXT at the
+    consumer. Pin: with the BOM-aware lstrip, this returns a usable
+    PatchedFile."""
+    bom_patch = "﻿" + ("@@ -1,1 +1,2 @@\n original\n+added\n")
+    result = lookup_patched_file(bom_patch, "src/foo.py")
+    assert result is not None, (
+        "BOM-prefixed hunks-only patch silently downgraded to None — "
+        "the BOM-strip in _wrap_github_hunks_with_headers regressed"
+    )
+    assert result.path == "src/foo.py"
+
+
+def test_lookup_patched_file_handles_bom_after_whitespace() -> None:
+    """Belt-and-suspenders: BOM that appears AFTER leading whitespace
+    (`'  \\n\\ufeff@@ ...'`) must also be stripped. The detector handles
+    `lstrip().removeprefix('\\ufeff').lstrip()` to tolerate the BOM in
+    either order relative to whitespace, since real-world emitters vary."""
+    patch_with_ws_and_bom = "  \n﻿" + ("@@ -1,1 +1,2 @@\n original\n+added\n")
+    result = lookup_patched_file(patch_with_ws_and_bom, "src/foo.py")
+    assert result is not None
+    assert result.path == "src/foo.py"
+
+
 # NOTE: The two defensive error paths in `lookup_patched_file` —
 # malformed-unidiff wrap (`UnidiffParseError → CoordinateError`) and
 # duplicate-entries detection — are NOT pinned here because `unidiff`
