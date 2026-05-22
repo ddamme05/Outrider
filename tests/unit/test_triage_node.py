@@ -1011,3 +1011,89 @@ async def test_phase_id_is_a_valid_uuid_string(
     assert len(events) >= 1
     # str(uuid4()) is valid input to UUID(...) — round-trip test
     UUID(events[0].phase_id)
+
+
+# ===========================================================================
+# Fenced-JSON envelope tolerance (regression for the bug where Haiku
+# wrapped its response in ```json...``` despite the system-prompt
+# instruction, causing TriageResult.model_validate_json to raise and the
+# background graph to crash before any analyze work could run)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_triage_tolerates_json_tagged_fenced_response(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Anthropic Haiku sometimes wraps the response in ```json...```
+    despite the explicit "no markdown fences" prompt. With the
+    `strip_outer_json_fence` runtime defense, triage parses the fenced
+    response successfully instead of crashing with ValidationError."""
+    state = _build_state()
+    inner = _build_triage_json()
+    fenced = f"```json\n{inner}\n```"
+    plan = _Plan(response_text=fenced)
+    provider = MockLLMProvider(plan)
+
+    result = await triage(
+        state,
+        provider=provider,
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+
+    assert "triage_result" in result
+    triage_result = result["triage_result"]
+    assert isinstance(triage_result, TriageResult)
+    # Both phase events emitted (no dangling start from a parser crash).
+    events = recording_phase_event_sink.events
+    assert len(events) == 2
+    assert events[0].marker == "start"
+    assert events[1].marker == "end"
+
+
+@pytest.mark.asyncio
+async def test_triage_tolerates_bare_fenced_response(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """Some models emit ```\\n{...}\\n``` without the `json` tag.
+    The runtime defense tolerates that shape too."""
+    state = _build_state()
+    inner = _build_triage_json()
+    fenced = f"```\n{inner}\n```"
+    plan = _Plan(response_text=fenced)
+    provider = MockLLMProvider(plan)
+
+    result = await triage(
+        state,
+        provider=provider,
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+
+    assert "triage_result" in result
+    assert isinstance(result["triage_result"], TriageResult)
+
+
+@pytest.mark.asyncio
+async def test_triage_still_rejects_malformed_fence(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """A wrapper missing its closing fence is malformed — the helper
+    falls through unchanged, Pydantic raises ValidationError. The
+    runtime defense is NARROW: it only handles well-formed wrappers,
+    not arbitrary recovery. Pins the policy boundary so future model
+    misbehavior doesn't tempt anyone to widen the helper."""
+    state = _build_state()
+    inner = _build_triage_json()
+    malformed = f"```json\n{inner}"  # opener but no closer
+    plan = _Plan(response_text=malformed)
+    provider = MockLLMProvider(plan)
+
+    with pytest.raises(ValidationError):
+        await triage(
+            state,
+            provider=provider,
+            triage_model="claude-haiku-4-5",
+            phase_event_sink=recording_phase_event_sink,
+        )

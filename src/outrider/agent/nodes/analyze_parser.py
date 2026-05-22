@@ -46,6 +46,7 @@ from outrider.coordinates.spans import (
     span_within_file,
     span_within_scope_unit,
 )
+from outrider.llm.parsing import strip_outer_json_fence
 from outrider.policy.canonical import (
     compute_candidate_id,
     compute_proposal_hash,
@@ -217,7 +218,13 @@ def parse_analyze_response(
     parser threads `pass_index` into rejection_detail.
     """
     try:
-        raw = AnalyzeResponseRaw.model_validate_json(response_text)
+        # Strip a single outer ```json...``` wrapper if present — the
+        # model sometimes adds one despite the system-prompt instruction.
+        # Malformed wrappers fall through unchanged so Pydantic produces
+        # a clean ResponseRejection. Previously, fenced output was
+        # silently rejected as `raw_response_unparseable` and the file's
+        # findings were lost; this defense closes that coverage hole.
+        raw = AnalyzeResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
     except ValidationError as e:
         return ParserResult(
             admitted_findings=(),

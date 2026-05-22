@@ -469,8 +469,15 @@ async def _process_one_file(
     status = file_metadata.status
     additions = file_metadata.additions
     deletions = file_metadata.deletions
-    patch = getattr(file_metadata, "patch", None)
-    raw_previous_filename = getattr(file_metadata, "previous_filename", None)
+    # GitHubKit returns these optional fields as "" (not omitted) for the
+    # non-applicable case: `patch` is "" for binary/oversized diffs, and
+    # `previous_filename` is "" for non-renamed statuses. Collapse the
+    # empty-string sentinel to None at the boundary so downstream
+    # `is None` checks and Pydantic Optional[str] fields agree on
+    # "absent" — without this normalizer, validate_diff_path("") fires
+    # on non-renamed files and silently drops every changed file.
+    patch = getattr(file_metadata, "patch", None) or None
+    raw_previous_filename = getattr(file_metadata, "previous_filename", None) or None
 
     # Path validation happens HERE at the top — the validated form is
     # what reaches the GitHub API URL, the FileExaminationEvent

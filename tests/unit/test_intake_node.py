@@ -1480,3 +1480,174 @@ async def test_intake_phase_start_emit_failure_does_not_emit_orphan_phase_end() 
     assert session_factory.call_count == 1
     # No file events — intake never reached phase-2.
     assert file_sink.events == []
+
+
+# ===========================================================================
+# Empty-string sentinel normalization (regression for the
+# "GitHubKit returns previous_filename='' / patch='' instead of omitting"
+# bug class that silently skipped every non-renamed file at intake)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_previous_filename_empty_string_normalizes_to_none() -> None:
+    """GitHubKit returns `previous_filename=""` for non-renamed files. Intake
+    must normalize it to None at extraction so the downstream `is not None`
+    check doesn't trip `validate_diff_path("")`, which would silently drop the
+    file with a "path validation rejected" warning and no FileExaminationEvent.
+
+    Pins the post-normalization shape: file is admitted, `previous_path` on
+    the resulting ChangedFile is None (not ""), one clean FileExaminationEvent
+    is emitted.
+    """
+    state = _build_state()
+    files = [
+        _StubFileMeta(
+            filename="src/example.py",
+            status="modified",
+            additions=5,
+            deletions=2,
+            patch="@@ -1 +1 @@\n-old\n+new\n",
+            previous_filename="",  # the regression trigger
+        ),
+    ]
+    content = {
+        ("src/example.py", "b" * 40): b"old\n",
+        ("src/example.py", "h" * 40): b"new\n",
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    result = await intake(
+        state,
+        github_factory=_stub_github_factory(gh),
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert isinstance(result, Command)
+    assert result.goto == "triage", "file was skipped instead of admitted"
+    update_payload = result.update
+    assert update_payload is not None
+    new_ctx: PRContext = update_payload["pr_context"]
+    assert len(new_ctx.changed_files) == 1, (
+        "modified file with previous_filename='' was silently dropped — "
+        "empty-string normalizer regression"
+    )
+    cf = new_ctx.changed_files[0]
+    assert cf.previous_path is None, (
+        f"previous_path={cf.previous_path!r} — empty-string sentinel not "
+        "collapsed to None at the boundary"
+    )
+
+    # One clean FileExaminationEvent (no silent skip).
+    assert len(file_sink.events) == 1
+    assert file_sink.events[0].parse_status == "clean"
+
+
+@pytest.mark.asyncio
+async def test_patch_empty_string_normalizes_to_none() -> None:
+    """GitHubKit returns `patch=""` for binary diffs and oversized diffs
+    (patch suppressed by the API). The schema docstring at
+    `schemas/pr_context.py:36-40` codifies: "None means no textual diff
+    available from GitHub" — empty string is NOT a valid sentinel.
+
+    Pins the post-normalization shape: file is admitted, `patch` on the
+    resulting ChangedFile is None (not ""), so downstream `if patch is None`
+    checks behave correctly. The file is NOT skipped on the patch grounds —
+    content fetching still happens; only the diff-line→scope mapping path
+    is unavailable (which is the intended degradation).
+    """
+    state = _build_state()
+    files = [
+        _StubFileMeta(
+            filename="src/example.py",
+            status="modified",
+            additions=5,
+            deletions=2,
+            patch="",  # the regression trigger — API returned "" instead of omitting
+        ),
+    ]
+    content = {
+        ("src/example.py", "b" * 40): b"old\n",
+        ("src/example.py", "h" * 40): b"new\n",
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    result = await intake(
+        state,
+        github_factory=_stub_github_factory(gh),
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert isinstance(result, Command)
+    assert result.goto == "triage"
+    update_payload = result.update
+    assert update_payload is not None
+    new_ctx: PRContext = update_payload["pr_context"]
+    assert len(new_ctx.changed_files) == 1
+    cf = new_ctx.changed_files[0]
+    assert cf.patch is None, (
+        f"patch={cf.patch!r} — empty-string sentinel not collapsed to None "
+        "at the boundary; downstream `if patch is None` would mis-classify"
+    )
+    # File still admitted and content fetched normally — patch being None
+    # only means "no diff text," not "skip the file."
+    assert cf.content_base == "old\n"
+    assert cf.content_head == "new\n"
+
+
+@pytest.mark.asyncio
+async def test_both_empty_sentinels_combined_file_still_admitted() -> None:
+    """Combined regression: a non-renamed modified file with both `patch=""`
+    and `previous_filename=""` (the common GitHubKit shape for any non-renamed
+    file with a suppressed patch) is admitted with both fields normalized to
+    None — neither alone, nor combined, causes the silent skip path.
+    """
+    state = _build_state()
+    files = [
+        _StubFileMeta(
+            filename="src/example.py",
+            status="modified",
+            additions=5,
+            deletions=2,
+            patch="",
+            previous_filename="",
+        ),
+    ]
+    content = {
+        ("src/example.py", "b" * 40): b"old\n",
+        ("src/example.py", "h" * 40): b"new\n",
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    result = await intake(
+        state,
+        github_factory=_stub_github_factory(gh),
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert isinstance(result, Command)
+    assert result.goto == "triage"
+    update_payload = result.update
+    assert update_payload is not None
+    new_ctx: PRContext = update_payload["pr_context"]
+    assert len(new_ctx.changed_files) == 1
+    cf = new_ctx.changed_files[0]
+    assert cf.patch is None
+    assert cf.previous_path is None
+    assert len(file_sink.events) == 1
+    assert file_sink.events[0].parse_status == "clean"

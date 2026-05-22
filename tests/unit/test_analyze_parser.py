@@ -449,6 +449,56 @@ def test_step0_valid_empty_findings_returns_clean_zero_result() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fenced-JSON envelope tolerance (regression for the silent-coverage-hole
+# bug: Sonnet wrapping its response in ```json...``` was producing a
+# `raw_response_unparseable` ResponseRejection — analyze degraded
+# gracefully but every fenced response lost ALL its findings silently)
+# ---------------------------------------------------------------------------
+
+
+def test_fenced_json_response_is_parsed_not_rejected() -> None:
+    """Sonnet sometimes wraps the response in ```json...``` despite the
+    "no markdown fences" prompt instruction. With `strip_outer_json_fence`
+    applied before model_validate_json, the fenced response is parsed
+    normally — `response_rejection` stays None, the file's findings
+    (here: zero) flow through admission as usual. Previously this path
+    produced a ResponseRejection and the file's true findings were lost."""
+    inner = '{"findings": []}'
+    fenced = f"```json\n{inner}\n```"
+    result = _call_parser(fenced)
+    assert result.response_rejection is None, (
+        "fenced response was treated as raw_response_unparseable — the "
+        "fence-stripping normalizer regressed; analyze silently loses "
+        "every file whose response is fenced"
+    )
+    assert result.admitted_findings == ()
+    assert result.counters.n_responses_rejected == 0
+
+
+def test_bare_fenced_json_response_is_parsed_not_rejected() -> None:
+    """The bare-fence shape (```\\n...\\n``` without `json` tag) is also
+    tolerated."""
+    inner = '{"findings": []}'
+    fenced = f"```\n{inner}\n```"
+    result = _call_parser(fenced)
+    assert result.response_rejection is None
+    assert result.counters.n_responses_rejected == 0
+
+
+def test_malformed_fence_still_routes_to_response_rejection() -> None:
+    """A wrapper missing its closing fence is malformed — the helper
+    falls through unchanged, the existing try/except routes the failure
+    to the response-rejection path. Pins the policy boundary so the
+    fence helper stays narrow: it tolerates ONE well-formed wrapper,
+    not arbitrary recovery."""
+    inner = '{"findings": []}'
+    malformed = f"```json\n{inner}"  # opener but no closer
+    result = _call_parser(malformed)
+    assert result.response_rejection is not None
+    assert result.response_rejection.rejection_reason == "raw_response_unparseable"
+
+
+# ---------------------------------------------------------------------------
 # Spec §6 commit-2 scaffold — proposal iteration + rejection-payload helper
 # (no admission decisions yet; commit 3 wires the admission checks)
 # ---------------------------------------------------------------------------

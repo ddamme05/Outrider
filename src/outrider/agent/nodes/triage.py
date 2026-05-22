@@ -57,6 +57,7 @@ from outrider.agent.state import ReviewState
 from outrider.audit.events import ReviewPhaseEvent
 from outrider.audit.sinks import PhaseEventSink
 from outrider.llm.base import LLMProvider, LLMRequest
+from outrider.llm.parsing import strip_outer_json_fence
 from outrider.prompts import triage as triage_prompt
 from outrider.schemas.triage_result import ReviewTier, TriageResult
 
@@ -267,7 +268,11 @@ async def triage(
 
     # Step 5: schema validation. ValidationError on malformed JSON,
     # missing required keys, wrong enum casing, or reasoning >500 chars.
-    triage_result = TriageResult.model_validate_json(response.text)
+    # `strip_outer_json_fence` tolerates a single ```json...``` wrapper
+    # that the model sometimes adds despite the system-prompt
+    # instruction; malformed wrappers fall through unchanged so
+    # Pydantic raises a clear error.
+    triage_result = TriageResult.model_validate_json(strip_outer_json_fence(response.text))
 
     # Step 5b: deterministic policy gate. Catches schema-valid output that
     # violates this node's contract (SKIP, unknown path, missing path).
