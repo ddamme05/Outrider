@@ -9,20 +9,31 @@
 # =============================================================================
 """Coordinates module — translation surface per docs/spec.md §5.6.
 
-V1 public translation surface (the four named in §5.6):
+V1 §5.6 public surface — two translation functions + three supporting
+surfaces, all inside `coordinates/` per `coordinates-module-is-sole-translator`:
+
+Two translation functions:
 
 - `tree_sitter_to_github(...)` — byte-span → GitHub comment location (§5.6).
 - `diff_line_to_scope(...)` — diff line → owning ScopeUnit or None (§5.6).
+
+Three supporting surfaces:
+
 - `validate_diff_path(...)` — diff-side path validator (publisher-facing,
-  before any reach the GitHub comment API per docs/spec.md §10.1).
+  string-level surface for paths heading to the GitHub comment API per
+  docs/spec.md §10.1 / trust-boundary §5 sub-rule 3a).
 - `resolve_candidate_paths(...)` — ImportPathResolver Protocol implementation
-  per `src/outrider/ast_facts/base.py`; trust-boundary #5 places the
-  implementation here (docs/trust-boundaries.md §5.3).
+  per `src/outrider/ast_facts/base.py`; root-aware surface for paths heading
+  to filesystem stats per trust-boundary §5 sub-rule 3b.
+- `file_in_patch(...)` — coordinates-owned patch-membership helper. **NOT
+  called by V1 publish** (publish uses the in-memory `ChangedFile` registry
+  short-circuit per `specs/2026-05-21-publish-node.md` FUP-057 resolution);
+  remains canonical for non-registry consumers. Also listed under "V1
+  supporting helpers" below.
 
 V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
 
-- `file_in_patch(...)` — file-membership helper for the publisher's
-  routing decision (`publish-routes-through-coordinates`).
+- `file_in_patch(...)` — see "Three supporting surfaces" above.
 - `lookup_patched_file(...)` — locate a `PatchedFile` by path inside a
   raw unified-diff string; returns None on absence (analyze §7 step 3a).
 - `span_within_scope_unit(...)` / `span_within_file(...)` /

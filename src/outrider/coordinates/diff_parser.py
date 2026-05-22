@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Final
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
-from outrider.coordinates.errors import CoordinateError
+from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
     from unidiff import PatchedFile
@@ -105,7 +105,10 @@ def diff_line_to_scope(
     divergent surface forms compare unequal and silently miss matches.
     """
     if diff_line < 1:
-        raise CoordinateError(f"diff_line {diff_line} is not a valid 1-indexed source line")
+        raise CoordinateError(
+            f"diff_line {diff_line} is not a valid 1-indexed source line",
+            kind=CoordinateErrorKind.INVALID_DIFF_LINE,
+        )
     candidates = [
         unit
         for unit in scope_units
@@ -271,7 +274,10 @@ def validate_diff_path(file_path: str) -> str:
     surface.
     """
     if not file_path:
-        raise CoordinateError("file_path is empty")
+        raise CoordinateError(
+            "file_path is empty",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
+        )
     # NFC normalization FIRST, before any other check, so all downstream
     # validators (Trojan-Source, metachars, traversal) see the same byte
     # sequence the hash recipes will see. spec §1 promised NFC; implementation initially
@@ -281,35 +287,48 @@ def validate_diff_path(file_path: str) -> str:
     file_path = unicodedata.normalize("NFC", file_path)
     if "\\" in file_path:
         raise CoordinateError(
-            f"file_path {file_path!r} contains a backslash (POSIX separators only)"
+            f"file_path {file_path!r} contains a backslash (POSIX separators only)",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
         )
     if _SHELL_METACHARS_RE.search(file_path):
-        raise CoordinateError(f"file_path {file_path!r} contains shell metacharacters")
+        raise CoordinateError(
+            f"file_path {file_path!r} contains shell metacharacters",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
+        )
     if _TROJAN_SOURCE_CHARS_RE.search(file_path):
         # Per CVE-2021-42574. Path bytes that render as a different
         # filename in audit logs / dashboards break the audit story
         # (operators see a different path than the one fetched).
         raise CoordinateError(
             f"file_path {file_path!r} contains Unicode bidi-override or "
-            "zero-width characters (CVE-2021-42574 / trojan source)"
+            "zero-width characters (CVE-2021-42574 / trojan source)",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
         )
     if _WINDOWS_DRIVE_PREFIX_RE.match(file_path):
         raise CoordinateError(
             f"file_path {file_path!r} has a Windows drive-letter prefix; "
-            "must be repo-relative POSIX"
+            "must be repo-relative POSIX",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
         )
     pp = PurePosixPath(file_path)
     if pp.is_absolute():
-        raise CoordinateError(f"file_path {file_path!r} is absolute; must be repo-relative")
+        raise CoordinateError(
+            f"file_path {file_path!r} is absolute; must be repo-relative",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
+        )
     if ".." in pp.parts:
-        raise CoordinateError(f"file_path {file_path!r} contains '..' traversal")
+        raise CoordinateError(
+            f"file_path {file_path!r} contains '..' traversal",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
+        )
     if pp.parts and pp.parts[0].lower() == _GIT_INTERNAL_FIRST_COMPONENT:
         # `.git/HEAD`, `.git/config`, etc. — not legitimate PR targets.
         # Component-equality (not prefix-match) so `.github/`, `.gitignore`,
         # and `.gitkeep` are unaffected.
         raise CoordinateError(
             f"file_path {file_path!r} targets the `.git` internal directory; "
-            "not a legitimate PR-modifiable path"
+            "not a legitimate PR-modifiable path",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
         )
     return pp.as_posix()
 
@@ -335,15 +354,19 @@ def _wrap_github_hunks_with_headers(patch: str, file_path: str) -> str:
     can wrap an already-unified diff and create a malformed hybrid.
 
     **What the wrap loses.** Using the same ``file_path`` on both header
-    lines is enough for the two current consumers (membership query +
-    path-keyed lookup) but deliberately discards:
+    lines is enough for the three current consumers (membership query in
+    ``file_in_patch``, path-keyed lookup in ``lookup_patched_file``, and
+    publisher-facing translation in ``_find_patched_file`` — the
+    wire-format normalization extension that lets ``tree_sitter_to_github``
+    accept GitHub's ``/pulls/{n}/files`` hunks-only shape) but deliberately
+    discards:
 
     - The rename source path. ``PatchedFile.is_rename`` will report
       ``False`` even for actually-renamed files.
     - The ``is_added_file`` / ``is_removed_file`` semantics derived
       from ``/dev/null`` source/target sides.
 
-    The two callers here don't consult those flags. If a future caller
+    The three callers here don't consult those flags. If a future caller
     needs rename-aware parsing, this helper must NOT be used — that
     caller should accept ``(patch, current_path, previous_path)`` and
     construct the headers accordingly, OR the producer side (intake +
@@ -415,12 +438,16 @@ def file_in_patch(file_path: str, patch: str) -> bool:
     try:
         patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
     except UnidiffParseError as e:
-        raise CoordinateError(f"malformed patch input: {e}") from e
+        raise CoordinateError(
+            f"malformed patch input: {e}",
+            kind=CoordinateErrorKind.MALFORMED_PATCH,
+        ) from e
 
     matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
     if len(matches) > 1:
         raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}"
+            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}",
+            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
         )
     return bool(matches)
 
@@ -486,10 +513,14 @@ def lookup_patched_file(patch: str | None, file_path: str) -> PatchedFile | None
     try:
         patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
     except UnidiffParseError as e:
-        raise CoordinateError(f"malformed patch input: {e}") from e
+        raise CoordinateError(
+            f"malformed patch input: {e}",
+            kind=CoordinateErrorKind.MALFORMED_PATCH,
+        ) from e
     matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
     if len(matches) > 1:
         raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}"
+            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}",
+            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
         )
     return matches[0] if matches else None

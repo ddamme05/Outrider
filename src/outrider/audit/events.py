@@ -61,6 +61,7 @@ into the payload before validating; the emitter dumps with
 import hashlib
 import json
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
 from uuid import UUID, uuid4
 
@@ -787,13 +788,655 @@ class PublishEvent(AuditEventBase):
     review_status: Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"]
 
 
+# ---------------------------------------------------------------------------
+# Publish-node §V1: PublishRoutingEvent extensions + PublishEligibilityEvent +
+# PublishAttemptEvent + supporting enums + canonical decision-hash helpers.
+# Per specs/2026-05-21-publish-node.md Q1-Q3.
+# ---------------------------------------------------------------------------
+
+
+class PublishRoutingReason(StrEnum):
+    """Why the publisher routed a finding to its `PublishDestination`.
+
+    StrEnum (not `Literal[...]`) so the routing reason mirrors the shape of
+    `PublishEligibilityReason` and `PublishAttemptOutcome` below. Consumers
+    branching on the value get `match`-statement exhaustiveness; the
+    audit-stream queries can filter by enum members rather than raw strings.
+    """
+
+    # tree_sitter_to_github returned a GitHubCommentLocation. Destination
+    # = INLINE_COMMENT.
+    REVIEWABLE_DIFF_LINE = "reviewable_diff_line"
+
+    # tree_sitter_to_github raised CoordinateError(kind=UNCHANGED_REGION).
+    # Destination = REVIEW_BODY.
+    UNCHANGED_REGION = "unchanged_region"
+
+    # EITHER ChangedFile registry miss (coordinates not called) OR
+    # CoordinateError(kind=FILE_NOT_IN_PATCH) — registry/patch disagreement.
+    # Destination = DASHBOARD_ONLY.
+    NON_DIFFED_FILE = "non_diffed_file"
+
+    # Any other CoordinateError(kind=...); the kind itself rides on
+    # PublishRoutingEvent.coordinate_error_kind so the audit stream can
+    # group by structural failure class. Destination = DASHBOARD_ONLY.
+    COORDINATE_ERROR = "coordinate_error"
+
+
+class PublishEligibility(StrEnum):
+    """Per-finding materialization decision, separate from routing.
+
+    Per specs/2026-05-21-publish-node.md Q3: routing is coordinate-derived;
+    eligibility is policy-derived; they're audited independently so a
+    CRITICAL finding routed cleanly to INLINE_COMMENT carries
+    destination=INLINE_COMMENT AND eligibility=withheld.
+    """
+
+    ELIGIBLE = "eligible"
+    WITHHELD = "withheld"
+
+
+class PublishEligibilityReason(StrEnum):
+    """Why a finding was withheld at the eligibility gate (V1 reasons only).
+
+    V1 ships before `hitl` is wired; the `hitl_required_node_absent` and
+    `unexpected_override_fields_present` reasons cover the V1 trust gate.
+    The `routing_emission_failed` reason covers the per-finding try/except
+    recovery path. Post-V1 will add `hitl_pending`, `hitl_rejected`,
+    `hitl_suppressed` when the hitl node lands.
+    """
+
+    # severity ∈ {CRITICAL, HIGH} and `hitl` node is absent.
+    HITL_REQUIRED_NODE_ABSENT = "hitl_required_node_absent"
+
+    # finding carries `original_severity is not None` despite no legitimate
+    # HITL override path existing in V1 — defends against producer bugs
+    # or replay-injected state forging a pre-approved downgrade.
+    UNEXPECTED_OVERRIDE_FIELDS_PRESENT = "unexpected_override_fields_present"
+
+    # Per-finding `try/except` in the publish node's routing+eligibility
+    # interleaved loop caught an exception from `emit_publish_routing`;
+    # the eligibility event still fires (withheld) so the per-finding
+    # audit contract holds even when routing emission fails.
+    ROUTING_EMISSION_FAILED = "routing_emission_failed"
+
+
+class PublishAttemptOutcome(StrEnum):
+    """Terminal outcome of one `publisher.create_review` attempt.
+
+    Single emission per attempt, AFTER the GitHub call resolves. No
+    `in_flight` outcome — an in-flight pre-call emission would be
+    incompatible with `audit-events-append-only` because
+    same-event_id-different-payload raises
+    `AuditPersisterIdempotencyConflict` rather than acting as an update.
+    Crash-after-success defense via `find_existing_review_on_head_sha`.
+    """
+
+    # Atomic GitHub POST returned 2xx.
+    SUCCESS = "success"
+
+    # GitHub call failed (HTTP error, app uninstalled, permission denied,
+    # transient 5xx that retry middleware gave up on). `failure_class`
+    # field carries the exception class name.
+    FAILED = "failed"
+
+    # Pre-flight check found a prior `PublishEvent` for this review_id;
+    # no GitHub call made. The review's UNIQUE(repo_id, pr_number, head_sha)
+    # canonical constraint means review_id ALREADY scopes to one head_sha.
+    IDEMPOTENTLY_SKIPPED = "idempotently_skipped"
+
+    # No prior `PublishEvent` but `find_existing_review_on_head_sha`
+    # found an existing review on PR with our review_id's body marker —
+    # crash-after-success path. No second GitHub call, no second PublishEvent.
+    IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD = "idempotently_skipped_external_record"
+
+    # Zero eligible+INLINE_COMMENT-routed findings; no GitHub call.
+    NO_OP_EMPTY = "no_op_empty"
+
+
+def compute_publish_routing_decision_hash(
+    *,
+    destination: PublishDestination,
+    reason: PublishRoutingReason,
+    coordinate_error_kind: object | None,
+) -> str:
+    """SHA-256 hex over the routing decision tuple per Q1.f.
+
+    Canonical encoding: compact JSON of `[destination.value, reason.value,
+    coordinate_error_kind.value | None]`. Mirrors `compute_finding_content_hash`
+    above (which is the canonical reference recipe at events.py:113-161).
+    Two implementers OR two replay re-emissions of the same logical decision
+    MUST produce identical hashes; the JSON encoding pins this.
+
+    `coordinate_error_kind` is typed as `object | None` to avoid a runtime
+    circular-import dependency on `outrider.coordinates.errors`; the helper
+    accepts any StrEnum value (validated at the field-level on
+    `PublishRoutingEvent.coordinate_error_kind`).
+
+    Consumer-side dedup identity is `(review_id, finding_id, finding_content_hash,
+    decision_content_hash)` — re-emission with the same decision collapses
+    to one logical row; re-emission with a different decision produces two
+    rows so an anomaly rule (V1.5 dashboard work, FOLLOWUPS.md FUP-063 —
+    decision-drift saturation cap) can surface the drift.
+    """
+    kind_value: str | None
+    if coordinate_error_kind is None:
+        kind_value = None
+    elif hasattr(coordinate_error_kind, "value"):
+        kind_value = coordinate_error_kind.value
+    else:
+        kind_value = str(coordinate_error_kind)
+    payload = json.dumps(
+        [destination.value, reason.value, kind_value],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def compute_publish_eligibility_decision_hash(
+    *,
+    eligibility: PublishEligibility,
+    reason: PublishEligibilityReason | None,
+) -> str:
+    """SHA-256 hex over the eligibility decision tuple.
+
+    `policy_version` is NOT in the hash even though it's on the event.
+    A legitimate policy bump that doesn't change the gate logic for a
+    given (finding_type, severity) must not surface as decision drift.
+    `policy_version` is carried as a separate column for replay-equivalence
+    queries (filter rows by policy_version) but the dedup identity treats
+    two policy versions with identical gate outcomes as the SAME logical
+    decision.
+    """
+    payload = json.dumps(
+        [eligibility.value, reason.value if reason is not None else None],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def compute_publish_attempt_content_hash(
+    *,
+    review_id: UUID,
+    attempt_index: int,
+    sorted_finding_ids: tuple[UUID, ...],
+    outcome: PublishAttemptOutcome,
+) -> str:
+    """SHA-256 hex over the attempt content tuple.
+
+    `outcome` is INCLUDED in the hash so two attempts with the same input
+    finding set but different outcomes (success vs failed) don't collapse
+    on read-time dedup — that would hide the divergence. Including outcome
+    makes the hash unique per (review_id, attempt_index, finding_set,
+    outcome) so success-then-failed-replay surfaces as two logical rows.
+    `sorted_finding_ids` ensures iteration order doesn't change the hash
+    for a permutation of the same set.
+    """
+    payload = json.dumps(
+        [
+            str(review_id),
+            attempt_index,
+            [str(fid) for fid in sorted_finding_ids],
+            outcome.value,
+        ],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 class PublishRoutingEvent(AuditEventBase):
-    """Records the per-finding routing decision; backs publish-routes-through-coordinates."""
+    """Records the per-finding routing decision; backs publish-routes-through-coordinates.
+
+    Q1-extended per specs/2026-05-21-publish-node.md:
+
+    - `reason` is a `PublishRoutingReason` StrEnum (not a raw `Literal[...]`).
+    - `coordinate_error_kind` carries the structurally distinct CoordinateError
+      variants so they're queryable in the audit stream rather than collapsed
+      into one opaque reason. Payload contains ONLY the enum value, NEVER the
+      `CoordinateError.message` text — the `PATH_VALIDATION_FAILED` umbrella
+      would otherwise leak the validate_diff_path rule set as an enumeration
+      oracle to anyone with audit-log read access.
+    - Identity fields `file_path`, `line_start`, `line_end`, `finding_content_hash`
+      support post-retention metadata replay AND the `PublishEligibilityEvent`
+      content-hash binding validator.
+    - `decision_content_hash` is the consumer-side dedup identity so re-emission
+      with the same decision collapses, but re-emission with a different
+      decision surfaces as a second logical row rather than hiding behind
+      `finding_content_hash`.
+    """
 
     event_type: Literal["publish_routing"] = "publish_routing"
     finding_id: UUID
     destination: PublishDestination
-    reason: Literal["reviewable_diff_line", "unchanged_region", "non_diffed_file"]
+    reason: PublishRoutingReason
+    # Typed via `str | None` for JSONB-payload shape compatibility (the
+    # field stores the enum's `.value` string, not a Python enum member,
+    # so re-emission and replay round-trip cleanly through JSON). Runtime
+    # membership against `CoordinateErrorKind` is enforced by the
+    # `_enforce_coordinate_error_kind_membership` field validator below;
+    # only the value lands in the audit row, never the
+    # `CoordinateError.message` text (information-leak defense for the
+    # `PATH_VALIDATION_FAILED` umbrella).
+    #
+    # `None` carries deliberate semantic on `reason=non_diffed_file`: the
+    # registry-miss path short-circuits BEFORE coordinates is invoked, so
+    # there's no `CoordinateError` to draw a kind from. Distinct from the
+    # `FILE_NOT_IN_PATCH` case where coordinates IS invoked and reports
+    # registry/patch disagreement. The two carry the same routing reason
+    # but different diagnostic stories — replay can tell them apart via
+    # this field.
+    coordinate_error_kind: str | None = None
+    file_path: Annotated[str, Field(max_length=1024)]
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    # Carried so `_verify_finding_content_hash` can recompute against the
+    # canonical recipe; mirrors `PublishEligibilityEvent.finding_type` so
+    # the two per-finding event types share the same identity tuple.
+    finding_type: FindingType
+    finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
+    decision_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use`."""
+        return validate_diff_path(path)
+
+    @field_validator("coordinate_error_kind")
+    @classmethod
+    def _enforce_coordinate_error_kind_membership(cls, value: str | None) -> str | None:
+        """`coordinate_error_kind`, when set, MUST be the `.value` of a
+        `CoordinateErrorKind` member. The field is typed as `str` (not the
+        enum directly) for JSONB-payload shape compatibility, so the
+        membership check has to live here rather than at the type layer.
+
+        Without this validator, a JSON-replay row carrying
+        `coordinate_error_kind="totally_made_up"` admits cleanly via
+        `model_validate`, defeating the structural taxonomy that
+        `coordinates/errors.py::CoordinateErrorKind` is supposed to be
+        total over. Local-import the enum to avoid a top-level
+        `audit -> coordinates` dependency.
+        """
+        if value is None:
+            return value
+        # Local import: keep `audit` independent of `coordinates` at module
+        # import time. `coordinates/errors.py` is the canonical source for
+        # the enum and intentionally has no `audit` dependency.
+        from outrider.coordinates.errors import CoordinateErrorKind  # noqa: PLC0415
+
+        valid_values = {member.value for member in CoordinateErrorKind}
+        if value not in valid_values:
+            raise ValueError(
+                f"PublishRoutingEvent.coordinate_error_kind={value!r} is not a "
+                f"CoordinateErrorKind member value (valid: {sorted(valid_values)})"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _enforce_line_constraint(self) -> Self:
+        """line_end must be >= line_start (1-indexed per coordinates/)."""
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_coordinate_error_kind_required_iff_coordinate_error(self) -> Self:
+        """`coordinate_error_kind` required iff reason is `coordinate_error`,
+        AND for the unchanged_region case where coordinates raised
+        UNCHANGED_REGION, AND for the non_diffed_file case where coordinates
+        raised FILE_NOT_IN_PATCH (registry/patch disagreement).
+
+        Reason → kind mapping (the validator is total over this product):
+
+        - reviewable_diff_line → kind=None (coordinates returned success)
+        - unchanged_region → kind=UNCHANGED_REGION (always; raise was caught)
+        - non_diffed_file → kind=None (registry miss; coordinates not called)
+                           OR kind=FILE_NOT_IN_PATCH (registry/patch disagreement)
+        - coordinate_error → kind required AND must NOT be UNCHANGED_REGION or
+          FILE_NOT_IN_PATCH (those map to dedicated reasons above)
+        """
+        # Local import: kept inside the validator for the same reason as
+        # `_enforce_coordinate_error_kind_membership` above — `audit` should
+        # not gain a top-level `coordinates` dependency.
+        from outrider.coordinates.errors import CoordinateErrorKind  # noqa: PLC0415
+
+        kind = self.coordinate_error_kind
+
+        if self.reason is PublishRoutingReason.REVIEWABLE_DIFF_LINE:
+            if kind is not None:
+                raise ValueError(
+                    f"PublishRoutingEvent reason=reviewable_diff_line is the success path; "
+                    f"coordinate_error_kind must be None, got {kind!r}"
+                )
+        elif self.reason is PublishRoutingReason.UNCHANGED_REGION:
+            if kind != CoordinateErrorKind.UNCHANGED_REGION.value:
+                expected = CoordinateErrorKind.UNCHANGED_REGION.value
+                raise ValueError(
+                    f"PublishRoutingEvent reason=unchanged_region requires "
+                    f"coordinate_error_kind={expected!r} (coordinates raised "
+                    f"UNCHANGED_REGION; the kind is part of the routing "
+                    f"identity), got {kind!r}"
+                )
+        elif self.reason is PublishRoutingReason.NON_DIFFED_FILE:
+            allowed = {None, CoordinateErrorKind.FILE_NOT_IN_PATCH.value}
+            if kind not in allowed:
+                fnip = CoordinateErrorKind.FILE_NOT_IN_PATCH.value
+                raise ValueError(
+                    f"PublishRoutingEvent reason=non_diffed_file accepts only "
+                    f"coordinate_error_kind in {{None (registry miss), {fnip!r} "
+                    f"(registry/patch disagreement)}}, got {kind!r}"
+                )
+        elif self.reason is PublishRoutingReason.COORDINATE_ERROR:
+            if kind is None:
+                raise ValueError(
+                    "PublishRoutingEvent reason=coordinate_error requires coordinate_error_kind"
+                )
+            forbidden = {
+                CoordinateErrorKind.UNCHANGED_REGION.value,
+                CoordinateErrorKind.FILE_NOT_IN_PATCH.value,
+            }
+            if kind in forbidden:
+                raise ValueError(
+                    f"PublishRoutingEvent reason=coordinate_error must use the dedicated "
+                    f"reason for {kind!r} (UNCHANGED_REGION → reason=unchanged_region; "
+                    f"FILE_NOT_IN_PATCH → reason=non_diffed_file)"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_finding_content_hash(self) -> Self:
+        """`finding_content_hash` must equal `compute_finding_content_hash(
+        file_path, line_start, line_end, finding_type)`.
+
+        Same recipe + same canonical helper as `FindingEvent._verify_content_hash`
+        and `PublishEligibilityEvent._verify_content_hash_binding`, so the
+        three event types ride on identical identity hashes for the same
+        finding — joins between routing/eligibility/finding rows compare by
+        this hash directly without recomputation drift.
+        """
+        expected = compute_finding_content_hash(
+            self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.finding_type,
+        )
+        if self.finding_content_hash != expected:
+            raise ValueError(
+                f"PublishRoutingEvent.finding_content_hash="
+                f"{self.finding_content_hash!r} does not match "
+                f"compute_finding_content_hash(file_path={self.file_path!r}, "
+                f"line_start={self.line_start}, line_end={self.line_end}, "
+                f"finding_type={self.finding_type.value!r})={expected!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_decision_content_hash(self) -> Self:
+        """`decision_content_hash` must equal `compute_publish_routing_decision_hash(...)`
+        over this event's decision tuple.
+
+        Pinning the recipe at the in-memory event layer prevents two
+        emissions of the same logical decision from disagreeing on hash
+        — which would surface as phantom drift in the consumer-side
+        dedup. Pattern mirrors `FindingEvent._verify_content_hash`.
+        """
+        # CoordinateErrorKind is a StrEnum so the helper's hasattr branch
+        # handles both the raw string and enum cases. We pass the field
+        # value as-is; the helper canonicalizes.
+        expected = compute_publish_routing_decision_hash(
+            destination=self.destination,
+            reason=self.reason,
+            coordinate_error_kind=self.coordinate_error_kind,
+        )
+        if self.decision_content_hash != expected:
+            raise ValueError(
+                f"PublishRoutingEvent.decision_content_hash={self.decision_content_hash!r} "
+                f"does not match compute_publish_routing_decision_hash over "
+                f"(destination={self.destination.value!r}, reason={self.reason.value!r}, "
+                f"coordinate_error_kind={self.coordinate_error_kind!r})={expected!r}. "
+                f"Use compute_publish_routing_decision_hash(...) to compute the hash."
+            )
+        return self
+
+
+class PublishEligibilityEvent(AuditEventBase):
+    """Records the per-finding materialization decision, separate from routing.
+
+    Per Q3: eligibility is policy-derived (gates on severity + HITL absence).
+    Fires AFTER `PublishRoutingEvent` for each finding under the interleaved
+    per-finding routing+eligibility loop. Carries identity fields so
+    `_verify_content_hash_binding` can recompute `finding_content_hash` via
+    the canonical helper; carries `severity` + `finding_type` + `policy_version`
+    for severity-versioned replay (`severity-policy-versioned-for-replay`).
+    """
+
+    event_type: Literal["publish_eligibility"] = "publish_eligibility"
+    finding_id: UUID
+    file_path: Annotated[str, Field(max_length=1024)]
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    finding_type: FindingType
+    severity: FindingSeverity
+    # V1 requires None: no legitimate HITL override path exists yet, so a
+    # non-None value indicates either a producer bug or replay-injected
+    # state forging a pre-approved downgrade. Enforced at the gate
+    # (is_eligible_for_v1_publish returns withheld with
+    # unexpected_override_fields_present) and validated here on the event.
+    original_severity: FindingSeverity | None = None
+    finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
+    decision_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
+    eligibility: PublishEligibility
+    reason: PublishEligibilityReason | None = None
+    policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        return validate_diff_path(path)
+
+    @model_validator(mode="after")
+    def _enforce_line_constraint(self) -> Self:
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_eligibility_reason_required_when_withheld(self) -> Self:
+        """`reason` required iff `eligibility == withheld`. An eligible
+        finding has no withholding reason; a withheld finding must record
+        one."""
+        if self.eligibility is PublishEligibility.WITHHELD and self.reason is None:
+            raise ValueError("PublishEligibilityEvent eligibility=withheld requires a reason")
+        if self.eligibility is PublishEligibility.ELIGIBLE and self.reason is not None:
+            raise ValueError(
+                f"PublishEligibilityEvent eligibility=eligible must have reason=None, "
+                f"got {self.reason!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_severity_matches_policy(self) -> Self:
+        """`severity` must equal `SEVERITY_POLICY[finding_type]` under the
+        live policy version. Backs `severity-set-by-policy`. Mirror of
+        `FindingEvent._enforce_severity_matches_policy` so the
+        eligibility-side audit shadow is at least as strict as the
+        analyze-side source row.
+
+        Replay-aware scoping (identical reasoning to `FindingEvent`):
+        the live-policy match check fires ONLY when
+        `policy_version == ACTIVE_POLICY_VERSION`. Historical rows under
+        older policy versions trust the row — the severity it carries
+        was correct AT WRITE TIME under its frozen policy, and there is
+        no synchronous loader for the historical mapping at this layer.
+        """
+        from outrider.policy.severity import (  # noqa: PLC0415
+            ACTIVE_POLICY_VERSION,
+            SEVERITY_POLICY,
+        )
+
+        if self.policy_version != ACTIVE_POLICY_VERSION:
+            return self
+        expected = SEVERITY_POLICY.get(self.finding_type)
+        if expected is None or self.severity != expected:
+            raise ValueError(
+                f"PublishEligibilityEvent.severity={self.severity.value!r} does not match "
+                f"SEVERITY_POLICY[{self.finding_type.value!r}]="
+                f"{(expected.value if expected else None)!r} under policy_version "
+                f"{self.policy_version!r}. Per `severity-set-by-policy`, baseline severity "
+                f"comes from SEVERITY_POLICY keyed by finding_type, never from caller."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_v1_no_overrides(self) -> Self:
+        """V1 publish ships BEFORE the `hitl` node is wired, so no legitimate
+        HITL override path exists yet. A non-None `original_severity` on an
+        eligibility event indicates either a producer bug or replay-injected
+        state forging a pre-approved downgrade — reject at the schema layer
+        so the audit row cannot lie.
+
+        When the hitl-node spec lands, this validator relaxes to mirror
+        `ReviewFinding._enforce_override_triplet_coherence` (`original_severity`
+        is set iff override happened, with reviewer identity + reason). For
+        now the schema's "all three or none" override triplet is "none"
+        unconditionally.
+        """
+        if self.original_severity is not None:
+            raise ValueError(
+                f"PublishEligibilityEvent.original_severity={self.original_severity.value!r} "
+                f"but V1 publish ships before the hitl node — no legitimate path produces "
+                f"override fields. A non-None value indicates a producer bug or "
+                f"replay-injected state forging a pre-approved downgrade; the eligibility "
+                f"gate would normally withhold via `unexpected_override_fields_present`, "
+                f"but the event-side validator rejects too so the audit row cannot lie."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_content_hash_binding(self) -> Self:
+        """MUST call `compute_finding_content_hash(...)` — never re-implement
+        the recipe. Mirror of `FindingEvent._verify_content_hash` at
+        events.py:628.
+        """
+        expected = compute_finding_content_hash(
+            self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.finding_type,
+        )
+        if self.finding_content_hash != expected:
+            raise ValueError(
+                f"PublishEligibilityEvent.finding_content_hash={self.finding_content_hash!r} "
+                f"does not match compute_finding_content_hash over "
+                f"(file_path={self.file_path!r}, line_start={self.line_start}, "
+                f"line_end={self.line_end}, finding_type={self.finding_type.value!r})="
+                f"{expected!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_decision_content_hash(self) -> Self:
+        """MUST call `compute_publish_eligibility_decision_hash(...)`. NOTE:
+        `policy_version` is NOT in the hash — legitimate policy bumps must
+        not surface as decision drift, so the dedup identity treats two
+        policy versions with identical gate outcomes as one logical decision.
+        """
+        expected = compute_publish_eligibility_decision_hash(
+            eligibility=self.eligibility,
+            reason=self.reason,
+        )
+        if self.decision_content_hash != expected:
+            raise ValueError(
+                f"PublishEligibilityEvent.decision_content_hash={self.decision_content_hash!r} "
+                f"does not match compute_publish_eligibility_decision_hash over "
+                f"(eligibility={self.eligibility.value!r}, "
+                f"reason={self.reason.value if self.reason else None!r})={expected!r}."
+            )
+        return self
+
+
+class PublishAttemptEvent(AuditEventBase):
+    """Records the terminal outcome of one publish-attempt to GitHub.
+
+    Per Q2: single emission per attempt, AFTER the GitHub call resolves.
+    No in_flight pre-call emission (would conflict with append-only
+    audit semantics — same-event_id-different-payload raises rather than
+    updates). Carries `attempt_content_hash` (which includes `outcome`)
+    so consumer-side dedup distinguishes attempts with the same finding
+    set but different outcomes (e.g., success-then-failed-replay).
+    """
+
+    event_type: Literal["publish_attempt"] = "publish_attempt"
+    attempt_index: int = Field(ge=1)
+    outcome: PublishAttemptOutcome
+    status_code: int | None = None
+    # Bounded to defend against attacker-influenced 422 response strings
+    # being interpolated into `failure_class` by a producer bug (a
+    # GitHub 422 body's `errors[].message` is attacker-controlled when
+    # the PR author crafts an invalid request shape). Practical
+    # `type(exc).__name__` strings are well under 128 chars; the cap
+    # exists to bound append-only audit-row size on the pathological case.
+    failure_class: Annotated[str, Field(max_length=128)] | None = None
+    comments_attempted: int = Field(ge=0)
+    sorted_finding_ids: tuple[UUID, ...] = ()
+    attempt_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
+
+    @field_validator("sorted_finding_ids")
+    @classmethod
+    def _enforce_sorted_finding_ids(cls, ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        """`sorted_finding_ids` must already be sorted at construction.
+
+        `compute_publish_attempt_content_hash` encodes the tuple
+        positionally; an unsorted producer would compute a hash that
+        diverges from the same logical attempt encoded in sorted order,
+        producing two consumer-dedup rows for one logical attempt.
+        Enforced here rather than auto-coerced via `sorted(...)`: silent
+        coercion would mask the producer bug, defeating the
+        loud-failure pattern documented for V1 audit-event factories.
+        """
+        if tuple(sorted(ids)) != ids:
+            raise ValueError(
+                "PublishAttemptEvent.sorted_finding_ids must be sorted "
+                "at construction (per `compute_publish_attempt_content_hash` "
+                "recipe). Producer-side bug — sort the tuple before "
+                "constructing the event."
+            )
+        return ids
+
+    @model_validator(mode="after")
+    def _enforce_failure_class_required_when_failed(self) -> Self:
+        """`failure_class` required iff `outcome == failed`. A successful
+        attempt has no failure to record; a failed attempt must record one."""
+        if self.outcome is PublishAttemptOutcome.FAILED and self.failure_class is None:
+            raise ValueError("PublishAttemptEvent outcome=failed requires failure_class")
+        if self.outcome is not PublishAttemptOutcome.FAILED and self.failure_class is not None:
+            raise ValueError(
+                f"PublishAttemptEvent outcome={self.outcome.value!r} must have "
+                f"failure_class=None, got {self.failure_class!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_attempt_content_hash(self) -> Self:
+        """MUST call `compute_publish_attempt_content_hash(...)` — recipe pinning
+        for consumer-side dedup correctness."""
+        expected = compute_publish_attempt_content_hash(
+            review_id=self.review_id,
+            attempt_index=self.attempt_index,
+            sorted_finding_ids=self.sorted_finding_ids,
+            outcome=self.outcome,
+        )
+        if self.attempt_content_hash != expected:
+            raise ValueError(
+                f"PublishAttemptEvent.attempt_content_hash={self.attempt_content_hash!r} "
+                f"does not match compute_publish_attempt_content_hash="
+                f"{expected!r}."
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -1013,6 +1656,8 @@ AuditEvent = Annotated[
     | HITLDecisionEvent
     | PublishEvent
     | PublishRoutingEvent
+    | PublishEligibilityEvent
+    | PublishAttemptEvent
     | AnalyzeCompletedEvent
     | FindingProposalRejectedEvent
     | AnalyzeResponseRejectedEvent,
@@ -1034,6 +1679,8 @@ AuditEventAdapter: Final[
         | HITLDecisionEvent
         | PublishEvent
         | PublishRoutingEvent
+        | PublishEligibilityEvent
+        | PublishAttemptEvent
         | AnalyzeCompletedEvent
         | FindingProposalRejectedEvent
         | AnalyzeResponseRejectedEvent
@@ -1055,8 +1702,17 @@ __all__ = [
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
+    "PublishAttemptEvent",
+    "PublishAttemptOutcome",
+    "PublishEligibility",
+    "PublishEligibilityEvent",
+    "PublishEligibilityReason",
     "PublishEvent",
     "PublishRoutingEvent",
+    "PublishRoutingReason",
     "ReviewPhaseEvent",
     "TraceDecisionEvent",
+    "compute_publish_attempt_content_hash",
+    "compute_publish_eligibility_decision_hash",
+    "compute_publish_routing_decision_hash",
 ]

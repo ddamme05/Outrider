@@ -1,12 +1,13 @@
 """Every spec §8.2 audit subtype admits with valid fields + correct event_type.
 
-Parametrized over the 10 V1 event types per spec §8.2 (`AgentTransitionEvent`,
+Parametrized over the 12 V1 event types per spec §8.2 (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`, `FindingEvent`,
 `TraceDecisionEvent`, `HITLRequestEvent`, `HITLDecisionEvent`,
-`PublishEvent`, `PublishRoutingEvent`). Each tuple is `(event_class,
-expected_literal, minimal_kwargs)`; construction must succeed and
-`event.event_type` must equal the literal — confirms the discriminator
-value is wired correctly on every subtype.
+`PublishEvent`, `PublishRoutingEvent`, `PublishEligibilityEvent`,
+`PublishAttemptEvent`). Each tuple is `(event_class, expected_literal,
+minimal_kwargs)`; construction must succeed and `event.event_type` must
+equal the literal — confirms the discriminator value is wired correctly
+on every subtype.
 
 **Scope note (post-PR review fold):** the three analyze-foundation
 event additions (`AnalyzeCompletedEvent`, `FindingProposalRejectedEvent`,
@@ -34,11 +35,19 @@ from outrider.audit.events import (
     HITLDecisionEvent,
     HITLRequestEvent,
     LLMCallEvent,
+    PublishAttemptEvent,
+    PublishAttemptOutcome,
+    PublishEligibility,
+    PublishEligibilityEvent,
     PublishEvent,
     PublishRoutingEvent,
+    PublishRoutingReason,
     ReviewPhaseEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
+    compute_publish_attempt_content_hash,
+    compute_publish_eligibility_decision_hash,
+    compute_publish_routing_decision_hash,
 )
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.schemas import (
@@ -154,10 +163,84 @@ def _publish_kwargs() -> dict[str, Any]:
 
 
 def _publish_routing_kwargs() -> dict[str, Any]:
+    file_path = "src/app.py"
+    line_start = 10
+    line_end = 12
+    destination = PublishDestination.INLINE_COMMENT
+    reason = PublishRoutingReason.REVIEWABLE_DIFF_LINE
+    finding_type = FindingType.MISSING_INPUT_VALIDATION
     return {
         "finding_id": uuid4(),
-        "destination": PublishDestination.INLINE_COMMENT,
-        "reason": "reviewable_diff_line",
+        "destination": destination,
+        "reason": reason,
+        "coordinate_error_kind": None,
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "finding_type": finding_type,
+        "finding_content_hash": compute_finding_content_hash(
+            file_path,
+            line_start=line_start,
+            line_end=line_end,
+            finding_type=finding_type,
+        ),
+        "decision_content_hash": compute_publish_routing_decision_hash(
+            destination=destination,
+            reason=reason,
+            coordinate_error_kind=None,
+        ),
+    }
+
+
+def _publish_eligibility_kwargs() -> dict[str, Any]:
+    file_path = "src/app.py"
+    line_start = 10
+    line_end = 12
+    eligibility = PublishEligibility.ELIGIBLE
+    reason = None
+    return {
+        "finding_id": uuid4(),
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "finding_type": FindingType.MISSING_INPUT_VALIDATION,
+        "severity": FindingSeverity.MEDIUM,
+        "original_severity": None,
+        "finding_content_hash": compute_finding_content_hash(
+            file_path,
+            line_start=line_start,
+            line_end=line_end,
+            finding_type=FindingType.MISSING_INPUT_VALIDATION,
+        ),
+        "decision_content_hash": compute_publish_eligibility_decision_hash(
+            eligibility=eligibility,
+            reason=reason,
+        ),
+        "eligibility": eligibility,
+        "reason": reason,
+        "policy_version": "1.0.0",
+    }
+
+
+def _publish_attempt_kwargs() -> dict[str, Any]:
+    review_id = uuid4()
+    attempt_index = 1
+    sorted_finding_ids: tuple[Any, ...] = ()
+    outcome = PublishAttemptOutcome.NO_OP_EMPTY
+    return {
+        "review_id": review_id,
+        "attempt_index": attempt_index,
+        "outcome": outcome,
+        "status_code": None,
+        "failure_class": None,
+        "comments_attempted": 0,
+        "sorted_finding_ids": sorted_finding_ids,
+        "attempt_content_hash": compute_publish_attempt_content_hash(
+            review_id=review_id,
+            attempt_index=attempt_index,
+            sorted_finding_ids=sorted_finding_ids,
+            outcome=outcome,
+        ),
     }
 
 
@@ -172,6 +255,8 @@ SUBTYPES: tuple[tuple[type[AuditEventBase], str, dict[str, Any]], ...] = (
     (HITLDecisionEvent, "hitl_decision", _hitl_decision_kwargs()),
     (PublishEvent, "publish", _publish_kwargs()),
     (PublishRoutingEvent, "publish_routing", _publish_routing_kwargs()),
+    (PublishEligibilityEvent, "publish_eligibility", _publish_eligibility_kwargs()),
+    (PublishAttemptEvent, "publish_attempt", _publish_attempt_kwargs()),
 )
 
 
@@ -181,8 +266,18 @@ def test_subtype_admits_with_valid_fields_and_event_type_literal_correct(
     expected_event_type: str,
     kwargs: dict[str, Any],
 ) -> None:
-    """Every subtype constructs cleanly and reports the canonical event_type."""
-    event = event_class(review_id=uuid4(), **kwargs)
+    """Every subtype constructs cleanly and reports the canonical event_type.
+
+    Most fixtures don't include `review_id` in their kwargs and rely on the
+    harness's `uuid4()`. `PublishAttemptEvent` is the exception: its
+    `attempt_content_hash` recipe includes `review_id`, so the fixture
+    pre-computes the hash against a known review_id and provides both in
+    its kwargs. The fixture's review_id wins via the dict-merge order
+    below — kwargs override the harness's default.
+    """
+    harness_kwargs: dict[str, Any] = {"review_id": uuid4()}
+    harness_kwargs.update(kwargs)
+    event = event_class(**harness_kwargs)
     assert event.event_type == expected_event_type
     assert event.review_id is not None
 

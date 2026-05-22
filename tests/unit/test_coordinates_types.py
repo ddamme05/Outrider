@@ -15,6 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from outrider.coordinates import CoordinateError, GitHubCommentLocation
+from outrider.coordinates.errors import CoordinateErrorKind
 
 # ----------------------------------------------------------------------------
 # GitHubCommentLocation — minimum valid construction
@@ -214,9 +215,14 @@ def test_coordinate_error_is_exception_subclass() -> None:
 
 
 def test_coordinate_error_can_be_raised_and_caught() -> None:
-    """Basic raise/catch behavior with a message."""
+    """Basic raise/catch behavior with a message and a typed `kind`.
+
+    Per specs/2026-05-21-publish-node.md Q1, every `CoordinateError`
+    construction MUST pass `kind=` keyword-only. This test pins that
+    the raise/catch semantic still works with the new signature.
+    """
     with pytest.raises(CoordinateError, match="test message"):
-        raise CoordinateError("test message")
+        raise CoordinateError("test message", kind=CoordinateErrorKind.UNCHANGED_REGION)
 
 
 # ----------------------------------------------------------------------------

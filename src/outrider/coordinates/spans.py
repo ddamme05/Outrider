@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from outrider.coordinates.errors import CoordinateError
+from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
     from unidiff import PatchedFile
@@ -62,7 +62,8 @@ def span_within_file(span: Span, file_byte_length: int) -> bool:
     """
     if file_byte_length < 0:
         raise CoordinateError(
-            f"span_within_file: file_byte_length must be non-negative, got {file_byte_length}"
+            f"span_within_file: file_byte_length must be non-negative, got {file_byte_length}",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
         )
     return span.byte_end <= file_byte_length
 
@@ -129,7 +130,8 @@ def span_to_line_range(span: Span, source: str) -> tuple[int, int]:
     if span.byte_end > len(source_bytes):
         raise CoordinateError(
             f"span_to_line_range: span byte_end={span.byte_end} exceeds "
-            f"source length {len(source_bytes)} bytes"
+            f"source length {len(source_bytes)} bytes",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
 
     # Newline at byte position N means the NEXT byte starts a new line.
@@ -247,11 +249,13 @@ def bound_diff_hunks_text(
     """
     if max_lines < 0:
         raise CoordinateError(
-            f"bound_diff_hunks_text: max_lines must be non-negative, got {max_lines}"
+            f"bound_diff_hunks_text: max_lines must be non-negative, got {max_lines}",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
         )
     if max_chars < 0:
         raise CoordinateError(
-            f"bound_diff_hunks_text: max_chars must be non-negative, got {max_chars}"
+            f"bound_diff_hunks_text: max_chars must be non-negative, got {max_chars}",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
         )
     truncation_sentinel = "\n[truncated: prompt budget cap reached]\n"
     # `max_chars` is the hard cap on the returned string. Content uses
