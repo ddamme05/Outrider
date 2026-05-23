@@ -57,6 +57,7 @@ from outrider.audit.events import (
 )
 from outrider.coordinates import (
     CoordinateError,
+    GitHubCommentLocation,
     source_line_to_github,
 )
 from outrider.coordinates.errors import CoordinateErrorKind
@@ -69,7 +70,10 @@ from outrider.schemas import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from outrider.audit.sinks import PhaseEventSink, PublishEventSink
+    from outrider.github.auth import InstallationGitHubClient
     from outrider.github.publisher import GitHubPublisher
     from outrider.schemas import ReviewFinding, ReviewState
 
@@ -90,10 +94,12 @@ async def publish(
     publisher: GitHubPublisher,
     publish_event_sink: PublishEventSink,
     phase_event_sink: PhaseEventSink,
-    github_factory,  # Callable[[int], InstallationGitHubClient] — typed
-    # loosely here to avoid the github wrapper import at module level
-    # (nodes consume githubkit ONLY through the factory closure per
-    # `vendor-sdks-only-in-wrappers`).
+    # `InstallationGitHubClient` is the typed `GitHub[AppInstallationAuthStrategy]`
+    # alias from `outrider.github.auth`; the TYPE_CHECKING import keeps
+    # the runtime free of the githubkit wrapper-module dependency (the
+    # node never references the type at runtime — it just calls the
+    # factory and passes the result to the publisher).
+    github_factory: Callable[[int], InstallationGitHubClient],
     active_policy_version: str = ACTIVE_POLICY_VERSION,
 ) -> dict[str, object]:
     """Run the V1 publish flow over admitted findings.
@@ -481,9 +487,9 @@ async def _route_and_gate_one_finding(
             destination = PublishDestination.INLINE_COMMENT
             routing_reason = PublishRoutingReason.REVIEWABLE_DIFF_LINE
             coord_kind = None
-            inline_path = location["path"]
-            inline_line = location["line"]
-            inline_side = location["side"]
+            inline_path = location.file_path
+            inline_line = location.line
+            inline_side = location.side
 
     # Per the spec's "publish_destination pre-set overwrite" test:
     # routing ALWAYS overwrites the finding's publish_destination
@@ -606,12 +612,17 @@ async def _route_and_gate_one_finding(
         )
 
 
-def _resolve_inline_location(*, finding: ReviewFinding, state: ReviewState) -> dict[str, int | str]:
-    """Resolve a `ReviewFinding` to (path, line, side) via coordinates.
+def _resolve_inline_location(
+    *, finding: ReviewFinding, state: ReviewState
+) -> GitHubCommentLocation:
+    """Resolve a `ReviewFinding` to a `GitHubCommentLocation` via coordinates.
 
-    Returns `{"path": str, "line": int, "side": str}` on success; raises
-    `CoordinateError` on unchanged-region / past-EOF / etc. The
-    publisher's caller catches and maps the kind to a routing reason.
+    Returns the `GitHubCommentLocation` (file_path + line + side) on
+    success; raises `CoordinateError` on unchanged-region / past-EOF /
+    etc. The publisher's caller catches and maps the kind to a routing
+    reason. Returning the canonical `coordinates` type directly (rather
+    than a dict) lets the caller type-narrow each field at attribute
+    access without an `int | str` union dance.
 
     `side` ("LEFT" | "RIGHT") comes from `GitHubCommentLocation` and is
     passed through to `InlineComment` unchanged — the publisher does
@@ -656,14 +667,13 @@ def _resolve_inline_location(*, finding: ReviewFinding, state: ReviewState) -> d
     # `tree_sitter_to_github` consumes directly. The line→byte
     # translation lives in `coordinates/translator.py` per
     # `coordinates-module-is-sole-translator`.
-    location = source_line_to_github(
+    return source_line_to_github(
         file_path=finding.file_path,
         line_start=finding.line_start,
         line_end=finding.line_end,
         head_content=changed_file.content_head,
         patch=changed_file.patch,
     )
-    return {"path": location.file_path, "line": location.line, "side": location.side}
 
 
 def _classify_coordinate_error(
