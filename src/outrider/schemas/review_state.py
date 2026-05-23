@@ -26,6 +26,11 @@ includes `analysis_rounds` + `trace_candidates` per §3 of
 `append_with_dedup_by` reducer from `outrider.agent.reducers`, which is
 idempotent under LangGraph checkpoint replay.
 
+Now landed beyond the analyze-foundation set:
+- `publish_result: PublishResult | None` — populated by the publish
+  node per the publish-node spec; single-writer field with default
+  overwrite reducer (publish is a graph terminal).
+
 Still deferred:
 - `trace_decisions: list[TraceDecision]` (trace-node spec) — append-with-
   dedup-by(source_finding_id) reducer per DECISIONS.md#017.
@@ -33,7 +38,6 @@ Still deferred:
 - `hitl_request: HITLRequest | None` (hitl-node spec).
 - `hitl_decision: HITLDecision | None` (hitl-node spec; reviewer-set,
   consumed by publish).
-- `publish_result: PublishResult | None` (publish-node spec).
 
 ReviewState is NOT frozen: nodes return partial-update dicts that LangGraph
 merges through reducers (per docs/conventions.md "LangGraph specifics").

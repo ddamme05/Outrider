@@ -23,15 +23,12 @@ existing `test_publish_node_end_to_end.py` pattern — `tests/unit/` has no
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
-
-os.environ.setdefault("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests")
 
 from outrider.agent.nodes import publish as publish_module
 from outrider.audit.events import (
@@ -56,6 +53,16 @@ from outrider.schemas import (
     ReviewFinding,
     ReviewState,
 )
+
+# ---------------------------------------------------------------------------
+# Autouse env fixture — scopes the truncation-HMAC env var to test execution.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests")
+
 
 # ---------------------------------------------------------------------------
 # Recording stubs (inlined per repo's no-cross-test-import convention)

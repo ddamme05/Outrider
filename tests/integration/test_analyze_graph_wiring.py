@@ -659,7 +659,14 @@ async def test_is_eval_propagates_through_full_graph(
 
     # Phase events: property-based — every node that ran fired its start+end
     # pair (count reflects graph wiring, not the eval-propagation contract).
+    # Pin the FULL-graph node coverage so a future regression that
+    # accidentally skips publish (or any node) surfaces here rather
+    # than only via the absence of a publish-side audit event.
     assert len(recording_phase_event_sink.events) > 0, "no phase events emitted"
+    started_nodes = {e.node_id for e in recording_phase_event_sink.events if e.marker == "start"}
+    assert {"intake", "triage", "analyze", "publish"} <= started_nodes, (
+        f"expected full-graph node coverage, got starts from {sorted(started_nodes)}"
+    )
     assert all(e.is_eval is eval_flag for e in recording_phase_event_sink.events), (
         f"Phase event leaked the wrong is_eval flag (expected {eval_flag})"
     )

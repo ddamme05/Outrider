@@ -382,10 +382,22 @@ class GitHubKitPublisher:
         # status is 200 (not 201) and the body carries `id` for the
         # review_id. `comments_posted` is len(comments) under atomic
         # semantics — if the call returned 2xx, ALL comments posted.
-        parsed = json.loads(response.text)
-        github_review_id = parsed["id"]
+        # Wrap parse + shape failures in the wrapper's typed exception
+        # so a malformed 2xx surfaces as `GitHubPublishError` (the
+        # wrapper's contract) rather than escaping as a raw
+        # `json.JSONDecodeError` / `KeyError` / `TypeError` /
+        # `ValueError` that the publish node's audit chain would
+        # classify under the wrong `failure_class`.
+        try:
+            parsed = json.loads(response.text)
+            github_review_id = int(parsed["id"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise GitHubPublishError(
+                "GitHub create-review returned an unexpected success payload: "
+                f"{response.text[:200]!r}"
+            ) from exc
         return GitHubReviewCreated(
-            github_review_id=int(github_review_id),
+            github_review_id=github_review_id,
             comments_posted=len(comments),
         )
 
@@ -442,7 +454,13 @@ class GitHubKitPublisher:
                     f"GitHub list-reviews failed (status={status}, page={page}): {text[:200]!r}"
                 ) from exc
 
-            reviews = json.loads(response.text)
+            try:
+                reviews = json.loads(response.text)
+            except json.JSONDecodeError as exc:
+                raise GitHubPublishError(
+                    "GitHub list-reviews returned non-JSON payload on "
+                    f"page={page}: {response.text[:200]!r}"
+                ) from exc
             if not isinstance(reviews, list):
                 # Defensive — REST doc says list, but if GitHub returns
                 # an envelope object on some future version, we don't
