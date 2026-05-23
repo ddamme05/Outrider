@@ -12,16 +12,24 @@ Two modes:
 - **live** (`--apply`; requires real GitHub App + Postgres): real
   `GitHubKitPublisher` + real `AuditPersister`. Posts a single review
   comment to a hard-allowlisted PR on `ddamme05/outrider-smoke-test`.
-  Asserts on the three success pillars (PublishResult.success + GitHub
-  re-query + audit-row counts) and then re-invokes publish() with the
-  same `review_id` to assert the intra-Outrider idempotency path
-  returns `PublishResult.skipped()` and NO duplicate comment posts.
+  Asserts pillar 1 (`PublishResult.success` shape) + pillar 2 (GitHub
+  re-query via body-marker matcher returns the just-posted review).
+  Pillar 3 (audit-row count + payload verification) is currently
+  `[SKIP]` — `AuditPersister.emit_*` calls completing without raising
+  is the V1 signal; row-count / payload-shape verification against
+  `audit_events` is deferred to FUP-070. Then re-invokes publish() with
+  the same `review_id` to assert the intra-Outrider idempotency path
+  returns `PublishResult.idempotently_skipped` and NO duplicate comment
+  posts.
 
 This harness is the empirical validation of the publish path the unit
 suite (1963 tests, stub publisher) cannot give: it proves githubkit
-actually accepts our request shape, Postgres actually persists the
-audit chain, and the FUP-064 intra-Outrider idempotency check actually
-fires on a re-run.
+actually accepts our request shape, the body marker round-trips through
+`GET /pulls/{n}/reviews`, the `AuditPersister.emit_*` calls do not
+raise against real Postgres, and the FUP-064 intra-Outrider idempotency
+check actually fires on a re-run. It does NOT prove that audit-event
+rows landed with the expected per-event-type counts or payload content
+(FUP-070).
 
 Guard rails (per the multi-lens design audit):
 
