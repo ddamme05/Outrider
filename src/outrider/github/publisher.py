@@ -473,8 +473,20 @@ class GitHubKitPublisher:
             for review in reviews:
                 if not isinstance(review, dict):
                     continue
-                review_body = review.get("body") or ""
-                review_commit = review.get("commit_id") or ""
+                # Explicit str-type narrowing on every vendor-supplied
+                # field consumed below. GitHub's REST contract documents
+                # `body` and `commit_id` as strings, but a future API
+                # change (or a malformed-yet-2xx response) could supply
+                # a list/dict/null shape; without the type-narrowing
+                # `.startswith(...)` / equality would raise
+                # `AttributeError` / no-op outside the typed
+                # `GitHubPublishError` hierarchy. Treat any non-string
+                # as "no match" rather than raising — matches the
+                # broader "best-effort search" intent of this method.
+                raw_body = review.get("body")
+                review_body = raw_body if isinstance(raw_body, str) else ""
+                raw_commit = review.get("commit_id")
+                review_commit = raw_commit if isinstance(raw_commit, str) else ""
                 # Hardened matcher: line-anchored marker + Bot author +
                 # commit match. See method docstring "Matcher hardening".
                 review_user = review.get("user")
