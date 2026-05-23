@@ -433,11 +433,12 @@ def _assert_idempotency(
 
 
 def _phase_markers_after(sink: _RecordingPhaseEventSink, *, prior_count: int) -> list[str]:
-    """Return the marker strings ('start'/'end') for events past `prior_count`."""
-    return [
-        e.marker.value if hasattr(e.marker, "value") else str(e.marker)
-        for e in sink.events[prior_count:]
-    ]
+    """Return the marker strings ('start'/'end') for events past `prior_count`.
+
+    `ReviewPhaseEvent.marker` is `Literal["start", "end"]` per
+    `audit/events.py:275` — a plain string, not an enum.
+    """
+    return [e.marker for e in sink.events[prior_count:]]
 
 
 def _print_check_block(title: str, checks: Sequence[tuple[bool, str]]) -> bool:
@@ -665,14 +666,19 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
 
     # Imports deferred to live mode so mock mode runs without these
     # being importable (e.g., no sqlalchemy installed in a minimal env).
-    from outrider.audit.retention_config import RetentionSettings
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from outrider.audit.config import RetentionSettings
     from outrider.audit.persister import AuditPersister
     from outrider.github.auth import make_installation_client_factory
     from outrider.github.config import GitHubAppSettings
     from outrider.github.fetch import fetch_file_content_at, list_pr_files
-    from outrider.github.publisher import GitHubKitPublisher
+    from outrider.github.publisher import (
+        GitHubKitPublisher,
+        GitHubReviewValidationError,
+        GitHubSecondaryRateLimitError,
+    )
 
     # Bare-call construction matches production lifespan exactly; env
     # vars feed `GitHubAppSettings` via `env_prefix="OUTRIDER_GITHUB_"`.
@@ -683,7 +689,19 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
     # Phase-1: list PR files; find ours; capture head_sha. Defend
     # against the PR being closed/merged — both have stale head SHAs
     # relative to what the operator likely intended.
-    pr_resp = await gh.rest.pulls.async_get(owner, repo, args.pr)
+    try:
+        pr_resp = await gh.rest.pulls.async_get(owner, repo, args.pr)
+    except Exception as exc:
+        # Most common case here: 404 (App not installed on repo) or 403
+        # (App installed but missing scope). Surface the likely cause
+        # rather than a bare githubkit traceback.
+        raise SystemExit(
+            f"GET /repos/{owner}/{repo}/pulls/{args.pr} failed: "
+            f"{exc.__class__.__name__}: {exc}. Most likely the App is not "
+            f"installed on this repo OR the installation_id "
+            f"({installation_id}) doesn't grant access to it. Check the "
+            f"App's installation list at https://github.com/settings/installations."
+        ) from exc
     pr = pr_resp.parsed_data
     if pr.state != "open":
         raise SystemExit(
@@ -695,12 +713,25 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
     base_sha = pr.base.sha
     print(f"  PR head_sha={head_sha} base_sha={base_sha}")
 
-    files = await list_pr_files(gh, owner=owner, repo=repo, pull_number=args.pr)
+    try:
+        files = await list_pr_files(gh, owner=owner, repo=repo, pull_number=args.pr)
+    except Exception as exc:
+        raise SystemExit(
+            f"GET /repos/{owner}/{repo}/pulls/{args.pr}/files failed: "
+            f"{exc.__class__.__name__}: {exc}."
+        ) from exc
     target = next((f for f in files if f.filename == args.file_path), None)
     if target is None:
+        # Trim the available-list if huge — operator scans for their
+        # filename, not the full inventory.
+        available = sorted(f.filename for f in files)
+        if len(available) > 12:
+            available = available[:12] + [f"... ({len(files) - 12} more)"]
         raise SystemExit(
-            f"--file-path {args.file_path!r} not in PR #{args.pr} diff; "
-            f"available: {sorted(f.filename for f in files)}"
+            f"--file-path {args.file_path!r} not in PR #{args.pr} diff "
+            f"at head_sha={head_sha}; the file may have been renamed or "
+            f"removed since the operator last set --file-path. Available: "
+            f"{available}"
         )
     if not getattr(target, "patch", None):
         raise SystemExit(
@@ -710,9 +741,15 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
 
     # Phase-2: fetch head content via the production helper (path
     # validation included, per paths-validated-before-use).
-    content_bytes = await fetch_file_content_at(
-        gh, owner=owner, repo=repo, path=args.file_path, ref=head_sha
-    )
+    try:
+        content_bytes = await fetch_file_content_at(
+            gh, owner=owner, repo=repo, path=args.file_path, ref=head_sha
+        )
+    except Exception as exc:
+        raise SystemExit(
+            f"GET /repos/{owner}/{repo}/contents/{args.file_path}?ref={head_sha} "
+            f"failed: {exc.__class__.__name__}: {exc}."
+        ) from exc
     if content_bytes is None:
         raise SystemExit(
             f"fetch_file_content_at returned None for {args.file_path!r} "
@@ -765,6 +802,21 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
     async with AsyncExitStack() as stack:
         engine = create_async_engine(database_url, hide_parameters=True)
         stack.push_async_callback(engine.dispose)
+
+        # Postgres connectivity probe BEFORE the first publish call so
+        # "docker compose up -d postgres-test missing" surfaces with a
+        # clear error message instead of crashing deep inside emit_phase.
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            raise SystemExit(
+                f"Postgres connectivity probe failed against "
+                f"{database_url.rsplit('@', 1)[-1]}: "
+                f"{exc.__class__.__name__}: {exc}. Run "
+                f"`docker compose up -d postgres-test` and re-try."
+            ) from exc
+
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         persister = AuditPersister(
             session_factory=session_factory,
@@ -773,24 +825,40 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
         publisher = GitHubKitPublisher()
         phase_sink = persister  # AuditPersister satisfies PhaseEventSink too
 
-        manifest_path = Path("spikes/publish/cleanup_manifest.jsonl")
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        # Manifest path is anchored to the harness file's directory, NOT
+        # CWD — operator can run from anywhere and still find the record
+        # under spikes/publish/.
+        manifest_path = Path(__file__).parent / "cleanup_manifest.jsonl"
 
         print("\nfirst invoke (real POST):")
-        first = await publish(
-            state,
-            publisher=publisher,
-            publish_event_sink=persister,
-            phase_event_sink=phase_sink,
-            github_factory=github_factory,
-        )
+        try:
+            first = await publish(
+                state,
+                publisher=publisher,
+                publish_event_sink=persister,
+                phase_event_sink=phase_sink,
+                github_factory=github_factory,
+            )
+        except GitHubReviewValidationError as exc:
+            raise SystemExit(
+                f"GitHub rejected the publish request as a validation "
+                f"failure (status={exc.status_code}). Common cause: the "
+                f"--file-path / --line combination doesn't anchor to a "
+                f"reviewable diff line at head_sha={head_sha}. "
+                f"Inspect publisher.body_text for details."
+            ) from exc
+        except GitHubSecondaryRateLimitError as exc:
+            raise SystemExit(
+                f"GitHub returned a secondary rate limit (status={exc.status_code}). "
+                f"Wait several minutes and re-run; do NOT re-run in a loop "
+                f"(rate-limit windows compound)."
+            ) from exc
         first_result: PublishResult = first["publish_result"]
-        print(
-            f"  outcome={first_result.outcome!r} "
-            f"github_review_id={first_result.github_review_id} "
-            f"comments_posted={first_result.comments_posted}"
-        )
 
+        # Manifest append happens IMMEDIATELY after publish returns,
+        # BEFORE any print. Closes the Ctrl-C race between GitHub POST
+        # success and the record write — even if the operator hits Ctrl-C
+        # before the pillar prints, the manifest entry already landed.
         if first_result.github_review_id is not None:
             _append_manifest(
                 manifest_path,
@@ -800,6 +868,12 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
                 repo=repo,
                 pr_number=args.pr,
             )
+
+        print(
+            f"  outcome={first_result.outcome!r} "
+            f"github_review_id={first_result.github_review_id} "
+            f"comments_posted={first_result.comments_posted}"
+        )
 
         # Three-pillar check pillar 1: result shape.
         ok_result = (
