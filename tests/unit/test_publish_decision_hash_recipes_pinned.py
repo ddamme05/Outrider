@@ -134,37 +134,53 @@ def test_eligibility_hash_recipe_pinned_withheld_hitl_absent() -> None:
 
 
 def test_attempt_hash_recipe_pinned_success_empty_findings() -> None:
-    """no_op_empty / success-with-zero-findings boundary case."""
-    expected = "a39134d68e01910d6c98113cc658ff17ac088324d42fdc2c9c9344215e8a39a8"
+    """SUCCESS / zero-findings boundary case. Pins the seven-field
+    recipe (review_id, attempt_index, sorted_finding_ids, outcome,
+    status_code, failure_class, comments_attempted). Re-pinned when
+    the recipe expanded to include the three attempt-distinguishing
+    fields so two FAILED attempts with different status_code can't
+    collapse on read-time dedup."""
+    expected = "e89e6f4ed4ff68ce19c489c2ecc33b5ac1c729a94f4178583a45957408dfa29a"
     actual = compute_publish_attempt_content_hash(
         review_id=_FIXED_REVIEW_ID,
         attempt_index=1,
         sorted_finding_ids=(),
         outcome=PublishAttemptOutcome.SUCCESS,
+        status_code=200,
+        failure_class=None,
+        comments_attempted=0,
     )
     assert actual == expected, (
         f"compute_publish_attempt_content_hash recipe drift detected.\n"
-        f"  Inputs: SUCCESS + attempt_index=1 + empty sorted_finding_ids.\n"
+        f"  Inputs: SUCCESS + attempt_index=1 + empty sorted_finding_ids "
+        f"+ status_code=200 + no failure_class + comments_attempted=0.\n"
         f"  Expected: {expected}\n  Actual:   {actual}\n"
         f"  See this file's module docstring before updating the golden."
     )
 
 
 def test_attempt_hash_recipe_pinned_failed_two_findings_sorted() -> None:
-    """FAILED outcome with two sorted finding IDs — pins outcome-in-recipe AND
-    sorted-tuple positional encoding. Renaming `failed` → `failed_v2`, dropping
-    `outcome` from the recipe, or re-encoding the UUID list to a different
+    """FAILED outcome with two sorted finding IDs + failure context.
+    Pins outcome-in-recipe AND sorted-tuple positional encoding AND
+    failure-context inclusion (status_code + failure_class +
+    comments_attempted). Renaming `failed` → `failed_v2`, dropping any
+    field from the recipe, or re-encoding the UUID list to a different
     string form would each break this golden."""
-    expected = "fb4081da2a338b5a231ffd9e6e890eebbbf7993593aa4320ebc32b9591e1b39c"
+    expected = "dc651ca70fbb6251411b302cb2d320c1b7566795612105ec33fffea382730220"
     actual = compute_publish_attempt_content_hash(
         review_id=_FIXED_REVIEW_ID,
         attempt_index=2,
         sorted_finding_ids=(_FIXED_FINDING_A, _FIXED_FINDING_B),
         outcome=PublishAttemptOutcome.FAILED,
+        status_code=422,
+        failure_class="GitHubReviewValidationError",
+        comments_attempted=2,
     )
     assert actual == expected, (
         f"compute_publish_attempt_content_hash recipe drift detected.\n"
-        f"  Inputs: FAILED + attempt_index=2 + 2 sorted finding IDs.\n"
+        f"  Inputs: FAILED + attempt_index=2 + 2 sorted finding IDs "
+        f"+ status_code=422 + GitHubReviewValidationError + "
+        f"comments_attempted=2.\n"
         f"  Expected: {expected}\n  Actual:   {actual}\n"
         f"  See this file's module docstring before updating the golden."
     )

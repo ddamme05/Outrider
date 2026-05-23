@@ -74,8 +74,15 @@ def _find_inline_comment_constructions(source: str) -> list[tuple[int, str]]:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
-        return []
+    except SyntaxError as exc:
+        # Silently returning `[]` would mask an unscanned production
+        # file and let the structural-routing guard pass green. A
+        # SyntaxError inside `src/outrider/` IS the bug; surface it.
+        raise AssertionError(
+            "failed to parse source while scanning for direct "
+            "InlineComment(...) construction; the unscanned file would "
+            "have silently bypassed the structural-routing guard."
+        ) from exc
 
     # First pass: collect every local name + module-base path that
     # resolves to the canonical `outrider.schemas[.publish].InlineComment`.

@@ -286,8 +286,13 @@ async def publish(
     # trail records the failure class — otherwise the dangling
     # phase-start is the only signal and operators can't distinguish
     # "external-record query crashed" from "node hung mid-execution".
-    gh = github_factory(state.pr_context.installation_id)
     try:
+        # `github_factory(...)` is inside the try because installation-
+        # token minting can raise (App uninstalled, JWT clock skew,
+        # GitHub identity-API outage) — its failure must land in the
+        # audit chain as `PublishAttemptEvent(FAILED)`, not as a
+        # dangling phase-start.
+        gh = github_factory(state.pr_context.installation_id)
         existing_review_id = await publisher.find_existing_review_on_head_sha(
             gh=gh,
             owner=state.pr_context.owner,
@@ -789,6 +794,9 @@ async def _emit_attempt(
         attempt_index=attempt_index,
         sorted_finding_ids=sorted_finding_ids,
         outcome=outcome,
+        status_code=status_code,
+        failure_class=failure_class,
+        comments_attempted=comments_attempted,
     )
     await publish_event_sink.emit_publish_attempt(
         PublishAttemptEvent(

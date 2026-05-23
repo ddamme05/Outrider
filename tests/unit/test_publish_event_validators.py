@@ -398,19 +398,25 @@ def _attempt_kwargs(**overrides: Any) -> dict[str, Any]:
     attempt_index = overrides.pop("attempt_index", 1)
     sorted_finding_ids: tuple[Any, ...] = overrides.pop("sorted_finding_ids", ())
     outcome = overrides.pop("outcome", PublishAttemptOutcome.NO_OP_EMPTY)
+    status_code = overrides.pop("status_code", None)
+    failure_class = overrides.pop("failure_class", None)
+    comments_attempted = overrides.pop("comments_attempted", 0)
     base = {
         "review_id": review_id,
         "attempt_index": attempt_index,
         "outcome": outcome,
-        "status_code": None,
-        "failure_class": None,
-        "comments_attempted": 0,
+        "status_code": status_code,
+        "failure_class": failure_class,
+        "comments_attempted": comments_attempted,
         "sorted_finding_ids": sorted_finding_ids,
         "attempt_content_hash": compute_publish_attempt_content_hash(
             review_id=review_id,
             attempt_index=attempt_index,
             sorted_finding_ids=sorted_finding_ids,
             outcome=outcome,
+            status_code=status_code,
+            failure_class=failure_class,
+            comments_attempted=comments_attempted,
         ),
     }
     base.update(overrides)

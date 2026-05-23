@@ -961,16 +961,30 @@ def compute_publish_attempt_content_hash(
     attempt_index: int,
     sorted_finding_ids: tuple[UUID, ...],
     outcome: PublishAttemptOutcome,
+    status_code: int | None,
+    failure_class: str | None,
+    comments_attempted: int,
 ) -> str:
     """SHA-256 hex over the attempt content tuple.
 
-    `outcome` is INCLUDED in the hash so two attempts with the same input
-    finding set but different outcomes (success vs failed) don't collapse
-    on read-time dedup — that would hide the divergence. Including outcome
-    makes the hash unique per (review_id, attempt_index, finding_set,
-    outcome) so success-then-failed-replay surfaces as two logical rows.
-    `sorted_finding_ids` ensures iteration order doesn't change the hash
-    for a permutation of the same set.
+    All attempt-distinguishing fields ride in the hash so divergent
+    attempts don't collapse on read-time dedup:
+
+    - `outcome` separates success-vs-failed-replay.
+    - `status_code` + `failure_class` separate distinct failure modes
+      under the same outcome (e.g., two FAILED attempts where one is
+      a 422 validation rejection and the other is a 502 upstream
+      error — these are LOGICALLY different attempts and should not
+      collapse on the dedup join).
+    - `comments_attempted` separates attempts where the eligible-
+      finding set changed between retries (analyze re-ran with a
+      different fixture, eligibility gate flipped a finding).
+    - `sorted_finding_ids` ensures iteration-order permutations of
+      the same set hash identically.
+
+    `status_code` + `failure_class` are nullable (success attempts
+    carry `None` on both); JSON encodes `None` → `null` distinct from
+    any string, so the absence is itself a hash-distinguishing value.
     """
     payload = json.dumps(
         [
@@ -978,6 +992,9 @@ def compute_publish_attempt_content_hash(
             attempt_index,
             [str(fid) for fid in sorted_finding_ids],
             outcome.value,
+            status_code,
+            failure_class,
+            comments_attempted,
         ],
         separators=(",", ":"),
     )
@@ -1447,6 +1464,9 @@ class PublishAttemptEvent(AuditEventBase):
             attempt_index=self.attempt_index,
             sorted_finding_ids=self.sorted_finding_ids,
             outcome=self.outcome,
+            status_code=self.status_code,
+            failure_class=self.failure_class,
+            comments_attempted=self.comments_attempted,
         )
         if self.attempt_content_hash != expected:
             raise ValueError(

@@ -49,8 +49,51 @@ def _find_coordinate_error_raises(source: str) -> list[tuple[int, ast.Call | Non
 
     Returns the Call node when the raise has an exception-construction
     argument; None when the raise is bare (`raise CoordinateError`).
+
+    Resolves import aliases + dotted-module forms so all four shapes
+    are scanned (mirrors the discipline in
+    `test_inline_comment_factory_closed_construction.py`):
+      - `from outrider.coordinates.errors import CoordinateError`
+      - `from outrider.coordinates.errors import CoordinateError as CE`
+      - `import outrider.coordinates.errors`
+      - `import outrider.coordinates.errors as ce`
+    Without alias resolution, a future contributor renaming the import
+    locally could bypass the totality scan and the "every raise site
+    carries kind=" guarantee would silently stop applying to the
+    aliased raises.
     """
     tree = ast.parse(source)
+
+    # Collect local names + module bases that resolve to CoordinateError.
+    error_modules = {
+        "outrider.coordinates.errors",
+        "outrider.coordinates",  # re-exports CoordinateError via __init__
+    }
+    error_local_names: set[str] = set()
+    error_module_bases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module in error_modules:
+                for alias in node.names:
+                    if alias.name == "CoordinateError":
+                        error_local_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in error_modules:
+                    error_module_bases.add(alias.asname if alias.asname is not None else alias.name)
+
+    def _dotted_name(expr: ast.AST) -> str | None:
+        """Render `ast.Name` / `ast.Attribute` chains as a dotted string."""
+        parts: list[str] = []
+        cur: ast.AST = expr
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+            return ".".join(reversed(parts))
+        return None
+
     found: list[tuple[int, ast.Call | None]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Raise):
@@ -60,16 +103,34 @@ def _find_coordinate_error_raises(source: str) -> list[tuple[int, ast.Call | Non
             # `raise` with no exc is `raise <current>` inside `except` —
             # not a fresh construction; skip.
             continue
-        # `raise CoordinateError(...)` — Call form.
+        # `raise <local-name>(...)` — Call form, Name base.
         if (
             isinstance(exc, ast.Call)
             and isinstance(exc.func, ast.Name)
-            and exc.func.id == "CoordinateError"
+            and exc.func.id in error_local_names
         ):
             found.append((node.lineno, exc))
             continue
-        # `raise CoordinateError` — bare class form (no parens).
-        if isinstance(exc, ast.Name) and exc.id == "CoordinateError":
+        # `raise <module-base>.CoordinateError(...)` — Call form, Attribute base.
+        if (
+            isinstance(exc, ast.Call)
+            and isinstance(exc.func, ast.Attribute)
+            and exc.func.attr == "CoordinateError"
+            and _dotted_name(exc.func.value) in error_module_bases
+        ):
+            found.append((node.lineno, exc))
+            continue
+        # `raise <local-name>` — bare class form (no parens).
+        if isinstance(exc, ast.Name) and exc.id in error_local_names:
+            found.append((node.lineno, None))
+            continue
+        # `raise <module-base>.CoordinateError` — bare class form,
+        # qualified.
+        if (
+            isinstance(exc, ast.Attribute)
+            and exc.attr == "CoordinateError"
+            and _dotted_name(exc.value) in error_module_bases
+        ):
             found.append((node.lineno, None))
             continue
     return found
