@@ -1387,16 +1387,35 @@ class PublishAttemptEvent(AuditEventBase):
     @field_validator("sorted_finding_ids")
     @classmethod
     def _enforce_sorted_finding_ids(cls, ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
-        """`sorted_finding_ids` must already be sorted at construction.
+        """`sorted_finding_ids` must be sorted AND unique at construction.
 
-        `compute_publish_attempt_content_hash` encodes the tuple
-        positionally; an unsorted producer would compute a hash that
-        diverges from the same logical attempt encoded in sorted order,
-        producing two consumer-dedup rows for one logical attempt.
-        Enforced here rather than auto-coerced via `sorted(...)`: silent
-        coercion would mask the producer bug, defeating the
+        Two constraints, both load-bearing for the attempt-content-hash
+        recipe:
+
+        1. **Sorted.** `compute_publish_attempt_content_hash` encodes
+           the tuple positionally; an unsorted producer would compute
+           a hash that diverges from the same logical attempt encoded
+           in sorted order, producing two consumer-dedup rows for one
+           logical attempt.
+
+        2. **Set-semantic (no duplicates).** A tuple like `(a, a, b)`
+           is already "sorted" but encodes a different hash than
+           `(a, b)` for what is logically the same attempted-finding
+           set. The publish node already de-duplicates upstream, but
+           schema-level enforcement is the loud-failure floor that
+           catches a future producer that drops the dedup.
+
+        Enforced here rather than auto-coerced via `sorted(set(ids))`:
+        silent coercion would mask the producer bug, defeating the
         loud-failure pattern documented for V1 audit-event factories.
         """
+        if len(ids) != len(set(ids)):
+            raise ValueError(
+                "PublishAttemptEvent.sorted_finding_ids must not contain "
+                "duplicate finding IDs; the field is set-semantic for "
+                "attempt-content-hash determinism. Producer-side bug — "
+                "de-duplicate the tuple before constructing the event."
+            )
         if tuple(sorted(ids)) != ids:
             raise ValueError(
                 "PublishAttemptEvent.sorted_finding_ids must be sorted "

@@ -32,14 +32,11 @@ cross-file imports aren't first-class.
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-
-os.environ.setdefault("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests")
 
 from outrider.agent.nodes import publish as publish_module
 from outrider.audit.events import (
@@ -63,6 +60,18 @@ from outrider.schemas import (
     ReviewFinding,
     ReviewState,
 )
+
+# ---------------------------------------------------------------------------
+# Autouse env fixture — scopes the truncation-HMAC env var to test execution
+# (the sanitizer reads it per call; module-level os.environ.setdefault would
+# leak into sibling test modules and mask missing-env failures).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests")
+
 
 # ---------------------------------------------------------------------------
 # Recording stubs (inlined)

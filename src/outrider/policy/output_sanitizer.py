@@ -114,7 +114,8 @@ _TRUNCATION_MARKER_TEMPLATE: Final[str] = "\n\n[truncated, original {n} bytes ·
 # vector where a reader trusts "this content was truncated by Outrider"
 # when in fact the attacker chose what to elide.
 _TRUNCATION_MARKER_REGEX: Final[re.Pattern[str]] = re.compile(
-    r"\n*\[truncated,\s+original\s+\d+\s+bytes\s+·\s+[0-9a-f]+\]"
+    r"\n*\[truncated,\s+original\s+\d+\s+bytes\s+·\s+[0-9a-f]+\]",
+    flags=re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------

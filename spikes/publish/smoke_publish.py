@@ -811,6 +811,15 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
     # Base-content fetch per status. `ChangedFile`'s validator enforces:
     # `modified`/`renamed` need both base + head; `added` only head;
     # `removed` only base (and can't be inline-commented — skip).
+    # Fail fast on any unexpected status BEFORE _make_changed_file so
+    # the operator sees a clear error instead of a Pydantic traceback.
+    _SUPPORTED_STATUSES = {"added", "modified", "renamed", "removed"}
+    if target.status not in _SUPPORTED_STATUSES:
+        raise SystemExit(
+            f"unsupported file status {target.status!r} for {args.file_path!r}; "
+            f"the smoke harness supports {sorted(_SUPPORTED_STATUSES)} only "
+            f"(matches `ChangedFile.status` Literal)."
+        )
     content_base: str | None = None
     previous_path: str | None = None
     if target.status in {"modified", "renamed"}:

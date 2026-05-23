@@ -1425,7 +1425,19 @@ class AuditPersister:
                     AuditEventRow.review_id == review_id,
                     AuditEventRow.event_type == publish_event_type,
                 )
-                .order_by(AuditEventRow.timestamp.desc())
+                # `timestamp DESC` alone is not a total order — two
+                # PublishEvent rows for the same review_id can share a
+                # timestamp under concurrent emits, in which case the
+                # returned row would be nondeterministic across runs and
+                # the idempotency pre-flight could silently flap. The
+                # append-only `sequence_number IDENTITY` column on
+                # `audit_events` is the deterministic tie-breaker
+                # (per `db/models/audit_events.py:57` —
+                # `UNIQUE(review_id, sequence_number)`).
+                .order_by(
+                    AuditEventRow.timestamp.desc(),
+                    AuditEventRow.sequence_number.desc(),
+                )
                 .limit(1)
             )
             payload = await session.scalar(stmt)
