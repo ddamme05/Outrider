@@ -526,41 +526,44 @@ async def _route_and_gate_one_finding(
     # regardless of any pre-set value (model can't pick destination).
     finding.publish_destination = destination
 
-    # Build + emit the routing event. Wrapped in try/except so the
-    # per-finding eligibility emission still fires (routing-emission-
-    # failed recovery).
+    # Build the routing event OUTSIDE the try/except: hash computation
+    # and `PublishRoutingEvent(...)` construction (Pydantic validation)
+    # are producer/schema concerns, not sink-I/O concerns. Wrapping
+    # them in the recovery path would silently convert producer bugs
+    # (drift between event schema + emitter, hash recipe regression)
+    # into `routing_emission_failed` — masking the bug as a withheld
+    # finding instead of failing fast.
+    coord_kind_value = coord_kind.value if coord_kind is not None else None
+    finding_content_hash = compute_finding_content_hash(
+        file_path=finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        finding_type=finding.finding_type,
+    )
+    decision_content_hash = compute_publish_routing_decision_hash(
+        destination=destination,
+        reason=routing_reason,
+        coordinate_error_kind=coord_kind,
+    )
+    routing_event = PublishRoutingEvent(
+        review_id=state.review_id,
+        is_eval=state.is_eval,
+        finding_id=finding.finding_id,
+        destination=destination,
+        reason=routing_reason,
+        coordinate_error_kind=coord_kind_value,
+        file_path=finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        finding_type=finding.finding_type,
+        finding_content_hash=finding_content_hash,
+        decision_content_hash=decision_content_hash,
+    )
+    # Sink I/O only — recovery path falls through to the eligibility
+    # emit with `withheld + routing_emission_failed` per spec.
     try:
-        coord_kind_value = coord_kind.value if coord_kind is not None else None
-        finding_content_hash = compute_finding_content_hash(
-            file_path=finding.file_path,
-            line_start=finding.line_start,
-            line_end=finding.line_end,
-            finding_type=finding.finding_type,
-        )
-        decision_content_hash = compute_publish_routing_decision_hash(
-            destination=destination,
-            reason=routing_reason,
-            coordinate_error_kind=coord_kind,
-        )
-        await publish_event_sink.emit_publish_routing(
-            PublishRoutingEvent(
-                review_id=state.review_id,
-                is_eval=state.is_eval,
-                finding_id=finding.finding_id,
-                destination=destination,
-                reason=routing_reason,
-                coordinate_error_kind=coord_kind_value,
-                file_path=finding.file_path,
-                line_start=finding.line_start,
-                line_end=finding.line_end,
-                finding_type=finding.finding_type,
-                finding_content_hash=finding_content_hash,
-                decision_content_hash=decision_content_hash,
-            )
-        )
+        await publish_event_sink.emit_publish_routing(routing_event)
     except Exception:
-        # Per spec: routing-emission-failed recovery. Fall through to
-        # eligibility emission with withheld + routing_emission_failed.
         routing_emission_failed = True
 
     # Eligibility decision. If routing emission failed, use the
