@@ -29,6 +29,7 @@ that don't need durable persistence.
 """
 
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
 from outrider.audit.events import (
     AnalyzeCompletedEvent,
@@ -272,6 +273,32 @@ class PublishEventSink(Protocol):
         carrying `github_review_id` + `comments_posted` + `review_status`.
         Not emitted on `failed` / `no_op_empty` / `idempotently_skipped*`
         paths.
+        """
+        ...
+
+    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
+        """Return the most-recent prior `PublishEvent` for `review_id`,
+        or `None` if no prior event was emitted.
+
+        Backs the V1 publish node's intra-Outrider idempotency check per
+        FUP-064: a same-`review_id` redispatch (e.g., dispatcher re-fires
+        the webhook after agent crash + restart) hits this query BEFORE
+        the GitHub call. On hit, the publish node emits
+        `PublishAttemptEvent(outcome=idempotently_skipped)` and returns
+        `PublishResult.skipped()` — no GitHub round-trip burned.
+
+        Multi-row semantics (replay re-emission divergence): if multiple
+        `PublishEvent` rows exist for `review_id`, return the most-recent
+        by `timestamp`. The persister is append-only; consumer-side
+        drift detection joins on `(review_id, github_review_id)` per
+        Q5 withdrawal — divergent rows surface as two logical
+        `PublishEvent`s and are caught by V1.5 anomaly rules
+        (FOLLOWUPS.md FUP-063), not by this query method.
+
+        Implementation parallels the per-emit session discipline:
+        each call opens its own `AsyncSession` (read-only, no
+        `session.begin()`), runs one `SELECT ... LIMIT 1`, and
+        deserializes the JSONB payload via `PublishEvent.model_validate`.
         """
         ...
 

@@ -118,11 +118,17 @@ if TYPE_CHECKING:
         LLMCallEvent,
         PublishAttemptEvent,
         PublishEligibilityEvent,
-        PublishEvent,
         PublishRoutingEvent,
         ReviewPhaseEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
+
+# PublishEvent is consumed at RUNTIME by `query_prior_publish_event`'s
+# `PublishEvent.model_validate(payload)` call — must be imported at
+# module level, not under TYPE_CHECKING.
+from outrider.audit.events import (
+    PublishEvent,  # noqa: E402  (intentional post-TYPE_CHECKING runtime import)
+)
 
 __all__ = [
     "AuditPersister",
@@ -1373,3 +1379,49 @@ class AuditPersister:
     async def emit_publish_result(self, event: PublishEvent) -> None:
         """Persist a `PublishEvent` row (success-path review-level summary)."""
         await self._persist_non_phase_event(event)
+
+    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
+        """Return the most-recent prior `PublishEvent` for `review_id`, or None.
+
+        Per FUP-064: the V1 publish node's intra-Outrider idempotency
+        pre-flight check. A same-`review_id` redispatch (dispatcher
+        re-fires the webhook after agent crash + restart) hits this
+        query BEFORE the GitHub call; on hit, the publish node short-
+        circuits to `idempotently_skipped` outcome without burning a
+        GitHub round-trip.
+
+        Read-only — opens its own `AsyncSession` (no `session.begin()`,
+        no transaction needed for a single SELECT). Mirrors the
+        per-emit session discipline so the persister stays
+        concurrent-safe across reviews.
+
+        Multi-row handling (replay re-emission divergence): returns the
+        most-recent by `timestamp` via `ORDER BY timestamp DESC LIMIT 1`.
+        The append-only audit log can legitimately carry multiple
+        `PublishEvent` rows for one `review_id` (per Q5 withdrawal:
+        replay re-emission produces additional rows; consumer-side
+        dedup keys off `(review_id, github_review_id)`). This query
+        chooses the most-recent row as the canonical "did we publish";
+        consumer-side drift surfaces via V1.5 anomaly rules (FUP-063),
+        not this method.
+
+        Deserialization: the JSONB payload round-trips through
+        `PublishEvent.model_validate(payload)` — the event's frozen
+        + extra=forbid + validator chain re-fires, so a corrupted
+        payload raises `ValidationError` at the read boundary rather
+        than producing a silently-wrong return value.
+        """
+        async with self._session_factory() as session:
+            stmt = (
+                select(AuditEventRow.payload)
+                .where(
+                    AuditEventRow.review_id == review_id,
+                    AuditEventRow.event_type == "publish",
+                )
+                .order_by(AuditEventRow.timestamp.desc())
+                .limit(1)
+            )
+            payload = await session.scalar(stmt)
+        if payload is None:
+            return None
+        return PublishEvent.model_validate(payload)

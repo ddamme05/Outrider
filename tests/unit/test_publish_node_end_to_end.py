@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -71,11 +71,22 @@ class _RecordingPhaseEventSink:
 
 
 class _RecordingPublishEventSink:
+    """Recording PublishEventSink — captures all emit_* calls + serves a
+    configurable `prior_publish_event` from `query_prior_publish_event`.
+
+    Tests configure `prior_publish_event` before invoking publish to
+    simulate the intra-Outrider idempotency hit path (FUP-064 closed).
+    Default `None` = "no prior publish" = continues to empty-eligible
+    + external-record + POST paths.
+    """
+
     def __init__(self) -> None:
         self.routing: list[PublishRoutingEvent] = []
         self.eligibility: list[PublishEligibilityEvent] = []
         self.attempts: list[PublishAttemptEvent] = []
         self.results: list[PublishEvent] = []
+        self.prior_publish_event: PublishEvent | None = None
+        self.query_calls: list[UUID] = []
 
     async def emit_publish_routing(self, event: PublishRoutingEvent) -> None:
         self.routing.append(event)
@@ -88,6 +99,10 @@ class _RecordingPublishEventSink:
 
     async def emit_publish_result(self, event: PublishEvent) -> None:
         self.results.append(event)
+
+    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
+        self.query_calls.append(review_id)
+        return self.prior_publish_event
 
 
 class _StubPublisher:

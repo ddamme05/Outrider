@@ -101,6 +101,9 @@ class _StubPublishEventSink:
     async def emit_publish_result(self, event: Any) -> None:  # noqa: ARG002
         return None
 
+    async def query_prior_publish_event(self, review_id: Any) -> Any:  # noqa: ARG002
+        return None
+
 
 class _StubGitHubPublisher:
     async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002
