@@ -38,16 +38,20 @@ if TYPE_CHECKING:
 class InlineComment(BaseModel):
     """One inline review comment, ready for the GitHub create-review API.
 
-    Constructed via `InlineComment.from_finding(finding, location, sanitizer)`
-    in production. Direct construction is permitted by the schema for test
-    fixtures but forbidden in `src/outrider/` by an import-graph unit test
-    (per the spec's structural-routing assertion at §4.1.7 sub-rule 5).
+    Constructed via `InlineComment.from_finding(*, finding, path, line,
+    side, body)` in production. Direct construction is permitted by the
+    schema for test fixtures but forbidden in `src/outrider/` by an
+    import-graph unit test (per the spec's structural-routing assertion
+    at §4.1.7 sub-rule 5).
 
     Fields mirror the per-comment shape the publisher posts to
     `POST /repos/{owner}/{repo}/pulls/{n}/reviews` `comments[]` items
     (verified via 4d sandbox 2026-05-22 + githubkit cookbook): `path`
-    + `line` + `side="RIGHT"` + `body`. The `position` parameter is
-    NOT used; V1 uses source-line coordinates exclusively.
+    + `line` + `side` + `body`. `side` flows through from
+    `GitHubCommentLocation.side` per `coordinates-module-is-sole-translator`
+    — V1 always sees `"RIGHT"` because `tree_sitter_to_github` only
+    accepts head_content. The `position` parameter is NOT used; V1 uses
+    source-line coordinates exclusively.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

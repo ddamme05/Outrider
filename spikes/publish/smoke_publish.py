@@ -792,13 +792,23 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
     content_base: str | None = None
     previous_path: str | None = None
     if target.status in {"modified", "renamed"}:
-        # `renamed` may also be `modified` content-wise; base lives at
-        # `previous_filename` (renamed) or `path` (modified).
-        base_path = (
-            getattr(target, "previous_filename", None) or args.file_path
-            if target.status == "renamed"
-            else args.file_path
-        )
+        # Vendor-quirk normalization mirroring `agent/nodes/intake.py:480`:
+        # GitHubKit returns `previous_filename=""` for non-renamed files,
+        # AND can plausibly return `""` for renamed if a future drift
+        # hits. `or None` collapses both None and `""` to None so the
+        # rename-without-previous-filename case fails loud with a
+        # helpful message instead of an opaque ValidationError.
+        raw_previous_filename = getattr(target, "previous_filename", None) or None
+        if target.status == "renamed":
+            if raw_previous_filename is None:
+                raise SystemExit(
+                    f"GitHub returned status='renamed' for {args.file_path!r} "
+                    f"without previous_filename — likely a GitHubKit shape "
+                    f"drift; production intake.py:642 has the matching guard."
+                )
+            base_path = raw_previous_filename
+        else:
+            base_path = args.file_path
         try:
             base_bytes = await fetch_file_content_at(
                 gh, owner=owner, repo=repo, path=base_path, ref=base_sha
