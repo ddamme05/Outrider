@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from outrider.audit.sinks import PhaseEventSink, PublishEventSink
-    from outrider.github.auth import InstallationGitHubClient
+    from outrider.github import InstallationGitHubClient
     from outrider.github.publisher import GitHubPublisher
     from outrider.schemas import ReviewFinding, ReviewState
 
