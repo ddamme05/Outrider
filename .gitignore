@@ -82,3 +82,7 @@ frontend/.vite/
 
 # Spikes are tracked in git (NOTES.md is kept), but spike output files aren't.
 spikes/**/__pycache__/
+# Smoke-harness per-run state — manifests carry installation_id + GitHub
+# review IDs that are useful for reconnaissance; never commit.
+spikes/**/*.jsonl
+spikes/**/.local/
