@@ -77,18 +77,36 @@ def _find_inline_comment_constructions(source: str) -> list[tuple[int, str]]:
     except SyntaxError:
         return []
 
-    # First pass: collect every local name that resolves to InlineComment,
-    # whether via `from outrider.schemas import InlineComment` (name="InlineComment")
-    # or `... import InlineComment as IC` (name="IC"). Also covers
-    # `import outrider.schemas as schemas; schemas.InlineComment(...)` via
-    # the Attribute branch below — but only the local-name case needs
-    # alias resolution here.
-    inline_comment_local_names: set[str] = {"InlineComment"}
+    # First pass: collect every local name + module alias that resolves
+    # to the canonical `outrider.schemas[.publish].InlineComment`.
+    # Constrains alias detection to the canonical source modules so an
+    # unrelated `InlineComment` from a hypothetical third-party module
+    # is not treated as a false-positive target.
+    schema_modules = {"outrider.schemas", "outrider.schemas.publish"}
+    inline_comment_local_names: set[str] = set()
+    schema_module_aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
+            # `from outrider.schemas import InlineComment[ as IC]` —
+            # local name (or alias) resolves to the canonical class.
+            if node.module in schema_modules:
+                for alias in node.names:
+                    if alias.name == "InlineComment":
+                        inline_comment_local_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            # `import outrider.schemas[ as schemas]` — `schemas` (or
+            # `outrider.schemas`) is a valid attribute-access base for
+            # `<base>.InlineComment(...)` direct construction.
             for alias in node.names:
-                if alias.name == "InlineComment":
-                    inline_comment_local_names.add(alias.asname or alias.name)
+                if alias.name in schema_modules:
+                    # `import outrider.schemas` binds `outrider`; the
+                    # construction site is `outrider.schemas.InlineComment(...)`
+                    # — an `ast.Attribute` chain whose final `.value`
+                    # is `outrider.schemas` (depth-2 Attribute). For
+                    # the alias-bound case, `<alias>.InlineComment(...)`
+                    # is one-level Attribute. We accept both shapes
+                    # via the simple base-name set.
+                    schema_module_aliases.add(alias.asname or alias.name.split(".")[-1])
 
     constructions: list[tuple[int, str]] = []
     for node in ast.walk(tree):
@@ -96,14 +114,16 @@ def _find_inline_comment_constructions(source: str) -> list[tuple[int, str]]:
             continue
         func = node.func
         # Direct `<local-name>(...)` where local-name resolves to InlineComment.
+        if isinstance(func, ast.Name) and func.id in inline_comment_local_names:
+            constructions.append((node.lineno, ast.unparse(node)[:80]))
+            continue
+        # `<schema-alias>.InlineComment(...)` where <schema-alias> is
+        # a known outrider.schemas[.publish] import binding.
         if (
-            isinstance(func, ast.Name)
-            and func.id in inline_comment_local_names
-            or (
-                isinstance(func, ast.Attribute)
-                and func.attr == "InlineComment"
-                and isinstance(func.value, ast.Name)
-            )
+            isinstance(func, ast.Attribute)
+            and func.attr == "InlineComment"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in schema_module_aliases
         ):
             constructions.append((node.lineno, ast.unparse(node)[:80]))
     return constructions

@@ -697,17 +697,14 @@ async def test_external_record_query_failure_emits_attempt_failed_before_raising
     distinguish "external-record query crashed" from "node hung
     mid-execution".
     """
+    from outrider.github.publisher import GitHubPublishError
+
     finding = _make_finding()
     state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
-
-    class _RaisingFindStub(_RecordingPublishEventSink):
-        pass  # type narrower for the test-local subclass
 
     class _RaisingPublisher(_StubPublisher):
         async def find_existing_review_on_head_sha(self, **kwargs: Any) -> int | None:
             self.find_calls.append(kwargs)
-            from outrider.github.publisher import GitHubPublishError
-
             raise GitHubPublishError(
                 "simulated: GitHub GET reviews failed (503 upstream)",
             )
@@ -715,7 +712,12 @@ async def test_external_record_query_failure_emits_attempt_failed_before_raising
     publisher = _RaisingPublisher(existing_review_id=None)
     sink = _RecordingPublishEventSink()
 
-    with pytest.raises(Exception):  # noqa: B017  # any propagating exc is fine; we assert below
+    # Pin the re-raise contract: the publish node MUST propagate the
+    # exact `GitHubPublishError` (not a wrapped or transformed type)
+    # after emitting the FAILED attempt. A broader `pytest.raises
+    # (Exception)` would silently pass if a future refactor wrapped
+    # the Step 6 exception as something else.
+    with pytest.raises(GitHubPublishError, match="simulated: GitHub GET reviews failed"):
         await publish_module.publish(
             state,
             publisher=publisher,
