@@ -148,8 +148,25 @@ async def publish(
     _assert_no_duplicate_finding_ids(admitted_findings)
 
     # Build the body marker once — embedded in the review body for
-    # crash-after-success recovery.
-    body_marker = _BODY_MARKER_TEMPLATE.format(review_id=state.review_id)
+    # crash-after-success recovery. Explicit `str(...)` (rather than
+    # implicit f-string `__str__`) defends against silent format drift
+    # if `ReviewState.review_id` is ever retyped from UUID to a
+    # different identity type (Wave-3 Sharp-Edges F1 fix): the matcher
+    # at `find_existing_review_on_head_sha` does a literal `startswith`
+    # so the marker shape MUST be deterministic across producer +
+    # consumer. `UUID.__str__` is the canonical 8-4-4-4-12 hex form;
+    # any other identity type would land here with a different shape
+    # and break crash-recovery silently. Cast via `str(...)` makes the
+    # stringification explicit so a future type change surfaces as a
+    # test failure (test_body_marker_shape_pinned) rather than silently
+    # at runtime.
+    if not isinstance(state.review_id, UUID):
+        raise TypeError(
+            f"state.review_id must be UUID (got {type(state.review_id).__name__}); "
+            f"the body marker's literal shape is load-bearing for crash-after-"
+            f"success recovery and depends on UUID.__str__ formatting."
+        )
+    body_marker = _BODY_MARKER_TEMPLATE.format(review_id=str(state.review_id))
 
     # Build a quick-lookup registry of file paths in the diff so
     # routing's "non_diffed_file" short-circuit can decide WITHOUT
