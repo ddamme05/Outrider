@@ -56,6 +56,7 @@ __all__ = [
     "GitHubPublishError",
     "GitHubPublisher",
     "GitHubReviewValidationError",
+    "GitHubSecondaryRateLimitError",
 ]
 
 
@@ -94,22 +95,62 @@ class GitHubPublishError(Exception):
 
 
 class GitHubReviewValidationError(GitHubPublishError):
-    """HTTP 422 from `POST .../pulls/{n}/reviews` — atomic rejection.
+    """HTTP 422 from `POST .../pulls/{n}/reviews` — atomic VALIDATION rejection.
 
     Per Q6 sandbox (2026-05-22): GitHub atomically rejects multi-comment
     reviews where any comment has an invalid position / path /
     commit_id. Zero reviews are created and zero comments are posted
     on 422 — the publish node does NOT retry per-comment.
 
+    Distinct from `GitHubSecondaryRateLimitError` (the spec at §VI line
+    406 notes GitHub's 422 wording — "Validation failed, or the endpoint
+    has been spammed" — is ambiguous between per-comment validation
+    failure and a secondary-rate-limit; the publisher discriminates by
+    inspecting the response body, NOT status code alone).
+
     Carries the raw 422 response body as `.body_text` for diagnostic
-    logging (NOT for parsing decision logic; per Q6 the body shape is
-    docs-silent and behavior may vary across GitHub deployments).
+    logging (NOT for parsing decision logic).
     """
 
     def __init__(self, message: str, *, status_code: int, body_text: str) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.body_text = body_text
+
+
+class GitHubSecondaryRateLimitError(GitHubPublishError):
+    """HTTP 422 from `POST .../pulls/{n}/reviews` — SECONDARY-RATE-LIMIT.
+
+    GitHub returns the SAME 422 status code for two distinct failure
+    classes: per-comment validation failures (atomic rejection per Q6)
+    AND secondary-rate-limit (abuse-detection throttle). Per spec §VI
+    line 406, the publisher MUST distinguish the two from the response
+    body. This exception carries the rate-limit case so the publish
+    node's audit row records the right `failure_class` for retry-
+    diagnosis dashboards.
+
+    The discriminator: a 422 body containing the literal token
+    `"secondary rate limit"` (GitHub's documented abuse-detection
+    phrasing — case-insensitive match per the docs). Anything else
+    classified as `GitHubReviewValidationError`.
+
+    Treated as a TRANSIENT failure for audit purposes (`failure_class
+    = "GitHubSecondaryRateLimitError"`); V1 does NOT auto-retry —
+    the dispatcher's retry-after-cooldown logic (V1.5 scope) reads
+    the failure_class to decide whether to retry.
+    """
+
+    def __init__(self, message: str, *, status_code: int, body_text: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body_text = body_text
+
+
+# GitHub's secondary-rate-limit phrasing — present in the 422 body when
+# the throttle fires. Case-insensitive match; the publisher checks via
+# `.lower() in body_text.lower()`. Sourced from GitHub's REST API
+# best-practices doc (apiVersion 2026-03-10).
+_SECONDARY_RATE_LIMIT_MARKER = "secondary rate limit"
 
 
 @runtime_checkable
@@ -164,10 +205,14 @@ class GitHubPublisher(Protocol):
             `GitHubReviewCreated(github_review_id, comments_posted)`.
 
         Raises:
-            `GitHubReviewValidationError`: HTTP 422 (validation
-                failure, atomic).
+            `GitHubReviewValidationError`: HTTP 422 with a validation-
+                failure body (atomic rejection per Q6).
+            `GitHubSecondaryRateLimitError`: HTTP 422 with a
+                secondary-rate-limit body. Per spec §VI line 406,
+                422 is ambiguous between the two cases; the publisher
+                discriminates by inspecting the response body.
             `GitHubPublishError`: any other HTTP error (403 permission,
-                404 PR not found, 5xx upstream).
+                404 PR not found, 5xx upstream) — the base class.
         """
         ...
 
@@ -261,6 +306,18 @@ class GitHubKitPublisher:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             text = getattr(getattr(exc, "response", None), "text", str(exc))
             if status == 422:
+                # 422 is ambiguous per spec §VI line 406: validation
+                # failure OR secondary-rate-limit (abuse throttle). The
+                # response body is the discriminator. The rate-limit
+                # body contains GitHub's documented phrase "secondary
+                # rate limit" (case-insensitive); validation failures
+                # do not.
+                if _SECONDARY_RATE_LIMIT_MARKER in (text or "").lower():
+                    raise GitHubSecondaryRateLimitError(
+                        f"GitHub secondary-rate-limit on create-review (422): {text[:200]!r}",
+                        status_code=422,
+                        body_text=text,
+                    ) from exc
                 raise GitHubReviewValidationError(
                     f"GitHub rejected the review (422): {text[:200]!r}",
                     status_code=422,

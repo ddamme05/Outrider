@@ -312,7 +312,7 @@ async def publish(
             sorted_finding_ids=sorted_finding_ids,
             comments_attempted=len(eligible_inline_comments),
             failure_class=type(exc).__name__,
-            status_code=getattr(getattr(exc, "response", None), "status_code", None),
+            status_code=_extract_status_code(exc),
             is_eval=state.is_eval,
         )
         raise
@@ -359,6 +359,34 @@ async def publish(
 # ---------------------------------------------------------------------------
 # Per-finding orchestration helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_status_code(exc: BaseException) -> int | None:
+    """Extract HTTP status code from a publish-path exception, if present.
+
+    Two exception shapes carry status:
+      - Wrapper exceptions (`GitHubReviewValidationError`,
+        `GitHubSecondaryRateLimitError`) set `exc.status_code` directly
+        at construction. Prefer this — it's the wrapper's contract.
+      - Raw githubkit `RequestFailed` carries `exc.response.status_code`.
+        Falls through to this when the wrapper didn't wrap (e.g.,
+        non-422 error path).
+
+    Returns `None` for exceptions with no HTTP context (network errors
+    pre-response, programmer-error exceptions like `ValueError`).
+
+    Per Codex 2026-05-22 review: the prior `getattr(getattr(exc,
+    "response", None), "status_code", None)` pattern missed
+    `GitHubReviewValidationError.status_code` because that wrapper
+    sets `.status_code` directly (not on `.response`), so a known
+    HTTP 422 was being recorded as `status_code=None` on the
+    `PublishAttemptEvent`.
+    """
+    direct = getattr(exc, "status_code", None)
+    if isinstance(direct, int):
+        return direct
+    nested = getattr(getattr(exc, "response", None), "status_code", None)
+    return nested if isinstance(nested, int) else None
 
 
 def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:

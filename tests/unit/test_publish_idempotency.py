@@ -379,6 +379,52 @@ async def test_query_prior_publish_event_failure_emits_attempt_failed_before_rai
 
 
 @pytest.mark.asyncio
+async def test_failed_attempt_records_wrapper_exception_status_code() -> None:
+    """`PublishAttemptEvent.status_code` MUST reflect the wrapper
+    exception's `.status_code` (e.g., 422 on
+    `GitHubReviewValidationError`), NOT None.
+
+    Codex 2026-05-22 review: the prior `getattr(getattr(exc, "response",
+    None), "status_code", None)` pattern missed wrapper exceptions that
+    set `.status_code` directly. The fix introduces
+    `_extract_status_code(exc)` which prefers `exc.status_code` over
+    `exc.response.status_code`. This test pins that contract end-to-end:
+    a publisher that raises `GitHubReviewValidationError(status_code=422,
+    ...)` MUST land `status_code=422` on the failed-attempt audit row.
+    """
+    from outrider.github.publisher import GitHubReviewValidationError
+
+    class _RaisingPublisher(_StubPublisher):
+        async def create_review(self, **kwargs: Any) -> GitHubReviewCreated:  # noqa: ARG002
+            raise GitHubReviewValidationError(
+                "atomic 422 with validation body",
+                status_code=422,
+                body_text='{"message":"Unprocessable Entity","errors":["..."]}',
+            )
+
+    finding = _make_finding()
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    publisher = _RaisingPublisher()
+    sink = _RecordingPublishEventSink()
+
+    with pytest.raises(GitHubReviewValidationError):
+        await publish_module.publish(
+            state,
+            publisher=publisher,
+            publish_event_sink=sink,
+            phase_event_sink=_RecordingPhaseEventSink(),
+            github_factory=_stub_github_factory,
+        )
+
+    # Failed-attempt row was emitted BEFORE re-raise.
+    assert len(sink.attempts) == 1
+    assert sink.attempts[0].outcome is PublishAttemptOutcome.FAILED
+    assert sink.attempts[0].failure_class == "GitHubReviewValidationError"
+    # The fix: status_code lands as 422, NOT None.
+    assert sink.attempts[0].status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_no_prior_publish_event_proceeds_normally() -> None:
     """No prior PublishEvent → query returns None → normal flow continues
     (empty-eligible check, external-record check, POST). Pins the
