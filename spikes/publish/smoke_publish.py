@@ -197,10 +197,26 @@ def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
 def _make_changed_file(
     *,
     path: str,
-    content_head: str,
+    content_head: str | None,
+    content_base: str | None = None,
     patch: str,
-    status: str = "modified",
+    status: str = "added",
+    previous_path: str | None = None,
 ) -> ChangedFile:
+    """Construct a `ChangedFile` for the smoke harness.
+
+    `ChangedFile`'s validator enforces status-specific content-presence:
+      - `added`:    content_base=None,    content_head=<str>
+      - `modified`: content_base=<str>,   content_head=<str>
+      - `removed`:  content_base=<str>,   content_head=None
+      - `renamed`:  content_base=<str>,   content_head=<str>,
+                    previous_path=<str>
+
+    Caller is responsible for fetching the right content shape per status
+    before invoking — the live-mode flow in `_run_live_mode` branches on
+    `target.status` and fetches base content from `previous_filename`
+    (renamed) or `path` (modified/removed) at `base_sha`.
+    """
     additions = sum(
         1 for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++")
     )
@@ -213,9 +229,9 @@ def _make_changed_file(
         additions=additions,
         deletions=deletions,
         patch=patch,
-        content_base=None,
+        content_base=content_base,
         content_head=content_head,
-        previous_path=None,
+        previous_path=previous_path,
     )
 
 
@@ -770,11 +786,54 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
             f"in [1, {head_line_count}]."
         )
 
+    # Base-content fetch per status. `ChangedFile`'s validator enforces:
+    # `modified`/`renamed` need both base + head; `added` only head;
+    # `removed` only base (and can't be inline-commented — skip).
+    content_base: str | None = None
+    previous_path: str | None = None
+    if target.status in {"modified", "renamed"}:
+        # `renamed` may also be `modified` content-wise; base lives at
+        # `previous_filename` (renamed) or `path` (modified).
+        base_path = (
+            getattr(target, "previous_filename", None) or args.file_path
+            if target.status == "renamed"
+            else args.file_path
+        )
+        try:
+            base_bytes = await fetch_file_content_at(
+                gh, owner=owner, repo=repo, path=base_path, ref=base_sha
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"GET /repos/{owner}/{repo}/contents/{base_path}?ref={base_sha} "
+                f"(base content for {target.status}) failed: "
+                f"{exc.__class__.__name__}: {exc}."
+            ) from exc
+        if base_bytes is None:
+            raise SystemExit(
+                f"fetch_file_content_at returned None for base path "
+                f"{base_path!r} at ref={base_sha} (oversize/non-file/symlink). "
+                f"Pick another file."
+            )
+        content_base = base_bytes.decode("utf-8")
+        if target.status == "renamed":
+            previous_path = base_path
+    elif target.status == "removed":
+        raise SystemExit(
+            f"target file {args.file_path!r} status is 'removed'; the publish "
+            f"node correctly routes removed-file findings to DASHBOARD_ONLY "
+            f"(HEAD_CONTENT_UNAVAILABLE) — which means zero inline comments "
+            f"post and the smoke can't exercise the happy path. Pick an "
+            f"added/modified/renamed file instead."
+        )
+
     changed_file = _make_changed_file(
         path=args.file_path,
         content_head=content_head,
+        content_base=content_base,
         patch=target.patch,
         status=target.status,
+        previous_path=previous_path,
     )
 
     review_id = uuid4()
