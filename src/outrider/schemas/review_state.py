@@ -84,6 +84,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from outrider.agent.reducers import append_with_dedup_by
 from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.pr_context import PRContext
+from outrider.schemas.publish import PublishResult
 from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.triage_result import TriageResult
 
@@ -140,6 +141,15 @@ class ReviewState(BaseModel):
         list[TraceCandidate],
         append_with_dedup_by(lambda c: c.candidate_id),
     ] = Field(default_factory=list)
+
+    # Populated by the publish node (`agent/nodes/publish.py`) per
+    # specs/2026-05-21-publish-node.md. Single-writer field with the
+    # default overwrite reducer (no dedup-key needed — only the publish
+    # node assigns it, and the node is a graph terminal). Carries the
+    # publish outcome shape per `PublishResult` (success / empty /
+    # idempotently_skipped / idempotently_skipped_external_record).
+    # `None` until publish runs.
+    publish_result: PublishResult | None = None
 
 
 __all__ = [

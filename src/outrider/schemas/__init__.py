@@ -15,6 +15,11 @@ from outrider.schemas.pr_context import (
     ChangedFile,
     PRContext,
 )
+from outrider.schemas.publish import (
+    GitHubReviewCreated,
+    InlineComment,
+    PublishResult,
+)
 from outrider.schemas.review_finding import (
     PublishDestination,
     ReviewDimension,
@@ -31,12 +36,15 @@ from outrider.schemas.triage_result import (
 __all__ = [
     "AnalysisRound",
     "ChangedFile",
+    "GitHubReviewCreated",
     "HITLDecision",
     "HITLRequest",
+    "InlineComment",
     "PerFindingDecision",
     "PerFindingOutcome",
     "PRContext",
     "PublishDestination",
+    "PublishResult",
     "ReviewDimension",
     "ReviewFinding",
     "ReviewState",

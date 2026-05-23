@@ -1,12 +1,14 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of four sink Protocols.
+"""AuditPersister — durable single-class implementation of five sink Protocols.
 
 Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
-`FileExaminationSink`, and `AnalyzeEventSink` (`audit/sinks.py`) from one
-body, sharing transaction lifecycle and session-per-call discipline. The
-non-phase events route through a shared `_persist_non_phase_event`
-helper so the idempotency + payload-mismatch discipline is uniform
-across event types.
+`FileExaminationSink`, `AnalyzeEventSink`, and `PublishEventSink`
+(`audit/sinks.py`) from one body, sharing transaction lifecycle and
+session-per-call discipline. The non-phase events route through a
+shared `_persist_non_phase_event` helper so the idempotency +
+payload-mismatch discipline is uniform across event types. The
+PublishEventSink surface was added per DECISIONS.md #023 (publish
+routing and eligibility are separate decisions).
 
 Key invariants:
 
@@ -114,6 +116,10 @@ if TYPE_CHECKING:
         FindingEvent,
         FindingProposalRejectedEvent,
         LLMCallEvent,
+        PublishAttemptEvent,
+        PublishEligibilityEvent,
+        PublishEvent,
+        PublishRoutingEvent,
         ReviewPhaseEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
@@ -795,6 +801,10 @@ def _serialize_event_payload(
         | FindingProposalRejectedEvent
         | AnalyzeResponseRejectedEvent
         | AnalyzeCompletedEvent
+        | PublishRoutingEvent
+        | PublishEligibilityEvent
+        | PublishAttemptEvent
+        | PublishEvent
     ),
 ) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
@@ -832,7 +842,7 @@ def _serialize_event_payload(
 
 class AuditPersister:
     """Durable persister; implements `LLMExchangePersister` + `PhaseEventSink`
-    + `FileExaminationSink` + `AnalyzeEventSink`.
+    + `FileExaminationSink` + `AnalyzeEventSink` + `PublishEventSink`.
 
     Constructor accepts dependencies via keyword args:
 
@@ -1274,6 +1284,10 @@ class AuditPersister:
             | FindingProposalRejectedEvent
             | AnalyzeResponseRejectedEvent
             | AnalyzeCompletedEvent
+            | PublishRoutingEvent
+            | PublishEligibilityEvent
+            | PublishAttemptEvent
+            | PublishEvent
         ),
     ) -> None:
         """Persist any non-phase audit event row to audit_events.
@@ -1335,4 +1349,27 @@ class AuditPersister:
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
         """Persist an `AnalyzeCompletedEvent` row (per-pass aggregate)."""
+        await self._persist_non_phase_event(event)
+
+    # -- PublishEventSink surface -------------------------------------------
+    # Per DECISIONS.md #023 (publish routing and eligibility are separate
+    # decisions): four publish-emitted event types share one Protocol because
+    # they form one logical group (per-finding routing + eligibility + the
+    # terminal per-attempt outcome + the review-level summary) and one
+    # transaction-lifecycle discipline.
+
+    async def emit_publish_routing(self, event: PublishRoutingEvent) -> None:
+        """Persist a `PublishRoutingEvent` row (per-finding routing decision)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_publish_eligibility(self, event: PublishEligibilityEvent) -> None:
+        """Persist a `PublishEligibilityEvent` row (per-finding policy gate)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_publish_attempt(self, event: PublishAttemptEvent) -> None:
+        """Persist a `PublishAttemptEvent` row (terminal GitHub-call outcome)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_publish_result(self, event: PublishEvent) -> None:
+        """Persist a `PublishEvent` row (success-path review-level summary)."""
         await self._persist_non_phase_event(event)

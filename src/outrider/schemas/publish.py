@@ -1,0 +1,213 @@
+# Cross-boundary publish carriers per docs/spec.md §4.1.7 + specs/2026-05-21-publish-node.md.
+"""InlineComment + PublishResult + GitHubReviewCreated — publish-side carriers.
+
+All three are frozen + extra="forbid" per the output-boundary trust rule
+(`docs/trust-boundaries.md` §6): the model proposes, deterministic systems
+dispose. The publisher constructs these from `ReviewFinding` + the
+`coordinates.tree_sitter_to_github` location — no model field controls
+publish routing or comment body content; sanitizer + coordinates own those.
+
+`InlineComment.from_finding(...)` is the canonical production construction
+path; the trust-boundary checklist (boundary #6) mandates this factory be
+the only call site inside `src/outrider/`. Direct Pydantic construction
+remains permitted for test fixtures that need to bypass the sanitizer
+path, but an import-graph unit test forbids it inside `src/outrider/`.
+
+`PublishResult` is the publish node's terminal state field — captured on
+`ReviewState.publish_result` and rolled up into the dashboard's review-level
+summary. Its three constructors (`success`, `empty`, `skipped`,
+`skipped_external`) line up with the four non-`failed` `PublishAttemptOutcome`
+variants; the publisher raises on `failed` outcomes rather than returning
+a degraded result, matching the analyze convention of "failures propagate
+and the start phase event is left dangling as the audit signal."
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Annotated, Self
+
+from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from outrider.schemas.review_finding import ReviewFinding
+
+
+# GitHub `side` parameter — `RIGHT` references the head version of the
+# diff, `LEFT` references the base. V1 always posts on the head version
+# (we comment on what the PR author wrote, not on what they removed); the
+# spec verified via 4d sandbox (2026-05-22) that source-line + `side=RIGHT`
+# is accepted under apiVersion 2026-03-10 and lands on the requested line.
+_GITHUB_DIFF_SIDE_RIGHT = "RIGHT"
+
+
+class InlineComment(BaseModel):
+    """One inline review comment, ready for the GitHub create-review API.
+
+    Constructed via `InlineComment.from_finding(finding, location, sanitizer)`
+    in production. Direct construction is permitted by the schema for test
+    fixtures but forbidden in `src/outrider/` by an import-graph unit test
+    (per the spec's structural-routing assertion at §4.1.7 sub-rule 5).
+
+    Fields mirror the per-comment shape the publisher posts to
+    `POST /repos/{owner}/{repo}/pulls/{n}/reviews` `comments[]` items
+    (verified via 4d sandbox 2026-05-22 + githubkit cookbook): `path`
+    + `line` + `side="RIGHT"` + `body`. The `position` parameter is
+    NOT used; V1 uses source-line coordinates exclusively.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # GitHub-side coordinates. Path is repo-relative POSIX form; line is
+    # 1-indexed source-line on the head version of the diff. Both come
+    # from `coordinates.tree_sitter_to_github(...)` — never from model
+    # output, never from finding.publish_destination (which is an
+    # advisory hint coordinates may overwrite).
+    path: Annotated[str, Field(max_length=1024)]
+    line: int = Field(ge=1)
+    side: Annotated[str, Field(pattern=r"^(LEFT|RIGHT)$")] = _GITHUB_DIFF_SIDE_RIGHT
+
+    # Pre-sanitized body. Capped at `GITHUB_COMMENT_BODY_MAX` UTF-8 bytes
+    # by the sanitizer (Outrider policy cap per DECISIONS.md #023 + 4a
+    # sandbox); the schema doesn't re-enforce the byte cap because
+    # `policy/output_sanitizer.py` is the single canonical authority on
+    # that boundary. Schema enforces a coarser char-count cap as a
+    # defense-in-depth floor — any body that exceeds this is a sanitizer
+    # bug, not a routing decision.
+    body: Annotated[str, Field(min_length=1, max_length=131072)]
+
+    # Backed by the originating ReviewFinding so the publisher can join
+    # back to the FindingEvent / PublishRoutingEvent identity tuple on
+    # the audit side. Not serialized to GitHub; the comment body itself
+    # is the user-visible surface.
+    finding_id: UUID
+
+    @classmethod
+    def from_finding(
+        cls,
+        *,
+        finding: ReviewFinding,
+        path: str,
+        line: int,
+        body: str,
+    ) -> Self:
+        """Canonical production constructor.
+
+        The caller (publisher) supplies the coordinates from
+        `tree_sitter_to_github(...)` (`path`, `line`) and the
+        sanitized `body` from `policy/output_sanitizer.py`. This
+        factory exists so the trust-boundary structural-routing
+        assertion can be enforced via an import-graph test rather
+        than reviewer discipline alone.
+        """
+        return cls(
+            path=path,
+            line=line,
+            side=_GITHUB_DIFF_SIDE_RIGHT,
+            body=body,
+            finding_id=finding.finding_id,
+        )
+
+
+class GitHubReviewCreated(BaseModel):
+    """Publisher's success-path response — what GitHub returned for the POST.
+
+    Carries the minimum identifiers the publish node needs to emit the
+    canonical `PublishEvent` audit row (review-level summary) and to
+    surface in `PublishResult`. Distinct from the verbose githubkit
+    response object: the wrapper extracts the two load-bearing fields
+    and discards the rest.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # GitHub-assigned review ID. Used as the dedup key on
+    # `PublishEvent` (consumer-side dedup is `(review_id, github_review_id)`).
+    github_review_id: int = Field(ge=1)
+
+    # Count of inline comments GitHub accepted as posted. V1 atomicity
+    # (per Q6 sandbox 2026-05-22): if any comment is invalid, GitHub
+    # rejects the entire review with 422 and creates zero rows. So when
+    # the publisher returns a `GitHubReviewCreated`, all comments
+    # posted; this value equals `len(comments)` from the request.
+    comments_posted: int = Field(ge=0)
+
+
+class PublishResult(BaseModel):
+    """Publish node's terminal state field; rolled up into ReviewState.
+
+    Five outcome shapes correspond 1:1 to `PublishAttemptOutcome` minus
+    `FAILED` (failed attempts raise rather than producing a result):
+
+    - `success` — review posted; `github_review_id` populated.
+    - `empty` — zero eligible+INLINE findings; no GitHub call.
+    - `skipped` — prior PublishEvent for this review_id; no GitHub call.
+    - `skipped_external` — body-marker query found existing review on
+      head_sha (crash-after-success recovery path).
+
+    The publish node returns `{"publish_result": result}` from its body;
+    LangGraph merges into `ReviewState.publish_result` via the default
+    overwrite reducer (single-writer field, no dedup needed).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # The canonical outcome string — mirrors PublishAttemptOutcome.value
+    # so dashboard consumers can switch on a single string. NOT typed
+    # `PublishAttemptOutcome` directly to avoid the audit→schemas import
+    # circular and to keep `schemas/` free of audit-layer dependencies.
+    outcome: Annotated[
+        str,
+        Field(
+            pattern=r"^(success|empty|idempotently_skipped|idempotently_skipped_external_record)$"
+        ),
+    ]
+
+    # Populated on `success` and `skipped_external`; None on `empty` and `skipped`.
+    github_review_id: int | None = Field(default=None, ge=1)
+
+    # Count of comments the publisher MATERIALIZED (passed to GitHub).
+    # Distinct from `comments_attempted` on `PublishAttemptEvent`, which
+    # counts only the publisher's outgoing payload — both track the same
+    # number for `success` outcomes. Zero on `empty`/`skipped` paths.
+    comments_posted: int = Field(ge=0, default=0)
+
+    @classmethod
+    def success(cls, *, github_review_id: int, comments_posted: int) -> Self:
+        """Publisher posted the review; github_review_id is the new row."""
+        return cls(
+            outcome="success",
+            github_review_id=github_review_id,
+            comments_posted=comments_posted,
+        )
+
+    @classmethod
+    def empty(cls) -> Self:
+        """No eligible+INLINE findings; no GitHub call. Audit emits no_op_empty."""
+        return cls(outcome="empty", github_review_id=None, comments_posted=0)
+
+    @classmethod
+    def skipped(cls) -> Self:
+        """Prior PublishEvent for this review_id; no GitHub call.
+
+        Distinct from `skipped_external` because the local audit log
+        had the prior row — this is intra-review-id retry idempotency,
+        not crash-after-success recovery.
+        """
+        return cls(outcome="idempotently_skipped", github_review_id=None, comments_posted=0)
+
+    @classmethod
+    def skipped_external(cls, *, existing_review_id: int) -> Self:
+        """find_existing_review_on_head_sha matched a body marker.
+
+        The prior process succeeded at the GitHub call but died before
+        persisting PublishEvent. The current process discovers the
+        prior review via the embedded `<!-- outrider-review-id:{review_id} -->`
+        marker and treats it as the canonical outcome.
+        """
+        return cls(
+            outcome="idempotently_skipped_external_record",
+            github_review_id=existing_review_id,
+            comments_posted=0,
+        )

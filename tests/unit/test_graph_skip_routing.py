@@ -88,6 +88,30 @@ class _StubImportPathResolver:
         return []
 
 
+class _StubPublishEventSink:
+    async def emit_publish_routing(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_eligibility(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_attempt(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_result(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubGitHubPublisher:
+    async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002
+        msg = "introspection test never POSTs to GitHub"
+        raise NotImplementedError(msg)
+
+    async def find_existing_review_on_head_sha(self, **kwargs: Any) -> Any:  # noqa: ARG002
+        msg = "introspection test never queries GitHub"
+        raise NotImplementedError(msg)
+
+
 class _StubModelConfig:
     triage_model = "stub-model"
     analyze_model = "stub-analyze-model"
@@ -117,6 +141,8 @@ def compiled_graph() -> Any:
         provider=_StubProvider(),
         model_config=_StubModelConfig(),  # type: ignore[arg-type]
         phase_event_sink=_StubPhaseSink(),
+        publish_event_sink=_StubPublishEventSink(),
+        publisher=_StubGitHubPublisher(),
         file_examination_sink=_StubFileSink(),
         analyze_event_sink=_StubAnalyzeEventSink(),
         import_path_resolver=_StubImportPathResolver(),

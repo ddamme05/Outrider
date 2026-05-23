@@ -93,6 +93,19 @@ class CoordinateErrorKind(StrEnum):
     # (which is data-driven, not caller-driven).
     ARGUMENT_VALIDATION_FAILED = "argument_validation_failed"
 
+    # agent/nodes/publish.py:_resolve_inline_location — finding's file_path
+    # IS in the ChangedFile registry, but the file has `head_content=None`
+    # (deleted in this PR: status="removed"). Distinct from FILE_NOT_IN_PATCH
+    # (which means "file_path absent from patch entirely") and from
+    # NON_DIFFED_FILE (which is the registry-miss case BEFORE coordinates is
+    # called). Without this kind, a finding on a deleted file routes via the
+    # FILE_NOT_IN_PATCH path and lands in the audit stream as
+    # reason=non_diffed_file — overload that loses the
+    # diffed-but-deleted distinction for replay-time analysis.
+    # Routes via PublishRoutingReason.COORDINATE_ERROR (umbrella for
+    # non-dedicated kinds) per the reason × kind matrix.
+    HEAD_CONTENT_UNAVAILABLE = "head_content_unavailable"
+
 
 class CoordinateError(Exception):
     """Raised when coordinate translation cannot produce a reviewable result.

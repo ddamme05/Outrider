@@ -229,4 +229,5 @@ def test_coordinate_error_kind_value_strings_pinned() -> None:
     assert CoordinateErrorKind.INVALID_DIFF_LINE.value == "invalid_diff_line"
     assert CoordinateErrorKind.PATH_VALIDATION_FAILED.value == "path_validation_failed"
     assert CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED.value == "argument_validation_failed"
-    assert len(CoordinateErrorKind) == 8
+    assert CoordinateErrorKind.HEAD_CONTENT_UNAVAILABLE.value == "head_content_unavailable"
+    assert len(CoordinateErrorKind) == 9
