@@ -77,6 +77,7 @@ from outrider.audit.persister import AuditPersister
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
 from outrider.github.auth import make_installation_client_factory
 from outrider.github.config import GitHubAppSettings
+from outrider.github.publisher import GitHubKitPublisher
 from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.logging import register_filter_on_all_handlers
@@ -433,14 +434,18 @@ def build_lifespan(
             # parameter per `docs/spec.md §9.3`. `model_config` is the
             # SAME instance already passed to the provider at step 5b —
             # single-source guarantee. The same `persister` implements
-            # all four sink Protocols; `import_path_resolver` is the
-            # stateless coordinates singleton.
+            # all FIVE sink Protocols (phase + file-examination +
+            # analyze + publish + LLM-exchange) per DECISIONS.md #023;
+            # `import_path_resolver` is the stateless coordinates
+            # singleton; `publisher` is the stateless GitHubKitPublisher.
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
                 phase_event_sink=persister,
                 file_examination_sink=persister,
                 analyze_event_sink=persister,
+                publish_event_sink=persister,
+                publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,
                 github_factory=github_factory,
