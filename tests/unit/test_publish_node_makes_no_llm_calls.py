@@ -145,6 +145,10 @@ def test_publish_node_transitive_imports_do_not_load_anthropic() -> None:
         capture_output=True,
         text=True,
         check=False,
+        # Guard against a stalled subprocess hanging the suite. The
+        # import + sys.modules walk should complete in well under 2s;
+        # 20s is generous but bounded.
+        timeout=20,
     )
     if completed.returncode != 0:
         # Gate the xfail on the explicit "loaded disallowed modules:"
