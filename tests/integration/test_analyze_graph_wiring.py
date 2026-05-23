@@ -335,6 +335,40 @@ def _build_seed_state(*, is_eval: bool = True) -> ReviewState:
     )
 
 
+class _StubPublishEventSink:
+    """No-op `PublishEventSink` for analyze-graph wiring tests.
+
+    These tests exercise intake→triage→analyze and assert wiring; the
+    publish node is downstream of analyze and unreachable in the
+    scenarios exercised here. Stub admits the structural Protocol
+    check at build_graph time.
+    """
+
+    async def emit_publish_routing(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_eligibility(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_attempt(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_result(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubGitHubPublisher:
+    """No-op `GitHubPublisher`. Same rationale as `_StubPublishEventSink`."""
+
+    async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002
+        msg = "test stub — create_review unreachable in analyze-wiring tests"
+        raise NotImplementedError(msg)
+
+    async def find_existing_review_on_head_sha(self, **kwargs: Any) -> Any:  # noqa: ARG002
+        msg = "test stub — find_existing_review unreachable in analyze-wiring tests"
+        raise NotImplementedError(msg)
+
+
 def _build_kwargs(
     *,
     provider: _RoutingMockLLMProvider,
@@ -351,6 +385,11 @@ def _build_kwargs(
         "phase_event_sink": phase_event_sink,
         "file_examination_sink": file_examination_sink,
         "analyze_event_sink": analyze_event_sink,
+        # Publish-node deps added 2026-05-22 per the publish-node arc;
+        # these tests don't reach publish but build_graph's structural
+        # Protocol gate requires both.
+        "publish_event_sink": _StubPublishEventSink(),
+        "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
     if total_review_budget_tokens is not None:
