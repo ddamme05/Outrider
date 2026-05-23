@@ -1411,12 +1411,20 @@ class AuditPersister:
         payload raises `ValidationError` at the read boundary rather
         than producing a silently-wrong return value.
         """
+        # The discriminator string MUST match PublishEvent's event_type
+        # Literal default. A future rename of the Literal value (e.g.,
+        # "publish" → "publish_result") would silently disable this
+        # query without test signal (Wave-3 Sharp-Edges F3 fix —
+        # stringly-typed filter bound to the schema). Pulled via
+        # `model_fields[...].default` so the magic string lives in one
+        # place: the PublishEvent schema declaration.
+        publish_event_type: str = PublishEvent.model_fields["event_type"].default
         async with self._session_factory() as session:
             stmt = (
                 select(AuditEventRow.payload)
                 .where(
                     AuditEventRow.review_id == review_id,
-                    AuditEventRow.event_type == "publish",
+                    AuditEventRow.event_type == publish_event_type,
                 )
                 .order_by(AuditEventRow.timestamp.desc())
                 .limit(1)

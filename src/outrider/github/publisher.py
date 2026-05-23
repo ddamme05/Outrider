@@ -146,11 +146,62 @@ class GitHubSecondaryRateLimitError(GitHubPublishError):
         self.body_text = body_text
 
 
-# GitHub's secondary-rate-limit phrasing — present in the 422 body when
-# the throttle fires. Case-insensitive match; the publisher checks via
-# `.lower() in body_text.lower()`. Sourced from GitHub's REST API
-# best-practices doc (apiVersion 2026-03-10).
-_SECONDARY_RATE_LIMIT_MARKER = "secondary rate limit"
+# GitHub's secondary-rate-limit phrasings — present in the 422 body
+# when the throttle fires. Multiple phrasings are documented across
+# GitHub's REST API + create-review prose under apiVersion 2026-03-10
+# (verified via aegis-docs `github-rest-api/pull-requests/reviews.md`
+# 2026-05-22). Case-insensitive substring match; the publisher checks
+# ALL phrasings to defend against wording drift across GitHub
+# deployments (Wave-3 adversarial M1 + Sharp-Edges F2 convergent fix).
+#
+# Future failure mode: if GitHub introduces a new phrasing not in this
+# tuple, the publisher silently mis-classifies the throttle as a
+# validation failure. Mitigation: also gate on the JSON envelope check
+# in `_looks_like_secondary_rate_limit` below — a body with a single
+# top-level `message` field AND no `errors[]` array is rate-limit-shaped
+# regardless of exact phrasing (validation 422s always include `errors`).
+_SECONDARY_RATE_LIMIT_MARKERS: Final[tuple[str, ...]] = (
+    "secondary rate limit",  # canonical phrasing per GitHub's docs
+    "secondary-rate limit",  # hyphenated variant (Codex round-N+2)
+    "abuse detection mechanism",  # legacy GitHub phrasing (still observed)
+    "rate-limit",  # broadest fallback; intersect with envelope shape below
+)
+
+
+def _looks_like_secondary_rate_limit(body_text: str) -> bool:
+    """Discriminate 422 secondary-rate-limit from 422 validation failure.
+
+    Per spec §VI line 406: 422 is ambiguous between per-comment validation
+    failure and secondary-rate-limit (abuse throttle); the publisher MUST
+    distinguish from the response body, not status code alone.
+
+    Two-check defense (Wave-3 audit convergent fix):
+
+    1. **Phrase check**: body contains ANY of the documented rate-limit
+       phrasings (case-insensitive). Multiple phrasings defend against
+       wording drift across GitHub deployments.
+
+    2. **Envelope check**: body is rate-limit-SHAPED, NOT validation-
+       shaped. Validation 422s always carry `errors[]` (per Q6 sandbox
+       observation: `{"message":"Unprocessable Entity","errors":["..."]}`).
+       Rate-limit 422s carry only `message` (per GitHub's documented
+       abuse-detection response). Substring match on `'"errors"'` reliably
+       distinguishes the two envelopes regardless of exact phrasing.
+
+    Returns True iff EITHER check confirms rate-limit AND the envelope
+    check doesn't refute it. The two checks together close the attacker-
+    echo vector: an attacker who manages to inject `"secondary rate
+    limit"` into a file path that gets echoed into a validation-422
+    body still trips the `"errors":` envelope check and gets classified
+    as validation (correct).
+    """
+    if not body_text:
+        return False
+    lower = body_text.lower()
+    has_phrase = any(marker in lower for marker in _SECONDARY_RATE_LIMIT_MARKERS)
+    has_errors_envelope = '"errors"' in body_text
+    # Rate-limit if phrase matches AND envelope does NOT look validation-shaped.
+    return has_phrase and not has_errors_envelope
 
 
 @runtime_checkable
@@ -307,12 +358,15 @@ class GitHubKitPublisher:
             text = getattr(getattr(exc, "response", None), "text", str(exc))
             if status == 422:
                 # 422 is ambiguous per spec §VI line 406: validation
-                # failure OR secondary-rate-limit (abuse throttle). The
-                # response body is the discriminator. The rate-limit
-                # body contains GitHub's documented phrase "secondary
-                # rate limit" (case-insensitive); validation failures
-                # do not.
-                if _SECONDARY_RATE_LIMIT_MARKER in (text or "").lower():
+                # failure OR secondary-rate-limit (abuse throttle).
+                # `_looks_like_secondary_rate_limit` combines a
+                # multi-phrase substring match with a JSON-envelope
+                # shape check (validation 422s carry `errors[]`;
+                # rate-limit 422s do not) — defends against both
+                # GitHub wording drift AND attacker echo-injection
+                # via paths/content surfaced in a validation response
+                # (Wave-3 adversarial M1 convergent fix).
+                if _looks_like_secondary_rate_limit(text or ""):
                     raise GitHubSecondaryRateLimitError(
                         f"GitHub secondary-rate-limit on create-review (422): {text[:200]!r}",
                         status_code=422,
