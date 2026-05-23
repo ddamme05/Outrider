@@ -685,6 +685,60 @@ async def test_external_record_match_short_circuits_no_post() -> None:
     assert result["publish_result"].github_review_id == 777
 
 
+@pytest.mark.asyncio
+async def test_external_record_query_failure_emits_attempt_failed_before_raising() -> None:
+    """When `find_existing_review_on_head_sha` raises (network drop,
+    App-uninstalled mid-run, 5xx upstream, pagination cap exhaustion),
+    the publish node emits `PublishAttemptEvent(FAILED,
+    failure_class=type(exc).__name__, status_code=...)` BEFORE
+    re-raising. Symmetric with Step 4 (intra-Outrider query) + Step 7
+    (POST) failure handling. Without this guard, the dangling
+    phase-start would be the only signal; operators couldn't
+    distinguish "external-record query crashed" from "node hung
+    mid-execution".
+    """
+    finding = _make_finding()
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    class _RaisingFindStub(_RecordingPublishEventSink):
+        pass  # type narrower for the test-local subclass
+
+    class _RaisingPublisher(_StubPublisher):
+        async def find_existing_review_on_head_sha(self, **kwargs: Any) -> int | None:
+            self.find_calls.append(kwargs)
+            from outrider.github.publisher import GitHubPublishError
+
+            raise GitHubPublishError(
+                "simulated: GitHub GET reviews failed (503 upstream)",
+            )
+
+    publisher = _RaisingPublisher(existing_review_id=None)
+    sink = _RecordingPublishEventSink()
+
+    with pytest.raises(Exception):  # noqa: B017  # any propagating exc is fine; we assert below
+        await publish_module.publish(
+            state,
+            publisher=publisher,
+            publish_event_sink=sink,
+            phase_event_sink=_RecordingPhaseEventSink(),
+            github_factory=_stub_github_factory,
+        )
+
+    # Exactly one PublishAttemptEvent emitted, with outcome=FAILED and
+    # failure_class set to the raised exception's class name. Step 4's
+    # `prior_publish_event` short-circuit didn't fire (sink returns None
+    # from query_prior_publish_event), so we reached Step 6 and emitted
+    # FAILED there.
+    assert len(sink.attempts) == 1
+    assert sink.attempts[0].outcome is PublishAttemptOutcome.FAILED
+    assert sink.attempts[0].failure_class == "GitHubPublishError"
+    # The publisher's create_review must NOT have been called (we
+    # raised before reaching Step 7).
+    assert len(publisher.create_calls) == 0
+    # find_existing_review_on_head_sha WAS called and raised (Step 6).
+    assert len(publisher.find_calls) == 1
+
+
 # ===========================================================================
 # PublishEvent divergence signal
 # ===========================================================================
