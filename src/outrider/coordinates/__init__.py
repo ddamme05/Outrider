@@ -9,13 +9,19 @@
 # =============================================================================
 """Coordinates module — translation surface per docs/spec.md §5.6.
 
-V1 §5.6 public surface — two translation functions + three supporting
+V1 §5.6 public surface — three translation functions + three supporting
 surfaces, all inside `coordinates/` per `coordinates-module-is-sole-translator`:
 
-Two translation functions:
+Three translation functions:
 
 - `tree_sitter_to_github(...)` — byte-span → GitHub comment location (§5.6).
+  Canonical analyze→publish path; consumers with byte spans use this directly.
 - `diff_line_to_scope(...)` — diff line → owning ScopeUnit or None (§5.6).
+- `source_line_to_github(...)` — source-line → GitHub comment location.
+  Added Wave-3 publish-node fix 2026-05-22 as a line-coord publisher entry
+  that bridges `ReviewFinding.line_start` / `line_end` to the byte-based
+  canonical translator without inlining line→byte math at the publish-node
+  call site (which would violate `coordinates-module-is-sole-translator`).
 
 Three supporting surfaces:
 
