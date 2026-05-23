@@ -122,8 +122,8 @@ class _MockLLMProvider:
 # tuple BYTE-IDENTICAL to the seed's pr_context.changed_files. That way
 # intake's pr_context-replacement is a structural no-op at the
 # changed_files level, and tests that asserted "pr_context survives"
-# (under the single-node triage graph) still hold under the two-node
-# intake → triage graph.
+# (originally written under the single-node triage graph) still hold
+# under the current four-node intake → triage → analyze → publish graph.
 
 
 _SEED_FILENAME = "src/example.py"
@@ -311,12 +311,14 @@ class _StubImportPathResolver:
 
 
 class _StubPublishEventSink:
-    """No-op `PublishEventSink` (PR-time-only structural satisfier).
+    """No-op `PublishEventSink` (structural Protocol satisfier).
 
-    Tests in this file exercise intake→triage→analyze (publish never
-    runs because the seed state has SKIP-tier files and analyze emits
-    nothing). The stub admits the structural Protocol check at
-    build_graph; emit methods are unreachable in this file's tests."""
+    Tests in this file exercise intake→triage→analyze; the publish node
+    is wired but reaches the empty-eligible short-circuit because the
+    seed state has SKIP-tier files and analyze emits nothing. The stub
+    admits the structural Protocol check at build_graph; the emit
+    methods would capture calls if a future fixture changed fix-tier
+    routing to produce admitted findings."""
 
     async def emit_publish_routing(self, event: Any) -> None:  # noqa: ARG002
         return None
@@ -424,12 +426,14 @@ def _build_seed_dict_with_naive_datetime() -> dict[str, object]:
 # FUP-019 test 1: first-node input validation fires
 # ---------------------------------------------------------------------------
 #
-# Rebuilt 2026-05-17 for the two-node intake → triage graph: each test
-# now passes the cooperative intake deps (stub github_factory + stub
-# db_factory + recording file_examination_sink) via the `_graph_kwargs`
-# helper. The intake-side stubs are designed so that the produced
-# `ChangedFile` tuple is byte-identical to the seed's pr_context.changed_files,
-# preserving each test's original assertions about pr_context survival.
+# Originally rebuilt 2026-05-17 for the then-current two-node intake →
+# triage graph; the graph has since extended to four nodes (intake →
+# triage → analyze → publish) and these tests still hold because the
+# intake-side stubs produce a `ChangedFile` tuple byte-identical to the
+# seed's pr_context.changed_files (preserving pr_context-survival
+# assertions), and the SKIP-tier triage response keeps analyze + publish
+# as no-op pass-throughs. The `_graph_kwargs` helper wires every node's
+# deps via the same closure pattern.
 
 
 @pytest.mark.asyncio
@@ -491,20 +495,29 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
         # dict-shaped — direct compare after re-serializing the original
         assert result_pr_context == original_pr_context_dump
 
-    # Phase events were emitted: three start+end pairs (intake, triage, analyze).
-    # Analyze fires its pair even when the all-SKIP tier map sends zero files
-    # into the per-file loop (phase-events-bound-work guarantees the pair).
+    # Phase events were emitted: every node that ran fired its start+end pair
+    # (phase-events-bound-work). Property-based assertion — count reflects
+    # graph wiring (intake/triage/analyze/publish today; trace/synthesize/hitl
+    # later), not the contract under test. The contract is "every node that
+    # ran emitted a matched start+end pair."
     events = recording_phase_event_sink.events
-    assert len(events) == 6
-    assert [e.node_id for e in events] == [
-        "intake",
-        "intake",
-        "triage",
-        "triage",
-        "analyze",
-        "analyze",
-    ]
-    assert [e.marker for e in events] == ["start", "end", "start", "end", "start", "end"]
+    assert len(events) > 0, "no phase events emitted"
+    starts = [e for e in events if e.marker == "start"]
+    ends = [e for e in events if e.marker == "end"]
+    assert len(starts) == len(ends), (
+        f"unmatched start/end pairs: {len(starts)} starts, {len(ends)} ends"
+    )
+    # Each emitted node_id contributed exactly one start + one end pair.
+    node_ids_with_starts = {e.node_id for e in starts}
+    node_ids_with_ends = {e.node_id for e in ends}
+    assert node_ids_with_starts == node_ids_with_ends, (
+        f"node_ids with starts ({sorted(node_ids_with_starts)}) don't match "
+        f"node_ids with ends ({sorted(node_ids_with_ends)})"
+    )
+    # Triage MUST have run (this test exercises triage merge behavior).
+    assert "triage" in node_ids_with_starts, (
+        "triage did not run; this test exercises triage's merge contract"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -587,12 +600,10 @@ async def test_is_eval_survives_langgraph_merge(
         # Phase events emitted during THIS iteration must carry the same flag.
         # Slicing from events_before isolates per-iteration emissions since
         # the recording sink is function-scoped and accumulates across the loop.
-        # Three-node graph: intake + triage + analyze start/end pairs = 6 events.
+        # Property-based: non-empty + all carry the right is_eval (count
+        # reflects graph wiring, not the eval-propagation contract under test).
         new_events = recording_phase_event_sink.events[events_before:]
-        assert len(new_events) == 6, (
-            f"expected intake+triage+analyze start/end pairs for is_eval={eval_flag} "
-            f"iteration, got {len(new_events)}"
-        )
+        assert len(new_events) > 0, f"no phase events for is_eval={eval_flag} iteration"
         for ev in new_events:
             assert ev.is_eval is eval_flag, (
                 f"phase event marker={ev.marker!r} carries is_eval={ev.is_eval}, "
@@ -607,9 +618,9 @@ async def test_phase_events_have_matching_phase_id_through_graph(
 ) -> None:
     """End-to-end: each node's start/end pair shares the same phase_id.
     Validates the closure correctly threads phase_id through both emit_phase
-    calls inside the LangGraph-managed node invocation. Three-node graph:
-    intake, triage, and analyze each produce a start/end pair, each with a
-    distinct phase_id.
+    calls inside the LangGraph-managed node invocation. Property-based —
+    for every unique phase_id, there's exactly one start + one end, and
+    they share the same node_id. Distinct phase_ids across nodes.
 
     The unit test pins this at the node level; the integration test
     confirms the full graph orchestration doesn't break the contract."""
@@ -619,17 +630,34 @@ async def test_phase_events_have_matching_phase_id_through_graph(
     await graph.ainvoke(state)
 
     events = recording_phase_event_sink.events
-    assert len(events) == 6
-    # Intake / triage / analyze each share a phase_id internally; the three
-    # pairs use distinct phase_ids (one per node invocation).
-    assert events[0].node_id == "intake" and events[1].node_id == "intake"
-    assert events[2].node_id == "triage" and events[3].node_id == "triage"
-    assert events[4].node_id == "analyze" and events[5].node_id == "analyze"
-    assert events[0].phase_id == events[1].phase_id  # intake pair
-    assert events[2].phase_id == events[3].phase_id  # triage pair
-    assert events[4].phase_id == events[5].phase_id  # analyze pair
-    assert events[0].phase_id != events[2].phase_id  # intake vs triage
-    assert events[2].phase_id != events[4].phase_id  # triage vs analyze
-    assert events[0].phase_id != events[4].phase_id  # intake vs analyze
+    assert len(events) > 0, "no phase events emitted"
+
+    # Group events by phase_id; every group must have exactly one start +
+    # one end with the same node_id.
+    by_phase_id: dict[str, list[Any]] = {}
+    for ev in events:
+        by_phase_id.setdefault(ev.phase_id, []).append(ev)
+    for phase_id, pair in by_phase_id.items():
+        assert len(pair) == 2, (
+            f"phase_id {phase_id!r} has {len(pair)} events; expected 2 (start + end)"
+        )
+        markers = sorted(e.marker for e in pair)
+        assert markers == ["end", "start"], (
+            f"phase_id {phase_id!r} markers {markers!r}; expected [start, end]"
+        )
+        node_ids = {e.node_id for e in pair}
+        assert len(node_ids) == 1, (
+            f"phase_id {phase_id!r} has mixed node_ids {sorted(node_ids)!r}; "
+            f"start+end pair must share node_id"
+        )
+
+    # Distinct phase_ids across distinct node invocations: total unique
+    # phase_ids equals total unique node_ids (one phase_id per node invocation).
+    unique_phase_ids = len(by_phase_id)
+    unique_node_ids = len({e.node_id for e in events})
+    assert unique_phase_ids == unique_node_ids, (
+        f"{unique_phase_ids} unique phase_ids vs {unique_node_ids} unique node_ids; "
+        f"each node invocation should have its own phase_id"
+    )
     for ev in events:
         assert ev.review_id == state.review_id

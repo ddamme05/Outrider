@@ -1,15 +1,14 @@
 # Tests for github/publisher.py — focus on the 422 taxonomy split.
 """Pin `GitHubKitPublisher`'s 422 discrimination logic.
 
-Per spec §VI line 406 (Codex 2026-05-22 review): GitHub returns
-HTTP 422 for two distinct failure classes — per-comment validation
-failure AND secondary-rate-limit (abuse-detection throttle). The
-status code alone is ambiguous; the publisher MUST inspect the
-response body to discriminate.
+Per `docs/spec.md` §VI: GitHub returns HTTP 422 for two distinct
+failure classes — per-comment validation failure AND secondary-rate-
+limit (abuse-detection throttle). The status code alone is ambiguous;
+the publisher MUST inspect the response body to discriminate.
 
-Prior to this round, the publisher conflated both into
-`GitHubReviewValidationError`, which would mis-record
-`failure_class` on `PublishAttemptEvent` for rate-limited cases
+Without the split, both would land as `GitHubReviewValidationError`,
+which would mis-record `failure_class` on `PublishAttemptEvent` for
+rate-limited cases
 (critical for retry-diagnosis dashboards).
 
 This file pins:
@@ -109,8 +108,8 @@ async def test_422_secondary_rate_limit_body_raises_rate_limit_error(
     """422 carrying GitHub's documented 'secondary rate limit' phrase →
     `GitHubSecondaryRateLimitError`, NOT `GitHubReviewValidationError`.
 
-    Pins the spec §VI line 406 discriminator: the publisher branches
-    on body content, not status code alone.
+    Pins the publish-node spec §VI discriminator: the publisher
+    branches on body content, not status code alone.
     """
     body = (
         '{"message":"You have exceeded a secondary rate limit. '
@@ -175,8 +174,7 @@ async def test_422_each_documented_rate_limit_phrasing_matches(
     phrasing: str,
     publisher: GitHubKitPublisher,
 ) -> None:
-    """Per Wave-3 audit (Sharp-Edges F2 / Adversarial M1 convergent):
-    multiple GitHub phrasings can trigger the throttle. The publisher
+    """Multiple GitHub phrasings can trigger the throttle. The publisher
     matches ALL documented phrasings; single-phrase wording drift
     cannot silently mis-classify the throttle as validation.
 
@@ -207,11 +205,10 @@ async def test_422_each_documented_rate_limit_phrasing_matches(
 async def test_422_validation_body_with_echoed_rate_limit_phrase_still_validation(
     publisher: GitHubKitPublisher,
 ) -> None:
-    """Wave-3 adversarial M1 convergent fix: a 422 validation body that
-    happens to ECHO the rate-limit phrase (via an attacker-controlled
-    file path or comment body surfaced in `errors[]`) MUST still be
-    classified as `GitHubReviewValidationError`, NOT
-    `GitHubSecondaryRateLimitError`.
+    """A 422 validation body that happens to ECHO the rate-limit phrase
+    (via an attacker-controlled file path or comment body surfaced in
+    `errors[]`) MUST still be classified as
+    `GitHubReviewValidationError`, NOT `GitHubSecondaryRateLimitError`.
 
     The envelope check (`'"errors":' in body`) is the discriminator:
     validation 422s always carry `errors[]`; rate-limit 422s do not.
@@ -342,7 +339,7 @@ def test_422_exception_classes_carry_status_and_body_attributes() -> None:
     """Both wrapper exceptions MUST expose `.status_code` and `.body_text`
     directly on the exception object — `_extract_status_code` in
     `agent/nodes/publish.py` reads `exc.status_code` to record the
-    correct value on `PublishAttemptEvent` (Codex 2026-05-22 fix)."""
+    correct value on `PublishAttemptEvent`."""
     val_err = GitHubReviewValidationError("test", status_code=422, body_text="body")
     rate_err = GitHubSecondaryRateLimitError("test", status_code=422, body_text="body")
     assert val_err.status_code == 422
@@ -352,7 +349,7 @@ def test_422_exception_classes_carry_status_and_body_attributes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PublishEventSink Protocol method-set structural pin (Sharp-Edges F5)
+# PublishEventSink Protocol method-set structural pin
 # ---------------------------------------------------------------------------
 
 
@@ -393,7 +390,7 @@ def test_publish_event_sink_protocol_method_set_pinned() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Body marker UUID shape pin (Sharp-Edges F1)
+# Body marker UUID shape pin
 # ---------------------------------------------------------------------------
 
 

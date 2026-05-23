@@ -252,10 +252,9 @@ def source_line_to_github(
     # distinguishes:
     #   (a) line_end IS the last content line → byte_end = end-of-buffer
     #   (b) line_end is PAST the last content line → raise
-    #       BYTE_OFFSET_INVALID (was previously swallowed by an
-    #       over-broad `except CoordinateError` that silently truncated
-    #       past-EOF findings to EOF and let them publish — caught by
-    #       Codex review 2026-05-22).
+    #       BYTE_OFFSET_INVALID. An over-broad `except CoordinateError`
+    #       here would silently truncate past-EOF findings to EOF and
+    #       let them publish, so the explicit bounds check is required.
     #
     # The `byte_at_line_end >= len(head_bytes)` check additionally
     # rejects the "trailing empty line" case: a file ending with `\n`

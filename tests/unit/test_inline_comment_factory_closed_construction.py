@@ -65,6 +65,10 @@ def _find_inline_comment_constructions(source: str) -> list[tuple[int, str]]:
       - Type annotations (`comments: tuple[InlineComment, ...]`)
       - Method-on-class (NOT a constructor call)
 
+    Resolves import aliases so `from outrider.schemas import InlineComment
+    as IC; IC(...)` is correctly flagged as a direct construction (the
+    bare-name walker would otherwise miss aliased imports).
+
     Uses AST analysis rather than regex so the test doesn't false-
     positive on the patterns above.
     """
@@ -72,15 +76,29 @@ def _find_inline_comment_constructions(source: str) -> list[tuple[int, str]]:
         tree = ast.parse(source)
     except SyntaxError:
         return []
+
+    # First pass: collect every local name that resolves to InlineComment,
+    # whether via `from outrider.schemas import InlineComment` (name="InlineComment")
+    # or `... import InlineComment as IC` (name="IC"). Also covers
+    # `import outrider.schemas as schemas; schemas.InlineComment(...)` via
+    # the Attribute branch below — but only the local-name case needs
+    # alias resolution here.
+    inline_comment_local_names: set[str] = {"InlineComment"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "InlineComment":
+                    inline_comment_local_names.add(alias.asname or alias.name)
+
     constructions: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        # Direct `InlineComment(...)` — `func` is `ast.Name(id="InlineComment")`.
+        # Direct `<local-name>(...)` where local-name resolves to InlineComment.
         if (
             isinstance(func, ast.Name)
-            and func.id == "InlineComment"
+            and func.id in inline_comment_local_names
             or (
                 isinstance(func, ast.Attribute)
                 and func.attr == "InlineComment"

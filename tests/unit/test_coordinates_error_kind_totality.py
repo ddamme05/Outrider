@@ -151,11 +151,11 @@ def test_coordinate_error_kind_enum_is_total_over_documented_raise_classes() -> 
         "INVALID_DIFF_LINE",
         "PATH_VALIDATION_FAILED",
         "ARGUMENT_VALIDATION_FAILED",
-        # Added 2026-05-22 (Wave-3 audit fix): publish node's
-        # _resolve_inline_location raises this kind when the finding's
-        # file_path is in the ChangedFile registry but head_content=None
-        # (e.g., status="removed"). Distinct from FILE_NOT_IN_PATCH per
-        # the audit-stream replay-distinction requirement.
+        # Publish node's _resolve_inline_location raises this kind when
+        # the finding's file_path is in the ChangedFile registry but
+        # head_content=None (e.g., status="removed"). Distinct from
+        # FILE_NOT_IN_PATCH per the audit-stream replay-distinction
+        # requirement.
         "HEAD_CONTENT_UNAVAILABLE",
     }
     actual_names = {member.name for member in CoordinateErrorKind}

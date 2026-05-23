@@ -93,11 +93,12 @@ def test_source_line_to_github_multiline_range_succeeds() -> None:
 def test_source_line_to_github_line_end_past_eof_raises() -> None:
     """line_end past EOF MUST raise BYTE_OFFSET_INVALID.
 
-    PRIOR BUG (Codex 2026-05-22): the implementation caught every
+    Regression pin: an earlier implementation caught every
     CoordinateError from `_line_to_byte_offset(line_end + 1)` and
     silently treated it as "last line of file", letting past-EOF
-    findings publish on EOF anyway. The fix splits the validation:
-    line_end itself is checked first; past-EOF raises immediately.
+    findings publish on EOF anyway. The shipped implementation splits
+    the validation: line_end itself is checked first; past-EOF raises
+    immediately.
     """
     with pytest.raises(CoordinateError) as exc_info:
         source_line_to_github(

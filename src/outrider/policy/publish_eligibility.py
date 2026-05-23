@@ -83,10 +83,10 @@ class _V1SeverityBaseline(StrEnum):
 # eligibility for the rest of the process. Same defense-in-depth shape as
 # `outrider.llm.pricing.RATE_TABLE` per project convention.
 #
-# V1 policy (per spec line 16):
+# V1 policy:
 #   CRITICAL/HIGH → withheld (HITL node absent in V1)
 #   MEDIUM/LOW/INFO → eligible (no HITL gating needed; INFO is below
-#                    the spec's CRITICAL/HIGH HITL trigger)
+#                    the CRITICAL/HIGH HITL trigger)
 _V1_SEVERITY_GATE: Final[MappingProxyType[FindingSeverity, _V1SeverityBaseline]] = MappingProxyType(
     {
         FindingSeverity.CRITICAL: _V1SeverityBaseline.WITHHELD_HITL_ABSENT,
@@ -101,9 +101,10 @@ _V1_SEVERITY_GATE: Final[MappingProxyType[FindingSeverity, _V1SeverityBaseline]]
 def _assert_mapping_total_at_import() -> None:
     """Pin the mapping's totality over `FindingSeverity` at import time.
 
-    Per spec line 30 ("`is_eligible_for_v1_publish` MUST use exhaustive
-    `match` over every `FindingSeverity` enum member OR a frozen
-    `MappingProxyType` keyed lookup that raises `KeyError` on miss; set-
+    Per the publish-node spec's implementation discipline clause
+    ("`is_eligible_for_v1_publish` MUST use exhaustive `match` over
+    every `FindingSeverity` enum member OR a frozen `MappingProxyType`
+    keyed lookup that raises `KeyError` on miss; set-
     membership rejected at review time"), we use the MappingProxyType
     + KeyError-on-miss shape; this import-time assertion is the
     "exhaustive coverage" half. If a new `FindingSeverity` member lands

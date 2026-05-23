@@ -157,8 +157,8 @@ async def publish(
     # crash-after-success recovery. Explicit `str(...)` (rather than
     # implicit f-string `__str__`) defends against silent format drift
     # if `ReviewState.review_id` is ever retyped from UUID to a
-    # different identity type (Wave-3 Sharp-Edges F1 fix): the matcher
-    # at `find_existing_review_on_head_sha` does a literal `startswith`
+    # different identity type: the matcher at
+    # `find_existing_review_on_head_sha` does a literal `startswith`
     # so the marker shape MUST be deterministic across producer +
     # consumer. `UUID.__str__` is the canonical 8-4-4-4-12 hex form;
     # any other identity type would land here with a different shape
@@ -195,8 +195,8 @@ async def publish(
 
     sorted_finding_ids = tuple(sorted(f.finding_id for f in admitted_findings))
 
-    # Step 4: intra-Outrider idempotency pre-flight (FUP-064 closed
-    # 2026-05-22). The publish_event_sink's `query_prior_publish_event`
+    # Step 4: intra-Outrider idempotency pre-flight (FUP-064 closed).
+    # The publish_event_sink's `query_prior_publish_event`
     # method (shipped on AuditPersister) returns the most-recent prior
     # `PublishEvent` for this review_id if one exists. Same-review_id
     # redispatch (e.g., dispatcher re-fires the webhook after agent
@@ -218,10 +218,10 @@ async def publish(
     # `PublishEvent.model_validate`, DB connection drops mid-SELECT),
     # emit `PublishAttemptEvent(FAILED, failure_class=type(exc).__name__)`
     # BEFORE re-raising so the audit trail records the failure class.
-    # Without this wrap (Wave-3 adversarial M1 / Codex round-N+2 catch),
-    # the dangling phase-start would be the only signal — operators
-    # diagnosing the failure couldn't distinguish "intra-Outrider
-    # idempotency query crashed" from "node hung mid-execution".
+    # Without this wrap, the dangling phase-start would be the only
+    # signal — operators diagnosing the failure couldn't distinguish
+    # "intra-Outrider idempotency query crashed" from "node hung
+    # mid-execution".
     try:
         prior_publish_event = await publish_event_sink.query_prior_publish_event(state.review_id)
     except Exception as exc:
@@ -278,15 +278,37 @@ async def publish(
     # (the prior process died BEFORE persisting PublishEvent), so the
     # external-record body-marker query on GitHub is the load-bearing
     # signal here.
+    #
+    # Symmetric with Steps 4 + 7 failure handling: if the GitHub GET
+    # raises (network drop, 403 App-uninstalled mid-run, 5xx upstream,
+    # pagination cap exhausted), emit `PublishAttemptEvent(FAILED,
+    # failure_class=type(exc).__name__)` BEFORE re-raising so the audit
+    # trail records the failure class — otherwise the dangling
+    # phase-start is the only signal and operators can't distinguish
+    # "external-record query crashed" from "node hung mid-execution".
     gh = github_factory(state.pr_context.installation_id)
-    existing_review_id = await publisher.find_existing_review_on_head_sha(
-        gh=gh,
-        owner=state.pr_context.owner,
-        repo=state.pr_context.repo,
-        pull_number=state.pr_context.pr_number,
-        head_sha=state.pr_context.head_sha,
-        body_marker=body_marker,
-    )
+    try:
+        existing_review_id = await publisher.find_existing_review_on_head_sha(
+            gh=gh,
+            owner=state.pr_context.owner,
+            repo=state.pr_context.repo,
+            pull_number=state.pr_context.pr_number,
+            head_sha=state.pr_context.head_sha,
+            body_marker=body_marker,
+        )
+    except Exception as exc:
+        await _emit_attempt(
+            publish_event_sink=publish_event_sink,
+            review_id=state.review_id,
+            attempt_index=1,
+            outcome=PublishAttemptOutcome.FAILED,
+            sorted_finding_ids=sorted_finding_ids,
+            comments_attempted=len(eligible_inline_comments),
+            failure_class=type(exc).__name__,
+            status_code=_extract_status_code(exc),
+            is_eval=state.is_eval,
+        )
+        raise
     if existing_review_id is not None:
         await _emit_attempt(
             publish_event_sink=publish_event_sink,
@@ -398,12 +420,11 @@ def _extract_status_code(exc: BaseException) -> int | None:
     Returns `None` for exceptions with no HTTP context (network errors
     pre-response, programmer-error exceptions like `ValueError`).
 
-    Per Codex 2026-05-22 review: the prior `getattr(getattr(exc,
-    "response", None), "status_code", None)` pattern missed
-    `GitHubReviewValidationError.status_code` because that wrapper
-    sets `.status_code` directly (not on `.response`), so a known
-    HTTP 422 was being recorded as `status_code=None` on the
-    `PublishAttemptEvent`.
+    The `exc.response.status_code`-only pattern misses
+    `GitHubReviewValidationError.status_code` because that wrapper sets
+    `.status_code` directly (not on `.response`); preferring `direct`
+    first ensures wrapper-typed 422s land in `PublishAttemptEvent` with
+    the actual HTTP status rather than `None`.
     """
     direct = getattr(exc, "status_code", None)
     if isinstance(direct, int):

@@ -18,10 +18,10 @@ Three translation functions:
   Canonical analyze→publish path; consumers with byte spans use this directly.
 - `diff_line_to_scope(...)` — diff line → owning ScopeUnit or None (§5.6).
 - `source_line_to_github(...)` — source-line → GitHub comment location.
-  Added Wave-3 publish-node fix 2026-05-22 as a line-coord publisher entry
-  that bridges `ReviewFinding.line_start` / `line_end` to the byte-based
-  canonical translator without inlining line→byte math at the publish-node
-  call site (which would violate `coordinates-module-is-sole-translator`).
+  Line-coord publisher entry that bridges `ReviewFinding.line_start` /
+  `line_end` to the byte-based canonical translator without inlining
+  line→byte math at the publish-node call site (which would violate
+  `coordinates-module-is-sole-translator`).
 
 Three supporting surfaces:
 
@@ -33,9 +33,9 @@ Three supporting surfaces:
   to filesystem stats per trust-boundary §5 sub-rule 3b.
 - `file_in_patch(...)` — coordinates-owned patch-membership helper. **NOT
   called by V1 publish** (publish uses the in-memory `ChangedFile` registry
-  short-circuit per `specs/2026-05-21-publish-node.md` FUP-057 resolution);
-  remains canonical for non-registry consumers. Also listed under "V1
-  supporting helpers" below.
+  short-circuit per the publish-node spec's FUP-057 resolution); remains
+  canonical for non-registry consumers. Also listed under "V1 supporting
+  helpers" below.
 
 V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
 

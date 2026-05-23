@@ -441,8 +441,8 @@ async def test_removed_file_routes_dashboard_only_with_head_content_unavailable(
     """A finding on a removed file (content_head=None) routes to
     DASHBOARD_ONLY with reason=COORDINATE_ERROR + kind=HEAD_CONTENT_UNAVAILABLE.
 
-    Pins the Wave-3 fix that prevents this case from being mis-classified
-    as `non_diffed_file`.
+    Pins the routing distinction that prevents this case from being
+    mis-classified as `non_diffed_file`.
     """
     finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
     # Removed file: content_head=None, patch present but no head version.

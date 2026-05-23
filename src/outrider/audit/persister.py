@@ -1414,8 +1414,7 @@ class AuditPersister:
         # The discriminator string MUST match PublishEvent's event_type
         # Literal default. A future rename of the Literal value (e.g.,
         # "publish" → "publish_result") would silently disable this
-        # query without test signal (Wave-3 Sharp-Edges F3 fix —
-        # stringly-typed filter bound to the schema). Pulled via
+        # query if the filter were a hardcoded string. Pulled via
         # `model_fields[...].default` so the magic string lives in one
         # place: the PublishEvent schema declaration.
         publish_event_type: str = PublishEvent.model_fields["event_type"].default
