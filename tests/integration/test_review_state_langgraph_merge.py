@@ -310,16 +310,50 @@ class _StubImportPathResolver:
         return []
 
 
+class _StubPublishEventSink:
+    """No-op `PublishEventSink` (PR-time-only structural satisfier).
+
+    Tests in this file exercise intake→triage→analyze (publish never
+    runs because the seed state has SKIP-tier files and analyze emits
+    nothing). The stub admits the structural Protocol check at
+    build_graph; emit methods are unreachable in this file's tests."""
+
+    async def emit_publish_routing(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_eligibility(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_attempt(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_publish_result(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubGitHubPublisher:
+    """No-op `GitHubPublisher`. Same rationale as `_StubPublishEventSink`."""
+
+    async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002
+        msg = "test stub — create_review unreachable in this file's scenarios"
+        raise NotImplementedError(msg)
+
+    async def find_existing_review_on_head_sha(self, **kwargs: Any) -> Any:  # noqa: ARG002
+        msg = "test stub — find_existing_review unreachable in this file's scenarios"
+        raise NotImplementedError(msg)
+
+
 def _graph_kwargs(
     *,
     phase_event_sink: _RecordingPhaseEventSinkLike,
     file_examination_sink: _RecordingFileExaminationSink | None = None,
 ) -> dict[str, Any]:
-    """Build the full set of build_graph kwargs (intake + triage + analyze).
+    """Build the full set of build_graph kwargs (intake + triage + analyze + publish).
 
-    Encapsulates the seven deps so test bodies stay readable. Renamed
-    from `_intake_kwargs` when the analyze-node arc added
-    `analyze_event_sink` + `import_path_resolver`.
+    Encapsulates the deps so test bodies stay readable. Renamed from
+    `_intake_kwargs` when the analyze-node arc added `analyze_event_sink`
+    + `import_path_resolver`; extended again 2026-05-22 for the
+    publish-node arc (`publish_event_sink` + `publisher`).
     """
     return {
         "db_factory": _stub_db_factory,  # type: ignore[arg-type]
@@ -329,6 +363,8 @@ def _graph_kwargs(
         "phase_event_sink": phase_event_sink,
         "file_examination_sink": file_examination_sink or _RecordingFileExaminationSink(),
         "analyze_event_sink": _RecordingAnalyzeEventSink(),
+        "publish_event_sink": _StubPublishEventSink(),
+        "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
 
