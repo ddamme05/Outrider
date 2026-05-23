@@ -33,6 +33,7 @@ from outrider.llm.config import ModelConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -103,7 +104,7 @@ class _StubImportPathResolver:
 
 
 class _StubPublishEventSink:
-    """Satisfies PublishEventSink Protocol structurally (has all 4 emit_* members)."""
+    """Satisfies PublishEventSink Protocol structurally (4 emit_* + 1 query method)."""
 
     async def emit_publish_routing(self, event: PublishRoutingEvent) -> None:
         return None
@@ -115,6 +116,9 @@ class _StubPublishEventSink:
         return None
 
     async def emit_publish_result(self, event: PublishEvent) -> None:
+        return None
+
+    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:  # noqa: ARG002
         return None
 
 

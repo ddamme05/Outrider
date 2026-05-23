@@ -220,7 +220,8 @@ def build_graph(
             f"publish_event_sink does not satisfy PublishEventSink Protocol "
             f"(passed type: {type(publish_event_sink).__name__}; "
             f"missing one of `emit_publish_routing` / `emit_publish_eligibility` / "
-            f"`emit_publish_attempt` / `emit_publish_result`; "
+            f"`emit_publish_attempt` / `emit_publish_result` / "
+            f"`query_prior_publish_event` (read-side method added per FUP-064); "
             f"see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(publisher, GitHubPublisher):

@@ -172,7 +172,66 @@ async def publish(
 
     sorted_finding_ids = tuple(sorted(f.finding_id for f in admitted_findings))
 
-    # Step 4: empty-eligible-inline short-circuit. No GitHub call.
+    # Step 4: intra-Outrider idempotency pre-flight (FUP-064 closed
+    # 2026-05-22). The publish_event_sink's `query_prior_publish_event`
+    # method (shipped on AuditPersister) returns the most-recent prior
+    # `PublishEvent` for this review_id if one exists. Same-review_id
+    # redispatch (e.g., dispatcher re-fires the webhook after agent
+    # crash + restart) short-circuits here — no GitHub round-trip
+    # burned. Distinct from the Step 6 external-record check:
+    #   - Step 4 (here): the prior process succeeded AND persisted
+    #     PublishEvent. Local audit log proves the publish happened.
+    #   - Step 6: the prior process succeeded at the GitHub POST but
+    #     died BEFORE persisting PublishEvent. Local audit log has no
+    #     prior; the external-record body-marker query on GitHub is
+    #     the only signal.
+    # Spec ordering (§V lines 314-326): intra-Outrider BEFORE empty-
+    # eligible BEFORE external-record. Reasoning: if we already
+    # published, even an empty-eligible re-run should report skipped
+    # rather than producing a no_op_empty result that would mask the
+    # prior success on the dashboard.
+    # Symmetric with Step 7's POST-failure handling: if the read-side
+    # query raises (e.g., corrupted JSONB payload fails
+    # `PublishEvent.model_validate`, DB connection drops mid-SELECT),
+    # emit `PublishAttemptEvent(FAILED, failure_class=type(exc).__name__)`
+    # BEFORE re-raising so the audit trail records the failure class.
+    # Without this wrap (Wave-3 adversarial M1 / Codex round-N+2 catch),
+    # the dangling phase-start would be the only signal — operators
+    # diagnosing the failure couldn't distinguish "intra-Outrider
+    # idempotency query crashed" from "node hung mid-execution".
+    try:
+        prior_publish_event = await publish_event_sink.query_prior_publish_event(state.review_id)
+    except Exception as exc:
+        await _emit_attempt(
+            publish_event_sink=publish_event_sink,
+            review_id=state.review_id,
+            attempt_index=1,
+            outcome=PublishAttemptOutcome.FAILED,
+            sorted_finding_ids=sorted_finding_ids,
+            comments_attempted=len(eligible_inline_comments),
+            failure_class=type(exc).__name__,
+            is_eval=state.is_eval,
+        )
+        raise
+    if prior_publish_event is not None:
+        await _emit_attempt(
+            publish_event_sink=publish_event_sink,
+            review_id=state.review_id,
+            attempt_index=1,
+            outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED,
+            sorted_finding_ids=sorted_finding_ids,
+            comments_attempted=len(eligible_inline_comments),
+            is_eval=state.is_eval,
+        )
+        await _emit_phase_end(
+            phase_event_sink=phase_event_sink,
+            review_id=state.review_id,
+            phase_id=phase_id,
+            is_eval=state.is_eval,
+        )
+        return {"publish_result": PublishResult.skipped()}
+
+    # Step 5: empty-eligible-inline short-circuit. No GitHub call.
     if not eligible_inline_comments:
         await _emit_attempt(
             publish_event_sink=publish_event_sink,
@@ -191,11 +250,11 @@ async def publish(
         )
         return {"publish_result": PublishResult.empty()}
 
-    # Step 5: external-record check (crash-after-success defense).
-    # V1 minimally exercises intra-Outrider idempotency via a future
-    # `_query_prior_publish_event` (not shipped in this PR — depends on
-    # a DB-side query helper the persister doesn't expose yet); the
-    # external-record path is the load-bearing defense today.
+    # Step 6: external-record check (crash-after-success defense). The
+    # intra-Outrider check at Step 4 returns None for this scenario
+    # (the prior process died BEFORE persisting PublishEvent), so the
+    # external-record body-marker query on GitHub is the load-bearing
+    # signal here.
     gh = github_factory(state.pr_context.installation_id)
     existing_review_id = await publisher.find_existing_review_on_head_sha(
         gh=gh,
@@ -227,7 +286,7 @@ async def publish(
             )
         }
 
-    # Step 6: POST the review. Failures emit attempt(failed) BEFORE
+    # Step 7: POST the review. Failures emit attempt(failed) BEFORE
     # re-raising so the audit trail has the failure_class on record.
     # The phase-start remains dangling on failure (analyze convention).
     review_status = "COMMENT"  # V1: every published review is a comment.
@@ -258,7 +317,7 @@ async def publish(
         )
         raise
 
-    # Step 7: success path — emit attempt + canonical PublishEvent +
+    # Step 8: success path — emit attempt + canonical PublishEvent +
     # phase end + return success result.
     await _emit_attempt(
         publish_event_sink=publish_event_sink,
