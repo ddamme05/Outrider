@@ -464,6 +464,7 @@ async def _route_and_gate_one_finding(
     routing_emission_failed = False
     inline_path: str | None = None
     inline_line: int | None = None
+    inline_side: str | None = None
 
     if finding.file_path not in changed_paths:
         # Registry miss — coordinates not called, kind=None.
@@ -482,6 +483,7 @@ async def _route_and_gate_one_finding(
             coord_kind = None
             inline_path = location["path"]
             inline_line = location["line"]
+            inline_side = location["side"]
 
     # Per the spec's "publish_destination pre-set overwrite" test:
     # routing ALWAYS overwrites the finding's publish_destination
@@ -586,6 +588,7 @@ async def _route_and_gate_one_finding(
         and eligibility is PublishEligibility.ELIGIBLE
         and inline_path is not None
         and inline_line is not None
+        and inline_side is not None
     ):
         # Build the inline comment via the canonical factory. Body
         # construction is V1-minimal: severity + finding type + title
@@ -597,22 +600,26 @@ async def _route_and_gate_one_finding(
                 finding=finding,
                 path=inline_path,
                 line=inline_line,
+                side=inline_side,
                 body=body,
             )
         )
 
 
 def _resolve_inline_location(*, finding: ReviewFinding, state: ReviewState) -> dict[str, int | str]:
-    """Resolve a `ReviewFinding` to (path, line) via coordinates.
+    """Resolve a `ReviewFinding` to (path, line, side) via coordinates.
 
-    Returns `{"path": str, "line": int}` on success; raises
+    Returns `{"path": str, "line": int, "side": str}` on success; raises
     `CoordinateError` on unchanged-region / past-EOF / etc. The
     publisher's caller catches and maps the kind to a routing reason.
 
-    The finding's `byte_start`/`byte_end` are tree-sitter byte spans
-    over the head version of the file; coordinates translates these
-    to source-line + side per the 4d sandbox-verified shape (line +
-    side=RIGHT under 2026-03-10).
+    `side` ("LEFT" | "RIGHT") comes from `GitHubCommentLocation` and is
+    passed through to `InlineComment` unchanged — the publisher does
+    not independently decide head-vs-base. V1 always sees "RIGHT"
+    because `tree_sitter_to_github` accepts only `head_content` today;
+    a future spec adding LEFT-side commenting extends the translator,
+    not this resolver (per `coordinates-module-is-sole-translator` +
+    spec §V publisher-input-contract sub-rule).
     """
     # Find the ChangedFile for this finding.file_path so we have the
     # head content + patch. _collect_admitted_findings's caller has
@@ -656,7 +663,7 @@ def _resolve_inline_location(*, finding: ReviewFinding, state: ReviewState) -> d
         head_content=changed_file.content_head,
         patch=changed_file.patch,
     )
-    return {"path": location.file_path, "line": location.line}
+    return {"path": location.file_path, "line": location.line, "side": location.side}
 
 
 def _classify_coordinate_error(

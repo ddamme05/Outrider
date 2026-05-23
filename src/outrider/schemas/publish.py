@@ -35,14 +35,6 @@ if TYPE_CHECKING:
     from outrider.schemas.review_finding import ReviewFinding
 
 
-# GitHub `side` parameter — `RIGHT` references the head version of the
-# diff, `LEFT` references the base. V1 always posts on the head version
-# (we comment on what the PR author wrote, not on what they removed); the
-# spec verified via 4d sandbox (2026-05-22) that source-line + `side=RIGHT`
-# is accepted under apiVersion 2026-03-10 and lands on the requested line.
-_GITHUB_DIFF_SIDE_RIGHT = "RIGHT"
-
-
 class InlineComment(BaseModel):
     """One inline review comment, ready for the GitHub create-review API.
 
@@ -67,7 +59,13 @@ class InlineComment(BaseModel):
     # advisory hint coordinates may overwrite).
     path: Annotated[str, Field(max_length=1024)]
     line: int = Field(ge=1)
-    side: Annotated[str, Field(pattern=r"^(LEFT|RIGHT)$")] = _GITHUB_DIFF_SIDE_RIGHT
+    # `side` ("LEFT" | "RIGHT") flows from `GitHubCommentLocation.side` and
+    # is not defaulted at the schema layer: per
+    # `coordinates-module-is-sole-translator`, side is a translation
+    # decision that belongs in `coordinates/`, not in any consumer's
+    # field default. V1's `tree_sitter_to_github` always returns "RIGHT";
+    # this field carries that decision through unchanged.
+    side: Annotated[str, Field(pattern=r"^(LEFT|RIGHT)$")]
 
     # Pre-sanitized body. Capped at `GITHUB_COMMENT_BODY_MAX` UTF-8 bytes
     # by the sanitizer (Outrider policy cap per DECISIONS.md #023 + 4a
@@ -91,21 +89,28 @@ class InlineComment(BaseModel):
         finding: ReviewFinding,
         path: str,
         line: int,
+        side: str,
         body: str,
     ) -> Self:
         """Canonical production constructor.
 
         The caller (publisher) supplies the coordinates from
-        `tree_sitter_to_github(...)` (`path`, `line`) and the
-        sanitized `body` from `policy/output_sanitizer.py`. This
-        factory exists so the trust-boundary structural-routing
+        `tree_sitter_to_github(...)` (`path`, `line`, `side`) and the
+        sanitized `body` from `policy/output_sanitizer.py`. `side` is
+        passed through unchanged from `GitHubCommentLocation` — the
+        factory does NOT independently decide head-vs-base, per
+        `coordinates-module-is-sole-translator` + spec §V publisher-
+        input-contract sub-rule. V1 always sees "RIGHT" because
+        `tree_sitter_to_github` accepts only `head_content`.
+
+        This factory exists so the trust-boundary structural-routing
         assertion can be enforced via an import-graph test rather
         than reviewer discipline alone.
         """
         return cls(
             path=path,
             line=line,
-            side=_GITHUB_DIFF_SIDE_RIGHT,
+            side=side,
             body=body,
             finding_id=finding.finding_id,
         )
