@@ -6,22 +6,26 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships three sinks from this module: `PhaseEventSink` for
+V1 ships four sinks from this module: `PhaseEventSink` for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
-for `FileExaminationEvent` (per intake + analyze per-file outcomes), and
+for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `AnalyzeEventSink` bundling the four analyze-emitted event types
 (`FindingEvent`, `FindingProposalRejectedEvent`,
-`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`). `LLMCallEvent`
-emission lives inside `LLMProvider.complete()` and uses the sibling
-`LLMExchangePersister` Protocol in `llm/base.py` — no node code emits
-`LLMCallEvent` directly.
+`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`), and
+`PublishEventSink` bundling the four publish-emitted event types
+(`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
+`PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling.
+`LLMCallEvent` emission lives inside `LLMProvider.complete()` and uses
+the sibling `LLMExchangePersister` Protocol in `llm/base.py` — no node
+code emits `LLMCallEvent` directly.
 
 The durable `AuditPersister` in `outrider.audit.persister` implements
-ALL FOUR (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
-+ `LLMExchangePersister`) from one body, sharing DB transaction
-lifecycle and session-per-call discipline. Test-only no-op
-implementations (`NoOpPersister`, `RecordingPhaseEventSink`) live in
-`tests/conftest.py` for fixtures that don't need durable persistence.
+ALL FIVE (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
++ `PublishEventSink` + `LLMExchangePersister`) from one body, sharing
+DB transaction lifecycle and session-per-call discipline. Test-only
+no-op implementations (`NoOpPersister`, `RecordingPhaseEventSink`,
+`RecordingPublishEventSink`) live in `tests/conftest.py` for fixtures
+that don't need durable persistence.
 """
 
 from typing import Protocol, runtime_checkable
@@ -32,6 +36,10 @@ from outrider.audit.events import (
     FileExaminationEvent,
     FindingEvent,
     FindingProposalRejectedEvent,
+    PublishAttemptEvent,
+    PublishEligibilityEvent,
+    PublishEvent,
+    PublishRoutingEvent,
     ReviewPhaseEvent,
 )
 
@@ -195,8 +203,82 @@ class AnalyzeEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class PublishEventSink(Protocol):
+    """Sink for the four publish-node audit event types.
+
+    Per DECISIONS.md #023 (publish routing and eligibility are separate
+    decisions, not one combined gate): the publish node emits one
+    `PublishRoutingEvent` per finding (coordinates-derived destination),
+    one `PublishEligibilityEvent` per finding (policy-derived
+    materialization gate), at most one `PublishAttemptEvent` per
+    `publisher.create_review` attempt (terminal GitHub-call outcome),
+    and at most one `PublishEvent` per logical publication (success-path
+    review-level summary, including external-record recovery).
+
+    Production / durable implementations MUST:
+      - Be idempotent on `event_id`. LangGraph checkpoint replay can
+        re-emit the same event; the persister handles dedup via the
+        `audit_events.event_id` PK + payload-equality check (raises
+        `AuditPersisterIdempotencyConflict` on mismatch). Consumer-side
+        replay-equivalence dedup keys off the canonical
+        `decision_content_hash` / `attempt_content_hash` carried by the
+        events themselves.
+      - Be concurrent-safe across reviews (one persister per process,
+        one session per emit call). V1 publish is per-finding sequential,
+        but the same persister instance services multiple reviews.
+
+    Test / recording implementations capture each event for assertion;
+    `RecordingPublishEventSink` in `tests/conftest.py` is the canonical
+    test double.
+    """
+
+    async def emit_publish_routing(self, event: PublishRoutingEvent) -> None:
+        """Persist a `PublishRoutingEvent` for the per-finding routing decision.
+
+        Fires for EVERY finding processed regardless of eligibility — the
+        audit trail records what coordinates classified, even when the
+        eligibility gate later withholds materialization.
+        """
+        ...
+
+    async def emit_publish_eligibility(self, event: PublishEligibilityEvent) -> None:
+        """Persist a `PublishEligibilityEvent` for the per-finding policy gate.
+
+        Fires alongside the routing event under the interleaved
+        per-finding loop. Carries `eligibility` (`eligible`/`withheld`)
+        and `policy_version` for severity-versioned replay.
+        """
+        ...
+
+    async def emit_publish_attempt(self, event: PublishAttemptEvent) -> None:
+        """Persist a `PublishAttemptEvent` for the per-attempt GitHub-call outcome.
+
+        Single emission per attempt, AFTER the GitHub call resolves
+        (no in_flight pre-call emission — would conflict with
+        `audit-events-append-only`). On `failed` outcome, `failure_class`
+        carries the exception class name (bounded at 128 chars per
+        DECISIONS.md #023 append-only contract + the schema-layer
+        defense against attacker-influenced 422 error strings).
+        """
+        ...
+
+    async def emit_publish_result(self, event: PublishEvent) -> None:
+        """Persist a `PublishEvent` for the success-path review-level summary.
+
+        Named `emit_publish_result` (NOT `emit_publish_event`) to avoid
+        confusion with the four other event types this sink emits — the
+        canonical `PublishEvent` IS the publish-level result row,
+        carrying `github_review_id` + `comments_posted` + `review_status`.
+        Not emitted on `failed` / `no_op_empty` / `idempotently_skipped*`
+        paths.
+        """
+        ...
+
+
 __all__ = [
     "AnalyzeEventSink",
     "FileExaminationSink",
     "PhaseEventSink",
+    "PublishEventSink",
 ]

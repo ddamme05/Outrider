@@ -42,10 +42,15 @@ if TYPE_CHECKING:
         FileExaminationEvent,
         FindingEvent,
         FindingProposalRejectedEvent,
+        PublishAttemptEvent,
+        PublishEligibilityEvent,
+        PublishEvent,
+        PublishRoutingEvent,
         ReviewPhaseEvent,
     )
     from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
+    from outrider.schemas import GitHubReviewCreated, InlineComment
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +102,53 @@ class _StubImportPathResolver:
         return []
 
 
+class _StubPublishEventSink:
+    """Satisfies PublishEventSink Protocol structurally (has all 4 emit_* members)."""
+
+    async def emit_publish_routing(self, event: PublishRoutingEvent) -> None:
+        return None
+
+    async def emit_publish_eligibility(self, event: PublishEligibilityEvent) -> None:
+        return None
+
+    async def emit_publish_attempt(self, event: PublishAttemptEvent) -> None:
+        return None
+
+    async def emit_publish_result(self, event: PublishEvent) -> None:
+        return None
+
+
+class _StubGitHubPublisher:
+    """Satisfies GitHubPublisher Protocol structurally (has create_review +
+    find_existing_review_on_head_sha)."""
+
+    async def create_review(
+        self,
+        *,
+        gh: InstallationGitHubClient,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        head_sha: str,
+        review_status: str,
+        body_marker: str,
+        comments: tuple[InlineComment, ...],
+    ) -> GitHubReviewCreated:
+        raise NotImplementedError("test stub")
+
+    async def find_existing_review_on_head_sha(
+        self,
+        *,
+        gh: InstallationGitHubClient,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        head_sha: str,
+        body_marker: str,
+    ) -> int | None:
+        raise NotImplementedError("test stub")
+
+
 def _stub_db_factory() -> async_sessionmaker[AsyncSession]:
     """A callable stub satisfying both the None-check and the
     `callable()` check at construction time. The duck-typed runtime
@@ -124,6 +176,8 @@ def _valid_args() -> dict[str, Any]:
         "phase_event_sink": _StubPhaseSink(),
         "file_examination_sink": _StubFileExaminationSink(),
         "analyze_event_sink": _StubAnalyzeEventSink(),
+        "publish_event_sink": _StubPublishEventSink(),
+        "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),
         "github_factory": _stub_github_factory,

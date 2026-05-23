@@ -30,5 +30,17 @@ Settings live in `outrider.github.config.GitHubAppSettings`.
 # auth.py and re-exported here for ergonomic import from
 # `outrider.github`.
 from outrider.github.auth import InstallationGitHubClient
+from outrider.github.publisher import (
+    GitHubKitPublisher,
+    GitHubPublisher,
+    GitHubPublishError,
+    GitHubReviewValidationError,
+)
 
-__all__ = ["InstallationGitHubClient"]
+__all__ = [
+    "GitHubKitPublisher",
+    "GitHubPublishError",
+    "GitHubPublisher",
+    "GitHubReviewValidationError",
+    "InstallationGitHubClient",
+]

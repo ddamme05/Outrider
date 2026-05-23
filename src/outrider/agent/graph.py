@@ -77,10 +77,17 @@ from langgraph.graph.state import CompiledStateGraph
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.intake import intake
+from outrider.agent.nodes.publish import publish
 from outrider.agent.nodes.triage import triage
 from outrider.agent.state import ReviewState
 from outrider.ast_facts.base import ImportPathResolver
-from outrider.audit.sinks import AnalyzeEventSink, FileExaminationSink, PhaseEventSink
+from outrider.audit.sinks import (
+    AnalyzeEventSink,
+    FileExaminationSink,
+    PhaseEventSink,
+    PublishEventSink,
+)
+from outrider.github.publisher import GitHubPublisher
 from outrider.llm.base import LLMProvider
 
 if TYPE_CHECKING:
@@ -119,6 +126,8 @@ def build_graph(
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
+    publish_event_sink: PublishEventSink,
+    publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
 ) -> _CompiledTriageGraph:
@@ -143,6 +152,10 @@ def build_graph(
         raise BuildGraphError("file_examination_sink must not be None")
     if analyze_event_sink is None:
         raise BuildGraphError("analyze_event_sink must not be None")
+    if publish_event_sink is None:
+        raise BuildGraphError("publish_event_sink must not be None")
+    if publisher is None:
+        raise BuildGraphError("publisher must not be None")
     if import_path_resolver is None:
         raise BuildGraphError("import_path_resolver must not be None")
     if db_factory is None:
@@ -202,6 +215,21 @@ def build_graph(
             f"`emit_analyze_response_rejected` / `emit_analyze_completed`; "
             f"see PEP 544 runtime-checkable semantics)"
         )
+    if not isinstance(publish_event_sink, PublishEventSink):
+        raise BuildGraphError(
+            f"publish_event_sink does not satisfy PublishEventSink Protocol "
+            f"(passed type: {type(publish_event_sink).__name__}; "
+            f"missing one of `emit_publish_routing` / `emit_publish_eligibility` / "
+            f"`emit_publish_attempt` / `emit_publish_result`; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
+    if not isinstance(publisher, GitHubPublisher):
+        raise BuildGraphError(
+            f"publisher does not satisfy GitHubPublisher Protocol "
+            f"(passed type: {type(publisher).__name__}; "
+            f"missing one of `create_review` / `find_existing_review_on_head_sha`; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
     if not isinstance(import_path_resolver, ImportPathResolver):
         raise BuildGraphError(
             f"import_path_resolver does not satisfy ImportPathResolver Protocol "
@@ -234,11 +262,19 @@ def build_graph(
         import_path_resolver=import_path_resolver,
         total_review_budget_tokens=total_review_budget_tokens,
     )
+    publish_callable = functools.partial(
+        publish,
+        publisher=publisher,
+        publish_event_sink=publish_event_sink,
+        phase_event_sink=phase_event_sink,
+        github_factory=github_factory,
+    )
 
     builder = StateGraph(ReviewState)
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
     builder.add_node("analyze", analyze_callable)
+    builder.add_node("publish", publish_callable)
     builder.add_edge(START, "intake")
     # NO `builder.add_edge("intake", "triage")` here, and NO
     # `builder.add_conditional_edges("intake", ...)`. Intake routes via
@@ -246,9 +282,13 @@ def build_graph(
     # would fire alongside the Command and send to BOTH destinations.
     # See module docstring "Routing" section for the full rationale.
     builder.add_edge("triage", "analyze")
-    # V1 wires `analyze → END` unconditionally. The `analyze ⇄ trace`
-    # loop replaces this edge when trace lands as a registered node.
-    builder.add_edge("analyze", END)
+    # V1 wires `analyze → publish → END`. The `analyze ⇄ trace` loop
+    # (V1.5) and the `synthesize → hitl → publish` chain (later spec)
+    # will replace these edges when those nodes land. Per the publish-
+    # node spec: synthesize is not shipped, so V1 publish runs straight
+    # off analyze with `review_status="COMMENT"` as a constant.
+    builder.add_edge("analyze", "publish")
+    builder.add_edge("publish", END)
     return builder.compile()
 
 
