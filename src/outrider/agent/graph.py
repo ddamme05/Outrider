@@ -1,16 +1,19 @@
-# Three-node StateGraph(ReviewState) factory per specs/2026-05-19-analyze-node.md §8.
-"""Three-node `StateGraph(ReviewState)` factory: intake → triage → analyze.
+# Four-node StateGraph(ReviewState) factory: intake → triage → analyze → publish.
+"""Four-node `StateGraph(ReviewState)` factory: intake → triage → analyze → publish.
 
-V1.x ships THREE nodes: `intake`, `triage`, `analyze`. Intake enriches
-`pr_context.changed_files` per `DECISIONS.md#020`; triage runs a fast
-LLM pass for tier classification; analyze runs one Sonnet call per
-DEEP/STANDARD-tier file, emits findings, and returns analysis-round +
-trace-candidate state deltas. The factory produces a
+V1 ships FOUR nodes: `intake`, `triage`, `analyze`, `publish`. Intake
+enriches `pr_context.changed_files` per `DECISIONS.md#020`; triage runs
+a fast LLM pass for tier classification; analyze runs one Sonnet call
+per DEEP/STANDARD-tier file and emits findings; publish routes each
+finding through `coordinates/`, applies the V1 eligibility gate
+(CRITICAL/HIGH withheld until HITL ships), and posts a single GitHub
+review for the eligible-inline set. The factory produces a
 `CompiledStateGraph` that consumers invoke via
 `await graph.ainvoke(seed_state)`.
 
-Multi-node graph topology beyond intake → triage → analyze (trace →
-synthesize → hitl → publish) is downstream of this spec.
+Graph topology beyond intake → triage → analyze → publish (trace →
+synthesize → hitl) is downstream of this spec; the `analyze ⇄ trace`
+loop and the HITL interrupt land in subsequent feature specs.
 
 ## Routing: Command, not static or conditional edges from intake
 
@@ -36,7 +39,7 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `provider: LLMProvider` — LLM transport for triage AND analyze.
   - `model_config: ModelConfig` — `triage_model` and `analyze_model` are
     captured at callsite (per `model-strings-from-config-not-hardcoded`).
-  - `phase_event_sink: PhaseEventSink` — required for all three nodes;
+  - `phase_event_sink: PhaseEventSink` — required for all four nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
     per-file content-fetch events AND analyze's per-file examination
@@ -131,7 +134,7 @@ def build_graph(
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
 ) -> _CompiledTriageGraph:
-    """Build the three-node intake → triage → analyze graph.
+    """Build the four-node intake → triage → analyze → publish graph.
 
     Keyword-only arguments prevent positional-confusion bugs at callsites
     with multiple deps. Validation order: None checks first (cheaper),

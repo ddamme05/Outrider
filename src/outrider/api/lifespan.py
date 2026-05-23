@@ -25,10 +25,11 @@ Constructs at startup, in dependency order:
      lifespan-validated settings. Per `DECISIONS.md#020` + the
      `nodes-receive-deps-via-closure` invariant, installation-token
      minting happens at intake call-site, not at webhook receipt.
-  8. `compiled_graph = build_graph(...)` — the V1 two-node intake →
-     triage graph with all six deps injected at construction time
-     (`db_factory`, `github_factory`, `provider`, `model_config`,
-     `phase_event_sink=persister`, `file_examination_sink=persister`).
+  8. `compiled_graph = build_graph(...)` — the V1 four-node intake →
+     triage → analyze → publish graph with all required deps injected
+     at construction time (`db_factory`, `github_factory`, `provider`,
+     `model_config`, the four sink Protocols, `publisher`, and
+     `import_path_resolver`).
   9. `run_graph` async closure that the V1 `BackgroundTasksDispatcher`
      invokes per request to call `compiled_graph.ainvoke(state)`.
   10. `register_filter_on_all_handlers()` — re-applies the log-content

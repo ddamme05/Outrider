@@ -46,7 +46,7 @@ from outrider.api.webhooks.router import router as webhook_router
 app = FastAPI(
     title="Outrider",
     description=(
-        "Agentic PR review (intake → triage → analyze; trace/synthesize/hitl/publish post-V1)."
+        "Agentic PR review (intake → triage → analyze → publish; trace/synthesize/hitl post-V1)."
     ),
     lifespan=lifespan,
 )
