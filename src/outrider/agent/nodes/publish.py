@@ -57,7 +57,7 @@ from outrider.audit.events import (
 )
 from outrider.coordinates import (
     CoordinateError,
-    tree_sitter_to_github,
+    source_line_to_github,
 )
 from outrider.coordinates.errors import CoordinateErrorKind
 from outrider.policy.publish_eligibility import is_eligible_for_v1_publish
@@ -445,6 +445,16 @@ async def _route_and_gate_one_finding(
         line_end=finding.line_end,
         finding_type=finding.finding_type,
     )
+    # `PublishEligibilityEvent.severity` MUST equal SEVERITY_POLICY[finding_type]
+    # (the BASELINE) per the event's `_enforce_severity_matches_policy`
+    # validator. On findings WITH a HITL override (current finding.severity
+    # is the override value), the BASELINE lives at finding.original_severity.
+    # In V1 the gate already withholds any finding with original_severity set,
+    # so the override case is the WITHHELD-via-fabricated-override path; the
+    # baseline still goes on the event so the validator admits.
+    baseline_severity = (
+        finding.original_severity if finding.original_severity is not None else finding.severity
+    )
     await publish_event_sink.emit_publish_eligibility(
         PublishEligibilityEvent(
             review_id=state.review_id,
@@ -454,7 +464,7 @@ async def _route_and_gate_one_finding(
             line_start=finding.line_start,
             line_end=finding.line_end,
             finding_type=finding.finding_type,
-            severity=finding.severity,
+            severity=baseline_severity,
             original_severity=None,  # V1 always None; gate already rejected non-None
             finding_content_hash=finding_content_hash_for_eligibility,
             decision_content_hash=eligibility_decision_hash,
@@ -516,8 +526,8 @@ def _resolve_inline_location(*, finding: ReviewFinding, state: ReviewState) -> d
             kind=CoordinateErrorKind.FILE_NOT_IN_PATCH,
         )
     changed_file = matching[0]
-    if changed_file.head_content is None or changed_file.patch is None:
-        # `removed` files have head_content=None; trying to publish
+    if changed_file.content_head is None or changed_file.patch is None:
+        # `removed` files have content_head=None; trying to publish
         # against a removed file can't anchor inline. Distinct from
         # FILE_NOT_IN_PATCH (which means "absent from patch entirely")
         # — the file IS in the patch, just deleted. Per audit-stream
@@ -525,15 +535,21 @@ def _resolve_inline_location(*, finding: ReviewFinding, state: ReviewState) -> d
         # surface with a discriminating reason, not collapse into the
         # registry-miss bucket.
         raise CoordinateError(
-            f"file {finding.file_path!r} has no head_content or patch "
+            f"file {finding.file_path!r} has no content_head or patch "
             f"(status={changed_file.status!r}); cannot anchor inline comment.",
             kind=CoordinateErrorKind.HEAD_CONTENT_UNAVAILABLE,
         )
-    location = tree_sitter_to_github(
+    # `source_line_to_github` is the line-based entry point in
+    # coordinates: `ReviewFinding` carries `line_start` / `line_end`
+    # (source-line coords on head), not the byte-span coords
+    # `tree_sitter_to_github` consumes directly. The line→byte
+    # translation lives in `coordinates/translator.py` per
+    # `coordinates-module-is-sole-translator`.
+    location = source_line_to_github(
         file_path=finding.file_path,
-        byte_start=finding.byte_start,
-        byte_end=finding.byte_end,
-        head_content=changed_file.head_content.decode("utf-8", errors="replace"),
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        head_content=changed_file.content_head,
         patch=changed_file.patch,
     )
     return {"path": location.file_path, "line": location.line}

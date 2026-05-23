@@ -25,12 +25,13 @@ and the start phase event is left dangling as the audit signal."
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Self
+from uuid import (
+    UUID,  # noqa: TC003  (Pydantic v2 needs UUID resolvable at runtime, not TYPE_CHECKING)
+)
 
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from outrider.schemas.review_finding import ReviewFinding
 
 

@@ -177,6 +177,93 @@ def _byte_offset_to_line(head_bytes: bytes, byte_offset: int) -> int:
     return head_bytes[:byte_offset].count(b"\n") + 1
 
 
+def _line_to_byte_offset(head_bytes: bytes, line_number: int) -> int:
+    """Inverse of `_byte_offset_to_line`: return the byte offset of the FIRST
+    byte of line `line_number` (1-indexed) in `head_bytes`.
+
+    Used by `source_line_to_github` to translate a `ReviewFinding`'s line
+    coords to the byte coords the tree-sitter translation path consumes.
+
+    Line 1 → byte 0. Line N (N ≥ 2) → byte just after the (N-1)th `\\n`.
+    A `line_number` beyond the last line raises `CoordinateError(kind=
+    BYTE_OFFSET_INVALID)` — the caller has a finding pointing past EOF,
+    which is a producer-side bug (model hallucinated line number OR
+    head_content drifted from the version the finding was anchored
+    against).
+    """
+    if line_number < 1:
+        raise CoordinateError(
+            f"line_number {line_number} must be >= 1 (1-indexed source lines)",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+        )
+    if line_number == 1:
+        return 0
+    # Find the position right after the (line_number - 1)th newline.
+    newlines_needed = line_number - 1
+    pos = 0
+    for _ in range(newlines_needed):
+        next_newline = head_bytes.find(b"\n", pos)
+        if next_newline == -1:
+            raise CoordinateError(
+                f"line_number {line_number} exceeds source-line count "
+                f"({head_bytes.count(b'\\n') + 1} lines in head_content)",
+                kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+            )
+        pos = next_newline + 1
+    return pos
+
+
+def source_line_to_github(
+    *,
+    file_path: str,
+    line_start: int,
+    line_end: int,
+    head_content: str,
+    patch: str,
+) -> GitHubCommentLocation:
+    """Source-line publisher entry point — line coords → GitHub comment location.
+
+    The byte-based `tree_sitter_to_github` is the canonical translator
+    (analyze produces tree-sitter byte spans). `ReviewFinding` carries
+    `line_start` / `line_end` instead — the publish node uses this
+    surface to bridge to GitHub's line-based comment API without
+    inlining the line→byte math (which would violate
+    `coordinates-module-is-sole-translator`).
+
+    Translates the source line range to a byte span via
+    `_line_to_byte_offset` and delegates to `tree_sitter_to_github`.
+    Same `CoordinateError(kind=...)` taxonomy applies: out-of-bounds
+    lines raise `BYTE_OFFSET_INVALID`; unchanged-region spans raise
+    `UNCHANGED_REGION`; etc.
+
+    V1 collapses multi-line findings to the line containing
+    `line_start` per the existing `tree_sitter_to_github` semantics
+    (`docs/spec.md` §5.6).
+    """
+    head_bytes = head_content.encode("utf-8")
+    byte_start = _line_to_byte_offset(head_bytes, line_start)
+    # `line_end` is 1-indexed inclusive in `ReviewFinding`; treat it as
+    # the START of line_end + 1 for the half-open byte interval. If
+    # line_end is the last line, point at the end of the buffer.
+    if line_end < line_start:
+        raise CoordinateError(
+            f"line_end {line_end} must be >= line_start {line_start}",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+        )
+    try:
+        byte_end = _line_to_byte_offset(head_bytes, line_end + 1)
+    except CoordinateError:
+        # line_end is the last line of the file → use end-of-buffer.
+        byte_end = len(head_bytes)
+    return tree_sitter_to_github(
+        file_path=file_path,
+        byte_start=byte_start,
+        byte_end=byte_end,
+        head_content=head_content,
+        patch=patch,
+    )
+
+
 def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
     """Parse `patch` and find the `PatchedFile` matching `file_path`.
 

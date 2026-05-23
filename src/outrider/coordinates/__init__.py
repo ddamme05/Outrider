@@ -90,6 +90,7 @@ from outrider.coordinates.spans import (
 )
 from outrider.coordinates.translator import (
     GitHubCommentLocation,
+    source_line_to_github,
     tree_sitter_to_github,
 )
 
@@ -106,6 +107,7 @@ __all__ = [
     "resolve_candidate_paths",
     "scope_unit_diff_hunks",
     "scope_unit_has_added_lines",
+    "source_line_to_github",
     "span_is_nonempty",
     "span_to_line_range",
     "span_within_degraded_context",
