@@ -11,8 +11,6 @@ Covers the five concerns named in the module docstring:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from outrider.policy.output_sanitizer import (
@@ -26,9 +24,19 @@ from outrider.policy.output_sanitizer import (
     strip_fake_truncation_markers,
 )
 
-# Ensure the HMAC secret is set for every test in this module. Tests
-# that mutate it use monkeypatch to restore.
-os.environ.setdefault(TRUNCATION_HMAC_SECRET_ENV, "test-secret-for-unit-tests")
+
+@pytest.fixture(autouse=True)
+def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scope `TRUNCATION_HMAC_SECRET_ENV` to test execution.
+
+    Sibling discipline to `test_publish_idempotency.py` /
+    `test_publish_routing.py` / `test_publish_node_end_to_end.py`:
+    module-level `os.environ.setdefault(...)` leaks across test
+    modules and can mask missing-env failures elsewhere. Tests that
+    deliberately mutate the env in-test can still use their own
+    `monkeypatch` to override this fixture's setting.
+    """
+    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "test-secret-for-unit-tests")
 
 
 # ---------------------------------------------------------------------------
