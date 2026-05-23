@@ -35,6 +35,7 @@ from outrider.github.publisher import (
     GitHubPublisher,
     GitHubPublishError,
     GitHubReviewValidationError,
+    GitHubSecondaryRateLimitError,
 )
 
 __all__ = [
@@ -42,5 +43,6 @@ __all__ = [
     "GitHubPublishError",
     "GitHubPublisher",
     "GitHubReviewValidationError",
+    "GitHubSecondaryRateLimitError",
     "InstallationGitHubClient",
 ]
