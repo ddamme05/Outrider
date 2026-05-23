@@ -147,8 +147,24 @@ def test_publish_node_transitive_imports_do_not_load_anthropic() -> None:
         check=False,
     )
     if completed.returncode != 0:
-        pytest.xfail(
-            f"Known transitive import (tracked as FUP-071 — publish→audit.events"
-            f"→llm.pricing→llm/__init__.py imports AnthropicProvider): "
-            f"{completed.stderr.strip()!r}"
+        # Gate the xfail on the explicit "loaded disallowed modules:"
+        # sentinel the subprocess prints — otherwise a real regression
+        # (e.g., a syntax/import error in `outrider.agent.nodes.publish`
+        # itself, an OSError, an environment-shape issue) would be
+        # silently swallowed under the FUP-071 xfail. Real failures
+        # surface as a normal AssertionError; only the documented
+        # transitive-import case xfails.
+        output = (completed.stderr or completed.stdout).strip()
+        if "loaded disallowed modules:" in output:
+            pytest.xfail(
+                f"Known transitive import (tracked as FUP-071 — "
+                f"publish→audit.events→llm.pricing→llm/__init__.py "
+                f"imports AnthropicProvider): {output!r}"
+            )
+        raise AssertionError(
+            f"transitive-import subprocess failed with exit "
+            f"{completed.returncode} (not the FUP-071 sentinel — "
+            f"investigate as a real regression):\n"
+            f"  stderr: {completed.stderr!r}\n"
+            f"  stdout: {completed.stdout!r}"
         )
