@@ -787,7 +787,13 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
             f"fetch_file_content_at returned None for {args.file_path!r} "
             f"(oversize, non-file, or symlink). Pick another path."
         )
-    content_head = content_bytes.decode("utf-8")
+    try:
+        content_head = content_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(
+            f"head content for {args.file_path!r} at {head_sha} is not valid "
+            f"UTF-8 ({exc.reason}); the smoke harness only supports text files."
+        ) from exc
 
     # Line bounds check: `--line` must be within head_content. The
     # publish-node coordinate translator catches past-EOF eventually
@@ -841,7 +847,13 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
                 f"{base_path!r} at ref={base_sha} (oversize/non-file/symlink). "
                 f"Pick another file."
             )
-        content_base = base_bytes.decode("utf-8")
+        try:
+            content_base = base_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SystemExit(
+                f"base content for {base_path!r} at {base_sha} is not valid "
+                f"UTF-8 ({exc.reason}); the smoke harness only supports text files."
+            ) from exc
         if target.status == "renamed":
             previous_path = base_path
     elif target.status == "removed":

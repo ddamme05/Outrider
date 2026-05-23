@@ -409,28 +409,37 @@ async def publish(
 def _extract_status_code(exc: BaseException) -> int | None:
     """Extract HTTP status code from a publish-path exception, if present.
 
-    Two exception shapes carry status:
-      - Wrapper exceptions (`GitHubReviewValidationError`,
-        `GitHubSecondaryRateLimitError`) set `exc.status_code` directly
-        at construction. Prefer this — it's the wrapper's contract.
-      - Raw githubkit `RequestFailed` carries `exc.response.status_code`.
-        Falls through to this when the wrapper didn't wrap (e.g.,
-        non-422 error path).
+    Three exception shapes carry status; checked in order:
+      1. Wrapper exceptions (`GitHubReviewValidationError`,
+         `GitHubSecondaryRateLimitError`) set `exc.status_code` directly
+         at construction. Prefer this — it's the wrapper's contract.
+      2. Raw githubkit `RequestFailed` carries `exc.response.status_code`.
+         Falls through to this for raw passes-from-the-SDK paths.
+      3. Bare `GitHubPublishError` wraps the original SDK exception via
+         `raise ... from exc`; the original lives at `exc.__cause__`,
+         which carries `.response.status_code` for the SDK shape and
+         (in the wrapper subclasses' raise sites) `.status_code` directly.
+         Without this hop, non-422 POST failures + GET-reviews-list
+         failures would record `status_code=None` on `PublishAttemptEvent`.
 
     Returns `None` for exceptions with no HTTP context (network errors
     pre-response, programmer-error exceptions like `ValueError`).
-
-    The `exc.response.status_code`-only pattern misses
-    `GitHubReviewValidationError.status_code` because that wrapper sets
-    `.status_code` directly (not on `.response`); preferring `direct`
-    first ensures wrapper-typed 422s land in `PublishAttemptEvent` with
-    the actual HTTP status rather than `None`.
     """
     direct = getattr(exc, "status_code", None)
     if isinstance(direct, int):
         return direct
     nested = getattr(getattr(exc, "response", None), "status_code", None)
-    return nested if isinstance(nested, int) else None
+    if isinstance(nested, int):
+        return nested
+    cause = exc.__cause__
+    if cause is not None and cause is not exc:
+        cause_direct = getattr(cause, "status_code", None)
+        if isinstance(cause_direct, int):
+            return cause_direct
+        cause_nested = getattr(getattr(cause, "response", None), "status_code", None)
+        if isinstance(cause_nested, int):
+            return cause_nested
+    return None
 
 
 def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:

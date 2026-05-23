@@ -122,9 +122,9 @@ class GitHubSecondaryRateLimitError(GitHubPublishError):
     """HTTP 422 from `POST .../pulls/{n}/reviews` — SECONDARY-RATE-LIMIT.
 
     GitHub returns the SAME 422 status code for two distinct failure
-    classes: per-comment validation failures (atomic rejection per Q6)
-    AND secondary-rate-limit (abuse-detection throttle). Per spec §VI
-    line 406, the publisher MUST distinguish the two from the response
+    classes: per-comment validation failures (atomic rejection) AND
+    secondary-rate-limit (abuse-detection throttle). Per `docs/spec.md`
+    §VI, the publisher MUST distinguish the two from the response
     body. This exception carries the rate-limit case so the publish
     node's audit row records the right `failure_class` for retry-
     diagnosis dashboards.
