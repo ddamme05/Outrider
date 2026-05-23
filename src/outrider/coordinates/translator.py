@@ -242,18 +242,46 @@ def source_line_to_github(
     """
     head_bytes = head_content.encode("utf-8")
     byte_start = _line_to_byte_offset(head_bytes, line_start)
-    # `line_end` is 1-indexed inclusive in `ReviewFinding`; treat it as
-    # the START of line_end + 1 for the half-open byte interval. If
-    # line_end is the last line, point at the end of the buffer.
     if line_end < line_start:
         raise CoordinateError(
             f"line_end {line_end} must be >= line_start {line_start}",
             kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
+    # Validate `line_end` is REACHABLE AND has content in head_content
+    # BEFORE the half-open byte_end lookup. The two-step check
+    # distinguishes:
+    #   (a) line_end IS the last content line → byte_end = end-of-buffer
+    #   (b) line_end is PAST the last content line → raise
+    #       BYTE_OFFSET_INVALID (was previously swallowed by an
+    #       over-broad `except CoordinateError` that silently truncated
+    #       past-EOF findings to EOF and let them publish — caught by
+    #       Codex review 2026-05-22).
+    #
+    # The `byte_at_line_end >= len(head_bytes)` check additionally
+    # rejects the "trailing empty line" case: a file ending with `\n`
+    # has a structurally-reachable line N+1 at position end-of-buffer
+    # with zero content, which is not legitimately commentable. The
+    # naive `_line_to_byte_offset(line_end)` check alone would admit
+    # this case because the position IS computable (= EOB); the
+    # content-presence check rejects.
+    byte_at_line_end = _line_to_byte_offset(head_bytes, line_end)
+    if byte_at_line_end >= len(head_bytes):
+        raise CoordinateError(
+            f"line_end {line_end} has no content in head_content "
+            f"({len(head_bytes)} bytes total); cannot anchor inline comment "
+            f"past the last content line",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+        )
+    # `line_end` is 1-indexed inclusive in `ReviewFinding`; the half-open
+    # byte interval ends at the START of line_end + 1, OR at end-of-buffer
+    # when line_end is the legitimate last line of the file.
     try:
         byte_end = _line_to_byte_offset(head_bytes, line_end + 1)
     except CoordinateError:
-        # line_end is the last line of the file → use end-of-buffer.
+        # line_end is the LAST line of the file (the validation above
+        # confirmed line_end itself is reachable, so this except can
+        # only fire when line_end + 1 would be past EOF — the
+        # legitimate end-of-buffer case).
         byte_end = len(head_bytes)
     return tree_sitter_to_github(
         file_path=file_path,
