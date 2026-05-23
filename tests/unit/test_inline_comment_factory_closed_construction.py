@@ -2,13 +2,15 @@
 """Pin the contract that `InlineComment.from_finding` is the only
 production construction path for `InlineComment` inside `src/outrider/`.
 
-Per the publish-node spec §V Input boundary sub-rule 5:
+Per the publish-node spec §V Input boundary sub-rule 5 (note: spec text
+predates the 2026-05-22 side-threading fix; the runtime signature now
+requires `side` from `coordinates`):
 
     Structural-routing assertion: all GitHub-comment-body fields route
-    through sanitizer; `InlineComment.from_finding(finding, location,
-    sanitizer)` is the only documented production construction path.
-    Direct Pydantic construction is permitted by the schema (test
-    fixtures need it) but an import-graph test forbids it inside
+    through sanitizer; `InlineComment.from_finding(*, finding, path,
+    line, side, body)` is the only documented production construction
+    path. Direct Pydantic construction is permitted by the schema
+    (test fixtures need it) but an import-graph test forbids it inside
     `src/outrider/`.
 
 This module is the import-graph test. Direct `InlineComment(...)`
@@ -117,7 +119,7 @@ def test_no_direct_inline_comment_construction_in_src(path: Path) -> None:
         msg = (
             f"Direct `InlineComment(...)` construction found in production code. "
             f"Per spec §V Input boundary sub-rule 5, use `InlineComment.from_finding"
-            f"(finding=..., path=..., line=..., body=sanitized_body)` so the "
-            f"sanitizer pipeline runs at the call site:\n{formatted}"
+            f"(finding=..., path=..., line=..., side=..., body=sanitized_body)` "
+            f"so the sanitizer pipeline runs at the call site:\n{formatted}"
         )
         raise AssertionError(msg)
