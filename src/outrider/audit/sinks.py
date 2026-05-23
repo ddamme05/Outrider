@@ -125,10 +125,11 @@ class FileExaminationSink(Protocol):
         replay equivalence.
 
     The durable `AuditPersister` implements this Protocol alongside
-    `PhaseEventSink`, `AnalyzeEventSink`, and `LLMExchangePersister` —
-    one class, one transaction-lifecycle discipline, four sinks. Test
-    fixtures may record to a list or persist directly per the same
-    recorder-vs-durable split documented on `PhaseEventSink`.
+    `PhaseEventSink`, `AnalyzeEventSink`, `PublishEventSink`, and
+    `LLMExchangePersister` — one class, one transaction-lifecycle
+    discipline, five sinks. Test fixtures may record to a list or
+    persist directly per the same recorder-vs-durable split documented
+    on `PhaseEventSink`.
 
     `@runtime_checkable` matches the `PhaseEventSink` precedent and enables
     `build_graph` to reject sinks lacking the `emit_file_examination` member

@@ -1396,7 +1396,9 @@ class AuditPersister:
         concurrent-safe across reviews.
 
         Multi-row handling (replay re-emission divergence): returns the
-        most-recent by `timestamp` via `ORDER BY timestamp DESC LIMIT 1`.
+        most-recent row via `ORDER BY timestamp DESC, sequence_number DESC
+        LIMIT 1`. The `sequence_number DESC` tie-breaker is load-bearing
+        — `timestamp` alone is not a total order across concurrent emits.
         The append-only audit log can legitimately carry multiple
         `PublishEvent` rows for one `review_id` (per Q5 withdrawal:
         replay re-emission produces additional rows; consumer-side

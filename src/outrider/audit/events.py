@@ -1100,19 +1100,24 @@ class PublishRoutingEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_coordinate_error_kind_required_iff_coordinate_error(self) -> Self:
-        """`coordinate_error_kind` required iff reason is `coordinate_error`,
-        AND for the unchanged_region case where coordinates raised
-        UNCHANGED_REGION, AND for the non_diffed_file case where coordinates
-        raised FILE_NOT_IN_PATCH (registry/patch disagreement).
+        """Enforce the `reason × destination × coordinate_error_kind` product.
 
-        Reason → kind mapping (the validator is total over this product):
+        The three fields jointly identify the routing decision; an invalid
+        tuple would silently corrupt audit semantics + drift analysis.
 
-        - reviewable_diff_line → kind=None (coordinates returned success)
-        - unchanged_region → kind=UNCHANGED_REGION (always; raise was caught)
-        - non_diffed_file → kind=None (registry miss; coordinates not called)
-                           OR kind=FILE_NOT_IN_PATCH (registry/patch disagreement)
-        - coordinate_error → kind required AND must NOT be UNCHANGED_REGION or
-          FILE_NOT_IN_PATCH (those map to dedicated reasons above)
+        Reason → destination → kind mapping (validator is total over the
+        product):
+
+        - reviewable_diff_line → INLINE_COMMENT → kind=None
+          (coordinates returned success)
+        - unchanged_region → REVIEW_BODY → kind=UNCHANGED_REGION
+          (always; raise was caught)
+        - non_diffed_file → DASHBOARD_ONLY → kind=None (registry miss;
+          coordinates not called) OR kind=FILE_NOT_IN_PATCH
+          (registry/patch disagreement)
+        - coordinate_error → DASHBOARD_ONLY → kind required AND must
+          NOT be UNCHANGED_REGION or FILE_NOT_IN_PATCH (those map to
+          dedicated reasons above)
         """
         # Local import: kept inside the validator for the same reason as
         # `_enforce_coordinate_error_kind_membership` above — `audit` should
@@ -1122,12 +1127,22 @@ class PublishRoutingEvent(AuditEventBase):
         kind = self.coordinate_error_kind
 
         if self.reason is PublishRoutingReason.REVIEWABLE_DIFF_LINE:
+            if self.destination is not PublishDestination.INLINE_COMMENT:
+                raise ValueError(
+                    f"PublishRoutingEvent reason=reviewable_diff_line requires "
+                    f"destination=INLINE_COMMENT, got {self.destination!r}"
+                )
             if kind is not None:
                 raise ValueError(
                     f"PublishRoutingEvent reason=reviewable_diff_line is the success path; "
                     f"coordinate_error_kind must be None, got {kind!r}"
                 )
         elif self.reason is PublishRoutingReason.UNCHANGED_REGION:
+            if self.destination is not PublishDestination.REVIEW_BODY:
+                raise ValueError(
+                    f"PublishRoutingEvent reason=unchanged_region requires "
+                    f"destination=REVIEW_BODY, got {self.destination!r}"
+                )
             if kind != CoordinateErrorKind.UNCHANGED_REGION.value:
                 expected = CoordinateErrorKind.UNCHANGED_REGION.value
                 raise ValueError(
@@ -1137,6 +1152,11 @@ class PublishRoutingEvent(AuditEventBase):
                     f"identity), got {kind!r}"
                 )
         elif self.reason is PublishRoutingReason.NON_DIFFED_FILE:
+            if self.destination is not PublishDestination.DASHBOARD_ONLY:
+                raise ValueError(
+                    f"PublishRoutingEvent reason=non_diffed_file requires "
+                    f"destination=DASHBOARD_ONLY, got {self.destination!r}"
+                )
             allowed = {None, CoordinateErrorKind.FILE_NOT_IN_PATCH.value}
             if kind not in allowed:
                 fnip = CoordinateErrorKind.FILE_NOT_IN_PATCH.value
@@ -1146,6 +1166,11 @@ class PublishRoutingEvent(AuditEventBase):
                     f"(registry/patch disagreement)}}, got {kind!r}"
                 )
         elif self.reason is PublishRoutingReason.COORDINATE_ERROR:
+            if self.destination is not PublishDestination.DASHBOARD_ONLY:
+                raise ValueError(
+                    f"PublishRoutingEvent reason=coordinate_error requires "
+                    f"destination=DASHBOARD_ONLY, got {self.destination!r}"
+                )
             if kind is None:
                 raise ValueError(
                     "PublishRoutingEvent reason=coordinate_error requires coordinate_error_kind"

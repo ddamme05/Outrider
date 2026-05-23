@@ -152,11 +152,18 @@ def _find_inline_comment_constructions(source: str) -> list[tuple[int, str]]:
         if isinstance(func, ast.Name) and func.id in inline_comment_local_names:
             constructions.append((node.lineno, ast.unparse(node)[:80]))
             continue
-        # `<base>.InlineComment(...)` where <base> is one of the known
-        # schema-module call-site bases (alias or dotted module path).
+        # `<base>.InlineComment(...)` where <base> matches a known
+        # schema-module call-site base exactly OR is a sub-attribute of
+        # one. Exact-match catches `schemas.InlineComment(...)` after
+        # `import outrider.schemas as schemas`; sub-attribute match
+        # catches the nested case `outrider.schemas.publish.InlineComment(...)`
+        # under `import outrider.schemas` (where the call site walks
+        # through `schemas.publish` as an attribute chain).
         if isinstance(func, ast.Attribute) and func.attr == "InlineComment":
             base = _dotted_name(func.value)
-            if base is not None and base in schema_module_bases:
+            if base is not None and any(
+                base == known or base.startswith(f"{known}.") for known in schema_module_bases
+            ):
                 constructions.append((node.lineno, ast.unparse(node)[:80]))
     return constructions
 

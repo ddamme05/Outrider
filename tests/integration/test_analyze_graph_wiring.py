@@ -338,29 +338,36 @@ def _build_seed_state(*, is_eval: bool = True) -> ReviewState:
 
 
 class _StubPublishEventSink:
-    """No-op `PublishEventSink` for analyze-graph wiring tests.
+    """Recording `PublishEventSink` for analyze-graph wiring tests.
 
     These tests focus on intake→triage→analyze wiring assertions; the
     publish node is wired into the graph and runs as the terminal node,
     but every fixture here lands on a no-finding or SKIP-tier path so
     publish exits via the empty-eligible short-circuit without invoking
-    the publisher or emitting publish-side events. The stub admits the
-    structural Protocol check at build_graph time and captures any
-    emits the node would make if a future fixture starts producing
-    admitted findings.
+    the publisher. The stub admits the structural Protocol check at
+    build_graph time and captures any emits the node would make if a
+    future fixture starts producing admitted findings — keeping the
+    recording lists in place so test failures point at the actual
+    emitted events instead of disappearing into a discarder.
     """
 
-    async def emit_publish_routing(self, event: Any) -> None:  # noqa: ARG002
-        return None
+    def __init__(self) -> None:
+        self.routing_events: list[Any] = []
+        self.eligibility_events: list[Any] = []
+        self.attempt_events: list[Any] = []
+        self.result_events: list[Any] = []
 
-    async def emit_publish_eligibility(self, event: Any) -> None:  # noqa: ARG002
-        return None
+    async def emit_publish_routing(self, event: Any) -> None:
+        self.routing_events.append(event)
 
-    async def emit_publish_attempt(self, event: Any) -> None:  # noqa: ARG002
-        return None
+    async def emit_publish_eligibility(self, event: Any) -> None:
+        self.eligibility_events.append(event)
 
-    async def emit_publish_result(self, event: Any) -> None:  # noqa: ARG002
-        return None
+    async def emit_publish_attempt(self, event: Any) -> None:
+        self.attempt_events.append(event)
+
+    async def emit_publish_result(self, event: Any) -> None:
+        self.result_events.append(event)
 
     async def query_prior_publish_event(self, review_id: Any) -> Any:  # noqa: ARG002
         return None

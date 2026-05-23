@@ -4,9 +4,10 @@
 Per the `coordinates-module-is-sole-translator` invariant: all
 translation among diff coordinates, tree-sitter byte spans, GitHub
 comment locations, and source line numbers lives in the `coordinates/`
-module. The five functions below cover span-containment, byte-to-line
-translation, and scope-unit-bounded diff slicing for the analyze
-sister spec's parser + node body.
+module. The helpers below cover span-containment, byte-to-line
+translation, scope-unit-bounded diff slicing, and added-line detection
+for the analyze sister spec's parser + node body. See the public
+exports + each helper's docstring for the full surface.
 
 Interval semantics: all `Span` instances are half-open
 `[byte_start, byte_end)` — `byte_end` is exclusive (a 4-byte span at
