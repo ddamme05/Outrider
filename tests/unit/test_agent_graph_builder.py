@@ -242,6 +242,20 @@ def test_build_graph_rejects_analyze_event_sink_none() -> None:
         build_graph(**args)
 
 
+def test_build_graph_rejects_publish_event_sink_none() -> None:
+    args = _valid_args()
+    args["publish_event_sink"] = None
+    with pytest.raises(BuildGraphError, match="publish_event_sink must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_publisher_none() -> None:
+    args = _valid_args()
+    args["publisher"] = None
+    with pytest.raises(BuildGraphError, match="publisher must not be None"):
+        build_graph(**args)
+
+
 def test_build_graph_rejects_import_path_resolver_none() -> None:
     args = _valid_args()
     args["import_path_resolver"] = None
@@ -340,6 +354,32 @@ def test_build_graph_rejects_import_path_resolver_missing_member() -> None:
     with pytest.raises(
         BuildGraphError,
         match="import_path_resolver does not satisfy ImportPathResolver",
+    ):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_publish_event_sink_missing_member() -> None:
+    """`isinstance(sink, PublishEventSink)` fails on objects lacking any
+    of the five expected methods (4 emit_* + 1 query). PEP 544
+    member-presence semantics."""
+    args = _valid_args()
+    args["publish_event_sink"] = object()
+    with pytest.raises(
+        BuildGraphError,
+        match="publish_event_sink does not satisfy PublishEventSink",
+    ):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_publisher_missing_member() -> None:
+    """`isinstance(pub, GitHubPublisher)` fails on objects lacking
+    `create_review` / `find_existing_review_on_head_sha`. PEP 544
+    member-presence semantics."""
+    args = _valid_args()
+    args["publisher"] = object()
+    with pytest.raises(
+        BuildGraphError,
+        match="publisher does not satisfy GitHubPublisher",
     ):
         build_graph(**args)
 

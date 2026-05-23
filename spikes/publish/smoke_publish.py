@@ -56,9 +56,10 @@ Out of scope for V1:
   credentials + a real PR with model-eligible findings; the four-node
   graph runs intake → triage → analyze → publish, and analyze needs
   a Sonnet call. Tracked separately.
-- The `IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` branch (Step 6 at
-  `publish.py:284`) requires a crash-after-success scenario; deferred
-  to a future harness extension.
+- The `IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` branch (Step 6 of
+  `agent/nodes/publish.py` — the `find_existing_review_on_head_sha`
+  body-marker query path) requires a crash-after-success scenario;
+  deferred to a future harness extension.
 - Automatic teardown of posted GitHub reviews: GitHub doesn't expose
   bulk-delete and submitted comment-reviews persist. Operator runs a
   separate cleanup pass against `cleanup_manifest.jsonl`.
@@ -681,7 +682,14 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
         "OUTRIDER_GITHUB_WEBHOOK_SECRET",
         hint="required by GitHubAppSettings even though smoke harness doesn't receive webhooks",
     )
-    installation_id = int(_env_or_die("OUTRIDER_SMOKE_INSTALLATION_ID"))
+    installation_id_raw = _env_or_die("OUTRIDER_SMOKE_INSTALLATION_ID")
+    try:
+        installation_id = int(installation_id_raw)
+    except ValueError as exc:
+        raise SystemExit(
+            f"OUTRIDER_SMOKE_INSTALLATION_ID must be a base-10 integer "
+            f"(got {installation_id_raw!r})."
+        ) from exc
     database_url = _env_or_die("TEST_DATABASE_URL", hint="psycopg async URL, port 5433")
     _assert_test_database_url(database_url)
 
@@ -1029,7 +1037,7 @@ def _append_manifest(
     pr_number: int,
 ) -> None:
     entry = {
-        "ts": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "review_id": str(review_id),
         "github_review_id": github_review_id,
         "owner": owner,

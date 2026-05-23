@@ -1,6 +1,7 @@
-# spikes/publish/smoke_publish.py
+# Publish-node smoke harness
 
-Direct-invoke smoke harness for the V1 publish node.
+Direct-invoke smoke harness for the V1 publish node
+(`spikes/publish/smoke_publish.py`).
 
 ## Why this exists
 
@@ -99,8 +100,9 @@ option — that's per `audit-events-append-only` invariant.
 
 ## What this harness does NOT exercise
 
-- The `IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` branch (Step 6 in
-  `agent/nodes/publish.py:284`). Hitting this requires a
+- The `IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` branch (Step 6 of
+  `agent/nodes/publish.py` — the external-record `find_existing_review_on_head_sha`
+  query path). Hitting this requires a
   crash-after-success scenario where the GitHub review exists but the
   PublishEvent audit row does not. Future harness extension.
 - The `WITHHELD` paths (CRITICAL/HIGH eligibility, fabricated overrides).

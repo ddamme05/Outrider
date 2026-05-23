@@ -13,8 +13,8 @@ Two surfaces:
   - `create_review(...)` — POST the review with inline comments. The
     `body_marker` (e.g., `<!-- outrider-review-id:{review_id} -->`)
     is embedded in the review body for crash-after-success recovery.
-    Returns `GitHubReviewCreated` on success (HTTP 200; per MCP doc
-    verification 2026-05-22, this endpoint returns 200, not 201).
+    Returns `GitHubReviewCreated` on success (HTTP 200; this endpoint
+    returns 200, not 201, under apiVersion 2026-03-10).
 
   - `find_existing_review_on_head_sha(...)` — GET reviews on the PR
     + filter by body containing `body_marker` to detect a prior
@@ -22,8 +22,8 @@ Two surfaces:
     success race (prior process succeeded at the POST but died before
     persisting `PublishEvent`).
 
-Per Q6 sandbox (2026-05-22): GitHub atomically rejects multi-comment
-reviews where ANY comment has an invalid position / path / commit_id.
+GitHub atomically rejects multi-comment reviews where ANY comment has
+an invalid position / path / commit_id (verified via sandbox probe).
 HTTP 422 + zero reviews created + zero comments posted. The publisher
 does NOT attempt per-comment retry on 422; the atomicity is the
 contract V1 relies on (Q2a confirmed). On 422, raise a typed exception
@@ -97,16 +97,16 @@ class GitHubPublishError(Exception):
 class GitHubReviewValidationError(GitHubPublishError):
     """HTTP 422 from `POST .../pulls/{n}/reviews` — atomic VALIDATION rejection.
 
-    Per Q6 sandbox (2026-05-22): GitHub atomically rejects multi-comment
-    reviews where any comment has an invalid position / path /
-    commit_id. Zero reviews are created and zero comments are posted
-    on 422 — the publish node does NOT retry per-comment.
+    GitHub atomically rejects multi-comment reviews where any comment
+    has an invalid position / path / commit_id. Zero reviews are
+    created and zero comments are posted on 422 — the publish node
+    does NOT retry per-comment.
 
-    Distinct from `GitHubSecondaryRateLimitError` (the spec at §VI line
-    406 notes GitHub's 422 wording — "Validation failed, or the endpoint
-    has been spammed" — is ambiguous between per-comment validation
-    failure and a secondary-rate-limit; the publisher discriminates by
-    inspecting the response body, NOT status code alone).
+    Distinct from `GitHubSecondaryRateLimitError`: GitHub's 422 wording
+    ("Validation failed, or the endpoint has been spammed") is ambiguous
+    between per-comment validation failure and a secondary-rate-limit;
+    the publisher discriminates by inspecting the response body, NOT
+    status code alone.
 
     Carries the raw 422 response body as `.body_text` for diagnostic
     logging (NOT for parsing decision logic).
@@ -148,11 +148,9 @@ class GitHubSecondaryRateLimitError(GitHubPublishError):
 
 # GitHub's secondary-rate-limit phrasings — present in the 422 body
 # when the throttle fires. Multiple phrasings are documented across
-# GitHub's REST API + create-review prose under apiVersion 2026-03-10
-# (verified via aegis-docs `github-rest-api/pull-requests/reviews.md`
-# 2026-05-22). Case-insensitive substring match; the publisher checks
-# ALL phrasings to defend against wording drift across GitHub
-# deployments (Wave-3 adversarial M1 + Sharp-Edges F2 convergent fix).
+# GitHub's REST API + create-review prose under apiVersion 2026-03-10.
+# Case-insensitive substring match; the publisher checks ALL phrasings
+# to defend against wording drift across GitHub deployments.
 #
 # Future failure mode: if GitHub introduces a new phrasing not in this
 # tuple, the publisher silently mis-classifies the throttle as a
@@ -162,7 +160,7 @@ class GitHubSecondaryRateLimitError(GitHubPublishError):
 # regardless of exact phrasing (validation 422s always include `errors`).
 _SECONDARY_RATE_LIMIT_MARKERS: Final[tuple[str, ...]] = (
     "secondary rate limit",  # canonical phrasing per GitHub's docs
-    "secondary-rate limit",  # hyphenated variant (Codex round-N+2)
+    "secondary-rate limit",  # hyphenated variant
     "abuse detection mechanism",  # legacy GitHub phrasing (still observed)
     "rate-limit",  # broadest fallback; intersect with envelope shape below
 )
@@ -171,19 +169,19 @@ _SECONDARY_RATE_LIMIT_MARKERS: Final[tuple[str, ...]] = (
 def _looks_like_secondary_rate_limit(body_text: str) -> bool:
     """Discriminate 422 secondary-rate-limit from 422 validation failure.
 
-    Per spec §VI line 406: 422 is ambiguous between per-comment validation
+    Per `docs/spec.md` §VI: 422 is ambiguous between per-comment validation
     failure and secondary-rate-limit (abuse throttle); the publisher MUST
     distinguish from the response body, not status code alone.
 
-    Two-check defense (Wave-3 audit convergent fix):
+    Two-check defense:
 
     1. **Phrase check**: body contains ANY of the documented rate-limit
        phrasings (case-insensitive). Multiple phrasings defend against
        wording drift across GitHub deployments.
 
     2. **Envelope check**: body is rate-limit-SHAPED, NOT validation-
-       shaped. Validation 422s always carry `errors[]` (per Q6 sandbox
-       observation: `{"message":"Unprocessable Entity","errors":["..."]}`).
+       shaped. Validation 422s always carry `errors[]`
+       (`{"message":"Unprocessable Entity","errors":["..."]}`).
        Rate-limit 422s carry only `message` (per GitHub's documented
        abuse-detection response). Substring match on `'"errors"'` reliably
        distinguishes the two envelopes regardless of exact phrasing.
@@ -259,7 +257,7 @@ class GitHubPublisher(Protocol):
             `GitHubReviewValidationError`: HTTP 422 with a validation-
                 failure body (atomic rejection per Q6).
             `GitHubSecondaryRateLimitError`: HTTP 422 with a
-                secondary-rate-limit body. Per spec §VI line 406,
+                secondary-rate-limit body. Per `docs/spec.md` §VI,
                 422 is ambiguous between the two cases; the publisher
                 discriminates by inspecting the response body.
             `GitHubPublishError`: any other HTTP error (403 permission,
@@ -357,15 +355,14 @@ class GitHubKitPublisher:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             text = getattr(getattr(exc, "response", None), "text", str(exc))
             if status == 422:
-                # 422 is ambiguous per spec §VI line 406: validation
+                # 422 is ambiguous per `docs/spec.md` §VI: validation
                 # failure OR secondary-rate-limit (abuse throttle).
                 # `_looks_like_secondary_rate_limit` combines a
                 # multi-phrase substring match with a JSON-envelope
                 # shape check (validation 422s carry `errors[]`;
                 # rate-limit 422s do not) — defends against both
                 # GitHub wording drift AND attacker echo-injection
-                # via paths/content surfaced in a validation response
-                # (Wave-3 adversarial M1 convergent fix).
+                # via paths/content surfaced in a validation response.
                 if _looks_like_secondary_rate_limit(text or ""):
                     raise GitHubSecondaryRateLimitError(
                         f"GitHub secondary-rate-limit on create-review (422): {text[:200]!r}",
@@ -381,11 +378,10 @@ class GitHubKitPublisher:
                 f"GitHub create-review failed (status={status}): {text[:200]!r}"
             ) from exc
 
-        # Parse response. Per MCP doc verification (2026-05-22), the
-        # success status is 200 (not 201) and the body carries `id`
-        # for the review_id. `comments_posted` is len(comments) under
-        # atomic semantics — if the call returned 2xx, ALL comments
-        # posted (Q6 atomicity).
+        # Parse response. Under apiVersion 2026-03-10 the success
+        # status is 200 (not 201) and the body carries `id` for the
+        # review_id. `comments_posted` is len(comments) under atomic
+        # semantics — if the call returned 2xx, ALL comments posted.
         parsed = json.loads(response.text)
         github_review_id = parsed["id"]
         return GitHubReviewCreated(
@@ -409,11 +405,11 @@ class GitHubKitPublisher:
         either: (a) a matching review is found, (b) pagination
         exhausts, or (c) `_REVIEWS_LIST_MAX_PAGES` is hit (raises).
 
-        **Matcher hardening (Wave-3 audit convergent fix):** the body
-        marker alone is forgeable — a PR author with `pull_requests:
-        write` could post a human review carrying a copy of the marker
-        and trick a retry into `idempotently_skipped_external_record`,
-        silently suppressing the legitimate findings. Defenses applied:
+        **Matcher hardening:** the body marker alone is forgeable — a
+        PR author with `pull_requests:write` could post a human review
+        carrying a copy of the marker and trick a retry into
+        `idempotently_skipped_external_record`, silently suppressing
+        the legitimate findings. Defenses applied:
 
           1. The marker must appear at the START of the review body
              (line-anchored, not substring) so a marker embedded inside

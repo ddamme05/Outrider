@@ -2,15 +2,15 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has thirteen
-concrete subtypes: ten V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
+`AuditEventBase` is the shared base. The hierarchy has fifteen
+concrete subtypes: twelve V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
-`HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`) plus three
-analyze-foundation additions per `specs/2026-05-19-analyze-foundation.md`
-§5 (`AnalyzeCompletedEvent`, `FindingProposalRejectedEvent`,
-`AnalyzeResponseRejectedEvent`). Each declares its own
-`event_type: Literal[...]` discriminator value. The
+`HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`,
+`PublishEligibilityEvent`, `PublishAttemptEvent`) plus three
+analyze-foundation additions (`AnalyzeCompletedEvent`,
+`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`). Each
+declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
 
@@ -904,7 +904,7 @@ def compute_publish_routing_decision_hash(
 
     Canonical encoding: compact JSON of `[destination.value, reason.value,
     coordinate_error_kind.value | None]`. Mirrors `compute_finding_content_hash`
-    above (which is the canonical reference recipe at events.py:113-161).
+    above (the canonical reference recipe in this module).
     Two implementers OR two replay re-emissions of the same logical decision
     MUST produce identical hashes; the JSON encoding pins this.
 
@@ -1319,8 +1319,7 @@ class PublishEligibilityEvent(AuditEventBase):
     @model_validator(mode="after")
     def _verify_content_hash_binding(self) -> Self:
         """MUST call `compute_finding_content_hash(...)` — never re-implement
-        the recipe. Mirror of `FindingEvent._verify_content_hash` at
-        events.py:628.
+        the recipe. Mirror of `FindingEvent._verify_content_hash` above.
         """
         expected = compute_finding_content_hash(
             self.file_path,
@@ -1448,8 +1447,8 @@ class PublishAttemptEvent(AuditEventBase):
 
 # Module-local alias for the canonical short pattern. Single source lives
 # in `outrider.policy.canonical`; redefining the regex here would
-# reintroduce the per-call-site drift class the chokepoint module was
-# created to prevent (Copilot review fold).
+# reintroduce the per-call-site drift class the chokepoint module exists
+# to prevent.
 _SHA256_HEX_PATTERN_SHORT: Final = SHA256_HEX_PATTERN_SHORT
 
 

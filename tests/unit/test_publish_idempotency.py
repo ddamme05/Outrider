@@ -344,8 +344,7 @@ async def test_query_prior_publish_event_failure_emits_attempt_failed_before_rai
 
     Without this guard, the Step 4 failure path would leave only the
     dangling phase-start as an audit signal, with no `failure_class`
-    breadcrumb for operators diagnosing the crash. Wave-3 adversarial
-    audit M1 / Codex round-N+2 catch.
+    breadcrumb for operators diagnosing the crash.
     """
 
     class _RaisingSink(_RecordingPublishEventSink):
@@ -384,11 +383,11 @@ async def test_failed_attempt_records_wrapper_exception_status_code() -> None:
     exception's `.status_code` (e.g., 422 on
     `GitHubReviewValidationError`), NOT None.
 
-    Codex 2026-05-22 review: the prior `getattr(getattr(exc, "response",
-    None), "status_code", None)` pattern missed wrapper exceptions that
-    set `.status_code` directly. The fix introduces
-    `_extract_status_code(exc)` which prefers `exc.status_code` over
-    `exc.response.status_code`. This test pins that contract end-to-end:
+    The `getattr(getattr(exc, "response", None), "status_code", None)`
+    pattern (response-only) misses wrapper exceptions that set
+    `.status_code` directly. `_extract_status_code(exc)` prefers
+    `exc.status_code` over `exc.response.status_code`. This test pins
+    that contract end-to-end:
     a publisher that raises `GitHubReviewValidationError(status_code=422,
     ...)` MUST land `status_code=422` on the failed-attempt audit row.
     """

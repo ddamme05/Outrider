@@ -44,39 +44,45 @@ class CoordinateErrorKind(StrEnum):
     predecessor in place + emitters move to successor", not in-place edit.
     """
 
-    # translator.py:120 — span landed outside any hunk's reviewable range.
-    # Publish routing branches this to PublishDestination.REVIEW_BODY.
+    # Raised by `translator.tree_sitter_to_github` when the span landed
+    # outside any hunk's reviewable range. Publish routing branches this
+    # to PublishDestination.REVIEW_BODY.
     UNCHANGED_REGION = "unchanged_region"
 
-    # translator.py:149/153/157 — byte_start out of bounds, byte_end out of
-    # bounds, byte_end < byte_start.
+    # Raised by `translator.tree_sitter_to_github` /
+    # `source_line_to_github` / `_line_to_byte_offset` for: byte_start out
+    # of bounds, byte_end out of bounds, byte_end < byte_start, line_end
+    # past EOF.
     BYTE_OFFSET_INVALID = "byte_offset_invalid"
 
-    # translator.py:195, diff_parser.py:418, diff_parser.py:489 — unidiff
-    # PatchSet(...) raised UnidiffParseError; wrapped for the
-    # CoordinateError contract.
+    # Raised by `translator._find_patched_file` / `diff_parser.file_in_patch`
+    # / `diff_parser.lookup_patched_file` when `unidiff.PatchSet(...)`
+    # raised UnidiffParseError; wrapped for the CoordinateError contract.
     MALFORMED_PATCH = "malformed_patch"
 
-    # translator.py:199, diff_parser.py:422, diff_parser.py:492 — patch
-    # contains duplicate entries for the queried normalized path.
+    # Raised by `translator._find_patched_file` / `diff_parser.file_in_patch`
+    # / `diff_parser.lookup_patched_file` when the patch contains duplicate
+    # entries for the queried normalized path.
     DUPLICATE_FILE_ENTRY = "duplicate_file_entry"
 
-    # translator.py:201 — file_path is absent from the patch entirely.
-    # NOTE: distinct from the `ChangedFile` registry-miss case that publish
-    # short-circuits BEFORE calling coordinates; FILE_NOT_IN_PATCH fires
-    # when registry says "yes" but coordinates says "no" (patch-text
-    # disagreement). Publish routing surfaces both via reason=non_diffed_file.
+    # Raised by `translator._find_patched_file` when file_path is absent
+    # from the patch entirely. NOTE: distinct from the `ChangedFile`
+    # registry-miss case that publish short-circuits BEFORE calling
+    # coordinates; FILE_NOT_IN_PATCH fires when registry says "yes" but
+    # coordinates says "no" (patch-text disagreement). Publish routing
+    # surfaces both via reason=non_diffed_file.
     FILE_NOT_IN_PATCH = "file_not_in_patch"
 
-    # diff_parser.py:108 — diff_line_to_scope called with diff_line < 1.
-    # NOT reachable from publish (publish doesn't call diff_line_to_scope)
-    # but enumerated for totality so the enum stays a complete taxonomy.
+    # Raised by `diff_parser.diff_line_to_scope` when called with
+    # diff_line < 1. NOT reachable from publish (publish doesn't call
+    # diff_line_to_scope) but enumerated for totality so the enum stays
+    # a complete taxonomy.
     INVALID_DIFF_LINE = "invalid_diff_line"
 
-    # diff_parser.py:274/283/287/292/297/303/305/310 — validate_diff_path
-    # umbrella for the eight sub-rules (empty, backslash, shell metachars,
-    # trojan source, Windows drive, absolute, .. traversal, .git internal).
-    # The sub-discrimination lives in the human-readable .args[0] message
+    # Raised by `diff_parser.validate_diff_path` — umbrella for the
+    # eight sub-rules (empty, backslash, shell metachars, trojan source,
+    # Windows drive, absolute, .. traversal, .git internal). The
+    # sub-discrimination lives in the human-readable .args[0] message
     # for audit-stream regex queries; the publish-routing decision treats
     # all sub-cases identically (DASHBOARD_ONLY). The message is NOT
     # serialized into PublishRoutingEvent payload to avoid leaking the
@@ -84,8 +90,8 @@ class CoordinateErrorKind(StrEnum):
     # audit-log read access.
     PATH_VALIDATION_FAILED = "path_validation_failed"
 
-    # spans.py:64/249/253 — caller passed negative byte_length / max_lines /
-    # max_chars to a coordinates helper. These are programmer-error
+    # Raised by `spans.*` helpers when the caller passed negative
+    # byte_length / max_lines / max_chars. These are programmer-error
     # preconditions, structurally different from runtime data-validation
     # kinds above. Distinct enum value so the publish-side branch can
     # treat them as "publisher bug, surface as DASHBOARD_ONLY +
