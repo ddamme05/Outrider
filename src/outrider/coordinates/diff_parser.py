@@ -122,6 +122,53 @@ def diff_line_to_scope(
     return min(candidates, key=lambda unit: unit.line_end - unit.line_start)
 
 
+def is_valid_import_string(value: str) -> str:
+    """Validate and NFC-normalize a dotted Python import string.
+
+    Raises ValueError on invalid input; returns the NFC-normalized value on
+    valid input. Single source of truth shared by `TraceCandidate.import_string`
+    field validator (raises directly) AND `resolve_candidate_paths` (catches +
+    returns []) per `DECISIONS.md#024` point 1 and `specs/2026-05-23-trace-node.md` M3.
+
+    NFC normalization runs first so the schema-time validator + the resolver +
+    the audit-shadow `validate_diff_path` all see the same canonical form.
+    Homoglyph identifiers (e.g., Cyrillic `а` U+0430 vs Latin `a` U+0061) pass
+    through unchanged — NFC is composition normalization, not transliteration —
+    but they pass through CONSISTENTLY, preventing hash divergence between the
+    raw input fed to `compute_candidate_id` and the NFC'd path that lands in
+    the audit log via `validate_diff_path`.
+
+    Rejection cases (each raises ValueError with a discriminating message):
+
+    - empty input
+    - any backslash or forward-slash (Python imports use `.` as separator)
+    - any shell metacharacter from the existing `_SHELL_METACHARS_RE` set
+    - leading dot, trailing dot, or empty interior part (e.g., `foo..bar`)
+    - any part that is not a valid Python identifier (e.g., `123abc`)
+    - any part that is a reserved Python keyword (e.g., `class`, `for`)
+    """
+    if not value:
+        raise ValueError("import_string must not be empty")
+    normalized = unicodedata.normalize("NFC", value)
+    if "\\" in normalized or "/" in normalized:
+        raise ValueError("import_string must not contain path separators (use `.`)")
+    if _SHELL_METACHARS_RE.search(normalized):
+        raise ValueError("import_string contains shell metacharacters")
+    parts = normalized.split(".")
+    if not all(parts):
+        raise ValueError(
+            "import_string has empty leading/trailing/interior part "
+            "(e.g., '.foo', 'foo.', 'foo..bar')"
+        )
+    bad_parts = [p for p in parts if not p.isidentifier() or keyword.iskeyword(p)]
+    if bad_parts:
+        raise ValueError(
+            f"import_string parts not valid Python identifiers "
+            f"(or are reserved keywords): {bad_parts!r}"
+        )
+    return normalized
+
+
 def resolve_candidate_paths(
     import_string: str,
     import_root: Path,
@@ -158,24 +205,18 @@ def resolve_candidate_paths(
     import strings (empty, leading/trailing dot, empty interior part, any
     rejected character, or any part that is not a valid Python identifier —
     e.g., numeric prefix `123abc`, a Python keyword like `class`).
+
+    Input-string validation delegates to `is_valid_import_string` (shared with
+    `TraceCandidate.import_string` field validator); validation failures map
+    to the empty-list return per this function's existing "treats as does-
+    not-exist" contract.
     """
-    if not import_string:
-        return []
-    if "\\" in import_string or "/" in import_string:
-        return []
-    if _SHELL_METACHARS_RE.search(import_string):
+    try:
+        normalized = is_valid_import_string(import_string)
+    except ValueError:
         return []
 
-    parts = import_string.split(".")
-    if not all(parts):
-        return []
-    # Each part must be a valid Python identifier (and not a reserved keyword).
-    # Dunders like `__init__`, `__pycache__` ARE valid identifiers and pass.
-    # Numeric prefixes (`123abc`), keywords (`class`, `for`), and other
-    # non-identifier strings are rejected — `ast_facts/` would never produce
-    # them, but we narrow the LLM-influenced trace surface defensively.
-    if not all(p.isidentifier() and not keyword.iskeyword(p) for p in parts):
-        return []
+    parts = normalized.split(".")
 
     # Two candidates: foo/bar.py and foo/bar/__init__.py
     base = PurePosixPath(*parts)

@@ -354,3 +354,180 @@ def test_import_root_with_trailing_separator_works(tmp_path: Path) -> None:
     result_a = resolve_candidate_paths("foo", tmp_path)
     result_b = resolve_candidate_paths("foo", Path(str(tmp_path) + "/"))
     assert result_a == result_b
+
+
+# ----------------------------------------------------------------------------
+# is_valid_import_string predicate — DECISIONS.md#024 point 1 +
+# specs/2026-05-23-trace-node.md M3 (NFC normalization)
+# ----------------------------------------------------------------------------
+#
+# These tests pin the predicate behavior INDEPENDENTLY of
+# `resolve_candidate_paths` because the predicate is also the shared source
+# of truth for `TraceCandidate.import_string` schema-validator (which raises
+# rather than returning []). Asymmetric semantics (raise vs return []) make
+# round-trip-only tests insufficient — pin the predicate's own contract.
+
+
+from outrider.coordinates import is_valid_import_string  # noqa: E402
+
+
+class TestIsValidImportString:
+    """Per `DECISIONS.md#024` point 1: predicate raises ValueError on invalid
+    input, returns NFC-normalized value on valid. Caller-side semantics
+    differ — `resolve_candidate_paths` catches+returns []; schema validators
+    let it propagate. The predicate itself raises in both worlds."""
+
+    # Happy path — admits valid forms; returns NFC-normalized value
+    def test_simple_dotted_form_returns_unchanged(self) -> None:
+        assert is_valid_import_string("foo.bar") == "foo.bar"
+
+    def test_single_part_returns_unchanged(self) -> None:
+        assert is_valid_import_string("foo") == "foo"
+
+    def test_deeply_nested_returns_unchanged(self) -> None:
+        assert is_valid_import_string("a.b.c.d.e") == "a.b.c.d.e"
+
+    def test_dunder_parts_admit(self) -> None:
+        """Dunders like `__init__` ARE valid Python identifiers and admit."""
+        assert is_valid_import_string("foo.__init__") == "foo.__init__"
+
+    def test_underscore_prefix_admits(self) -> None:
+        assert is_valid_import_string("_private.module") == "_private.module"
+
+    def test_digit_in_middle_admits(self) -> None:
+        """Identifier may contain digits after the first character."""
+        assert is_valid_import_string("foo2.bar3") == "foo2.bar3"
+
+    # NFC normalization — M3 / adversarial-modeler #1
+    def test_nfc_composition_normalizes_decomposed_unicode(self) -> None:
+        """Decomposed `é` (e + combining acute U+0065 U+0301) normalizes to
+        precomposed `é` (U+00E9). Returned value uses the composed form."""
+        decomposed = "café.bar"  # café.bar in NFD
+        precomposed = "café.bar"  # café.bar in NFC
+        result = is_valid_import_string(decomposed)
+        assert result == precomposed
+
+    def test_already_nfc_value_returned_unchanged(self) -> None:
+        """NFC normalization is idempotent — pre-normalized input passes through."""
+        precomposed = "café.bar"
+        assert is_valid_import_string(precomposed) == precomposed
+
+    def test_homoglyph_passes_through_consistently(self) -> None:
+        """Per M3: NFC is composition normalization, NOT transliteration.
+        Cyrillic `а` U+0430 is a valid Python identifier and stays Cyrillic.
+        The predicate's job is CONSISTENCY (same form in/out), not rejection."""
+        cyrillic_a = "а"  # Cyrillic small letter a
+        # Confirm Python identifier check admits Cyrillic (precondition; if
+        # this changes, the homoglyph-consistency story changes too)
+        assert cyrillic_a.isidentifier()
+        result = is_valid_import_string(f"foo.{cyrillic_a}bc")
+        assert result == f"foo.{cyrillic_a}bc"
+
+    # Rejections — each raises ValueError; message discriminates the reason
+    def test_empty_string_raises(self) -> None:
+        with pytest.raises(ValueError, match="must not be empty"):
+            is_valid_import_string("")
+
+    def test_backslash_raises(self) -> None:
+        with pytest.raises(ValueError, match="path separators"):
+            is_valid_import_string("foo\\bar")
+
+    def test_forward_slash_raises(self) -> None:
+        with pytest.raises(ValueError, match="path separators"):
+            is_valid_import_string("foo/bar")
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "foo;bar",
+            "foo&bar",
+            "foo|bar",
+            "foo`bar",
+            "foo$bar",
+            "foo(bar",
+            "foo>bar",
+            "foo*bar",
+            "foo?bar",
+            "foo\nbar",
+            "foo\x00bar",
+        ],
+    )
+    def test_shell_metacharacter_raises(self, value: str) -> None:
+        with pytest.raises(ValueError, match="shell metacharacters"):
+            is_valid_import_string(value)
+
+    def test_leading_dot_raises(self) -> None:
+        with pytest.raises(ValueError, match="empty leading/trailing/interior part"):
+            is_valid_import_string(".foo")
+
+    def test_trailing_dot_raises(self) -> None:
+        with pytest.raises(ValueError, match="empty leading/trailing/interior part"):
+            is_valid_import_string("foo.")
+
+    def test_consecutive_dots_raises(self) -> None:
+        with pytest.raises(ValueError, match="empty leading/trailing/interior part"):
+            is_valid_import_string("foo..bar")
+
+    def test_numeric_prefix_part_raises(self) -> None:
+        with pytest.raises(ValueError, match="not valid Python identifiers"):
+            is_valid_import_string("foo.123abc")
+
+    def test_python_keyword_part_raises(self) -> None:
+        with pytest.raises(ValueError, match="reserved keywords"):
+            is_valid_import_string("foo.class")
+
+    def test_keyword_in_first_part_raises(self) -> None:
+        with pytest.raises(ValueError, match="reserved keywords"):
+            is_valid_import_string("class.foo")
+
+    # Bad-parts reporting — message names every offender, not just the first
+    def test_error_message_names_all_bad_parts(self) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            is_valid_import_string("foo.123.class")
+        # Both bad parts surface in the message
+        assert "123" in str(exc_info.value)
+        assert "class" in str(exc_info.value)
+
+    # Round-trip with resolve_candidate_paths — every input rejected by the
+    # predicate produces [] from the resolver; every input admitted by the
+    # predicate produces a non-empty candidate list (when import_root exists)
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "",
+            ".foo",
+            "foo.",
+            "foo..bar",
+            "foo/bar",
+            "foo\\bar",
+            "foo;bar",
+            "foo.123abc",
+            "foo.class",
+        ],
+    )
+    def test_resolver_returns_empty_for_predicate_rejections(
+        self, bad_value: str, tmp_path: Path
+    ) -> None:
+        """Per the shared-predicate contract: resolver MUST return [] for every
+        string the predicate rejects (caller-side `try/except ValueError`)."""
+        # Sanity: predicate rejects
+        with pytest.raises(ValueError):
+            is_valid_import_string(bad_value)
+        # Resolver returns empty
+        assert resolve_candidate_paths(bad_value, tmp_path) == []
+
+    @pytest.mark.parametrize(
+        "good_value",
+        ["foo", "foo.bar", "a.b.c.d", "foo._private", "foo.__init__"],
+    )
+    def test_resolver_returns_candidates_for_predicate_admits(
+        self, good_value: str, tmp_path: Path
+    ) -> None:
+        """Per the shared-predicate contract: resolver MUST return non-empty
+        candidate list for every string the predicate admits (when import_root
+        is a real existing directory)."""
+        # Sanity: predicate admits (returns the normalized form)
+        normalized = is_valid_import_string(good_value)
+        assert normalized
+        # Resolver returns the two-candidate list
+        assert len(resolve_candidate_paths(good_value, tmp_path)) == 2
