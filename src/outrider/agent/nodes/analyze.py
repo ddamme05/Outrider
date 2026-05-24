@@ -288,6 +288,12 @@ async def analyze(
     n_proposals_rejected = 0
     n_responses_rejected = 0
     n_trace_candidates_emitted = 0
+    # Sharp-edges F1 fold (Group 1) introduced `n_trace_candidates_
+    # dropped_malformed` on `ParserCounters` + `AnalyzeCompletedEvent`,
+    # but the pass aggregate never accumulated it from `parser_result.
+    # counters` — the per-pass summary under-reported malformed
+    # trace-candidate drops. Wired here per CodeRabbit + Codex review.
+    n_trace_candidates_dropped_malformed = 0
     n_llm_calls = 0
     total_input_tokens = 0
     total_output_tokens = 0
@@ -352,6 +358,9 @@ async def analyze(
                 n_trace_candidates_emitted += (
                     file_outcome.parser_result.counters.n_trace_candidates_emitted
                 )
+                n_trace_candidates_dropped_malformed += (
+                    file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
+                )
                 admitted_findings.extend(file_outcome.parser_result.admitted_findings)
                 trace_candidates.extend(file_outcome.parser_result.trace_candidates)
 
@@ -395,6 +404,9 @@ async def analyze(
                 n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
                 n_trace_candidates_emitted += (
                     file_outcome.parser_result.counters.n_trace_candidates_emitted
+                )
+                n_trace_candidates_dropped_malformed += (
+                    file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
                 admitted_findings.extend(file_outcome.parser_result.admitted_findings)
                 trace_candidates.extend(file_outcome.parser_result.trace_candidates)
@@ -448,6 +460,7 @@ async def analyze(
             n_proposals_rejected=n_proposals_rejected,
             n_responses_rejected=n_responses_rejected,
             n_trace_candidates_emitted=n_trace_candidates_emitted,
+            n_trace_candidates_dropped_malformed=n_trace_candidates_dropped_malformed,
             total_input_tokens=total_input_tokens,
             total_cache_read_tokens=total_cache_read_tokens,
             total_cache_write_tokens=total_cache_write_tokens,
@@ -1080,11 +1093,20 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
-    # Include ALL scope units in the prompt. No diff intersection —
-    # trace decided the WHOLE file is relevant to the source finding,
-    # and analyze pass 1's job is to surface INFERRED findings tying
-    # the source finding's evidence to behavior elsewhere in this file.
-    included_scope_units = tuple(parse_result.scope_units)
+    # Include all scope units WITHOUT `has_error` from the prompt's
+    # deterministic-proof set. Pass-1 INFERRED admission cross-checks
+    # `trace_path` elements against the included scope-unit names
+    # (`evidence-tier-schema-enforced`); admitting a scope unit whose
+    # tree-sitter parse contains ERROR nodes would let the model claim
+    # structural proof against recovered/error-bearing AST — defeating
+    # the proof boundary. The unchanged-file `_process_one_file` has
+    # the same guard (it routes the whole file to degraded mode when
+    # has_error fires in changed regions); for trace-fetched files we
+    # do per-scope-unit filtering instead, since there are no "changed
+    # regions" to scope the degradation to. Per CodeRabbit + Codex F6.
+    included_scope_units = tuple(
+        su for su in parse_result.scope_units if not parse_result.has_error.get(su.unit_id, False)
+    )
     if not included_scope_units:
         return await _emit_skip(
             file_examination_sink=file_examination_sink,

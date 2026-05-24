@@ -28,7 +28,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v1"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v2"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -47,7 +47,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-VERSION: Final[str] = "analyze-v1"
+# Bumped 2026-05-24 (was "analyze-v1") because the prompt contract
+# changed substantially in the trace-node arc: pass 0 vs pass 1
+# admission semantics; new `render_post_trace` variant; pass-1 output
+# schema overrides the pass-0 enum / trace_path / field semantics
+# (`<observed|inferred|judged>` + non-null trace_path admitted).
+# Reusing v1 would conflate old/new prompt shapes in replay attribution.
+VERSION: Final[str] = "analyze-v2"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 

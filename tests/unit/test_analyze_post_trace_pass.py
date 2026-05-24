@@ -177,26 +177,62 @@ def _build_round_0(file_path: str = "src/foo.py") -> AnalysisRound:
     )
 
 
-async def test_pass_index_derives_from_analysis_rounds_state(
-    pytest_mock_provider: _MockLLMProvider,  # noqa: ARG001 — fixture stand-in
-) -> None:
-    """`pass_index` = `len(state.analysis_rounds)`. Pass 0 state has
-    empty rounds → pass_index 0. Pass 1 state has one round → pass_index 1.
-    Without this derivation, the round_id reducer would collide and
-    silently dedup the second pass (the bug Codex caught on round-N+1)."""
-    # Pass 0 state: empty analysis_rounds; analyze should iterate
-    # pr_context.changed_files (empty here → no iterations, no LLM call).
-    state_pass_0 = _build_seed_state(analysis_rounds=[], trace_fetched_files=[])
-    assert len(state_pass_0.analysis_rounds) == 0
+async def test_pass_index_derives_from_analysis_rounds_state() -> None:
+    """`pass_index` = `len(state.analysis_rounds)`. Without this
+    derivation, hardcoded pass_index=0 would make the round_id
+    reducer collide on the second analyze pass and silently dedup.
 
-    # Pass 1 state: one round merged. analyze should iterate
-    # trace_fetched_files (empty here → no iterations, no LLM call;
-    # the test pins the routing, not the LLM behavior).
+    Exercises analyze() with an empty-input pass-0 state (no
+    changed files, no trace_fetched_files) and pass-1 state (one
+    seed round, no fetched files). The AnalyzeCompletedEvent's
+    pass_index field is the load-bearing observable: it must be
+    derived from state, not hardcoded. Empty inputs keep the LLM
+    out of the picture so the test exercises ONLY the routing /
+    derivation logic.
+    """
+    provider = _MockLLMProvider(response_text=json.dumps({"findings": []}))
+    phase_sink = _RecordingPhaseSink()
+    file_examination_sink = _RecordingFileExaminationSink()
+    analyze_event_sink_0 = _RecordingAnalyzeEventSink()
+
+    # Pass 0: empty analysis_rounds + empty pr_context.changed_files
+    # → analyze iterates pr-files (zero) → emits AnalyzeCompletedEvent
+    # with pass_index=0.
+    state_pass_0 = _build_seed_state(analysis_rounds=[], trace_fetched_files=[])
+    await analyze(
+        state_pass_0,
+        provider=provider,  # type: ignore[arg-type]
+        analyze_model="claude-sonnet-4-6-20251015",
+        phase_event_sink=phase_sink,  # type: ignore[arg-type]
+        file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
+        analyze_event_sink=analyze_event_sink_0,  # type: ignore[arg-type]
+        import_path_resolver=_StubImportPathResolver(),  # type: ignore[arg-type]
+    )
+    assert len(analyze_event_sink_0.completed) == 1
+    assert analyze_event_sink_0.completed[0].pass_index == 0
+
+    # Pass 1: one round in state + empty trace_fetched_files →
+    # analyze iterates trace-fetched-files (zero) → emits
+    # AnalyzeCompletedEvent with pass_index=1.
+    analyze_event_sink_1 = _RecordingAnalyzeEventSink()
     state_pass_1 = _build_seed_state(
         analysis_rounds=[_build_round_0()],
         trace_fetched_files=[],
     )
-    assert len(state_pass_1.analysis_rounds) == 1
+    await analyze(
+        state_pass_1,
+        provider=provider,  # type: ignore[arg-type]
+        analyze_model="claude-sonnet-4-6-20251015",
+        phase_event_sink=phase_sink,  # type: ignore[arg-type]
+        file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
+        analyze_event_sink=analyze_event_sink_1,  # type: ignore[arg-type]
+        import_path_resolver=_StubImportPathResolver(),  # type: ignore[arg-type]
+    )
+    assert len(analyze_event_sink_1.completed) == 1
+    assert analyze_event_sink_1.completed[0].pass_index == 1
+
+    # No LLM call fired in either pass (both file lists were empty).
+    assert len(provider.calls) == 0
 
 
 async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> None:

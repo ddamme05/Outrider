@@ -97,12 +97,42 @@ def test_trace_candidate_import_string_rejects_python_keyword_part() -> None:
 
 
 def test_trace_candidate_import_string_nfc_normalizes() -> None:
-    """Per M3: schema field validator NFC-normalizes input. Decomposed Unicode
-    (`café` with combining acute) admits and the stored value is the
-    NFC-composed form."""
-    decomposed = "café.bar"  # NFD form
-    precomposed = "café.bar"  # NFC form
-    c = TraceCandidate(**_kwargs(import_string=decomposed))  # type: ignore[arg-type]
+    """Per M3: schema field validator NFC-normalizes input. Decomposed
+    Unicode (`café` with combining acute) admits and the stored value
+    is the NFC-composed form.
+
+    Constructed via `unicodedata.normalize` (not visually-identical
+    string literals — those compile to the SAME bytes in a UTF-8 source
+    file, defeating the test by making decomposed == precomposed at
+    the literal level). The pre-assert below pins that the two forms
+    actually DIFFER byte-wise before exercising the validator."""
+    import unicodedata
+
+    precomposed = "café.bar"
+    decomposed = unicodedata.normalize("NFD", precomposed)
+    # Sanity: the two forms must differ byte-wise; otherwise the test
+    # is vacuous (a literal-equality assertion masquerading as
+    # validator-behavior).
+    assert decomposed != precomposed
+    # The schema's field validator NFC-normalizes import_string BEFORE
+    # the cross-field `_enforce_candidate_id_matches_payload` validator
+    # runs, so candidate_id must be computed from the PRECOMPOSED form
+    # (what the validator will store). `_kwargs` precomputes from the
+    # supplied import_string, so we override candidate_id explicitly
+    # here.
+    source_proposal_hash = compute_identity_hash({"prop": 1})
+    reason = "auth middleware referenced by the finding"
+    canonical_id = compute_candidate_id(
+        source_proposal_hash=source_proposal_hash,
+        import_string=precomposed,
+        reason=reason,
+    )
+    c = TraceCandidate(
+        source_proposal_hash=source_proposal_hash,
+        reason=reason,
+        import_string=decomposed,
+        candidate_id=canonical_id,
+    )
     assert c.import_string == precomposed
 
 

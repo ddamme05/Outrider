@@ -1471,8 +1471,17 @@ def test_decomposed_unicode_import_string_uses_canonical_nfc_form() -> None:
     the NFC bytes the schema validator stores, and
     `_enforce_candidate_id_matches_payload` would crash.
     Per M3 / adversarial-modeler #1."""
-    decomposed = "café.bar"  # NFD: e + combining acute
-    precomposed = "café.bar"  # NFC: precomposed
+    # Construct via unicodedata.normalize — visually-identical string
+    # literals compile to the SAME bytes in a UTF-8 source file
+    # (whichever form the editor/save flow produced), defeating the
+    # NFC-vs-NFD distinction the test claims to exercise.
+    import unicodedata
+
+    precomposed = "café.bar"
+    decomposed = unicodedata.normalize("NFD", precomposed)
+    # Sanity: NFD must differ byte-wise from NFC (otherwise the
+    # canonicalization step is unobservable here).
+    assert decomposed != precomposed
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="judged",
