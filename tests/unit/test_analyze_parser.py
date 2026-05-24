@@ -228,6 +228,7 @@ def test_parser_counters_field_set() -> None:
         "n_proposals_rejected",
         "n_responses_rejected",
         "n_trace_candidates_emitted",
+        "n_trace_candidates_dropped_malformed",
     }
     assert fields == expected
 
@@ -1275,6 +1276,37 @@ def test_hostile_import_string_does_not_crash_parser() -> None:
     )
     assert len(result.admitted_findings) == 1  # parent admitted
     assert len(result.trace_candidates) == 0  # hostile candidate dropped
+    # Sharp-edges F1 audit-fold: the drop is counted, not silent.
+    assert result.counters.n_trace_candidates_dropped_malformed == 1
+
+
+def test_dropped_malformed_counter_increments_per_dropped_candidate() -> None:
+    """Sharp-edges F1 audit-fold: the n_trace_candidates_dropped_malformed
+    counter increments ONCE per dropped raw candidate, not per affected
+    proposal. Operators reading AnalyzeCompletedEvent.n_trace_candidates_
+    dropped_malformed should see aggregate drift across pass-level
+    candidate emissions, not a binary "any proposal had a drop" signal."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                # Three different rejection cases — all drop, all count
+                {"import_string_raw": "../../etc/passwd", "reason": "path"},
+                {"import_string_raw": "foo;rm -rf", "reason": "shell"},
+                {"import_string_raw": "foo.class", "reason": "keyword"},
+                # One valid one — admits, doesn't count toward drops
+                {"import_string_raw": "valid.module", "reason": "ok"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.trace_candidates) == 1  # only the valid one
+    assert result.counters.n_trace_candidates_emitted == 1
+    assert result.counters.n_trace_candidates_dropped_malformed == 3
 
 
 def test_admitted_finding_survives_hostile_sibling_candidate() -> None:

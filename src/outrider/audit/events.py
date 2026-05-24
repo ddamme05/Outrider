@@ -1547,6 +1547,20 @@ class AnalyzeCompletedEvent(AuditEventBase):
     indicates either prompt confusion or a model behavior worth tracking.
     Reviewers periodically suggest deduping here; that would erase the
     signal, hence the explicit contract."""
+    n_trace_candidates_dropped_malformed: int = Field(ge=0, default=0)
+    """Count of raw `trace_candidates` entries the parser DROPPED because
+    `coordinates.is_valid_import_string` rejected the `import_string_raw`
+    (sharp-edges F1 audit-fold per `specs/2026-05-23-trace-node.md` arc).
+    Per `DECISIONS.md#024` trace candidates are dotted Python import
+    strings; the parser silently drops malformed candidates (rather than
+    crashing the whole pass) to preserve the n_proposals_seen accounting
+    equation, but the count surfaces here so operators can distinguish
+    "model proposed no trace candidates" from "every proposal was
+    malformed" — drift in this metric over time signals prompt drift or
+    a model retraining that warrants prompt-template review.
+    Default=0 for backward compatibility with pre-fold AnalyzeCompletedEvent
+    payloads (none exist in production yet — analyze hasn't shipped — so
+    the default is a forward-compat hedge, not a backfill substitute)."""
     total_input_tokens: int = Field(ge=0)
     total_cache_read_tokens: int = Field(ge=0)
     """Sum of `LLMResponse.cache_read_tokens` across this pass's LLM calls.
