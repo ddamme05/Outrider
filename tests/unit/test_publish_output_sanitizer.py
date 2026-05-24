@@ -126,13 +126,29 @@ def test_render_fenced_block_language_info_string_sanitized() -> None:
     """Language info-string restricted to alphanum + `-_+`.
 
     An attacker controlling the language string can't inject newlines
-    or other characters to break out of the info-string position.
+    or other characters to break out of the info-string position. The
+    sanitizer strips `\\n` and backtick from the input, producing the
+    safe info-string `pythonbash` directly after the opening fence
+    marker.
     """
     block = render_fenced_block("x", language="python\n```bash")
+    # No closing-fence breakout (the canonical injection vector).
     assert "\n```bash" not in block
-    # Closing-fence breakout would land here if sanitization failed.
-    # The sanitized language should keep only the safe characters.
-    assert "pythonbash" in block or "python```bash" not in block
+    # Pin the EXACT shape of the opening fence: any leading newlines
+    # the renderer adds for block separation, then the fence marker +
+    # sanitized info-string with no breakout characters. Strip the
+    # leading newline(s) before splitting so the first content line is
+    # the fence-with-info-string, not a leading empty line.
+    first_line = block.lstrip("\n").splitlines()[0]
+    assert first_line.startswith("```"), f"opening fence shape regression: {first_line!r}"
+    # `[3:]` cuts the fence marker; what remains is the sanitized
+    # info-string. Equality (not substring) so a regression that
+    # accidentally re-admits `\n` or backtick chars surfaces here.
+    assert first_line[3:] == "pythonbash", (
+        f"info-string sanitization regression: {first_line[3:]!r} "
+        f"(expected 'pythonbash' — sanitizer should have stripped "
+        f"`\\n` and backtick)"
+    )
 
 
 def test_render_fenced_block_strips_control_codes_inside() -> None:
