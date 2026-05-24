@@ -81,6 +81,7 @@ from langgraph.graph.state import CompiledStateGraph
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.intake import intake
 from outrider.agent.nodes.publish import publish
+from outrider.agent.nodes.trace import trace
 from outrider.agent.nodes.triage import triage
 from outrider.agent.state import ReviewState
 from outrider.ast_facts.base import ImportPathResolver
@@ -89,6 +90,7 @@ from outrider.audit.sinks import (
     FileExaminationSink,
     PhaseEventSink,
     PublishEventSink,
+    TraceEventSink,
 )
 from outrider.github.publisher import GitHubPublisher
 from outrider.llm.base import LLMProvider
@@ -130,6 +132,7 @@ def build_graph(
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
     publish_event_sink: PublishEventSink,
+    trace_sink: TraceEventSink,
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
@@ -157,6 +160,8 @@ def build_graph(
         raise BuildGraphError("analyze_event_sink must not be None")
     if publish_event_sink is None:
         raise BuildGraphError("publish_event_sink must not be None")
+    if trace_sink is None:
+        raise BuildGraphError("trace_sink must not be None")
     if publisher is None:
         raise BuildGraphError("publisher must not be None")
     if import_path_resolver is None:
@@ -227,6 +232,13 @@ def build_graph(
             f"`query_prior_publish_event` (read-side method added per FUP-064); "
             f"see PEP 544 runtime-checkable semantics)"
         )
+    if not isinstance(trace_sink, TraceEventSink):
+        raise BuildGraphError(
+            f"trace_sink does not satisfy TraceEventSink Protocol "
+            f"(passed type: {type(trace_sink).__name__}; "
+            f"missing `emit_trace_decision` member; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
     if not isinstance(publisher, GitHubPublisher):
         raise BuildGraphError(
             f"publisher does not satisfy GitHubPublisher Protocol "
@@ -273,11 +285,20 @@ def build_graph(
         phase_event_sink=phase_event_sink,
         github_factory=github_factory,
     )
+    trace_callable = functools.partial(
+        trace,
+        provider=provider,
+        trace_model=model_config.trace_model,
+        phase_event_sink=phase_event_sink,
+        trace_sink=trace_sink,
+        github_factory=github_factory,
+    )
 
     builder = StateGraph(ReviewState)
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
     builder.add_node("analyze", analyze_callable)
+    builder.add_node("trace", trace_callable)
     builder.add_node("publish", publish_callable)
     builder.add_edge(START, "intake")
     # NO `builder.add_edge("intake", "triage")` here, and NO
@@ -286,14 +307,41 @@ def build_graph(
     # would fire alongside the Command and send to BOTH destinations.
     # See module docstring "Routing" section for the full rationale.
     builder.add_edge("triage", "analyze")
-    # V1 wires `analyze → publish → END`. The `analyze ⇄ trace` loop
-    # (V1.5) and the `synthesize → hitl → publish` chain (later spec)
-    # will replace these edges when those nodes land. Per the publish-
-    # node spec: synthesize is not shipped, so V1 publish runs straight
-    # off analyze with `review_status="COMMENT"` as a constant.
-    builder.add_edge("analyze", "publish")
+    # Adaptive analyze ⇄ trace loop per `specs/2026-05-23-trace-node.md`.
+    # After analyze pass 1: route to trace iff there are accumulated
+    # trace candidates AND we're on round 1. After trace: route back to
+    # analyze iff trace's content fetches produced new files to examine
+    # AND we're below the depth-2 round limit. Otherwise → publish.
+    builder.add_conditional_edges("analyze", _analyze_router)
+    builder.add_conditional_edges("trace", _trace_router)
     builder.add_edge("publish", END)
     return builder.compile()
+
+
+def _analyze_router(state: ReviewState) -> str:
+    """Route analyze's output: trace if pass 1 produced candidates, else publish.
+
+    Per the trace-node spec: after analyze pass 1 (i.e.,
+    `len(state.analysis_rounds) == 1`), route to trace to consume the
+    accumulated trace_candidates. After analyze pass 2 (depth-2 limit),
+    route straight to publish — no further trace work allowed.
+    """
+    if len(state.analysis_rounds) == 1 and state.trace_candidates:
+        return "trace"
+    return "publish"
+
+
+def _trace_router(state: ReviewState) -> str:
+    """Route trace's output: analyze if new files fetched, else publish.
+
+    Per the trace-node spec: route back to analyze iff trace fetched at
+    least one new file AND we're still below the round limit. Otherwise
+    proceed to publish. The depth bound is enforced HERE because trace
+    runs after analyze pass N, so re-entering analyze produces round N+1.
+    """
+    if len(state.trace_fetched_files) > 0 and len(state.analysis_rounds) < 2:
+        return "analyze"
+    return "publish"
 
 
 __all__ = [

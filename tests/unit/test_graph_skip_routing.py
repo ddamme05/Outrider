@@ -105,6 +105,11 @@ class _StubPublishEventSink:
         return None
 
 
+class _StubTraceEventSink:
+    async def emit_trace_decision(self, event: Any) -> Any:
+        return event
+
+
 class _StubGitHubPublisher:
     async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002
         msg = "introspection test never POSTs to GitHub"
@@ -118,6 +123,7 @@ class _StubGitHubPublisher:
 class _StubModelConfig:
     triage_model = "stub-model"
     analyze_model = "stub-analyze-model"
+    trace_model = "stub-trace-model"
 
 
 def _stub_db_factory() -> Any:
@@ -145,6 +151,7 @@ def compiled_graph() -> Any:
         model_config=_StubModelConfig(),  # type: ignore[arg-type]
         phase_event_sink=_StubPhaseSink(),
         publish_event_sink=_StubPublishEventSink(),
+        trace_sink=_StubTraceEventSink(),
         publisher=_StubGitHubPublisher(),
         file_examination_sink=_StubFileSink(),
         analyze_event_sink=_StubAnalyzeEventSink(),

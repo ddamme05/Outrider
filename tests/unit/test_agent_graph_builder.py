@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         PublishEvent,
         PublishRoutingEvent,
         ReviewPhaseEvent,
+        TraceDecisionEvent,
     )
     from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
@@ -122,6 +123,14 @@ class _StubPublishEventSink:
         return None
 
 
+class _StubTraceEventSink:
+    """Satisfies TraceEventSink Protocol structurally (1 emit method
+    returning the canonical persisted event per M7 b)."""
+
+    async def emit_trace_decision(self, event: TraceDecisionEvent) -> TraceDecisionEvent:
+        return event
+
+
 class _StubGitHubPublisher:
     """Satisfies GitHubPublisher Protocol structurally (has create_review +
     find_existing_review_on_head_sha)."""
@@ -181,6 +190,7 @@ def _valid_args() -> dict[str, Any]:
         "file_examination_sink": _StubFileExaminationSink(),
         "analyze_event_sink": _StubAnalyzeEventSink(),
         "publish_event_sink": _StubPublishEventSink(),
+        "trace_sink": _StubTraceEventSink(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),

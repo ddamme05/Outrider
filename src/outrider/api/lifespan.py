@@ -446,6 +446,7 @@ def build_lifespan(
                 file_examination_sink=persister,
                 analyze_event_sink=persister,
                 publish_event_sink=persister,
+                trace_sink=persister,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,
