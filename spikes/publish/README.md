@@ -40,11 +40,12 @@ uv run python -m spikes.publish.smoke_publish --apply --pr 2
 
 Real `GitHubKitPublisher` posts to the allowlisted smoke-test repo.
 Real `AuditPersister` writes audit rows to the postgres-test container.
-Second invocation with the same review_id MUST hit the FUP-064
-intra-Outrider idempotency path (PublishResult.skipped, no second POST).
-Audit-row count verification is currently deferred (see the harness's
-pillar-3 `[SKIP]` note); the "PublishEvent row count unchanged"
-property is true by construction but is not asserted live.
+The harness queries `audit_events` after the first invoke and asserts
+one row each of `publish_routing`, `publish_eligibility`,
+`publish_attempt`, and `publish` landed for the harness's `review_id`
+(pillar 3 — closes FUP-070). Second invocation with the same review_id
+MUST hit the FUP-064 intra-Outrider idempotency path
+(`PublishResult.idempotently_skipped`, no second POST).
 
 Use this to:
 - Validate before opening a PR for the publish-node arc.

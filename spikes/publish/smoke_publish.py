@@ -13,23 +13,21 @@ Two modes:
   `GitHubKitPublisher` + real `AuditPersister`. Posts a single review
   comment to a hard-allowlisted PR on `ddamme05/outrider-smoke-test`.
   Asserts pillar 1 (`PublishResult.success` shape) + pillar 2 (GitHub
-  re-query via body-marker matcher returns the just-posted review).
-  Pillar 3 (audit-row count + payload verification) is currently
-  `[SKIP]` — `AuditPersister.emit_*` calls completing without raising
-  is the V1 signal; row-count / payload-shape verification against
-  `audit_events` is deferred to FUP-070. Then re-invokes publish() with
-  the same `review_id` to assert the intra-Outrider idempotency path
-  returns `PublishResult.idempotently_skipped` and NO duplicate comment
-  posts.
+  re-query via body-marker matcher returns the just-posted review) +
+  pillar 3 (audit-row counts: queries `audit_events` for the harness's
+  `review_id` and asserts one row each of `publish_routing`,
+  `publish_eligibility`, `publish_attempt`, `publish` landed — closes
+  FUP-070). Then re-invokes publish() with the same `review_id` to
+  assert the intra-Outrider idempotency path returns
+  `PublishResult.idempotently_skipped` and NO duplicate comment posts.
 
 This harness is the empirical validation of the publish path the unit
-suite (1963 tests, stub publisher) cannot give: it proves githubkit
-actually accepts our request shape, the body marker round-trips through
-`GET /pulls/{n}/reviews`, the `AuditPersister.emit_*` calls do not
-raise against real Postgres, and the FUP-064 intra-Outrider idempotency
-check actually fires on a re-run. It does NOT prove that audit-event
-rows landed with the expected per-event-type counts or payload content
-(FUP-070).
+suite (stub publisher) cannot give: it proves githubkit actually
+accepts our request shape, the body marker round-trips through
+`GET /pulls/{n}/reviews`, the four publish-event types actually land
+in `audit_events` against real Postgres with the expected per-type
+counts, and the FUP-064 intra-Outrider idempotency check actually
+fires on a re-run.
 
 Guard rails (per the multi-lens design audit):
 
@@ -1001,13 +999,34 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
         )
         ok_github = existing == first_result.github_review_id
 
-        # Pillar 3 (audit-row counts) is DEFERRED to a future extension
-        # because querying `audit_events` requires a separate
-        # AsyncSession scope; the current harness only proves the
-        # persister did not raise during emit (which Pillar 1's
-        # success-outcome implicitly carries). Renamed [SKIP] so the
-        # operator isn't misled into thinking we actually checked the
-        # row count.
+        # Pillar 3 (audit-row counts): query `audit_events` for the
+        # harness's `review_id` and verify the expected four event-type
+        # rows landed (one PublishRoutingEvent + one PublishEligibilityEvent
+        # + one PublishAttemptEvent(SUCCESS) + one PublishEvent for the
+        # first invocation). Closes FUP-070 — "persister did not raise"
+        # is weaker than "rows present with the right shape," and the
+        # smoke harness's whole purpose is to prove the latter.
+        from sqlalchemy import func, select  # noqa: PLC0415
+
+        from outrider.db.models.audit_events import AuditEvent as AuditEventRow  # noqa: PLC0415
+
+        async with engine.connect() as conn:
+            audit_counts_result = await conn.execute(
+                select(AuditEventRow.event_type, func.count())
+                .where(AuditEventRow.review_id == review_id)
+                .group_by(AuditEventRow.event_type)
+            )
+            audit_counts = dict(audit_counts_result.all())
+        # Expected: one row each for the four publish event types
+        # (with one finding in the synthetic fixture, both routing and
+        # eligibility produce exactly one row each).
+        expected_counts = {
+            "publish_routing": 1,
+            "publish_eligibility": 1,
+            "publish_attempt": 1,
+            "publish": 1,
+        }
+        ok_audit = audit_counts == expected_counts
 
         print(
             "\n  [OK]   pillar 1: result shape"
@@ -1019,8 +1038,8 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
             f"(body_marker found: {existing})"
         )
         print(
-            "  [SKIP] pillar 3: audit-row count "
-            "(deferred — persister did not raise; no row-count verification yet)"
+            f"  [{'OK' if ok_audit else 'FAIL':4s}] pillar 3: audit-row counts "
+            f"(expected {expected_counts}, got {audit_counts})"
         )
 
         # Second invoke — must hit intra-Outrider idempotency.
@@ -1040,8 +1059,10 @@ async def _run_live_mode(args: argparse.Namespace) -> int:
             f"(expected outcome='idempotently_skipped'; got {second_result.outcome!r})"
         )
 
-        # Pillar 3 (audit) is [SKIP] not [FAIL] — exclude from all_ok.
-        all_ok = ok_result and ok_github and ok_idem
+        # All four pillars contribute to the live-mode verdict (Pillar 3
+        # was [SKIP] under FUP-070 deferral; now closed with a real
+        # `audit_events` SELECT query above).
+        all_ok = ok_result and ok_github and ok_audit and ok_idem
         print()
         print("=== live mode result:", "PASS" if all_ok else "FAIL", "===")
         print(f"  cleanup_manifest: {manifest_path}")
