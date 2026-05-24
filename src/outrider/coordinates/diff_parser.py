@@ -154,6 +154,18 @@ def is_valid_import_string(value: str) -> str:
         raise ValueError("import_string must not contain path separators (use `.`)")
     if _SHELL_METACHARS_RE.search(normalized):
         raise ValueError("import_string contains shell metacharacters")
+    # CVE-2021-42574 ("Trojan Source") — bidi-override / zero-width chars
+    # honor the audit-shadow promise with `validate_diff_path`. U+200D
+    # (ZWJ) is `Other_ID_Continue` in Unicode 16 so it passes
+    # `str.isidentifier()` — without this gate, an attacker-controlled
+    # candidate could read as `foo.bar` in audit logs while resolving
+    # to a different module file. Aligns with `validate_diff_path`'s
+    # `_TROJAN_SOURCE_CHARS_RE` rejection at the diff-side surface.
+    if _TROJAN_SOURCE_CHARS_RE.search(normalized):
+        raise ValueError(
+            "import_string contains bidi-override or invisible-format characters "
+            "(CVE-2021-42574 Trojan Source defense)"
+        )
     parts = normalized.split(".")
     if not all(parts):
         raise ValueError(

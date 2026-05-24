@@ -423,6 +423,81 @@ class TestIsValidImportString:
         result = is_valid_import_string(f"foo.{cyrillic_a}bc")
         assert result == f"foo.{cyrillic_a}bc"
 
+    def test_homoglyph_produces_distinct_candidate_id(self) -> None:
+        """Sharp-edges F4: Latin `a` vs Cyrillic `а` produce DISTINCT
+        `compute_candidate_id` outputs. Pins that future
+        transliteration/case-folding (if any caller adds one) would
+        loudly fail this test rather than silently collapse the two
+        IDs."""
+        from outrider.policy.canonical import compute_candidate_id
+
+        latin = is_valid_import_string("foo.abc")  # Latin a-b-c
+        cyrillic = is_valid_import_string("foo.аbc")  # Cyrillic а, Latin b-c
+        # Sanity precondition: the two strings differ at the byte level
+        assert latin != cyrillic
+        # Sanity precondition: both produced canonical (NFC) forms
+        assert latin == "foo.abc"
+        # candidate_id derivations must differ — otherwise homoglyph
+        # candidates would collapse on the dedup-by-candidate_id reducer
+        id_latin = compute_candidate_id(
+            source_proposal_hash="a" * 64, import_string=latin, reason="r"
+        )
+        id_cyrillic = compute_candidate_id(
+            source_proposal_hash="a" * 64, import_string=cyrillic, reason="r"
+        )
+        assert id_latin != id_cyrillic
+
+    # Trojan-Source defense — sharp-edges F3 + CVE-2021-42574
+    # `validate_diff_path` rejects bidi-override / invisible-format chars.
+    # `is_valid_import_string` honors the same defense per the audit-shadow
+    # promise — without it, U+200D (ZWJ, `Other_ID_Continue` in Unicode 16)
+    # would pass `str.isidentifier()` and embed in an import string that
+    # displays differently from the bytes operators see.
+
+    @pytest.mark.parametrize(
+        "trojan_codepoint",
+        [
+            "​",  # Zero Width Space
+            "‎",  # LTR Mark
+            "‏",  # RTL Mark
+            "‪",  # LRE
+            "‫",  # RLE
+            "‬",  # PDF
+            "‭",  # LRO
+            "‮",  # RLO (CVE-2021-42574 canonical)
+            "⁦",  # LRI
+            "⁧",  # RLI
+            "⁨",  # FSI
+            "⁩",  # PDI
+            "﻿",  # BOM / ZWNBSP
+        ],
+    )
+    def test_trojan_source_codepoints_rejected(self, trojan_codepoint: str) -> None:
+        """Every codepoint in `_TROJAN_SOURCE_CHARS_RE` is rejected by
+        the predicate, matching `validate_diff_path`'s audit-shadow rule.
+        Construct `foo<codepoint>.bar` so the codepoint embeds inside an
+        identifier (otherwise some codepoints would fail `isidentifier()`
+        independently and the rejection path would be ambiguous)."""
+        value = f"foo{trojan_codepoint}bar.baz"
+        with pytest.raises(ValueError, match="bidi-override or invisible-format characters"):
+            is_valid_import_string(value)
+
+    def test_zwj_and_zwnj_deliberately_admitted(self) -> None:
+        """U+200C (ZWNJ) and U+200D (ZWJ) are DELIBERATELY excluded from
+        `_TROJAN_SOURCE_CHARS_RE` (see `diff_parser.py:51-56` rationale:
+        legitimate use in Persian/Arabic word-joining + Hindi/Devanagari
+        conjuncts + emoji ZWJ sequences). They ARE `Other_ID_Continue` in
+        Unicode 16 so `str.isidentifier()` admits them, AND the predicate
+        admits them by design — `validate_diff_path` makes the same
+        trade-off. Rejecting them would block legitimate non-Latin-script
+        identifier contributions, which the project deliberately accepts
+        instead of the marginal homoglyph-attack risk."""
+        # ZWJ-embedded identifier passes (precondition)
+        assert "foo‍bar".isidentifier()
+        # Predicate ADMITS (this is the documented trade-off)
+        result = is_valid_import_string("foo‍bar.baz")
+        assert result == "foo‍bar.baz"
+
     # Rejections — each raises ValueError; message discriminates the reason
     def test_empty_string_raises(self) -> None:
         with pytest.raises(ValueError, match="must not be empty"):
