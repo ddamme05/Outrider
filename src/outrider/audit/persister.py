@@ -920,6 +920,16 @@ _TRACE_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
     {"source_finding_id", "target_file", "resolution_status", "is_eval"}
 )
 
+# Registry shape so the extension surface is obvious: adding a second
+# natural-key event type is a single mapping entry (plus a partial unique
+# index + an `emit_*` method). The MappingProxyType wrapper blocks
+# post-import mutation — callers cannot widen the registry by
+# `_IDENTITY_SUBSETS["x"] = frozenset()` and silently admit a wrong-mode
+# write.
+_IDENTITY_SUBSETS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {"trace_decision": _TRACE_DECISION_IDENTITY_SUBSET}
+)
+
 
 def _payload_identity_subset(event_type: str) -> frozenset[str]:
     """Identity-subset field names for natural-key idempotency comparison.
@@ -958,13 +968,15 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
     on unknown event_type to surface the routing bug at the persister
     boundary rather than silently admitting a wrong-mode write.
     """
-    if event_type == "trace_decision":
-        return _TRACE_DECISION_IDENTITY_SUBSET
-    raise ValueError(
-        f"_payload_identity_subset: unsupported event_type={event_type!r}; "
-        "natural-key idempotency mode is only defined for 'trace_decision' "
-        "in V1 (per DECISIONS.md#026 first-instance scope)."
-    )
+    try:
+        return _IDENTITY_SUBSETS[event_type]
+    except KeyError:
+        raise ValueError(
+            f"_payload_identity_subset: unsupported event_type={event_type!r}; "
+            f"natural-key idempotency mode is only defined for "
+            f"{sorted(_IDENTITY_SUBSETS)} in V1 (per DECISIONS.md#026 "
+            "first-instance scope)."
+        ) from None
 
 
 def _serialize_event_payload(
@@ -1586,11 +1598,26 @@ class AuditPersister:
             detected at least one field divergence.
         """
         payload = _serialize_event_payload(event)
+        # SELECT predicate uses `.astext == ...` so the column reference
+        # compiles to `payload->>'source_finding_id'`, matching the partial
+        # unique index expression (db/migrations/.../8f2a4c1e7b3d). Drift
+        # here — switching to `payload["...source_finding_id"] == "..."`
+        # (which compiles to `payload->'key' = '...'::jsonb`) — would NOT
+        # match the index expression and the planner would fall through
+        # to a seq scan.
         natural_key_select_predicate = (
             (AuditEventRow.review_id == event.review_id)
             & (AuditEventRow.event_type == "trace_decision")
             & (AuditEventRow.payload["source_finding_id"].astext == str(event.source_finding_id))
         )
+
+        # Concurrent emits with identical natural-keys serialize via PG's
+        # unique-index conflict resolution: one transaction wins INSERT;
+        # the other gets `inserted_event_id=None` and follows the
+        # conflict-path. V1 is single-threaded per review, but V1.5
+        # parallel-analyze + webhook redispatch exercise this race
+        # window — `session.begin()` + `on_conflict_do_nothing` is the
+        # right shape.
 
         async with self._session_factory() as session, session.begin():
             insert_stmt = (
@@ -1637,6 +1664,14 @@ class AuditPersister:
                 )
             existing_event_id, existing_payload = existing_row
 
+            # is_eval is mirrored in both the row column (`audit_events.is_eval`)
+            # AND the JSONB payload (carried by AuditEventBase serialization).
+            # Comparison reads from `payload` only — single source for all
+            # identity-subset reads keeps the loop uniform. The two surfaces
+            # can only diverge if `_serialize_event_payload` drops `is_eval`
+            # from the payload (it doesn't — `_EXCLUDE_FROM_PAYLOAD` is just
+            # `{"sequence_number"}`) or via manual row mutation (blocked by
+            # the append-only trigger).
             mismatched = tuple(
                 sorted(
                     field

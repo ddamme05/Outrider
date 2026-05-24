@@ -209,7 +209,13 @@ async def test_conflict_path_raises_on_target_file_divergence(
     assert exc.incoming_event_id == diverging.event_id
     assert exc.review_id == persister_setup.review_id
     assert exc.source_finding_id == source_finding_id
-    assert "target_file" in exc.mismatched_fields
+    # Exact-equality on the contract: the helper sorts identity-subset
+    # divergences into a tuple before raising. A target_file-only
+    # divergence MUST surface as exactly ("target_file",) — a wider
+    # tuple would mean the helper compared an extra field by accident
+    # (membership-only assertion would mask that bug per the
+    # vacuous-pass test anti-pattern in memory).
+    assert exc.mismatched_fields == ("target_file",)
 
     # Still exactly one row — conflict short-circuited the INSERT.
     count = await _count_trace_decision_rows(
@@ -245,8 +251,12 @@ async def test_conflict_path_raises_on_resolution_status_divergence(
     with pytest.raises(AuditPersisterNaturalKeyConflict) as exc_info:
         await persister_setup.persister.emit_trace_decision(diverging)
 
-    assert "resolution_status" in exc_info.value.mismatched_fields
-    assert "target_file" in exc_info.value.mismatched_fields
+    # Sorted tuple per the helper's `sorted(...)` discipline. Exact-
+    # equality pins the cross-field validator behavior:
+    # `resolution_status='unresolved'` forces `target_file=None`, so
+    # the diverging event has BOTH fields different from the persisted
+    # `resolved`/`src/middleware/auth.py` original.
+    assert exc_info.value.mismatched_fields == ("resolution_status", "target_file")
 
 
 async def test_conflict_path_raises_on_is_eval_divergence(
@@ -271,7 +281,9 @@ async def test_conflict_path_raises_on_is_eval_divergence(
     with pytest.raises(AuditPersisterNaturalKeyConflict) as exc_info:
         await persister_setup.persister.emit_trace_decision(diverging)
 
-    assert "is_eval" in exc_info.value.mismatched_fields
+    # is_eval-only divergence (all other identity-subset fields match);
+    # exact-equality pins the contract.
+    assert exc_info.value.mismatched_fields == ("is_eval",)
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +324,46 @@ async def test_finding_event_with_same_natural_key_does_not_collide(
             )
         )
         # No IntegrityError raised — partial index scope held.
+
+
+async def test_emit_trace_decision_succeeds_after_foreign_event_with_same_natural_key(
+    persister_setup: PersisterTestSetup,
+) -> None:
+    """Reverse of the preceding test: a foreign-event row with the same
+    `(review_id, payload->>'source_finding_id')` tuple already exists
+    when `emit_trace_decision` fires. The partial-index WHERE excludes
+    the foreign row, so the trace insert should take the INSERT path
+    (NOT the no-op path) and return the incoming event. Pins the
+    arbiter-binding semantics in the more dangerous direction (foreign
+    row pre-existing — drift in `index_where` would cause the trace
+    insert to mistakenly conflict against the foreign row)."""
+    source_finding_id = uuid4()
+
+    # Insert the foreign-mode row FIRST.
+    async with persister_setup.engine.begin() as conn:
+        metadata = sa.MetaData()
+        await conn.run_sync(lambda sync_conn: metadata.reflect(sync_conn, only=["audit_events"]))
+        audit_events_table = metadata.tables["audit_events"]
+        await conn.execute(
+            audit_events_table.insert().values(
+                event_id=uuid4(),
+                review_id=persister_setup.review_id,
+                event_type="finding",
+                timestamp=datetime.now(UTC),
+                sequence_number=42,
+                is_eval=False,
+                payload={"source_finding_id": str(source_finding_id), "kind": "other"},
+            )
+        )
+
+    # Now emit a TraceDecisionEvent with the SAME natural-key.
+    # Insert path: returns the incoming event (not a conflict).
+    trace_event = _build_trace_decision_event(persister_setup.review_id, source_finding_id)
+    returned = await persister_setup.persister.emit_trace_decision(trace_event)
+    assert returned.event_id == trace_event.event_id  # insert-path winner
+
+    # Exactly one trace_decision row exists for this natural-key.
+    count = await _count_trace_decision_rows(
+        persister_setup, persister_setup.review_id, source_finding_id
+    )
+    assert count == 1
