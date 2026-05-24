@@ -336,15 +336,23 @@ def _analyze_router(state: ReviewState) -> str:
 
 
 def _trace_router(state: ReviewState) -> str:
-    """Route trace's output: analyze if new files fetched, else publish.
+    """Route trace's output: analyze if NEW files fetched this pass, else publish.
 
     Per the trace-node spec: route back to analyze iff trace fetched at
-    least one new file AND we're still below `MAX_ANALYSIS_ROUNDS`
-    (depth-2 ceiling). Otherwise proceed to publish. The depth bound is
-    enforced HERE because trace runs after analyze pass N, so re-entering
-    analyze produces round N+1.
+    least one new file IN THE MOST RECENT trace() CALL AND we're still
+    below `MAX_ANALYSIS_ROUNDS` (depth-2 ceiling). Otherwise proceed to
+    publish. The depth bound is enforced HERE because trace runs after
+    analyze pass N, so re-entering analyze produces round N+1.
+
+    Reads `state.last_trace_pass_fetched_count` (the per-invocation
+    delta trace() writes on every call), NOT the cumulative
+    `len(state.trace_fetched_files)`. The cumulative check would route
+    to analyze even when the latest trace() call yielded nothing new
+    (replay path: cumulative list rehydrates non-empty from checkpoint
+    even when the just-run trace() returned no new fetches). Per
+    CodeRabbit R1.
     """
-    if len(state.trace_fetched_files) > 0 and len(state.analysis_rounds) < MAX_ANALYSIS_ROUNDS:
+    if state.last_trace_pass_fetched_count > 0 and len(state.analysis_rounds) < MAX_ANALYSIS_ROUNDS:
         return "analyze"
     return "publish"
 

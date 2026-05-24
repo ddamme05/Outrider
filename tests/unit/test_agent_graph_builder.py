@@ -259,6 +259,16 @@ def test_build_graph_rejects_publish_event_sink_none() -> None:
         build_graph(**args)
 
 
+def test_build_graph_rejects_trace_sink_none() -> None:
+    """`trace_sink` parity with the other required sinks — None must
+    raise BuildGraphError, not silently propagate a NoneType down to
+    the first `await trace_sink.emit_trace_decision(...)` call."""
+    args = _valid_args()
+    args["trace_sink"] = None
+    with pytest.raises(BuildGraphError, match="trace_sink must not be None"):
+        build_graph(**args)
+
+
 def test_build_graph_rejects_publisher_none() -> None:
     args = _valid_args()
     args["publisher"] = None
@@ -377,6 +387,20 @@ def test_build_graph_rejects_publish_event_sink_missing_member() -> None:
     with pytest.raises(
         BuildGraphError,
         match="publish_event_sink does not satisfy PublishEventSink",
+    ):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_trace_sink_missing_member() -> None:
+    """`isinstance(sink, TraceEventSink)` fails on objects lacking
+    `emit_trace_decision`. PEP 544 member-presence semantics; parity
+    with `publish_event_sink_missing_member` so trace_sink's structural
+    guard isn't silently undone by a future refactor."""
+    args = _valid_args()
+    args["trace_sink"] = object()
+    with pytest.raises(
+        BuildGraphError,
+        match="trace_sink does not satisfy TraceEventSink",
     ):
         build_graph(**args)
 

@@ -362,7 +362,12 @@ async def analyze(
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
                 admitted_findings.extend(file_outcome.parser_result.admitted_findings)
-                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+                trace_candidates.extend(
+                    _filter_to_admitted_proposals(
+                        candidates=file_outcome.parser_result.trace_candidates,
+                        admitted_findings=file_outcome.parser_result.admitted_findings,
+                    )
+                )
 
             total_input_tokens += file_outcome.input_tokens
             total_output_tokens += file_outcome.output_tokens
@@ -379,9 +384,33 @@ async def analyze(
         # Pass 1+ trace-fetched-file iteration. Trace resolved these
         # files; analyze examines the whole content (no diff intersection)
         # and admits INFERRED proposals citing trace_path.
+        #
+        # Build `source_findings_by_id` once per pass — the post-trace
+        # prompt names the originating finding's title/description/evidence
+        # so the model can connect the trace-fetched file back to the
+        # source finding (per CodeRabbit R4 — `source_finding_id` alone
+        # is opaque). The lookup walks ALL prior rounds' findings;
+        # `TraceFetchedFile.source_finding_id` always references an
+        # admitted finding (trace's contract — rejected-proposal
+        # candidates filter out at the analyze→state boundary per R3),
+        # so `.get(...)` returning None is a programmer error.
+        source_findings_by_id: dict[UUID, ReviewFinding] = {
+            f.finding_id: f for r in state.analysis_rounds for f in r.findings
+        }
         for fetched_file in state.trace_fetched_files:
+            source_finding = source_findings_by_id.get(fetched_file.source_finding_id)
+            if source_finding is None:
+                raise RuntimeError(
+                    f"analyze pass {pass_index}: TraceFetchedFile "
+                    f"source_finding_id={fetched_file.source_finding_id} "
+                    f"does not appear in state.analysis_rounds. Trace's "
+                    f"emission contract is broken (rejected-proposal "
+                    f"candidates should not reach trace via "
+                    f"state.trace_candidates — see _filter_to_admitted_proposals)."
+                )
             file_outcome = await _process_one_trace_fetched_file(
                 fetched_file=fetched_file,
+                source_finding=source_finding,
                 review_id=state.review_id,
                 installation_id=state.pr_context.installation_id,
                 is_eval=state.is_eval,
@@ -409,7 +438,12 @@ async def analyze(
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
                 admitted_findings.extend(file_outcome.parser_result.admitted_findings)
-                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+                trace_candidates.extend(
+                    _filter_to_admitted_proposals(
+                        candidates=file_outcome.parser_result.trace_candidates,
+                        admitted_findings=file_outcome.parser_result.admitted_findings,
+                    )
+                )
 
             total_input_tokens += file_outcome.input_tokens
             total_output_tokens += file_outcome.output_tokens
@@ -560,6 +594,31 @@ def _intersect_changed_scope_units(
         included.append(su)
         hunks.append(clipped)
     return tuple(included), tuple(hunks)
+
+
+def _filter_to_admitted_proposals(
+    *,
+    candidates: tuple[TraceCandidate, ...],
+    admitted_findings: tuple[ReviewFinding, ...],
+) -> tuple[TraceCandidate, ...]:
+    """Drop trace candidates whose `source_proposal_hash` doesn't match
+    an admitted finding in the same file outcome.
+
+    The parser preserves trace_candidates from BOTH admitted AND
+    proposal-level-rejected raw proposals (per the parser-contract test
+    `test_step10_trace_candidates_collected_from_rejected_proposal` —
+    rejected proposals may carry useful cross-file signal). But trace
+    requires `source_proposal_hash` to join to an admitted finding via
+    `_build_proposal_hash_join` (which only walks
+    `state.analysis_rounds[*].findings`); rejected-proposal candidates
+    have no admitted finding to attribute the trace to and would be
+    silently dropped at trace's bucket step. Filter here at the
+    analyze→state boundary so the drop is INTENTIONAL with a clear
+    semantic owner (analyze: "we only forward candidates whose parent
+    proposal was admitted"). Per CodeRabbit R3.
+    """
+    admitted_hashes = {f.proposal_hash for f in admitted_findings}
+    return tuple(c for c in candidates if c.source_proposal_hash in admitted_hashes)
 
 
 def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
@@ -1001,6 +1060,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
 async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration parallel to _process_one_file
     *,
     fetched_file: TraceFetchedFile,
+    source_finding: ReviewFinding,
     review_id: UUID,
     installation_id: int,
     is_eval: bool,
@@ -1108,12 +1168,17 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         su for su in parse_result.scope_units if not parse_result.has_error.get(su.unit_id, False)
     )
     if not included_scope_units:
+        # Pass-1 trace-fetched file has no notion of "changed" — the file
+        # lives outside the PR diff. Empty included-scope-units after the
+        # has_error filter means there's no reviewable structural context;
+        # NO_REVIEWABLE_CONTEXT classifies this for audit telemetry.
+        # Same enum the parse-failed branch above uses for the same reason.
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
             is_eval=is_eval,
             file_path=fetched_file.path,
-            skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS,
+            skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
     # Pass-1 prompt admits INFERRED proposals with non-empty `trace_path`.
@@ -1128,6 +1193,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         ),
         query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
         source_finding_id=fetched_file.source_finding_id,
+        source_finding_title=source_finding.title,
+        source_finding_description=source_finding.description,
+        source_finding_evidence=source_finding.evidence,
         pass_index=pass_index,
     )
 
