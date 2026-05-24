@@ -104,9 +104,10 @@ On pass 1 (post-trace re-entry, when the trace node has resolved +
 fetched a file relevant to a source finding): `inferred` IS admitted,
 provided `trace_path` is a non-empty array of non-empty scope-unit
 names tracing how the source finding's evidence connects to behavior
-in this file. The pass-1 prompt variant supplies the post-trace
-admission directive; on pass 1 you'll see the directive in the
-system prompt's "Pass 1 (post-trace) INFERRED admission" section.
+in this file. The pass-1 system prompt variant (via `render_post_trace`)
+appends an override section that REPLACES the pass-0 output schema +
+field semantics below; on pass 1 you'll see explicit admission
+instructions there.
 
 Failed admission DROPS the proposal — it does not downgrade to a lower
 tier. Pick `judged` upfront if you cannot cite structural evidence.

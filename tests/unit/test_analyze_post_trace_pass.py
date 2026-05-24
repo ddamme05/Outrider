@@ -293,10 +293,17 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     assert len(provider.calls) == 1
     call = provider.calls[0]
     assert call.node_id == "analyze"
-    # The pass-1 prompt names the source finding via the post-trace
-    # user template. Verify the post-trace prompt was used (the
-    # pass-1 admission directive lands in the system prompt).
-    assert "Pass 1 (post-trace) INFERRED admission" in call.system_prompt
+    # Verify the post-trace SUFFIX was appended (not just the base
+    # prompt's mention of the suffix). Use phrases that exist ONLY in
+    # POST_TRACE_SYSTEM_PROMPT_SUFFIX: "REPLACES the pass-0 schema" and
+    # the literal pass-1 output schema fragment `<observed|inferred|judged>`.
+    # Asserting the section heading alone would be vacuous — Codex
+    # round-3 finding F2 caught the earlier version of this test
+    # passing on a phrase that existed in the BASE prompt too.
+    assert "REPLACES the pass-0 schema" in call.system_prompt
+    assert "<observed|inferred|judged>" in call.system_prompt
+    # The user-prompt names the source finding via render_post_trace's
+    # user template (POST_TRACE_USER_TEMPLATE).
     assert str(fetched_file.source_finding_id) in call.user_prompt
 
     # Phase events: one start + one end.
