@@ -1,9 +1,19 @@
-"""TraceDecisionEvent: resolution_status Literal + nullable target_file + three-rule validator.
+"""TraceDecisionEvent: resolution_status Literal + nullable target_file + validator rules.
 
-Backs DECISIONS.md#017 (Amended same-day, two clauses):
-(a) resolved ↔ non-None target_file
-(b) unresolved / ambiguous ↔ target_file is None
-(c) when resolved, target_file in candidates_considered
+Backs DECISIONS.md#017 (Amended 2026-04-29 same-day + 2026-05-24 by #024).
+Per the #024 amendment, field shape:
+- `candidates_considered` → renamed to `proposed_import_strings` (LLM-proposed
+  dotted Python import strings).
+- New `resolved_candidate_paths` carries resolver outputs (file paths).
+- Cross-field validator rules rewritten to consult `resolved_candidate_paths`
+  cardinality (not `proposed_import_strings` membership):
+  - resolved: len(resolved_candidate_paths) == 1 AND target_file ==
+    resolved_candidate_paths[0]
+  - unresolved: len(resolved_candidate_paths) == 0 AND target_file is None
+  - ambiguous: len(resolved_candidate_paths) > 1 AND target_file is None
+- Uniqueness validator split into two — one per tuple.
+- target_file + every resolved_candidate_paths element pass through
+  validate_diff_path at the audit-shadow boundary (#024 point 6).
 """
 
 import json
@@ -23,22 +33,26 @@ def _build_event(**overrides: Any) -> TraceDecisionEvent:
         "target_file": "src/bar.py",
         "reason": "called from middleware/auth.py:42",
         "resolution_status": "resolved",
-        "candidates_considered": ("src/bar.py", "src/baz.py"),
+        "proposed_import_strings": ("bar", "baz"),
+        "resolved_candidate_paths": ("src/bar.py",),
     }
     fields.update(overrides)
     return TraceDecisionEvent(**fields)
 
 
 def test_resolution_status_admits_three_canonical_values() -> None:
-    """resolved + unresolved + ambiguous all admit (resolved with target; others without)."""
+    """resolved + unresolved + ambiguous all admit (with appropriate
+    target_file + resolved_candidate_paths cardinality per the validator)."""
     event_resolved = _build_event(resolution_status="resolved")
     event_unresolved = _build_event(
         resolution_status="unresolved",
         target_file=None,
+        resolved_candidate_paths=(),
     )
     event_ambiguous = _build_event(
         resolution_status="ambiguous",
         target_file=None,
+        resolved_candidate_paths=("src/foo.py", "src/bar.py"),
     )
     assert event_resolved.resolution_status == "resolved"
     assert event_unresolved.resolution_status == "unresolved"
@@ -60,119 +74,238 @@ def test_round_trips_resolution_status() -> None:
     assert reconstructed.resolution_status == original.resolution_status
 
 
-def test_resolved_admits_with_target_file() -> None:
-    """Happy path: resolved + non-None target_file in candidates_considered."""
+def test_resolved_admits_with_target_file_matching_resolved_path() -> None:
+    """Happy path: resolved + target_file == resolved_candidate_paths[0]."""
     event = _build_event(
         resolution_status="resolved",
         target_file="src/bar.py",
-        candidates_considered=("src/bar.py", "src/baz.py"),
+        proposed_import_strings=("bar", "baz"),
+        resolved_candidate_paths=("src/bar.py",),
     )
     assert event.target_file == "src/bar.py"
 
 
-def test_unresolved_admits_with_none_target_file() -> None:
-    """unresolved (and ambiguous) + target_file=None admits."""
+def test_unresolved_admits_with_none_target_file_and_empty_resolved() -> None:
+    """unresolved + target_file=None + empty resolved_candidate_paths admits."""
     event = _build_event(
         resolution_status="unresolved",
         target_file=None,
+        resolved_candidate_paths=(),
     )
     assert event.target_file is None
+    assert event.resolved_candidate_paths == ()
+
+
+def test_ambiguous_admits_with_none_target_file_and_multiple_resolved() -> None:
+    """ambiguous + target_file=None + len(resolved_candidate_paths) > 1 admits."""
+    event = _build_event(
+        resolution_status="ambiguous",
+        target_file=None,
+        resolved_candidate_paths=("src/bar.py", "src/baz.py"),
+    )
+    assert event.target_file is None
+    assert len(event.resolved_candidate_paths) == 2
 
 
 def test_resolved_without_target_file_raises() -> None:
-    """Cross-field rule (a): resolved + target_file=None raises."""
+    """Cross-field rule: resolved + target_file=None raises."""
     with pytest.raises(ValidationError, match="non-None target_file"):
-        _build_event(resolution_status="resolved", target_file=None)
+        _build_event(
+            resolution_status="resolved",
+            target_file=None,
+            resolved_candidate_paths=("src/bar.py",),
+        )
+
+
+def test_resolved_with_wrong_resolved_count_raises() -> None:
+    """Cross-field rule: resolved requires exactly one resolved_candidate_paths."""
+    with pytest.raises(ValidationError, match="exactly one"):
+        _build_event(
+            resolution_status="resolved",
+            target_file="src/bar.py",
+            resolved_candidate_paths=(),
+        )
+    with pytest.raises(ValidationError, match="exactly one"):
+        _build_event(
+            resolution_status="resolved",
+            target_file="src/bar.py",
+            resolved_candidate_paths=("src/bar.py", "src/baz.py"),
+        )
+
+
+def test_resolved_target_file_must_equal_single_resolved_path() -> None:
+    """Cross-field rule per #024 amendment: resolved target_file must
+    EQUAL the single resolved_candidate_paths entry (no longer
+    membership in proposed_import_strings)."""
+    with pytest.raises(ValidationError, match="must equal the single"):
+        _build_event(
+            resolution_status="resolved",
+            target_file="src/qux.py",  # ≠ resolved_candidate_paths[0]
+            resolved_candidate_paths=("src/bar.py",),
+        )
 
 
 def test_unresolved_with_target_file_raises() -> None:
-    """Cross-field rule (b): unresolved + non-None target_file raises."""
+    """Cross-field rule: unresolved + non-None target_file raises."""
     with pytest.raises(ValidationError, match="target_file is None"):
         _build_event(
             resolution_status="unresolved",
             target_file="src/bar.py",
+            resolved_candidate_paths=(),
+        )
+
+
+def test_unresolved_with_nonempty_resolved_raises() -> None:
+    """Cross-field rule: unresolved + non-empty resolved_candidate_paths raises."""
+    with pytest.raises(ValidationError, match="zero resolved_candidate_paths"):
+        _build_event(
+            resolution_status="unresolved",
+            target_file=None,
+            resolved_candidate_paths=("src/bar.py",),
         )
 
 
 def test_ambiguous_with_target_file_raises() -> None:
-    """Cross-field rule (b), ambiguous side: ambiguous + non-None target_file raises."""
+    """Cross-field rule: ambiguous + non-None target_file raises."""
     with pytest.raises(ValidationError, match="target_file is None"):
         _build_event(
             resolution_status="ambiguous",
             target_file="src/bar.py",
+            resolved_candidate_paths=("src/bar.py", "src/baz.py"),
         )
 
 
-def test_resolved_target_file_must_be_in_candidates_considered() -> None:
-    """Cross-field rule (c) per #017 clause (b): resolved target_file ∈ candidates_considered."""
-    in_list = _build_event(
-        resolution_status="resolved",
-        target_file="src/bar.py",
-        candidates_considered=("src/bar.py", "src/baz.py"),
-    )
-    assert in_list.target_file == "src/bar.py"
-
-    with pytest.raises(ValidationError, match="member of candidates_considered"):
+def test_ambiguous_with_single_resolved_raises() -> None:
+    """Cross-field rule: ambiguous requires more than one resolved_candidate_paths."""
+    with pytest.raises(ValidationError, match="more than one"):
         _build_event(
-            resolution_status="resolved",
-            target_file="src/qux.py",
-            candidates_considered=("src/bar.py", "src/baz.py"),
+            resolution_status="ambiguous",
+            target_file=None,
+            resolved_candidate_paths=("src/bar.py",),
         )
 
 
-def test_unresolved_with_nonempty_candidates_admits() -> None:
-    """Canonical unresolved-with-non-empty-candidates case per #017 clause (b).
-
-    LLM proposed candidates; ast_facts resolved zero of them. The
-    candidates_considered list is the LLM-proposed list (any cardinality);
-    resolution_status describes ast_facts-resolution count.
-    """
+def test_unresolved_with_nonempty_proposed_import_strings_admits() -> None:
+    """LLM proposed import strings but resolver yielded zero: unresolved
+    case per #017 amended clause (b). proposed_import_strings carries
+    the LLM's proposals; resolved_candidate_paths is empty."""
     event = _build_event(
         resolution_status="unresolved",
         target_file=None,
-        candidates_considered=("src/foo.py", "src/bar.py"),
+        proposed_import_strings=("foo.bar", "foo.baz"),
+        resolved_candidate_paths=(),
     )
-    assert event.candidates_considered == ("src/foo.py", "src/bar.py")
-    assert event.resolution_status == "unresolved"
+    assert event.proposed_import_strings == ("foo.bar", "foo.baz")
+    assert event.resolved_candidate_paths == ()
 
 
-def test_missing_candidates_considered_raises() -> None:
-    """candidates_considered is REQUIRED (no default) per #017 + replay equivalence.
-
-    Defaulted field would silently absorb emitter bugs. Callers pass ()
-    explicitly for the zero-candidate case.
-    """
+def test_missing_proposed_import_strings_raises() -> None:
+    """proposed_import_strings is REQUIRED (no default) per #017 +
+    replay equivalence. Defaulted field would silently absorb emitter
+    bugs. Callers pass () explicitly for the zero-proposal case."""
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "source_finding_id": uuid4(),
         "target_file": None,
         "reason": "x",
         "resolution_status": "unresolved",
+        "resolved_candidate_paths": (),
+        # proposed_import_strings deliberately omitted
     }
     with pytest.raises(ValidationError):
         TraceDecisionEvent(**fields)
 
 
-def test_candidates_considered_admits_empty_tuple() -> None:
-    """Explicit candidates_considered=() admits — well-typed zero-candidate case."""
+def test_missing_resolved_candidate_paths_raises() -> None:
+    """resolved_candidate_paths is REQUIRED (no default) per #024 + #017."""
+    fields: dict[str, Any] = {
+        "review_id": uuid4(),
+        "source_finding_id": uuid4(),
+        "target_file": None,
+        "reason": "x",
+        "resolution_status": "unresolved",
+        "proposed_import_strings": (),
+        # resolved_candidate_paths deliberately omitted
+    }
+    with pytest.raises(ValidationError):
+        TraceDecisionEvent(**fields)
+
+
+def test_proposed_import_strings_admits_empty_tuple() -> None:
+    """Explicit proposed_import_strings=() admits — well-typed
+    zero-proposal case."""
     event = _build_event(
         resolution_status="unresolved",
         target_file=None,
-        candidates_considered=(),
+        proposed_import_strings=(),
+        resolved_candidate_paths=(),
     )
-    assert event.candidates_considered == ()
+    assert event.proposed_import_strings == ()
 
 
-def test_candidates_considered_round_trips_as_tuple() -> None:
-    """JSON round-trip preserves tuple shape (decodes from JSON array back to tuple)."""
+def test_round_trips_as_tuples() -> None:
+    """JSON round-trip preserves both tuple shapes."""
     original = _build_event(
-        candidates_considered=("src/bar.py", "src/baz.py"),
+        proposed_import_strings=("foo.bar", "foo.baz"),
+        resolved_candidate_paths=("src/bar.py",),
     )
     json_payload = original.model_dump_json(exclude={"sequence_number"})
     decoded_dict = json.loads(json_payload)
-    assert isinstance(decoded_dict["candidates_considered"], list)
+    assert isinstance(decoded_dict["proposed_import_strings"], list)
+    assert isinstance(decoded_dict["resolved_candidate_paths"], list)
 
     reconstructed = AuditEventAdapter.validate_json(json_payload)
     assert isinstance(reconstructed, TraceDecisionEvent)
-    assert isinstance(reconstructed.candidates_considered, tuple)
-    assert reconstructed.candidates_considered == ("src/bar.py", "src/baz.py")
+    assert isinstance(reconstructed.proposed_import_strings, tuple)
+    assert isinstance(reconstructed.resolved_candidate_paths, tuple)
+    assert reconstructed.proposed_import_strings == ("foo.bar", "foo.baz")
+    assert reconstructed.resolved_candidate_paths == ("src/bar.py",)
+
+
+def test_proposed_import_strings_uniqueness_validator() -> None:
+    """proposed_import_strings is set-semantic; duplicates raise. Per
+    #024 amendment to #017's uniqueness validator (split into two)."""
+    with pytest.raises(ValidationError, match="proposed_import_strings contains duplicates"):
+        _build_event(
+            proposed_import_strings=("foo.bar", "foo.bar"),
+        )
+
+
+def test_resolved_candidate_paths_uniqueness_validator() -> None:
+    """resolved_candidate_paths is set-semantic; duplicates raise."""
+    with pytest.raises(ValidationError, match="resolved_candidate_paths contains duplicates"):
+        _build_event(
+            resolution_status="ambiguous",
+            target_file=None,
+            resolved_candidate_paths=("src/bar.py", "src/bar.py"),
+        )
+
+
+def test_target_file_audit_shadow_validate_diff_path() -> None:
+    """Per #024 point 6: target_file passes through validate_diff_path
+    at the audit-event boundary. Traversal-bearing target raises.
+    Pydantic V2 re-raises non-ValueError exceptions from field_validators
+    directly, so CoordinateError propagates as itself, not wrapped."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_event(
+            target_file="../../etc/passwd",
+            resolved_candidate_paths=("../../etc/passwd",),
+        )
+
+
+def test_resolved_candidate_paths_audit_shadow_per_element() -> None:
+    """Per #024 point 6: every resolved_candidate_paths element passes
+    through validate_diff_path. Even one bad path in the tuple raises.
+    Load-bearing for the ambiguous branch where target_file is None.
+    Pydantic V2 re-raises non-ValueError exceptions from field_validators
+    directly, so CoordinateError propagates as itself, not wrapped."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((ValidationError, CoordinateError)):
+        _build_event(
+            resolution_status="ambiguous",
+            target_file=None,
+            resolved_candidate_paths=("src/bar.py", "../../etc/passwd"),
+        )

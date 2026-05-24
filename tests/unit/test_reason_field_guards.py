@@ -27,13 +27,16 @@ from outrider.schemas import PerFindingDecision, PerFindingOutcome
 
 
 def _build_trace_event(**overrides: Any) -> TraceDecisionEvent:
+    """Per #024 amendment to #017: trace decisions carry parallel
+    proposed_import_strings + resolved_candidate_paths tuples."""
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "source_finding_id": uuid4(),
         "target_file": None,
         "reason": "x",
         "resolution_status": "unresolved",
-        "candidates_considered": (),
+        "proposed_import_strings": (),
+        "resolved_candidate_paths": (),
     }
     fields.update(overrides)
     return TraceDecisionEvent(**fields)
