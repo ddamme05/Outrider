@@ -859,3 +859,72 @@ The reasoning:
 **No supersession of prior DECISIONS.** #017's commitment to one decision per source finding is preserved by point 5's `already_traced` gate (explicit, not merely emergent from the reducer key). #022's PR/file-scoped proposal-identity rule is preserved by point 3's separation of `proposal_hash` (provenance) from `finding_content_hash` (content identity).
 
 **Referenced from.** `src/outrider/schemas/review_finding.py` (`ReviewFinding.proposal_hash`), `src/outrider/schemas/analysis_round.py` (`_enforce_findings_proposal_hash_unique`), `src/outrider/audit/events.py` (`FindingEvent.proposal_hash`), `src/outrider/agent/nodes/analyze.py` (admission threading), `src/outrider/agent/nodes/trace.py` (when written — join gate + `already_traced` gate + `TraceJoinIntegrityError`), `docs/spec.md` §7.3 + §8.5, `specs/2026-05-23-trace-node.md` (consumer of this decision).
+
+## 026. Audit-event idempotency mode: `event_id`-PK vs natural-key
+
+**Status:** Accepted, 2026-05-24.
+
+**Context.** The `audit_events` table has, until trace-node, used a single idempotency mechanism: each event carries a UUID `event_id` generated per-emission via `AuditEventBase.event_id = default_factory=uuid4`; the persister's `_persist_non_phase_event` writes with `ON CONFLICT (event_id) DO NOTHING` and raises `AuditPersisterIdempotencyConflict` on payload divergence under PK collision. This works for events that are naturally unique per emission: `FindingEvent` (one per admitted finding), `LLMCallEvent` (one per provider call), `PublishRoutingEvent` (one per routing decision per finding). Each retry/replay produces a fresh `event_id`; PK conflict only fires on the same logical write repeating with the EXACT same UUID (rare; mostly LangGraph checkpoint replay edge cases).
+
+Trace introduces a different shape. Per `specs/2026-05-23-trace-node.md` M7 + `DECISIONS.md#017`: a `TraceDecisionEvent` represents the trace node's logically-once decision for a given `source_finding_id` within a review. The audit-first emission contract requires that retry/replay of trace (transient sink failure, partial-loop failure, checkpoint resume) MUST produce no duplicate audit row even though each emission attempt mints a fresh `event_id`. The event_id-PK mechanism cannot enforce this — the natural identity is `(review_id, source_finding_id)`, not `event_id`. A second concern surfaced during the trace spec arc's audit rounds: when the persister no-ops on natural-key match, the producer node MUST be able to construct the state-layer mirror from the PERSISTED row's payload (not from the freshly-computed inputs), otherwise per-emission fields excluded from the identity subset (LLM-narrative text, ranking order, timestamps) cause state-vs-audit divergence on retry.
+
+**Decision.** Audit events choose ONE of two idempotency modes at design time, and the mode is pinned in the event-class docstring + persister helper.
+
+1. **`event_id`-PK idempotency** (existing mechanism, default for most events). Use when:
+   - The event represents a discrete observable operation that is naturally unique per emission (an LLM call, a routing decision, a phase boundary, an admitted finding).
+   - Retry/replay producing a fresh `event_id` is acceptable behavior — the consumer-side dedup (via `decision_content_hash` per #023 or `finding_content_hash` per the audit-events module spec) handles read-time deduplication.
+   - The persister uses `_persist_non_phase_event` (or its event-type-keyed variants).
+
+2. **Natural-key idempotency** (new mechanism, introduced by trace M7). Use when **duplicate semantic rows would violate an audit-first or state-completeness contract** — not merely "you can name a structural tuple" (publish events qualify under that loose framing but correctly stay event_id-PK; the consumer-side `decision_content_hash` dedup is sufficient for publish's read-time queries). The trigger condition for natural-key is specifically: a producer's write-time contract requires "audit row exists before state delta returns" AND retries/replay must not create duplicate audit rows AND state must stay in lockstep with the persisted audit row across retries.
+
+   The event type ships FOUR coupled components:
+
+   - **(a) Alembic migration** adding a partial unique index on the natural-key tuple filtered by `event_type = '<discriminator>'`.
+   - **(b) Persister helper** `_persist_keyed_by_natural_key` (or equivalent) using `postgresql_insert(...).on_conflict_do_nothing(index_elements=[...], index_where=...)` — **NOT** raw INSERT + `IntegrityError(UniqueViolation)` catch. The `on_conflict_do_nothing` path is the existing persister idiom (`persister.py:1010`) and avoids the savepoint/transaction-rollback footguns of exception-driven conflict handling. On the no-rows-returned path (conflict fired), run a follow-up SELECT on the natural-key tuple to load the existing row, then compare against incoming via the identity-subset (component d).
+   - **(c) Persisted-payload return contract.** The helper RETURNS the canonical persisted event payload — either the just-inserted event (insert path) OR the existing row's event (no-op path on identity-subset match). The sink Protocol method's signature is `async def emit_X(self, event: XEvent) -> XEvent: ...` (non-None return). The producer node MUST use the returned event to construct any state-layer mirror; this is the lockstep-recovery contract that keeps state in sync with audit when per-emission fields (LLM-narrative, ranking order, timestamps) differ between attempts. Without this, the crash-after-audit-before-state scenario diverges state from audit on retry. (Trace's M7 spells the `trace_decision` instance: state-layer `TraceDecision` is built from the returned `TraceDecisionEvent`, not from trace's locally-computed inputs.)
+   - **(d) `_payload_identity_subset(event_type) -> frozenset[str]`** enumeration. Each natural-key event type lists its identity fields explicitly; per-emission fields are explicitly excluded.
+
+   The persister raises a distinct **`AuditPersisterNaturalKeyConflict`** (NOT `AuditPersisterIdempotencyConflict`) on real divergence — the natural-key conflict carries both the existing row's PK and the conflicting natural key.
+
+3. **First normative identity subset (pins the precedent for future natural-key event types):** for `trace_decision`, the identity subset is exactly:
+
+   ```python
+   _PAYLOAD_IDENTITY_SUBSET = {
+       "trace_decision": frozenset({
+           "source_finding_id",   # natural-key payload component
+           "target_file",         # deterministic resolution outcome
+           "resolution_status",   # outcome class (resolved/unresolved/ambiguous)
+           "is_eval",             # invariant per review; divergence = config bug
+       }),
+   }
+   ```
+
+   Explicitly EXCLUDED (each would defeat the lockstep contract on legitimate retries):
+
+   - `event_id` — per-emission UUID.
+   - `timestamp` — per-emission datetime (NOTE: field is `timestamp`, NOT `emitted_at`).
+   - `sequence_number` — per-emission (already excluded by `_serialize_event_payload`).
+   - `review_id` — pinned by the natural-key index's lookup columns (the SELECT for the no-op recovery filters on `(review_id, payload->>'source_finding_id')`); tautological in the value-comparison.
+   - `reason` — LLM-narrative; retries produce fresh Haiku-generated reasons.
+   - `proposed_import_strings` — LLM ranking order varies across retries.
+   - `resolved_candidate_paths` — derived from `proposed_import_strings`.
+   - `trace_path` — per-emission scope-walk context.
+   - `event_type` — pinned by the partial index's WHERE clause filter; tautological.
+
+   Future natural-key event types extend the enumeration in a single commit with the event class. Subset choices are golden-pinned by `tests/unit/test_audit_persister_identity_subsets.py`.
+
+4. **The choice is per-event-type, pinned in the event class's module docstring** — `Idempotency mode: event_id-PK` or `Idempotency mode: natural-key (key=(...))`. Mixing modes across the table is supported by design — the partial unique index from mode (2) is event-type-filtered, so it doesn't constrain mode (1) events.
+
+5. **Selection rule.** Default to **event_id-PK** unless an audit-first / state-completeness contract requires natural-key. Specifically:
+   - Choose **event_id-PK** when: the event records a discrete observable operation, the consumer-side dedup (via content-hash carried IN the payload per #023's `decision_content_hash` pattern) is sufficient for replay-equivalence queries, and retry/replay producing additional rows is acceptable.
+   - Choose **natural-key** when ALL of: (i) a producer node's write-time contract requires "audit row exists in `audit_events` before state delta merges"; (ii) retry/replay must NOT create duplicate rows at the persister layer; (iii) state must stay in lockstep with the persisted audit row across retries (per-emission divergence on `reason`/timestamps/rankings would otherwise produce drift). Trace's M7 is the V1 instance — meets all three.
+
+**Consequences.**
+
+- `audit/events.py` event class docstrings gain an `Idempotency mode:` annotation naming `event_id-PK` or `natural-key (key=...)`.
+- New persister helpers (`_persist_keyed_by_natural_key`) and exception classes (`AuditPersisterNaturalKeyConflict`, `AuditPersisterTraceIdempotencyLookupError`) land with trace per `specs/2026-05-23-trace-node.md` M7. Both helpers coexist; per-event-type routing in `AuditPersister.emit_*` methods selects.
+- Sink Protocols for natural-key event types ship with non-None return signatures per point (2c). `TraceEventSink.emit_trace_decision(event) -> TraceDecisionEvent` is the V1 first instance.
+- The `_payload_identity_subset` enumeration is golden-pinned per event type by `tests/unit/test_audit_persister_identity_subsets.py`. Integration tests additionally pin the persisted-payload-return contract (no-op path returns existing row's event; insert path returns incoming event).
+- Future migrations can mix modes per event type — no global re-architecture; the table's PK + per-event-type partial indexes co-exist.
+
+**Referenced from.** `src/outrider/audit/events.py` (event class `Idempotency mode:` docstring annotations — added per-type as event types land), `src/outrider/audit/persister.py` (`_persist_non_phase_event` + new `_persist_keyed_by_natural_key`), `src/outrider/audit/sinks.py` (sink Protocols with non-None return for natural-key event types), `src/outrider/db/models/audit_events.py` (`event_id` PK + partial unique indexes from per-event-type migrations), `specs/2026-05-23-trace-node.md` M7 (first natural-key application), `DECISIONS.md#017` (the once-per-source-finding semantics natural-key enforces), `DECISIONS.md#023` (publish's `decision_content_hash` consumer-side dedup pattern, the parallel mode-1 idiom).
