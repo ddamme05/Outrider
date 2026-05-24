@@ -11,7 +11,8 @@ concurrent emissions of the same logical trace decision:
 
     CREATE UNIQUE INDEX uq_audit_events_trace_decision_natural_key
         ON audit_events (review_id, (payload->>'source_finding_id'))
-        WHERE event_type = 'trace_decision';
+        WHERE event_type = 'trace_decision'
+              AND payload ? 'source_finding_id';
 
 The DB-level constraint is load-bearing for M7's audit-first emission
 contract: trace emits the TraceDecisionEvent BEFORE returning the state
@@ -41,6 +42,21 @@ Partial-index design choices:
     the string representation — fine for uniqueness, irrelevant for
     range queries (this index is consulted only for natural-key
     conflict detection on INSERT, not for ordered scans).
+
+  - `AND payload ? 'source_finding_id'` in the WHERE clause — defense
+    in depth against PostgreSQL's NULL-distinct semantics. `payload->>
+    'source_finding_id'` returns NULL when the key is absent, and Postgres
+    treats NULLs as distinct in unique indexes (pre-PG15 default — even
+    PG15+'s opt-in `NULLS NOT DISTINCT` is not requested here). A
+    TraceDecisionEvent row whose payload was constructed without
+    `source_finding_id` (manual SQL, schema-evolution defect, persister
+    bug) would silently bypass uniqueness and create duplicates the
+    persister-side natural-key SELECT trusts as unique. The Pydantic
+    `TraceDecisionEvent.source_finding_id: UUID` field is the
+    application-side guarantee, but M7(a)'s claim is a DB-level safety
+    net; the `payload ? '...'` predicate excludes key-missing rows from
+    the index entirely so any future NULL-keyed row falls outside the
+    uniqueness rule cleanly (no silent admission as "distinct").
 
   - `review_id` is the index's first column (not in the WHERE clause):
     it's the natural-key tuple's first component AND a real top-level
@@ -89,7 +105,8 @@ def upgrade() -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_events_trace_decision_natural_key
             ON audit_events (review_id, (payload->>'source_finding_id'))
-            WHERE event_type = 'trace_decision';
+            WHERE event_type = 'trace_decision'
+                  AND payload ? 'source_finding_id';
         """
     )
 
