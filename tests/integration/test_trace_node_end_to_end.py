@@ -275,6 +275,30 @@ async def test_resolved_candidate_writes_decision_and_fetched_file(
     assert fetched.content_head == file_content.decode("utf-8")
     assert fetched.source_finding_id == finding.finding_id
 
+    # Audit-completeness link per M7 (data-integrity G1 fold):
+    # the state delta contains a TraceDecision iff the audit_events
+    # row was actually written. A future refactor where the sink
+    # accepted-and-discarded would pass every state-delta assertion
+    # above; this SELECT closes that gap by reading the audit table
+    # directly.
+    import sqlalchemy as sa
+
+    async with persister_setup.engine.connect() as conn:
+        result = await conn.execute(
+            sa.text(
+                "SELECT count(*)::int FROM audit_events "
+                "WHERE review_id = :rid "
+                "  AND event_type = 'trace_decision' "
+                "  AND payload->>'source_finding_id' = :sfid"
+            ),
+            {"rid": str(review_id), "sfid": str(finding.finding_id)},
+        )
+        audit_row_count = result.scalar_one()
+    assert audit_row_count == 1, (
+        f"expected exactly one trace_decision audit row for finding "
+        f"{finding.finding_id}; got {audit_row_count}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Unresolved path: Phase 1 only; M8 invariant — no TraceFetchedFile.
@@ -410,74 +434,23 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
 # ---------------------------------------------------------------------------
 
 
-async def test_retry_returns_persisted_event_fields_not_incoming(
-    persister_setup: PersisterTestSetup,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """M7 (b) lockstep-recovery: second trace invocation with the same
-    `(review_id, source_finding_id)` should get the natural-key no-op
-    path AND build the state-layer TraceDecision from the ORIGINALLY-
-    persisted event's fields, NOT from the (potentially diverging)
-    incoming event's fields. We don't have a way to make the per-emission
-    fields diverge across two trace() calls because the LLM is mocked
-    deterministically — but the natural-key no-op path is exercised
-    regardless, and we verify the second call returns the same fields
-    as the first (audit lockstep)."""
-    review_id = persister_setup.review_id
-    proposal_hash = "d" * 64
-    finding = _build_finding(review_id=review_id, proposal_hash=proposal_hash)
-    candidate = _build_candidate(
-        source_proposal_hash=proposal_hash,
-        import_string="some.module",
-    )
-    state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
-
-    async def fake_fetch(*_args: object, path: str, **_kwargs: object) -> bytes | None:
-        if path == "some/module.py":
-            return b"x = 1\n"
-        return None
-
-    monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
-
-    provider = _MockLLMProvider(ranked_candidate_ids=(candidate.candidate_id,))
-
-    # First invocation: insert path.
-    first_delta = await trace(
-        state,
-        provider=provider,  # type: ignore[arg-type]
-        trace_model="claude-haiku-test",
-        phase_event_sink=persister_setup.persister,
-        trace_sink=persister_setup.persister,
-        github_factory=_stub_github_factory,  # type: ignore[arg-type]
-    )
-    first_decision = first_delta["trace_decisions"][0]  # type: ignore[index]
-    first_event_id = first_decision.source_finding_id
-
-    # Second invocation with the SAME state (already_traced gate isn't
-    # populated because we don't merge first_delta back into state).
-    # The persister's natural-key path will short-circuit on the second
-    # emit, returning the ORIGINALLY-persisted event. Trace builds the
-    # state-layer TraceDecision from that returned event.
-    second_delta = await trace(
-        state,
-        provider=provider,  # type: ignore[arg-type]
-        trace_model="claude-haiku-test",
-        phase_event_sink=persister_setup.persister,
-        trace_sink=persister_setup.persister,
-        github_factory=_stub_github_factory,  # type: ignore[arg-type]
-    )
-    second_decision = second_delta["trace_decisions"][0]  # type: ignore[index]
-
-    # Lockstep contract: same source_finding_id, same target_file,
-    # same resolution_status. Per-emission fields (reason,
-    # proposed_import_strings, resolved_candidate_paths) match
-    # because the mock LLM returns deterministic ordering, but the
-    # path through the persister is the natural-key no-op recovery
-    # path on the second call — that's verified at the persister
-    # tier (`test_audit_persister_natural_key.py`).
-    assert second_decision.source_finding_id == first_event_id
-    assert second_decision.target_file == first_decision.target_file
-    assert second_decision.resolution_status == first_decision.resolution_status
+# M7 (b) lockstep-recovery contract — verified at the persister tier
+# (`test_audit_persister_natural_key.py::test_no_op_path_returns_existing_
+# event_when_identity_subset_matches`) which exercises the
+# persister-side no-op path with diverging incoming per-emission fields
+# (different event_id, timestamp, reason, proposed_import_strings) and
+# asserts the returned event carries the FIRST call's fields. The
+# trace node itself is a thin composition over that pinned contract:
+# trace.py:299-308 builds the state-layer TraceDecision from
+# `persisted_event.*`, never from `decision_event.*`. The node-tier
+# end-to-end test that previously sat here was vacuous (deterministic
+# mock LLM made first-vs-second incoming events identical, so the
+# lockstep assertion was satisfied trivially regardless of contract
+# correctness). Removed 2026-05-24 per multi-lens audit convergence
+# (sharp-edges H-A + data-integrity G2). The structural M7(b)
+# composition over the persister contract is documented in trace.py's
+# docstring + the `# Build state-layer TraceDecision from the RETURNED
+# event` comment at the call site.
 
 
 # ---------------------------------------------------------------------------
