@@ -6,26 +6,27 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships four sinks from this module: `PhaseEventSink` for
+V1 ships five sinks from this module: `PhaseEventSink` for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `AnalyzeEventSink` bundling the four analyze-emitted event types
 (`FindingEvent`, `FindingProposalRejectedEvent`,
-`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`), and
+`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`),
 `PublishEventSink` bundling the four publish-emitted event types
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
-`PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling.
-`LLMCallEvent` emission lives inside `LLMProvider.complete()` and uses
-the sibling `LLMExchangePersister` Protocol in `llm/base.py` — no node
-code emits `LLMCallEvent` directly.
+`PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
+and `TraceEventSink` for `TraceDecisionEvent` per
+`specs/2026-05-23-trace-node.md` Q4 + M7. `LLMCallEvent` emission lives
+inside `LLMProvider.complete()` and uses the sibling `LLMExchangePersister`
+Protocol in `llm/base.py` — no node code emits `LLMCallEvent` directly.
 
 The durable `AuditPersister` in `outrider.audit.persister` implements
-ALL FIVE (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
-+ `PublishEventSink` + `LLMExchangePersister`) from one body, sharing
-DB transaction lifecycle and session-per-call discipline. Test-only
-no-op implementations (`NoOpPersister`, `RecordingPhaseEventSink`,
-`RecordingPublishEventSink`) live in `tests/conftest.py` for fixtures
-that don't need durable persistence.
+ALL SIX (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
++ `PublishEventSink` + `TraceEventSink` + `LLMExchangePersister`) from
+one body, sharing DB transaction lifecycle and session-per-call
+discipline. Test-only no-op implementations (`NoOpPersister`,
+`RecordingPhaseEventSink`, `RecordingPublishEventSink`) live in
+`tests/conftest.py` for fixtures that don't need durable persistence.
 """
 
 from typing import Protocol, runtime_checkable
@@ -42,6 +43,7 @@ from outrider.audit.events import (
     PublishEvent,
     PublishRoutingEvent,
     ReviewPhaseEvent,
+    TraceDecisionEvent,
 )
 
 
@@ -304,9 +306,84 @@ class PublishEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class TraceEventSink(Protocol):
+    """Sink for `TraceDecisionEvent` emissions per the trace node spec
+    (`specs/2026-05-23-trace-node.md` Q4 + M7).
+
+    Why sibling Protocol (not extending `AnalyzeEventSink`): trace is a
+    separate node with separate responsibility. Per Q4 resolution,
+    conflating the sinks would make the analyze sink's name lie. The
+    `build_graph` deps surface gains one kwarg (`trace_sink: TraceEventSink`);
+    cost is bounded and matches the existing one-sink-per-node pattern.
+
+    **Audit-first emission contract per M7 (b) — non-None return.**
+    `emit_trace_decision` returns the canonical persisted
+    `TraceDecisionEvent` — either the just-inserted incoming event
+    (insert path) OR the existing row's event (no-op path on
+    natural-key match with identity-subset equality). The producer
+    node (trace) MUST use the returned event to construct the state-
+    layer `TraceDecision` for the state delta, ensuring state and
+    audit stay in lockstep across retry/replay even when per-emission
+    fields (`reason`, `proposed_import_strings`, `resolved_candidate_paths`,
+    `trace_path`) differ between attempts. Without this lockstep, the
+    crash-after-audit-before-state scenario would diverge state from
+    audit on retry.
+
+    **Persister-side natural-key idempotency on `(review_id,
+    source_finding_id)` per `DECISIONS.md#026`** — the durable
+    `AuditPersister` implementation runs `postgresql_insert(...)
+    .on_conflict_do_nothing(...)` against a partial unique index
+    introduced by an Alembic migration; on conflict, a follow-up SELECT
+    loads the existing row and the identity-subset comparison
+    (`source_finding_id`, `target_file`, `resolution_status`, `is_eval`)
+    distinguishes legitimate retry (no-op return) from real divergence
+    (raise `AuditPersisterNaturalKeyConflict`). The persister + migration
+    + identity-subset helper land in Group 4; this Protocol declares
+    the contract.
+
+    Production / durable implementations MUST:
+      - Implement the audit-first return contract per M7 (b) — return
+        the canonical persisted event, not the incoming one.
+      - Be idempotent on the semantic key `(review_id, source_finding_id)`
+        (NOT on `event_id` PK — that's a different idempotency mode
+        per `DECISIONS.md#026`). Replay producing the same logical
+        decision twice MUST collapse to one audit row, not two.
+      - Be concurrent-safe: V1 is single-threaded per review via the
+        `BackgroundTasksDispatcher`, but the partial unique index from
+        Group 4's Alembic migration is the DB-level safety net for
+        V1.5 parallel-analyze + the webhook-redispatch edge case.
+      - Persist before returning, OR raise. Silent drop is never
+        acceptable — trace's audit-first contract relies on
+        `TraceDecision` in state ↔ matching `TraceDecisionEvent` row
+        in audit_events (joined on source_finding_id within the review).
+
+    Test recorders capture each emission for assertion; per the
+    audit-first contract, they MUST also return the incoming event
+    (no idempotency dedup in test sinks — recorders are
+    deliberately exempt so double-emit bugs surface in tests rather
+    than being silently deduped).
+
+    `@runtime_checkable` matches the sibling-Protocol precedent —
+    `build_graph` can reject sinks lacking `emit_trace_decision` at
+    construction time via `isinstance(...)`. PEP 544 caveat: member-
+    presence only, not signature shape; mypy strict is the write-time
+    gate for the non-None return type.
+    """
+
+    async def emit_trace_decision(self, event: TraceDecisionEvent) -> TraceDecisionEvent:
+        """Persist a `TraceDecisionEvent` and return the canonical
+        persisted event (incoming on insert; existing on no-op match).
+
+        See class docstring for the audit-first return contract.
+        """
+        ...
+
+
 __all__ = [
     "AnalyzeEventSink",
     "FileExaminationSink",
     "PhaseEventSink",
     "PublishEventSink",
+    "TraceEventSink",
 ]

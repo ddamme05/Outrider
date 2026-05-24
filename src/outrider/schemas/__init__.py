@@ -27,6 +27,8 @@ from outrider.schemas.review_finding import (
 )
 from outrider.schemas.review_state import ReviewState
 from outrider.schemas.trace_candidate import TraceCandidate
+from outrider.schemas.trace_decision import TraceDecision
+from outrider.schemas.trace_fetched_file import TraceFetchedFile
 from outrider.schemas.triage_result import (
     ReviewTier,
     RiskLevel,
@@ -51,5 +53,7 @@ __all__ = [
     "ReviewTier",
     "RiskLevel",
     "TraceCandidate",
+    "TraceDecision",
+    "TraceFetchedFile",
     "TriageResult",
 ]

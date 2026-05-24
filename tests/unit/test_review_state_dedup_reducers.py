@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, get_args, get_type_hints
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
@@ -33,6 +33,8 @@ from outrider.schemas import (
     ReviewFinding,
     ReviewState,
     TraceCandidate,
+    TraceDecision,
+    TraceFetchedFile,
 )
 
 
@@ -205,3 +207,100 @@ def test_review_state_default_lists_are_empty() -> None:
     )
     assert state.analysis_rounds == []
     assert state.trace_candidates == []
+    # Trace-node spec slots also default to empty lists.
+    assert state.trace_decisions == []
+    assert state.trace_fetched_files == []
+
+
+# ---------------------------------------------------------------------------
+# trace_decisions reducer (per DECISIONS.md#017 × #024 amendment)
+# ---------------------------------------------------------------------------
+
+
+def _trace_decision(source_finding_id: UUID | None = None) -> TraceDecision:
+    """Build a TraceDecision fixture for reducer tests. Per #024 amendment:
+    parallel proposed_import_strings + resolved_candidate_paths tuples;
+    `resolved` case has exactly one resolved_candidate_paths entry
+    matching target_file."""
+    return TraceDecision(
+        source_finding_id=source_finding_id if source_finding_id is not None else uuid4(),
+        target_file="src/bar.py",
+        reason="x",
+        resolution_status="resolved",
+        proposed_import_strings=("bar",),
+        resolved_candidate_paths=("src/bar.py",),
+    )
+
+
+def test_trace_decisions_field_carries_reducer() -> None:
+    """`ReviewState.trace_decisions` carries an `append_with_dedup_by` reducer
+    keyed on `source_finding_id` per DECISIONS.md#017 amended point 1."""
+    reducer = _get_reducer("trace_decisions")
+    assert reducer is not None
+
+
+def test_trace_decisions_replay_idempotent() -> None:
+    """Same TraceDecision applied twice via the reducer collapses to one row.
+    Replay idempotency per #017's `source_finding_id`-alone dedup-key
+    contract."""
+    reducer = _get_reducer("trace_decisions")
+    d = _trace_decision()
+    merged_once = reducer([], [d])
+    merged_twice = reducer(merged_once, [d])
+    assert len(merged_once) == 1
+    assert len(merged_twice) == 1  # duplicate dropped
+    assert merged_once == merged_twice
+
+
+def test_trace_decisions_distinct_source_finding_ids_both_admitted() -> None:
+    """Different source_finding_ids = distinct decisions; reducer keeps both."""
+    reducer = _get_reducer("trace_decisions")
+    d1 = _trace_decision()
+    d2 = _trace_decision()
+    assert d1.source_finding_id != d2.source_finding_id
+    merged = reducer([d1], [d2])
+    assert len(merged) == 2
+
+
+# ---------------------------------------------------------------------------
+# trace_fetched_files reducer (per spec Q3 + M2)
+# ---------------------------------------------------------------------------
+
+
+def _trace_fetched_file(path: str = "src/middleware/auth.py") -> TraceFetchedFile:
+    """Build a TraceFetchedFile fixture for reducer tests."""
+    return TraceFetchedFile(
+        path=path,
+        content_head="def authenticate(): pass\n",
+        source_finding_id=uuid4(),
+    )
+
+
+def test_trace_fetched_files_field_carries_reducer() -> None:
+    """`ReviewState.trace_fetched_files` carries an `append_with_dedup_by`
+    reducer keyed on `path` per spec Q3."""
+    reducer = _get_reducer("trace_fetched_files")
+    assert reducer is not None
+
+
+def test_trace_fetched_files_first_write_wins_on_path_collision() -> None:
+    """Per M2 audit-fold: when two findings resolve to the same target
+    path, the reducer's first-write-wins semantics keep only the first
+    emission. Multi-cause provenance recovers via cross-reference to
+    `state.trace_decisions` by `target_file`."""
+    reducer = _get_reducer("trace_fetched_files")
+    f1 = _trace_fetched_file(path="src/foo.py")
+    f2 = _trace_fetched_file(path="src/foo.py")  # same path, different source_finding_id
+    assert f1.source_finding_id != f2.source_finding_id
+    merged = reducer([f1], [f2])
+    assert len(merged) == 1  # f2 dropped
+    assert merged[0].source_finding_id == f1.source_finding_id  # first-write-wins
+
+
+def test_trace_fetched_files_distinct_paths_both_admitted() -> None:
+    """Different paths = distinct fetches; reducer keeps both."""
+    reducer = _get_reducer("trace_fetched_files")
+    f1 = _trace_fetched_file(path="src/foo.py")
+    f2 = _trace_fetched_file(path="src/bar.py")
+    merged = reducer([f1], [f2])
+    assert len(merged) == 2
