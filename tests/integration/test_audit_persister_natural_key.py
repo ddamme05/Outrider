@@ -199,6 +199,10 @@ async def test_conflict_path_raises_on_target_file_divergence(
         persister_setup.review_id,
         source_finding_id,
         target_file="src/handlers/login.py",  # identity-subset divergence
+        # Schema's cross-field validator: resolved → target_file ==
+        # resolved_candidate_paths[0]. Update both in lockstep to
+        # construct a valid event with a diverging target_file.
+        resolved_candidate_paths=("src/handlers/login.py",),
     )
 
     with pytest.raises(AuditPersisterNaturalKeyConflict) as exc_info:

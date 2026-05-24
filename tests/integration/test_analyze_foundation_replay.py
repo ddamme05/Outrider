@@ -96,10 +96,13 @@ def _round(pass_index: int = 0) -> AnalysisRound:
 
 def _candidate(seed: str) -> TraceCandidate:
     """Construct a TraceCandidate fixture. Per DECISIONS.md#024 trace
-    candidates are dotted Python import strings — the seed is folded
-    into a single-part identifier."""
+    candidates are dotted Python import strings — the seed is sanitized
+    (hyphens → underscores) and folded into a single-part identifier so
+    test-author-friendly seeds like 'auth-mw' don't trip the
+    identifier-validity check (added in Group 1's
+    `is_valid_import_string` predicate tightening)."""
     source_proposal_hash = compute_identity_hash({"prop": seed})
-    import_string = f"pkg_{seed}"
+    import_string = f"pkg_{seed.replace('-', '_')}"
     reason = "x"
     return TraceCandidate(
         candidate_id=compute_candidate_id(

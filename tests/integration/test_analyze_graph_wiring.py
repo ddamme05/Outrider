@@ -373,6 +373,19 @@ class _StubPublishEventSink:
         return None
 
 
+class _StubTraceEventSink:
+    """No-op `TraceEventSink` for analyze-graph wiring tests.
+
+    Trace is now wired into the graph (post the trace-node arc); these
+    analyze-wiring tests don't drive trace activation (no
+    trace_candidates in fixtures), so the stub just admits the
+    structural Protocol check at build_graph time. Returns the incoming
+    event verbatim if a future fixture changes routing to invoke trace."""
+
+    async def emit_trace_decision(self, event: Any) -> Any:
+        return event
+
+
 class _StubGitHubPublisher:
     """No-op `GitHubPublisher`. Same rationale as `_StubPublishEventSink`."""
 
@@ -405,6 +418,7 @@ def _build_kwargs(
         # these tests don't reach publish but build_graph's structural
         # Protocol gate requires both.
         "publish_event_sink": _StubPublishEventSink(),
+        "trace_sink": _StubTraceEventSink(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
@@ -451,7 +465,8 @@ def test_compiled_graph_has_analyze_node_and_correct_edges(
     assert "intake" in nodes
     assert "triage" in nodes
     assert "analyze" in nodes
-    assert "trace" not in nodes  # trace spec hasn't landed; must NOT be pre-wired
+    assert "trace" in nodes  # trace spec landed 2026-05-24; node IS wired
+    assert "publish" in nodes
 
     edges = {(e.source, e.target) for e in graph.get_graph().edges}
     # START → intake is the only statically-visible START-reachable edge;

@@ -336,6 +336,19 @@ class _StubPublishEventSink:
         return None
 
 
+class _StubTraceEventSink:
+    """No-op `TraceEventSink` (structural Protocol satisfier).
+
+    Tests in this file exercise intake→triage→analyze; trace runs only
+    when analyze emits trace_candidates, which the seed state's SKIP-tier
+    files prevent. The stub admits the structural Protocol check at
+    build_graph; returns the incoming event verbatim if a future
+    fixture changes routing to invoke trace."""
+
+    async def emit_trace_decision(self, event: Any) -> Any:
+        return event
+
+
 class _StubGitHubPublisher:
     """No-op `GitHubPublisher`. Same rationale as `_StubPublishEventSink`."""
 
@@ -369,6 +382,7 @@ def _graph_kwargs(
         "file_examination_sink": file_examination_sink or _RecordingFileExaminationSink(),
         "analyze_event_sink": _RecordingAnalyzeEventSink(),
         "publish_event_sink": _StubPublishEventSink(),
+        "trace_sink": _StubTraceEventSink(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
