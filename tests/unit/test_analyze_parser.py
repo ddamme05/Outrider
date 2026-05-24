@@ -1280,6 +1280,42 @@ def test_hostile_import_string_does_not_crash_parser() -> None:
     assert result.counters.n_trace_candidates_dropped_malformed == 1
 
 
+def test_admitted_finding_carries_proposal_hash_from_compute_recipe() -> None:
+    """Per DECISIONS.md#025: analyze's admission path threads proposal_hash
+    from compute_proposal_hash through to ReviewFinding construction.
+    The same value the rejected branch (FindingProposalRejectedEvent.proposal_hash)
+    would emit appears on admitted findings — closes the trace-join contract."""
+    from outrider.policy.canonical import compute_proposal_hash
+
+    response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+    assert len(result.admitted_findings) == 1
+    admitted = result.admitted_findings[0]
+
+    # The expected proposal_hash matches the canonical recipe over the
+    # admitted proposal's payload (same recipe the rejected branch uses).
+    # Reading _minimal_proposal defaults: source_file_path=src/x.py,
+    # finding_type=sql_injection, evidence_tier=judged, no query_match_id /
+    # trace_path, title/description/evidence are "t"/"d"/"e", span 0-1.
+    expected_hash = compute_proposal_hash(
+        source_file_path="src/x.py",
+        finding_type="sql_injection",
+        evidence_tier="judged",
+        query_match_id=None,
+        trace_path=None,
+        title="t",
+        description="d",
+        evidence="e",
+        byte_start=0,
+        byte_end=1,
+    )
+    assert admitted.proposal_hash == expected_hash
+
+
 def test_dropped_malformed_counter_increments_per_dropped_candidate() -> None:
     """Sharp-edges F1 audit-fold: the n_trace_candidates_dropped_malformed
     counter increments ONCE per dropped raw candidate, not per affected

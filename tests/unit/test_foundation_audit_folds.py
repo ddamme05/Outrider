@@ -436,6 +436,7 @@ def _valid_finding() -> ReviewFinding:
             line_end=12,
             finding_type=FindingType.SQL_INJECTION,
         ),
+        proposal_hash="a" * 64,  # Per DECISIONS.md#025; dummy SHA-256 hex.
     )
 
 
@@ -538,6 +539,7 @@ def test_review_finding_rejects_drifted_dimension() -> None:
                 line_end=12,
                 finding_type=FindingType.SQL_INJECTION,
             ),
+            proposal_hash="a" * 64,  # Per DECISIONS.md#025.
         )
 
 

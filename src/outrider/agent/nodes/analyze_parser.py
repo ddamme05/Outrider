@@ -488,6 +488,15 @@ def parse_analyze_response(
                 evidence=raw_proposal.evidence,
                 query_match_id=raw_proposal.query_match_id,
                 trace_path=raw_proposal.trace_path,
+                # Per DECISIONS.md#025: admitted findings carry the
+                # `proposal_hash` for trace's join contract. Same value
+                # the rejected branch (proposal_rejections.append(...))
+                # passes to FindingProposalRejectedEvent — both branches
+                # use the SAME pre-computed `proposal_hash` from the
+                # per-proposal compute_proposal_hash call above. Provenance
+                # link between TraceCandidate.source_proposal_hash and
+                # admitted finding_id is closed at admission time.
+                proposal_hash=proposal_hash,
                 content_hash=compute_finding_content_hash(
                     file_path=file_path,
                     line_start=line_start,

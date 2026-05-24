@@ -82,6 +82,7 @@ def _build_finding(
         query_match_id=query_match_id,
         trace_path=trace_path,
         policy_version="1.0.0",
+        proposal_hash="a" * 64,  # Per DECISIONS.md#025; mirror of ReviewFinding.
     )
 
 

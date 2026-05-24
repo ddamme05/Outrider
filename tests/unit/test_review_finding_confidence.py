@@ -38,6 +38,8 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "title": "t",
         "description": "d",
         "evidence": "e",
+        # Per DECISIONS.md#025: admitted findings carry proposal_hash.
+        "proposal_hash": "a" * 64,
     }
     fields.update(overrides)
     if "content_hash" not in overrides:

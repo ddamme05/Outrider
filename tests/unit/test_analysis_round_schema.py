@@ -21,7 +21,11 @@ from outrider.policy.canonical import compute_identity_hash, compute_round_id
 from outrider.schemas import AnalysisRound, ReviewDimension, ReviewFinding
 
 
-def _finding() -> ReviewFinding:
+def _finding(proposal_hash: str = "a" * 64) -> ReviewFinding:
+    """Build a fixture finding. `proposal_hash` is parametrized so tests
+    that put multiple findings in one AnalysisRound (exercising the new
+    `_enforce_findings_proposal_hash_unique` validator per #025) can
+    distinguish each finding without overriding all other fields."""
     return ReviewFinding(
         finding_id=uuid4(),
         review_id=uuid4(),
@@ -43,6 +47,7 @@ def _finding() -> ReviewFinding:
             line_end=12,
             finding_type=FindingType.SQL_INJECTION,
         ),
+        proposal_hash=proposal_hash,
     )
 
 
@@ -219,8 +224,10 @@ def test_analysis_round_rejects_duplicate_in_files_skipped() -> None:
 def test_analysis_round_rejects_duplicate_finding_ids() -> None:
     """Two ReviewFindings with the same finding_id is a producer bug —
     `findings` is set-semantic by finding_id."""
-    f1 = _finding()
-    # Same finding_id, otherwise valid (different content_hash via file_path).
+    f1 = _finding()  # proposal_hash default "a" * 64
+    # Same finding_id, otherwise valid (different content_hash via file_path,
+    # distinct proposal_hash so the #025 within-round-uniqueness validator
+    # doesn't fire FIRST — this test targets finding_id collision).
     duplicate = ReviewFinding(
         finding_id=f1.finding_id,  # same id — bug
         review_id=uuid4(),
@@ -242,6 +249,7 @@ def test_analysis_round_rejects_duplicate_finding_ids() -> None:
             line_end=2,
             finding_type=FindingType.SQL_INJECTION,
         ),
+        proposal_hash="b" * 64,  # Distinct from f1's default; targets finding_id validator.
     )
     now = datetime.now(UTC)
     bad_round_id = compute_round_id(
@@ -265,8 +273,10 @@ def test_analysis_round_rejects_duplicate_finding_ids() -> None:
 def test_analysis_round_rejects_duplicate_content_hashes() -> None:
     """Two findings with the same content_hash collapse the finding-
     content-hash tuple's sorted form, changing the round_id digest."""
-    f1 = _finding()
-    # Same content_hash inputs => same hash, but different finding_id.
+    f1 = _finding()  # proposal_hash default "a" * 64
+    # Same content_hash inputs => same hash, but different finding_id +
+    # distinct proposal_hash so the #025 within-round-uniqueness validator
+    # doesn't fire FIRST — this test targets content_hash collision.
     duplicate = ReviewFinding(
         finding_id=uuid4(),  # different id...
         review_id=uuid4(),
@@ -283,6 +293,7 @@ def test_analysis_round_rejects_duplicate_content_hashes() -> None:
         evidence_tier=EvidenceTier.JUDGED,
         policy_version="1.0.0",
         content_hash=f1.content_hash,
+        proposal_hash="b" * 64,  # Distinct from f1's default; targets content_hash validator.
     )
     now = datetime.now(UTC)
     bad_round_id = compute_round_id(
@@ -297,6 +308,63 @@ def test_analysis_round_rejects_duplicate_content_hashes() -> None:
             pass_index=0,
             findings=(f1, duplicate),
             files_examined=("src/foo.py",),
+            files_skipped=(),
+            started_at=now,
+            ended_at=now,
+        )
+
+
+def test_analysis_round_rejects_duplicate_proposal_hashes() -> None:
+    """Per DECISIONS.md#025 point 4: admitted findings within a round
+    have unique proposal_hashes. Two findings sharing a proposal_hash
+    is a producer bug (compute_proposal_hash is content-derived from
+    the raw proposal payload; collision means analyze emitted two
+    findings from THE SAME logical proposal). Load-bearing for trace's
+    join contract — catching the collision at construction time
+    prevents the upstream producer bug from reaching trace's
+    collision-detecting lookup."""
+    # Two findings with DISTINCT finding_id + DISTINCT content_hash but
+    # SAME proposal_hash. The other validators ( _enforce_findings_unique +
+    # _enforce_findings_proposal_hash_unique) split responsibility cleanly:
+    # this test isolates the proposal_hash validator by varying
+    # finding_id + content_hash inputs but pinning proposal_hash.
+    f1 = _finding(proposal_hash="a" * 64)
+    duplicate = ReviewFinding(
+        finding_id=uuid4(),  # distinct from f1.finding_id
+        review_id=uuid4(),
+        installation_id=12345,
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.CRITICAL,
+        file_path="src/other.py",  # distinct file → distinct content_hash
+        line_start=20,
+        line_end=22,
+        title="x",
+        description="y",
+        evidence="z",
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version="1.0.0",
+        content_hash=compute_finding_content_hash(
+            file_path="src/other.py",
+            line_start=20,
+            line_end=22,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+        proposal_hash="a" * 64,  # SAME as f1 — triggers the validator
+    )
+    now = datetime.now(UTC)
+    bad_round_id = compute_round_id(
+        pass_index=0,
+        files_examined=("src/foo.py", "src/other.py"),
+        files_skipped=(),
+        finding_content_hashes=(f1.content_hash, duplicate.content_hash),
+    )
+    with pytest.raises(ValidationError, match="duplicate proposal_hashes"):
+        AnalysisRound(
+            round_id=bad_round_id,
+            pass_index=0,
+            findings=(f1, duplicate),
+            files_examined=("src/foo.py", "src/other.py"),
             files_skipped=(),
             started_at=now,
             ended_at=now,

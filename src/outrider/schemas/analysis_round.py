@@ -142,6 +142,37 @@ class AnalysisRound(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _enforce_findings_proposal_hash_unique(self) -> Self:
+        """`findings` is set-semantic by `proposal_hash` per
+        `DECISIONS.md#025` point 4 — admitted findings within a review
+        carry unique proposal_hashes. Two findings sharing a proposal_hash
+        is a producer bug: `compute_proposal_hash` is content-derived
+        from the raw proposal payload (per `DECISIONS.md#022`), so a
+        collision means analyze emitted two findings from THE SAME logical
+        proposal — which by definition is the same finding, not two.
+
+        Load-bearing for trace's join contract per #025 point 5: trace
+        builds a `{f.proposal_hash → f.finding_id}` lookup over
+        admitted findings and raises `TraceJoinIntegrityError` on
+        duplicates. Catching the collision here at construction time
+        prevents the upstream producer bug from reaching trace
+        (where its rejection would surface as a loud-fail at the
+        join layer rather than at the source). Cross-round uniqueness
+        is pinned by an analyze-side test, not by this validator
+        (which sees only this round's findings).
+        """
+        proposal_hashes = [f.proposal_hash for f in self.findings]
+        if len(proposal_hashes) != len(set(proposal_hashes)):
+            raise ValueError(
+                f"AnalysisRound.findings contains duplicate proposal_hashes: "
+                f"{sorted(proposal_hashes)!r}. Per DECISIONS.md#025 point 4, "
+                f"admitted findings within a round have unique proposal_hashes; "
+                f"a collision means analyze emitted two findings from the same "
+                f"raw proposal."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_round_id_matches_payload(self) -> Self:
         """Assert `round_id == compute_round_id(...)` over this round's payload.
 

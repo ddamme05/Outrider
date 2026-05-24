@@ -500,6 +500,14 @@ class FindingEvent(AuditEventBase):
         | None
     ) = None
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
+    # Audit-shadow mirror of `ReviewFinding.proposal_hash` per
+    # `DECISIONS.md#025` (Accepted 2026-05-24). Provenance link from
+    # admitted findings to `TraceCandidate.source_proposal_hash` so
+    # trace's join contract holds at replay time without consulting
+    # the in-memory ReviewFinding. NOT part of `finding_content_hash`
+    # recipe (#025 point 3): content hash stays stable across LLM
+    # phrasing variation; proposal_hash carries provenance.
+    proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
 
     @field_validator("file_path")
     @classmethod

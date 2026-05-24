@@ -187,6 +187,7 @@ def _make_finding(
             line_end=line_end,
             finding_type=finding_type,
         ),
+        proposal_hash="a" * 64,  # Per DECISIONS.md#025; dummy SHA-256 hex.
     )
 
 
@@ -319,6 +320,7 @@ async def test_query_prior_publish_event_fires_before_empty_eligible_check() -> 
             line_end=2,
             finding_type=crit_type,
         ),
+        proposal_hash="b" * 64,  # Per DECISIONS.md#025; distinct from default fixture.
     )
     state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
     sink = _RecordingPublishEventSink()
