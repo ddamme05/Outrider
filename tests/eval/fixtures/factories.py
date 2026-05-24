@@ -25,8 +25,9 @@ What each factory produces:
     with canonical hash + `is_eval=True`.
   - `TraceDecisionEventFactory.create()` → `TraceDecisionEvent` (frozen
     + extra=forbid) with the three-rule cross-field validator satisfied
-    (resolution_status="resolved" + target_file in candidates_considered
-    by default; overrides can supply unresolved/ambiguous shapes).
+    (resolution_status="resolved" + target_file equal to the single
+    `resolved_candidate_paths` entry, per #024 amendment to #017;
+    overrides can supply unresolved/ambiguous shapes).
   - `HITLRequestEventFactory.create()` → `HITLRequestEvent` with
     `is_eval=True`.
   - `HITLDecisionEventFactory.create()` → `HITLDecisionEvent` with
@@ -212,10 +213,13 @@ class FindingEventFactory:
 class TraceDecisionEventFactory:
     """Factory for `TraceDecisionEvent` Pydantic instances.
 
-    Defaults to `resolution_status="resolved"` with `target_file` in
-    `candidates_considered` (satisfies the three-rule cross-field validator
-    per `DECISIONS.md#017`). Overrides for unresolved/ambiguous outcomes
-    must also set `target_file=None` and `candidates_considered` accordingly.
+    Defaults to `resolution_status="resolved"` with `target_file` equal
+    to the single `resolved_candidate_paths` entry (satisfies the
+    three-rule cross-field validator per `DECISIONS.md#017` × #024
+    amendment — `candidates_considered` was renamed to the parallel
+    `proposed_import_strings` + `resolved_candidate_paths` tuples).
+    Overrides for unresolved/ambiguous outcomes must also set
+    `target_file=None` and adjust the two tuples accordingly.
     """
 
     @classmethod
@@ -322,7 +326,8 @@ def _reject_is_eval_false(overrides: dict[str, Any]) -> None:
     (UNION ALL across 5 tables); this helper catches them at construction so
     the error names the factory + caller, not just the row id at teardown.
     Loud-failure pattern matches `PerFindingDecision.reason` no-default and
-    `candidates_considered` no-default — fail where the bug is, not later.
+    `proposed_import_strings` no-default (formerly `candidates_considered`,
+    renamed per #024) — fail where the bug is, not later.
 
     The check is `is not True` (not `is False`) because Pydantic V2 will
     coerce truthy/falsy values like `0`, `""`, `"false"` to `False` in

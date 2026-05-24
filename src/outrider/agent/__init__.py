@@ -10,10 +10,10 @@ Module structure follows docs/conventions.md "File organization":
   so node files write `from outrider.agent.state import ReviewState` without
   reaching into `schemas/`.
 - `agent/graph.py` — `build_graph(...)` factory exposing the V1
-  four-node graph (intake → triage → analyze → publish → END). All
-  arguments are keyword-only; the canonical order is documented in
+  five-node graph (intake → triage → analyze ⇄ trace → publish → END).
+  All arguments are keyword-only; the canonical order is documented in
   `docs/spec.md §9.3`. See `build_graph`'s signature for the full
-  required-dep set (LLM provider, four sink Protocols, GitHub
+  required-dep set (LLM provider, five sink Protocols, GitHub
   publisher, import-path resolver, etc.).
 - `agent/nodes/<node>.py` — the per-node body.
 """

@@ -18,7 +18,8 @@ Two responsibilities:
    `tests/eval/fixtures/factories.py`); this gate is the after-the-fact
    check. Pattern matches the project's loud-failure discipline
    (`PerFindingDecision.reason` required-no-default,
-   `candidates_considered` required-no-default,
+   `proposed_import_strings` required-no-default (formerly
+   `candidates_considered`, renamed per #024),
    `FindingEvent.finding_content_hash` equality verifier).
 
    Earlier drafts split this into a separate `is_eval_injection` autouse
@@ -230,7 +231,7 @@ async def eval_db() -> AsyncGenerator[str]:
                         "row(s) with is_eval=False in eval-test DB. "
                         "Factories MUST set is_eval=True; this gate is the "
                         "loud-failure check (per `PerFindingDecision.reason` "
-                        "no-default + `candidates_considered` no-default + "
+                        "no-default + `proposed_import_strings` no-default + "
                         "`FindingEvent.finding_content_hash` equality "
                         "verifier discipline). Violations: "
                         f"{[(v.table_name, v.row_id) for v in violations]}"

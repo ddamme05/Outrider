@@ -53,7 +53,14 @@ def _build_finding(
     """Build a ReviewFinding fixture; defaults to a fresh proposal_hash.
     `file_path` is parameterized so callers can vary it across siblings
     in one round (the AnalysisRound validator rejects duplicate
-    content_hashes; varying file_path produces distinct hashes)."""
+    content_hashes; varying file_path produces distinct hashes).
+
+    The default `proposal_hash` is a fresh hex-64 string (two `uuid4().hex`
+    concatenated, 32+32 chars). Two default `_build_finding()` calls
+    therefore produce distinct hashes — required so AnalysisRound's
+    `_enforce_findings_proposal_hash_unique` validator AND trace's
+    `TraceJoinIntegrityError` guard don't false-fire on tests that
+    happen to use two default findings in one round."""
     return ReviewFinding(
         finding_id=uuid4(),
         review_id=uuid4(),
@@ -75,7 +82,7 @@ def _build_finding(
             line_end=12,
             finding_type=FindingType.SQL_INJECTION,
         ),
-        proposal_hash=proposal_hash if proposal_hash is not None else "a" * 64,
+        proposal_hash=(proposal_hash if proposal_hash is not None else (uuid4().hex + uuid4().hex)),
     )
 
 

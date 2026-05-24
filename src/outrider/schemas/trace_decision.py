@@ -49,7 +49,7 @@ from uuid import UUID  # noqa: TC003 — Pydantic field type, needs runtime impo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from outrider.coordinates import validate_diff_path
+from outrider.coordinates import is_valid_import_string, validate_diff_path
 
 
 class TraceDecision(BaseModel):
@@ -89,6 +89,19 @@ class TraceDecision(BaseModel):
         tuple still carries multiple resolver-output paths that
         consumers (analyze round 2, replay reconstruction) rely on."""
         return tuple(validate_diff_path(p) for p in paths)
+
+    @field_validator("proposed_import_strings")
+    @classmethod
+    def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """Per-element `is_valid_import_string` so the schema layer
+        enforces the same canonical form `TraceCandidate.import_string`
+        guarantees at the singleton boundary. Defense in depth against a
+        direct state-layer construction (replay path, test fixture)
+        bypassing the upstream singleton validator. Mirror of
+        `TraceDecisionEvent._enforce_canonical_proposed_import_strings`.
+        Returns the tuple of NFC-normalized canonical forms.
+        """
+        return tuple(is_valid_import_string(value) for value in values)
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:

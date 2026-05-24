@@ -76,7 +76,7 @@ from pydantic import (
 )
 
 from outrider.ast_facts.models import SkipReason
-from outrider.coordinates import validate_diff_path
+from outrider.coordinates import is_valid_import_string, validate_diff_path
 from outrider.llm.pricing import PRICING_VERSION_PATTERN
 from outrider.policy import (
     EvidenceTier,
@@ -726,6 +726,22 @@ class TraceDecisionEvent(AuditEventBase):
         of canonicalized paths.
         """
         return tuple(validate_diff_path(p) for p in paths)
+
+    @field_validator("proposed_import_strings")
+    @classmethod
+    def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """Per-element audit-shadow `is_valid_import_string` on every
+        LLM-proposed import string. Defense in depth against a direct
+        emitter (replay path, test fixture, future callsite) bypassing
+        `TraceCandidate.import_string`'s field validator. The upstream
+        singleton field validates one import string at construction;
+        this tuple gathers many, and the audit boundary must rerun the
+        same validation so malformed / non-canonical strings cannot
+        persist into `audit_events`. Returns the tuple of NFC-normalized
+        canonical forms (matching the audit-shadow pattern used for
+        `resolved_candidate_paths` and `target_file`).
+        """
+        return tuple(is_valid_import_string(value) for value in values)
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:
