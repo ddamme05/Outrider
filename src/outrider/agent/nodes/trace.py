@@ -118,9 +118,11 @@ async def trace(
 ) -> dict[str, object]:
     """Run one trace pass.
 
-    Returns `{"trace_decisions": [...], "trace_fetched_files": [...]}`
-    for LangGraph's reducer to merge (both fields use
-    `append_with_dedup_by`).
+    Returns `{"trace_decisions": [...], "trace_fetched_files": [...],
+    "last_trace_pass_fetched_count": int}` for LangGraph's reducer to
+    merge (the two list fields use `append_with_dedup_by`;
+    `last_trace_pass_fetched_count` is a scalar overwrite per invocation
+    — the per-pass-delta signal `_trace_router` reads).
 
     Step order matches the module docstring. The Haiku ranking call is
     one per invocation (not per finding); the LLM sees all candidates
@@ -343,9 +345,14 @@ async def trace(
         )
     )
 
+    # `last_trace_pass_fetched_count` is the router's per-invocation
+    # delta signal — see ReviewState's field comment. Writing it on
+    # every trace() invocation (including zero-fetch calls) keeps the
+    # "trace JUST yielded new fetches" contract honest. Per CodeRabbit R1.
     return {
         "trace_decisions": accumulated_decisions,
         "trace_fetched_files": accumulated_fetched_files,
+        "last_trace_pass_fetched_count": len(accumulated_fetched_files),
     }
 
 

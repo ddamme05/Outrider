@@ -508,12 +508,18 @@ class TestIsValidImportString:
         admits them by design — `validate_diff_path` makes the same
         trade-off. Rejecting them would block legitimate non-Latin-script
         identifier contributions, which the project deliberately accepts
-        instead of the marginal homoglyph-attack risk."""
-        # ZWJ-embedded identifier passes (precondition)
-        assert "foo‍bar".isidentifier()
-        # Predicate ADMITS (this is the documented trade-off)
-        result = is_valid_import_string("foo‍bar.baz")
-        assert result == "foo‍bar.baz"
+        instead of the marginal homoglyph-attack risk.
+
+        Exercises BOTH code points programmatically (\u200c and \u200d)
+        rather than embedded visually-identical literals — the test name
+        claims both AND a ZWNJ-specific regression would silently pass
+        if only ZWJ were exercised.
+        """
+        for value in ("foo\u200cbar.baz", "foo\u200dbar.baz"):
+            # Precondition: Python admits the identifier with the joiner.
+            assert value.split(".")[0].isidentifier()
+            # Predicate ADMITS (this is the documented trade-off).
+            assert is_valid_import_string(value) == value
 
     # Rejections — each raises ValueError; message discriminates the reason
     def test_empty_string_raises(self) -> None:

@@ -30,11 +30,14 @@ from uuid import uuid4
 import pytest  # noqa: TC002 — used at runtime as parameter type
 
 from outrider.agent.nodes.analyze import analyze
+from outrider.audit.events import compute_finding_content_hash
 from outrider.llm.base import LLMResponse
-from outrider.policy import FindingType
+from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import compute_round_id
 from outrider.schemas import (
     AnalysisRound,
+    ReviewDimension,
+    ReviewFinding,
     ReviewState,
     TraceFetchedFile,
 )
@@ -156,24 +159,62 @@ def _build_seed_state(
     )
 
 
-def _build_round_0(file_path: str = "src/foo.py") -> AnalysisRound:
+def _build_round_0(
+    file_path: str = "src/foo.py",
+    *,
+    findings: tuple[ReviewFinding, ...] = (),
+) -> AnalysisRound:
     """Build a pass-0 AnalysisRound representing analyze's first
-    invocation. Used as the seed state for pass-1 tests."""
+    invocation. Used as the seed state for pass-1 tests. `findings`
+    is parameterized so callers that need a source_finding for a
+    trace-fetched file can wire the join (per analyze pass-1's
+    source_findings_by_id lookup added with R4)."""
     now = datetime.now(UTC)
     round_id = compute_round_id(
         pass_index=0,
         files_examined=(file_path,),
         files_skipped=(),
-        finding_content_hashes=(),
+        finding_content_hashes=tuple(f.content_hash for f in findings),
     )
     return AnalysisRound(
         round_id=round_id,
         pass_index=0,
-        findings=(),
+        findings=findings,
         files_examined=(file_path,),
         files_skipped=(),
         started_at=now,
         ended_at=now,
+    )
+
+
+def _build_source_finding() -> ReviewFinding:
+    """Build a minimal admitted ReviewFinding the seed pass-0 round can
+    carry. `TraceFetchedFile.source_finding_id` references this finding's
+    id; analyze pass-1's source_findings_by_id lookup resolves it for the
+    post-trace prompt (title/description/evidence). Per R4."""
+    file_path = "src/foo.py"
+    return ReviewFinding(
+        finding_id=uuid4(),
+        review_id=uuid4(),
+        installation_id=12345,
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.CRITICAL,
+        file_path=file_path,
+        line_start=10,
+        line_end=12,
+        title="Source finding title",
+        description="Source finding description",
+        evidence="def vulnerable_helper():\n    return raw_concat(input)\n",
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version="1.0.0",
+        content_hash=compute_finding_content_hash(
+            file_path=file_path,
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+        proposal_hash=uuid4().hex + uuid4().hex,
     )
 
 
@@ -270,6 +311,11 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     )
     provider = _MockLLMProvider(response_text=inferred_response)
 
+    # Build a source finding the trace_fetched_file can point at —
+    # analyze pass-1's `source_findings_by_id` lookup (added per R4)
+    # raises if the source_finding_id has no matching admitted finding
+    # in state.analysis_rounds.
+    source_finding = _build_source_finding()
     fetched_file = TraceFetchedFile(
         path="src/middleware/auth.py",
         content_head=(
@@ -279,11 +325,11 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
             "def validate_token(token: str) -> bool:\n"
             "    return token == 'admin'\n"
         ),
-        source_finding_id=uuid4(),
+        source_finding_id=source_finding.finding_id,
     )
 
     state = _build_seed_state(
-        analysis_rounds=[_build_round_0()],
+        analysis_rounds=[_build_round_0(findings=(source_finding,))],
         trace_fetched_files=[fetched_file],
     )
 

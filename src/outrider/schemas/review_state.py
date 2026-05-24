@@ -189,6 +189,23 @@ class ReviewState(BaseModel):
         append_with_dedup_by(lambda f: f.path),
     ] = Field(default_factory=list)
 
+    # Per-invocation delta count: how many NEW trace-fetched files the
+    # most recent `trace()` call added to state (NOT the cumulative
+    # `len(trace_fetched_files)`). Default-overwrite reducer (LangGraph's
+    # default for un-annotated fields) means each trace() invocation's
+    # value REPLACES the previous, preserving per-invocation delta
+    # semantics across checkpoint replay.
+    #
+    # `_trace_router` reads this to decide whether to re-enter analyze.
+    # Checking cumulative `trace_fetched_files` would route to analyze
+    # even when the latest trace() call yielded nothing new (replay
+    # path or trace producing zero new fetches after an earlier
+    # successful pass). With MAX_ANALYSIS_ROUNDS=2 the depth gate
+    # masks this today, but the contract is "re-enter analyze iff
+    # trace JUST yielded new fetches" — the per-invocation delta is
+    # the source of truth. Per CodeRabbit R1.
+    last_trace_pass_fetched_count: int = 0
+
 
 __all__ = [
     "ReviewState",

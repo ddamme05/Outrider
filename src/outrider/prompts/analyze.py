@@ -386,12 +386,21 @@ Source finding id (trace-fetched on behalf of): {source_finding_id}
 
 Pass index: {pass_index} (post-trace).
 
+## Source finding (the originating finding that drove trace to fetch this file)
+
+Title: {source_finding_title}
+
+Description: {source_finding_description}
+
+Evidence (verbatim quoted code from the source finding's location):
+{source_finding_evidence_fenced}
+
 This file was fetched by the trace node because finding
 {source_finding_id} referenced an import resolving here. Examine the
 file's scope units for behavior connecting the source finding's
-evidence to this code; emit `inferred` proposals with `trace_path` if
-you find any. `observed` / `judged` proposals remain admissible per
-the pass-0 rules.
+evidence (above) to this code; emit `inferred` proposals with
+`trace_path` if you find any. `observed` / `judged` proposals remain
+admissible per the pass-0 rules.
 """
 
 
@@ -401,6 +410,9 @@ def render_post_trace(
     scope_unit_context: str,
     query_match_id_list: str,
     source_finding_id: object,
+    source_finding_title: str,
+    source_finding_description: str,
+    source_finding_evidence: str,
     pass_index: int,
 ) -> AnalyzePromptParts:
     """Build the (system, user) prompt pair for a pass-1 (post-trace) call.
@@ -415,12 +427,22 @@ def render_post_trace(
     context (NOT `SYSTEM_FILE_CONTEXT_TEMPLATE`, which is diff-scoped
     and would falsely tell the model "changed scope units") + the
     post-trace INFERRED-admission suffix. The user prompt names the
-    source finding explicitly so the model knows the reasoning target.
+    source finding by id AND includes its title + description + evidence
+    so the model can connect the trace-fetched file back to the
+    originating finding (per CodeRabbit R4 — `source_finding_id` alone
+    is opaque to the model and drives generic whole-file review).
 
     `source_finding_id` is `UUID` at runtime; typed as `object` here
     so the function accepts both the schema's `UUID` field and string
     forms that pre-validation tests might construct.
+
+    `source_finding_evidence` is verbatim quoted code (≤2000 chars per
+    `ReviewFinding.evidence` schema), wrapped in a dynamic-length
+    `text`-fence via `safe_code_fence` — evidence is LLM-output text
+    that may contain `` ``` `` sequences from the originating PR.
     """
+    from outrider.prompts import safe_code_fence
+
     system_prompt = (
         SYSTEM_PROMPT_INVARIANTS
         + POST_TRACE_FILE_CONTEXT_TEMPLATE.format(
@@ -433,6 +455,9 @@ def render_post_trace(
     user_prompt = POST_TRACE_USER_TEMPLATE.format(
         file_path=file_path,
         source_finding_id=source_finding_id,
+        source_finding_title=source_finding_title,
+        source_finding_description=source_finding_description,
+        source_finding_evidence_fenced=safe_code_fence(source_finding_evidence, lang="text"),
         pass_index=pass_index,
     )
     return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)

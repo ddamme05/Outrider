@@ -1598,6 +1598,12 @@ class AuditPersister:
             detected at least one field divergence.
         """
         payload = _serialize_event_payload(event)
+        # Canonical event_type discriminator via the schema's literal
+        # default — same pattern as `query_prior_publish_event` below.
+        # Hardcoding "trace_decision" in two places (SELECT predicate +
+        # partial-index WHERE) would silently disable both lookups if
+        # the literal got renamed in the schema. One source of truth.
+        trace_decision_event_type: str = TraceDecisionEvent.model_fields["event_type"].default
         # SELECT predicate uses `.astext == ...` so the column reference
         # compiles to `payload->>'source_finding_id'`, matching the partial
         # unique index expression (db/migrations/.../8f2a4c1e7b3d). Drift
@@ -1607,7 +1613,7 @@ class AuditPersister:
         # to a seq scan.
         natural_key_select_predicate = (
             (AuditEventRow.review_id == event.review_id)
-            & (AuditEventRow.event_type == "trace_decision")
+            & (AuditEventRow.event_type == trace_decision_event_type)
             & (AuditEventRow.payload["source_finding_id"].astext == str(event.source_finding_id))
         )
 
@@ -1637,7 +1643,8 @@ class AuditPersister:
                         sa_text("(payload->>'source_finding_id')"),
                     ],
                     index_where=sa_text(
-                        "event_type = 'trace_decision' AND payload ? 'source_finding_id'"
+                        f"event_type = '{trace_decision_event_type}' "
+                        "AND payload ? 'source_finding_id'"
                     ),
                 )
                 .returning(AuditEventRow.event_id)
