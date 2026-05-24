@@ -770,7 +770,11 @@ def test_module_exports_all_documented_surfaces() -> None:
         "MAX_TOKENS",
         # Post-trace prompt surfaces added 2026-05-24 for trace-node arc
         # pass-1 INFERRED admission. See trace.py and analyze.py for the
-        # render_post_trace call site.
+        # render_post_trace call site. `POST_TRACE_FILE_CONTEXT_TEMPLATE`
+        # is the whole-file analogue of SYSTEM_FILE_CONTEXT_TEMPLATE —
+        # diff-scoped wording ("changed scope units") is wrong for
+        # trace-fetched files outside the PR diff.
+        "POST_TRACE_FILE_CONTEXT_TEMPLATE",
         "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
         "POST_TRACE_USER_TEMPLATE",
         "SYSTEM_FILE_CONTEXT_TEMPLATE",

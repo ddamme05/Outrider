@@ -1,19 +1,23 @@
-# Four-node StateGraph(ReviewState) factory: intake → triage → analyze → publish.
-"""Four-node `StateGraph(ReviewState)` factory: intake → triage → analyze → publish.
+# Five-node StateGraph(ReviewState) factory: intake → triage → analyze ⇄ trace → publish.
+"""Five-node `StateGraph(ReviewState)` factory: intake → triage → analyze ⇄ trace → publish.
 
-V1 ships FOUR nodes: `intake`, `triage`, `analyze`, `publish`. Intake
-enriches `pr_context.changed_files` per `DECISIONS.md#020`; triage runs
-a fast LLM pass for tier classification; analyze runs one Sonnet call
-per DEEP/STANDARD-tier file and emits findings; publish routes each
-finding through `coordinates/`, applies the V1 eligibility gate
-(CRITICAL/HIGH withheld until HITL ships), and posts a single GitHub
-review for the eligible-inline set. The factory produces a
-`CompiledStateGraph` that consumers invoke via
-`await graph.ainvoke(seed_state)`.
+V1 ships FIVE nodes: `intake`, `triage`, `analyze`, `trace`, `publish`.
+Intake enriches `pr_context.changed_files` per `DECISIONS.md#020`;
+triage runs a fast LLM pass for tier classification; analyze runs one
+Sonnet call per DEEP/STANDARD-tier file and emits findings; trace
+consumes `state.trace_candidates`, ranks via Haiku, resolves via the
+two-phase fetch (probe + content), and emits `TraceDecisionEvent`
+audit-first — the analyze router loops back into analyze when new
+trace-fetched files arrived; publish routes each finding through
+`coordinates/`, applies the V1 eligibility gate (CRITICAL/HIGH
+withheld until HITL ships), and posts a single GitHub review for the
+eligible-inline set. The factory produces a `CompiledStateGraph` that
+consumers invoke via `await graph.ainvoke(seed_state)`.
 
-Graph topology beyond intake → triage → analyze → publish (trace →
-synthesize → hitl) is downstream of this spec; the `analyze ⇄ trace`
-loop and the HITL interrupt land in subsequent feature specs.
+The adaptive `analyze ⇄ trace` loop is bounded by `MAX_ANALYSIS_ROUNDS`
+(`agent/nodes/trace.py`, depth-2 ceiling). Graph topology beyond the
+five wired nodes (synthesize → hitl) is downstream of this spec; the
+HITL interrupt lands in a subsequent feature spec.
 
 ## Routing: Command, not static or conditional edges from intake
 
@@ -39,7 +43,7 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `provider: LLMProvider` — LLM transport for triage AND analyze.
   - `model_config: ModelConfig` — `triage_model` and `analyze_model` are
     captured at callsite (per `model-strings-from-config-not-hardcoded`).
-  - `phase_event_sink: PhaseEventSink` — required for all four nodes;
+  - `phase_event_sink: PhaseEventSink` — required for all five nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
     per-file content-fetch events AND analyze's per-file examination
@@ -137,7 +141,7 @@ def build_graph(
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
 ) -> _CompiledTriageGraph:
-    """Build the four-node intake → triage → analyze → publish graph.
+    """Build the five-node intake → triage → analyze ⇄ trace → publish graph.
 
     Keyword-only arguments prevent positional-confusion bugs at callsites
     with multiple deps. Validation order: None checks first (cheaper),

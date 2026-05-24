@@ -401,9 +401,26 @@ class TestIsValidImportString:
     # NFC normalization — M3 / adversarial-modeler #1
     def test_nfc_composition_normalizes_decomposed_unicode(self) -> None:
         """Decomposed `é` (e + combining acute U+0065 U+0301) normalizes to
-        precomposed `é` (U+00E9). Returned value uses the composed form."""
-        decomposed = "café.bar"  # café.bar in NFD
-        precomposed = "café.bar"  # café.bar in NFC
+        precomposed `é` (U+00E9). Returned value uses the composed form.
+
+        Constructed via `unicodedata.normalize` (NOT visually-identical
+        string literals — both forms could compile to the SAME bytes
+        in a UTF-8 source file depending on the editor's save flow,
+        which would make `decomposed == precomposed` at the literal
+        level and the test would assert nothing). The pre-assert below
+        pins that the two forms differ byte-wise before exercising the
+        validator — cohort sibling of `test_analyze_parser.py` +
+        `test_trace_candidate_schema.py` for the SAME `is_valid_import_string`
+        validator.
+        """
+        import unicodedata
+
+        precomposed = "café.bar"
+        decomposed = unicodedata.normalize("NFD", precomposed)
+        # Sanity: NFD and NFC forms must differ byte-wise; otherwise
+        # the test is vacuous (a literal-equality assertion
+        # masquerading as validator-behavior).
+        assert decomposed != precomposed
         result = is_valid_import_string(decomposed)
         assert result == precomposed
 

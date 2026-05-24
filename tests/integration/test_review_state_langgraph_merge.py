@@ -123,7 +123,7 @@ class _MockLLMProvider:
 # intake's pr_context-replacement is a structural no-op at the
 # changed_files level, and tests that asserted "pr_context survives"
 # (originally written under the single-node triage graph) still hold
-# under the current four-node intake → triage → analyze → publish graph.
+# under the current five-node intake → triage → analyze ⇄ trace → publish graph.
 
 
 _SEED_FILENAME = "src/example.py"
@@ -441,12 +441,13 @@ def _build_seed_dict_with_naive_datetime() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 #
 # Originally rebuilt 2026-05-17 for the then-current two-node intake →
-# triage graph; the graph has since extended to four nodes (intake →
-# triage → analyze → publish) and these tests still hold because the
-# intake-side stubs produce a `ChangedFile` tuple byte-identical to the
-# seed's pr_context.changed_files (preserving pr_context-survival
-# assertions), and the SKIP-tier triage response keeps analyze + publish
-# as no-op pass-throughs. The `_graph_kwargs` helper wires every node's
+# triage graph; the graph has since extended to five nodes (intake →
+# triage → analyze ⇄ trace → publish) and these tests still hold
+# because the intake-side stubs produce a `ChangedFile` tuple
+# byte-identical to the seed's pr_context.changed_files (preserving
+# pr_context-survival assertions), and the SKIP-tier triage response
+# keeps analyze + trace + publish as no-op pass-throughs. The
+# `_graph_kwargs` helper wires every node's
 # deps via the same closure pattern.
 
 

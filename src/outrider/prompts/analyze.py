@@ -23,7 +23,12 @@ instead of scope-unit-clipped ones.
 Surfaces:
 
 - `SYSTEM_PROMPT_INVARIANTS` — fully static head of the system prompt.
-- `SYSTEM_FILE_CONTEXT_TEMPLATE` — file-scoped tail appended by `render`.
+- `SYSTEM_FILE_CONTEXT_TEMPLATE` — diff-scoped file tail appended by
+  `render` (says "the file's CHANGED scope units"; correct for pass-0
+  on PR-diff files, NOT for post-trace whole-file context).
+- `POST_TRACE_FILE_CONTEXT_TEMPLATE` — whole-file analogue appended by
+  `render_post_trace` (drops "changed" wording; trace-fetched files
+  live outside the PR diff).
 - `USER_TEMPLATE` — pass directives + diff hunks for clean calls.
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
@@ -35,7 +40,8 @@ Surfaces:
 - `AnalyzePromptParts` — frozen dataclass result. NOT a NamedTuple, so
   positional unpacking `(sys, usr) = render(...)` fails loud rather
   than silently masking a field swap.
-- `render` / `render_degraded` — build the (system, user) pair.
+- `render` / `render_post_trace` / `render_degraded` — build the
+  (system, user) pair for each pass shape.
 
 Per `webhook-strings-are-data-not-format-strings`: PR-sourced content
 enters via `str.format(**kwargs)` against structural placeholders;
@@ -346,6 +352,32 @@ behavior here; otherwise fall back to `judged`.
 """
 
 
+POST_TRACE_FILE_CONTEXT_TEMPLATE: Final[str] = """\
+
+## File under review (trace-fetched, whole-file)
+
+File: {file_path}
+
+## Scope-unit context
+
+This file was fetched by the trace node (NOT part of the PR diff —
+no "changed" notion applies here). The whole file's scope units
+(functions, classes, methods) and their callers/callees, imports,
+and decorators are listed below. Findings should land within the
+byte ranges of these units; `trace_path` elements (when emitting
+`evidence_tier="inferred"`) must cite scope-unit names drawn from
+this listing.
+
+{scope_unit_context}
+
+## Pre-fired query matches
+
+Use these `query_match_id` values when claiming `evidence_tier="observed"`:
+
+{query_match_id_list}
+"""
+
+
 POST_TRACE_USER_TEMPLATE: Final[str] = """\
 ## File under analysis (pass 1, post-trace)
 
@@ -379,9 +411,11 @@ def render_post_trace(
     findings that connect the source finding's evidence to behavior in
     this file.
 
-    The system prompt = pass-0 invariants + file context + post-trace
-    INFERRED-admission suffix. The user prompt names the source finding
-    explicitly so the model knows the reasoning target.
+    The system prompt = pass-0 invariants + WHOLE-FILE post-trace file
+    context (NOT `SYSTEM_FILE_CONTEXT_TEMPLATE`, which is diff-scoped
+    and would falsely tell the model "changed scope units") + the
+    post-trace INFERRED-admission suffix. The user prompt names the
+    source finding explicitly so the model knows the reasoning target.
 
     `source_finding_id` is `UUID` at runtime; typed as `object` here
     so the function accepts both the schema's `UUID` field and string
@@ -389,7 +423,7 @@ def render_post_trace(
     """
     system_prompt = (
         SYSTEM_PROMPT_INVARIANTS
-        + SYSTEM_FILE_CONTEXT_TEMPLATE.format(
+        + POST_TRACE_FILE_CONTEXT_TEMPLATE.format(
             file_path=file_path,
             scope_unit_context=scope_unit_context,
             query_match_id_list=query_match_id_list,
@@ -442,6 +476,7 @@ def render_degraded(
 __all__ = [
     "DEGRADED_USER_TEMPLATE",
     "MAX_TOKENS",
+    "POST_TRACE_FILE_CONTEXT_TEMPLATE",
     "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
     "POST_TRACE_USER_TEMPLATE",
     "SYSTEM_FILE_CONTEXT_TEMPLATE",

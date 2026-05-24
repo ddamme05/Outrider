@@ -3,9 +3,12 @@
 Per spec §11.2: PR modifies a request handler where the vulnerability is
 resolvable via simple direct import to a model definition file. Expected:
 `TraceDecision.resolution_status="resolved"` + `target_file` pointing at
-the model file + `target_file in candidates_considered` (per
-DECISIONS.md#017 — resolved selection must be a member of the LLM-proposed
-candidate set).
+the model file + `resolved_candidate_paths` containing exactly one path
+equal to `target_file` (per DECISIONS.md#017 × #024 amendment —
+`candidates_considered` was renamed to the parallel
+`proposed_import_strings` + `resolved_candidate_paths` tuples, and the
+resolved-selection contract shifted from "member of candidates_considered"
+to "equals the single resolved_candidate_paths entry").
 
 `trace_path` is NOT a field on `TraceDecision` (`docs/spec.md` §7.2). It
 lives on:
