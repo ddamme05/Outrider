@@ -30,10 +30,17 @@ Now landed beyond the analyze-foundation set:
 - `publish_result: PublishResult | None` — populated by the publish
   node per the publish-node spec; single-writer field with default
   overwrite reducer (publish is a graph terminal).
+- `trace_decisions: list[TraceDecision]` — populated by the trace node
+  per `specs/2026-05-23-trace-node.md` Q3 + Q4 + #017 × #024 amendment.
+  Reducer: `append_with_dedup_by(source_finding_id)`. One decision per
+  source finding across the review (per #017 amended point 1); replay
+  re-application collapses on the source_finding_id key.
+- `trace_fetched_files: list[TraceFetchedFile]` — populated by the trace
+  node per Q3. Reducer: `append_with_dedup_by(path)`. First-write-wins
+  on path collision; multi-cause provenance recovers via
+  `query state.trace_decisions where target_file == self.path` (M2).
 
 Still deferred:
-- `trace_decisions: list[TraceDecision]` (trace-node spec) — append-with-
-  dedup-by(source_finding_id) reducer per DECISIONS.md#017.
 - `review_report: ReviewReport | None` (synthesize-node spec).
 - `hitl_request: HITLRequest | None` (hitl-node spec).
 - `hitl_decision: HITLDecision | None` (hitl-node spec; reviewer-set,
@@ -90,6 +97,8 @@ from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.publish import PublishResult
 from outrider.schemas.trace_candidate import TraceCandidate
+from outrider.schemas.trace_decision import TraceDecision
+from outrider.schemas.trace_fetched_file import TraceFetchedFile
 from outrider.schemas.triage_result import TriageResult
 
 
@@ -154,6 +163,31 @@ class ReviewState(BaseModel):
     # idempotently_skipped / idempotently_skipped_external_record).
     # `None` until publish runs.
     publish_result: PublishResult | None = None
+
+    # Populated by the trace node (`agent/nodes/trace.py`) per
+    # `specs/2026-05-23-trace-node.md` + `DECISIONS.md#017` × `#024`
+    # amendment. Reducer: `append_with_dedup_by(source_finding_id)` per
+    # #017 amended point 1 — one decision per source finding across the
+    # review; explicit rejection of the `(source_finding_id, target_file)`
+    # key that would collapse unresolved/ambiguous rows on (id, None).
+    # Trace's emission gate (#025 point 5 + M7 audit-first contract)
+    # consults this list to enforce once-per-finding semantics.
+    trace_decisions: Annotated[
+        list[TraceDecision],
+        append_with_dedup_by(lambda d: d.source_finding_id),
+    ] = Field(default_factory=list)
+
+    # Populated by the trace node per Q3 resolution
+    # (`specs/2026-05-23-trace-node.md`). Reducer:
+    # `append_with_dedup_by(path)`. First-write-wins on path collision
+    # (per M2 audit-fold) — multi-cause provenance recovers via
+    # `query state.trace_decisions where target_file == self.path`.
+    # Trace's fetched file content (head-side); analyze pass-2 consumes
+    # it alongside `pr_context.changed_files` for the post-trace pass.
+    trace_fetched_files: Annotated[
+        list[TraceFetchedFile],
+        append_with_dedup_by(lambda f: f.path),
+    ] = Field(default_factory=list)
 
 
 __all__ = [
