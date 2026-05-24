@@ -24,9 +24,11 @@ import pytest
 
 from outrider.agent.nodes.trace import (
     TraceJoinIntegrityError,
+    _aggregate_candidate_reasons,
     _bucket_candidates_by_finding,
     _build_proposal_hash_join,
     _candidate_paths_for,
+    _dedupe_by_import_string,
 )
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
@@ -220,3 +222,153 @@ def test_candidate_paths_for_emits_module_and_package_forms() -> None:
     assert _candidate_paths_for("foo.bar") == ("foo/bar.py", "foo/bar/__init__.py")
     assert _candidate_paths_for("single") == ("single.py", "single/__init__.py")
     assert _candidate_paths_for("a.b.c") == ("a/b/c.py", "a/b/c/__init__.py")
+
+
+# ---------------------------------------------------------------------------
+# Round-N+1 regression: H1 — `_dedupe_by_import_string` keeps the audit
+# event's `proposed_import_strings` set-semantic invariant under benign
+# LLM behavior (same import_string, different reasons).
+# ---------------------------------------------------------------------------
+
+
+def test_dedupe_by_import_string_collapses_same_import_different_reason() -> None:
+    """Round-N+1 H1 regression test: two TraceCandidates with the same
+    `import_string` but different `reason` have distinct `candidate_id`s
+    (content-hash over `(source_proposal_hash, import_string, reason)`)
+    and both survive `state.trace_candidates`'s reducer. Without the
+    dedup helper, `TraceDecisionEvent.proposed_import_strings`'s
+    `_enforce_proposed_import_strings_unique` validator would raise mid-
+    emit-loop on this benign LLM behavior, breaking the M7 audit-first
+    contract. The dedup is order-stable (first occurrence wins).
+    """
+    proposal_hash = "1" * 64
+    first_reason_candidate = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=proposal_hash,
+            import_string="middleware.auth",
+            reason="first reasoning",
+        ),
+        source_proposal_hash=proposal_hash,
+        reason="first reasoning",
+        import_string="middleware.auth",
+    )
+    second_reason_candidate = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=proposal_hash,
+            import_string="middleware.auth",
+            reason="alternative reasoning",
+        ),
+        source_proposal_hash=proposal_hash,
+        reason="alternative reasoning",
+        import_string="middleware.auth",
+    )
+    distinct_candidate = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=proposal_hash,
+            import_string="handlers.login",
+            reason="x",
+        ),
+        source_proposal_hash=proposal_hash,
+        reason="x",
+        import_string="handlers.login",
+    )
+    # Pre-condition: same import_string, different reason → distinct
+    # candidate_ids (the bug the dedup defends against).
+    assert first_reason_candidate.candidate_id != second_reason_candidate.candidate_id
+    assert first_reason_candidate.import_string == second_reason_candidate.import_string
+
+    deduped = _dedupe_by_import_string(
+        (first_reason_candidate, second_reason_candidate, distinct_candidate)
+    )
+
+    # First occurrence wins → first_reason_candidate's `reason` survives;
+    # second_reason_candidate is dropped; distinct_candidate kept.
+    assert len(deduped) == 2
+    assert deduped[0] is first_reason_candidate
+    assert deduped[1] is distinct_candidate
+    # The audit-event invariant: extracting import_strings yields a set
+    # with no duplicates (what the validator enforces).
+    import_strings = tuple(c.import_string for c in deduped)
+    assert len(import_strings) == len(set(import_strings))
+
+
+def test_dedupe_by_import_string_preserves_single_candidate() -> None:
+    """Trivial case: one candidate → unchanged tuple."""
+    proposal_hash = "2" * 64
+    candidate = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=proposal_hash,
+            import_string="pkg.mod",
+            reason="x",
+        ),
+        source_proposal_hash=proposal_hash,
+        reason="x",
+        import_string="pkg.mod",
+    )
+    assert _dedupe_by_import_string((candidate,)) == (candidate,)
+
+
+def test_dedupe_by_import_string_empty_input() -> None:
+    """Empty input → empty tuple. Defensive: trace's pre-condition is a
+    non-empty bucket, but the helper is total."""
+    assert _dedupe_by_import_string(()) == ()
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap from cross-file consistency audit: _aggregate_candidate_reasons
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_candidate_reasons_concatenates_with_separator() -> None:
+    """Per the audit-row contract: aggregated reason carries
+    `<import_string>: <reason>` per candidate, joined with ` | `."""
+    proposal_hash = "3" * 64
+    c1 = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=proposal_hash,
+            import_string="pkg.alpha",
+            reason="first",
+        ),
+        source_proposal_hash=proposal_hash,
+        reason="first",
+        import_string="pkg.alpha",
+    )
+    c2 = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=proposal_hash,
+            import_string="pkg.beta",
+            reason="second",
+        ),
+        source_proposal_hash=proposal_hash,
+        reason="second",
+        import_string="pkg.beta",
+    )
+
+    aggregated = _aggregate_candidate_reasons((c1, c2))
+    assert aggregated == "pkg.alpha: first | pkg.beta: second"
+
+
+def test_aggregate_candidate_reasons_truncates_to_500_chars() -> None:
+    """Aggregated reason that exceeds 500 chars truncates to 497 + ellipsis
+    (matching the schema's max_length=500 cap on TraceDecisionEvent.reason).
+    The truncation is lossy and biased toward early candidates — the
+    architectural lens flagged this as the structured-tuple FUP."""
+    proposal_hash = "4" * 64
+    # Construct candidates whose aggregate exceeds 500 chars.
+    candidates = tuple(
+        TraceCandidate(
+            candidate_id=compute_candidate_id(
+                source_proposal_hash=proposal_hash,
+                import_string=f"pkg.mod{i}",
+                reason="x" * 100,
+            ),
+            source_proposal_hash=proposal_hash,
+            reason="x" * 100,
+            import_string=f"pkg.mod{i}",
+        )
+        for i in range(10)
+    )
+
+    aggregated = _aggregate_candidate_reasons(candidates)
+    assert len(aggregated) == 500  # 497 chars + "..."
+    assert aggregated.endswith("...")
