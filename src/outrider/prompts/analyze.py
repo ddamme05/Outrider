@@ -94,10 +94,19 @@ Pick exactly one value for `evidence_tier`. V1 admits two tiers:
 - `judged` — your own interpretation; no structural artifact required.
   Use this when you cannot cite a registry query match.
 
-Do NOT emit `evidence_tier="inferred"` in V1. The trace resolver lands
-in a future spec; until then, every `inferred` proposal is rejected
-with `trace_path_not_admissible`. Pick `judged` for cross-file or
-walk-derived reasoning.
+On pass 0 (the first analyze pass over a PR's diff): do NOT emit
+`evidence_tier="inferred"`. Pass 0 has no trace context yet — every
+`inferred` proposal at pass 0 is rejected with
+`trace_path_not_admissible`. Pick `judged` for cross-file or
+walk-derived reasoning on pass 0.
+
+On pass 1 (post-trace re-entry, when the trace node has resolved +
+fetched a file relevant to a source finding): `inferred` IS admitted,
+provided `trace_path` is a non-empty array of non-empty scope-unit
+names tracing how the source finding's evidence connects to behavior
+in this file. The pass-1 prompt variant supplies the post-trace
+admission directive; on pass 1 you'll see the directive in the
+system prompt's "Pass 1 (post-trace) INFERRED admission" section.
 
 Failed admission DROPS the proposal — it does not downgrade to a lower
 tier. Pick `judged` upfront if you cannot cite structural evidence.
@@ -261,6 +270,89 @@ def render(
     return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
 
 
+POST_TRACE_SYSTEM_PROMPT_SUFFIX: Final[str] = """\
+
+## Pass 1 (post-trace) INFERRED admission
+
+This is a POST-TRACE pass. The trace node fetched this file because a
+finding from pass 0 referenced an import / symbol that resolves here.
+Pass 1 admits `evidence_tier="inferred"` proposals — UNLIKE pass 0,
+which rejected every `inferred` proposal.
+
+For `inferred` proposals you MUST:
+
+- Set `trace_path` to a non-empty array of scope-unit names (strings,
+  each non-empty) tracing how the source finding's evidence connects
+  to behavior in this file. Example: `["target_module.entry_point",
+  "target_module.helper"]`. An empty / missing `trace_path` causes the
+  proposal to be rejected with `trace_path_not_admissible`.
+- Cite the source finding via `trace_path` (the scope units you walked
+  to reach the inferred conclusion). The proof-boundary validator at
+  ReviewFinding construction enforces the shape.
+
+`observed` and `judged` rules from the pass-0 system prompt continue to
+apply. Don't emit `inferred` if you cannot fill `trace_path` honestly.
+"""
+
+
+POST_TRACE_USER_TEMPLATE: Final[str] = """\
+## File under analysis (pass 1, post-trace)
+
+File path: {file_path}
+Source finding id (trace-fetched on behalf of): {source_finding_id}
+
+Pass index: {pass_index} (post-trace).
+
+This file was fetched by the trace node because finding
+{source_finding_id} referenced an import resolving here. Examine the
+file's scope units for behavior connecting the source finding's
+evidence to this code; emit `inferred` proposals with `trace_path` if
+you find any. `observed` / `judged` proposals remain admissible per
+the pass-0 rules.
+"""
+
+
+def render_post_trace(
+    *,
+    file_path: str,
+    scope_unit_context: str,
+    query_match_id_list: str,
+    source_finding_id: object,
+    pass_index: int,
+) -> AnalyzePromptParts:
+    """Build the (system, user) prompt pair for a pass-1 (post-trace) call.
+
+    Sibling of `render()` for the trace-fetched-file path: trace
+    resolved this file via M8's two-phase fetch, and analyze pass 1
+    examines the WHOLE file (no diff intersection) looking for INFERRED
+    findings that connect the source finding's evidence to behavior in
+    this file.
+
+    The system prompt = pass-0 invariants + file context + post-trace
+    INFERRED-admission suffix. The user prompt names the source finding
+    explicitly so the model knows the reasoning target.
+
+    `source_finding_id` is `UUID` at runtime; typed as `object` here
+    so the function accepts both the schema's `UUID` field and string
+    forms that pre-validation tests might construct.
+    """
+    system_prompt = (
+        SYSTEM_PROMPT_INVARIANTS
+        + SYSTEM_FILE_CONTEXT_TEMPLATE.format(
+            file_path=file_path,
+            scope_unit_context=scope_unit_context,
+            query_match_id_list=query_match_id_list,
+        )
+        + POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    )
+    user_prompt = POST_TRACE_USER_TEMPLATE.format(
+        file_path=file_path,
+        source_finding_id=source_finding_id,
+        pass_index=pass_index,
+    )
+    return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
+
+
 def render_degraded(
     *,
     file_path: str,
@@ -299,6 +391,8 @@ def render_degraded(
 __all__ = [
     "DEGRADED_USER_TEMPLATE",
     "MAX_TOKENS",
+    "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
+    "POST_TRACE_USER_TEMPLATE",
     "SYSTEM_FILE_CONTEXT_TEMPLATE",
     "SYSTEM_PROMPT_INVARIANTS",
     "TEMPERATURE",
@@ -307,5 +401,6 @@ __all__ = [
     "VERSION",
     "AnalyzePromptParts",
     "render",
+    "render_post_trace",
     "render_degraded",
 ]
