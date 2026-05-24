@@ -229,7 +229,7 @@ def build_graph(
             f"(passed type: {type(publish_event_sink).__name__}; "
             f"missing one of `emit_publish_routing` / `emit_publish_eligibility` / "
             f"`emit_publish_attempt` / `emit_publish_result` / "
-            f"`query_prior_publish_event` (read-side method added per FUP-064); "
+            f"`query_prior_publish_event`; "
             f"see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(trace_sink, TraceEventSink):
