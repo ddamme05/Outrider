@@ -187,6 +187,7 @@ def parse_analyze_response(
     degraded_mode: bool,
     active_policy_version: str,
     pass_index: int = 0,
+    valid_trace_path_elements: frozenset[str] = frozenset(),
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -219,12 +220,26 @@ def parse_analyze_response(
       `ReviewFinding.policy_version` on admitted proposals.
 
     The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
-    and now threads it here for INFERRED admission: pass 0 (the original
+    and threads it here for INFERRED admission: pass 0 (the original
     PR-diff analyze pass) rejects every INFERRED proposal — no trace
     context exists yet — while pass 1+ (post-trace re-entry per M8 loop)
-    admits INFERRED proposals carrying a non-empty `trace_path` (the
-    proof-boundary validator at `policy/findings.py::_trace_path_is_valid`
-    is the schema-level gate for trace_path shape).
+    admits INFERRED proposals whose `trace_path` is grounded in
+    deterministic trace context.
+
+    `valid_trace_path_elements` is the deterministic-proof source per
+    the `evidence-tier-schema-enforced` invariant: a frozenset of
+    scope-unit names (`qualified_name` or `name`) from the file's
+    `included_scope_units`, supplied by the node body for pass-1 calls.
+    Pass-1 INFERRED admission requires EVERY element of the model-
+    proposed `trace_path` to appear in this set — the model cannot
+    claim to have walked a scope unit that doesn't exist in the file
+    trace fetched. An empty `valid_trace_path_elements` (the default,
+    used for pass-0 calls) means no trace-grounded admission can fire,
+    matching the pass-0 reject-all semantic.
+
+    Shape-level validation runs first (`_raw_trace_path_is_admissible`
+    + the mirror at `policy/findings.py::_trace_path_is_valid`);
+    deterministic-proof validation runs second.
     """
     try:
         # Strip a single outer ```json...``` wrapper if present — the
@@ -371,33 +386,58 @@ def parse_analyze_response(
             # pass 0 (mirrors the pass-0 prompt instruction at
             # prompts/analyze.py).
             # Pass 1+: trace ran + fetched files; INFERRED is admitted
-            # when `trace_path` is non-empty (the proof-boundary check
-            # at `policy/findings.py::_trace_path_is_valid` enforces
-            # the shape — non-empty list-or-tuple of non-empty strs).
-            # Empty / wrong-shape trace_path on pass 1+ is rejected with
-            # the same `trace_path_not_admissible` reason.
-            if pass_index == 0 or not _raw_trace_path_is_admissible(raw_proposal.trace_path):
-                detail = (
-                    "INFERRED rejected on pass 0 (no trace context yet)"
-                    if pass_index == 0
-                    else "INFERRED requires non-empty trace_path of non-empty strs"
+            # ONLY when:
+            #   (a) trace_path shape is valid (non-empty list of non-
+            #       empty strs — proof-boundary mirror at
+            #       `policy/findings.py::_trace_path_is_valid`), AND
+            #   (b) every trace_path element appears in the deterministic-
+            #       proof set `valid_trace_path_elements` (scope-unit
+            #       names from the trace-fetched file's
+            #       `included_scope_units`). The model cannot claim to
+            #       have walked a scope unit that doesn't exist in the
+            #       file trace fetched. Per
+            #       `evidence-tier-schema-enforced`: structural-tier
+            #       claims require deterministic proof.
+            inferred_rejection_detail: str | None = None
+            if pass_index == 0:
+                inferred_rejection_detail = "INFERRED rejected on pass 0 (no trace context yet)"
+            elif not _raw_trace_path_is_admissible(raw_proposal.trace_path):
+                inferred_rejection_detail = (
+                    "INFERRED requires non-empty trace_path of non-empty strs"
                 )
+            else:
+                ungrounded = _trace_path_elements_not_in_proof(
+                    raw_proposal.trace_path, valid_trace_path_elements
+                )
+                if ungrounded:
+                    # Don't echo the model-supplied ungrounded elements
+                    # verbatim into the audit row (would let a hostile
+                    # LLM ship arbitrary text into rejection_detail).
+                    # The count + the size of the valid set is the
+                    # operator-actionable signal.
+                    inferred_rejection_detail = (
+                        f"INFERRED trace_path has {len(ungrounded)} element(s) "
+                        f"not in the trace-fetched file's scope-unit set "
+                        f"(valid_trace_path_elements has "
+                        f"{len(valid_trace_path_elements)} entries)"
+                    )
+            if inferred_rejection_detail is not None:
                 proposal_rejections.append(
                     _build_proposal_rejection(
                         raw_proposal,
                         proposal_hash=proposal_hash,
                         file_path=file_path,
                         rejection_reason="trace_path_not_admissible",
-                        rejection_detail=detail,
+                        rejection_detail=inferred_rejection_detail,
                         claimed_evidence_tier=evidence_tier,
                     )
                 )
                 trace_candidates.extend(proposal_trace_candidates)
                 continue
-            # Pass 1+ with valid trace_path: fall through to step 5
-            # (span admission). The proof-boundary validator at
-            # `policy/findings.py::enforce_proof_boundary` runs again
-            # at ReviewFinding construction.
+            # Pass 1+ with valid trace_path grounded in the proof set:
+            # fall through to step 5 (span admission). The proof-boundary
+            # validator at `policy/findings.py::enforce_proof_boundary`
+            # runs again at ReviewFinding construction.
         # JUDGED falls through to step 5 (span admission).
 
         # Step 5: span admission (per-outcome branch). The
@@ -581,6 +621,24 @@ _CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
 # `max_length=256` — no pattern. This regex enforces the spec-promised
 # safety class as a parser-side sanitization step.
 _QUERY_MATCH_ID_SAFE_CLASS: Final = re.compile(r"[^A-Za-z0-9_./:\-]")
+
+
+def _trace_path_elements_not_in_proof(
+    trace_path: object,
+    valid_trace_path_elements: frozenset[str],
+) -> list[str]:
+    """Return the trace_path elements that are NOT in the deterministic-
+    proof set. Empty list iff every element is grounded.
+
+    Pre-condition: `_raw_trace_path_is_admissible(trace_path)` returned
+    True (caller already validated shape). This helper assumes `trace_path`
+    is a list-or-tuple of non-empty strings; the `isinstance` guard
+    inside is defensive against direct callers that bypassed the shape
+    check.
+    """
+    if not isinstance(trace_path, (list, tuple)):
+        return []  # defensive — shape-check should have rejected
+    return [element for element in trace_path if element not in valid_trace_path_elements]
 
 
 def _raw_trace_path_is_admissible(trace_path: object) -> bool:

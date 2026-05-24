@@ -272,26 +272,62 @@ def render(
 
 POST_TRACE_SYSTEM_PROMPT_SUFFIX: Final[str] = """\
 
-## Pass 1 (post-trace) INFERRED admission
+## Pass 1 (post-trace) — OVERRIDES the pass-0 output schema above
 
-This is a POST-TRACE pass. The trace node fetched this file because a
-finding from pass 0 referenced an import / symbol that resolves here.
-Pass 1 admits `evidence_tier="inferred"` proposals — UNLIKE pass 0,
-which rejected every `inferred` proposal.
+The earlier "Output shape" section + "Field semantics" describe the
+PASS-0 contract. THIS PASS (pass 1, post-trace) overrides BOTH. The
+trace node fetched this file because a finding from pass 0 referenced
+an import / symbol that resolves here; pass 1 admits
+`evidence_tier="inferred"` proposals.
 
-For `inferred` proposals you MUST:
+### Pass-1 output schema (REPLACES the pass-0 schema)
 
-- Set `trace_path` to a non-empty array of scope-unit names (strings,
-  each non-empty) tracing how the source finding's evidence connects
-  to behavior in this file. Example: `["target_module.entry_point",
-  "target_module.helper"]`. An empty / missing `trace_path` causes the
-  proposal to be rejected with `trace_path_not_admissible`.
-- Cite the source finding via `trace_path` (the scope units you walked
-  to reach the inferred conclusion). The proof-boundary validator at
-  ReviewFinding construction enforces the shape.
+```
+{
+  "findings": [
+    {
+      "finding_type": "<enum value>",
+      "evidence_tier": "<observed|inferred|judged>",
+      "query_match_id": "<id from registry, or null>",
+      "trace_path": ["<scope-unit name>", "..."] | null,
+      "title": "<short summary, ≤120 chars>",
+      "description": "<explanation, ≤1000 chars>",
+      "evidence": "<verbatim quote from the code, ≤2000 chars>",
+      "span": {"byte_start": 0, "byte_end": 1},
+      "trace_candidates": []
+    }
+  ]
+}
+```
 
-`observed` and `judged` rules from the pass-0 system prompt continue to
-apply. Don't emit `inferred` if you cannot fill `trace_path` honestly.
+### Pass-1 field semantics (REPLACES the pass-0 field semantics)
+
+- `evidence_tier`: `observed` / `inferred` / `judged` — the
+  pass-0-only restriction to `observed|judged` is LIFTED here.
+- `query_match_id`: same rule as pass 0 (registry id when
+  `evidence_tier="observed"`; `null` otherwise).
+- `trace_path`: REQUIRED non-empty array of scope-unit names when
+  `evidence_tier="inferred"`; `null` for `observed` / `judged`.
+  Each element MUST be a scope-unit name (`qualified_name` or `name`)
+  from the file's scope units listed in the system-prompt's "Changed
+  scope units" / "Scope unit context" section. A trace_path element
+  that doesn't match a real scope unit is rejected with
+  `trace_path_not_admissible` — the parser cross-checks model claims
+  against the deterministic-proof set per
+  `evidence-tier-schema-enforced`.
+- `trace_candidates`: empty array on pass 1 (cross-file trace work
+  was already completed by the trace node; pass 1 doesn't re-propose
+  candidates).
+
+### Why INFERRED matters on this pass
+
+Pass 0 lacked trace context, so every `inferred` proposal was
+rejected. Pass 1 has the trace context: this file was deterministically
+resolved + fetched. INFERRED findings on pass 1 carry the proof the
+proof boundary requires — the scope units walked to reach the
+inferred conclusion. Emit `inferred` whenever the file's code lets
+you trace concrete evidence connecting the source finding to a
+behavior here; otherwise fall back to `judged`.
 """
 
 

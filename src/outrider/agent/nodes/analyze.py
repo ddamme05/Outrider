@@ -1174,6 +1174,17 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         output_tokens=response.output_tokens,
     )
 
+    # Deterministic-proof set for INFERRED admission per the
+    # `evidence-tier-schema-enforced` invariant: every scope-unit name
+    # the model could legitimately have walked in this file. Includes
+    # both `qualified_name` (e.g. "module.Class.method") and bare
+    # `name` (e.g. "method") so the model can cite either form. The
+    # parser's pass-1 INFERRED admission rejects any trace_path element
+    # not in this set — closes the proof-boundary gap Codex round-2
+    # finding 1 caught.
+    valid_trace_path_elements = frozenset(
+        name for su in included_scope_units for name in (su.qualified_name, su.name) if name
+    )
     parser_result = parse_analyze_response(
         response.text,
         review_id=review_id,
@@ -1186,6 +1197,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         degraded_mode=False,
         active_policy_version=active_policy_version,
         pass_index=pass_index,
+        valid_trace_path_elements=valid_trace_path_elements,
     )
 
     for proposal_rej in parser_result.proposal_rejections:

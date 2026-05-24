@@ -210,6 +210,11 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     """
     # Mock LLM provider returns an INFERRED proposal with valid
     # trace_path. The parser's pass_index=1 admission gate accepts it.
+    # trace_path elements MUST appear in the trace-fetched file's
+    # scope-unit set (post-Codex-round-2 deterministic-proof check).
+    # parse_python yields scope units named `authenticate` +
+    # `validate_token` for this content (top-level function defs;
+    # qualified_name == name when there's no enclosing class/module).
     inferred_response = json.dumps(
         {
             "findings": [
@@ -217,10 +222,7 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
                     "finding_type": "sql_injection",
                     "evidence_tier": "inferred",
                     "query_match_id": None,
-                    "trace_path": [
-                        "middleware.auth.authenticate",
-                        "middleware.auth.validate_token",
-                    ],
+                    "trace_path": ["authenticate", "validate_token"],
                     "title": "Auth check skipped in helper",
                     "description": "The helper bypasses the validation in the parent",
                     "evidence": "def authenticate(token: str) -> bool:\n    return True\n",
@@ -284,10 +286,7 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     assert len(new_round.findings) == 1
     finding = new_round.findings[0]
     assert finding.evidence_tier.value == "inferred"
-    assert finding.trace_path == (
-        "middleware.auth.authenticate",
-        "middleware.auth.validate_token",
-    )
+    assert finding.trace_path == ("authenticate", "validate_token")
     assert finding.finding_type == FindingType.SQL_INJECTION
 
     # The provider was called exactly once (one trace-fetched file).

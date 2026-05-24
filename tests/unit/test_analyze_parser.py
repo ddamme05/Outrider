@@ -278,8 +278,15 @@ def test_parse_analyze_response_signature() -> None:
         "active_policy_version",
         # `pass_index` added 2026-05-24 for trace-node arc's post-trace
         # INFERRED admission: pass 0 rejects every INFERRED (no trace
-        # context yet); pass 1+ admits INFERRED with non-empty trace_path.
+        # context yet); pass 1+ admits INFERRED with valid trace_path.
         "pass_index",
+        # `valid_trace_path_elements` added 2026-05-24 (Codex round 2):
+        # deterministic-proof set for pass-1 INFERRED admission per
+        # `evidence-tier-schema-enforced` — every trace_path element
+        # MUST appear in this set (scope-unit names from the trace-
+        # fetched file's included_scope_units). Defaults to empty
+        # frozenset for pass-0 calls.
+        "valid_trace_path_elements",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -746,11 +753,15 @@ def test_step4_inferred_rejects_on_pass_0_no_trace_context_yet() -> None:
 
 
 def test_step4_inferred_admits_on_pass_1_with_valid_trace_path() -> None:
-    """Per trace-node arc: pass 1 (post-trace re-entry) admits INFERRED
-    when trace_path is a non-empty array of non-empty strs. Mirrors
-    the schema-level proof-boundary check at
-    `policy/findings.py::_trace_path_is_valid`.
+    """Per trace-node arc + Codex round 2: pass 1 (post-trace re-entry)
+    admits INFERRED when (a) trace_path is a non-empty array of non-
+    empty strs AND (b) every element appears in
+    `valid_trace_path_elements` (the deterministic-proof set of scope-
+    unit names from the trace-fetched file). Without (b), the parser
+    would trust model-claimed structural evidence — violating
+    `evidence-tier-schema-enforced`.
     """
+    valid_set = frozenset({"middleware.auth.authenticate", "middleware.auth.validate_token"})
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="inferred",
@@ -762,6 +773,7 @@ def test_step4_inferred_admits_on_pass_1_with_valid_trace_path() -> None:
         included_scope_units=(_build_scope_unit(),),
         file_content="x" * 200,
         pass_index=1,
+        valid_trace_path_elements=valid_set,
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
@@ -771,6 +783,36 @@ def test_step4_inferred_admits_on_pass_1_with_valid_trace_path() -> None:
         "middleware.auth.authenticate",
         "middleware.auth.validate_token",
     )
+
+
+def test_step4_inferred_rejects_on_pass_1_with_ungrounded_trace_path() -> None:
+    """Codex round 2 regression: pass-1 INFERRED with trace_path elements
+    NOT in the deterministic-proof set is rejected per
+    `evidence-tier-schema-enforced`. The model cannot claim to have
+    walked a scope unit that doesn't exist in the trace-fetched file.
+    """
+    valid_set = frozenset({"only.this.name"})
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="inferred",
+            trace_path=("forged.symbol.one", "forged.symbol.two"),
+        )
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        pass_index=1,
+        valid_trace_path_elements=valid_set,
+    )
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "trace_path_not_admissible"
+    # Detail describes the gap quantitatively — does NOT echo the
+    # model-supplied ungrounded elements verbatim (would let a hostile
+    # LLM ship arbitrary text into the audit row).
+    assert "2 element(s) not in" in rej.rejection_detail
+    assert "forged.symbol" not in rej.rejection_detail
 
 
 def test_step4_inferred_rejects_on_pass_1_empty_trace_path() -> None:

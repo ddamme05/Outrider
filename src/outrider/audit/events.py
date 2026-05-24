@@ -673,12 +673,15 @@ class TraceDecisionEvent(AuditEventBase):
     - `proposed_import_strings`: the LLM-proposed dotted Python import strings
       (any cardinality). Per DECISIONS.md#024 trace candidates are import
       strings, not file paths.
-    - `resolved_candidate_paths`: the resolver outputs from
-      `coordinates.resolve_candidate_paths` — the file paths the import
-      strings resolved to (any cardinality, including zero / one /
-      multiple). Each element is post-`validate_diff_path` per the
-      audit-shadow rule (defense in depth at the append-only log against
-      a hypothetical future direct emitter bypassing the resolver).
+    - `resolved_candidate_paths`: the resolution outputs — file paths
+      the import strings resolved to (any cardinality, including zero /
+      one / multiple). V1 source per M8: GitHub fetch-probes (paths
+      whose `fetch_file_content_at` returned content). V1.5+ source:
+      filesystem-aware `coordinates.resolve_candidate_paths` (per
+      DECISIONS#024 point 4 Amended 2026-05-24). Each element is
+      post-`validate_diff_path` per the audit-shadow rule (defense in
+      depth at the append-only log against a hypothetical future
+      direct emitter bypassing the resolution mechanism).
 
     `resolution_status` describes how many resolved (zero / exactly one /
     multiple). `target_file`, when non-None, ALSO passes through
