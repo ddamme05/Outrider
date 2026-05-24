@@ -125,22 +125,28 @@ def test_finding_event_factory_validator_runs_on_construction() -> None:
     assert event.trace_path is None
 
 
-def test_trace_decision_event_factory_satisfies_three_rule_validator() -> None:
-    """Default factory output passes the resolved↔target_file in candidates rule."""
+def test_trace_decision_event_factory_satisfies_validator_rules() -> None:
+    """Default factory output passes the resolved-cross-field rules per
+    #017 × #024 amendment: target_file == resolved_candidate_paths[0]."""
     event = TraceDecisionEventFactory.create()
     assert isinstance(event, TraceDecisionEvent)
     assert event.is_eval is True
     assert event.resolution_status == "resolved"
     assert event.target_file is not None
-    assert event.target_file in event.candidates_considered
+    # Per #024 amendment to #017: resolved target_file must equal the
+    # single resolved_candidate_paths entry.
+    assert len(event.resolved_candidate_paths) == 1
+    assert event.target_file == event.resolved_candidate_paths[0]
 
 
 def test_trace_decision_event_factory_unresolved_override() -> None:
-    """Overrides for unresolved + target_file=None construct cleanly."""
+    """Overrides for unresolved + target_file=None + empty
+    resolved_candidate_paths construct cleanly."""
     event = TraceDecisionEventFactory.create(
         resolution_status="unresolved",
         target_file=None,
-        candidates_considered=("src/foo.py", "src/bar.py"),
+        proposed_import_strings=("foo", "bar"),
+        resolved_candidate_paths=(),
     )
     assert event.resolution_status == "unresolved"
     assert event.target_file is None

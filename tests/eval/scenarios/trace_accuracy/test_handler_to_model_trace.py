@@ -45,8 +45,10 @@ def test_handler_to_model_trace_resolves_via_direct_import() -> None:
     decision = trace_decisions[0]
     assert decision.resolution_status == EXPECTED_DECISION["resolution_status"]
     assert decision.target_file is not None
-    # Per DECISIONS.md#017: resolved target_file must be a member of
-    # candidates_considered. This is the canonical "resolved" contract;
-    # the schema-level validator enforces it on construction, but this
+    # Per DECISIONS.md#017 × #024 amendment: resolved target_file must
+    # equal the single resolved_candidate_paths entry (no longer
+    # `member of candidates_considered` after the rename to import strings).
+    # The schema-level validator enforces it on construction; this
     # assertion documents the contract at the test surface for clarity.
-    assert decision.target_file in decision.candidates_considered
+    assert len(decision.resolved_candidate_paths) == 1
+    assert decision.target_file == decision.resolved_candidate_paths[0]

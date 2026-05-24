@@ -124,12 +124,17 @@ def _finding_kwargs() -> dict[str, Any]:
 
 
 def _trace_decision_kwargs() -> dict[str, Any]:
+    """Per DECISIONS.md#017 × #024 (Accepted 2026-05-24): trace decisions
+    carry parallel proposed_import_strings + resolved_candidate_paths
+    tuples. Resolved case has exactly one resolved_candidate_paths entry
+    matching target_file."""
     return {
         "source_finding_id": uuid4(),
         "target_file": "src/bar.py",
         "reason": "called from middleware/auth.py:42",
         "resolution_status": "resolved",
-        "candidates_considered": ("src/bar.py", "src/baz.py"),
+        "proposed_import_strings": ("bar", "baz"),
+        "resolved_candidate_paths": ("src/bar.py",),
     }
 
 
@@ -561,14 +566,16 @@ def test_hitl_decision_event_rejects_multiple_decisions_for_same_finding() -> No
         HITLDecisionEvent(review_id=uuid4(), **kwargs)
 
 
-def test_trace_decision_event_rejects_duplicate_candidates() -> None:
-    """`candidates_considered` is set-semantic — each candidate is one
-    consideration, not many."""
+def test_trace_decision_event_rejects_duplicate_proposed_import_strings() -> None:
+    """`proposed_import_strings` is set-semantic — each LLM-proposed
+    candidate is one proposal, not many. Per #024 amendment to #017's
+    uniqueness validator (split into two — one per tuple)."""
     kwargs = _trace_decision_kwargs()
-    kwargs["candidates_considered"] = ("src/a.py", "src/a.py")
+    kwargs["proposed_import_strings"] = ("foo", "foo")
+    kwargs["resolved_candidate_paths"] = ()
     kwargs["resolution_status"] = "unresolved"
     kwargs["target_file"] = None
-    with pytest.raises(ValidationError, match="candidates_considered contains duplicates"):
+    with pytest.raises(ValidationError, match="proposed_import_strings contains duplicates"):
         TraceDecisionEvent(review_id=uuid4(), **kwargs)
 
 

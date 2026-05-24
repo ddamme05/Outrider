@@ -660,19 +660,32 @@ class FindingEvent(AuditEventBase):
 
 
 class TraceDecisionEvent(AuditEventBase):
-    """One aggregate trace decision per source_finding_id (per DECISIONS.md#017).
+    """One aggregate trace decision per source_finding_id (per DECISIONS.md#017,
+    amended by DECISIONS.md#024 — Accepted 2026-05-24).
 
-    Three-rule cross-field validator per #017 (Amended same-day, two clauses):
-    (a) resolved ↔ non-None target_file
-    (b) unresolved / ambiguous ↔ target_file is None
-    (c) when resolved, target_file in candidates_considered
+    Cross-field validator rules per #017 × #024:
+    (a) resolved → len(resolved_candidate_paths) == 1 AND
+        target_file == resolved_candidate_paths[0]
+    (b) unresolved → len(resolved_candidate_paths) == 0 AND target_file is None
+    (c) ambiguous → len(resolved_candidate_paths) > 1 AND target_file is None
 
-    `candidates_considered` is the LLM-proposed candidate list (any
-    cardinality); `resolution_status` describes how many resolved
-    through ast_facts (zero / exactly one / multiple). Required field
-    (no default) per #017 — defaults would silently absorb emitter bugs
-    and undermine §8.7 replay equivalence; callers pass `()` explicitly
-    for the zero-candidate case.
+    Two parallel tuples:
+    - `proposed_import_strings`: the LLM-proposed dotted Python import strings
+      (any cardinality). Per DECISIONS.md#024 trace candidates are import
+      strings, not file paths.
+    - `resolved_candidate_paths`: the resolver outputs from
+      `coordinates.resolve_candidate_paths` — the file paths the import
+      strings resolved to (any cardinality, including zero / one /
+      multiple). Each element is post-`validate_diff_path` per the
+      audit-shadow rule (defense in depth at the append-only log against
+      a hypothetical future direct emitter bypassing the resolver).
+
+    `resolution_status` describes how many resolved (zero / exactly one /
+    multiple). `target_file`, when non-None, ALSO passes through
+    `validate_diff_path` at the audit-event boundary. All tuples
+    required (no default) per #017 — defaults would silently absorb
+    emitter bugs and undermine §8.7 replay equivalence; callers pass
+    `()` explicitly for the zero-candidate case.
     """
 
     event_type: Literal["trace_decision"] = "trace_decision"
@@ -680,35 +693,101 @@ class TraceDecisionEvent(AuditEventBase):
     target_file: str | None
     reason: str = Field(max_length=500)
     resolution_status: Literal["resolved", "unresolved", "ambiguous"]
-    candidates_considered: tuple[str, ...]
+    proposed_import_strings: tuple[str, ...]
+    resolved_candidate_paths: tuple[str, ...]
     trace_path: tuple[str, ...] | None = None
+
+    @field_validator("target_file")
+    @classmethod
+    def _enforce_canonical_target_file(cls, value: str | None) -> str | None:
+        """Audit-shadow `validate_diff_path` on the target_file when non-None.
+        Per DECISIONS.md#024 point 6: even though the resolver produces safe
+        repo-relative paths, the audit-event schema must shadow the
+        boundary the same way other path-bearing events do (defense in
+        depth against a hypothetical future direct emitter bypassing
+        the resolver). None passes through unchanged (the validator only
+        canonicalizes when there's a path to canonicalize).
+        """
+        if value is None:
+            return None
+        return validate_diff_path(value)
+
+    @field_validator("resolved_candidate_paths")
+    @classmethod
+    def _enforce_canonical_resolved_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
+        """Per-element audit-shadow `validate_diff_path` on every
+        resolved candidate path. Per DECISIONS.md#024 point 6: load-
+        bearing for the ambiguous branch where target_file is None
+        but the tuple carries multiple resolver-output paths that
+        otherwise enter audit storage unvalidated. Returns the tuple
+        of canonicalized paths.
+        """
+        return tuple(validate_diff_path(p) for p in paths)
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:
-        """Three rules per DECISIONS.md#017 (Amended same-day)."""
+        """Three rules per DECISIONS.md#017 × #024 amendment (point 5).
+        Consults `resolved_candidate_paths` cardinality (not the old
+        `candidates_considered` membership) and asserts `target_file`
+        matches the single resolved path when resolved.
+        """
+        n_resolved = len(self.resolved_candidate_paths)
         if self.resolution_status == "resolved":
+            if n_resolved != 1:
+                raise ValueError(
+                    f"resolved TraceDecisionEvent requires exactly one "
+                    f"resolved_candidate_paths entry; got {n_resolved}"
+                )
             if self.target_file is None:
                 raise ValueError("resolved TraceDecisionEvent requires non-None target_file")
-            if self.target_file not in self.candidates_considered:
-                raise ValueError("resolved target_file must be a member of candidates_considered")
-        else:
-            if self.target_file is not None:
+            if self.target_file != self.resolved_candidate_paths[0]:
                 raise ValueError(
-                    f"{self.resolution_status} TraceDecisionEvent requires target_file is None"
+                    f"resolved target_file ({self.target_file!r}) must equal the "
+                    f"single resolved_candidate_paths entry "
+                    f"({self.resolved_candidate_paths[0]!r})"
                 )
+        elif self.resolution_status == "unresolved":
+            if n_resolved != 0:
+                raise ValueError(
+                    f"unresolved TraceDecisionEvent requires zero "
+                    f"resolved_candidate_paths entries; got {n_resolved}"
+                )
+            if self.target_file is not None:
+                raise ValueError("unresolved TraceDecisionEvent requires target_file is None")
+        else:  # ambiguous
+            if n_resolved <= 1:
+                raise ValueError(
+                    f"ambiguous TraceDecisionEvent requires more than one "
+                    f"resolved_candidate_paths entry; got {n_resolved}"
+                )
+            if self.target_file is not None:
+                raise ValueError("ambiguous TraceDecisionEvent requires target_file is None")
         return self
 
     @model_validator(mode="after")
-    def _enforce_candidates_considered_unique(self) -> Self:
-        """`candidates_considered` is set-semantic: each candidate is one
-        consideration, not many. Duplicates would let the same logical
-        trace decision hash differently (any future content-derived id
-        over this field) and confuse audit-stream consumers.
-        """
-        if len(self.candidates_considered) != len(set(self.candidates_considered)):
+    def _enforce_proposed_import_strings_unique(self) -> Self:
+        """`proposed_import_strings` is set-semantic: each LLM-proposed
+        import string is one consideration, not many. Duplicates would
+        let the same logical trace decision hash differently (any future
+        content-derived id over this field) and confuse audit-stream
+        consumers. Per #024 amendment to #017's uniqueness validator —
+        split into two (one per tuple)."""
+        if len(self.proposed_import_strings) != len(set(self.proposed_import_strings)):
             raise ValueError(
-                f"TraceDecisionEvent.candidates_considered contains duplicates: "
-                f"{sorted(self.candidates_considered)!r}"
+                f"TraceDecisionEvent.proposed_import_strings contains duplicates: "
+                f"{sorted(self.proposed_import_strings)!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_resolved_candidate_paths_unique(self) -> Self:
+        """`resolved_candidate_paths` is set-semantic: each resolved
+        candidate is one resolution outcome, not many. Per #024
+        amendment to #017's uniqueness validator — split into two."""
+        if len(self.resolved_candidate_paths) != len(set(self.resolved_candidate_paths)):
+            raise ValueError(
+                f"TraceDecisionEvent.resolved_candidate_paths contains duplicates: "
+                f"{sorted(self.resolved_candidate_paths)!r}"
             )
         return self
 
