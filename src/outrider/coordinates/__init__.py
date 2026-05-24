@@ -31,6 +31,12 @@ Three supporting surfaces:
 - `resolve_candidate_paths(...)` — ImportPathResolver Protocol implementation
   per `src/outrider/ast_facts/base.py`; root-aware surface for paths heading
   to filesystem stats per trust-boundary §5 sub-rule 3b.
+- `is_valid_import_string(...)` — validate + NFC-normalize a dotted Python
+  import string. Shared predicate per `DECISIONS.md#024` point 1: the
+  `TraceCandidate.import_string` field validator calls it (raises on invalid);
+  `resolve_candidate_paths` calls it (catches + returns []). Single source of
+  truth ensures producer-side schema validation and resolver-side input
+  validation accept the same set of strings.
 - `file_in_patch(...)` — coordinates-owned patch-membership helper. **NOT
   called by V1 publish** (publish uses the in-memory `ChangedFile` registry
   short-circuit per the publish-node spec's FUP-057 resolution); remains
@@ -77,6 +83,7 @@ from outrider.coordinates.diff_parser import (
     COORDINATES_IMPORT_PATH_RESOLVER,
     diff_line_to_scope,
     file_in_patch,
+    is_valid_import_string,
     lookup_patched_file,
     resolve_candidate_paths,
     validate_diff_path,
@@ -108,6 +115,7 @@ __all__ = [
     "diff_line_to_scope",
     "extract_scope_unit_body",
     "file_in_patch",
+    "is_valid_import_string",
     "lookup_patched_file",
     "patched_file_has_added_lines",
     "resolve_candidate_paths",
