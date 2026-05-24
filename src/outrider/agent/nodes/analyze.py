@@ -134,7 +134,12 @@ if TYPE_CHECKING:
         PhaseEventSink,
     )
     from outrider.llm.base import LLMProvider, LLMResponse
-    from outrider.schemas import ReviewFinding, ReviewState, TraceCandidate
+    from outrider.schemas import (
+        ReviewFinding,
+        ReviewState,
+        TraceCandidate,
+        TraceFetchedFile,
+    )
     from outrider.schemas.pr_context import ChangedFile
 
 
@@ -243,8 +248,16 @@ async def analyze(
     Counter source-of-truth: per-file local bookkeeping accumulators
     summed at step 5. NEVER re-read from the audit stream.
     """
-    # V1 single-pass: trace ⇄ analyze loop is post-V1 work.
-    pass_index = 0
+    # `pass_index` is derived from `state.analysis_rounds`: pass 0 = no
+    # rounds merged yet (the first analyze pass); pass 1 = one round
+    # merged (post-trace re-entry per the M8 loop). The round_id reducer
+    # dedup includes pass_index in its content-derived hash, so deriving
+    # the index from state guarantees distinct round_ids across the two
+    # passes (a hardcoded `pass_index = 0` would collide under the
+    # reducer + silently drop the second pass — that was the bug Codex
+    # caught on the round-N+1 audit). The depth-2 ceiling is enforced
+    # at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
+    pass_index = len(state.analysis_rounds)
     phase_id = str(uuid4())
     started_at = datetime.now(UTC)
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
@@ -283,62 +296,120 @@ async def analyze(
     total_cost_decimal = Decimal("0")
     remaining_budget_tokens = total_review_budget_tokens
 
-    # Step 2: triage-gate filter. SKIM/SKIP excluded by construction;
-    # files absent from the tier map are treated as SKIP (defensive
-    # against tier-map gaps; per spec §7 step 2). No FileExaminationEvent
-    # fires for excluded files — they never enter the per-file
-    # iteration scope.
+    # Step 2: per-pass iteration scope.
+    #
+    # Pass 0 (`len(state.analysis_rounds) == 0`): iterate
+    # `pr_context.changed_files` filtered by triage tier — the original
+    # analyze surface. SKIM/SKIP excluded by construction; files absent
+    # from the tier map are treated as SKIP (defensive against tier-map
+    # gaps; per spec §7 step 2). No FileExaminationEvent fires for
+    # excluded files.
+    #
+    # Pass 1 (`len(state.analysis_rounds) == 1`, post-trace re-entry per
+    # M8 loop): iterate `state.trace_fetched_files` — files trace
+    # resolved + fetched at head SHA. These are NOT PR-diff files, so
+    # there's no patch, no triage classification, and no
+    # changed-scope-unit intersection: analyze examines the WHOLE file
+    # because trace's resolution decided the file is relevant to a
+    # source finding. The parser admits INFERRED proposals only on
+    # pass 1 (`pass_index > 0`) — pass 0 still rejects per the V1 stub
+    # (no trace context exists yet at that point).
     triage_result = state.triage_result
-    for changed_file in state.pr_context.changed_files:
-        tier = (
-            triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
-            if triage_result is not None
-            else ReviewTier.SKIP
-        )
-        if tier not in (ReviewTier.DEEP, ReviewTier.STANDARD):
-            continue
-
-        # Step 3: per-file processing.
-        file_outcome = await _process_one_file(
-            changed_file=changed_file,
-            review_id=state.review_id,
-            installation_id=state.pr_context.installation_id,
-            is_eval=state.is_eval,
-            provider=provider,
-            analyze_model=analyze_model,
-            import_path_resolver=import_path_resolver,
-            file_examination_sink=file_examination_sink,
-            analyze_event_sink=analyze_event_sink,
-            active_policy_version=active_policy_version,
-            pass_index=pass_index,
-            per_file_cap_tokens=per_file_cap_tokens,
-            remaining_budget_tokens=remaining_budget_tokens,
-        )
-
-        if file_outcome.parser_result is not None:
-            # LLM call was made; parser ran.
-            n_llm_calls += 1
-            n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
-            n_findings_emitted += file_outcome.parser_result.counters.n_findings_emitted
-            n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
-            n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
-            n_trace_candidates_emitted += (
-                file_outcome.parser_result.counters.n_trace_candidates_emitted
+    if pass_index == 0:
+        for changed_file in state.pr_context.changed_files:
+            tier = (
+                triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
+                if triage_result is not None
+                else ReviewTier.SKIP
             )
-            admitted_findings.extend(file_outcome.parser_result.admitted_findings)
-            trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+            if tier not in (ReviewTier.DEEP, ReviewTier.STANDARD):
+                continue
 
-        total_input_tokens += file_outcome.input_tokens
-        total_output_tokens += file_outcome.output_tokens
-        total_cache_read_tokens += file_outcome.cache_read_tokens
-        total_cache_write_tokens += file_outcome.cache_write_tokens
-        total_cost_decimal += file_outcome.cost_decimal
-        remaining_budget_tokens -= file_outcome.estimated_tokens
+            # Step 3: per-file processing.
+            file_outcome = await _process_one_file(
+                changed_file=changed_file,
+                review_id=state.review_id,
+                installation_id=state.pr_context.installation_id,
+                is_eval=state.is_eval,
+                provider=provider,
+                analyze_model=analyze_model,
+                import_path_resolver=import_path_resolver,
+                file_examination_sink=file_examination_sink,
+                analyze_event_sink=analyze_event_sink,
+                active_policy_version=active_policy_version,
+                pass_index=pass_index,
+                per_file_cap_tokens=per_file_cap_tokens,
+                remaining_budget_tokens=remaining_budget_tokens,
+            )
 
-        if file_outcome.parse_status == "skipped":
-            files_skipped.append(changed_file.path)
-        else:
-            files_examined.append(changed_file.path)
+            if file_outcome.parser_result is not None:
+                # LLM call was made; parser ran.
+                n_llm_calls += 1
+                n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
+                n_findings_emitted += file_outcome.parser_result.counters.n_findings_emitted
+                n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
+                n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
+                n_trace_candidates_emitted += (
+                    file_outcome.parser_result.counters.n_trace_candidates_emitted
+                )
+                admitted_findings.extend(file_outcome.parser_result.admitted_findings)
+                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+
+            total_input_tokens += file_outcome.input_tokens
+            total_output_tokens += file_outcome.output_tokens
+            total_cache_read_tokens += file_outcome.cache_read_tokens
+            total_cache_write_tokens += file_outcome.cache_write_tokens
+            total_cost_decimal += file_outcome.cost_decimal
+            remaining_budget_tokens -= file_outcome.estimated_tokens
+
+            if file_outcome.parse_status == "skipped":
+                files_skipped.append(changed_file.path)
+            else:
+                files_examined.append(changed_file.path)
+    else:
+        # Pass 1+ trace-fetched-file iteration. Trace resolved these
+        # files; analyze examines the whole content (no diff intersection)
+        # and admits INFERRED proposals citing trace_path.
+        for fetched_file in state.trace_fetched_files:
+            file_outcome = await _process_one_trace_fetched_file(
+                fetched_file=fetched_file,
+                review_id=state.review_id,
+                installation_id=state.pr_context.installation_id,
+                is_eval=state.is_eval,
+                provider=provider,
+                analyze_model=analyze_model,
+                import_path_resolver=import_path_resolver,
+                file_examination_sink=file_examination_sink,
+                analyze_event_sink=analyze_event_sink,
+                active_policy_version=active_policy_version,
+                pass_index=pass_index,
+                per_file_cap_tokens=per_file_cap_tokens,
+                remaining_budget_tokens=remaining_budget_tokens,
+            )
+
+            if file_outcome.parser_result is not None:
+                n_llm_calls += 1
+                n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
+                n_findings_emitted += file_outcome.parser_result.counters.n_findings_emitted
+                n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
+                n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
+                n_trace_candidates_emitted += (
+                    file_outcome.parser_result.counters.n_trace_candidates_emitted
+                )
+                admitted_findings.extend(file_outcome.parser_result.admitted_findings)
+                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+
+            total_input_tokens += file_outcome.input_tokens
+            total_output_tokens += file_outcome.output_tokens
+            total_cache_read_tokens += file_outcome.cache_read_tokens
+            total_cache_write_tokens += file_outcome.cache_write_tokens
+            total_cost_decimal += file_outcome.cost_decimal
+            remaining_budget_tokens -= file_outcome.estimated_tokens
+
+            if file_outcome.parse_status == "skipped":
+                files_skipped.append(fetched_file.path)
+            else:
+                files_examined.append(fetched_file.path)
 
     ended_at = datetime.now(UTC)
 
@@ -881,6 +952,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         query_match_id_set=query_match_id_set,
         degraded_mode=degraded_mode,
         active_policy_version=active_policy_version,
+        pass_index=pass_index,
     )
 
     # Lift parser rejection payloads into audit events.
@@ -903,6 +975,237 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
 
     return _FileOutcome(
         parse_status=parse_status_for_event,
+        parser_result=parser_result,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        cache_read_tokens=response.cache_read_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        cost_decimal=cost_decimal,
+        estimated_tokens=estimated_tokens,
+    )
+
+
+async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration parallel to _process_one_file
+    *,
+    fetched_file: TraceFetchedFile,
+    review_id: UUID,
+    installation_id: int,
+    is_eval: bool,
+    provider: LLMProvider,
+    analyze_model: str,
+    import_path_resolver: ImportPathResolver,
+    file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    active_policy_version: str,
+    pass_index: int,
+    per_file_cap_tokens: int,
+    remaining_budget_tokens: int,
+) -> _FileOutcome:
+    """Process one trace-fetched file through parse → LLM call → parser.
+
+    Pass-1 sibling of `_process_one_file`. Trace resolved this file via
+    M8's two-phase fetch (Phase 1 probes + Phase 2 content fetch); the
+    file is NOT a PR-diff file, so there's no patch, no triage
+    classification, and no changed-scope-unit intersection. Analyze
+    examines the WHOLE file because trace's resolution decided the file
+    is relevant to a source finding.
+
+    Outcomes (subset of `_process_one_file`'s):
+      - `skipped+UNSUPPORTED_LANGUAGE` — non-Python file.
+      - Parser-stage skip — `parse_python` returned skipped (vendored,
+        oversized, etc.).
+      - `skipped+COST_BUDGET_EXHAUSTED` — cost gate failed.
+      - `clean+full_llm` — clean parse, LLM call admitted, parser ran.
+
+    Degraded outcomes (parse_failed / tree_has_error_in_changed_regions)
+    don't apply here: no changed regions, and parse failures on a
+    head-SHA-fetched file are routed through the parser-stage skip path
+    rather than the V1-unreachable degraded branch.
+
+    Per spec line 25: "INFERRED findings whose source `TraceDecision.
+    resolution_status` is `unresolved` or `ambiguous` downgrade to
+    JUDGED." V1 enforces this by Phase 2's gate (only `resolution_status=
+    "resolved"` files reach `state.trace_fetched_files`), so the
+    downgrade case doesn't fire here at the parser layer — every file
+    iterated in pass 1 is by construction resolved.
+    """
+    if not _is_python_file(fetched_file.path):
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=fetched_file.path,
+            skip_reason=SkipReason.UNSUPPORTED_LANGUAGE,
+        )
+
+    content = fetched_file.content_head
+    content_bytes = content.encode("utf-8")
+    file_byte_length = len(content_bytes)
+
+    parse_result: ParseResult = parse_python(
+        source=content_bytes,
+        file_path=fetched_file.path,
+        resolver=import_path_resolver,
+    )
+
+    if parse_result.parser_outcome == "skipped":
+        parser_skip_reason = parse_result.skip_reason
+        if parser_skip_reason is None:  # validator-impossible; narrows for mypy
+            raise RuntimeError(
+                "ParseResult invariant violated: parser_outcome='skipped' "
+                "requires non-None skip_reason"
+            )
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=fetched_file.path,
+            skip_reason=parser_skip_reason,
+        )
+
+    if parse_result.parser_outcome == "failed":
+        # Parse failure on a trace-fetched file: route to
+        # NO_REVIEWABLE_CONTEXT skip rather than the degraded-LLM branch.
+        # The fetched-file content came from GitHub at head SHA; a parse
+        # failure here is either a genuinely-unparseable Python file
+        # (already unusual for production code) or an invalid-UTF-8 case
+        # the encode round-trip can't produce. Trace's resolution stays
+        # in the audit log; analyze pass 1 didn't admit findings, but
+        # the file is reachable for forensic inspection.
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=fetched_file.path,
+            skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
+        )
+
+    # Include ALL scope units in the prompt. No diff intersection —
+    # trace decided the WHOLE file is relevant to the source finding,
+    # and analyze pass 1's job is to surface INFERRED findings tying
+    # the source finding's evidence to behavior elsewhere in this file.
+    included_scope_units = tuple(parse_result.scope_units)
+    if not included_scope_units:
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=fetched_file.path,
+            skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS,
+        )
+
+    # Pass-1 prompt admits INFERRED proposals with non-empty `trace_path`.
+    # `render_post_trace` is the pass-1 variant of `render`; same shape
+    # (system + user prompt), different system-prompt instructions to
+    # allow INFERRED.
+    query_match_id_set = _build_query_match_id_set(content_bytes)
+    parts = analyze_prompt.render_post_trace(
+        file_path=fetched_file.path,
+        scope_unit_context=_assemble_scope_unit_context(
+            included_scope_units=included_scope_units, file_content=content
+        ),
+        query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
+        source_finding_id=fetched_file.source_finding_id,
+        pass_index=pass_index,
+    )
+
+    estimated_tokens = (
+        _estimate_tokens(parts.system_prompt)
+        + _estimate_tokens(parts.user_prompt)
+        + analyze_prompt.MAX_TOKENS
+    )
+    if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=fetched_file.path,
+            skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
+        )
+
+    await file_examination_sink.emit_file_examination(
+        FileExaminationEvent(
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=fetched_file.path,
+            examination_type="analyze",
+            node_id="analyze",
+            parse_status="clean",
+            skip_reason=None,
+        )
+    )
+
+    # `inclusion_reason="trace_expansion"` per the ContextManifestEntry
+    # Literal — names the post-trace expansion-pass inclusion shape
+    # (scope units from a trace-fetched file). The Literal predates the
+    # trace-node arc; using it here closes the loop without a schema
+    # change.
+    context_summary: tuple[ContextManifestEntry, ...] = tuple(
+        ContextManifestEntry(
+            file_path=fetched_file.path,
+            scope_unit_name=su.qualified_name or su.name,
+            line_start=su.line_start,
+            line_end=su.line_end,
+            inclusion_reason="trace_expansion",
+        )
+        for su in included_scope_units
+    )
+    request = LLMRequest(
+        model=analyze_model,
+        system_prompt=parts.system_prompt,
+        user_prompt=parts.user_prompt,
+        max_tokens=analyze_prompt.MAX_TOKENS,
+        temperature=analyze_prompt.TEMPERATURE,
+        review_id=review_id,
+        node_id="analyze",
+        is_eval=is_eval,
+        prompt_template_version=analyze_prompt.VERSION,
+        degraded_mode=False,
+        degradation_reason=None,
+        context_summary=context_summary,
+    )
+    response: LLMResponse = await provider.complete(request)
+
+    cost_decimal = compute_cost_usd(
+        analyze_model,
+        input_tokens=response.input_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        cache_read_tokens=response.cache_read_tokens,
+        output_tokens=response.output_tokens,
+    )
+
+    parser_result = parse_analyze_response(
+        response.text,
+        review_id=review_id,
+        installation_id=installation_id,
+        file_path=fetched_file.path,
+        file_content=content,
+        file_byte_length=file_byte_length,
+        included_scope_units=included_scope_units,
+        query_match_id_set=query_match_id_set,
+        degraded_mode=False,
+        active_policy_version=active_policy_version,
+        pass_index=pass_index,
+    )
+
+    for proposal_rej in parser_result.proposal_rejections:
+        await analyze_event_sink.emit_finding_proposal_rejected(
+            _lift_proposal_rejection(proposal_rej, review_id=review_id, is_eval=is_eval)
+        )
+    if parser_result.response_rejection is not None:
+        await analyze_event_sink.emit_analyze_response_rejected(
+            _lift_response_rejection(
+                parser_result.response_rejection,
+                review_id=review_id,
+                is_eval=is_eval,
+            )
+        )
+
+    for finding in parser_result.admitted_findings:
+        await analyze_event_sink.emit_finding(_lift_admitted_finding(finding, is_eval=is_eval))
+
+    return _FileOutcome(
+        parse_status="clean",
         parser_result=parser_result,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,

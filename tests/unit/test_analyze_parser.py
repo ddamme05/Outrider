@@ -276,6 +276,10 @@ def test_parse_analyze_response_signature() -> None:
         "query_match_id_set",
         "degraded_mode",
         "active_policy_version",
+        # `pass_index` added 2026-05-24 for trace-node arc's post-trace
+        # INFERRED admission: pass 0 rejects every INFERRED (no trace
+        # context yet); pass 1+ admits INFERRED with non-empty trace_path.
+        "pass_index",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -721,22 +725,69 @@ def test_step4_observed_passes_when_query_match_id_in_registry() -> None:
     assert finding.query_match_id == "real_id"
 
 
-def test_step4_inferred_always_rejects_in_v1_stub() -> None:
-    """V1 stub per spec §6 step 4: until the trace-node spec lands
-    the resolver, every INFERRED is `Unwalkable` and gets
-    `trace_path_not_admissible`."""
+def test_step4_inferred_rejects_on_pass_0_no_trace_context_yet() -> None:
+    """Per trace-node arc: pass 0 (the first analyze pass over a PR
+    diff) rejects every INFERRED — no trace context exists yet, so
+    no trace_path can ground the claim. Pass 1+ admits INFERRED with
+    a non-empty trace_path (covered by a separate test below).
+    """
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="inferred",
             trace_path=("some.symbol", "step.two"),
         )
     )
-    result = _call_parser(response)
+    result = _call_parser(response)  # pass_index defaults to 0
     assert len(result.proposal_rejections) == 1
     rej = result.proposal_rejections[0]
     assert rej.rejection_reason == "trace_path_not_admissible"
     assert rej.claimed_evidence_tier == EvidenceTier.INFERRED
-    assert "V1 stub" in rej.rejection_detail
+    assert "pass 0" in rej.rejection_detail
+
+
+def test_step4_inferred_admits_on_pass_1_with_valid_trace_path() -> None:
+    """Per trace-node arc: pass 1 (post-trace re-entry) admits INFERRED
+    when trace_path is a non-empty array of non-empty strs. Mirrors
+    the schema-level proof-boundary check at
+    `policy/findings.py::_trace_path_is_valid`.
+    """
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="inferred",
+            trace_path=("middleware.auth.authenticate", "middleware.auth.validate_token"),
+        )
+    )
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        pass_index=1,
+    )
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
+    finding = result.admitted_findings[0]
+    assert finding.evidence_tier == EvidenceTier.INFERRED
+    assert finding.trace_path == (
+        "middleware.auth.authenticate",
+        "middleware.auth.validate_token",
+    )
+
+
+def test_step4_inferred_rejects_on_pass_1_empty_trace_path() -> None:
+    """Pass 1 admits INFERRED only when trace_path is non-empty.
+    An empty trace_path is rejected with the same reason but a
+    different rejection_detail naming the shape requirement."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="inferred",
+            trace_path=(),
+        )
+    )
+    result = _call_parser(response, pass_index=1)
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "trace_path_not_admissible"
+    assert "non-empty trace_path" in rej.rejection_detail
 
 
 def test_step4_judged_skips_producer_admission() -> None:

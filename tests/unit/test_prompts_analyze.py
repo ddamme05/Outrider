@@ -199,22 +199,35 @@ def test_safe_code_fence_grows_past_arbitrary_backtick_runs() -> None:
     assert hostile in wrapped
 
 
-def test_system_prompt_forbids_inferred_in_v1() -> None:
-    """V1 admission stub auto-rejects every `inferred` proposal with
-    `trace_path_not_admissible` (parser §6 step 4, deferred until the
-    trace-node spec lands). Telling the model to emit `inferred` would
-    burn per-file budget on guaranteed-reject calls. Pin the prohibition
-    so a future prompt edit that silently re-permits inferred — before
-    the trace resolver actually exists — fails this test rather than
-    inflating rejection events in production.
+def test_system_prompt_pass_conditional_inferred_admission() -> None:
+    """Per the trace-node arc (M8 loop): pass 0 prohibits `inferred`
+    (no trace context yet); pass 1 (post-trace re-entry) admits it
+    when trace_path is non-empty. The pass-0 prompt must keep the
+    prohibition signal so the model doesn't burn budget on pass-0
+    rejects; the pass-1 admission directive ships via
+    `POST_TRACE_SYSTEM_PROMPT_SUFFIX`, appended at `render_post_trace`
+    time.
+
+    The shared `SYSTEM_PROMPT_INVARIANTS` is the pass-0 baseline;
+    `render_post_trace` appends the pass-1 suffix. Pin both signals
+    so a future prompt edit that silently relaxes pass-0 admission
+    OR drops the pass-1 admission directive fails this test.
     """
-    # Three load-bearing signals in the prompt:
+    # Pass 0 (baseline) signals:
     # 1. The output-shape enum union DOES NOT list inferred as an option.
-    # 2. The clean prompt has an explicit "Do NOT emit inferred" sentence.
-    # 3. The degraded-mode reminder continues to say `inferred` is rejected.
+    # 2. The clean prompt explicitly rejects inferred on pass 0.
     assert "<observed|judged>" in SYSTEM_PROMPT_INVARIANTS
     assert "<observed|inferred|judged>" not in SYSTEM_PROMPT_INVARIANTS
-    assert 'Do NOT emit `evidence_tier="inferred"`' in SYSTEM_PROMPT_INVARIANTS
+    assert "On pass 0" in SYSTEM_PROMPT_INVARIANTS
+    assert 'do NOT emit\n`evidence_tier="inferred"`' in SYSTEM_PROMPT_INVARIANTS
+
+    # Pass 1 (post-trace) admission signals — supplied via the
+    # render_post_trace path.
+    from outrider.prompts.analyze import POST_TRACE_SYSTEM_PROMPT_SUFFIX
+
+    assert "Pass 1 (post-trace)" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    assert "INFERRED admission" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    assert "non-empty array" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
 
 
 def test_system_prompt_prohibits_severity_proposal() -> None:
@@ -741,6 +754,11 @@ def test_module_exports_all_documented_surfaces() -> None:
     expected = {
         "DEGRADED_USER_TEMPLATE",
         "MAX_TOKENS",
+        # Post-trace prompt surfaces added 2026-05-24 for trace-node arc
+        # pass-1 INFERRED admission. See trace.py and analyze.py for the
+        # render_post_trace call site.
+        "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
+        "POST_TRACE_USER_TEMPLATE",
         "SYSTEM_FILE_CONTEXT_TEMPLATE",
         "SYSTEM_PROMPT_INVARIANTS",
         "TEMPERATURE",
@@ -750,5 +768,6 @@ def test_module_exports_all_documented_surfaces() -> None:
         "AnalyzePromptParts",
         "render",
         "render_degraded",
+        "render_post_trace",
     }
     assert set(analyze.__all__) == expected

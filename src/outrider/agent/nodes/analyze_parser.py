@@ -186,6 +186,7 @@ def parse_analyze_response(
     query_match_id_set: frozenset[str],
     degraded_mode: bool,
     active_policy_version: str,
+    pass_index: int = 0,
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -218,10 +219,12 @@ def parse_analyze_response(
       `ReviewFinding.policy_version` on admitted proposals.
 
     The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
-    — the parser doesn't reference it (admission decisions are
-    pass-agnostic). Removing the parameter from this signature avoids
-    an unused-input footgun where a future caller might assume the
-    parser threads `pass_index` into rejection_detail.
+    and now threads it here for INFERRED admission: pass 0 (the original
+    PR-diff analyze pass) rejects every INFERRED proposal — no trace
+    context exists yet — while pass 1+ (post-trace re-entry per M8 loop)
+    admits INFERRED proposals carrying a non-empty `trace_path` (the
+    proof-boundary validator at `policy/findings.py::_trace_path_is_valid`
+    is the schema-level gate for trace_path shape).
     """
     try:
         # Strip a single outer ```json...``` wrapper if present — the
@@ -361,21 +364,40 @@ def parse_analyze_response(
                 trace_candidates.extend(proposal_trace_candidates)
                 continue
         elif evidence_tier == EvidenceTier.INFERRED:
-            # V1 stub per spec §6 step 4: until the trace-node spec
-            # lands the resolver, every INFERRED is `Unwalkable` and
-            # rejected. Tracked as Q5 in spec "Open design questions".
-            proposal_rejections.append(
-                _build_proposal_rejection(
-                    raw_proposal,
-                    proposal_hash=proposal_hash,
-                    file_path=file_path,
-                    rejection_reason="trace_path_not_admissible",
-                    rejection_detail="INFERRED tier deferred to trace-node spec (V1 stub)",
-                    claimed_evidence_tier=evidence_tier,
+            # Pass-conditional admission per the trace-node arc (M8 loop).
+            # Pass 0: trace hasn't run yet — no trace context exists —
+            # so every INFERRED proposal is rejected. The model should
+            # emit JUDGED for cross-file or walk-derived reasoning on
+            # pass 0 (mirrors the pass-0 prompt instruction at
+            # prompts/analyze.py).
+            # Pass 1+: trace ran + fetched files; INFERRED is admitted
+            # when `trace_path` is non-empty (the proof-boundary check
+            # at `policy/findings.py::_trace_path_is_valid` enforces
+            # the shape — non-empty list-or-tuple of non-empty strs).
+            # Empty / wrong-shape trace_path on pass 1+ is rejected with
+            # the same `trace_path_not_admissible` reason.
+            if pass_index == 0 or not _raw_trace_path_is_admissible(raw_proposal.trace_path):
+                detail = (
+                    "INFERRED rejected on pass 0 (no trace context yet)"
+                    if pass_index == 0
+                    else "INFERRED requires non-empty trace_path of non-empty strs"
                 )
-            )
-            trace_candidates.extend(proposal_trace_candidates)
-            continue
+                proposal_rejections.append(
+                    _build_proposal_rejection(
+                        raw_proposal,
+                        proposal_hash=proposal_hash,
+                        file_path=file_path,
+                        rejection_reason="trace_path_not_admissible",
+                        rejection_detail=detail,
+                        claimed_evidence_tier=evidence_tier,
+                    )
+                )
+                trace_candidates.extend(proposal_trace_candidates)
+                continue
+            # Pass 1+ with valid trace_path: fall through to step 5
+            # (span admission). The proof-boundary validator at
+            # `policy/findings.py::enforce_proof_boundary` runs again
+            # at ReviewFinding construction.
         # JUDGED falls through to step 5 (span admission).
 
         # Step 5: span admission (per-outcome branch). The
@@ -559,6 +581,21 @@ _CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
 # `max_length=256` — no pattern. This regex enforces the spec-promised
 # safety class as a parser-side sanitization step.
 _QUERY_MATCH_ID_SAFE_CLASS: Final = re.compile(r"[^A-Za-z0-9_./:\-]")
+
+
+def _raw_trace_path_is_admissible(trace_path: object) -> bool:
+    """Pre-construction shape check on a raw `trace_path` proposal value.
+
+    Mirrors `policy/findings.py::_trace_path_is_valid` exactly so the
+    parser's pass-1 INFERRED admission gate and the ReviewFinding
+    proof-boundary validator agree on what "non-empty trace_path of
+    non-empty strs" means. Type-agnostic on input (the raw proposal
+    schema admits `list[str] | None` but the parser must guard against
+    a future schema relaxation that admits other types).
+    """
+    if not isinstance(trace_path, (list, tuple)) or not trace_path:
+        return False
+    return all(isinstance(item, str) and item for item in trace_path)
 
 
 def _sanitize_query_match_id_for_detail(claimed_id: str | None) -> str:
