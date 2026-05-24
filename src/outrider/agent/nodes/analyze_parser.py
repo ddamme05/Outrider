@@ -138,6 +138,12 @@ class ParserCounters:
     n_proposals_rejected: int
     n_responses_rejected: int
     n_trace_candidates_emitted: int
+    n_trace_candidates_dropped_malformed: int = 0
+    """Count of raw trace_candidates entries DROPPED because
+    `is_valid_import_string` rejected the import_string_raw (sharp-edges
+    F1 audit-fold; sister field on AnalyzeCompletedEvent has the full
+    rationale). Default=0 so existing fixture-driven constructions
+    don't break; the parser sets it explicitly when emitting."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +261,7 @@ def parse_analyze_response(
     proposal_rejections: list[ProposalRejection] = []
     trace_candidates: list[TraceCandidate] = []
     n_proposals_seen = 0
+    n_trace_candidates_dropped_malformed = 0
     for raw_proposal in raw.findings:
         n_proposals_seen += 1
 
@@ -281,9 +288,10 @@ def parse_analyze_response(
         # a rejected JUDGED-claim might still surface a legitimate
         # cross-file signal. Pre-compute here and `.extend(...)` on
         # whichever branch the iteration takes.
-        proposal_trace_candidates = _collect_trace_candidates_for(
+        proposal_trace_candidates, n_dropped = _collect_trace_candidates_for(
             raw_proposal, proposal_hash=proposal_hash
         )
+        n_trace_candidates_dropped_malformed += n_dropped
 
         # Step 2: evidence_tier enum admission (runs first per the
         # bidirectional-validator requirement above).
@@ -524,6 +532,7 @@ def parse_analyze_response(
             n_proposals_rejected=len(proposal_rejections),
             n_responses_rejected=0,
             n_trace_candidates_emitted=len(trace_candidates),
+            n_trace_candidates_dropped_malformed=n_trace_candidates_dropped_malformed,
         ),
     )
 
@@ -607,7 +616,7 @@ def _collect_trace_candidates_for(
     raw: AnalyzeFindingProposalRaw,
     *,
     proposal_hash: str,
-) -> list[TraceCandidate]:
+) -> tuple[list[TraceCandidate], int]:
     """Build the `TraceCandidate` list from a raw proposal's
     `trace_candidates`. Each candidate's `candidate_id` is content-
     derived via `compute_candidate_id`, `source_proposal_hash` is the
@@ -640,15 +649,22 @@ def _collect_trace_candidates_for(
     # `validate_diff_path` (path-shaped) to `is_valid_import_string`
     # (identifier-shaped) in the same DECISIONS-aligned commit.
     out: list[TraceCandidate] = []
+    n_dropped_malformed = 0
     for raw_cand in raw.trace_candidates:
         try:
             canonical_import = is_valid_import_string(raw_cand.import_string_raw)
         except ValueError:
-            # Malformed import string — drop silently. Per spec §6 step
-            # 10 trace candidates are advisory; dropping one bad
-            # candidate is preferable to crashing the whole parser
-            # pass. The dropped candidate's parent proposal still
-            # produces its own rejection/admission outcome independently.
+            # Malformed import string — drop silently AND increment the
+            # forensic counter (sharp-edges F1 audit-fold). Per spec §6
+            # step 10 trace candidates are advisory; dropping one bad
+            # candidate is preferable to crashing the whole parser pass.
+            # The dropped candidate's parent proposal still produces its
+            # own rejection/admission outcome independently. The counter
+            # surfaces aggregate drift so operators can distinguish
+            # "model proposed nothing" from "every proposal was
+            # malformed" without sanitizing raw model output into an
+            # audit row.
+            n_dropped_malformed += 1
             continue
         try:
             candidate = TraceCandidate(
@@ -664,10 +680,12 @@ def _collect_trace_candidates_for(
         except ValidationError:
             # Defense-in-depth: should not fire given `canonical_import`
             # just passed `is_valid_import_string` AND the candidate_id
-            # is computed canonically. If it does, drop rather than crash.
+            # is computed canonically. If it does, drop AND count as
+            # malformed (same forensic bucket).
+            n_dropped_malformed += 1
             continue
         out.append(candidate)
-    return out
+    return out, n_dropped_malformed
 
 
 # Max length matches `Field(max_length=500)` on
