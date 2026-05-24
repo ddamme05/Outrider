@@ -289,6 +289,14 @@ an import / symbol that resolves here; pass 1 admits
 
 ### Pass-1 output schema (REPLACES the pass-0 schema)
 
+The "Return exactly one JSON object" / "Every value must be valid JSON
+literally" rules from the pass-0 schema STILL APPLY here — placeholders
+like `<...>` are illustrative and must be replaced with real values.
+`trace_path` is shown as an array example; substitute `null` (the JSON
+literal) when `evidence_tier` is `observed` or `judged` (see field
+semantics below). Do NOT mirror union-type syntax like `[...] | null` —
+that's not valid JSON.
+
 ```
 {
   "findings": [
@@ -296,7 +304,7 @@ an import / symbol that resolves here; pass 1 admits
       "finding_type": "<enum value>",
       "evidence_tier": "<observed|inferred|judged>",
       "query_match_id": "<id from registry, or null>",
-      "trace_path": ["<scope-unit name>", "..."] | null,
+      "trace_path": ["scope.unit.one", "scope.unit.two"],
       "title": "<short summary, ≤120 chars>",
       "description": "<explanation, ≤1000 chars>",
       "evidence": "<verbatim quote from the code, ≤2000 chars>",
