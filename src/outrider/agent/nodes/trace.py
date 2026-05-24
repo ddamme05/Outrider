@@ -204,19 +204,25 @@ async def trace(
     # Empty pending_buckets → no Haiku call, no decisions to emit.
     ordered_candidates: tuple[TraceCandidate, ...] = ()
     if pending_buckets:
-        # Flatten preserving deterministic input order (sorted by
-        # finding_id then by candidate_id for stability across calls).
+        # Flatten in BUCKET INSERTION ORDER — the order analyze emitted
+        # candidates into `state.trace_candidates` via the reducer.
+        # Deliberately NOT sorted by `candidate_id` (SHA-256 of LLM-
+        # controlled fields): a hostile LLM in analyze could grind
+        # candidate_ids to win lexicographic order, then force the
+        # parser fallback (e.g., via a malformed ranking response) to
+        # smuggle attacker-chosen candidates into the top-K probe set.
+        # Insertion order is producer-controlled, not attacker-grindable.
+        # `sorted(pending_buckets)` (the outer iteration) is also
+        # finding_id-derived, but finding_id is content-derived from
+        # `proposal_hash` which the analyze-side validator + DECISIONS#022
+        # recipe make collision-resistant per M5.
         flat_candidates = tuple(
-            c
-            for finding_id in sorted(pending_buckets)
-            for c in sorted(pending_buckets[finding_id], key=lambda c: c.candidate_id)
+            c for finding_id in sorted(pending_buckets) for c in pending_buckets[finding_id]
         )
         # Defensive: comprehension over a non-empty pending_buckets MUST
-        # produce a non-empty tuple (every bucket has at least one
-        # candidate by construction at step 4). Asserts protect against
-        # a future refactor that empties a bucket without removing the
-        # key — the Haiku call would otherwise fire with zero candidates
-        # and burn tokens on a vacuous response.
+        # produce a non-empty tuple (every bucket has ≥1 candidate by
+        # construction at step 4). Guard against a future refactor that
+        # empties a bucket without removing the key.
         if flat_candidates:
             ordered_candidates = await _rank_candidates_via_haiku(
                 state=state,
@@ -268,14 +274,20 @@ async def trace(
         # Construct TraceDecisionEvent. proposed_import_strings is the
         # LLM-ranked input order; resolved_candidate_paths is the probe
         # output (only the paths that fetched OK).
+        # `proposed_import_strings` carries the FULL ranked list from
+        # `full_bucket`, NOT just the probed top-K — the audit row
+        # preserves the LLM's full proposal for forensic transparency;
+        # only the probed subset incurs GitHub fetches. (The earlier
+        # `bucket` here was a doc-vs-code divergence — the cap is on
+        # fetches, not on what the audit row records.)
         decision_event = TraceDecisionEvent(
             review_id=state.review_id,
             is_eval=state.is_eval,
             source_finding_id=finding_id,
             target_file=probe_outcome.target_file,
-            reason=_aggregate_candidate_reasons(bucket),
+            reason=_aggregate_candidate_reasons(full_bucket),
             resolution_status=probe_outcome.resolution_status,
-            proposed_import_strings=tuple(c.import_string for c in bucket),
+            proposed_import_strings=tuple(c.import_string for c in full_bucket),
             resolved_candidate_paths=probe_outcome.resolved_candidate_paths,
         )
 
@@ -373,17 +385,22 @@ def _bucket_candidates_by_finding(
     """Group candidates by their joined source_finding_id.
 
     Candidates whose `source_proposal_hash` doesn't resolve via the
-    join are dropped silently — in practice this branch shouldn't fire
-    because analyze emits findings + candidates atomically, but a
-    cross-graph mutation could leave dangling candidates. Logged at
-    DEBUG so a producer-bug investigation has the trail.
+    join are dropped — in practice this branch shouldn't fire because
+    analyze emits findings + candidates atomically, but a cross-graph
+    mutation (direct `state.trace_candidates.append` bypassing the
+    reducer + analyze admission gate) could leave dangling candidates.
+    Logged at WARN so the producer-bug is visible at default log level
+    — DEBUG would make the drop invisible in production exactly when
+    the underlying bug needs investigation.
     """
     buckets: dict[UUID, list[TraceCandidate]] = {}
     for candidate in candidates:
         finding_id = join_lookup.get(candidate.source_proposal_hash)
         if finding_id is None:
-            logger.debug(
-                "trace: dropping unjoinable candidate candidate_id=%s source_proposal_hash=%s",
+            logger.warning(
+                "trace: dropping unjoinable candidate candidate_id=%s "
+                "source_proposal_hash=%s — producer bug (candidate bypassed "
+                "the reducer or analyze admission gate)",
                 candidate.candidate_id,
                 candidate.source_proposal_hash,
             )
@@ -572,9 +589,13 @@ async def _phase_two_content_fetch(
     Constructs `TraceFetchedFile` with `content_head` from the fetched
     bytes. Returns None if the fetch returns None (the target was
     resolved by Phase 1 but disappeared between probe and Phase 2 —
-    races, force-pushes; rare but defensive). The trace_fetched_files
-    reducer's `append_with_dedup_by(path)` collapses duplicates if
-    multiple findings resolve to the same target.
+    races, force-pushes; rare but defensive) OR if the bytes don't
+    decode as UTF-8 (a `.py`-named path that's actually a binary
+    blob — compiled `.pyc` misnamed, vendor-injected bytes-as-`.py`,
+    generated-stub binary). The decode-failure case is logged at WARN
+    so an operator can investigate; trace continues for other decisions
+    rather than failing the whole pass on a single producer-bug-shaped
+    candidate.
 
     Fields per Q3:
       - `path`: from `target_file` (already validated by Phase 1's
@@ -593,9 +614,25 @@ async def _phase_two_content_fetch(
     )
     if content_bytes is None:
         return None
+    try:
+        content_head = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        # Skip — a binary blob masquerading as Python would corrupt
+        # the audit trail (mojibake string in content_head) AND mislead
+        # analyze pass 2 (LLM hallucinates findings off replacement
+        # chars). Skipping keeps the TraceDecision audit row intact
+        # (resolution_status="resolved" reflects what Phase 1 saw)
+        # while preventing the bad bytes from entering state.
+        logger.warning(
+            "trace: Phase 2 fetched bytes at %s do not decode as UTF-8; "
+            "skipping TraceFetchedFile construction. Producer-bug or "
+            "binary masquerading as .py — operator investigation needed.",
+            target_file,
+        )
+        return None
     return TraceFetchedFile(
         path=target_file,
-        content_head=content_bytes.decode("utf-8", errors="replace"),
+        content_head=content_head,
         source_finding_id=source_finding_id,
     )
 
