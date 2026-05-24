@@ -394,16 +394,16 @@ def test_compute_round_id_keys_include_finding_content_hashes() -> None:
 
 
 def test_compute_candidate_id_includes_source_proposal_hash() -> None:
-    """Two candidates with same path + reason but different source
+    """Two candidates with same import_string + reason but different source
     proposal produce different ids — the source proposal is identity-bearing."""
     h_a = compute_candidate_id(
         source_proposal_hash="a" * 64,
-        candidate_path="src/foo.py",
+        import_string="foo",
         reason="r",
     )
     h_b = compute_candidate_id(
         source_proposal_hash="b" * 64,
-        candidate_path="src/foo.py",
+        import_string="foo",
         reason="r",
     )
     assert h_a != h_b
@@ -473,29 +473,32 @@ def test_analysis_round_rejects_traversal_in_files_examined() -> None:
         )
 
 
-def test_trace_candidate_rejects_traversal_in_candidate_path() -> None:
-    """Same rule on the candidate-side schema.
+def test_trace_candidate_rejects_invalid_import_string() -> None:
+    """Same shape on the candidate-side schema: the `import_string`
+    field validator rejects path-shaped / shell-metacharacter /
+    keyword-bearing inputs at the schema floor. Post-DECISIONS.md#024:
+    the validator is `is_valid_import_string` (identifier-shape) not
+    `validate_diff_path` (path-shape); the rejected example is
+    correspondingly an import-string-malformed value, not a path-
+    traversal value.
 
     `candidate_id` is derived from the same payload as the rest of the
-    object so a passing test can only come from path-traversal
-    rejection, not from canonical-ID-mismatch on a different
-    validator.
+    object so a passing test can only come from import-string rejection,
+    not from canonical-ID-mismatch on a different validator.
     """
-    from outrider.coordinates import CoordinateError
-
     prop = compute_identity_hash({"b": 1})
-    bad_path = "../escape.py"
+    bad_value = "../escape.py"  # path-shaped — rejected by is_valid_import_string
     reason = "r"
-    with pytest.raises((ValidationError, CoordinateError)):
+    with pytest.raises(ValidationError):
         TraceCandidate(
             candidate_id=compute_candidate_id(
                 source_proposal_hash=prop,
-                candidate_path=bad_path,
+                import_string=bad_value,
                 reason=reason,
             ),
             source_proposal_hash=prop,
             reason=reason,
-            candidate_path=bad_path,
+            import_string=bad_value,
         )
 
 
@@ -876,46 +879,45 @@ def test_trace_candidate_candidate_id_bound_to_payload() -> None:
     from outrider.schemas import TraceCandidate
 
     prop = compute_identity_hash({"x": 1})
-    path = "src/foo.py"
+    import_string = "foo"
     reason = "r"
     with pytest.raises(ValidationError, match="does not match the canonical id"):
         TraceCandidate(
             candidate_id="0" * 64,  # pattern-valid but wrong
             source_proposal_hash=prop,
             reason=reason,
-            candidate_path=path,
+            import_string=import_string,
         )
     # Canonical id is admitted:
     canonical = compute_candidate_id(
         source_proposal_hash=prop,
-        candidate_path=path,
+        import_string=import_string,
         reason=reason,
     )
     c = TraceCandidate(
         candidate_id=canonical,
         source_proposal_hash=prop,
         reason=reason,
-        candidate_path=path,
+        import_string=import_string,
     )
     assert c.candidate_id == canonical
 
 
-def test_trace_candidate_proposal_admitted_layer_enforces_path_validation() -> None:
-    """Admitted-layer schema validator rejects un-canonicalized paths.
+def test_trace_candidate_proposal_admitted_layer_enforces_import_string_validation() -> None:
+    """Admitted-layer schema validator rejects un-canonicalized import strings.
 
     The raw layer (TraceCandidateProposalRaw) stays loose by design —
     it admits the model's unvalidated string long enough for the parser
     to emit a rejection event. The admitted layer is where the
-    'already passed validate_diff_path' invariant becomes structural.
-    Pydantic V2 surfaces non-ValueError exceptions raised inside
-    field_validators directly, so the CoordinateError propagates
-    without being wrapped.
+    'already passed is_valid_import_string' invariant becomes structural.
+    Per DECISIONS.md#024 the validator is `is_valid_import_string`
+    (raises ValueError, wrapped into ValidationError by Pydantic).
     """
-    from outrider.coordinates import CoordinateError
     from outrider.schemas.llm import TraceCandidateProposal
 
-    with pytest.raises((ValidationError, CoordinateError)):
-        TraceCandidateProposal(candidate_path="../escape.py", reason="r")
+    with pytest.raises(ValidationError):
+        # Path-shaped — rejected by is_valid_import_string
+        TraceCandidateProposal(import_string="../escape.py", reason="r")
 
 
 def test_skip_reason_stage_totality_at_import() -> None:

@@ -105,7 +105,7 @@ def test_raw_admits_optional_trace_path() -> None:
 def test_raw_rejects_more_than_20_trace_candidates() -> None:
     """max_length=20 on trace_candidates."""
     candidates = tuple(
-        TraceCandidateProposalRaw(candidate_path_raw=f"src/f{i}.py", reason="x") for i in range(21)
+        TraceCandidateProposalRaw(import_string_raw=f"pkg.f{i}", reason="x") for i in range(21)
     )
     with pytest.raises(ValidationError):
         AnalyzeFindingProposalRaw(**_raw_kwargs(trace_candidates=candidates))
@@ -204,63 +204,63 @@ def test_admitted_span_must_equal_raw_span_byte_for_byte() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_trace_candidate_raw_uses_candidate_path_raw() -> None:
-    raw = TraceCandidateProposalRaw(candidate_path_raw="src/middleware/auth.py", reason="x")
-    assert raw.candidate_path_raw == "src/middleware/auth.py"
+def test_trace_candidate_raw_uses_import_string_raw() -> None:
+    raw = TraceCandidateProposalRaw(import_string_raw="middleware.auth", reason="x")
+    assert raw.import_string_raw == "middleware.auth"
 
 
-def test_trace_candidate_admitted_uses_candidate_path() -> None:
-    """Admitted layer uses `candidate_path` (post-validate_diff_path)."""
-    admitted = TraceCandidateProposal(candidate_path="src/middleware/auth.py", reason="x")
-    assert admitted.candidate_path == "src/middleware/auth.py"
+def test_trace_candidate_admitted_uses_import_string() -> None:
+    """Admitted layer uses `import_string` (post-is_valid_import_string per
+    DECISIONS.md#024)."""
+    admitted = TraceCandidateProposal(import_string="middleware.auth", reason="x")
+    assert admitted.import_string == "middleware.auth"
 
 
 @pytest.mark.parametrize(
-    "bad_path",
+    "bad_value",
     [
-        "../escape.py",
-        "src/../../escape.py",
-        "/etc/passwd",
-        "src/foo.py\x00",
+        "src/foo.py",  # path-shaped — has slashes
+        "foo..bar",  # empty interior part
+        "foo;rm",  # shell metacharacter
+        "foo.class",  # Python keyword part
+        "foo.123abc",  # numeric prefix part (not a valid identifier)
+        ".foo",  # leading dot
+        "",  # empty
     ],
 )
-def test_trace_candidate_admitted_rejects_invalid_path(bad_path: str) -> None:
-    """The admitted-layer `candidate_path` validator re-runs
-    `validate_diff_path` so traversal / absolute / NUL-bearing paths
-    are refused at the schema boundary, NOT just at the raw→admitted
-    translator. Pins the schema-layer guarantee against silent
-    construction of an admitted proposal with a path the API surface
-    would reject.
+def test_trace_candidate_admitted_rejects_invalid_import_string(bad_value: str) -> None:
+    """The admitted-layer `import_string` validator re-runs
+    `is_valid_import_string` so malformed dotted imports are refused
+    at the schema boundary, NOT just at the raw→admitted translator.
+    Pins the schema-layer guarantee against silent construction of an
+    admitted proposal with an import string the resolver would reject.
 
     Pydantic V2's `field_validator` re-raises non-`ValueError` /
-    non-`AssertionError` exceptions directly, so a `CoordinateError`
-    from `validate_diff_path` surfaces as itself, not wrapped in a
-    `ValidationError`. The test accepts either.
+    non-`AssertionError` exceptions directly. `is_valid_import_string`
+    raises `ValueError`, which Pydantic wraps into a `ValidationError`.
     """
-    from outrider.coordinates import CoordinateError
-
-    with pytest.raises((ValidationError, CoordinateError)):
-        TraceCandidateProposal(candidate_path=bad_path, reason="x")
-
-
-def test_trace_candidate_admitted_rejects_candidate_path_raw_kwarg() -> None:
-    """The raw layer's field name is NOT a valid admitted field — post-
-    split S4 pit-of-success: a raw→admitted swap fails Pydantic
-    construction under `extra='forbid'`."""
     with pytest.raises(ValidationError):
-        TraceCandidateProposal(candidate_path_raw="src/x.py", reason="x")  # type: ignore[call-arg]
+        TraceCandidateProposal(import_string=bad_value, reason="x")
 
 
-def test_trace_candidate_raw_rejects_candidate_path_kwarg() -> None:
+def test_trace_candidate_admitted_rejects_import_string_raw_kwarg() -> None:
+    """The raw layer's field name is NOT a valid admitted field —
+    pit-of-success: a raw→admitted swap fails Pydantic construction
+    under `extra='forbid'`."""
+    with pytest.raises(ValidationError):
+        TraceCandidateProposal(import_string_raw="foo.bar", reason="x")  # type: ignore[call-arg]
+
+
+def test_trace_candidate_raw_rejects_import_string_kwarg() -> None:
     """Symmetric: the admitted field name is not a raw field."""
     with pytest.raises(ValidationError):
-        TraceCandidateProposalRaw(candidate_path="src/x.py", reason="x")  # type: ignore[call-arg]
+        TraceCandidateProposalRaw(import_string="foo.bar", reason="x")  # type: ignore[call-arg]
 
 
 def test_trace_candidate_reason_max_length() -> None:
     """500-char cap shared between raw and admitted reason fields."""
     with pytest.raises(ValidationError):
-        TraceCandidateProposalRaw(candidate_path_raw="src/x.py", reason="r" * 501)
+        TraceCandidateProposalRaw(import_string_raw="foo.bar", reason="r" * 501)
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Final, Literal
 from pydantic import ValidationError
 
 from outrider.audit.events import compute_finding_content_hash
-from outrider.coordinates import validate_diff_path
+from outrider.coordinates import is_valid_import_string
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     span_is_nonempty,
@@ -619,46 +619,52 @@ def _collect_trace_candidates_for(
     rejections never reach this helper because no proposals exist at
     that point.
     """
-    # Canonicalize `candidate_path_raw` ONCE up-front and use the result
+    # Canonicalize `import_string_raw` ONCE up-front and use the result
     # for both `compute_candidate_id` and `TraceCandidate(...)`. Two
     # failure shapes are guarded:
     #
-    # - Hostile path (e.g. `"../../etc/passwd"`, Trojan-Source, NUL,
-    #   absolute) → `validate_diff_path` raises `CoordinateError`.
-    # - Alias path (e.g. `"./src/foo.py"`) canonicalizes successfully,
-    #   but feeding the RAW path to `compute_candidate_id` produces an
-    #   id the schema's recomputation rejects.
+    # - Malformed import string (path separator, shell metachar, empty
+    #   part, Python keyword, non-identifier part) →
+    #   `is_valid_import_string` raises `ValueError`.
+    # - Decomposed-Unicode import (e.g. `café.bar` in NFD) canonicalizes
+    #   successfully via NFC normalization, but feeding the RAW value
+    #   to `compute_candidate_id` would produce an id the schema's
+    #   recomputation rejects (since the schema validator NFC-normalizes
+    #   first; raw NFD bytes hash differently from NFC bytes).
     #
     # Without the up-front canonicalize + try/except, a single bad
     # candidate crashes the whole pass and breaks the
     # `n_proposals_seen == admitted + rejected` accounting equation.
+    # Per DECISIONS.md#024 trace candidates are dotted Python import
+    # strings (V1; no file-path fallback) — this helper switched from
+    # `validate_diff_path` (path-shaped) to `is_valid_import_string`
+    # (identifier-shaped) in the same DECISIONS-aligned commit.
     out: list[TraceCandidate] = []
     for raw_cand in raw.trace_candidates:
         try:
-            canonical_path = validate_diff_path(raw_cand.candidate_path_raw)
-        except CoordinateError:
-            # Hostile or invalid candidate path — drop silently. Per
-            # spec §6 step 10 trace candidates are advisory; dropping
-            # one bad candidate is preferable to crashing the whole
-            # parser pass. The dropped candidate's parent proposal
-            # still produces its own rejection/admission outcome
-            # independently.
+            canonical_import = is_valid_import_string(raw_cand.import_string_raw)
+        except ValueError:
+            # Malformed import string — drop silently. Per spec §6 step
+            # 10 trace candidates are advisory; dropping one bad
+            # candidate is preferable to crashing the whole parser
+            # pass. The dropped candidate's parent proposal still
+            # produces its own rejection/admission outcome independently.
             continue
         try:
             candidate = TraceCandidate(
                 candidate_id=compute_candidate_id(
                     source_proposal_hash=proposal_hash,
-                    candidate_path=canonical_path,
+                    import_string=canonical_import,
                     reason=raw_cand.reason,
                 ),
                 source_proposal_hash=proposal_hash,
                 reason=raw_cand.reason,
-                candidate_path=canonical_path,
+                import_string=canonical_import,
             )
         except ValidationError:
-            # Defense-in-depth: should not fire given `canonical_path`
-            # just passed `validate_diff_path` AND the candidate_id is
-            # computed canonically. If it does, drop rather than crash.
+            # Defense-in-depth: should not fire given `canonical_import`
+            # just passed `is_valid_import_string` AND the candidate_id
+            # is computed canonically. If it does, drop rather than crash.
             continue
         out.append(candidate)
     return out

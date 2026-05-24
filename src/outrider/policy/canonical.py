@@ -279,11 +279,11 @@ def compute_proposal_hash(
     `source_file_path` runs through `coordinates.validate_diff_path`
     BEFORE entering the hash payload. Per the path-canonicalization
     rule (spec.md §1: "All `files_examined`, `files_skipped`, and
-    `candidate_path` strings entering identity hashes MUST be in
-    canonical form"), `source_file_path` is the fourth path-bearing
-    input to a hash recipe and inherits the same rule. Without this
-    gate, `"src/foo.py"`, `"./src/foo.py"`, and `"src//foo.py"` (the
-    same file under different aliases) would produce distinct
+    file-path-bearing strings entering identity hashes MUST be in
+    canonical form"), `source_file_path` is a path-bearing input to
+    a hash recipe and inherits the same rule. Without this gate,
+    `"src/foo.py"`, `"./src/foo.py"`, and `"src//foo.py"` (the same
+    file under different aliases) would produce distinct
     `proposal_hash` values — reopening the dedup false-negative that
     DECISIONS.md#022 was specifically designed to close.
     Canonicalization here + at the carrier-schema layers means alias
@@ -297,10 +297,11 @@ def compute_proposal_hash(
     proposal identity is PR/file-scoped, so two analyze passes over
     DIFFERENT source files emitting logically-identical proposals
     produce DISTINCT hashes — preserving per-source-file audit
-    provenance on the candidate trail. The trace node still dedups
-    actual fetches by `candidate_path` at execution time; the
-    candidate-identity model preserves the per-source-file causal
-    edges either way.
+    provenance on the candidate trail. Per DECISIONS.md#024 (Accepted
+    2026-05-24), trace candidates are dotted Python import strings,
+    not file paths; the trace node resolves each candidate's
+    `import_string` to repo-relative paths via
+    `coordinates.resolve_candidate_paths` at execution time.
     """
     from outrider.coordinates import validate_diff_path  # noqa: PLC0415
 
@@ -368,6 +369,10 @@ def compute_round_id(
     the content_hash already captures finding identity).
     `files_examined`/`files_skipped` MUST be the canonical
     `validate_diff_path` output per `AnalysisRound._enforce_canonical_paths`.
+    For `TraceCandidate.import_string`, the canonical form comes from
+    `coordinates.is_valid_import_string` per `TraceCandidate._enforce_canonical_import_string`
+    (different validator, different shape — dotted Python identifier vs.
+    repo-relative POSIX path).
     """
     return compute_identity_hash(
         {
@@ -382,7 +387,7 @@ def compute_round_id(
 def compute_candidate_id(
     *,
     source_proposal_hash: str,
-    candidate_path: str,
+    import_string: str,
     reason: str,
 ) -> str:
     """SHA-256 hex identifying a `TraceCandidate`.
@@ -391,11 +396,18 @@ def compute_candidate_id(
     re-emission of the same logical candidate produces the same id and
     collapses on the dedup-by-candidate_id reducer.
 
-    `candidate_path` MUST be the canonical `validate_diff_path` output
-    per `TraceCandidate._enforce_canonical_path`. `source_proposal_hash`
-    matches `FindingProposalRejectedEvent.proposal_hash` for the audit
-    join — caller passes the same string that landed on the rejection
-    event (or would land, if the proposal were rejected).
+    `import_string` MUST be the canonical `coordinates.is_valid_import_string`
+    output per `TraceCandidate._enforce_canonical_import_string`.
+    `source_proposal_hash` matches `FindingProposalRejectedEvent.proposal_hash`
+    for the audit join — caller passes the same string that landed on
+    the rejection event (or would land, if the proposal were rejected).
+
+    Per `DECISIONS.md#024` (Accepted 2026-05-24), trace candidates are
+    dotted Python import strings (not file paths). The recipe input
+    was renamed from `candidate_path` to `import_string` in the same
+    DECISIONS-aligned commit; the canonical-encoding shape uses the
+    new key name. Callers that previously passed `candidate_path=...`
+    must update to `import_string=...`.
 
     The payload dict's key order is IRRELEVANT — `canonicalize_for_hash`
     applies `sort_keys=True` so any ordering produces identical canonical
@@ -405,7 +417,7 @@ def compute_candidate_id(
     return compute_identity_hash(
         {
             "source_proposal_hash": source_proposal_hash,
-            "candidate_path": candidate_path,
+            "import_string": import_string,
             "reason": reason,
         }
     )

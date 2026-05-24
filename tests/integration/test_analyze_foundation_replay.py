@@ -94,18 +94,21 @@ def _round(pass_index: int = 0) -> AnalysisRound:
 
 
 def _candidate(seed: str) -> TraceCandidate:
+    """Construct a TraceCandidate fixture. Per DECISIONS.md#024 trace
+    candidates are dotted Python import strings — the seed is folded
+    into a single-part identifier."""
     source_proposal_hash = compute_identity_hash({"prop": seed})
-    candidate_path = f"src/{seed}.py"
+    import_string = f"pkg_{seed}"
     reason = "x"
     return TraceCandidate(
         candidate_id=compute_candidate_id(
             source_proposal_hash=source_proposal_hash,
-            candidate_path=candidate_path,
+            import_string=import_string,
             reason=reason,
         ),
         source_proposal_hash=source_proposal_hash,
         reason=reason,
-        candidate_path=candidate_path,
+        import_string=import_string,
     )
 
 
