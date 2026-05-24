@@ -163,17 +163,26 @@ async def trace(
     # Step 6: Haiku ranking. One call across the capped candidate set.
     # Empty pending_buckets → no Haiku call, no decisions to emit.
     #
-    # PRE-RANK CAP per CodeRabbit + Codex F3: each bucket is truncated
-    # to MAX_CANDIDATES_PER_FINDING BEFORE flattening, so the Haiku
-    # call receives ≤ MAX_CANDIDATES_PER_FINDING × len(pending_buckets)
-    # candidates. The earlier post-rank cap left the ranking prompt
-    # receiving the full flattened set (up to ~1000 candidates worst-
-    # case), defeating the cap's stated cost bound. Trade-off: the
-    # audit row's `proposed_import_strings` now carries up to
-    # MAX_CANDIDATES_PER_FINDING per bucket, NOT the full LLM-proposed
-    # list. Operators wanting the full pre-cap list can read
-    # `state.trace_candidates` (the reducer-deduped per-finding source)
-    # directly — same info, different surface, no audit-row inflation.
+    # DEDUPE-THEN-CAP per CodeRabbit + Codex F8: each bucket is FIRST
+    # deduped by `import_string` (first-occurrence-wins, order-stable),
+    # THEN truncated to MAX_CANDIDATES_PER_FINDING. Two candidates with
+    # the same `import_string` but different `reason` are distinct
+    # `candidate_id`s (content-hash) and both survive the reducer's
+    # `append_with_dedup_by(candidate_id)`; without pre-cap dedup, a
+    # benign-but-loquacious LLM that proposed the same import 5+ times
+    # with different rationales would fill every slot with the same
+    # import_string, crowding out unique candidates from ranking,
+    # probe-fetch fanout, and the audit row's set-semantic
+    # `proposed_import_strings`. Dedupe-then-cap means
+    # MAX_CANDIDATES_PER_FINDING bounds UNIQUE imports per finding —
+    # matching the cap's stated intent + the downstream audit-event
+    # validator's set semantics. PRE-RANK (per earlier F3) is preserved:
+    # the Haiku call still receives ≤ MAX_CANDIDATES_PER_FINDING ×
+    # len(pending_buckets) candidates; the dedup tightens the bound by
+    # eliminating duplicate work. Trade-off remains: the audit row's
+    # `proposed_import_strings` carries the post-dedup-and-cap set, NOT
+    # the full LLM-proposed list. Operators wanting the full pre-cap
+    # list read `state.trace_candidates` (reducer-deduped per finding).
     #
     # Flatten: cross-bucket order is `sorted(pending_buckets)` (by
     # `source_finding_id` UUID — content-derived from `proposal_hash`
@@ -195,10 +204,16 @@ async def trace(
     # mitigation that lets operators observe rejection-rate spikes.
     ordered_candidates: tuple[TraceCandidate, ...] = ()
     if pending_buckets:
+        # Dedupe each bucket BEFORE applying the per-finding cap so
+        # MAX_CANDIDATES_PER_FINDING bounds unique imports, not raw
+        # entries. Downstream consumers (rank, probe, audit) all see
+        # this same deduped+capped set.
+        capped_buckets: dict[UUID, tuple[TraceCandidate, ...]] = {
+            finding_id: _dedupe_by_import_string(bucket)[:MAX_CANDIDATES_PER_FINDING]
+            for finding_id, bucket in pending_buckets.items()
+        }
         flat_candidates = tuple(
-            c
-            for finding_id in sorted(pending_buckets)
-            for c in pending_buckets[finding_id][:MAX_CANDIDATES_PER_FINDING]
+            c for finding_id in sorted(capped_buckets) for c in capped_buckets[finding_id]
         )
         # Defensive: a non-empty `pending_buckets` MUST flatten non-empty.
         # Guard against a future refactor that empties a bucket without
@@ -234,14 +249,18 @@ async def trace(
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
 
     for finding_id in sorted(ranked_by_finding):
-        # Bucket here is already capped to MAX_CANDIDATES_PER_FINDING:
-        # the pre-rank flatten at step 6 truncated each pending_bucket
-        # before the Haiku call, so `ranked_by_finding[finding_id]`
-        # already holds ≤ MAX_CANDIDATES_PER_FINDING ranked candidates.
-        # No further slicing needed here. The full pre-cap candidate
-        # set lives in `state.trace_candidates` (reducer-deduped per
-        # source finding); operators wanting the LLM's full proposal
-        # for forensic inspection read it from there.
+        # Bucket here is dedup'd-then-capped to MAX_CANDIDATES_PER_FINDING:
+        # step 6 deduped each `pending_buckets[finding_id]` by
+        # `import_string` (first-occurrence-wins, order-stable) BEFORE
+        # the cap, then truncated to MAX_CANDIDATES_PER_FINDING. Ranking
+        # reorders but does not introduce duplicates. So
+        # `ranked_by_finding[finding_id]` already satisfies the audit
+        # event's `_enforce_proposed_import_strings_unique` validator
+        # (set-semantic per #024) by construction — no further dedup
+        # call needed here. The full pre-cap candidate set lives in
+        # `state.trace_candidates` (reducer-deduped per source finding);
+        # operators wanting the LLM's full proposal for forensic
+        # inspection read it from there.
         bucket = ranked_by_finding[finding_id]
 
         # Phase 1: probe fetches across this finding's ranked candidates.
@@ -254,35 +273,20 @@ async def trace(
         )
 
         # Construct TraceDecisionEvent. `proposed_import_strings` carries
-        # the post-cap Haiku-ranked import strings (≤
-        # MAX_CANDIDATES_PER_FINDING per bucket; the pre-rank cap at
-        # step 6 already bounded the bucket). The full pre-cap LLM
+        # the dedup'd-then-capped Haiku-ranked import strings (≤
+        # MAX_CANDIDATES_PER_FINDING UNIQUE imports per bucket; see
+        # step 6 for the ordering rationale). The full pre-cap LLM
         # proposal lives in `state.trace_candidates` for forensic
         # inspection. `resolved_candidate_paths` is the probe output
         # (only the paths that fetched OK).
-        #
-        # Dedupe by `import_string` (first occurrence wins, order-stable)
-        # because two `TraceCandidate`s with the same `import_string` but
-        # different `reason` are distinct `candidate_id`s (content-hash
-        # over `(source_proposal_hash, import_string, reason)`) and both
-        # survive the reducer's `append_with_dedup_by(candidate_id)`. The
-        # audit event's `_enforce_proposed_import_strings_unique` validator
-        # treats `proposed_import_strings` as set-semantic per #024; a
-        # benign LLM that proposes the same import twice with different
-        # rationales would otherwise raise ValueError mid-emit-loop,
-        # breaking the M7 audit-first contract. Dedup at the construction
-        # boundary keeps the validator's set-semantic invariant intact
-        # while preserving the first-occurrence's reason in the aggregated
-        # `reason` field.
-        deduped_bucket = _dedupe_by_import_string(bucket)
         decision_event = TraceDecisionEvent(
             review_id=state.review_id,
             is_eval=state.is_eval,
             source_finding_id=finding_id,
             target_file=probe_outcome.target_file,
-            reason=_aggregate_candidate_reasons(deduped_bucket),
+            reason=_aggregate_candidate_reasons(bucket),
             resolution_status=probe_outcome.resolution_status,
-            proposed_import_strings=tuple(c.import_string for c in deduped_bucket),
+            proposed_import_strings=tuple(c.import_string for c in bucket),
             resolved_candidate_paths=probe_outcome.resolved_candidate_paths,
         )
 
