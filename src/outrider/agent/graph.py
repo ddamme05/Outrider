@@ -81,7 +81,7 @@ from langgraph.graph.state import CompiledStateGraph
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.intake import intake
 from outrider.agent.nodes.publish import publish
-from outrider.agent.nodes.trace import trace
+from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS, trace
 from outrider.agent.nodes.triage import triage
 from outrider.agent.state import ReviewState
 from outrider.ast_facts.base import ImportPathResolver
@@ -335,11 +335,12 @@ def _trace_router(state: ReviewState) -> str:
     """Route trace's output: analyze if new files fetched, else publish.
 
     Per the trace-node spec: route back to analyze iff trace fetched at
-    least one new file AND we're still below the round limit. Otherwise
-    proceed to publish. The depth bound is enforced HERE because trace
-    runs after analyze pass N, so re-entering analyze produces round N+1.
+    least one new file AND we're still below `MAX_ANALYSIS_ROUNDS`
+    (depth-2 ceiling). Otherwise proceed to publish. The depth bound is
+    enforced HERE because trace runs after analyze pass N, so re-entering
+    analyze produces round N+1.
     """
-    if len(state.trace_fetched_files) > 0 and len(state.analysis_rounds) < 2:
+    if len(state.trace_fetched_files) > 0 and len(state.analysis_rounds) < MAX_ANALYSIS_ROUNDS:
         return "analyze"
     return "publish"
 

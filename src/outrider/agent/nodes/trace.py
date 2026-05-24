@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID, uuid4
 
 from outrider.agent.nodes.trace_parser import (
@@ -88,6 +88,26 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+# Cap on candidates probed per source-finding bucket per trace invocation.
+# Without a cap, a hostile (or buggy) analyze pass can emit N candidates
+# per finding × M findings × 2 paths-per-candidate GitHub fetches in
+# Phase 1; at the analyze-side cap of 50 findings × 20 candidates that
+# is 2000 requests per pass, ~4000 across the depth-2 round limit —
+# enough to exhaust an installation's 5000/hr GitHub rate limit on a
+# single hostile PR. Top-K per finding keeps Phase 1 cost bounded
+# (`MAX_CANDIDATES_PER_FINDING × n_findings × 2` GitHub fetches per
+# pass) and the LLM's ranking is exactly the signal trace uses to
+# decide WHICH top-K to probe — non-top-K candidates are recorded in
+# `TraceDecisionEvent.proposed_import_strings` for audit transparency
+# but never probed. Per sharp-edges H1 fold.
+MAX_CANDIDATES_PER_FINDING: Final[int] = 5
+
+# Depth limit on the analyze ⇄ trace loop. After round 2, the trace
+# router unconditionally routes to publish — bounds the loop's total
+# wall-clock cost and matches the spec's depth-2 ceiling.
+MAX_ANALYSIS_ROUNDS: Final[int] = 2
 
 
 class TraceJoinIntegrityError(RuntimeError):
@@ -191,12 +211,19 @@ async def trace(
             for finding_id in sorted(pending_buckets)
             for c in sorted(pending_buckets[finding_id], key=lambda c: c.candidate_id)
         )
-        ordered_candidates = await _rank_candidates_via_haiku(
-            state=state,
-            candidates=flat_candidates,
-            provider=provider,
-            trace_model=trace_model,
-        )
+        # Defensive: comprehension over a non-empty pending_buckets MUST
+        # produce a non-empty tuple (every bucket has at least one
+        # candidate by construction at step 4). Asserts protect against
+        # a future refactor that empties a bucket without removing the
+        # key — the Haiku call would otherwise fire with zero candidates
+        # and burn tokens on a vacuous response.
+        if flat_candidates:
+            ordered_candidates = await _rank_candidates_via_haiku(
+                state=state,
+                candidates=flat_candidates,
+                provider=provider,
+                trace_model=trace_model,
+            )
 
     # Step 7: process each source_finding_id bucket. Trace_decisions +
     # trace_fetched_files accumulate locally; emitted via the audit-first
@@ -221,9 +248,15 @@ async def trace(
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
 
     for finding_id in sorted(ranked_by_finding):
-        bucket = ranked_by_finding[finding_id]
+        full_bucket = ranked_by_finding[finding_id]
+        # Top-K cap per H1 fold: probe only the highest-ranked
+        # MAX_CANDIDATES_PER_FINDING candidates. The full ranked list
+        # still lands in `proposed_import_strings` on the audit row so
+        # forensic reconstruction can see what the LLM proposed; only
+        # the probed subset incurs GitHub fetches.
+        bucket = full_bucket[:MAX_CANDIDATES_PER_FINDING]
 
-        # Phase 1: probe fetches across this finding's candidates.
+        # Phase 1: probe fetches across this finding's top-K candidates.
         probe_outcome = await _resolve_via_probes(
             candidates=bucket,
             gh_client=gh_client,
