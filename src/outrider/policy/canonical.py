@@ -298,10 +298,12 @@ def compute_proposal_hash(
     DIFFERENT source files emitting logically-identical proposals
     produce DISTINCT hashes — preserving per-source-file audit
     provenance on the candidate trail. Per DECISIONS.md#024 (Accepted
-    2026-05-24), trace candidates are dotted Python import strings,
-    not file paths; the trace node resolves each candidate's
-    `import_string` to repo-relative paths via
-    `coordinates.resolve_candidate_paths` at execution time.
+    2026-05-24, Amended 2026-05-24 for M8), trace candidates are dotted
+    Python import strings, not file paths; V1 trace per M8 resolves each
+    candidate via two-phase GitHub fetch (`_candidate_paths_for` +
+    `coordinates.validate_diff_path` + `github.fetch.fetch_file_content_at`).
+    The filesystem-aware `coordinates.resolve_candidate_paths` is the
+    V1.5+ future shape.
     """
     from outrider.coordinates import validate_diff_path  # noqa: PLC0415
 
