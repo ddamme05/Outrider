@@ -124,10 +124,13 @@ class ReviewFinding(BaseModel):
     severity: FindingSeverity
     evidence_tier: EvidenceTier
     # Repo-relative POSIX, post-`validate_diff_path` normalized — same
-    # contract `AnalysisRound.files_examined` and `TraceCandidate.candidate_path`
-    # enforce at the schema layer. Without this, a path that fails
-    # `validate_diff_path` could ride on the finding through replay and
-    # be rejected at the publisher boundary only — too late.
+    # contract `AnalysisRound.files_examined` enforces at the schema
+    # layer. (TraceCandidate uses `is_valid_import_string` on its
+    # `import_string` field instead — different validator for dotted-
+    # Python-import-string shape per DECISIONS.md#024.) Without this,
+    # a path that fails `validate_diff_path` could ride on the finding
+    # through replay and be rejected at the publisher boundary only —
+    # too late.
     file_path: str
     line_start: int = Field(ge=1)
     line_end: int
@@ -177,10 +180,12 @@ class ReviewFinding(BaseModel):
     def _enforce_canonical_file_path(cls, path: str) -> str:
         """Re-run `validate_diff_path` so the schema layer enforces the
         repo-relative-POSIX invariant. Same shape as
-        `AnalysisRound._enforce_canonical_files_examined` and
-        `TraceCandidate._enforce_canonical_candidate_path` — propagates the
-        canonical-record discipline to every cross-boundary model that
-        carries a diff-side path.
+        `AnalysisRound._enforce_canonical_files_examined` — propagates
+        the canonical-record discipline to every cross-boundary model
+        that carries a diff-side path. (TraceCandidate uses
+        `_enforce_canonical_import_string` for its import-string field
+        per DECISIONS.md#024; different shape, same validator-at-the-
+        schema-floor discipline.)
         """
         return validate_diff_path(path)
 

@@ -1135,7 +1135,7 @@ def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
         _minimal_proposal(
             evidence_tier="judged",
             trace_candidates=[
-                {"candidate_path_raw": "src/other.py", "reason": "calls helper"},
+                {"import_string_raw": "other", "reason": "calls helper"},
             ],
         )
     )
@@ -1148,7 +1148,7 @@ def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
     assert len(result.trace_candidates) == 1
     parent_hash = result.admitted_findings[0]
     cand = result.trace_candidates[0]
-    assert cand.candidate_path == "src/other.py"
+    assert cand.import_string == "other"
     assert cand.reason == "calls helper"
     # source_proposal_hash links back to the parent (same recipe)
     from outrider.policy.canonical import compute_proposal_hash
@@ -1179,7 +1179,7 @@ def test_step10_trace_candidates_collected_from_rejected_proposal() -> None:
             finding_type="unknown_type",  # rejects at finding_type_not_in_enum
             evidence_tier="judged",
             trace_candidates=[
-                {"candidate_path_raw": "src/related.py", "reason": "should still surface"},
+                {"import_string_raw": "related", "reason": "should still surface"},
             ],
         )
     )
@@ -1188,7 +1188,7 @@ def test_step10_trace_candidates_collected_from_rejected_proposal() -> None:
     assert len(result.admitted_findings) == 0
     # Trace candidate from the rejected proposal still appears
     assert len(result.trace_candidates) == 1
-    assert result.trace_candidates[0].candidate_path == "src/related.py"
+    assert result.trace_candidates[0].import_string == "related"
 
 
 def test_step10_response_level_rejection_collects_no_trace_candidates() -> None:
@@ -1247,19 +1247,23 @@ def test_counter_accounting_equation_holds() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hostile_candidate_path_does_not_crash_parser() -> None:
+def test_hostile_import_string_does_not_crash_parser() -> None:
     """Sharp-edges H1 + general-purpose §4: a single hostile
-    `candidate_path_raw` (`../../etc/passwd`) used to crash
-    `parse_analyze_response` mid-loop because `TraceCandidate(...)`
-    construction was outside any try/except. Fix: per-candidate
-    try/except in `_collect_trace_candidates_for` drops the bad
-    candidate; the parent proposal still produces its admission/
-    rejection outcome."""
+    `import_string_raw` (e.g. path-shaped, shell metacharacter, Python
+    keyword part) used to crash `parse_analyze_response` mid-loop
+    because `TraceCandidate(...)` construction was outside any
+    try/except. Fix: per-candidate try/except in
+    `_collect_trace_candidates_for` drops the bad candidate; the
+    parent proposal still produces its admission/rejection outcome.
+    Post-DECISIONS.md#024 rename: hostile values are import-string-
+    malformed instead of path-traversal-shaped, but the
+    crash-resistance contract is identical."""
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="judged",
             trace_candidates=[
-                {"candidate_path_raw": "../../etc/passwd", "reason": "hostile"},
+                # Path separator — rejected by is_valid_import_string
+                {"import_string_raw": "../../etc/passwd", "reason": "hostile"},
             ],
         )
     )
@@ -1283,7 +1287,8 @@ def test_admitted_finding_survives_hostile_sibling_candidate() -> None:
             evidence_tier="judged",
             span={"byte_start": 15, "byte_end": 20},
             trace_candidates=[
-                {"candidate_path_raw": "../escape", "reason": "hostile"},
+                # Python keyword part — rejected by is_valid_import_string
+                {"import_string_raw": "foo.class", "reason": "hostile"},
             ],
         ),
     )
@@ -1296,22 +1301,26 @@ def test_admitted_finding_survives_hostile_sibling_candidate() -> None:
     assert len(result.trace_candidates) == 0  # only the hostile one was filtered
 
 
-def test_alias_candidate_path_uses_canonical_form() -> None:
-    """General-purpose §4 MEDIUM: prior to commit 6, the parser passed
-    the raw alias path `./src/foo.py` to `compute_candidate_id`, but
-    the `TraceCandidate` field validator canonicalized to
-    `src/foo.py` and `_enforce_candidate_id_matches_payload`
-    recomputed the id over the canonical path → mismatch → crash.
-    Fix: canonicalize before computing the id."""
+def test_decomposed_unicode_import_string_uses_canonical_nfc_form() -> None:
+    """Post-DECISIONS.md#024 rename: the analog of the original "alias
+    canonicalize" test (`./src/foo.py` → `src/foo.py`) for import strings
+    is NFC normalization. The parser canonicalizes `import_string_raw`
+    via `is_valid_import_string` before computing `candidate_id`;
+    without that step, the raw NFD bytes would hash differently from
+    the NFC bytes the schema validator stores, and
+    `_enforce_candidate_id_matches_payload` would crash.
+    Per M3 / adversarial-modeler #1."""
+    decomposed = "café.bar"  # NFD: e + combining acute
+    precomposed = "café.bar"  # NFC: precomposed
     response = _build_response_json(
         _minimal_proposal(
             evidence_tier="judged",
             trace_candidates=[
-                {"candidate_path_raw": "./src/foo.py", "reason": "alias"},
+                {"import_string_raw": decomposed, "reason": "decomposed"},
             ],
         )
     )
-    # Must NOT raise — that was the bug
+    # Must NOT raise — that was the bug class
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
@@ -1319,8 +1328,8 @@ def test_alias_candidate_path_uses_canonical_form() -> None:
     )
     assert len(result.admitted_findings) == 1
     assert len(result.trace_candidates) == 1
-    # Candidate's `candidate_path` is the canonical form, not the raw alias
-    assert result.trace_candidates[0].candidate_path == "src/foo.py"
+    # Candidate's `import_string` is the canonical NFC form, not the raw NFD
+    assert result.trace_candidates[0].import_string == precomposed
 
 
 def test_query_match_id_rejection_detail_sanitizes_ansi_escape() -> None:

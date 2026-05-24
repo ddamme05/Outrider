@@ -122,7 +122,8 @@ are illustrative and must be replaced with real values.
       "evidence": "<verbatim quote from the code, ≤2000 chars>",
       "span": {"byte_start": 0, "byte_end": 1},
       "trace_candidates": [
-        {"candidate_path_raw": "<repo-relative path>", "reason": "<text>"}
+        {"import_string_raw": "<dotted Python import string, e.g. foo.bar>",
+         "reason": "<text>"}
       ]
     }
   ]
@@ -135,9 +136,15 @@ Field semantics:
   it lands with the trace-node spec).
 - `span.byte_start` / `span.byte_end`: integer UTF-8 byte offsets into
   the file. `byte_start` must be less than `byte_end`.
-- `trace_candidates`: an array (possibly empty) of `{candidate_path_raw,
-  reason}` objects. The field name is `candidate_path_raw` — the
-  parser canonicalizes it to `candidate_path` after admission.
+- `trace_candidates`: an array (possibly empty) of `{import_string_raw,
+  reason}` objects. The field name is `import_string_raw` — supply a
+  dotted Python import string (e.g. `foo.bar.baz`), NOT a file path.
+  Trace's resolver maps dotted imports to candidate file paths via
+  the `ast_facts` import registry. Same-file references should NOT
+  appear here (analyze handles them inline via the scope-unit graph
+  per DECISIONS.md#024 point 2). The parser canonicalizes the value
+  to `import_string` after admission (NFC normalization +
+  identifier-validity + part-validation + shell-metachar rejection).
 
 Up to 50 findings per response (`AnalyzeResponseRaw.findings` is bounded
 at max_length=50). Up to 20 trace_candidates per finding.

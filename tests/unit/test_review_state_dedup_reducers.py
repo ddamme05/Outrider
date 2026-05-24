@@ -90,19 +90,22 @@ def _round(pass_index: int = 0, *, distinct: str = "") -> AnalysisRound:
 def _candidate(seed: str = "a") -> TraceCandidate:
     """Construct a TraceCandidate with a canonical candidate_id derived
     from its own payload (required by `_enforce_candidate_id_matches_payload`).
-    """
+    Per DECISIONS.md#024, trace candidates are dotted Python import
+    strings — the seed is sanitized (hyphens → underscores) and folded
+    into a single-part identifier so test-author-friendly seeds like
+    'auth-mw' don't trip the identifier-validity check."""
     source_proposal_hash = compute_identity_hash({"prop": seed})
-    candidate_path = f"src/{seed}.py"
+    import_string = f"pkg_{seed.replace('-', '_')}"
     reason = "x"
     return TraceCandidate(
         candidate_id=compute_candidate_id(
             source_proposal_hash=source_proposal_hash,
-            candidate_path=candidate_path,
+            import_string=import_string,
             reason=reason,
         ),
         source_proposal_hash=source_proposal_hash,
         reason=reason,
-        candidate_path=candidate_path,
+        import_string=import_string,
     )
 
 

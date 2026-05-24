@@ -23,12 +23,14 @@ values; if the admitted span were normalized, downstream consumers of
 the admitted `ReviewFinding` would describe different bytes from the
 same hash, breaking replay reconstruction. Tests pin this invariant.
 
-The byte-for-byte rule does NOT apply to `candidate_path` — that field
-IS deliberately normalized between layers (raw has `candidate_path_raw`,
-admitted has `candidate_path` post-`coordinates.validate_diff_path`).
-`span` is identity-preserved because rejection-event
-hashes depend on it; `candidate_path` is normalized because downstream
-consumers (trace node fetching the file) need the validated form.
+The byte-for-byte rule does NOT apply to `import_string` — that field
+IS deliberately normalized between layers (raw has `import_string_raw`,
+admitted has `import_string` post-`coordinates.is_valid_import_string`).
+`span` is identity-preserved because rejection-event hashes depend on
+it; `import_string` is normalized because downstream consumers
+(trace node resolving the import) need the validated canonical form.
+Per `DECISIONS.md#024` trace candidates are dotted Python import
+strings; the prior `candidate_path` framing was renamed in lockstep.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from outrider.ast_facts.models import Span  # noqa: TC001 — Pydantic field type, runtime import
-from outrider.coordinates import validate_diff_path
+from outrider.coordinates import is_valid_import_string
 from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
     FindingType,
@@ -57,16 +59,18 @@ class TraceCandidateProposalRaw(BaseModel):
     Raw and admitted layers must be materially distinct (not just
     default markers), so a downstream variable typed as the raw layer
     cannot be silently passed where the admitted layer is expected.
-    The distinction is in the path field: raw layer carries
-    `candidate_path_raw` (the model's claimed path, unvalidated bounded
-    string); admitted layer carries `candidate_path` (already passed
-    through `coordinates.validate_diff_path` — repo-relative POSIX, no
-    traversal, no shell metacharacters).
+    The distinction is in the import field: raw layer carries
+    `import_string_raw` (the model's claimed dotted import string,
+    unvalidated bounded string); admitted layer carries `import_string`
+    (already passed through `coordinates.is_valid_import_string` —
+    NFC-normalized, identifier-validity-checked, no path separators,
+    no shell metacharacters, no Python keywords). Per `DECISIONS.md#024`
+    trace candidates are dotted Python import strings, not file paths.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    candidate_path_raw: Annotated[str, Field(max_length=1024)]
+    import_string_raw: Annotated[str, Field(max_length=1024)]
     reason: Annotated[str, Field(max_length=500)]
 
 
@@ -120,39 +124,40 @@ class TraceCandidateProposal(BaseModel):
     """Admitted trace candidate.
 
     Constructed by the sister analyze-implementation spec's parser only
-    AFTER `coordinates.validate_diff_path(raw.candidate_path_raw)`
+    AFTER `coordinates.is_valid_import_string(raw.import_string_raw)`
     succeeds.
 
-    Distinct field name (`candidate_path` vs raw's `candidate_path_raw`)
+    Distinct field name (`import_string` vs raw's `import_string_raw`)
     means a `TraceCandidateProposal(**raw.model_dump())` swap fails
     Pydantic construction under `extra="forbid"` — the raw layer's
-    `candidate_path_raw` is not a valid admitted field. Structural
+    `import_string_raw` is not a valid admitted field. Structural
     distinction is the pit-of-success fix; provenance markers
     (Literal["admitted"]) are belt only, validation-derived field
     shape is the load-bearing prevention.
 
-    The `candidate_path` field validator below enforces the documented
-    "already passed validate_diff_path" invariant at the schema layer
-    — without it, the admitted-vs-raw distinction rested on parser
-    flow alone; with it, the schema is the durable floor and any future
-    producer / replay reconstruction validates against the same rule.
+    The `import_string` field validator below enforces the documented
+    "already passed is_valid_import_string" invariant at the schema
+    layer — without it, the admitted-vs-raw distinction rested on
+    parser flow alone; with it, the schema is the durable floor and
+    any future producer / replay reconstruction validates against the
+    same rule.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    candidate_path: Annotated[str, Field(max_length=1024)]
+    import_string: Annotated[str, Field(max_length=1024)]
     reason: Annotated[str, Field(max_length=500)]
 
-    @field_validator("candidate_path")
+    @field_validator("import_string")
     @classmethod
-    def _enforce_canonical_candidate_path(cls, path: str) -> str:
-        """Re-run `validate_diff_path` so the admitted layer enforces the
-        canonical-path invariant the layer's name promises. The raw layer
-        (`TraceCandidateProposalRaw.candidate_path_raw`) stays loose — its
-        whole purpose is to admit unvalidated model output long enough for
-        the parser to emit a rejection event.
+    def _enforce_canonical_import_string(cls, value: str) -> str:
+        """Re-run `is_valid_import_string` so the admitted layer enforces
+        the canonical-import-string invariant the layer's name promises.
+        The raw layer (`TraceCandidateProposalRaw.import_string_raw`)
+        stays loose — its whole purpose is to admit unvalidated model
+        output long enough for the parser to emit a rejection event.
         """
-        return validate_diff_path(path)
+        return is_valid_import_string(value)
 
 
 class AnalyzeFindingProposal(BaseModel):

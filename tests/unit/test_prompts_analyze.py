@@ -294,17 +294,19 @@ def test_system_prompt_names_the_response_schema_top_level_key() -> None:
 
 def test_system_prompt_trace_candidate_field_matches_raw_schema() -> None:
     """Pin: the prompt's trace_candidates example uses
-    `candidate_path_raw`, not `candidate_path`.
+    `import_string_raw`, not `import_string` (and never the old
+    `candidate_path` / `candidate_path_raw` framing per DECISIONS.md#024).
 
     `TraceCandidateProposalRaw` has `extra="forbid"` and requires the
     `_raw` suffix; a model that follows the prompt literally and emits
-    `candidate_path` causes `AnalyzeResponseRaw.model_validate_json` to
-    reject the entire response.
+    `import_string` (bare) causes `AnalyzeResponseRaw.model_validate_json`
+    to reject the entire response.
     """
-    assert "candidate_path_raw" in SYSTEM_PROMPT_INVARIANTS
-    # The bare (admitted-layer) field name must not appear as an object
-    # key in the example.
-    assert '"candidate_path":' not in SYSTEM_PROMPT_INVARIANTS
+    assert "import_string_raw" in SYSTEM_PROMPT_INVARIANTS
+    # The bare (admitted-layer) field name must not appear as an object key.
+    assert '"import_string":' not in SYSTEM_PROMPT_INVARIANTS
+    # The old field name must not appear at all (DECISIONS.md#024 rename).
+    assert "candidate_path" not in SYSTEM_PROMPT_INVARIANTS
 
 
 def test_system_prompt_output_example_is_strict_json() -> None:
