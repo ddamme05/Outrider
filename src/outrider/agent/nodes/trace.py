@@ -160,30 +160,45 @@ async def trace(
         if finding_id not in already_traced
     }
 
-    # Step 6: Haiku ranking. One call across all remaining candidates.
+    # Step 6: Haiku ranking. One call across the capped candidate set.
     # Empty pending_buckets → no Haiku call, no decisions to emit.
+    #
+    # PRE-RANK CAP per CodeRabbit + Codex F3: each bucket is truncated
+    # to MAX_CANDIDATES_PER_FINDING BEFORE flattening, so the Haiku
+    # call receives ≤ MAX_CANDIDATES_PER_FINDING × len(pending_buckets)
+    # candidates. The earlier post-rank cap left the ranking prompt
+    # receiving the full flattened set (up to ~1000 candidates worst-
+    # case), defeating the cap's stated cost bound. Trade-off: the
+    # audit row's `proposed_import_strings` now carries up to
+    # MAX_CANDIDATES_PER_FINDING per bucket, NOT the full LLM-proposed
+    # list. Operators wanting the full pre-cap list can read
+    # `state.trace_candidates` (the reducer-deduped per-finding source)
+    # directly — same info, different surface, no audit-row inflation.
+    #
+    # Flatten: cross-bucket order is `sorted(pending_buckets)` (by
+    # `source_finding_id` UUID — content-derived from `proposal_hash`
+    # which #022 + M5 make collision-resistant); intra-bucket order
+    # is the reducer's insertion order (the order analyze emitted
+    # candidates into `state.trace_candidates`).
+    #
+    # Intra-bucket is deliberately NOT sorted by `candidate_id`
+    # (SHA-256 of LLM-controlled fields): a hostile analyze-LLM could
+    # grind candidate_ids to win lexicographic order, then force
+    # parser fallback (e.g., via a malformed ranking response) to
+    # smuggle attacker-chosen candidates into the top-K. Insertion
+    # order is reducer-controlled.
+    #
+    # Residual attack surface (see FOLLOWUPS — TraceRankingRejectedEvent):
+    # PR-author content can influence analyze-LLM's emission order,
+    # so insertion order is influenced (but not deterministic) by
+    # PR content. The dedicated rejected-event audit type is the V1.5
+    # mitigation that lets operators observe rejection-rate spikes.
     ordered_candidates: tuple[TraceCandidate, ...] = ()
     if pending_buckets:
-        # Flatten: cross-bucket order is `sorted(pending_buckets)` (by
-        # `source_finding_id` UUID — content-derived from `proposal_hash`
-        # which #022 + M5 make collision-resistant); intra-bucket order
-        # is the reducer's insertion order (the order analyze emitted
-        # candidates into `state.trace_candidates`).
-        #
-        # Intra-bucket is deliberately NOT sorted by `candidate_id`
-        # (SHA-256 of LLM-controlled fields): a hostile analyze-LLM could
-        # grind candidate_ids to win lexicographic order, then force
-        # parser fallback (e.g., via a malformed ranking response) to
-        # smuggle attacker-chosen candidates into the top-K probe set.
-        # Insertion order is reducer-controlled.
-        #
-        # Residual attack surface (see FOLLOWUPS — TraceRankingRejectedEvent):
-        # PR-author content can influence analyze-LLM's emission order,
-        # so insertion order is influenced (but not deterministic) by
-        # PR content. The dedicated rejected-event audit type is the V1.5
-        # mitigation that lets operators observe rejection-rate spikes.
         flat_candidates = tuple(
-            c for finding_id in sorted(pending_buckets) for c in pending_buckets[finding_id]
+            c
+            for finding_id in sorted(pending_buckets)
+            for c in pending_buckets[finding_id][:MAX_CANDIDATES_PER_FINDING]
         )
         # Defensive: a non-empty `pending_buckets` MUST flatten non-empty.
         # Guard against a future refactor that empties a bucket without
@@ -219,15 +234,17 @@ async def trace(
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
 
     for finding_id in sorted(ranked_by_finding):
-        full_bucket = ranked_by_finding[finding_id]
-        # Top-K cap: probe only the highest-ranked
-        # MAX_CANDIDATES_PER_FINDING candidates. The full ranked list
-        # still lands in `proposed_import_strings` on the audit row so
-        # forensic reconstruction can see what the LLM proposed; only
-        # the probed subset incurs GitHub fetches.
-        bucket = full_bucket[:MAX_CANDIDATES_PER_FINDING]
+        # Bucket here is already capped to MAX_CANDIDATES_PER_FINDING:
+        # the pre-rank flatten at step 6 truncated each pending_bucket
+        # before the Haiku call, so `ranked_by_finding[finding_id]`
+        # already holds ≤ MAX_CANDIDATES_PER_FINDING ranked candidates.
+        # No further slicing needed here. The full pre-cap candidate
+        # set lives in `state.trace_candidates` (reducer-deduped per
+        # source finding); operators wanting the LLM's full proposal
+        # for forensic inspection read it from there.
+        bucket = ranked_by_finding[finding_id]
 
-        # Phase 1: probe fetches across this finding's top-K candidates.
+        # Phase 1: probe fetches across this finding's ranked candidates.
         probe_outcome = await _resolve_via_probes(
             candidates=bucket,
             gh_client=gh_client,
@@ -236,13 +253,13 @@ async def trace(
             head_sha=head_sha,
         )
 
-        # Construct TraceDecisionEvent. proposed_import_strings is the
-        # LLM-ranked input order; resolved_candidate_paths is the probe
-        # output (only the paths that fetched OK).
-        # `proposed_import_strings` carries the FULL ranked list from
-        # `full_bucket`, NOT just the probed top-K — the audit row
-        # preserves the LLM's full proposal for forensic transparency;
-        # only the probed subset incurs GitHub fetches.
+        # Construct TraceDecisionEvent. `proposed_import_strings` carries
+        # the post-cap Haiku-ranked import strings (≤
+        # MAX_CANDIDATES_PER_FINDING per bucket; the pre-rank cap at
+        # step 6 already bounded the bucket). The full pre-cap LLM
+        # proposal lives in `state.trace_candidates` for forensic
+        # inspection. `resolved_candidate_paths` is the probe output
+        # (only the paths that fetched OK).
         #
         # Dedupe by `import_string` (first occurrence wins, order-stable)
         # because two `TraceCandidate`s with the same `import_string` but
@@ -257,7 +274,7 @@ async def trace(
         # boundary keeps the validator's set-semantic invariant intact
         # while preserving the first-occurrence's reason in the aggregated
         # `reason` field.
-        deduped_bucket = _dedupe_by_import_string(full_bucket)
+        deduped_bucket = _dedupe_by_import_string(bucket)
         decision_event = TraceDecisionEvent(
             review_id=state.review_id,
             is_eval=state.is_eval,

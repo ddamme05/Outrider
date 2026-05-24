@@ -42,7 +42,11 @@ from outrider.prompts.analyze import (
 def test_version_is_named_v1() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the v1
     name so future renames break the test and force a registry decision."""
-    assert VERSION == "analyze-v1"
+    # Bumped to v2 in the trace-node arc when pass-1 admission semantics
+    # + render_post_trace + output-schema override landed. Replay
+    # attribution depends on this — old prompt rows MUST be replayed
+    # against the v1 contract; new rows against v2.
+    assert VERSION == "analyze-v2"
 
 
 def test_max_tokens_bounded_within_llm_request_limit() -> None:
