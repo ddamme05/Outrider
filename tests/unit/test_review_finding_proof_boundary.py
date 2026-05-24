@@ -45,6 +45,10 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "evidence": 'cursor.execute("SELECT * FROM users WHERE id = " + user_id)',
         "query_match_id": "py.security.sql_injection.string_concat",
         "trace_path": None,
+        # Per DECISIONS.md#025: admitted findings carry proposal_hash;
+        # dummy SHA-256 hex here (the actual provenance value would
+        # come from compute_proposal_hash on the originating raw proposal).
+        "proposal_hash": "a" * 64,
     }
     fields.update(overrides)
     if "content_hash" not in overrides:

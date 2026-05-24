@@ -119,6 +119,7 @@ def _finding_kwargs() -> dict[str, Any]:
         ),
         "evidence_tier": EvidenceTier.JUDGED,
         "policy_version": "1.0.0",
+        "proposal_hash": "a" * 64,  # Per DECISIONS.md#025; FindingEvent mirror.
     }
 
 

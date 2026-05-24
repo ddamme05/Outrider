@@ -50,6 +50,8 @@ def _build_event(**overrides: Any) -> FindingEvent:
         "finding_content_hash": content_hash,
         "evidence_tier": EvidenceTier.JUDGED,
         "policy_version": "1.0.0",
+        # Per DECISIONS.md#025 admitted FindingEvent mirrors proposal_hash.
+        "proposal_hash": "a" * 64,
     }
     fields.update(overrides)
     return FindingEvent(**fields)

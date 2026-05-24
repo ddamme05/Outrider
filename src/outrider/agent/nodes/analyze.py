@@ -980,6 +980,7 @@ def _lift_admitted_finding(
         query_match_id=finding.query_match_id,
         trace_path=finding.trace_path,
         policy_version=finding.policy_version,
+        proposal_hash=finding.proposal_hash,
     )
 
 

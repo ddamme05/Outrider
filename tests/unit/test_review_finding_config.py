@@ -48,6 +48,8 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
         "title": "t",
         "description": "d",
         "evidence": "e",
+        # Per DECISIONS.md#025: admitted findings carry proposal_hash.
+        "proposal_hash": "a" * 64,
     }
     fields.update(overrides)
     if "content_hash" not in overrides and isinstance(fields["finding_type"], FindingType):
@@ -545,3 +547,75 @@ def test_review_finding_rejects_whitespace_only_override_reason() -> None:
             override_reason="   \t\n  ",  # whitespace-only
             overrider_id=uuid4(),
         )
+
+
+# ---------------------------------------------------------------------------
+# proposal_hash field — per DECISIONS.md#025
+# ---------------------------------------------------------------------------
+
+
+def test_review_finding_admits_proposal_hash() -> None:
+    """Per DECISIONS.md#025: ReviewFinding carries proposal_hash for trace's
+    join contract. Field is pattern-validated (SHA-256 hex)."""
+    finding = _build_finding(proposal_hash="b" * 64)
+    assert finding.proposal_hash == "b" * 64
+
+
+def test_review_finding_rejects_proposal_hash_non_hex() -> None:
+    """Pattern-validated against SHA256_HEX_PATTERN — non-hex rejected."""
+    with pytest.raises(ValidationError):
+        _build_finding(proposal_hash="not-a-sha256-hash")
+
+
+def test_review_finding_rejects_proposal_hash_wrong_length() -> None:
+    """64 hex chars exactly — too short / too long rejected."""
+    with pytest.raises(ValidationError):
+        _build_finding(proposal_hash="a" * 63)  # 1 too short
+    with pytest.raises(ValidationError):
+        _build_finding(proposal_hash="a" * 65)  # 1 too long
+
+
+def test_review_finding_rejects_missing_proposal_hash() -> None:
+    """Per DECISIONS.md#025 point 1: no default. A construction that
+    omits proposal_hash raises (not a silent default-to-empty)."""
+    from typing import Any
+
+    fields: dict[str, Any] = {
+        "review_id": uuid4(),
+        "installation_id": 12345,
+        "policy_version": "1.0.0",
+        "finding_type": FindingType.SQL_INJECTION,
+        "dimension": ReviewDimension.SECURITY,
+        "severity": FindingSeverity.CRITICAL,
+        "evidence_tier": EvidenceTier.JUDGED,
+        "file_path": "src/foo.py",
+        "line_start": 10,
+        "line_end": 12,
+        "title": "t",
+        "description": "d",
+        "evidence": "e",
+        "content_hash": compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+        # proposal_hash deliberately omitted
+    }
+    with pytest.raises(ValidationError):
+        ReviewFinding(**fields)
+
+
+def test_review_finding_proposal_hash_not_in_content_hash_recipe() -> None:
+    """Per DECISIONS.md#025 point 3: proposal_hash is PROVENANCE, not
+    part of finding_content_hash. Two findings with identical content
+    fields but DIFFERENT proposal_hash values produce IDENTICAL
+    content_hash. This is the load-bearing distinction between content
+    identity (#022 recipe; stable across LLM phrasing) and provenance
+    (#025; varies per LLM call)."""
+    f1 = _build_finding(proposal_hash="a" * 64)
+    f2 = _build_finding(proposal_hash="b" * 64)
+    # Different proposal_hash (provenance differs)
+    assert f1.proposal_hash != f2.proposal_hash
+    # Same content_hash (identity unchanged)
+    assert f1.content_hash == f2.content_hash

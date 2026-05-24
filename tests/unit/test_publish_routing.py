@@ -179,6 +179,11 @@ def _make_finding(
             line_end=line_end,
             finding_type=finding_type,
         ),
+        # Per DECISIONS.md#025: distinct per-call so multi-finding tests
+        # don't trip the AnalysisRound._enforce_findings_proposal_hash_unique
+        # validator on identical defaults. Derives from finding_id so the
+        # value is deterministic given a fixed uuid seed.
+        proposal_hash=uuid4().hex + uuid4().hex[:32],
     )
 
 

@@ -174,6 +174,20 @@ class ReviewFinding(BaseModel):
     # in `FindingEvent` joins via this field, so the shape MUST match the
     # corresponding event's `finding_content_hash` (also patterned).
     content_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
+    # SHA-256 hex digest of the raw proposal that produced this finding,
+    # computed via `outrider.policy.canonical.compute_proposal_hash`. Per
+    # `DECISIONS.md#025` (Accepted 2026-05-24), admitted findings carry
+    # `proposal_hash` so trace can join `state.trace_candidates` (whose
+    # `source_proposal_hash` field is the same digest) to admitted
+    # `finding_id`s. **Provenance, NOT content identity** — explicitly
+    # NOT part of `compute_finding_content_hash` recipe (#025 point 3):
+    # `content_hash` is `(file_path, line, type)`-derived and stays
+    # stable across LLM phrasing variation; `proposal_hash` is the
+    # full-proposal digest and DIFFERS when the LLM rewrites
+    # title/description/evidence (#022 PR/file-scoped semantics).
+    # Required (no default) — analyze's admission path stamps this from
+    # `compute_proposal_hash` output. Mirror on `FindingEvent.proposal_hash`.
+    proposal_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
 
     @field_validator("file_path")
     @classmethod

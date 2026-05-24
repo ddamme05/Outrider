@@ -92,6 +92,7 @@ def _make_finding(
             line_end=line_end,
             finding_type=finding_type,
         ),
+        proposal_hash="a" * 64,  # Per DECISIONS.md#025; dummy SHA-256 hex.
         **override_kwargs,
     )
 

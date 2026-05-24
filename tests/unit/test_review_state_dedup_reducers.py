@@ -58,6 +58,7 @@ def _finding() -> ReviewFinding:
             line_end=12,
             finding_type=FindingType.SQL_INJECTION,
         ),
+        proposal_hash="a" * 64,  # Per DECISIONS.md#025.
     )
 
 
