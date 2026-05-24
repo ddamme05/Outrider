@@ -19,10 +19,15 @@ Field shape per #024 amendment to #017:
 
 - `proposed_import_strings: tuple[str, ...]` — the LLM-proposed dotted
   Python import strings (any cardinality).
-- `resolved_candidate_paths: tuple[str, ...]` — the resolver outputs from
-  `coordinates.resolve_candidate_paths` (any cardinality). Each element
-  passes through `coordinates.validate_diff_path` at the schema boundary
-  per #024 point 6 (audit-shadow discipline).
+- `resolved_candidate_paths: tuple[str, ...]` — the resolution outputs
+  (any cardinality). V1 source per M8: GitHub fetch-probes via
+  `_resolve_via_probes` (paths whose `fetch_file_content_at` returned
+  content). V1.5+ source: filesystem-aware
+  `coordinates.resolve_candidate_paths` (per DECISIONS#024 point 4
+  Amended 2026-05-24). Each element passes through
+  `coordinates.validate_diff_path` at the schema boundary per #024
+  point 6 (audit-shadow discipline) regardless of which resolution
+  mechanism produced it.
 - `target_file: str | None` — selected candidate when `resolution_status
   == "resolved"`, None otherwise. When non-None, passes through
   `validate_diff_path`.

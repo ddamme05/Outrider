@@ -222,12 +222,22 @@ def test_system_prompt_pass_conditional_inferred_admission() -> None:
     assert 'do NOT emit\n`evidence_tier="inferred"`' in SYSTEM_PROMPT_INVARIANTS
 
     # Pass 1 (post-trace) admission signals — supplied via the
-    # render_post_trace path.
+    # render_post_trace path. Post-Codex-round-2: the suffix must
+    # OVERRIDE the pass-0 output schema (not just append guidance);
+    # the parser would otherwise reject INFERRED proposals citing
+    # scope-unit-name trace_paths that came back null per the pass-0
+    # schema.
     from outrider.prompts.analyze import POST_TRACE_SYSTEM_PROMPT_SUFFIX
 
     assert "Pass 1 (post-trace)" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
-    assert "INFERRED admission" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
-    assert "non-empty array" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    # The suffix MUST restate the output schema with `inferred`
+    # admitted + non-null trace_path — otherwise the pass-0 schema
+    # above (`<observed|judged>` + `trace_path: null`) wins and the
+    # model emits proposals the parser rejects.
+    assert "<observed|inferred|judged>" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    assert "REPLACES the pass-0 schema" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    assert "non-empty array of scope-unit names" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    assert "deterministic-proof set" in POST_TRACE_SYSTEM_PROMPT_SUFFIX
 
 
 def test_system_prompt_prohibits_severity_proposal() -> None:
