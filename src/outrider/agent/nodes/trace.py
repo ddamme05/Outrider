@@ -7,6 +7,12 @@ Audit-first emission contract + two-phase fetch design + failure
 semantics: see `specs/2026-05-23-trace-node.md` (the spec is the
 source of truth for the audit-boundary invariants). The step-by-step
 flow is also visible inline in the `trace()` body via step comments.
+
+Security-relevant: the Haiku-flatten step (in `trace()`'s step 6 +
+the comment block above `flat_candidates`) carries the candidate-
+ordering attack rationale — cross-bucket sort vs intra-bucket
+insertion order; insertion-order's PR-content influence surface;
+the FOLLOWUP for `TraceRankingRejectedEvent` audit-attribution.
 """
 
 from __future__ import annotations
@@ -158,18 +164,24 @@ async def trace(
     # Empty pending_buckets → no Haiku call, no decisions to emit.
     ordered_candidates: tuple[TraceCandidate, ...] = ()
     if pending_buckets:
-        # Flatten in BUCKET INSERTION ORDER — the order analyze emitted
-        # candidates into `state.trace_candidates` via the reducer.
-        # Deliberately NOT sorted by `candidate_id` (SHA-256 of LLM-
-        # controlled fields): a hostile LLM in analyze could grind
-        # candidate_ids to win lexicographic order, then force the
+        # Flatten: cross-bucket order is `sorted(pending_buckets)` (by
+        # `source_finding_id` UUID — content-derived from `proposal_hash`
+        # which #022 + M5 make collision-resistant); intra-bucket order
+        # is the reducer's insertion order (the order analyze emitted
+        # candidates into `state.trace_candidates`).
+        #
+        # Intra-bucket is deliberately NOT sorted by `candidate_id`
+        # (SHA-256 of LLM-controlled fields): a hostile analyze-LLM could
+        # grind candidate_ids to win lexicographic order, then force
         # parser fallback (e.g., via a malformed ranking response) to
         # smuggle attacker-chosen candidates into the top-K probe set.
-        # Insertion order is producer-controlled, not attacker-grindable.
-        # `sorted(pending_buckets)` (the outer iteration) is also
-        # finding_id-derived, but finding_id is content-derived from
-        # `proposal_hash` which the analyze-side validator + DECISIONS#022
-        # recipe make collision-resistant per M5.
+        # Insertion order is reducer-controlled.
+        #
+        # Residual attack surface (see FOLLOWUPS — TraceRankingRejectedEvent):
+        # PR-author content can influence analyze-LLM's emission order,
+        # so insertion order is influenced (but not deterministic) by
+        # PR content. The dedicated rejected-event audit type is the V1.5
+        # mitigation that lets operators observe rejection-rate spikes.
         flat_candidates = tuple(
             c for finding_id in sorted(pending_buckets) for c in pending_buckets[finding_id]
         )
@@ -230,17 +242,30 @@ async def trace(
         # `proposed_import_strings` carries the FULL ranked list from
         # `full_bucket`, NOT just the probed top-K — the audit row
         # preserves the LLM's full proposal for forensic transparency;
-        # only the probed subset incurs GitHub fetches. (The earlier
-        # `bucket` here was a doc-vs-code divergence — the cap is on
-        # fetches, not on what the audit row records.)
+        # only the probed subset incurs GitHub fetches.
+        #
+        # Dedupe by `import_string` (first occurrence wins, order-stable)
+        # because two `TraceCandidate`s with the same `import_string` but
+        # different `reason` are distinct `candidate_id`s (content-hash
+        # over `(source_proposal_hash, import_string, reason)`) and both
+        # survive the reducer's `append_with_dedup_by(candidate_id)`. The
+        # audit event's `_enforce_proposed_import_strings_unique` validator
+        # treats `proposed_import_strings` as set-semantic per #024; a
+        # benign LLM that proposes the same import twice with different
+        # rationales would otherwise raise ValueError mid-emit-loop,
+        # breaking the M7 audit-first contract. Dedup at the construction
+        # boundary keeps the validator's set-semantic invariant intact
+        # while preserving the first-occurrence's reason in the aggregated
+        # `reason` field.
+        deduped_bucket = _dedupe_by_import_string(full_bucket)
         decision_event = TraceDecisionEvent(
             review_id=state.review_id,
             is_eval=state.is_eval,
             source_finding_id=finding_id,
             target_file=probe_outcome.target_file,
-            reason=_aggregate_candidate_reasons(full_bucket),
+            reason=_aggregate_candidate_reasons(deduped_bucket),
             resolution_status=probe_outcome.resolution_status,
-            proposed_import_strings=tuple(c.import_string for c in full_bucket),
+            proposed_import_strings=tuple(c.import_string for c in deduped_bucket),
             resolved_candidate_paths=probe_outcome.resolved_candidate_paths,
         )
 
@@ -410,11 +435,42 @@ async def _rank_candidates_via_haiku(
     return candidates
 
 
+def _dedupe_by_import_string(
+    candidates: Sequence[TraceCandidate],
+) -> tuple[TraceCandidate, ...]:
+    """Dedupe candidates by `import_string`, preserving first-occurrence
+    order. Two candidates with the same import_string but different
+    `reason` are distinct `candidate_id`s (content-derived) and both
+    survive `state.trace_candidates`'s `append_with_dedup_by(candidate_id)`
+    reducer — but `TraceDecisionEvent.proposed_import_strings` is set-
+    semantic per #024's `_enforce_proposed_import_strings_unique`
+    validator. First-occurrence-wins gives a deterministic, order-stable
+    dedup that matches the LLM's ranked preference.
+    """
+    seen: set[str] = set()
+    out: list[TraceCandidate] = []
+    for candidate in candidates:
+        if candidate.import_string in seen:
+            continue
+        seen.add(candidate.import_string)
+        out.append(candidate)
+    return tuple(out)
+
+
 def _aggregate_candidate_reasons(candidates: Sequence[TraceCandidate]) -> str:
     """Collapse per-candidate reasons into a single `reason` field for
     the TraceDecisionEvent. The event has one reason; bucket has many
     candidates. Concatenate with a separator; truncate to fit the
-    schema's 500-char max."""
+    schema's 500-char max.
+
+    Caller's responsibility to pre-dedupe by `import_string` (the audit
+    event treats `proposed_import_strings` as set-semantic; the
+    aggregated `reason` mirrors the same set). Per the round-N+1
+    architectural audit: the structured-tuple field shape is the
+    long-term fix for forensic-loss-via-truncation; the 500-char cap
+    here is the V1 schema floor (see FUP for the structured-field
+    follow-up).
+    """
     parts = [f"{c.import_string}: {c.reason}" for c in candidates]
     aggregated = " | ".join(parts)
     if len(aggregated) > 500:
