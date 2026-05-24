@@ -76,7 +76,9 @@ pass.
 You ORDER candidates. You do NOT:
 - decide whether a candidate "resolves" — that's a deterministic
   fetch-probe step downstream.
-- fetch any files — the GitHub fetch happens after ranking.
+- fetch any files — the GitHub fetch-probes happen after ranking
+  (Phase 1 per-candidate fanout, then Phase 2 content fetch only for
+  candidates that resolve to exactly one path).
 - propose new candidates — only the candidates supplied below may
   appear in your output.
 - skip candidates you consider low-value — order them, but include

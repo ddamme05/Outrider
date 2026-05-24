@@ -1,58 +1,12 @@
-# See specs/2026-05-23-trace-node.md M1+M5+M6+M7+M8 + Q3 + Q4.
+# See specs/2026-05-23-trace-node.md.
 """Trace node — consumes `state.trace_candidates`, ranks via Haiku,
-resolves via two-phase fetch, emits `TraceDecisionEvent` audit-first.
+resolves via two-phase fetch (probe + content), emits
+`TraceDecisionEvent` audit-first.
 
-Per `specs/2026-05-23-trace-node.md` the trace node implements the
-adaptive analyze ⇄ trace loop's consumer side. Sequence:
-
-  1. Emit `ReviewPhaseEvent(node_id="trace", marker="start")`.
-  2. Build join lookup `{proposal_hash → finding_id}` from
-     `state.analysis_rounds`; raise `TraceJoinIntegrityError` on
-     collision (M5).
-  3. Build `already_traced: set[UUID]` from `state.trace_decisions` —
-     within-graph re-entry idempotency (M1 + #025 point 5).
-  4. Bucket `state.trace_candidates` by `source_finding_id`
-     (resolved via the join). Drop any candidate whose
-     `source_proposal_hash` doesn't appear in the join (unjoinable —
-     analyze-side bug; surfaced via the join-integrity raise).
-  5. Drop any bucket whose `source_finding_id` is already in
-     `already_traced`.
-  6. One Haiku call across all remaining candidates ranks them per
-     `prompts/trace.py` + `trace_parser.py`. Rejection → fall back to
-     input order (V1 simplification — FOLLOWUP for dedicated audit
-     event type).
-  7. For each `source_finding_id` bucket (in finding-id-stable order):
-     a. Phase 1 — probe fetches per candidate: construct paths
-        (`foo.bar → foo/bar.py + foo/bar/__init__.py`), validate via
-        `coordinates.validate_diff_path`, fetch-probe each via
-        `github.fetch.fetch_file_content_at` at head SHA.
-     b. Aggregate probe outcomes → `resolution_status` (resolved /
-        unresolved / ambiguous) + `target_file` + `resolved_candidate_paths`.
-     c. Build `TraceDecisionEvent`; emit audit-first via
-        `trace_sink.emit_trace_decision(event)`; sink returns the
-        canonical persisted event (incoming on insert path, existing
-        on natural-key no-op per M7 b).
-     d. Build state-layer `TraceDecision` from the RETURNED event
-        (M7 b lockstep-recovery).
-     e. Phase 2 — only if `resolution_status="resolved"` AND
-        `target_file NOT IN pr_context.changed_files`: fetch
-        `target_file` at head SHA, build `TraceFetchedFile`. Per M8,
-        Phase 2 is structurally separate from Phase 1 probes; probe
-        outcomes do NOT populate `state.trace_fetched_files`.
-  8. Emit `ReviewPhaseEvent(marker="end")` AND return state delta as
-     a coupled atom (M7 phase-end ordering — successful path only).
-
-`try/finally` is NOT used for the phase-end emission: per M7 (and the
-analyze-node precedent), the phase-end MUST NOT fire on exception
-paths (dangling-start preserved via the missing end — replay sees
-start without end as the failure signature).
-
-Failure semantics:
-  - Producer-deterministic (validator raises, join-integrity raises):
-    propagates without state delta. V1 loud-fail.
-  - Transient (GitHub fetch errors, DB connection): propagates without
-    state delta. Re-invocation re-runs trace; natural-key idempotency
-    makes already-persisted decisions no-ops; remaining work proceeds.
+Audit-first emission contract + two-phase fetch design + failure
+semantics: see `specs/2026-05-23-trace-node.md` (the spec is the
+source of truth for the audit-boundary invariants). The step-by-step
+flow is also visible inline in the `trace()` body via step comments.
 """
 
 from __future__ import annotations
@@ -101,7 +55,7 @@ logger = logging.getLogger(__name__)
 # pass) and the LLM's ranking is exactly the signal trace uses to
 # decide WHICH top-K to probe — non-top-K candidates are recorded in
 # `TraceDecisionEvent.proposed_import_strings` for audit transparency
-# but never probed. Per sharp-edges H1 fold.
+# but never probed.
 MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 
 # Depth limit on the analyze ⇄ trace loop. After round 2, the trace
@@ -219,10 +173,9 @@ async def trace(
         flat_candidates = tuple(
             c for finding_id in sorted(pending_buckets) for c in pending_buckets[finding_id]
         )
-        # Defensive: comprehension over a non-empty pending_buckets MUST
-        # produce a non-empty tuple (every bucket has ≥1 candidate by
-        # construction at step 4). Guard against a future refactor that
-        # empties a bucket without removing the key.
+        # Defensive: a non-empty `pending_buckets` MUST flatten non-empty.
+        # Guard against a future refactor that empties a bucket without
+        # removing the key.
         if flat_candidates:
             ordered_candidates = await _rank_candidates_via_haiku(
                 state=state,
@@ -255,7 +208,7 @@ async def trace(
 
     for finding_id in sorted(ranked_by_finding):
         full_bucket = ranked_by_finding[finding_id]
-        # Top-K cap per H1 fold: probe only the highest-ranked
+        # Top-K cap: probe only the highest-ranked
         # MAX_CANDIDATES_PER_FINDING candidates. The full ranked list
         # still lands in `proposed_import_strings` on the audit row so
         # forensic reconstruction can see what the LLM proposed; only
