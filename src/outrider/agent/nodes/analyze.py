@@ -616,6 +616,16 @@ def _filter_to_admitted_proposals(
     analyze→state boundary so the drop is INTENTIONAL with a clear
     semantic owner (analyze: "we only forward candidates whose parent
     proposal was admitted"). Per CodeRabbit R3.
+
+    On the round-9 R6 counter-argument ("preserve in state for
+    forensic visibility"): `state.trace_candidates` is the runtime
+    handoff to trace, not a forensic store — checkpoints have a
+    retention TTL while `audit_events` is the permanent record.
+    The forensic gap that R3 exposes is real (rejected-proposal trace
+    candidates have NO audit surface today —
+    `FindingProposalRejectedEvent` doesn't carry them), but the right
+    fix is extending the audit event, not repurposing state as a
+    forensic mirror. Tracked as FUP-081 (see FOLLOWUPS.md).
     """
     admitted_hashes = {f.proposal_hash for f in admitted_findings}
     return tuple(c for c in candidates if c.source_proposal_hash in admitted_hashes)

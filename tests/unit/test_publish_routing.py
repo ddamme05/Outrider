@@ -181,9 +181,13 @@ def _make_finding(
         ),
         # Per DECISIONS.md#025: distinct per-call so multi-finding tests
         # don't trip the AnalysisRound._enforce_findings_proposal_hash_unique
-        # validator on identical defaults. Derives from finding_id so the
-        # value is deterministic given a fixed uuid seed.
-        proposal_hash=uuid4().hex + uuid4().hex[:32],
+        # validator on identical defaults. Fresh `uuid4().hex + uuid4().hex`
+        # (two random 32-char hex strings concatenated to fit the SHA256
+        # 64-hex shape) — non-deterministic per call but uniqueness is the
+        # contract, not reproducibility. Per CodeRabbit round-9 N3: prior
+        # comment claimed "Derives from finding_id" but the code didn't —
+        # rewritten to match what the body actually does.
+        proposal_hash=uuid4().hex + uuid4().hex,
     )
 
 

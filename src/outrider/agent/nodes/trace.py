@@ -391,13 +391,23 @@ def _bucket_candidates_by_finding(
     """Group candidates by their joined source_finding_id.
 
     Candidates whose `source_proposal_hash` doesn't resolve via the
-    join are dropped — in practice this branch shouldn't fire because
-    analyze emits findings + candidates atomically, but a cross-graph
-    mutation (direct `state.trace_candidates.append` bypassing the
-    reducer + analyze admission gate) could leave dangling candidates.
-    Logged at WARN so the producer-bug is visible at default log level
-    — DEBUG would make the drop invisible in production exactly when
-    the underlying bug needs investigation.
+    join are dropped. With the round-8 R3 `_filter_to_admitted_proposals`
+    boundary filter in `agent/nodes/analyze.py` in place, this branch
+    fires only on:
+
+      1. Replay of state emitted before the R3 filter landed (transient
+         transition case — the cumulative state from older code carries
+         rejected-proposal candidates the filter would now reject; goes
+         away once those checkpoints age out).
+      2. A direct `state.trace_candidates.append` bypassing the reducer
+         + analyze admission gate (genuine producer bug).
+      3. A future code path that emits into `state.trace_candidates`
+         without flowing through analyze's admission gate (genuine
+         producer bug if introduced).
+
+    Logged at WARN so any of the three is visible at default log level —
+    DEBUG would make the drop invisible in production exactly when the
+    underlying scenario (replay or producer bug) needs investigation.
     """
     buckets: dict[UUID, list[TraceCandidate]] = {}
     for candidate in candidates:
@@ -405,8 +415,10 @@ def _bucket_candidates_by_finding(
         if finding_id is None:
             logger.warning(
                 "trace: dropping unjoinable candidate candidate_id=%s "
-                "source_proposal_hash=%s — producer bug (candidate bypassed "
-                "the reducer or analyze admission gate)",
+                "source_proposal_hash=%s — either a replay-of-old-state "
+                "transition case (R3 filter now prevents new emissions) "
+                "or a producer bug (state mutation bypassing the reducer "
+                "+ analyze admission gate)",
                 candidate.candidate_id,
                 candidate.source_proposal_hash,
             )
