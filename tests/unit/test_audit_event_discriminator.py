@@ -22,6 +22,7 @@ from outrider.audit.events import (
     compute_finding_content_hash,
 )
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewDimension
 
 
@@ -81,7 +82,7 @@ def _build_finding(
         evidence_tier=evidence_tier,
         query_match_id=query_match_id,
         trace_path=trace_path,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         proposal_hash="a" * 64,  # Per DECISIONS.md#025; mirror of ReviewFinding.
     )
 

@@ -288,13 +288,25 @@ def test_target_file_audit_shadow_validate_diff_path() -> None:
     """Per #024 point 6: target_file passes through validate_diff_path
     at the audit-event boundary. Traversal-bearing target raises.
     Pydantic V2 re-raises non-ValueError exceptions from field_validators
-    directly, so CoordinateError propagates as itself, not wrapped."""
+    directly, so CoordinateError propagates as itself, not wrapped.
+
+    Isolates the failure to `target_file` — keeps `resolved_candidate_paths`
+    valid so only the target_file field_validator can fire, ensuring a
+    future regression in `_enforce_canonical_target_file` can't be
+    masked by `_enforce_canonical_resolved_paths` firing on the same
+    payload. The cross-field validator (`target_file ==
+    resolved_candidate_paths[0]`) does not get reached because
+    Pydantic stops at field-level errors before running model
+    validators."""
     from outrider.coordinates import CoordinateError
 
     with pytest.raises((ValidationError, CoordinateError)):
         _build_event(
             target_file="../../etc/passwd",
-            resolved_candidate_paths=("../../etc/passwd",),
+            # Intentionally valid + same as the target field would canonically
+            # have been if the path validation passed; only target_file is
+            # the failure surface under test.
+            resolved_candidate_paths=("src/some/path.py",),
         )
 
 

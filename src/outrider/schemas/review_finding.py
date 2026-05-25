@@ -130,8 +130,12 @@ class ReviewFinding(BaseModel):
     # Python-import-string shape per DECISIONS.md#024.) Without this,
     # a path that fails `validate_diff_path` could ride on the finding
     # through replay and be rejected at the publisher boundary only —
-    # too late.
-    file_path: str
+    # too late. `max_length=1024` matches sibling path-bearing fields
+    # (`AnalysisRound.files_examined`, `TraceFetchedFile.path`,
+    # `FileExaminationEvent.file_path` audit shadow); without the cap a
+    # pathological model output could push an unbounded string through
+    # the finding admission path.
+    file_path: Annotated[str, Field(max_length=1024)]
     line_start: int = Field(ge=1)
     line_end: int
     title: Annotated[str, Field(max_length=120)]

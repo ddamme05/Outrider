@@ -23,7 +23,7 @@ Field shape per #024 amendment to #017:
   (any cardinality). V1 source per M8: GitHub fetch-probes via
   `_resolve_via_probes` (paths whose `fetch_file_content_at` returned
   content). V1.5+ source: filesystem-aware
-  `coordinates.resolve_candidate_paths` (per DECISIONS#024 point 4
+  `coordinates.resolve_candidate_paths` (per `DECISIONS.md#024` point 4
   Amended 2026-05-24). Each element passes through
   `coordinates.validate_diff_path` at the schema boundary per #024
   point 6 (audit-shadow discipline) regardless of which resolution
@@ -64,11 +64,14 @@ class TraceDecision(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     source_finding_id: UUID
-    target_file: str | None
+    # Bounds mirror `TraceDecisionEvent` (the audit-event twin) — see
+    # that class for the per-field rationale. Defense-in-depth length
+    # caps fire BEFORE the per-element canonical-form validators.
+    target_file: Annotated[str, Field(max_length=1024)] | None
     reason: Annotated[str, Field(max_length=500)]
     resolution_status: Literal["resolved", "unresolved", "ambiguous"]
-    proposed_import_strings: tuple[str, ...]
-    resolved_candidate_paths: tuple[str, ...]
+    proposed_import_strings: tuple[Annotated[str, Field(max_length=1024)], ...]
+    resolved_candidate_paths: tuple[Annotated[str, Field(max_length=1024)], ...]
     trace_path: tuple[str, ...] | None = None
 
     @field_validator("target_file")

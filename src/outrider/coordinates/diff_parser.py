@@ -130,13 +130,17 @@ def is_valid_import_string(value: str) -> str:
     field validator (raises directly) AND `resolve_candidate_paths` (catches +
     returns []) per `DECISIONS.md#024` point 1 and `specs/2026-05-23-trace-node.md` M3.
 
-    NFC normalization runs first so the schema-time validator + the resolver +
-    the audit-shadow `validate_diff_path` all see the same canonical form.
-    Homoglyph identifiers (e.g., Cyrillic `а` U+0430 vs Latin `a` U+0061) pass
-    through unchanged — NFC is composition normalization, not transliteration —
-    but they pass through CONSISTENTLY, preventing hash divergence between the
-    raw input fed to `compute_candidate_id` and the NFC'd path that lands in
-    the audit log via `validate_diff_path`.
+    NFC normalization runs first so the schema-time validator + the resolver
+    + the audit-event per-element `_enforce_canonical_proposed_import_strings`
+    on `TraceDecisionEvent` / `TraceDecision` all see the same canonical
+    form. Homoglyph identifiers (e.g., Cyrillic `а` U+0430 vs Latin `a`
+    U+0061) pass through unchanged — NFC is composition normalization, not
+    transliteration — but they pass through CONSISTENTLY, preventing hash
+    divergence between the raw input fed to `compute_candidate_id` and the
+    NFC'd value that lands in the audit log via the audit-event per-element
+    validator. (`validate_diff_path` is the parallel surface for the
+    path-shaped `target_file` / `resolved_candidate_paths` audit fields —
+    different validator for path vs import-string shape.)
 
     Rejection cases (each raises ValueError with a discriminating message):
 
@@ -155,12 +159,15 @@ def is_valid_import_string(value: str) -> str:
     if _SHELL_METACHARS_RE.search(normalized):
         raise ValueError("import_string contains shell metacharacters")
     # CVE-2021-42574 ("Trojan Source") — bidi-override / zero-width chars
-    # honor the audit-shadow promise with `validate_diff_path`. U+200D
-    # (ZWJ) is `Other_ID_Continue` in Unicode 16 so it passes
+    # rejected here on the import-string surface to mirror
+    # `validate_diff_path`'s `_TROJAN_SOURCE_CHARS_RE` rejection on the
+    # path surface (the two are sibling defenses for the two audit-side
+    # surfaces: `proposed_import_strings` runs THIS validator;
+    # `resolved_candidate_paths` / `target_file` runs `validate_diff_path`).
+    # U+200D (ZWJ) is `Other_ID_Continue` in Unicode 16 so it passes
     # `str.isidentifier()` — without this gate, an attacker-controlled
     # candidate could read as `foo.bar` in audit logs while resolving
-    # to a different module file. Aligns with `validate_diff_path`'s
-    # `_TROJAN_SOURCE_CHARS_RE` rejection at the diff-side surface.
+    # to a different module file.
     if _TROJAN_SOURCE_CHARS_RE.search(normalized):
         raise ValueError(
             "import_string contains bidi-override or invisible-format characters "

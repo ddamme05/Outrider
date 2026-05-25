@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import compute_identity_hash, compute_round_id
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import AnalysisRound, ReviewDimension, ReviewFinding
 
 
@@ -40,7 +41,7 @@ def _finding(proposal_hash: str = "a" * 64) -> ReviewFinding:
         description="User input is concatenated into the SQL string.",
         evidence="raw SQL string concatenation at src/foo.py:11",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             file_path="src/foo.py",
             line_start=10,
@@ -242,7 +243,7 @@ def test_analysis_round_rejects_duplicate_finding_ids() -> None:
         description="y",
         evidence="z",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             file_path="src/other.py",
             line_start=1,
@@ -291,7 +292,7 @@ def test_analysis_round_rejects_duplicate_content_hashes() -> None:
         description="y",
         evidence="z",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=f1.content_hash,
         proposal_hash="b" * 64,  # Distinct from f1's default; targets content_hash validator.
     )
@@ -343,7 +344,7 @@ def test_analysis_round_rejects_duplicate_proposal_hashes() -> None:
         description="y",
         evidence="z",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             file_path="src/other.py",
             line_start=20,

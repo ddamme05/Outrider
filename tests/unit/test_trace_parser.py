@@ -1,7 +1,7 @@
 # See specs/2026-05-23-trace-node.md M6.
 """Trace LLM-response parser — five rejection paths + happy path.
 
-Covers all rejection-reason literals on `TraceRankingRejectedReason`
+Covers all rejection-reason literals on `TraceResponseRejectionReason`
 plus the happy-path reorder. Vendor-wire-format quirk (JSON fence) is
 exercised via `strip_outer_json_fence` round-trip.
 """

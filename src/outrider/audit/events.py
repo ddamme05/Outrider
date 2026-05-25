@@ -700,7 +700,7 @@ class TraceDecisionEvent(AuditEventBase):
       one / multiple). V1 source per M8: GitHub fetch-probes (paths
       whose `fetch_file_content_at` returned content). V1.5+ source:
       filesystem-aware `coordinates.resolve_candidate_paths` (per
-      DECISIONS#024 point 4 Amended 2026-05-24). Each element is
+      `DECISIONS.md#024` point 4 Amended 2026-05-24). Each element is
       post-`validate_diff_path` per the audit-shadow rule (defense in
       depth at the append-only log against a hypothetical future
       direct emitter bypassing the resolution mechanism).
@@ -715,11 +715,26 @@ class TraceDecisionEvent(AuditEventBase):
 
     event_type: Literal["trace_decision"] = "trace_decision"
     source_finding_id: UUID
-    target_file: str | None
+    # max_length=1024 mirrors `AnalysisRound.files_examined` /
+    # `FileExaminationEvent.file_path` / `TraceFetchedFile.path` —
+    # the path-bearing audit surfaces all cap at 1024. Without the
+    # cap, a direct emitter constructing a TraceDecisionEvent could
+    # push an unbounded path through the audit boundary even though
+    # `validate_diff_path` rejects traversal / shell-metas / etc.
+    target_file: Annotated[str, Field(max_length=1024)] | None
     reason: str = Field(max_length=500)
     resolution_status: Literal["resolved", "unresolved", "ambiguous"]
-    proposed_import_strings: tuple[str, ...]
-    resolved_candidate_paths: tuple[str, ...]
+    # Per-element max_length on the tuples mirrors the singleton-field
+    # bounds: `proposed_import_strings` matches
+    # `TraceCandidate.import_string` (max_length=1024);
+    # `resolved_candidate_paths` matches the same 1024-cap as
+    # `target_file` above. The per-element validators
+    # (`_enforce_canonical_*` below) already NFC-normalize and
+    # `validate_diff_path` each entry, but Pydantic's per-element
+    # length constraint is a separate gate that fires BEFORE the
+    # validators — defense in depth at the append-only audit boundary.
+    proposed_import_strings: tuple[Annotated[str, Field(max_length=1024)], ...]
+    resolved_candidate_paths: tuple[Annotated[str, Field(max_length=1024)], ...]
     trace_path: tuple[str, ...] | None = None
 
     @field_validator("target_file")

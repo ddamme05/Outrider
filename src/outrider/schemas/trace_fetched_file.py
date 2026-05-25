@@ -5,9 +5,10 @@ After the trace node resolves a candidate's import_string via M8's V1
 two-phase fetch (Phase 1 probes through `_resolve_via_probes` + Phase 2
 content fetch through `_phase_two_content_fetch` — the filesystem-aware
 `coordinates.resolve_candidate_paths` is the FUTURE V1.5+ shape per
-DECISIONS#024 point 4 Amended 2026-05-24), it emits a `TraceFetchedFile`
-when the resolved path is NOT already in `pr_context.changed_files`
-so analyze's post-trace pass can examine the content.
+(`DECISIONS.md#024` point 4 Amended 2026-05-24), it emits a
+`TraceFetchedFile` when the resolved path is NOT already in
+`pr_context.changed_files` so analyze's post-trace pass can examine
+the content.
 
 Reducer key on `ReviewState.trace_fetched_files` is `path` alone (per
 Q3 resolution + M2 audit-fold). First-write-wins on key collision —
