@@ -1,4 +1,4 @@
-# See specs/2026-05-23-trace-node.md.
+# See specs/2026-05-23-trace-node.md and DECISIONS.md#017, #024, #025, #026.
 """Trace node — consumes `state.trace_candidates`, ranks via Haiku,
 resolves via two-phase fetch (probe + content), emits
 `TraceDecisionEvent` audit-first.

@@ -108,12 +108,12 @@ if TYPE_CHECKING:
     from outrider.llm.config import ModelConfig
 
 # LangGraph's CompiledStateGraph is generic over [StateT, ContextT, InputT,
-# OutputT]; V1 uses ReviewState for state but the output is a dict (per
-# LangGraph 1.1.6 docs "the output of the graph will NOT be an instance of
-# a pydantic model"). The Any params keep type checking sound without
-# overcommitting to a particular dict shape we don't strictly need to
-# constrain at the factory level.
-_CompiledTriageGraph = CompiledStateGraph[Any, Any, Any, Any]
+# OutputT]. V1 uses ReviewState for state — pin it as the first param so the
+# factory return type documents the state contract. ContextT/InputT/OutputT
+# stay Any: per LangGraph 1.1.6 docs "the output of the graph will NOT be
+# an instance of a pydantic model" (it's a dict), and the input/context
+# shapes aren't constrained at the factory level.
+_CompiledTriageGraph = CompiledStateGraph[ReviewState, Any, Any, Any]
 
 
 class BuildGraphError(ValueError):
