@@ -487,6 +487,28 @@ class FileExaminationEvent(AuditEventBase):
             )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_examination_type_matches_node(self) -> Self:
+        """`examination_type` is bound to the emitting `node_id`: intake
+        emits `intake_fetch`; analyze emits `analyze`. Without this
+        cross-field rule, the two independent Literals admit
+        contradictory combinations (`node_id="intake"` +
+        `examination_type="analyze"`, or the reverse) — a self-
+        contradictory row would land in the append-only log.
+        Tightening the discriminator-pair here keeps the audit
+        contract honest: the LP-emitter and the per-emitter stage
+        always agree.
+        """
+        valid_pairs = {("intake", "intake_fetch"), ("analyze", "analyze")}
+        if (self.node_id, self.examination_type) not in valid_pairs:
+            raise ValueError(
+                f"FileExaminationEvent: examination_type="
+                f"{self.examination_type!r} is not valid for "
+                f"node_id={self.node_id!r}. Valid pairs: "
+                f"intake/intake_fetch, analyze/analyze."
+            )
+        return self
+
 
 class FindingEvent(AuditEventBase):
     """Metadata for one finding. Proof artifacts are validated here.

@@ -397,14 +397,37 @@ def test_llm_call_event_rejects_non_llm_calling_node_id(bad_node_id: str) -> Non
         LLMCallEvent(review_id=uuid4(), **kwargs)
 
 
-@pytest.mark.parametrize("node_id", ["intake", "analyze"])
-def test_file_examination_event_admits_canonical_node_ids(node_id: str) -> None:
+@pytest.mark.parametrize(
+    ("node_id", "examination_type"),
+    [("intake", "intake_fetch"), ("analyze", "analyze")],
+)
+def test_file_examination_event_admits_canonical_node_ids(
+    node_id: str, examination_type: str
+) -> None:
     """FileExaminationEvent fires from intake (per-file fetch) and analyze
-    (per-file examination). Other graph nodes do not emit it in V1."""
+    (per-file examination). Other graph nodes do not emit it in V1.
+    `(node_id, examination_type)` is constrained to the valid pairs by
+    the `_enforce_examination_type_matches_node` cross-field validator
+    so the parametrize wraps both fields together."""
     kwargs = _file_examination_kwargs()
     kwargs["node_id"] = node_id
+    kwargs["examination_type"] = examination_type
     event = FileExaminationEvent(review_id=uuid4(), **kwargs)
     assert event.node_id == node_id
+    assert event.examination_type == examination_type
+
+
+def test_file_examination_event_rejects_mismatched_node_examination_pair() -> None:
+    """The new cross-field validator
+    `_enforce_examination_type_matches_node` rejects contradictory
+    combinations (intake/analyze, analyze/intake_fetch) — without it,
+    a self-contradictory row could land in the append-only audit log."""
+    for bad_node, bad_exam in [("intake", "analyze"), ("analyze", "intake_fetch")]:
+        kwargs = _file_examination_kwargs()
+        kwargs["node_id"] = bad_node
+        kwargs["examination_type"] = bad_exam
+        with pytest.raises(ValidationError, match="examination_type"):
+            FileExaminationEvent(review_id=uuid4(), **kwargs)
 
 
 @pytest.mark.parametrize("bad_node_id", ["triage", "trace", "hitl", "INTAKE", ""])

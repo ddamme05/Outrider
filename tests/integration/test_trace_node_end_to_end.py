@@ -626,10 +626,16 @@ def test_trace_router_routes_to_analyze_when_fetched_files_non_empty() -> None:
 
 
 def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
-    """Unresolved/ambiguous-only trace pass leaves
-    `last_trace_pass_fetched_count` at the default 0; router sends to
-    publish (no more analyze rounds needed). Per CodeRabbit R1 the
-    router reads the per-invocation scalar, not the cumulative list."""
+    """Trace pass produced no NEW fetches this invocation; router sends
+    to publish (no more analyze rounds needed). Per the router contract:
+    the per-invocation scalar `last_trace_pass_fetched_count` is the
+    signal, NOT the cumulative `state.trace_fetched_files`.
+
+    Seeds a STALE TraceFetchedFile from a prior pass while keeping
+    `last_trace_pass_fetched_count=0` so the test fails if a future
+    regression makes `_trace_router` consult cumulative state again.
+    Without the stale seed, both signals would be zero — the test
+    would pass even under the wrong (cumulative) implementation."""
     from outrider.agent.graph import _trace_router
 
     review_id = uuid4()
@@ -640,12 +646,23 @@ def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
         import_string="missing.module",
     )
     state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
-    # State after unresolved trace pass: trace_fetched_files empty AND
-    # the per-invocation scalar at its default 0.
-    assert state.trace_fetched_files == []
-    assert state.last_trace_pass_fetched_count == 0
+    stale_fetch = TraceFetchedFile(
+        path="already/fetched.py",
+        content_head="x = 1\n",
+        source_finding_id=finding.finding_id,
+    )
+    state_with_stale_fetch = state.model_copy(
+        update={
+            "trace_fetched_files": [stale_fetch],
+            "last_trace_pass_fetched_count": 0,
+        }
+    )
+    # Cumulative list non-empty AND per-invocation scalar zero —
+    # router must read the scalar and route to publish.
+    assert len(state_with_stale_fetch.trace_fetched_files) == 1
+    assert state_with_stale_fetch.last_trace_pass_fetched_count == 0
 
-    assert _trace_router(state) == "publish"
+    assert _trace_router(state_with_stale_fetch) == "publish"
 
 
 def test_trace_router_routes_to_publish_at_max_rounds() -> None:
