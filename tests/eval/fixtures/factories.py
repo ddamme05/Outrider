@@ -157,9 +157,16 @@ class FindingFactory:
             "evidence": "...",
             "content_hash": "0" * 64,
             # Per DECISIONS.md#025: admitted findings carry proposal_hash.
-            # Dummy SHA-256 hex; per-finding overrides can specify distinct
-            # values when an eval scenario exercises proposal_hash uniqueness.
-            "proposal_hash": "a" * 64,
+            # Unique-by-default (`uuid4().hex + uuid4().hex` = 64 hex
+            # chars matching the SHA-256 shape) so eval scenarios that
+            # compose multiple factory findings into one AnalysisRound
+            # don't accidentally trip the
+            # `_enforce_findings_proposal_hash_unique` validator on
+            # identical defaults. Per-finding overrides can still pin
+            # specific hashes when a scenario needs exact reproducibility.
+            # Per CodeRabbit round-9 N4 — cohort sibling of the round-6
+            # `_build_finding` fix in `test_trace_node.py`.
+            "proposal_hash": uuid4().hex + uuid4().hex,
         }
         return ReviewFinding(**{**defaults, **overrides})
 

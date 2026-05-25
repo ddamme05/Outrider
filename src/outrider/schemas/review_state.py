@@ -204,7 +204,12 @@ class ReviewState(BaseModel):
     # masks this today, but the contract is "re-enter analyze iff
     # trace JUST yielded new fetches" — the per-invocation delta is
     # the source of truth. Per CodeRabbit R1.
-    last_trace_pass_fetched_count: int = 0
+    #
+    # `ge=0` per CodeRabbit R9: the field models a count, so a negative
+    # value is meaningless AND silently violates router invariants
+    # (`> 0` would be false for `-N` even if trace did emit N fetches).
+    # Fail fast at the schema boundary rather than at the router.
+    last_trace_pass_fetched_count: int = Field(default=0, ge=0)
 
 
 __all__ = [

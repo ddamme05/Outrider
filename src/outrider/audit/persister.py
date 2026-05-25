@@ -1679,11 +1679,19 @@ class AuditPersister:
             # from the payload (it doesn't — `_EXCLUDE_FROM_PAYLOAD` is just
             # `{"sequence_number"}`) or via manual row mutation (blocked by
             # the append-only trigger).
+            # `_MISSING` sentinel distinguishes "field absent" from
+            # "field present with value None". Bare `.get(field)` would
+            # treat the two as equal — a drifted payload that DROPPED
+            # a nullable identity field (e.g., `target_file`) would
+            # compare equal to one that legitimately has `target_file=None`
+            # and get silently classified as a retry. Same pattern as
+            # `_payload_identity_subset_diverged` above (line 808). Per
+            # CodeRabbit R8.
             mismatched = tuple(
                 sorted(
                     field
                     for field in _payload_identity_subset("trace_decision")
-                    if existing_payload.get(field) != payload.get(field)
+                    if existing_payload.get(field, _MISSING) != payload.get(field, _MISSING)
                 )
             )
             if mismatched:
