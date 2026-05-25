@@ -176,12 +176,13 @@ Field semantics:
 - `trace_candidates`: an array (possibly empty) of `{import_string_raw,
   reason}` objects. The field name is `import_string_raw` — supply a
   dotted Python import string (e.g. `foo.bar.baz`), NOT a file path.
-  Trace's resolver maps dotted imports to candidate file paths via
-  the `ast_facts` import registry. Same-file references should NOT
-  appear here (analyze handles them inline via the scope-unit graph
-  per DECISIONS.md#024 point 2). The parser canonicalizes the value
-  to `import_string` after admission (NFC normalization +
-  identifier-validity + part-validation + shell-metachar rejection).
+  Trace's resolver probes the candidate's likely file paths in the
+  repository via the two-phase GitHub fetch (path-probe → content
+  fetch); same-file references should NOT appear here (analyze handles
+  them inline via the scope-unit graph per DECISIONS.md#024 point 2).
+  The parser canonicalizes the value to `import_string` after admission
+  (NFC normalization + identifier-validity + part-validation +
+  shell-metachar rejection).
 
 Up to 50 findings per response (`AnalyzeResponseRaw.findings` is bounded
 at max_length=50). Up to 20 trace_candidates per finding.

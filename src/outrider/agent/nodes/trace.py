@@ -429,34 +429,34 @@ def _bucket_candidates_by_finding(
     """Group candidates by their joined source_finding_id.
 
     Candidates whose `source_proposal_hash` doesn't resolve via the
-    join are dropped. `_filter_to_admitted_proposals` in
-    `agent/nodes/analyze.py` filters rejected-proposal candidates at
-    the analyze→state edge, so in normal flow this branch fires only
-    on:
-
-      1. Replay of state checkpointed before that filter landed
-         (transient — goes away once those checkpoints age out).
-      2. A direct `state.trace_candidates.append` bypassing the reducer
-         + analyze admission gate (genuine producer bug).
-      3. A future code path that emits into `state.trace_candidates`
-         without flowing through analyze's admission gate (genuine
-         producer bug if introduced).
-
-    Logged at WARN so any of the three is visible at default log level —
-    DEBUG would make the drop invisible in production exactly when the
-    underlying scenario (replay or producer bug) needs investigation.
+    join are dropped at this point per `DECISIONS.md#025` point 6:
+    `state.trace_candidates` may contain TraceCandidates from
+    REJECTED PARENT PROPOSALS (the parser preserves them per
+    `test_step10_trace_candidates_collected_from_rejected_proposal`)
+    — those candidates stay in state for replay/forensic visibility
+    but produce no `TraceDecisionEvent` and no GitHub fetch. The
+    drop here is the documented enforcement of "unjoined candidates
+    remain forensic-only." Logged at INFO (not WARN) because this
+    is normal forensic behavior, not a producer bug. A genuine
+    producer bug would manifest as a candidate whose
+    `source_proposal_hash` doesn't match any proposal the parser
+    has ever seen — distinguishable only at the
+    `TraceJoinIntegrityError` site upstream.
     """
     buckets: dict[UUID, list[TraceCandidate]] = {}
     for candidate in candidates:
         finding_id = join_lookup.get(candidate.source_proposal_hash)
         if finding_id is None:
-            logger.warning(
-                "trace: dropping unjoinable candidate candidate_id=%s "
-                "source_proposal_hash=%s — either a replay-of-old-state "
-                "transition case (the analyze→state filter now prevents "
-                "new emissions of unjoinable candidates) or a producer "
-                "bug (state mutation bypassing the reducer + analyze "
-                "admission gate)",
+            # INFO level: per DECISIONS#025 point 6 this is the
+            # documented forensic-only path for rejected-parent
+            # candidates; promote to WARN/ERROR only if a future
+            # invariant says "every state.trace_candidate must join."
+            logger.info(
+                "trace: candidate not joined to admitted finding "
+                "candidate_id=%s source_proposal_hash=%s — "
+                "forensic-only per DECISIONS.md#025 point 6 "
+                "(rejected-parent proposal). No TraceDecisionEvent "
+                "or GitHub fetch will fire for this candidate.",
                 candidate.candidate_id,
                 candidate.source_proposal_hash,
             )
