@@ -34,6 +34,7 @@ from outrider.audit.events import compute_finding_content_hash
 from outrider.llm.base import LLMResponse
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import compute_round_id
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import (
     AnalysisRound,
     ReviewDimension,
@@ -215,7 +216,7 @@ def _build_source_finding() -> ReviewFinding:
         description="Source finding description",
         evidence="def vulnerable_helper():\n    return raw_concat(input)\n",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             file_path=file_path,
             line_start=10,

@@ -322,7 +322,11 @@ async def test_finding_event_with_same_natural_key_does_not_collide(
                 review_id=persister_setup.review_id,
                 event_type="finding",
                 timestamp=datetime.now(UTC),
-                sequence_number=99,
+                # `sequence_number` is `sa.Identity(always=False)` —
+                # Postgres assigns from the table's identity sequence.
+                # Don't hard-code it here; an inserted value would mask
+                # a regression in the Identity column without surfacing
+                # one in the test's actual assertion.
                 is_eval=False,
                 payload={"source_finding_id": str(source_finding_id), "kind": "other"},
             )
@@ -354,7 +358,9 @@ async def test_emit_trace_decision_succeeds_after_foreign_event_with_same_natura
                 review_id=persister_setup.review_id,
                 event_type="finding",
                 timestamp=datetime.now(UTC),
-                sequence_number=42,
+                # `sequence_number` is `sa.Identity(always=False)`;
+                # Postgres auto-assigns. See sibling test above for
+                # the rationale.
                 is_eval=False,
                 payload={"source_finding_id": str(source_finding_id), "kind": "other"},
             )

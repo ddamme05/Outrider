@@ -228,15 +228,25 @@ async def trace(
         # Guard against a future refactor that empties a bucket without
         # removing the key.
         if flat_candidates:
-            # Skip the Haiku ranking call when there's only one candidate
-            # — the ranking is trivial (the one candidate is already the
-            # top-K). A PR with N findings × 1 unique import each fires
-            # one ranking call per finding under the old shape; this
-            # guard turns the per-trace-invocation single-candidate case
-            # into a zero-LLM-call pass. Order is preserved (input ==
-            # output). Tested as `len == 1` (not `<= 1`) because the
-            # outer `if flat_candidates:` already excludes len == 0.
-            if len(flat_candidates) == 1:
+            # Skip the Haiku ranking call when ranking can't change the
+            # outcome:
+            #
+            #   (a) a single flat candidate is trivially its own top-K
+            #       (the original short-circuit), and
+            #   (b) every per-finding bucket already has exactly one
+            #       candidate — ranking only reorders WITHIN buckets
+            #       (Step 7 re-groups by `source_finding_id`), so
+            #       singleton buckets get an inconsequential reordering.
+            #
+            # (b) is the common shape: many findings × 1 unique import
+            # each. Without it, every trace pass with N≥2 distinct
+            # findings (one candidate each) fires a Haiku call whose
+            # ordering output is discarded by the re-grouping. The
+            # post-cap-flatten order is preserved as-is on both
+            # short-circuits.
+            if len(flat_candidates) == 1 or all(
+                len(bucket) == 1 for bucket in capped_buckets.values()
+            ):
                 ordered_candidates = flat_candidates
             else:
                 ordered_candidates = await _rank_candidates_via_haiku(
