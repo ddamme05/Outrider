@@ -1,8 +1,8 @@
 """Agent package — the 7-node LangGraph state machine.
 
-V1 ships intake, triage, analyze, and publish today (per their
-respective node specs); the remaining three nodes (trace, synthesize,
-hitl) land with their own specs. The graph factory lives in
+V1 ships intake, triage, analyze, trace, and publish today (per their
+respective node specs); the remaining two nodes (synthesize, hitl)
+land with their own specs. The graph factory lives in
 `agent/graph.py`; per-node bodies live in `agent/nodes/`.
 
 Module structure follows docs/conventions.md "File organization":

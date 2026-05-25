@@ -7,7 +7,7 @@ content fetch through `_phase_two_content_fetch` — the filesystem-aware
 `coordinates.resolve_candidate_paths` is the FUTURE V1.5+ shape per
 DECISIONS#024 point 4 Amended 2026-05-24), it emits a `TraceFetchedFile`
 when the resolved path is NOT already in `pr_context.changed_files`
-so analyze's round-2 pass can examine the content.
+so analyze's post-trace pass can examine the content.
 
 Reducer key on `ReviewState.trace_fetched_files` is `path` alone (per
 Q3 resolution + M2 audit-fold). First-write-wins on key collision —
@@ -18,8 +18,8 @@ a bug. `TraceDecisionEvent` rows preserve full multi-cause provenance
 recovering "which findings caused this fetch" is
 `query state.trace_decisions where target_file == self.path`.
 
-V1 field set per spec Q3 (Codex round-7 revision — no
-source_import_string / source_proposal_hash fields):
+V1 field set per spec Q3 (no source_import_string /
+source_proposal_hash fields — see "Why not …" below):
 
 - `path: str` — post-`validate_diff_path` repo-relative POSIX.
 - `content_head: str` — head-side content from
@@ -35,12 +35,12 @@ Why not reuse `ChangedFile`: ChangedFile is intake's post-PR-file shape
 fetched file is not necessarily a changed PR file and has no patch
 semantics. Reusing ChangedFile would lie to analyze about the file's nature.
 
-No `source_import_string` / `source_proposal_hash` fields per the
-Codex round-7 audit-fold: those values vary across retries (LLM
-proposes different rankings; multiple candidates may map to the same
-target_file via different import strings) and would cause state-vs-
-audit divergence. Provenance recovery via `state.trace_decisions`
-cross-reference avoids the divergence and keeps the schema minimal.
+No `source_import_string` / `source_proposal_hash` fields: those
+values vary across retries (LLM proposes different rankings; multiple
+candidates may map to the same target_file via different import
+strings) and would cause state-vs-audit divergence. Provenance
+recovery via `state.trace_decisions` cross-reference avoids the
+divergence and keeps the schema minimal.
 """
 
 from __future__ import annotations

@@ -254,9 +254,8 @@ async def analyze(
     # dedup includes pass_index in its content-derived hash, so deriving
     # the index from state guarantees distinct round_ids across the two
     # passes (a hardcoded `pass_index = 0` would collide under the
-    # reducer + silently drop the second pass — that was the bug Codex
-    # caught on the round-N+1 audit). The depth-2 ceiling is enforced
-    # at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
+    # reducer + silently drop the second pass). The depth-2 ceiling is
+    # enforced at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
     pass_index = len(state.analysis_rounds)
     phase_id = str(uuid4())
     started_at = datetime.now(UTC)
@@ -288,11 +287,11 @@ async def analyze(
     n_proposals_rejected = 0
     n_responses_rejected = 0
     n_trace_candidates_emitted = 0
-    # Sharp-edges F1 fold (Group 1) introduced `n_trace_candidates_
-    # dropped_malformed` on `ParserCounters` + `AnalyzeCompletedEvent`,
-    # but the pass aggregate never accumulated it from `parser_result.
-    # counters` — the per-pass summary under-reported malformed
-    # trace-candidate drops. Wired here per CodeRabbit + Codex review.
+    # Per-pass aggregate of malformed-trace-candidate drops. Mirrors
+    # `ParserCounters.n_trace_candidates_dropped_malformed` and lands
+    # on `AnalyzeCompletedEvent` for the audit row — accumulating
+    # here is what makes the per-pass summary count match the per-file
+    # counters.
     n_trace_candidates_dropped_malformed = 0
     n_llm_calls = 0
     total_input_tokens = 0
@@ -388,12 +387,13 @@ async def analyze(
         # Build `source_findings_by_id` once per pass — the post-trace
         # prompt names the originating finding's title/description/evidence
         # so the model can connect the trace-fetched file back to the
-        # source finding (per CodeRabbit R4 — `source_finding_id` alone
-        # is opaque). The lookup walks ALL prior rounds' findings;
-        # `TraceFetchedFile.source_finding_id` always references an
-        # admitted finding (trace's contract — rejected-proposal
-        # candidates filter out at the analyze→state boundary per R3),
-        # so `.get(...)` returning None is a programmer error.
+        # source finding (passing source_finding_id alone leaves the
+        # model with no content to reason about). The lookup walks ALL
+        # prior rounds' findings; `TraceFetchedFile.source_finding_id`
+        # always references an admitted finding (trace's contract —
+        # rejected-proposal candidates filter out at the analyze→state
+        # boundary via `_filter_to_admitted_proposals`), so
+        # `.get(...)` returning None is a programmer error.
         source_findings_by_id: dict[UUID, ReviewFinding] = {
             f.finding_id: f for r in state.analysis_rounds for f in r.findings
         }
@@ -615,17 +615,16 @@ def _filter_to_admitted_proposals(
     silently dropped at trace's bucket step. Filter here at the
     analyze→state boundary so the drop is INTENTIONAL with a clear
     semantic owner (analyze: "we only forward candidates whose parent
-    proposal was admitted"). Per CodeRabbit R3.
+    proposal was admitted").
 
-    On the round-9 R6 counter-argument ("preserve in state for
-    forensic visibility"): `state.trace_candidates` is the runtime
-    handoff to trace, not a forensic store — checkpoints have a
-    retention TTL while `audit_events` is the permanent record.
-    The forensic gap that R3 exposes is real (rejected-proposal trace
-    candidates have NO audit surface today —
-    `FindingProposalRejectedEvent` doesn't carry them), but the right
-    fix is extending the audit event, not repurposing state as a
-    forensic mirror. Tracked as FUP-081 (see FOLLOWUPS.md).
+    `state.trace_candidates` is the runtime handoff to trace, not a
+    forensic store — checkpoints have a retention TTL while
+    `audit_events` is the permanent record. Rejected-proposal trace
+    candidates currently have NO audit surface
+    (`FindingProposalRejectedEvent` doesn't carry them); extending
+    the audit event is the right fix for that gap. Tracked as
+    FUP-081 (see FOLLOWUPS.md) — do not repurpose state as a
+    forensic mirror.
     """
     admitted_hashes = {f.proposal_hash for f in admitted_findings}
     return tuple(c for c in candidates if c.source_proposal_hash in admitted_hashes)
@@ -1173,7 +1172,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # the same guard (it routes the whole file to degraded mode when
     # has_error fires in changed regions); for trace-fetched files we
     # do per-scope-unit filtering instead, since there are no "changed
-    # regions" to scope the degradation to. Per CodeRabbit + Codex F6.
+    # regions" to scope the degradation to.
     included_scope_units = tuple(
         su for su in parse_result.scope_units if not parse_result.has_error.get(su.unit_id, False)
     )
@@ -1280,8 +1279,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # both `qualified_name` (e.g. "module.Class.method") and bare
     # `name` (e.g. "method") so the model can cite either form. The
     # parser's pass-1 INFERRED admission rejects any trace_path element
-    # not in this set — closes the proof-boundary gap Codex round-2
-    # finding 1 caught.
+    # not in this set — load-bearing for `evidence-tier-schema-enforced`:
+    # without this gate, an INFERRED proposal with a fabricated
+    # scope-unit name would persist as structural proof.
     valid_trace_path_elements = frozenset(
         name for su in included_scope_units for name in (su.qualified_name, su.name) if name
     )

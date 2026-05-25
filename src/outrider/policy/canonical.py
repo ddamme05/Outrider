@@ -166,8 +166,7 @@ def _validate_hash_payload(value: Any, path: str) -> None:
         # arrays, which is exactly the implicit shape coercion this
         # module is trying to prevent. Callers MUST convert via
         # `list(...)` (or `sorted(...)` for set-derived input) so the
-        # shape decision is explicit at the call site. Post-PR review
-        # fold (CodeRabbit + Copilot convergent).
+        # shape decision is explicit at the call site.
         raise TypeError(
             f"canonicalize_for_hash got a tuple at {path}; tuples are not "
             f"part of the canonical payload contract (JSON-native: "
