@@ -91,8 +91,9 @@ class TraceRankingRejected:
     """Rejection: response did not satisfy the parser contract.
 
     `reason` is one of the `TraceResponseRejectionReason` literals.
-    Consumers (trace node) emit an audit row with this reason and
-    fall back to the input order.
+    Consumers (trace node) WARN-log this reason and fall back to the
+    input order. V1 does NOT emit a `TraceRankingRejectedEvent` —
+    that audit surface is deferred per FUP-076.
     """
 
     outcome: Literal["rejected"]

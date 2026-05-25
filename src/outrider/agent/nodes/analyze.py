@@ -366,10 +366,10 @@ async def analyze(
                 # Per DECISIONS.md#025 point 6: trace_candidates from
                 # rejected-parent proposals stay in state for replay
                 # ("Unjoined candidates remain forensic-only"). Trace's
-                # `_bucket_candidates_by_finding` drops the unjoined
-                # ones at WARN-log level — that's the documented
-                # forensic contract, not a bug to filter at the
-                # analyze→state boundary. The audit-event counter
+                # `_bucket_candidates_by_finding` skips the unjoined
+                # ones (INFO log) — that's the documented forensic
+                # contract, not a bug to filter at the analyze→state
+                # boundary. The audit-event counter
                 # `n_trace_candidates_emitted` on
                 # `AnalyzeCompletedEvent` reflects the same pre-dedup
                 # set the state-side reducer ingests.
@@ -481,10 +481,10 @@ async def analyze(
                 # Per DECISIONS.md#025 point 6: trace_candidates from
                 # rejected-parent proposals stay in state for replay
                 # ("Unjoined candidates remain forensic-only"). Trace's
-                # `_bucket_candidates_by_finding` drops the unjoined
-                # ones at WARN-log level — that's the documented
-                # forensic contract, not a bug to filter at the
-                # analyze→state boundary. The audit-event counter
+                # `_bucket_candidates_by_finding` skips the unjoined
+                # ones (INFO log) — that's the documented forensic
+                # contract, not a bug to filter at the analyze→state
+                # boundary. The audit-event counter
                 # `n_trace_candidates_emitted` on
                 # `AnalyzeCompletedEvent` reflects the same pre-dedup
                 # set the state-side reducer ingests.
