@@ -375,15 +375,15 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     assert len(provider.calls) == 1
     call = provider.calls[0]
     assert call.node_id == "analyze"
-    # Verify the post-trace SUFFIX was appended (not just the base
-    # prompt's mention of the suffix). Use phrases that exist ONLY in
-    # POST_TRACE_SYSTEM_PROMPT_SUFFIX: "REPLACES the pass-0 schema" and
-    # the literal pass-1 output schema fragment `<observed|inferred|judged>`.
-    # Asserting the section heading alone would be vacuous — Codex
-    # round-3 finding F2 caught the earlier version of this test
-    # passing on a phrase that existed in the BASE prompt too.
-    assert "REPLACES the pass-0 schema" in call.system_prompt
-    assert "<observed|inferred|judged>" in call.system_prompt
+    # Verify the post-trace SUFFIX was appended to the system prompt.
+    # Assert against the actual `POST_TRACE_SYSTEM_PROMPT_SUFFIX`
+    # constant (whole-string presence) rather than incidental wording
+    # substrings — wording-coupled substring checks force the test to
+    # be edited every time the suffix's prose is tightened, even when
+    # the contract ("the suffix was appended") is unchanged.
+    from outrider.prompts.analyze import POST_TRACE_SYSTEM_PROMPT_SUFFIX
+
+    assert POST_TRACE_SYSTEM_PROMPT_SUFFIX in call.system_prompt
     # The user-prompt names the source finding via render_post_trace's
     # user template (POST_TRACE_USER_TEMPLATE).
     assert str(fetched_file.source_finding_id) in call.user_prompt

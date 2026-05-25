@@ -264,16 +264,19 @@ def test_round_trips_as_tuples() -> None:
 
 def test_proposed_import_strings_uniqueness_validator() -> None:
     """proposed_import_strings is set-semantic; duplicates raise. Per
-    #024 amendment to #017's uniqueness validator (split into two)."""
-    with pytest.raises(ValidationError, match="proposed_import_strings contains duplicates"):
+    #024 amendment to #017's uniqueness validator (split into two).
+    Matches on field name only — wording of the error message is not
+    contract, only the validator-attached-to-this-field is."""
+    with pytest.raises(ValidationError, match="proposed_import_strings"):
         _build_event(
             proposed_import_strings=("foo.bar", "foo.bar"),
         )
 
 
 def test_resolved_candidate_paths_uniqueness_validator() -> None:
-    """resolved_candidate_paths is set-semantic; duplicates raise."""
-    with pytest.raises(ValidationError, match="resolved_candidate_paths contains duplicates"):
+    """resolved_candidate_paths is set-semantic; duplicates raise.
+    Matches on field name only (see sibling test rationale)."""
+    with pytest.raises(ValidationError, match="resolved_candidate_paths"):
         _build_event(
             resolution_status="ambiguous",
             target_file=None,

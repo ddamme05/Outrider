@@ -187,12 +187,15 @@ def test_missing_resolved_candidate_paths_raises() -> None:
 
 
 def test_proposed_import_strings_uniqueness_validator() -> None:
-    with pytest.raises(ValidationError, match="proposed_import_strings contains duplicates"):
+    """Matches on field name only; the error message wording is not
+    contract, only that the validator attached to this field fires."""
+    with pytest.raises(ValidationError, match="proposed_import_strings"):
         _build(proposed_import_strings=("foo.bar", "foo.bar"))
 
 
 def test_resolved_candidate_paths_uniqueness_validator() -> None:
-    with pytest.raises(ValidationError, match="resolved_candidate_paths contains duplicates"):
+    """Matches on field name only (see sibling test rationale)."""
+    with pytest.raises(ValidationError, match="resolved_candidate_paths"):
         _build(
             resolution_status="ambiguous",
             target_file=None,
