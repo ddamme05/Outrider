@@ -8,9 +8,16 @@ into:
   `FindingType` enum, `EvidenceTier` proof rules, severity-set-by-policy
   and confidence-is-computed reminders) PLUS file-scoped context
   (changed scope units with bodies + same-file callers/callees + imports
-  + decorators + pre-fired `query_match_id` set). Stable for one file
-  across the analyze ⇄ trace loop, so the provider's
-  `cache_control: ephemeral` produces cross-pass cache hits.
+  + decorators + pre-fired `query_match_id` set). Stable WITHIN a pass
+  for one file, so the provider's `cache_control: ephemeral` produces
+  cache hits across REPEATED pass-0 calls on the same file (e.g.,
+  retry, replay). Pass-0 → pass-1 (post-trace) crosses a different
+  system-prompt shape: `render_post_trace` appends
+  `POST_TRACE_SYSTEM_PROMPT_SUFFIX` and uses the whole-file
+  `POST_TRACE_FILE_CONTEXT_TEMPLATE` instead of the diff-scoped
+  `SYSTEM_FILE_CONTEXT_TEMPLATE`, so pass-1 does NOT cache-hit
+  against pass-0 for the same path — by design (different file
+  context, different admission semantics).
 - **User prompt** (volatile): pass-specific instruction + scope-unit-
   clipped diff hunks. Outside the cache boundary.
 
@@ -29,6 +36,11 @@ Surfaces:
 - `POST_TRACE_FILE_CONTEXT_TEMPLATE` — whole-file analogue appended by
   `render_post_trace` (drops "changed" wording; trace-fetched files
   live outside the PR diff).
+- `POST_TRACE_SYSTEM_PROMPT_SUFFIX` — pass-1 INFERRED-admission section
+  appended after the file-context template by `render_post_trace`.
+- `POST_TRACE_USER_TEMPLATE` — pass-1 user-prompt body naming the
+  source finding (id + fenced title/description/evidence) and the
+  source path; consumed by `render_post_trace`.
 - `USER_TEMPLATE` — pass directives + diff hunks for clean calls.
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
