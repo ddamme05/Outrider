@@ -461,9 +461,16 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
 
 def test_trace_router_routes_to_analyze_when_fetched_files_non_empty() -> None:
     """`_trace_router` returns 'analyze' when trace produced at least one
-    fetched file AND we're below the depth-2 round limit. This is the
-    inbound side of the adaptive analyze ⇄ trace loop — the routing
-    decision the trace node's state delta drives."""
+    NEW fetched file IN THE MOST RECENT trace() CALL AND we're below the
+    depth-2 round limit. This is the inbound side of the adaptive
+    analyze ⇄ trace loop — the routing decision the trace node's state
+    delta drives.
+
+    Reads `state.last_trace_pass_fetched_count` (the per-invocation
+    scalar trace() writes per CodeRabbit R1), NOT the cumulative
+    `len(state.trace_fetched_files)`. Test sets the scalar to 1 to
+    simulate "trace just produced one new fetch this pass."
+    """
     from outrider.agent.graph import _trace_router
 
     review_id = uuid4()
@@ -474,21 +481,29 @@ def test_trace_router_routes_to_analyze_when_fetched_files_non_empty() -> None:
         import_string="some.module",
     )
     # State after a successful trace pass: analysis_rounds=[round_1],
-    # trace_fetched_files=[one file]. Router should send back to analyze.
+    # trace_fetched_files=[one file], last_trace_pass_fetched_count=1.
+    # Router should send back to analyze.
     state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
     fetched = TraceFetchedFile(
         path="some/module.py",
         content_head="x = 1\n",
         source_finding_id=finding.finding_id,
     )
-    state_with_fetch = state.model_copy(update={"trace_fetched_files": [fetched]})
+    state_with_fetch = state.model_copy(
+        update={
+            "trace_fetched_files": [fetched],
+            "last_trace_pass_fetched_count": 1,
+        }
+    )
 
     assert _trace_router(state_with_fetch) == "analyze"
 
 
-def test_trace_router_routes_to_publish_when_no_fetched_files() -> None:
-    """Unresolved/ambiguous-only trace pass leaves trace_fetched_files
-    empty; router sends to publish (no more analyze rounds needed)."""
+def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
+    """Unresolved/ambiguous-only trace pass leaves
+    `last_trace_pass_fetched_count` at the default 0; router sends to
+    publish (no more analyze rounds needed). Per CodeRabbit R1 the
+    router reads the per-invocation scalar, not the cumulative list."""
     from outrider.agent.graph import _trace_router
 
     review_id = uuid4()
@@ -499,16 +514,21 @@ def test_trace_router_routes_to_publish_when_no_fetched_files() -> None:
         import_string="missing.module",
     )
     state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
-    # State after unresolved trace pass: trace_fetched_files empty.
+    # State after unresolved trace pass: trace_fetched_files empty AND
+    # the per-invocation scalar at its default 0.
     assert state.trace_fetched_files == []
+    assert state.last_trace_pass_fetched_count == 0
 
     assert _trace_router(state) == "publish"
 
 
 def test_trace_router_routes_to_publish_at_max_rounds() -> None:
-    """Depth-2 ceiling: even with fetched files, if analysis_rounds has
-    already reached MAX_ANALYSIS_ROUNDS, route to publish to bound the
-    loop's total wall-clock cost."""
+    """Depth-2 ceiling: even when the most recent trace() call yielded
+    new fetches, if analysis_rounds has already reached
+    MAX_ANALYSIS_ROUNDS, route to publish to bound the loop's total
+    wall-clock cost. Sets `last_trace_pass_fetched_count=1` to ensure
+    the depth gate (not the scalar gate) is what blocks routing to
+    analyze — without that, the test would pass for the wrong reason."""
     from outrider.agent.graph import _trace_router
     from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS
     from outrider.schemas import TraceFetchedFile
@@ -534,7 +554,9 @@ def test_trace_router_routes_to_publish_at_max_rounds() -> None:
         update={
             "analysis_rounds": [state.analysis_rounds[0], extra_round],
             "trace_fetched_files": [fetched],
+            "last_trace_pass_fetched_count": 1,
         }
     )
     assert len(state_at_ceiling.analysis_rounds) == MAX_ANALYSIS_ROUNDS
-    assert _trace_router(state_at_ceiling) == "publish"
+    assert state_at_ceiling.last_trace_pass_fetched_count > 0  # scalar gate would pass
+    assert _trace_router(state_at_ceiling) == "publish"  # depth gate fires
