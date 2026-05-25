@@ -686,10 +686,12 @@ async def _phase_two_content_fetch(
         # (resolution_status="resolved" reflects what Phase 1 saw)
         # while preventing the bad bytes from entering state.
         logger.warning(
-            "trace: Phase 2 fetched bytes at %s do not decode as UTF-8; "
-            "skipping TraceFetchedFile construction. Producer-bug or "
-            "binary masquerading as .py — operator investigation needed.",
+            "trace: Phase 2 fetched bytes at %s (source_finding_id=%s) do "
+            "not decode as UTF-8; skipping TraceFetchedFile construction. "
+            "Producer-bug or binary masquerading as .py — operator "
+            "investigation needed.",
             target_file,
+            source_finding_id,
         )
         return None
     return TraceFetchedFile(

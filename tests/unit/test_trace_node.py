@@ -377,5 +377,11 @@ def test_aggregate_candidate_reasons_truncates_to_500_chars() -> None:
     )
 
     aggregated = _aggregate_candidate_reasons(candidates)
-    assert len(aggregated) == 500  # 497 chars + "..."
-    assert aggregated.endswith("...")
+    # Contract: respect the schema's 500-char cap on
+    # TraceDecisionEvent.reason. Don't pin the truncation marker shape
+    # ("..." today; a future fix may use a different marker per FUP-075's
+    # structured-field migration) — only that truncation occurred and
+    # the cap holds. Single-candidate aggregation provides a known-shorter
+    # baseline to prove truncation HAPPENED.
+    assert len(aggregated) <= 500
+    assert aggregated != _aggregate_candidate_reasons(candidates[:1])

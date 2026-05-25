@@ -254,9 +254,13 @@ async def test_resolved_candidate_writes_decision_and_fetched_file(
         github_factory=_stub_github_factory,  # type: ignore[arg-type]
     )
 
-    # Phase 1 probed both candidate paths; Phase 2 re-fetched the
-    # resolved one → 3 fetches total.
-    assert call_log == [resolved_path, unresolved_path, resolved_path]
+    # Contract: Phase 1 probed BOTH candidate paths (order is
+    # implementation choice — V1.5 may parallelize probes), then
+    # Phase 2 re-fetched ONLY the resolved one. Assert as set
+    # semantics on Phase 1 + ordered single-element Phase 2 so the
+    # test survives a parallel-probes refactor.
+    assert set(call_log[:2]) == {resolved_path, unresolved_path}
+    assert call_log[2:] == [resolved_path]
 
     # State delta carries one decision + one fetched file.
     decisions = state_delta["trace_decisions"]
@@ -340,8 +344,11 @@ async def test_unresolved_candidate_emits_decision_without_fetched_file(
         github_factory=_stub_github_factory,  # type: ignore[arg-type]
     )
 
-    # Phase 1 probed both candidate paths; Phase 2 did NOT fire.
-    assert call_log == ["missing/module.py", "missing/module/__init__.py"]
+    # Phase 1 probed both candidate paths; Phase 2 did NOT fire
+    # (unresolved → no target_file to fetch). Set semantics on the
+    # probe pair survives a parallel-probes refactor.
+    assert set(call_log) == {"missing/module.py", "missing/module/__init__.py"}
+    assert len(call_log) == 2  # Phase 2 didn't fire
 
     decisions = state_delta["trace_decisions"]
     fetched_files = state_delta["trace_fetched_files"]
@@ -416,8 +423,11 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
         github_factory=_stub_github_factory,  # type: ignore[arg-type]
     )
 
-    # Phase 1 probed both paths; Phase 2 did NOT fire (target in PR files).
-    assert call_log == [target_path, "middleware/auth/__init__.py"]
+    # Phase 1 probed both paths; Phase 2 did NOT fire (target in PR
+    # files — already analyzed at pass 0, no re-fetch needed). Set
+    # semantics on the probe pair survives a parallel-probes refactor.
+    assert set(call_log) == {target_path, "middleware/auth/__init__.py"}
+    assert len(call_log) == 2  # Phase 2 didn't fire
 
     decisions = state_delta["trace_decisions"]
     fetched_files = state_delta["trace_fetched_files"]
