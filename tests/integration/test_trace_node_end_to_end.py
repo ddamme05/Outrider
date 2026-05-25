@@ -267,6 +267,11 @@ async def test_resolved_candidate_writes_decision_and_fetched_file(
     fetched_files = state_delta["trace_fetched_files"]
     assert len(decisions) == 1  # type: ignore[arg-type]
     assert len(fetched_files) == 1  # type: ignore[arg-type]
+    # Per-invocation scalar: `_trace_router` reads this (NOT
+    # cumulative `len(trace_fetched_files)`). Pin it here so a future
+    # regression in trace's delta-construction can't silently break
+    # router routing.
+    assert state_delta["last_trace_pass_fetched_count"] == 1
 
     decision = decisions[0]  # type: ignore[index]
     assert decision.source_finding_id == finding.finding_id
@@ -354,6 +359,9 @@ async def test_unresolved_candidate_emits_decision_without_fetched_file(
     fetched_files = state_delta["trace_fetched_files"]
     assert len(decisions) == 1  # type: ignore[arg-type]
     assert len(fetched_files) == 0  # type: ignore[arg-type]  # M8: no probe → no fetched file
+    # Router-signal scalar: zero new fetches this pass → router routes
+    # to publish on the next graph step.
+    assert state_delta["last_trace_pass_fetched_count"] == 0
 
     decision = decisions[0]  # type: ignore[index]
     assert decision.resolution_status == "unresolved"
@@ -536,6 +544,10 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
     fetched_files = state_delta["trace_fetched_files"]
     assert len(decisions) == 1  # type: ignore[arg-type]
     assert len(fetched_files) == 0  # type: ignore[arg-type]  # Q3 + M8 skip
+    # Router-signal scalar: target is in pr_context.changed_files, so
+    # Phase 2 didn't fire → zero new fetched files this pass → router
+    # routes to publish (no analyze re-entry on already-in-diff files).
+    assert state_delta["last_trace_pass_fetched_count"] == 0
 
     decision = decisions[0]  # type: ignore[index]
     assert decision.resolution_status == "resolved"

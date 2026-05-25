@@ -27,6 +27,7 @@ from outrider.policy.canonical import (
     compute_identity_hash,
     compute_round_id,
 )
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import (
     AnalysisRound,
     ReviewDimension,
@@ -53,7 +54,7 @@ def _finding() -> ReviewFinding:
         description="raw concat",
         evidence="concat at src/foo.py:11",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             file_path="src/foo.py",
             line_start=10,

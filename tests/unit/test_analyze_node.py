@@ -1222,7 +1222,7 @@ def test_filter_to_admitted_proposals_keeps_admitted_drops_rejected() -> None:
         description="d",
         evidence="e",
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version="1.0.0",
+        policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             file_path="src/foo.py",
             line_start=10,
