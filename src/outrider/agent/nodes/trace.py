@@ -260,6 +260,15 @@ async def trace(
     gh_client = github_factory(state.pr_context.installation_id)
     head_sha = state.pr_context.head_sha
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
+    # Seed the within-pass fetch-dedup set with paths already in state
+    # (replay / multi-pass) so a Phase-2 fetch never repeats a
+    # `(target_file, head_sha)` round-trip that would land on a path
+    # the reducer's first-write-wins dedup-by-path is going to drop
+    # anyway. Also drives the `last_trace_pass_fetched_count` scalar
+    # the router reads: the count must reflect NEW state, not all
+    # successful Phase-2 calls (two findings resolving to the same
+    # target_file would otherwise count as 2 when only 1 file lands).
+    fetched_target_files: set[str] = {f.path for f in state.trace_fetched_files}
 
     for finding_id in sorted(ranked_by_finding):
         # Bucket here is dedup'd-then-capped to MAX_CANDIDATES_PER_FINDING:
@@ -320,16 +329,28 @@ async def trace(
                 resolution_status=persisted_event.resolution_status,
                 proposed_import_strings=persisted_event.proposed_import_strings,
                 resolved_candidate_paths=persisted_event.resolved_candidate_paths,
+                # Mirror the full persisted event — `trace_path` is None
+                # in V1 trace emission but the audit→state lift must
+                # carry whatever the persister returns so state and
+                # audit don't diverge if the persisted row ever has a
+                # non-None trace_path (V1.5 + replay reconstruction).
+                trace_path=persisted_event.trace_path,
             )
         )
 
-        # Phase 2: content fetch only for resolved AND not-in-PR per M8.
+        # Phase 2: content fetch only for resolved AND not-in-PR per M8
+        # AND not-already-fetched (within-pass OR carried-from-state).
         # Probe outcomes do NOT populate trace_fetched_files; only this
-        # explicit second fetch does.
+        # explicit second fetch does. The `fetched_target_files` set
+        # prevents duplicate Phase-2 round-trips when multiple findings
+        # resolve to the same target (the reducer would drop dupes via
+        # first-write-wins on `path`, but the GitHub call already
+        # happened, and the scalar would have over-counted).
         if (
             persisted_event.resolution_status == "resolved"
             and persisted_event.target_file is not None
             and persisted_event.target_file not in pr_file_paths
+            and persisted_event.target_file not in fetched_target_files
         ):
             fetched_file = await _phase_two_content_fetch(
                 target_file=persisted_event.target_file,
@@ -341,6 +362,7 @@ async def trace(
             )
             if fetched_file is not None:
                 accumulated_fetched_files.append(fetched_file)
+                fetched_target_files.add(fetched_file.path)
 
     # Step 8: phase-end + state delta. Coupled atom — either both happen
     # (success path) or neither (any earlier exception propagates without

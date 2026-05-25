@@ -22,10 +22,11 @@ Coverage:
   - **Target-in-PR-files skip (M8):** Phase 1 resolves the target,
     but `target_file` IS in `pr_context.changed_files` → decision
     emitted, Phase 2 skipped, NO TraceFetchedFile.
-  - **Audit-first lockstep on retry (M7 b):** trace runs twice with
-    identical inputs; second run's persister returns the existing
-    row's event; state-layer TraceDecision matches the first run's
-    persisted fields (not the second run's incoming fields).
+  - **Audit-first lockstep contract (M7 b):** node-side composition
+    is exercised here (trace constructs `TraceDecision` from the
+    persister's returned event), while the persister's no-op-on-
+    retry behavior (existing-row return on natural-key conflict) is
+    pinned in `tests/integration/test_audit_persister_natural_key.py`.
 """
 
 from __future__ import annotations
