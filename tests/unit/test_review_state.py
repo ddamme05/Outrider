@@ -313,3 +313,21 @@ def test_review_state_dict_round_trip() -> None:
     assert rehydrated == state
     assert isinstance(rehydrated.triage_result, TriageResult)
     assert isinstance(rehydrated.pr_context.changed_files, tuple)
+
+
+def test_last_trace_pass_fetched_count_rejects_negative() -> None:
+    """`Field(default=0, ge=0)` per the router-contract: the field models
+    a per-invocation count of NEW trace-fetched files; negative values are
+    meaningless AND silently violate `_trace_router`'s `> 0` predicate.
+    Fail fast at the schema boundary rather than at the router."""
+    with pytest.raises(ValidationError):
+        _minimal_review_state(last_trace_pass_fetched_count=-1)
+
+
+def test_last_trace_pass_fetched_count_admits_zero_and_positive() -> None:
+    """Default is 0 (no trace pass yet); positive values are valid
+    per-invocation deltas. Pin both ends of the valid range."""
+    zero_state = _minimal_review_state(last_trace_pass_fetched_count=0)
+    assert zero_state.last_trace_pass_fetched_count == 0
+    positive_state = _minimal_review_state(last_trace_pass_fetched_count=5)
+    assert positive_state.last_trace_pass_fetched_count == 5

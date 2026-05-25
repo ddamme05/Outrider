@@ -295,6 +295,19 @@ def test_target_file_audit_shadow_validate_diff_path() -> None:
         )
 
 
+def test_proposed_import_strings_per_element_is_valid_import_string() -> None:
+    """Per-element `is_valid_import_string` runs on every entry at the
+    audit-event boundary. Defense in depth against a direct emitter
+    (replay path, test fixture) that bypasses
+    `TraceCandidate.import_string`'s field validator: a path-shaped
+    element (forward slash) raises here even though the upstream
+    singleton validator would have rejected it earlier."""
+    with pytest.raises((ValidationError, ValueError)):
+        _build_event(
+            proposed_import_strings=("foo.bar", "src/baz.py"),
+        )
+
+
 def test_resolved_candidate_paths_audit_shadow_per_element() -> None:
     """Per #024 point 6: every resolved_candidate_paths element passes
     through validate_diff_path. Even one bad path in the tuple raises.
