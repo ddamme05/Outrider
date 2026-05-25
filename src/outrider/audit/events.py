@@ -251,11 +251,25 @@ class ContextManifestEntry(BaseModel):
 
 
 class AgentTransitionEvent(AuditEventBase):
-    """Node-to-node transition in the LangGraph state machine."""
+    """Node-to-node transition in the LangGraph state machine.
+
+    `from_node` and `to_node` are constrained Literals over the seven
+    graph nodes plus `"webhook"` — the latter is the seed source for
+    the FIRST transition in a review (webhook → intake), emitted by
+    `api/webhooks/router.py` when the review row is created. Every
+    subsequent transition is between two graph nodes.
+
+    Sharing the Literal with `ReviewPhaseEvent.node_id` (graph nodes
+    only — webhook doesn't have a phase) plus the seed exception stops
+    a typo (`"analyse"`, `"sythesize"`) from landing in the append-only
+    audit log without admitting arbitrary strings.
+    """
 
     event_type: Literal["agent_transition"] = "agent_transition"
-    from_node: str
-    to_node: str
+    from_node: Literal[
+        "webhook", "intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"
+    ]
+    to_node: Literal["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"]
     latency_ms: int = Field(ge=0)
 
 

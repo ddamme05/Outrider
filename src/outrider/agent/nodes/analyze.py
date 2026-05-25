@@ -1,3 +1,5 @@
+# See DECISIONS.md#018, #025 (proposal_hash threaded through admitted
+# and rejected lift sites per #025 point 1).
 """Analyze node body — orchestration around the proof-boundary parser.
 
 Assembles inputs, enforces triage gating, calls the provider, hands the
@@ -543,7 +545,7 @@ class _FileOutcome:
     `LLMCallEvent.cost_usd` sum.
     """
 
-    parse_status: str
+    parse_status: _ParseStatus
     parser_result: ParserResult | None
     input_tokens: int
     output_tokens: int

@@ -1,4 +1,6 @@
 # See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
+# See also DECISIONS.md#026 — natural-key idempotency mode (partial unique
+# indexes per event_type for retry-safe re-emission).
 """AUDIT_EVENTS.
 
 Append-only forever per #014. The append-only trigger on this table is added by

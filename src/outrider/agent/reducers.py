@@ -1,4 +1,4 @@
-# See specs/2026-05-19-analyze-foundation.md §2.
+# See specs/2026-05-19-analyze-foundation.md §2 and DECISIONS.md#017.
 """LangGraph reducer factory: dedup-keyed list append.
 
 Per `reducers-dedup-not-concat`: plain `operator.add` (the LangGraph
