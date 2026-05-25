@@ -56,14 +56,18 @@ logger = logging.getLogger(__name__)
 # Phase 1; at the analyze-side cap of 50 findings × 20 candidates that
 # is 2000 requests per pass, ~4000 across the depth-2 round limit —
 # enough to exhaust an installation's 5000/hr GitHub rate limit on a
-# single hostile PR. Top-K per finding keeps Phase 1 cost bounded
-# (`MAX_CANDIDATES_PER_FINDING × n_findings × 2` GitHub fetches per
-# pass) and the LLM's ranking is exactly the signal trace uses to
-# decide WHICH top-K to probe. `TraceDecisionEvent.proposed_import_strings`
-# carries ONLY the deduped+capped (top-K) bucket per finding — non-top-K
-# candidates are not probed and not recorded on the audit event. The
-# full pre-cap LLM-proposed list lives in `state.trace_candidates`
-# (reducer-deduped per finding) for forensic inspection.
+# single hostile PR. The cap is applied to insertion order (the order
+# analyze emitted candidates into `state.trace_candidates`, reducer-
+# controlled) BEFORE the Haiku ranking call, so membership in the
+# probed set is reducer-deterministic — a hostile analyze-LLM cannot
+# use ranking to smuggle attacker-chosen candidates past the cap.
+# `MAX_CANDIDATES_PER_FINDING × n_findings × 2` bounds GitHub fetches
+# per pass. The Haiku ranking step orders the post-cap bucket
+# (informs intra-bucket probe order; reserved for future probe-behavior
+# changes per spec M6 where order will gate early-exit). The full pre-
+# cap LLM-proposed list lives in `state.trace_candidates` for forensic
+# inspection. `TraceDecisionEvent.proposed_import_strings` carries
+# ONLY the deduped+capped bucket per finding.
 MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 
 # Depth limit on the analyze ⇄ trace loop. After round 2, the trace

@@ -501,16 +501,28 @@ async def analyze(
             # multiple times (one per source finding targeting that
             # path). `AnalysisRound._enforce_files_examined_unique` /
             # `_enforce_files_skipped_unique` validators reject
-            # duplicates, so dedup at append time. The first per-path
-            # iteration's parse_status wins (consistent with the
-            # `files_examined` semantic: "we did examine this file in
-            # this pass" — true regardless of how many findings
-            # triggered the examination).
-            if fetched_file.path not in files_examined and fetched_file.path not in files_skipped:
-                if file_outcome.parse_status == "skipped":
-                    files_skipped.append(fetched_file.path)
-                else:
-                    files_examined.append(fetched_file.path)
+            # duplicates, so dedup at append time.
+            #
+            # Examined-wins semantic: once a path lands in
+            # `files_examined`, subsequent iterations are no-ops; if an
+            # earlier iteration skipped the path and a later one
+            # examines it, promote the path from `files_skipped` to
+            # `files_examined`. In current code paths skip outcomes
+            # are deterministic per file (same content → same
+            # decision), so the skip→examined transition cannot occur
+            # — but encoding "examined wins" defensively means a
+            # future skip-reason addition that DOES depend on
+            # iteration-mutable state (e.g., partial-budget) can't
+            # silently leave a successfully-examined path stuck in
+            # `files_skipped`.
+            if fetched_file.path in files_examined:
+                pass
+            elif file_outcome.parse_status != "skipped":
+                if fetched_file.path in files_skipped:
+                    files_skipped.remove(fetched_file.path)
+                files_examined.append(fetched_file.path)
+            elif fetched_file.path not in files_skipped:
+                files_skipped.append(fetched_file.path)
 
     ended_at = datetime.now(UTC)
 

@@ -25,8 +25,20 @@ Surfaces:
 - `TEMPLATE` — alias for `USER_TEMPLATE`.
 - `VERSION: Final[str] = "trace-v1"` — flows to
   `LLMRequest.prompt_template_version`.
-- `MAX_TOKENS: Final[int] = 2048` — fits up to ~100 candidate-rank
-  pairs.
+- `MAX_TOKENS: Final[int] = 8192` — output cap for the ranking JSON.
+  Sized to cover the worst-case bucket flatten: analyze caps findings
+  at 50 per file and trace caps each finding's bucket at
+  `MAX_CANDIDATES_PER_FINDING=5` unique imports, so a single-file PR
+  with many findings can yield up to 50 × 5 = 250 candidate ids in
+  the flat ranking input. Each candidate id is a 64-char SHA-256 hex
+  string; the ranking output is a JSON array of those ids
+  (`["<64>", "<64>", ...]`), ~70 chars per entry including delimiters.
+  Worst-case output ≈ 250 × 70 + brackets ≈ 17.5 KB ≈ ~4500 tokens at
+  ~4 chars/token. 8192 gives a 80% safety margin and stays inside
+  Haiku 4.5's per-response output limit. Truncation here surfaces as
+  `TraceRankingRejected(reason="raw_response_unparseable")` (the
+  ranking parser falls back to input order, deterministic) — sized
+  to avoid that failure path under realistic load.
 - `TEMPERATURE: Final[float] = 0.0` — deterministic-leaning; minimizes
   replay drift.
 - `TracePromptParts` — frozen dataclass result. NOT a NamedTuple, so
@@ -53,7 +65,10 @@ if TYPE_CHECKING:
     from outrider.schemas.trace_candidate import TraceCandidate
 
 VERSION: Final[str] = "trace-v1"
-MAX_TOKENS: Final[int] = 2048
+# Sized to cover the worst-case flat ranking output (~4500 tokens at
+# 250 ids × 70 chars/id ÷ 4 chars/token) with safety margin. See
+# module docstring for the derivation.
+MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
 

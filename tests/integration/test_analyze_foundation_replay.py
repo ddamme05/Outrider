@@ -45,7 +45,7 @@ from outrider.schemas import (
 )
 
 
-def _finding() -> ReviewFinding:
+def _finding(proposal_hash: str = "a" * 64) -> ReviewFinding:
     return ReviewFinding(
         finding_id=uuid4(),
         review_id=uuid4(),
@@ -67,17 +67,22 @@ def _finding() -> ReviewFinding:
             line_end=12,
             finding_type=FindingType.SQL_INJECTION,
         ),
-        proposal_hash="a" * 64,  # Per DECISIONS.md#025.
+        proposal_hash=proposal_hash,  # Per DECISIONS.md#025.
     )
 
 
-def _round(pass_index: int = 0) -> AnalysisRound:
+def _round(pass_index: int = 0, proposal_hash: str | None = None) -> AnalysisRound:
     """Construct an AnalysisRound with a canonical round_id derived from
     its actual payload — required by `_enforce_round_id_matches_payload`.
-    Vary `pass_index` to get distinct round_ids."""
+    Vary `pass_index` to get distinct round_ids. `proposal_hash` is
+    derived from `pass_index` by default so each round's finding has a
+    distinct, join-stable hash (paired callers thread the same value
+    into `_candidate(...)` to produce a valid trace-join fixture)."""
     now = datetime.now(UTC)
     file_path = f"src/foo_{pass_index}.py"
-    finding = _finding()
+    if proposal_hash is None:
+        proposal_hash = f"{pass_index:02d}" + ("0" * 62)
+    finding = _finding(proposal_hash=proposal_hash)
     return AnalysisRound(
         round_id=compute_round_id(
             pass_index=pass_index,
@@ -94,14 +99,19 @@ def _round(pass_index: int = 0) -> AnalysisRound:
     )
 
 
-def _candidate(seed: str) -> TraceCandidate:
+def _candidate(seed: str, source_proposal_hash: str | None = None) -> TraceCandidate:
     """Construct a TraceCandidate fixture. Per DECISIONS.md#024 trace
     candidates are dotted Python import strings — the seed is sanitized
     (hyphens → underscores) and folded into a single-part identifier so
     test-author-friendly seeds like 'auth-mw' don't trip the
     identifier-validity check (added in Group 1's
-    `is_valid_import_string` predicate tightening)."""
-    source_proposal_hash = compute_identity_hash({"prop": seed})
+    `is_valid_import_string` predicate tightening). Callers may pass an
+    explicit `source_proposal_hash` to thread the candidate onto a
+    matching `_finding(proposal_hash=...)` for join-valid fixtures;
+    otherwise it derives from `seed` for backwards-compatibility with
+    tests that don't exercise the join."""
+    if source_proposal_hash is None:
+        source_proposal_hash = compute_identity_hash({"prop": seed})
     import_string = f"pkg_{seed.replace('-', '_')}"
     reason = "x"
     return TraceCandidate(
@@ -144,7 +154,13 @@ def test_review_state_json_dump_includes_new_state_slots() -> None:
         pr_context=_empty_pr_context(),
         received_at=datetime.now(UTC),
         analysis_rounds=[_round(0), _round(1)],
-        trace_candidates=[_candidate("a"), _candidate("b")],
+        # Join-valid pairing: round 0's finding has proposal_hash
+        # "00..." (per `_round`'s default); candidate "a" targets it.
+        # Round 1's finding has "01..."; candidate "b" targets that.
+        trace_candidates=[
+            _candidate("a", source_proposal_hash="00" + ("0" * 62)),
+            _candidate("b", source_proposal_hash="01" + ("0" * 62)),
+        ],
     )
 
     as_json = state.model_dump_json()
@@ -188,7 +204,13 @@ def test_review_state_checkpoint_roundtrip_with_analysis_rounds() -> None:
         pr_context=_empty_pr_context(),
         received_at=datetime.now(UTC),
         analysis_rounds=[_round(0), _round(1)],
-        trace_candidates=[_candidate("a"), _candidate("b")],
+        # Join-valid pairing: round 0's finding has proposal_hash
+        # "00..." (per `_round`'s default); candidate "a" targets it.
+        # Round 1's finding has "01..."; candidate "b" targets that.
+        trace_candidates=[
+            _candidate("a", source_proposal_hash="00" + ("0" * 62)),
+            _candidate("b", source_proposal_hash="01" + ("0" * 62)),
+        ],
     )
 
     # Dump → JSON → parse → model_validate. This is the path
