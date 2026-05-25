@@ -1215,7 +1215,21 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # `render_post_trace` is the pass-1 variant of `render`; same shape
     # (system + user prompt), different system-prompt instructions to
     # allow INFERRED.
-    query_match_id_set = _build_query_match_id_set(content_bytes)
+    #
+    # Fail-closed on partial has_error filtering: if the has_error filter
+    # above dropped any scope unit, treat the whole file as degraded for
+    # OBSERVED-proof purposes (force `query_match_id_set` empty). Without
+    # this, the registry built from the FULL file content could authorize
+    # an OBSERVED proposal against a query match that lives inside a
+    # scope unit we deliberately excluded from the proof set — defeating
+    # the proof boundary the has_error filter exists to defend. Mirrors
+    # the pass-0 `degraded_mode → frozenset()` pattern in
+    # `_process_one_file`.
+    query_match_id_set: frozenset[str] = (
+        frozenset()
+        if len(included_scope_units) != len(parse_result.scope_units)
+        else _build_query_match_id_set(content_bytes)
+    )
     parts = analyze_prompt.render_post_trace(
         file_path=fetched_file.path,
         scope_unit_context=_assemble_scope_unit_context(

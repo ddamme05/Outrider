@@ -406,9 +406,16 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     from outrider.prompts.analyze import POST_TRACE_SYSTEM_PROMPT_SUFFIX
 
     assert POST_TRACE_SYSTEM_PROMPT_SUFFIX in call.system_prompt
-    # The user-prompt names the source finding via render_post_trace's
-    # user template (POST_TRACE_USER_TEMPLATE).
-    assert str(fetched_file.source_finding_id) in call.user_prompt
+    # The user-prompt names the ACTIVE source finding via
+    # `render_post_trace`'s user template (POST_TRACE_USER_TEMPLATE).
+    # Assert against `source_finding.finding_id` rather than
+    # `fetched_file.source_finding_id`: both happen to be equal in this
+    # fixture, but the contract is that pass-1 attributes content to the
+    # loop-iteration source finding (analyze.py:1234), not the
+    # fetched-file's first-write-wins provenance — a future fan-out
+    # regression that uses `fetched_file.source_finding_id` would still
+    # pass an assertion targeting the fetched-file side.
+    assert str(source_finding.finding_id) in call.user_prompt
 
     # Phase events: one start + one end.
     assert len(phase_sink.events) == 2

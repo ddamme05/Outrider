@@ -300,14 +300,25 @@ def test_target_file_audit_shadow_validate_diff_path() -> None:
     validators."""
     from outrider.coordinates import CoordinateError
 
-    with pytest.raises((ValidationError, CoordinateError)):
+    # Assert specifically on the `target_file` field validator firing —
+    # accepting any ValidationError here would silently pass even if a
+    # future refactor deletes the field-level audit shadow, because the
+    # model-level `target_file == resolved_candidate_paths[0]` check
+    # also raises on this same payload (mismatched strings). Targeting
+    # `loc == ("target_file",)` pins the field-level path validator.
+    try:
         _build_event(
             target_file="../../etc/passwd",
-            # Intentionally valid + same as the target field would canonically
-            # have been if the path validation passed; only target_file is
-            # the failure surface under test.
             resolved_candidate_paths=("src/some/path.py",),
         )
+    except CoordinateError:
+        pass
+    except ValidationError as exc:
+        assert any(err["loc"] == ("target_file",) for err in exc.errors()), (
+            f"expected target_file field_validator to fire; got errors: {exc.errors()}"
+        )
+    else:
+        pytest.fail("expected target_file validation to fail")
 
 
 def test_proposed_import_strings_per_element_is_valid_import_string() -> None:
