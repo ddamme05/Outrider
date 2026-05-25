@@ -436,8 +436,9 @@ def test_compiled_graph_has_analyze_node_and_correct_edges(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
     """Build the compiled graph; assert node membership includes intake,
-    triage, and analyze (no pre-wired trace), and that the only
-    statically-renderable edge starts at START and lands at intake.
+    triage, analyze, trace (wired per the 2026-05-24 trace spec), and
+    publish, and that the only statically-renderable edge starts at
+    START and lands at intake.
 
     LangGraph's `get_graph()` renders only static edges visible from
     START's static reachability. Since intake routes via

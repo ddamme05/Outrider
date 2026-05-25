@@ -318,10 +318,21 @@ def parse_analyze_response(
         # a rejected JUDGED-claim might still surface a legitimate
         # cross-file signal. Pre-compute here and `.extend(...)` on
         # whichever branch the iteration takes.
-        proposal_trace_candidates, n_dropped = _collect_trace_candidates_for(
-            raw_proposal, proposal_hash=proposal_hash
-        )
-        n_trace_candidates_dropped_malformed += n_dropped
+        #
+        # Pass-1 (post-trace) is contractually trace_candidates-empty:
+        # `prompts/analyze.py::render_post_trace` instructs the model
+        # not to emit them, and `agent/graph.py::_analyze_router`
+        # never routes pass-1 output back to trace. A pass-1 model
+        # contract violation would otherwise persist dead candidates
+        # into `state.trace_candidates` and inflate
+        # `n_trace_candidates_emitted` for work the graph cannot
+        # execute. Gate at the parser boundary instead.
+        proposal_trace_candidates: list[TraceCandidate] = []
+        if pass_index == 0:
+            proposal_trace_candidates, n_dropped = _collect_trace_candidates_for(
+                raw_proposal, proposal_hash=proposal_hash
+            )
+            n_trace_candidates_dropped_malformed += n_dropped
 
         # Step 2: evidence_tier enum admission (runs first per the
         # bidirectional-validator requirement above).
