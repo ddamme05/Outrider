@@ -1642,6 +1642,13 @@ class AuditPersister:
                         AuditEventRow.review_id,
                         sa_text("(payload->>'source_finding_id')"),
                     ],
+                    # `trace_decision_event_type` is the Pydantic `Literal[...]`
+                    # default at the top of this method (line ~1612) —
+                    # never user input. The f-string interpolation here is
+                    # safe (no SQL-injection surface); we use it because
+                    # SQLAlchemy's partial-index WHERE needs literal SQL
+                    # text matching the migration's `CREATE UNIQUE INDEX
+                    # ... WHERE event_type = 'trace_decision' ...` exactly.
                     index_where=sa_text(
                         f"event_type = '{trace_decision_event_type}' "
                         "AND payload ? 'source_finding_id'"

@@ -225,9 +225,11 @@ async def trace(
             # — the ranking is trivial (the one candidate is already the
             # top-K). A PR with N findings × 1 unique import each fires
             # one ranking call per finding under the old shape; this
-            # guard turns the per-trace-invocation flat=1 case into a
-            # zero-LLM-call pass. Order is preserved (input == output).
-            if len(flat_candidates) <= 1:
+            # guard turns the per-trace-invocation single-candidate case
+            # into a zero-LLM-call pass. Order is preserved (input ==
+            # output). Tested as `len == 1` (not `<= 1`) because the
+            # outer `if flat_candidates:` already excludes len == 0.
+            if len(flat_candidates) == 1:
                 ordered_candidates = flat_candidates
             else:
                 ordered_candidates = await _rank_candidates_via_haiku(
