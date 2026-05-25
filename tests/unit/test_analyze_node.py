@@ -45,6 +45,7 @@ from outrider.agent.nodes.analyze import (
     PER_FILE_CAP_FRACTION,
     _compute_per_file_cap,
     _estimate_tokens,
+    _filter_to_admitted_proposals,
     analyze,
 )
 from outrider.ast_facts.models import SkipReason
@@ -1181,3 +1182,100 @@ async def test_total_cost_usd_is_decimal_sum_then_float_cast(deps: dict[str, Any
     # Decimal-sum. A float-sum-per-call regression would (occasionally)
     # produce a different float at FP-noise precision.
     assert completed[0].total_cost_usd == expected_total_cost_usd
+
+
+# ---------------------------------------------------------------------------
+# `_filter_to_admitted_proposals` boundary helper (analyze→state).
+# ---------------------------------------------------------------------------
+
+
+def test_filter_to_admitted_proposals_keeps_admitted_drops_rejected() -> None:
+    """Helper drops trace candidates whose source_proposal_hash doesn't
+    match any admitted finding in the file outcome. Parser preserves
+    candidates from BOTH admitted AND proposal-level-rejected raw
+    proposals; this filter is the analyze→state-boundary gate that
+    keeps trace from seeing unjoinable candidates."""
+    from uuid import uuid4
+
+    from outrider.audit.events import compute_finding_content_hash
+    from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+    from outrider.policy.canonical import compute_candidate_id
+    from outrider.schemas import (
+        ReviewDimension,
+        ReviewFinding,
+        TraceCandidate,
+    )
+
+    admitted_hash = "a" * 64
+    rejected_hash = "b" * 64
+    admitted_finding = ReviewFinding(
+        finding_id=uuid4(),
+        review_id=uuid4(),
+        installation_id=1,
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.CRITICAL,
+        file_path="src/foo.py",
+        line_start=10,
+        line_end=12,
+        title="t",
+        description="d",
+        evidence="e",
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version="1.0.0",
+        content_hash=compute_finding_content_hash(
+            file_path="src/foo.py",
+            line_start=10,
+            line_end=12,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+        proposal_hash=admitted_hash,
+    )
+
+    def _candidate(source_hash: str, import_string: str) -> TraceCandidate:
+        reason = "trace-context"
+        return TraceCandidate(
+            candidate_id=compute_candidate_id(
+                source_proposal_hash=source_hash,
+                import_string=import_string,
+                reason=reason,
+            ),
+            source_proposal_hash=source_hash,
+            import_string=import_string,
+            reason=reason,
+        )
+
+    keep = _candidate(admitted_hash, "pkg.kept")
+    drop = _candidate(rejected_hash, "pkg.dropped")
+
+    result = _filter_to_admitted_proposals(
+        candidates=(keep, drop),
+        admitted_findings=(admitted_finding,),
+    )
+    assert result == (keep,)
+
+
+def test_filter_to_admitted_proposals_empty_admitted_returns_empty() -> None:
+    """Response-level rejection (no admitted findings) → every
+    candidate's hash misses the empty admitted-hash set → all drop.
+    Filter must return empty tuple, not crash on the empty set."""
+    from outrider.policy.canonical import compute_candidate_id
+    from outrider.schemas import TraceCandidate
+
+    hash_a = "c" * 64
+    c = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=hash_a,
+            import_string="pkg.x",
+            reason="r",
+        ),
+        source_proposal_hash=hash_a,
+        import_string="pkg.x",
+        reason="r",
+    )
+    assert _filter_to_admitted_proposals(candidates=(c,), admitted_findings=()) == ()
+
+
+def test_filter_to_admitted_proposals_empty_candidates_returns_empty() -> None:
+    """No candidates → no work; returns empty tuple regardless of admitted set."""
+    assert _filter_to_admitted_proposals(candidates=(), admitted_findings=()) == ()

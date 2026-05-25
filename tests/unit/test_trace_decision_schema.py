@@ -227,6 +227,18 @@ def test_resolved_candidate_paths_audit_shadow_per_element() -> None:
         )
 
 
+def test_proposed_import_strings_per_element_is_valid_import_string() -> None:
+    """Per-element `is_valid_import_string` runs on every entry. A
+    path-shaped element (forward slash) bypasses the
+    upstream `TraceCandidate.import_string` validator only when a
+    direct emitter constructs `TraceDecision` without flowing through
+    the candidate path. The schema-layer per-element validator catches
+    it — defense in depth at the collection boundary.
+    """
+    with pytest.raises((ValidationError, ValueError)):
+        _build(proposed_import_strings=("foo.bar", "src/baz.py"))
+
+
 # ----------------------------------------------------------------------------
 # Frozen + extra="forbid" per cross-boundary schema discipline.
 # ----------------------------------------------------------------------------

@@ -18,7 +18,8 @@ reconstruct concrete events from `audit_events.payload` JSONB at read time:
 
 Every event uses `ConfigDict(frozen=True, extra="forbid")` per
 `audit-events-frozen-extra-forbid`. Tuple-typed sequence fields
-(`context_summary`, `trace_path`, the HITL containers, `candidates_considered`)
+(`context_summary`, `trace_path`, the HITL containers,
+`proposed_import_strings`, `resolved_candidate_paths`)
 deliver true immutability — Pydantic `frozen=True` only blocks attribute
 reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
@@ -39,10 +40,15 @@ by `HITLDecisionEvent.decisions`):
     (rejects emitter bugs that produce a mis-computed hash with the
     right shape).
   - `TraceDecisionEvent` enforces the three-rule resolution invariant
-    per `DECISIONS.md#017` (Amended same-day, two clauses):
-    (a) resolved ↔ non-None target_file;
-    (b) unresolved/ambiguous ↔ target_file is None;
-    (c) when resolved, target_file in candidates_considered.
+    per `DECISIONS.md#017` × `#024` amendment:
+    (a) resolved ↔ `len(resolved_candidate_paths) == 1` AND
+        `target_file == resolved_candidate_paths[0]`;
+    (b) unresolved ↔ `len(resolved_candidate_paths) == 0` AND
+        `target_file is None`;
+    (c) ambiguous ↔ `len(resolved_candidate_paths) > 1` AND
+        `target_file is None`.
+    Plus per-element `is_valid_import_string` on `proposed_import_strings`
+    and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
   - `AnalyzeCompletedEvent` enforces two accounting equations per
     foundation §5: `n_proposals_seen == n_findings_emitted +
     n_proposals_rejected`, and `n_responses_rejected <= n_llm_calls`.
@@ -420,12 +426,14 @@ class FileExaminationEvent(AuditEventBase):
 
     event_type: Literal["file_examination"] = "file_examination"
     file_path: Annotated[str, Field(max_length=1024)]
-    # Bounded to the two actually-emitted values today (intake's per-file
-    # fetch record at `agent/nodes/intake.py:703,737` and analyze's
-    # per-file examination at the sister-spec node body). Adding a third
-    # stage's emission site is a schema change — the explicit Literal forces
-    # the discriminator-like field to be widened deliberately rather than
-    # drifting on a string typo from a future contributor.
+    # Bounded to the two actually-emitted values today: intake's
+    # per-file fetch record (`emit_file_examination` sites in
+    # `agent/nodes/intake.py`) and analyze's per-file examination (the
+    # `_emit_skip` / `_emit_examined` helpers in `agent/nodes/analyze.py`).
+    # Adding a third stage's emission site is a schema change — the
+    # explicit Literal forces the discriminator-like field to be
+    # widened deliberately rather than drifting on a string typo from
+    # a future contributor.
     examination_type: Literal["intake_fetch", "analyze"]
     # `node_id` is the graph-node that emitted this event; for V1
     # FileExaminationEvent fires only from intake (per-file fetch) and

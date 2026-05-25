@@ -64,8 +64,8 @@ if TYPE_CHECKING:
     from outrider.ast_facts.models import ScopeUnit
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
-# Mirrors `FindingProposalRejectedEvent.rejection_reason` literal at
-# `audit/events.py:893`. Duplicated here so this module doesn't depend
+# Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
+# `audit/events.py`. Duplicated here so this module doesn't depend
 # on `audit/events.py` at import time (keeps the parser's pure-data
 # discipline visible at the import graph). If these drift, parser-
 # produced `ProposalRejection.rejection_reason` values that the event
@@ -608,8 +608,8 @@ def parse_analyze_response(
     )
 
 
-# `claimed_finding_type_hash` width matches the schema's pattern at
-# `audit/events.py:891` (`_SHA256_HEX_PATTERN_SHORT` — 16 hex chars).
+# `claimed_finding_type_hash` width matches the schema's pattern in
+# `audit/events.py` (`_SHA256_HEX_PATTERN_SHORT` — 16 hex chars).
 # Per `DECISIONS.md#014` point 1, the raw model string never lands in
 # the audit row; the hash+length pair lets operators reason about
 # identity without admitting content.
@@ -617,7 +617,7 @@ _CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
 
 
 # Spec §3 named character class for `query_match_id` (and `trace_path`
-# step values). Raw schema at `schemas/llm/analyze.py:87` ships only
+# step values). Raw schema in `schemas/llm/analyze.py` ships only
 # `max_length=256` — no pattern. This regex enforces the spec-promised
 # safety class as a parser-side sanitization step.
 _QUERY_MATCH_ID_SAFE_CLASS: Final = re.compile(r"[^A-Za-z0-9_./:\-]")

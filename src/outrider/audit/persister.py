@@ -1685,7 +1685,8 @@ class AuditPersister:
             # a nullable identity field (e.g., `target_file`) would
             # compare equal to one that legitimately has `target_file=None`
             # and get silently classified as a retry. Same pattern as
-            # `_payload_identity_subset_diverged` above (line 808).
+            # `_diff_field_names` above (the sentinel is defined once at
+            # module scope and used by both this loop and the diff helper).
             mismatched = tuple(
                 sorted(
                     field
