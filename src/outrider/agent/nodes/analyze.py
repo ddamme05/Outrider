@@ -391,25 +391,54 @@ async def analyze(
         # so the model can connect the trace-fetched file back to the
         # source finding (passing source_finding_id alone leaves the
         # model with no content to reason about). The lookup walks ALL
-        # prior rounds' findings; `TraceFetchedFile.source_finding_id`
-        # always references an admitted finding (trace's contract —
-        # rejected-proposal candidates filter out at the analyze→state
-        # boundary via `_filter_to_admitted_proposals`), so
-        # `.get(...)` returning None is a programmer error.
+        # prior rounds' findings; the source finding always exists for
+        # any (path, source_finding_id) pair derived from
+        # `state.trace_decisions` (trace's contract — rejected-proposal
+        # candidates filter out at the analyze→state boundary via
+        # `_filter_to_admitted_proposals`), so `.get(...)` returning
+        # None is a programmer error.
         source_findings_by_id: dict[UUID, ReviewFinding] = {
             f.finding_id: f for r in state.analysis_rounds for f in r.findings
         }
-        for fetched_file in state.trace_fetched_files:
-            source_finding = source_findings_by_id.get(fetched_file.source_finding_id)
+        # Fan out by `(target_file, source_finding_id)` per
+        # `state.trace_decisions`, NOT by `state.trace_fetched_files`
+        # alone. `TraceFetchedFile.path` is dedup'd first-write-wins
+        # under the reducer; iterating over fetched files would
+        # process the fetched content ONCE under the first finding's
+        # context only, leaving every other finding that resolved to
+        # the same target with no source-specific pass-1 analysis.
+        # Each `(fetched_file, source_finding)` pair runs pass-1
+        # independently so every admitted source finding gets its own
+        # post-trace prompt.
+        fetched_files_by_path: dict[str, TraceFetchedFile] = {
+            f.path: f for f in state.trace_fetched_files
+        }
+        # Build the (path, source_finding_id) work list from the
+        # canonical state.trace_decisions stream (filter to resolved +
+        # target_file in fetched_files_by_path to skip target-in-PR
+        # decisions whose Phase 2 deliberately skipped per M8).
+        pass_one_work: list[tuple[TraceFetchedFile, ReviewFinding]] = []
+        for decision in state.trace_decisions:
+            if decision.target_file is None:
+                continue
+            fetched = fetched_files_by_path.get(decision.target_file)
+            if fetched is None:
+                # Decision resolved but Phase 2 skipped (target-in-PR
+                # case per M8). No content to feed pass-1.
+                continue
+            source_finding = source_findings_by_id.get(decision.source_finding_id)
             if source_finding is None:
                 raise RuntimeError(
-                    f"analyze pass {pass_index}: TraceFetchedFile "
-                    f"source_finding_id={fetched_file.source_finding_id} "
+                    f"analyze pass {pass_index}: TraceDecision "
+                    f"source_finding_id={decision.source_finding_id} "
                     f"does not appear in state.analysis_rounds. Trace's "
                     f"emission contract is broken (rejected-proposal "
                     f"candidates should not reach trace via "
                     f"state.trace_candidates — see _filter_to_admitted_proposals)."
                 )
+            pass_one_work.append((fetched, source_finding))
+
+        for fetched_file, source_finding in pass_one_work:
             file_outcome = await _process_one_trace_fetched_file(
                 fetched_file=fetched_file,
                 source_finding=source_finding,
@@ -1277,15 +1306,21 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
 
     # Deterministic-proof set for INFERRED admission per the
     # `evidence-tier-schema-enforced` invariant: every scope-unit name
-    # the model could legitimately have walked in this file. Includes
-    # both `qualified_name` (e.g. "module.Class.method") and bare
-    # `name` (e.g. "method") so the model can cite either form. The
-    # parser's pass-1 INFERRED admission rejects any trace_path element
-    # not in this set — load-bearing for `evidence-tier-schema-enforced`:
-    # without this gate, an INFERRED proposal with a fabricated
-    # scope-unit name would persist as structural proof.
+    # the model could legitimately have walked in this file. Uses the
+    # SAME single rendered label the prompt actually shows the model
+    # (`_assemble_scope_unit_context` at line ~681 renders
+    # `su.qualified_name or su.name` — one label per scope unit, not
+    # both). Admitting both `qualified_name` AND bare `name` would
+    # weaken the proof boundary: common duplicate bare names like
+    # `__init__` or `handle` across multiple classes would satisfy
+    # `trace_path` membership without identifying a unique scope unit.
+    # The parser's pass-1 INFERRED admission rejects any trace_path
+    # element not in this set — load-bearing for
+    # `evidence-tier-schema-enforced`.
     valid_trace_path_elements = frozenset(
-        name for su in included_scope_units for name in (su.qualified_name, su.name) if name
+        rendered_name
+        for su in included_scope_units
+        if (rendered_name := (su.qualified_name or su.name))
     )
     parser_result = parse_analyze_response(
         response.text,

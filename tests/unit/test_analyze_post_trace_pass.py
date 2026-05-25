@@ -39,6 +39,7 @@ from outrider.schemas import (
     ReviewDimension,
     ReviewFinding,
     ReviewState,
+    TraceDecision,
     TraceFetchedFile,
 )
 from outrider.schemas.pr_context import PRContext
@@ -134,10 +135,16 @@ def _build_seed_state(
     *,
     analysis_rounds: list[AnalysisRound],
     trace_fetched_files: list[TraceFetchedFile],
+    trace_decisions: list[TraceDecision] | None = None,
 ) -> ReviewState:
     """Seed state for the analyze() call. Pass 0 → empty analysis_rounds
     + empty trace_fetched_files. Pass 1 → analysis_rounds=[round_0] +
-    trace_fetched_files=[fetched_file]."""
+    trace_fetched_files=[fetched_file] + trace_decisions=[decision]
+    (pass-1 work-list construction at analyze.py:399+ drives off
+    `state.trace_decisions` to support the multi-source fan-out;
+    callers that supply trace_fetched_files MUST also supply a
+    matching trace_decision per `(target_file, source_finding_id)`).
+    """
     return ReviewState(
         review_id=uuid4(),
         pr_context=PRContext(
@@ -156,6 +163,7 @@ def _build_seed_state(
         received_at=datetime.now(UTC),
         analysis_rounds=analysis_rounds,
         trace_fetched_files=trace_fetched_files,
+        trace_decisions=trace_decisions or [],
     )
 
 
@@ -328,9 +336,23 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
         source_finding_id=source_finding.finding_id,
     )
 
+    # Post-F4: pass-1 work-list is built from `state.trace_decisions`
+    # (with target_file lookup into `state.trace_fetched_files`), not
+    # from `state.trace_fetched_files` alone — so the seed must include
+    # a matching TraceDecision pointing the source finding at the
+    # fetched path.
+    trace_decision = TraceDecision(
+        source_finding_id=source_finding.finding_id,
+        target_file=fetched_file.path,
+        reason="trace context",
+        resolution_status="resolved",
+        proposed_import_strings=("middleware.auth",),
+        resolved_candidate_paths=(fetched_file.path,),
+    )
     state = _build_seed_state(
         analysis_rounds=[_build_round_0(findings=(source_finding,))],
         trace_fetched_files=[fetched_file],
+        trace_decisions=[trace_decision],
     )
 
     phase_sink = _RecordingPhaseSink()

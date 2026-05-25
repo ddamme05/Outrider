@@ -158,16 +158,23 @@ def is_valid_import_string(value: str) -> str:
         raise ValueError("import_string must not contain path separators (use `.`)")
     if _SHELL_METACHARS_RE.search(normalized):
         raise ValueError("import_string contains shell metacharacters")
-    # CVE-2021-42574 ("Trojan Source") — bidi-override / zero-width chars
-    # rejected here on the import-string surface to mirror
-    # `validate_diff_path`'s `_TROJAN_SOURCE_CHARS_RE` rejection on the
-    # path surface (the two are sibling defenses for the two audit-side
-    # surfaces: `proposed_import_strings` runs THIS validator;
-    # `resolved_candidate_paths` / `target_file` runs `validate_diff_path`).
-    # U+200D (ZWJ) is `Other_ID_Continue` in Unicode 16 so it passes
-    # `str.isidentifier()` — without this gate, an attacker-controlled
-    # candidate could read as `foo.bar` in audit logs while resolving
-    # to a different module file.
+    # CVE-2021-42574 ("Trojan Source") — `_TROJAN_SOURCE_CHARS_RE`
+    # rejects bidi-override + invisible-format characters EXCEPT
+    # U+200C (ZWNJ) and U+200D (ZWJ), which are deliberately admitted
+    # (see the regex's documented rationale: legitimate use in
+    # Persian/Arabic word-joining + Hindi/Devanagari conjuncts + emoji
+    # ZWJ sequences; `tests/unit/test_coordinates_paths_protocol.py::
+    # test_zwj_and_zwnj_deliberately_admitted` pins both). This gate
+    # blocks the broader Trojan-Source family (RLO, LRO, PDI,
+    # invisible-mark / hangul-filler variants) on the import-string
+    # surface to mirror `validate_diff_path`'s parallel rejection on
+    # the path surface. The two are sibling defenses for the two
+    # audit-side surfaces: `proposed_import_strings` runs THIS
+    # validator; `resolved_candidate_paths` / `target_file` runs
+    # `validate_diff_path`. The narrow ZWJ/ZWNJ admission is a
+    # documented trade-off: rejecting them would block legitimate
+    # non-Latin-script identifier contributions, which the project
+    # accepts instead of the marginal homoglyph-attack risk.
     if _TROJAN_SOURCE_CHARS_RE.search(normalized):
         raise ValueError(
             "import_string contains bidi-override or invisible-format characters "

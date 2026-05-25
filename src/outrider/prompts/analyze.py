@@ -344,13 +344,17 @@ that's not valid JSON.
   `evidence_tier="observed"`; `null` otherwise).
 - `trace_path`: REQUIRED non-empty array of scope-unit names when
   `evidence_tier="inferred"`; `null` for `observed` / `judged`.
-  Each element MUST be a scope-unit name (`qualified_name` or `name`)
-  from the file's scope units listed in the system-prompt's "Changed
-  scope units" / "Scope unit context" section. A trace_path element
-  that doesn't match a real scope unit is rejected with
-  `trace_path_not_admissible` — the parser cross-checks model claims
-  against the deterministic-proof set per
-  `evidence-tier-schema-enforced`.
+  Each element MUST be the EXACT scope-unit label rendered in the
+  system-prompt's "Scope unit context" section (the heading shown
+  inside the backticks — `qualified_name` when set, else bare
+  `name`; ONE label per scope unit, not both forms). A trace_path
+  element that doesn't match a rendered label is rejected with
+  `trace_path_not_admissible` — the parser cross-checks model
+  claims against the deterministic-proof set per
+  `evidence-tier-schema-enforced`. Admitting both forms would let
+  ambiguous bare names (e.g., `__init__` or `handle` shared across
+  classes) satisfy membership without identifying a unique scope
+  unit, weakening the proof boundary.
 - `trace_candidates`: empty array on pass 1 (cross-file trace work
   was already completed by the trace node; pass 1 doesn't re-propose
   candidates).

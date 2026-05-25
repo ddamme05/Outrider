@@ -227,8 +227,10 @@ def parse_analyze_response(
     deterministic trace context.
 
     `valid_trace_path_elements` is the deterministic-proof source per
-    the `evidence-tier-schema-enforced` invariant: a frozenset of
-    scope-unit names (`qualified_name` or `name`) from the file's
+    the `evidence-tier-schema-enforced` invariant: a frozenset of the
+    EXACT rendered scope-unit labels (one per scope unit —
+    `qualified_name` when set, else bare `name`; matches what the
+    prompt actually shows the model) from the file's
     `included_scope_units`, supplied by the node body for pass-1 calls.
     Pass-1 INFERRED admission requires EVERY element of the model-
     proposed `trace_path` to appear in this set — the model cannot
@@ -241,6 +243,16 @@ def parse_analyze_response(
     + the mirror at `policy/findings.py::_trace_path_is_valid`);
     deterministic-proof validation runs second.
     """
+    # pass_index is a non-negative integer per the analyze-node contract
+    # (`agent/nodes/analyze.py::analyze` derives it from
+    # `len(state.analysis_rounds)`). A negative value here would silently
+    # fall into the post-trace branch below (`pass_index >= 1`) and admit
+    # INFERRED proposals without any trace context — the exact bypass the
+    # pass-0 vs post-trace gate exists to prevent. Fail loud at the
+    # parser boundary.
+    if pass_index < 0:
+        raise ValueError(f"pass_index must be >= 0; got {pass_index}")
+
     try:
         # Strip a single outer ```json...``` wrapper if present — the
         # model sometimes adds one despite the system-prompt instruction.
