@@ -165,8 +165,8 @@ async def trace(
     # Step 6: Haiku ranking. One call across the capped candidate set.
     # Empty pending_buckets → no Haiku call, no decisions to emit.
     #
-    # DEDUPE-THEN-CAP per CodeRabbit + Codex F8: each bucket is FIRST
-    # deduped by `import_string` (first-occurrence-wins, order-stable),
+    # DEDUPE-THEN-CAP: each bucket is FIRST deduped by `import_string`
+    # (first-occurrence-wins, order-stable),
     # THEN truncated to MAX_CANDIDATES_PER_FINDING. Two candidates with
     # the same `import_string` but different `reason` are distinct
     # `candidate_id`s (content-hash) and both survive the reducer's
@@ -345,15 +345,20 @@ async def trace(
         )
     )
 
-    # `last_trace_pass_fetched_count` is the router's per-invocation
-    # delta signal — see ReviewState's field comment. Writing it on
-    # every trace() invocation (including zero-fetch calls) keeps the
-    # "trace JUST yielded new fetches" contract honest. Per CodeRabbit R1.
-    return {
+    # Single return path. `last_trace_pass_fetched_count` is the router's
+    # per-invocation delta signal — see ReviewState's field comment.
+    # MUST be present in EVERY return delta from this function (including
+    # zero-fetch calls AND any future early-return). The default-overwrite
+    # reducer means a delta missing the key leaves the prior invocation's
+    # value in state, and `_trace_router` would route on stale data
+    # (infinite loop / unwanted re-entry under depth > 2). If you add an
+    # early return below, include the key.
+    state_delta: dict[str, object] = {
         "trace_decisions": accumulated_decisions,
         "trace_fetched_files": accumulated_fetched_files,
         "last_trace_pass_fetched_count": len(accumulated_fetched_files),
     }
+    return state_delta
 
 
 # ---------------------------------------------------------------------------
@@ -391,14 +396,13 @@ def _bucket_candidates_by_finding(
     """Group candidates by their joined source_finding_id.
 
     Candidates whose `source_proposal_hash` doesn't resolve via the
-    join are dropped. With the round-8 R3 `_filter_to_admitted_proposals`
-    boundary filter in `agent/nodes/analyze.py` in place, this branch
-    fires only on:
+    join are dropped. `_filter_to_admitted_proposals` in
+    `agent/nodes/analyze.py` filters rejected-proposal candidates at
+    the analyze→state edge, so in normal flow this branch fires only
+    on:
 
-      1. Replay of state emitted before the R3 filter landed (transient
-         transition case — the cumulative state from older code carries
-         rejected-proposal candidates the filter would now reject; goes
-         away once those checkpoints age out).
+      1. Replay of state checkpointed before that filter landed
+         (transient — goes away once those checkpoints age out).
       2. A direct `state.trace_candidates.append` bypassing the reducer
          + analyze admission gate (genuine producer bug).
       3. A future code path that emits into `state.trace_candidates`
@@ -416,9 +420,10 @@ def _bucket_candidates_by_finding(
             logger.warning(
                 "trace: dropping unjoinable candidate candidate_id=%s "
                 "source_proposal_hash=%s — either a replay-of-old-state "
-                "transition case (R3 filter now prevents new emissions) "
-                "or a producer bug (state mutation bypassing the reducer "
-                "+ analyze admission gate)",
+                "transition case (the analyze→state filter now prevents "
+                "new emissions of unjoinable candidates) or a producer "
+                "bug (state mutation bypassing the reducer + analyze "
+                "admission gate)",
                 candidate.candidate_id,
                 candidate.source_proposal_hash,
             )
@@ -505,11 +510,10 @@ def _aggregate_candidate_reasons(candidates: Sequence[TraceCandidate]) -> str:
 
     Caller's responsibility to pre-dedupe by `import_string` (the audit
     event treats `proposed_import_strings` as set-semantic; the
-    aggregated `reason` mirrors the same set). Per the round-N+1
-    architectural audit: the structured-tuple field shape is the
-    long-term fix for forensic-loss-via-truncation; the 500-char cap
-    here is the V1 schema floor (see FUP for the structured-field
-    follow-up).
+    aggregated `reason` mirrors the same set). The structured-tuple
+    field shape is the long-term fix for forensic-loss-via-truncation;
+    the 500-char cap here is the V1 schema floor (see FUP-075 for the
+    structured-field follow-up).
     """
     parts = [f"{c.import_string}: {c.reason}" for c in candidates]
     aggregated = " | ".join(parts)

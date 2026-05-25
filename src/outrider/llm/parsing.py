@@ -30,7 +30,7 @@ def strip_outer_json_fence(text: str) -> str:
     other shape returns the input unchanged so Pydantic raises a clean
     schema error downstream.
 
-    Policy (per Codex review):
+    Policy:
 
     - Exactly one outer fence, optionally with a language tag
       (``` or ```json or ```any-lang).

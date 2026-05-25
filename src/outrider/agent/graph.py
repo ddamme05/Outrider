@@ -349,8 +349,7 @@ def _trace_router(state: ReviewState) -> str:
     `len(state.trace_fetched_files)`. The cumulative check would route
     to analyze even when the latest trace() call yielded nothing new
     (replay path: cumulative list rehydrates non-empty from checkpoint
-    even when the just-run trace() returned no new fetches). Per
-    CodeRabbit R1.
+    even when the just-run trace() returned no new fetches).
     """
     if state.last_trace_pass_fetched_count > 0 and len(state.analysis_rounds) < MAX_ANALYSIS_ROUNDS:
         return "analyze"

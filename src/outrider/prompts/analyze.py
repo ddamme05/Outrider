@@ -51,7 +51,10 @@ attacker-controlled content cannot escape the template structure.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 # Bumped 2026-05-24 (was "analyze-v1") because the prompt contract
 # changed substantially in the trace-node arc: pass 0 vs pass 1
@@ -417,7 +420,7 @@ def render_post_trace(
     file_path: str,
     scope_unit_context: str,
     query_match_id_list: str,
-    source_finding_id: object,
+    source_finding_id: UUID,
     source_finding_title: str,
     source_finding_description: str,
     source_finding_evidence: str,
@@ -437,12 +440,13 @@ def render_post_trace(
     post-trace INFERRED-admission suffix. The user prompt names the
     source finding by id AND includes its title + description + evidence
     so the model can connect the trace-fetched file back to the
-    originating finding (per CodeRabbit R4 — `source_finding_id` alone
-    is opaque to the model and drives generic whole-file review).
+    originating finding — `source_finding_id` alone is opaque to the
+    model and drives generic whole-file review.
 
-    `source_finding_id` is `UUID` at runtime; typed as `object` here
-    so the function accepts both the schema's `UUID` field and string
-    forms that pre-validation tests might construct.
+    `source_finding_id` is `UUID` — typed strictly so a caller passing
+    `None` (which would render the literal string `"None"` into the
+    prompt) is caught at the type-checker or at Pydantic boundaries
+    upstream, not at the model call.
 
     `source_finding_title`, `source_finding_description`, and
     `source_finding_evidence` are ALL prior-model output from the pass-0
@@ -450,9 +454,9 @@ def render_post_trace(
     dynamic-length `text`-fence via `safe_code_fence` before formatting
     so any markdown / heading / triple-backtick / instruction-shaped
     text in the source can't change pass-1's structure or directives.
-    Per CodeRabbit round-8 prompt-injection finding — fencing evidence
-    while leaving title and description raw left a structure-injection
-    vector from prior LLM output into the next LLM call.
+    Fencing only `evidence` and leaving `title` (≤120 chars) and
+    `description` (≤1000 chars) raw would let any structural payload
+    that fits in those fields rewrite the pass-1 directives.
     """
     from outrider.prompts import safe_code_fence
 
