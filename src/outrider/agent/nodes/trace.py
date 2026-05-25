@@ -582,13 +582,29 @@ async def _resolve_via_probes(
                 safe_path = validate_diff_path(candidate_path)
             except CoordinateError:
                 continue
-            content = await fetch_file_content_at(
-                gh_client,
-                owner=owner,
-                repo=repo,
-                path=safe_path,
-                ref=head_sha,
-            )
+            try:
+                content = await fetch_file_content_at(
+                    gh_client,
+                    owner=owner,
+                    repo=repo,
+                    path=safe_path,
+                    ref=head_sha,
+                )
+            except Exception as exc:
+                # 404 is the COMMON probe outcome: the LLM proposed a
+                # path that doesn't exist in this repo. Treat as
+                # "candidate did not resolve" (i.e., None content). All
+                # other HTTP errors (5xx / 403 / timeout / connection)
+                # propagate per M8 transient semantics — they signal
+                # GitHub-side issues that should abort the trace pass
+                # rather than silently miss a real path. Duck-typed
+                # `status_code` access mirrors the pattern at
+                # `github/publisher.py:355` (avoids importing the
+                # SDK-exception class outside the wrapper).
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status == 404:
+                    continue
+                raise
             if content is not None:
                 real_paths.append(safe_path)
 

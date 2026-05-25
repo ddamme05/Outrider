@@ -362,6 +362,109 @@ async def test_unresolved_candidate_emits_decision_without_fetched_file(
 
 
 # ---------------------------------------------------------------------------
+# Probe-side HTTP error handling: 404 admitted as "did not resolve",
+# other errors propagate per M8 transient semantics.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    """Minimal stub mimicking httpx-style response shape."""
+
+    def __init__(self, *, status_code: int, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+class _FakeRequestFailed(Exception):  # noqa: N818  (mirrors githubkit's name shape)
+    """Stand-in for githubkit's RequestFailed exception shape — same
+    pattern as `tests/unit/test_github_publisher.py:_FakeRequestFailed`."""
+
+    def __init__(self, *, status_code: int, text: str = "") -> None:
+        super().__init__(f"HTTP {status_code}: {text[:50]}")
+        self.response = _FakeResponse(status_code=status_code, text=text)
+
+
+async def test_probe_404_admits_as_unresolved(
+    persister_setup: PersisterTestSetup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the M8 contract per `_resolve_via_probes` docstring: a 404
+    from the GitHub fetch during Phase 1 is the COMMON probe outcome
+    (LLM proposed a path that doesn't exist) and must be admitted as
+    "candidate did not resolve" — NOT propagated as an exception that
+    aborts the trace pass."""
+    review_id = persister_setup.review_id
+    proposal_hash = "f0" * 32
+    finding = _build_finding(review_id=review_id, proposal_hash=proposal_hash)
+    candidate = _build_candidate(
+        source_proposal_hash=proposal_hash,
+        import_string="ghost.module",
+    )
+    state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
+
+    async def fetch_raises_404(*_args: object, path: str, **_kwargs: object) -> bytes | None:
+        del path
+        raise _FakeRequestFailed(status_code=404, text="Not Found")
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fetch_raises_404)
+
+    provider = _MockLLMProvider(ranked_candidate_ids=(candidate.candidate_id,))
+
+    state_delta = await trace(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        trace_model="claude-haiku-test",
+        phase_event_sink=persister_setup.persister,
+        trace_sink=persister_setup.persister,
+        github_factory=_stub_github_factory,  # type: ignore[arg-type]
+    )
+
+    decisions = state_delta["trace_decisions"]
+    assert len(decisions) == 1  # type: ignore[arg-type]
+    decision = decisions[0]  # type: ignore[index]
+    assert decision.resolution_status == "unresolved"
+    assert decision.target_file is None
+    assert state_delta["trace_fetched_files"] == []
+
+
+async def test_probe_500_propagates(
+    persister_setup: PersisterTestSetup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Companion contract: 5xx errors from GitHub during Phase 1 are
+    NOT routine probe outcomes — they signal upstream issues. Per the
+    `_resolve_via_probes` docstring "Probe failures (non-404 errors)
+    propagate per M8 transient semantics," they must abort the trace
+    pass rather than silently dropping the candidate."""
+    review_id = persister_setup.review_id
+    proposal_hash = "f1" * 32
+    finding = _build_finding(review_id=review_id, proposal_hash=proposal_hash)
+    candidate = _build_candidate(
+        source_proposal_hash=proposal_hash,
+        import_string="some.module",
+    )
+    state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
+
+    async def fetch_raises_500(*_args: object, path: str, **_kwargs: object) -> bytes | None:
+        del path
+        raise _FakeRequestFailed(status_code=500, text="Internal Server Error")
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fetch_raises_500)
+
+    provider = _MockLLMProvider(ranked_candidate_ids=(candidate.candidate_id,))
+
+    with pytest.raises(_FakeRequestFailed):
+        await trace(
+            state,
+            provider=provider,  # type: ignore[arg-type]
+            trace_model="claude-haiku-test",
+            phase_event_sink=persister_setup.persister,
+            trace_sink=persister_setup.persister,
+            github_factory=_stub_github_factory,  # type: ignore[arg-type]
+        )
+
+
+# ---------------------------------------------------------------------------
 # Target-in-PR-files: Phase 1 resolves, but Phase 2 skipped per M8.
 # ---------------------------------------------------------------------------
 
