@@ -97,20 +97,37 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Add the trace_decision natural-key partial unique index.
 
-    IF NOT EXISTS-guarded — a partial-failure rerun lands cleanly. The
-    index applies to the trace-decision event-type partition only;
+    Uses `CREATE UNIQUE INDEX CONCURRENTLY` inside an Alembic autocommit
+    block so the build does not block writes to `audit_events`. While
+    no `trace_decision` rows exist yet (trace hasn't shipped), Postgres
+    still scans the full table to identify rows matching the WHERE
+    clause; on a production audit-events table that scan can be long
+    and the non-concurrent SHARE lock would block other event-type
+    INSERTs for its duration. CONCURRENTLY trades that for a slower
+    build that never blocks writers.
+
+    IF NOT EXISTS-guarded — a partial-failure rerun lands cleanly.
+    Note: a failed concurrent build can leave an INVALID index that
+    IF NOT EXISTS would silently skip on retry; the standard recovery
+    is `DROP INDEX CONCURRENTLY uq_audit_events_trace_decision_natural_key`
+    then re-run this migration.
+
+    The index applies to the trace-decision event-type partition only;
     other event types stay under event_id-PK idempotency per #026.
     """
-    op.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_events_trace_decision_natural_key
-            ON audit_events (review_id, (payload->>'source_finding_id'))
-            WHERE event_type = 'trace_decision'
-                  AND payload ? 'source_finding_id';
-        """
-    )
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
+                uq_audit_events_trace_decision_natural_key
+                ON audit_events (review_id, (payload->>'source_finding_id'))
+                WHERE event_type = 'trace_decision'
+                      AND payload ? 'source_finding_id';
+            """
+        )
 
 
 def downgrade() -> None:
-    """Drop the partial unique index."""
-    op.execute("DROP INDEX IF EXISTS uq_audit_events_trace_decision_natural_key;")
+    """Drop the partial unique index concurrently (mirror of upgrade)."""
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS uq_audit_events_trace_decision_natural_key;")
