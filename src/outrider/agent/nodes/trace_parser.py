@@ -21,8 +21,11 @@ union rather than raised, mirroring the analyze-parser's discipline):
     fabricated id, missing id, duplicate id, count mismatch).
 
 The trace node consumes `parsed` directly; on `rejected` it falls back
-to the input order (deterministic) and audits the rejection — exactly
-the shape analyze uses for `AnalyzeResponseRejectedEvent`.
+to the input order (deterministic) and WARN-logs the rejection reason.
+V1 does not emit a dedicated `TraceRankingRejectedEvent` — that audit
+surface is deferred (see FUP-076). The discriminated-union shape here
+matches `AnalyzeResponseRaw`'s parser for code-shape parity and to
+keep the future event-emission wiring a one-site addition.
 """
 
 from __future__ import annotations

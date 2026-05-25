@@ -363,12 +363,17 @@ async def analyze(
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
                 admitted_findings.extend(file_outcome.parser_result.admitted_findings)
-                trace_candidates.extend(
-                    _filter_to_admitted_proposals(
-                        candidates=file_outcome.parser_result.trace_candidates,
-                        admitted_findings=file_outcome.parser_result.admitted_findings,
-                    )
-                )
+                # Per DECISIONS.md#025 point 6: trace_candidates from
+                # rejected-parent proposals stay in state for replay
+                # ("Unjoined candidates remain forensic-only"). Trace's
+                # `_bucket_candidates_by_finding` drops the unjoined
+                # ones at WARN-log level — that's the documented
+                # forensic contract, not a bug to filter at the
+                # analyze→state boundary. The audit-event counter
+                # `n_trace_candidates_emitted` on
+                # `AnalyzeCompletedEvent` reflects the same pre-dedup
+                # set the state-side reducer ingests.
+                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
 
             total_input_tokens += file_outcome.input_tokens
             total_output_tokens += file_outcome.output_tokens
@@ -393,10 +398,13 @@ async def analyze(
         # model with no content to reason about). The lookup walks ALL
         # prior rounds' findings; the source finding always exists for
         # any (path, source_finding_id) pair derived from
-        # `state.trace_decisions` (trace's contract — rejected-proposal
-        # candidates filter out at the analyze→state boundary via
-        # `_filter_to_admitted_proposals`), so `.get(...)` returning
-        # None is a programmer error.
+        # `state.trace_decisions` per trace's emission contract
+        # (`trace.py::_build_proposal_hash_join` admits only proposal
+        # hashes from admitted findings; unjoined candidates die at
+        # `_bucket_candidates_by_finding` BEFORE producing a
+        # TraceDecision — DECISIONS.md#025 point 6 documents the
+        # forensic-only behavior of those dropped candidates). So
+        # `.get(...)` returning None is a programmer error.
         source_findings_by_id: dict[UUID, ReviewFinding] = {
             f.finding_id: f for r in state.analysis_rounds for f in r.findings
         }
@@ -432,9 +440,10 @@ async def analyze(
                     f"analyze pass {pass_index}: TraceDecision "
                     f"source_finding_id={decision.source_finding_id} "
                     f"does not appear in state.analysis_rounds. Trace's "
-                    f"emission contract is broken (rejected-proposal "
-                    f"candidates should not reach trace via "
-                    f"state.trace_candidates — see _filter_to_admitted_proposals)."
+                    f"emission contract is broken — "
+                    f"_build_proposal_hash_join only admits proposal "
+                    f"hashes from admitted findings, so every "
+                    f"TraceDecision.source_finding_id should resolve."
                 )
             pass_one_work.append((fetched, source_finding))
 
@@ -469,12 +478,17 @@ async def analyze(
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
                 admitted_findings.extend(file_outcome.parser_result.admitted_findings)
-                trace_candidates.extend(
-                    _filter_to_admitted_proposals(
-                        candidates=file_outcome.parser_result.trace_candidates,
-                        admitted_findings=file_outcome.parser_result.admitted_findings,
-                    )
-                )
+                # Per DECISIONS.md#025 point 6: trace_candidates from
+                # rejected-parent proposals stay in state for replay
+                # ("Unjoined candidates remain forensic-only"). Trace's
+                # `_bucket_candidates_by_finding` drops the unjoined
+                # ones at WARN-log level — that's the documented
+                # forensic contract, not a bug to filter at the
+                # analyze→state boundary. The audit-event counter
+                # `n_trace_candidates_emitted` on
+                # `AnalyzeCompletedEvent` reflects the same pre-dedup
+                # set the state-side reducer ingests.
+                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
 
             total_input_tokens += file_outcome.input_tokens
             total_output_tokens += file_outcome.output_tokens
@@ -635,40 +649,6 @@ def _intersect_changed_scope_units(
         included.append(su)
         hunks.append(clipped)
     return tuple(included), tuple(hunks)
-
-
-def _filter_to_admitted_proposals(
-    *,
-    candidates: tuple[TraceCandidate, ...],
-    admitted_findings: tuple[ReviewFinding, ...],
-) -> tuple[TraceCandidate, ...]:
-    """Drop trace candidates whose `source_proposal_hash` doesn't match
-    an admitted finding in the same file outcome.
-
-    The parser preserves trace_candidates from BOTH admitted AND
-    proposal-level-rejected raw proposals (per the parser-contract test
-    `test_step10_trace_candidates_collected_from_rejected_proposal` —
-    rejected proposals may carry useful cross-file signal). But trace
-    requires `source_proposal_hash` to join to an admitted finding via
-    `_build_proposal_hash_join` (which only walks
-    `state.analysis_rounds[*].findings`); rejected-proposal candidates
-    have no admitted finding to attribute the trace to and would be
-    silently dropped at trace's bucket step. Filter here at the
-    analyze→state boundary so the drop is INTENTIONAL with a clear
-    semantic owner (analyze: "we only forward candidates whose parent
-    proposal was admitted").
-
-    `state.trace_candidates` is the runtime handoff to trace, not a
-    forensic store — checkpoints have a retention TTL while
-    `audit_events` is the permanent record. Rejected-proposal trace
-    candidates currently have NO audit surface
-    (`FindingProposalRejectedEvent` doesn't carry them); extending
-    the audit event is the right fix for that gap. Tracked as
-    FUP-081 (see FOLLOWUPS.md) — do not repurpose state as a
-    forensic mirror.
-    """
-    admitted_hashes = {f.proposal_hash for f in admitted_findings}
-    return tuple(c for c in candidates if c.source_proposal_hash in admitted_hashes)
 
 
 def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
