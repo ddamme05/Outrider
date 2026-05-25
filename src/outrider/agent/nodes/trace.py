@@ -221,12 +221,21 @@ async def trace(
         # Guard against a future refactor that empties a bucket without
         # removing the key.
         if flat_candidates:
-            ordered_candidates = await _rank_candidates_via_haiku(
-                state=state,
-                candidates=flat_candidates,
-                provider=provider,
-                trace_model=trace_model,
-            )
+            # Skip the Haiku ranking call when there's only one candidate
+            # — the ranking is trivial (the one candidate is already the
+            # top-K). A PR with N findings × 1 unique import each fires
+            # one ranking call per finding under the old shape; this
+            # guard turns the per-trace-invocation flat=1 case into a
+            # zero-LLM-call pass. Order is preserved (input == output).
+            if len(flat_candidates) <= 1:
+                ordered_candidates = flat_candidates
+            else:
+                ordered_candidates = await _rank_candidates_via_haiku(
+                    state=state,
+                    candidates=flat_candidates,
+                    provider=provider,
+                    trace_model=trace_model,
+                )
 
     # Step 7: process each source_finding_id bucket. Trace_decisions +
     # trace_fetched_files accumulate locally; emitted via the audit-first
@@ -691,6 +700,7 @@ async def _phase_two_content_fetch(
 
 
 __all__ = [
+    "MAX_ANALYSIS_ROUNDS",
     "TraceJoinIntegrityError",
     "trace",
 ]
