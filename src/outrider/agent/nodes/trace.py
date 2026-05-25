@@ -149,10 +149,11 @@ async def trace(
     already_traced: set[UUID] = {d.source_finding_id for d in state.trace_decisions}
 
     # Step 4: bucket candidates by source_finding_id via the join.
-    # Drop unjoinable candidates (would indicate analyze-side bug —
-    # state.trace_candidates is supposed to be source_proposal_hash-
-    # joinable to state.analysis_rounds; in practice that holds because
-    # analyze emits both atomically into the same state delta).
+    # Unjoinable candidates are the documented forensic-only case per
+    # DECISIONS.md#025 point 6 (rejected-parent proposals whose
+    # candidates stay in state.trace_candidates for replay but produce
+    # no TraceDecisionEvent and no GitHub fetch). They are skipped here,
+    # logged at INFO inside the helper, and remain visible in state.
     candidate_buckets = _bucket_candidates_by_finding(state.trace_candidates, join_lookup)
 
     # Step 5: drop already-traced buckets.
