@@ -40,9 +40,11 @@ top-level slots from intake).
 
 Required keyword arguments per `nodes-receive-deps-via-closure`:
 
-  - `provider: LLMProvider` — LLM transport for triage AND analyze.
-  - `model_config: ModelConfig` — `triage_model` and `analyze_model` are
-    captured at callsite (per `model-strings-from-config-not-hardcoded`).
+  - `provider: LLMProvider` — LLM transport for triage, analyze, and
+    trace (Haiku ranking).
+  - `model_config: ModelConfig` — `triage_model`, `analyze_model`, and
+    `trace_model` are captured at callsite (per
+    `model-strings-from-config-not-hardcoded`).
   - `phase_event_sink: PhaseEventSink` — required for all five nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
@@ -51,6 +53,14 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `analyze_event_sink: AnalyzeEventSink` — required for analyze's
     `FindingEvent` / `FindingProposalRejectedEvent` /
     `AnalyzeResponseRejectedEvent` / `AnalyzeCompletedEvent` emissions.
+  - `publish_event_sink: PublishEventSink` — required for publish's
+    `PublishRoutingEvent` / `PublishEligibilityEvent` /
+    `PublishAttemptEvent` / `PublishEvent` emissions + the
+    `query_prior_publish_event` idempotency lookup.
+  - `trace_sink: TraceEventSink` — required for trace's
+    `TraceDecisionEvent` audit-first emission per M7.
+  - `publisher: GitHubPublisher` — required for publish's GitHub
+    `create_review` call (single-review-per-PR contract).
   - `import_path_resolver: ImportPathResolver` — required for analyze's
     `parse_python(...)` call (passed through to `ast_facts/`); resolves
     same-file import paths for the registry walk.
@@ -70,8 +80,8 @@ only, not signature shape.
 
 ## Async invocation
 
-Both nodes are `async def`. Per LangGraph 1.1.6 docs, async-node graphs
-are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
+All five nodes are `async def`. Per LangGraph 1.1.6 docs, async-node
+graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
 """
 
 from __future__ import annotations

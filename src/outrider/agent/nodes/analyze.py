@@ -483,10 +483,20 @@ async def analyze(
             total_cost_decimal += file_outcome.cost_decimal
             remaining_budget_tokens -= file_outcome.estimated_tokens
 
-            if file_outcome.parse_status == "skipped":
-                files_skipped.append(fetched_file.path)
-            else:
-                files_examined.append(fetched_file.path)
+            # Pass-1 fan-out can iterate the same `fetched_file.path`
+            # multiple times (one per source finding targeting that
+            # path). `AnalysisRound._enforce_files_examined_unique` /
+            # `_enforce_files_skipped_unique` validators reject
+            # duplicates, so dedup at append time. The first per-path
+            # iteration's parse_status wins (consistent with the
+            # `files_examined` semantic: "we did examine this file in
+            # this pass" — true regardless of how many findings
+            # triggered the examination).
+            if fetched_file.path not in files_examined and fetched_file.path not in files_skipped:
+                if file_outcome.parse_status == "skipped":
+                    files_skipped.append(fetched_file.path)
+                else:
+                    files_examined.append(fetched_file.path)
 
     ended_at = datetime.now(UTC)
 
@@ -1232,7 +1242,16 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             included_scope_units=included_scope_units, file_content=content
         ),
         query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
-        source_finding_id=fetched_file.source_finding_id,
+        # Pass the ACTIVE source finding's id (matches the
+        # title/description/evidence below), NOT
+        # `fetched_file.source_finding_id` — the latter is first-write
+        # provenance on `state.trace_fetched_files` (dedup'd by path
+        # under the reducer); under the pass-1 fan-out (one iteration
+        # per source finding targeting this fetched path), every
+        # iteration after the first would attribute the SECOND/THIRD
+        # finding's content to the FIRST finding's id — internally
+        # inconsistent prompt.
+        source_finding_id=source_finding.finding_id,
         source_finding_title=source_finding.title,
         source_finding_description=source_finding.description,
         source_finding_evidence=source_finding.evidence,

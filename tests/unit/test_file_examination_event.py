@@ -123,16 +123,26 @@ def test_file_examination_event_round_trips_skipped_with_reason() -> None:
     assert rehydrated.skip_reason == SkipReason.OVERSIZED
 
 
-@pytest.mark.parametrize("examination_type", ["intake_fetch", "analyze"])
+@pytest.mark.parametrize(
+    ("examination_type", "node_id"),
+    [("intake_fetch", "intake"), ("analyze", "analyze")],
+)
 def test_file_examination_event_admits_canonical_examination_types(
     examination_type: str,
+    node_id: str,
 ) -> None:
-    """The two values actually emitted by src/ admit cleanly."""
+    """The two valid `(examination_type, node_id)` pairs admit cleanly.
+    Parametrized as pairs because the `_enforce_examination_type_matches_node`
+    cross-field validator rejects contradictory combinations
+    (intake/analyze, analyze/intake_fetch) — the audit-event Literal
+    pair is constrained to the actually-emitted shape."""
     kwargs = _base_kwargs()
     kwargs["examination_type"] = examination_type
+    kwargs["node_id"] = node_id
     kwargs["parse_status"] = "clean"
     event = FileExaminationEvent(**kwargs)
     assert event.examination_type == examination_type
+    assert event.node_id == node_id
 
 
 @pytest.mark.parametrize(

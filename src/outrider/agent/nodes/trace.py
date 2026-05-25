@@ -707,13 +707,28 @@ async def _phase_two_content_fetch(
     No `source_import_string` / `source_proposal_hash` per Q3 revision;
     cross-reference recovers via `state.trace_decisions`.
     """
-    content_bytes = await fetch_file_content_at(
-        gh_client,
-        owner=owner,
-        repo=repo,
-        path=target_file,
-        ref=head_sha,
-    )
+    # Phase-2 race window: Phase 1 probe confirmed the path existed at
+    # head_sha, but the file can disappear between probe and Phase 2
+    # (force-push, file deletion in a concurrent push to the same SHA
+    # — rare but real). Treat 404 here as a soft miss to match
+    # `_resolve_via_probes`'s 404→unresolved contract; aborting the
+    # whole trace pass on a single race would defeat the M8 design.
+    # Non-404 errors (5xx / 403 / timeout) still propagate per the
+    # transient-failure contract. Same duck-typed status pattern as
+    # `_resolve_via_probes` line ~606 and `github/publisher.py:355`.
+    try:
+        content_bytes = await fetch_file_content_at(
+            gh_client,
+            owner=owner,
+            repo=repo,
+            path=target_file,
+            ref=head_sha,
+        )
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 404:
+            return None
+        raise
     if content_bytes is None:
         return None
     try:
