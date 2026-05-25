@@ -442,6 +442,7 @@ def test_step0_response_rejection_counters() -> None:
     assert result.counters.n_proposals_rejected == 0
     assert result.counters.n_responses_rejected == 1
     assert result.counters.n_trace_candidates_emitted == 0
+    assert result.counters.n_trace_candidates_dropped_malformed == 0
 
 
 def test_step0_valid_empty_findings_returns_clean_zero_result() -> None:
@@ -458,6 +459,7 @@ def test_step0_valid_empty_findings_returns_clean_zero_result() -> None:
     assert result.counters.n_proposals_rejected == 0
     assert result.counters.n_responses_rejected == 0
     assert result.counters.n_trace_candidates_emitted == 0
+    assert result.counters.n_trace_candidates_dropped_malformed == 0
 
 
 # ---------------------------------------------------------------------------

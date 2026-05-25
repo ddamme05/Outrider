@@ -165,16 +165,19 @@ def is_valid_import_string(value: str) -> str:
     # Persian/Arabic word-joining + Hindi/Devanagari conjuncts + emoji
     # ZWJ sequences; `tests/unit/test_coordinates_paths_protocol.py::
     # test_zwj_and_zwnj_deliberately_admitted` pins both). This gate
-    # blocks the broader Trojan-Source family (RLO, LRO, PDI,
-    # invisible-mark / hangul-filler variants) on the import-string
-    # surface to mirror `validate_diff_path`'s parallel rejection on
-    # the path surface. The two are sibling defenses for the two
-    # audit-side surfaces: `proposed_import_strings` runs THIS
-    # validator; `resolved_candidate_paths` / `target_file` runs
-    # `validate_diff_path`. The narrow ZWJ/ZWNJ admission is a
+    # blocks the broader Trojan-Source family — the exact set is the
+    # regex above: U+200B (ZWSP), U+200E/U+200F (LRM/RLM),
+    # U+202A–U+202E (LRE/RLE/PDF/LRO/RLO), U+2066–U+2069 (LRI/RLI/FSI/PDI),
+    # and U+FEFF (ZWNBSP/BOM). It mirrors `validate_diff_path`'s
+    # parallel rejection on the path surface. The two are sibling
+    # defenses for the two audit-side surfaces: `proposed_import_strings`
+    # runs THIS validator; `resolved_candidate_paths` / `target_file`
+    # runs `validate_diff_path`. The narrow ZWJ/ZWNJ admission is a
     # documented trade-off: rejecting them would block legitimate
     # non-Latin-script identifier contributions, which the project
-    # accepts instead of the marginal homoglyph-attack risk.
+    # accepts instead of the marginal homoglyph-attack risk. The
+    # hangul-filler family (U+3164, U+FFA0) is OUT of scope here —
+    # extend the regex if a future homoglyph audit pulls them in.
     if _TROJAN_SOURCE_CHARS_RE.search(normalized):
         raise ValueError(
             "import_string contains bidi-override or invisible-format characters "

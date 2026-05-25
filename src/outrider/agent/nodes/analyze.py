@@ -281,6 +281,17 @@ async def analyze(
     # correctness to emission ordering and break the proposal-accounting
     # equation under concurrent-emit refactors.
     admitted_findings: list[ReviewFinding] = []
+    # Dedupe-by-(content_hash, proposal_hash) tracked alongside
+    # `admitted_findings` because `AnalysisRound` enforces uniqueness
+    # on both. Pass-1 fan-out (one iteration per source-finding × target
+    # file) can legitimately produce identical logical findings from
+    # different source-finding contexts (same file content → same
+    # vulnerability under any prompt framing); without this gate, the
+    # SECOND emission of the same logical finding would trip
+    # `_enforce_findings_unique` at `AnalysisRound` construction. The
+    # same defensive gate covers pass-0 against an LLM repeating the
+    # same proposal in a single response.
+    admitted_keys_seen: set[tuple[str, str]] = set()
     trace_candidates: list[TraceCandidate] = []
     files_examined: list[str] = []
     files_skipped: list[str] = []
@@ -362,7 +373,12 @@ async def analyze(
                 n_trace_candidates_dropped_malformed += (
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
-                admitted_findings.extend(file_outcome.parser_result.admitted_findings)
+                for f in file_outcome.parser_result.admitted_findings:
+                    key = (f.content_hash, f.proposal_hash)
+                    if key in admitted_keys_seen:
+                        continue
+                    admitted_keys_seen.add(key)
+                    admitted_findings.append(f)
                 # Per DECISIONS.md#025 point 6: trace_candidates from
                 # rejected-parent proposals stay in state for replay
                 # ("Unjoined candidates remain forensic-only"). Trace's
@@ -477,7 +493,12 @@ async def analyze(
                 n_trace_candidates_dropped_malformed += (
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
-                admitted_findings.extend(file_outcome.parser_result.admitted_findings)
+                for f in file_outcome.parser_result.admitted_findings:
+                    key = (f.content_hash, f.proposal_hash)
+                    if key in admitted_keys_seen:
+                        continue
+                    admitted_keys_seen.add(key)
+                    admitted_findings.append(f)
                 # Per DECISIONS.md#025 point 6: trace_candidates from
                 # rejected-parent proposals stay in state for replay
                 # ("Unjoined candidates remain forensic-only"). Trace's
