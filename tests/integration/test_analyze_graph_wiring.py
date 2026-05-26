@@ -398,6 +398,36 @@ class _StubGitHubPublisher:
         raise NotImplementedError(msg)
 
 
+class _StubHITLEventSink:
+    """No-op `HITLEventSink` for graph wiring tests.
+
+    HITL is wired into the graph post-trace; these tests don't drive
+    HITL activation (no CRITICAL/HIGH findings in fixtures), so the stub
+    admits the structural Protocol check at build_graph time. Returns
+    the incoming event verbatim if a future fixture changes routing to
+    invoke HITL emission.
+    """
+
+    async def emit_hitl_request(self, event: Any) -> Any:
+        return event
+
+    async def emit_hitl_decision(self, event: Any) -> Any:
+        return event
+
+
+class _StubReviewStatusSink:
+    """No-op `ReviewStatusSink`. Same rationale as `_StubHITLEventSink`."""
+
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_running(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 def _build_kwargs(
     *,
     provider: _RoutingMockLLMProvider,
@@ -406,6 +436,8 @@ def _build_kwargs(
     analyze_event_sink: _RecordingAnalyzeEventSink,
     total_review_budget_tokens: int | None = None,
 ) -> dict[str, Any]:
+    from outrider.agent.nodes.hitl_config import HITLConfig
+
     kwargs: dict[str, Any] = {
         "db_factory": _stub_db_factory,
         "github_factory": _stub_github_factory,
@@ -419,6 +451,12 @@ def _build_kwargs(
         # Protocol gate requires both.
         "publish_event_sink": _StubPublishEventSink(),
         "trace_sink": _StubTraceEventSink(),
+        # HITL deps added 2026-05-26 per the HITL-node arc; these tests
+        # don't drive HITL activation but build_graph's structural
+        # Protocol gate requires all three.
+        "hitl_event_sink": _StubHITLEventSink(),
+        "review_status_sink": _StubReviewStatusSink(),
+        "hitl_config": HITLConfig(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
@@ -687,8 +725,13 @@ async def test_is_eval_propagates_through_full_graph(
     # than only via the absence of a publish-side audit event.
     assert len(recording_phase_event_sink.events) > 0, "no phase events emitted"
     started_nodes = {e.node_id for e in recording_phase_event_sink.events if e.marker == "start"}
-    assert {"intake", "triage", "analyze", "publish"} <= started_nodes, (
-        f"expected full-graph node coverage, got starts from {sorted(started_nodes)}"
+    # HITL interrupts on CRITICAL/HIGH findings (sql_injection ->
+    # CRITICAL per SEVERITY_POLICY) — the graph emits hitl's start
+    # marker then suspends via `interrupt(...)`. publish does NOT run
+    # without a resume; that's the V1 HITL gate guarantee. is_eval
+    # propagation is checked across the nodes that DO run.
+    assert {"intake", "triage", "analyze", "hitl"} <= started_nodes, (
+        f"expected full-graph node coverage through hitl, got starts from {sorted(started_nodes)}"
     )
     assert all(e.is_eval is eval_flag for e in recording_phase_event_sink.events), (
         f"Phase event leaked the wrong is_eval flag (expected {eval_flag})"

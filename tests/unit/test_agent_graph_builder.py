@@ -131,6 +131,33 @@ class _StubTraceEventSink:
         return event
 
 
+class _StubHITLEventSink:
+    """Satisfies HITLEventSink Protocol structurally (two emit methods,
+    audit-first non-None return)."""
+
+    async def emit_hitl_request(self, event: Any) -> Any:
+        return event
+
+    async def emit_hitl_decision(self, event: Any) -> Any:
+        return event
+
+
+class _StubReviewStatusSink:
+    """Satisfies ReviewStatusSink Protocol structurally (three async
+    methods, all no-op stubs)."""
+
+    async def mark_awaiting_approval(
+        self, *, review_id: Any, expires_at: Any, hitl_request_payload: dict[str, Any]
+    ) -> None:
+        return None
+
+    async def mark_running(self, *, review_id: Any, hitl_decision_payload: dict[str, Any]) -> None:
+        return None
+
+    async def mark_awaiting_approval_expired(self, *, review_id: Any) -> None:
+        return None
+
+
 class _StubGitHubPublisher:
     """Satisfies GitHubPublisher Protocol structurally (has create_review +
     find_existing_review_on_head_sha)."""
@@ -183,6 +210,8 @@ def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
 
 def _valid_args() -> dict[str, Any]:
     """Build a complete, valid set of kwargs. Tests perturb one at a time."""
+    from outrider.agent.nodes.hitl_config import HITLConfig
+
     return {
         "provider": _StubProvider(),
         "model_config": ModelConfig(),
@@ -191,6 +220,9 @@ def _valid_args() -> dict[str, Any]:
         "analyze_event_sink": _StubAnalyzeEventSink(),
         "publish_event_sink": _StubPublishEventSink(),
         "trace_sink": _StubTraceEventSink(),
+        "hitl_event_sink": _StubHITLEventSink(),
+        "review_status_sink": _StubReviewStatusSink(),
+        "hitl_config": HITLConfig(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),

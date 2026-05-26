@@ -110,6 +110,25 @@ class _StubTraceEventSink:
         return event
 
 
+class _StubHITLEventSink:
+    async def emit_hitl_request(self, event: Any) -> Any:
+        return event
+
+    async def emit_hitl_decision(self, event: Any) -> Any:
+        return event
+
+
+class _StubReviewStatusSink:
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:
+        return None
+
+    async def mark_running(self, **kwargs: Any) -> None:
+        return None
+
+    async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:
+        return None
+
+
 class _StubGitHubPublisher:
     async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002
         msg = "introspection test never POSTs to GitHub"
@@ -144,6 +163,8 @@ def compiled_graph() -> Any:
     # gates are member-presence-only at runtime, so a duck-typed stub
     # is sufficient for introspection-only tests. mypy needs the
     # ignores because static-shape compatibility is stricter.
+    from outrider.agent.nodes.hitl_config import HITLConfig
+
     return build_graph(
         db_factory=_stub_db_factory,  # type: ignore[arg-type]
         github_factory=_stub_github_factory,
@@ -152,6 +173,9 @@ def compiled_graph() -> Any:
         phase_event_sink=_StubPhaseSink(),
         publish_event_sink=_StubPublishEventSink(),
         trace_sink=_StubTraceEventSink(),
+        hitl_event_sink=_StubHITLEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
+        hitl_config=HITLConfig(),
         publisher=_StubGitHubPublisher(),
         file_examination_sink=_StubFileSink(),
         analyze_event_sink=_StubAnalyzeEventSink(),

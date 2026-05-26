@@ -1,23 +1,26 @@
-# Five-node StateGraph(ReviewState) factory: intake → triage → analyze ⇄ trace → publish.
-"""Five-node `StateGraph(ReviewState)` factory: intake → triage → analyze ⇄ trace → publish.
+# Six-node StateGraph(ReviewState) factory: intake → triage → analyze ⇄ trace → hitl → publish.
+"""Six-node `StateGraph(ReviewState)` factory: intake → triage → analyze ⇄ trace → hitl → publish.
 
-V1 ships FIVE nodes: `intake`, `triage`, `analyze`, `trace`, `publish`.
-Intake enriches `pr_context.changed_files` per `DECISIONS.md#020`;
-triage runs a fast LLM pass for tier classification; analyze runs one
-Sonnet call per DEEP/STANDARD-tier file and emits findings; trace
-consumes `state.trace_candidates`, ranks via Haiku, resolves via the
-two-phase fetch (probe + content), and emits `TraceDecisionEvent`
-audit-first — the analyze router loops back into analyze when new
-trace-fetched files arrived; publish routes each finding through
-`coordinates/`, applies the V1 eligibility gate (CRITICAL/HIGH
-withheld until HITL ships), and posts a single GitHub review for the
-eligible-inline set. The factory produces a `CompiledStateGraph` that
-consumers invoke via `await graph.ainvoke(seed_state)`.
+V1 ships SIX nodes: `intake`, `triage`, `analyze`, `trace`, `hitl`,
+`publish`. Intake enriches `pr_context.changed_files` per
+`DECISIONS.md#020`; triage runs a fast LLM pass for tier
+classification; analyze runs one Sonnet call per DEEP/STANDARD-tier
+file and emits findings; trace consumes `state.trace_candidates`,
+ranks via Haiku, resolves via the two-phase fetch (probe + content),
+and emits `TraceDecisionEvent` audit-first — the analyze router loops
+back into analyze when new trace-fetched files arrived; hitl
+partitions findings by severity, optionally interrupts the graph for
+human approval, and emits `HITLRequestEvent` + `HITLDecisionEvent`
+audit-first; publish routes each finding through `coordinates/`,
+applies the V1 eligibility gate (CRITICAL/HIGH withheld unless an
+explicit HITL approval lands), and posts a single GitHub review for
+the eligible-inline set. The factory produces a `CompiledStateGraph`
+that consumers invoke via `await graph.ainvoke(seed_state)`.
 
 The adaptive `analyze ⇄ trace` loop is bounded by `MAX_ANALYSIS_ROUNDS`
-(`agent/nodes/trace.py`, depth-2 ceiling). Graph topology beyond the
-five wired nodes (synthesize → hitl) is downstream of this spec; the
-HITL interrupt lands in a subsequent feature spec.
+(`agent/nodes/trace.py`, depth-2 ceiling). The HITL interrupt is
+implemented via LangGraph's `interrupt(...)` — see
+`specs/2026-05-26-hitl-node.md` for the 13-step node body contract.
 
 ## Routing: Command, not static or conditional edges from intake
 
@@ -45,7 +48,7 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `model_config: ModelConfig` — `triage_model`, `analyze_model`, and
     `trace_model` are captured at callsite (per
     `model-strings-from-config-not-hardcoded`).
-  - `phase_event_sink: PhaseEventSink` — required for all five nodes;
+  - `phase_event_sink: PhaseEventSink` — required for all six nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
     per-file content-fetch events AND analyze's per-file examination
@@ -59,6 +62,16 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     `query_prior_publish_event` idempotency lookup.
   - `trace_sink: TraceEventSink` — required for trace's
     `TraceDecisionEvent` audit-first emission per M7.
+  - `hitl_event_sink: HITLEventSink` — required for hitl's
+    `HITLRequestEvent` + `HITLDecisionEvent` audit-first emissions.
+  - `review_status_sink: ReviewStatusSink` — required for hitl's
+    `reviews.status` lifecycle transitions (mark_awaiting_approval +
+    mark_running) and the sweep's `mark_awaiting_approval_expired`.
+  - `hitl_config: HITLConfig` — required for hitl's deterministic
+    `expires_at = state.received_at + timedelta(minutes=...)`
+    derivation. Per `nodes-receive-deps-via-closure`, config travels
+    through the dependency-injection seam at `build_graph(...)` —
+    the node body does not read env vars.
   - `publisher: GitHubPublisher` — required for publish's GitHub
     `create_review` call (single-review-per-PR contract).
   - `import_path_resolver: ImportPathResolver` — required for analyze's
@@ -80,7 +93,7 @@ only, not signature shape.
 
 ## Async invocation
 
-All five nodes are `async def`. Per LangGraph 1.1.6 docs, async-node
+All six nodes are `async def`. Per LangGraph 1.1.6 docs, async-node
 graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
 """
 
@@ -93,6 +106,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.hitl import hitl
+from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.intake import intake
 from outrider.agent.nodes.publish import publish
 from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS, trace
@@ -102,10 +117,12 @@ from outrider.ast_facts.base import ImportPathResolver
 from outrider.audit.sinks import (
     AnalyzeEventSink,
     FileExaminationSink,
+    HITLEventSink,
     PhaseEventSink,
     PublishEventSink,
     TraceEventSink,
 )
+from outrider.db.sinks import ReviewStatusSink
 from outrider.github.publisher import GitHubPublisher
 from outrider.llm.base import LLMProvider
 
@@ -147,11 +164,14 @@ def build_graph(
     analyze_event_sink: AnalyzeEventSink,
     publish_event_sink: PublishEventSink,
     trace_sink: TraceEventSink,
+    hitl_event_sink: HITLEventSink,
+    review_status_sink: ReviewStatusSink,
+    hitl_config: HITLConfig,
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
 ) -> _CompiledTriageGraph:
-    """Build the five-node intake → triage → analyze ⇄ trace → publish graph.
+    """Build the six-node intake → triage → analyze ⇄ trace → hitl → publish graph.
 
     Keyword-only arguments prevent positional-confusion bugs at callsites
     with multiple deps. Validation order: None checks first (cheaper),
@@ -176,6 +196,12 @@ def build_graph(
         raise BuildGraphError("publish_event_sink must not be None")
     if trace_sink is None:
         raise BuildGraphError("trace_sink must not be None")
+    if hitl_event_sink is None:
+        raise BuildGraphError("hitl_event_sink must not be None")
+    if review_status_sink is None:
+        raise BuildGraphError("review_status_sink must not be None")
+    if hitl_config is None:
+        raise BuildGraphError("hitl_config must not be None")
     if publisher is None:
         raise BuildGraphError("publisher must not be None")
     if import_path_resolver is None:
@@ -253,6 +279,25 @@ def build_graph(
             f"missing `emit_trace_decision` member; "
             f"see PEP 544 runtime-checkable semantics)"
         )
+    if not isinstance(hitl_event_sink, HITLEventSink):
+        raise BuildGraphError(
+            f"hitl_event_sink does not satisfy HITLEventSink Protocol "
+            f"(passed type: {type(hitl_event_sink).__name__}; "
+            f"missing one of `emit_hitl_request` / `emit_hitl_decision`; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
+    if not isinstance(review_status_sink, ReviewStatusSink):
+        raise BuildGraphError(
+            f"review_status_sink does not satisfy ReviewStatusSink Protocol "
+            f"(passed type: {type(review_status_sink).__name__}; "
+            f"missing one of `mark_awaiting_approval` / `mark_running` / "
+            f"`mark_awaiting_approval_expired`; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
+    if not isinstance(hitl_config, HITLConfig):
+        raise BuildGraphError(
+            f"hitl_config must be a HITLConfig instance (passed type: {type(hitl_config).__name__})"
+        )
     if not isinstance(publisher, GitHubPublisher):
         raise BuildGraphError(
             f"publisher does not satisfy GitHubPublisher Protocol "
@@ -307,12 +352,20 @@ def build_graph(
         trace_sink=trace_sink,
         github_factory=github_factory,
     )
+    hitl_callable = functools.partial(
+        hitl,
+        phase_event_sink=phase_event_sink,
+        hitl_event_sink=hitl_event_sink,
+        review_status_sink=review_status_sink,
+        hitl_config=hitl_config,
+    )
 
     builder = StateGraph(ReviewState)
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
     builder.add_node("analyze", analyze_callable)
     builder.add_node("trace", trace_callable)
+    builder.add_node("hitl", hitl_callable)
     builder.add_node("publish", publish_callable)
     builder.add_edge(START, "intake")
     # NO `builder.add_edge("intake", "triage")` here, and NO
@@ -325,33 +378,40 @@ def build_graph(
     # After analyze pass 1: route to trace iff there are accumulated
     # trace candidates AND we're on round 1. After trace: route back to
     # analyze iff trace's content fetches produced new files to examine
-    # AND we're below the depth-2 round limit. Otherwise → publish.
+    # AND we're below the depth-2 round limit. Otherwise → hitl.
     builder.add_conditional_edges("analyze", _analyze_router)
     builder.add_conditional_edges("trace", _trace_router)
+    # hitl always proceeds to publish. The node body's `interrupt(...)`
+    # is what pauses the graph for human approval; the static edge fires
+    # only when the body completes (either pass-through on empty gated
+    # set or post-resume after `Command(resume=...)`).
+    builder.add_edge("hitl", "publish")
     builder.add_edge("publish", END)
     return builder.compile()
 
 
 def _analyze_router(state: ReviewState) -> str:
-    """Route analyze's output: trace if pass 1 produced candidates, else publish.
+    """Route analyze's output: trace if pass 1 produced candidates, else hitl.
 
     Per the trace-node spec: after analyze pass 1 (i.e.,
     `len(state.analysis_rounds) == 1`), route to trace to consume the
     accumulated trace_candidates. After analyze pass 2 (depth-2 limit),
-    route straight to publish — no further trace work allowed.
+    route straight to hitl — no further trace work allowed. The hitl
+    node partitions by severity; empty gate-set sends the graph through
+    to publish without an interrupt.
     """
     if len(state.analysis_rounds) == 1 and state.trace_candidates:
         return "trace"
-    return "publish"
+    return "hitl"
 
 
 def _trace_router(state: ReviewState) -> str:
-    """Route trace's output: analyze if NEW files fetched this pass, else publish.
+    """Route trace's output: analyze if NEW files fetched this pass, else hitl.
 
     Per the trace-node spec: route back to analyze iff trace fetched at
     least one new file IN THE MOST RECENT trace() CALL AND we're still
     below `MAX_ANALYSIS_ROUNDS` (depth-2 ceiling). Otherwise proceed to
-    publish. The depth bound is enforced HERE because trace runs after
+    hitl. The depth bound is enforced HERE because trace runs after
     analyze pass N, so re-entering analyze produces round N+1.
 
     Reads `state.last_trace_pass_fetched_count` (the per-invocation
@@ -363,7 +423,7 @@ def _trace_router(state: ReviewState) -> str:
     """
     if state.last_trace_pass_fetched_count > 0 and len(state.analysis_rounds) < MAX_ANALYSIS_ROUNDS:
         return "analyze"
-    return "publish"
+    return "hitl"
 
 
 __all__ = [
