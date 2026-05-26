@@ -48,6 +48,7 @@ def _build_engine_factory(db_url: str):
 async def test_happy_path_matches_genesis_seed(
     migrated_db: str,
     make_stub_llm_provider: type,
+    in_memory_checkpointer_factory: object,
 ) -> None:
     """Lifespan starts cleanly when ACTIVE_POLICY_VERSION='1.0.0' matches
     the genesis-seeded DB row and the live SEVERITY_POLICY mapping.
@@ -56,6 +57,7 @@ async def test_happy_path_matches_genesis_seed(
     lifespan = build_lifespan(
         engine_factory=_build_engine_factory(migrated_db),
         provider_factory=lambda _persister, _model_config: stub_provider,
+        checkpointer_factory=in_memory_checkpointer_factory,  # type: ignore[arg-type]
     )
 
     app = FastAPI()

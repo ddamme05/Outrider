@@ -123,11 +123,25 @@ class ReviewStatusSink(Protocol):
         writing `hitl_decision` JSONB.
 
         Predicate: `WHERE id=:r AND status IN ('awaiting_approval',
-        'awaiting_approval_expired', 'running')`. Admits
-        `awaiting_approval_expired` so a reviewer's late decision
-        against an expired review progresses correctly; admits
-        `running` for the idempotent re-fire no-op semantic on resume
-        body re-run.
+        'awaiting_approval_expired') AND hitl_decision IS NULL`.
+
+        The `hitl_decision IS NULL` discriminator makes the method
+        first-write-only, mirroring `mark_awaiting_approval`'s
+        `hitl_request IS NULL` defense. Strengthening over the original
+        spec (which admitted `status='running'` as a source state for
+        idempotent re-fire): a divergent-content second decision whose
+        `AuditPersisterHITLDecisionNaturalKeyConflict` was caught by
+        the endpoint's failure wrapper could otherwise overwrite the
+        JSONB cache with content the audit row never ratified. Re-fires
+        after the first write see `hitl_decision` populated and no-op
+        (rowcount=0) — same idempotent semantic as the spec's `running`
+        admission, achieved via the discriminator instead. The audit
+        row remains canonical on cross-persister divergence per
+        `DECISIONS.md#016`.
+
+        Source states admitted: `awaiting_approval` (canonical
+        transition) + `awaiting_approval_expired` (remediation path per
+        `docs/spec.md` §4.1.6).
 
         `reviews.expires_at` is LEFT IN PLACE (NOT cleared to NULL).
         The sweep filter is `status='awaiting_approval' AND expires_at

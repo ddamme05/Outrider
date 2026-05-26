@@ -173,6 +173,12 @@ async def _verify_severity_policy_fingerprint(engine: AsyncEngine) -> None:
 
 
 EngineFactory = Callable[[], AsyncEngine]
+# `CheckpointerFactory` is the seam for the durable LangGraph
+# checkpointer. Production: `AsyncPostgresSaver.from_conn_string(url)`
+# returning an async context manager that `AsyncExitStack` enters.
+# Tests pass an `InMemorySaver`-yielding factory so no real DB
+# connection is attempted. Defaults to the real factory.
+CheckpointerFactory = Callable[[], "AbstractAsyncContextManager[Any]"]
 # `ProviderFactory` accepts the lifespan-built `ModelConfig` so the
 # provider and the compiled graph share ONE instance. The prior shape
 # (`Callable[[AuditPersister], AnthropicProvider]`) silently constructed
@@ -258,6 +264,23 @@ def _default_engine_factory() -> AsyncEngine:
     return create_async_engine(database_url, hide_parameters=True)
 
 
+def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
+    """Production checkpointer: AsyncPostgresSaver bound to DATABASE_URL.
+
+    `AsyncPostgresSaver.from_conn_string` expects a bare psycopg URL.
+    SQLAlchemy's `postgresql+psycopg://` driver-suffix is rejected by
+    psycopg's URL parser, so the suffix is stripped.
+
+    Returns the async context manager unentered — the lifespan body
+    pushes it onto its `AsyncExitStack` and calls `.setup()` after
+    entry to create checkpoint tables on first boot.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: PLC0415
+
+    checkpoint_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    return AsyncPostgresSaver.from_conn_string(checkpoint_url)
+
+
 def _default_provider_factory(
     persister: AuditPersister,
     model_config: ModelConfig,
@@ -299,6 +322,7 @@ def build_lifespan(
     severity_policy_fingerprint_check: SeverityPolicyFingerprintCheck = (
         _verify_severity_policy_fingerprint
     ),
+    checkpointer_factory: CheckpointerFactory = _default_checkpointer_factory,
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     """Construct a FastAPI lifespan callable with injectable factories.
 
@@ -453,6 +477,28 @@ def build_lifespan(
             review_status_persister = ReviewStatusPersister(session_factory=session_factory)
             hitl_config = HITLConfig()  # reads env vars; fails loud on AUTO_POST
 
+            # Step 7b: durable LangGraph checkpointer. HITL `interrupt(...)`
+            # writes the suspended state to this checkpointer; the
+            # `/decide` endpoint's `Command(resume=...)` reads it back
+            # via the same checkpointer in a separate FastAPI handler
+            # (potentially a separate process under V2 Celery dispatch).
+            # Without a checkpointer the suspended state lives in memory
+            # only and dies with the process — the HITL durability
+            # contract (specs/2026-05-26-hitl-node.md "interrupt + resume
+            # crash-replay windows") collapses.
+            #
+            # `checkpointer_factory` is the test seam: production default
+            # constructs an `AsyncPostgresSaver` against DATABASE_URL;
+            # tests inject a factory yielding an `InMemorySaver` to
+            # avoid the real DB connection.
+            checkpointer_cm = checkpointer_factory()
+            checkpointer = await stack.enter_async_context(checkpointer_cm)
+            # `.setup()` is the AsyncPostgresSaver bootstrap; the
+            # InMemorySaver does not expose it. Call only when present.
+            setup = getattr(checkpointer, "setup", None)
+            if setup is not None:
+                await setup()
+
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -464,6 +510,7 @@ def build_lifespan(
                 hitl_event_sink=persister,
                 review_status_sink=review_status_persister,
                 hitl_config=hitl_config,
+                checkpointer=checkpointer,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,
@@ -474,8 +521,19 @@ def build_lifespan(
             # from BackgroundTasks. The dispatcher itself is per-request
             # (built via FastAPI Depends in the webhook handler); the
             # graph is lifespan-bound.
+            #
+            # `thread_id=str(state.review_id)` is load-bearing: the
+            # checkpointer keys per-thread, and HITL resume requires the
+            # SAME thread_id to recover the suspended state. The review
+            # row's UUID is the canonical identifier and is unique per
+            # review.
             async def run_graph(state: Any) -> Any:
-                return await compiled_graph.ainvoke(state)
+                from langchain_core.runnables import (  # noqa: PLC0415, TC002
+                    RunnableConfig,
+                )
+
+                config: RunnableConfig = {"configurable": {"thread_id": str(state.review_id)}}
+                return await compiled_graph.ainvoke(state, config=config)
 
             # Step 10: re-apply log filter post-handler-registration.
             # uvicorn registers its handlers before the lifespan body
@@ -495,6 +553,21 @@ def build_lifespan(
             app.state.github_factory = github_factory
             app.state.compiled_graph = compiled_graph
             app.state.run_graph = run_graph
+            # Stash the checkpointer so the HITL-expiry sweep
+            # (Group 8) can call `checkpointer.aget(config)` to detect
+            # rows in `awaiting_approval` with no pending interrupt
+            # (window (c) crash recovery per the HITL spec). The
+            # `/decide` endpoint reaches the checkpointer transitively
+            # via `compiled_graph.ainvoke(Command(resume=...))`, so it
+            # doesn't need this binding — but the sweep does.
+            app.state.checkpointer = checkpointer
+            # Stash the ReviewStatusReader so the /decide endpoint
+            # (Group 7) can preflight the HITLRequest from the
+            # `reviews.hitl_request` JSONB cache without holding a
+            # graph reference. Same instance as `review_status_sink`
+            # because `ReviewStatusPersister` implements both
+            # Protocols.
+            app.state.review_status_reader = review_status_persister
 
             # Safe: `engine.url.drivername` is the scheme alone (e.g.,
             # "postgresql+psycopg") — never carries credentials. DO NOT log

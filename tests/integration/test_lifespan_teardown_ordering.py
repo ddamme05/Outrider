@@ -25,6 +25,7 @@ class _SyntheticACloseError(RuntimeError):
 
 async def test_engine_dispose_runs_when_provider_aclose_raises(
     noop_severity_policy_fingerprint_check: object,
+    in_memory_checkpointer_factory: object,
 ) -> None:
     """provider.aclose() raises during teardown; engine.dispose() still runs.
 
@@ -49,6 +50,7 @@ async def test_engine_dispose_runs_when_provider_aclose_raises(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: mock_provider,
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
+        checkpointer_factory=in_memory_checkpointer_factory,  # type: ignore[arg-type]
     )
 
     app = FastAPI()
