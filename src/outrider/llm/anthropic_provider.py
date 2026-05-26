@@ -271,12 +271,27 @@ class AnthropicProvider:
         # `.strip()` before `.lower()` so a `.env` parser quirk that leaves
         # surrounding whitespace (e.g., `LANGSMITH_TRACING=" true "`) doesn't
         # silently disable tracing. Same loose-truthy shape LangSmith's own
-        # SDK uses internally for the env var.
-        if os.environ.get("LANGSMITH_TRACING", "").strip().lower() == "true":
+        # SDK uses internally for the env var. Both `LANGSMITH_TRACING=true`
+        # AND a non-empty `LANGSMITH_API_KEY` are required: without the key
+        # the LangSmith client accepts traces and silently drops them in the
+        # background, wasting per-call CPU on tracing logic that never
+        # surfaces in the UI; explicit pre-flight gate surfaces the
+        # misconfiguration as a WARN instead.
+        tracing_on = os.environ.get("LANGSMITH_TRACING", "").strip().lower() == "true"
+        api_key_set = bool(os.environ.get("LANGSMITH_API_KEY", "").strip())
+        if tracing_on and api_key_set:
             from langsmith.wrappers import wrap_anthropic
 
             self._client = wrap_anthropic(self._client)
             _LOGGER.info("anthropic_provider: LangSmith tracing enabled via wrap_anthropic")
+        elif tracing_on and not api_key_set:
+            _LOGGER.warning(
+                "anthropic_provider: LANGSMITH_TRACING=true but LANGSMITH_API_KEY "
+                "is unset/empty; wrap_anthropic NOT activated and traces would "
+                "silently drop in the LangSmith client's background thread. Set "
+                "LANGSMITH_API_KEY to enable tracing, or unset LANGSMITH_TRACING "
+                "to silence this warning."
+            )
 
         # Privacy startup notice — canonical text per DECISIONS#015
         # point 4. Operator-attestation only; never a per-request header.

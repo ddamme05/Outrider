@@ -486,6 +486,7 @@ def test_langsmith_wrap_not_invoked_when_env_unset(
     """Default-off: no `LANGSMITH_TRACING` env var → no wrap, no langsmith
     import side effect on the constructor."""
     monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     with patch("langsmith.wrappers.wrap_anthropic") as mock_wrap:
         provider = AnthropicProvider(
             api_key=_api_key(),
@@ -506,9 +507,11 @@ def test_langsmith_wrap_invoked_when_env_truthy(
     raw: str,
 ) -> None:
     """`LANGSMITH_TRACING=true` (case-insensitive, whitespace-tolerant per
-    the defensive `.strip().lower()` in the constructor) activates the
-    `wrap_anthropic` shim and emits an INFO log naming the activation."""
+    the defensive `.strip().lower()` in the constructor) plus a non-empty
+    `LANGSMITH_API_KEY` activates the `wrap_anthropic` shim and emits an
+    INFO log naming the activation."""
     monkeypatch.setenv("LANGSMITH_TRACING", raw)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_test_key")
     caplog.set_level(logging.INFO, logger="outrider.llm.anthropic_provider")
     # Sentinel return so we can confirm the wrap's output replaced the
     # constructor-built client (the real `wrap_anthropic` returns the
@@ -544,6 +547,7 @@ def test_langsmith_wrap_not_invoked_when_env_non_true(
     surfaces a regression if someone "helpfully" widens the check to a
     general truthy-string parser."""
     monkeypatch.setenv("LANGSMITH_TRACING", raw)
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     with patch("langsmith.wrappers.wrap_anthropic") as mock_wrap:
         AnthropicProvider(
             api_key=_api_key(),
@@ -551,6 +555,41 @@ def test_langsmith_wrap_not_invoked_when_env_non_true(
             persister=_RecordingPersister(),
         )
     mock_wrap.assert_not_called()
+
+
+@pytest.mark.parametrize("missing_key", ["", "   ", None])
+def test_langsmith_wrap_not_invoked_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    missing_key: str | None,
+) -> None:
+    """`LANGSMITH_TRACING=true` with an empty/whitespace/unset
+    `LANGSMITH_API_KEY` MUST NOT activate the wrap: without the key the
+    LangSmith client accepts traces and silently drops them in its
+    background thread, wasting per-call CPU on tracing logic that never
+    surfaces in the UI. The constructor surfaces the misconfiguration
+    as a WARN log instead of silently activating a no-op wrap."""
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    if missing_key is None:
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("LANGSMITH_API_KEY", missing_key)
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    with patch("langsmith.wrappers.wrap_anthropic") as mock_wrap:
+        AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+        )
+    mock_wrap.assert_not_called()
+    warning_msgs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider" and r.levelno == logging.WARNING
+    ]
+    assert any("LANGSMITH_API_KEY" in m for m in warning_msgs), (
+        f"expected misconfig WARN naming LANGSMITH_API_KEY; got {warning_msgs!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
