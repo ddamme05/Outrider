@@ -210,10 +210,16 @@ def github_app_env(monkeypatch: pytest.MonkeyPatch) -> None:
     cleanly request this fixture explicitly. Lifespan integration tests
     that hit GitHubAppSettings() during startup must call this; pure
     unit tests that mock the settings object do not need it.
+
+    Also sets `OUTRIDER_ADMIN_API_KEY` since the lifespan's
+    `DashboardSettings()` construction is in the same startup chain —
+    a missing key surfaces as a Pydantic ValidationError at lifespan
+    Step 7c (see `api/lifespan.py` admin_api_key wiring).
     """
     monkeypatch.setenv("OUTRIDER_GITHUB_APP_ID", "12345")
     monkeypatch.setenv("OUTRIDER_GITHUB_APP_PRIVATE_KEY", TEST_GITHUB_APP_PRIVATE_KEY_PEM)
     monkeypatch.setenv("OUTRIDER_GITHUB_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("OUTRIDER_ADMIN_API_KEY", "test-admin-key")
 
 
 class StubLLMProvider:
