@@ -2020,6 +2020,49 @@ class AuditPersister:
             )
         return result
 
+    async def emit_hitl_request(self, event: HITLRequestEvent) -> HITLRequestEvent:
+        """Persist a HITLRequestEvent row under natural-key idempotency
+        on `(review_id)` (single-shot per review per the HITL Non-goals).
+
+        Returns the canonical persisted event — incoming on insert path,
+        existing row's event on no-op match. The HITL node MUST use the
+        returned event to construct the state-layer `HITLRequest` for
+        the state delta, keeping state and audit in lockstep across the
+        resume body re-run.
+        """
+        result = await self._persist_keyed_by_natural_key(event)
+        if not isinstance(result, HITLRequestEvent):
+            raise AuditPersisterSchemaInvariantError(
+                event_id=event.event_id,
+                invariant=(
+                    f"emit_hitl_request returned {type(result).__name__}, expected HITLRequestEvent"
+                ),
+            )
+        return result
+
+    async def emit_hitl_decision(self, event: HITLDecisionEvent) -> HITLDecisionEvent:
+        """Persist a HITLDecisionEvent row under natural-key idempotency
+        on `(review_id)` with identity-subset check on
+        `decisions_content_hash`.
+
+        Identical-content concurrent submissions absorb cleanly (returned
+        event is the existing persisted row with matching content hash);
+        divergent-content concurrent submissions raise
+        `AuditPersisterHITLDecisionNaturalKeyConflict`. The endpoint's
+        failure wrapper catches the conflict and logs
+        `hitl_resume_duplicate_submission` at INFO without re-raising.
+        """
+        result = await self._persist_keyed_by_natural_key(event)
+        if not isinstance(result, HITLDecisionEvent):
+            raise AuditPersisterSchemaInvariantError(
+                event_id=event.event_id,
+                invariant=(
+                    f"emit_hitl_decision returned {type(result).__name__}, "
+                    "expected HITLDecisionEvent"
+                ),
+            )
+        return result
+
     async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
         """Return the most-recent prior `PublishEvent` for `review_id`, or None.
 
