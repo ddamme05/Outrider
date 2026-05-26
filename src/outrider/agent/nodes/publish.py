@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from outrider.audit.events import (
     PublishAttemptEvent,
@@ -61,6 +61,7 @@ from outrider.coordinates import (
     source_line_to_github,
 )
 from outrider.coordinates.errors import CoordinateErrorKind
+from outrider.policy.canonical import compute_phase_id
 from outrider.policy.publish_eligibility import is_eligible_for_v1_publish
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import (
@@ -131,7 +132,11 @@ async def publish(
         remains dangling — that's the audit signal for "publish
         interrupted" per the analyze convention.
     """
-    phase_id = str(uuid4())
+    phase_id = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="publish",
+        attempt_key="publish",
+    )
     started_at = datetime.now(UTC)
 
     # Step 1: start phase event. If this raises (audit infra outage),

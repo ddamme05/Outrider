@@ -86,7 +86,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, Literal
-from uuid import uuid4
 
 from outrider.agent.nodes.analyze_parser import (
     ParserResult,
@@ -115,7 +114,7 @@ from outrider.coordinates import (
 )
 from outrider.llm.base import LLMRequest
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
-from outrider.policy.canonical import compute_round_id
+from outrider.policy.canonical import compute_phase_id, compute_round_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
 from outrider.prompts import safe_code_fence
@@ -259,7 +258,15 @@ async def analyze(
     # reducer + silently drop the second pass). The depth-2 ceiling is
     # enforced at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
     pass_index = len(state.analysis_rounds)
-    phase_id = str(uuid4())
+    # Per `compute_phase_id`'s contract, `attempt_key` is derived from
+    # `pass_index` BEFORE the round is appended — same pre-merge state on
+    # replay produces the same key, so the PhaseEventSink idempotency
+    # collapses re-emissions to one row.
+    phase_id = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="analyze",
+        attempt_key=f"analyze-pass-{pass_index}",
+    )
     started_at = datetime.now(UTC)
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
 
