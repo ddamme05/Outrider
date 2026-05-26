@@ -268,7 +268,11 @@ class AnthropicProvider:
         # (cold-start latency + the langsmith dep is technically optional
         # at runtime when tracing is off). The import lives inside the
         # `llm/` wrapper folder, honoring `vendor-sdks-only-in-wrappers`.
-        if os.environ.get("LANGSMITH_TRACING", "").lower() == "true":
+        # `.strip()` before `.lower()` so a `.env` parser quirk that leaves
+        # surrounding whitespace (e.g., `LANGSMITH_TRACING=" true "`) doesn't
+        # silently disable tracing. Same loose-truthy shape LangSmith's own
+        # SDK uses internally for the env var.
+        if os.environ.get("LANGSMITH_TRACING", "").strip().lower() == "true":
             from langsmith.wrappers import wrap_anthropic
 
             self._client = wrap_anthropic(self._client)
