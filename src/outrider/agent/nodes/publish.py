@@ -588,7 +588,15 @@ async def _route_and_gate_one_finding(
             PublishEligibilityReason.ROUTING_EMISSION_FAILED
         )
     else:
-        eligibility, eligibility_reason = is_eligible_for_v1_publish(finding)
+        # HITL context flows through explicit kwargs per the gate's
+        # pure-function contract; state.hitl_request / state.hitl_decision
+        # are populated by the HITL node body (None for the pass-through
+        # path or for graph-wiring bypasses).
+        eligibility, eligibility_reason = is_eligible_for_v1_publish(
+            finding,
+            hitl_request=state.hitl_request,
+            hitl_decision=state.hitl_decision,
+        )
 
     eligibility_decision_hash = compute_publish_eligibility_decision_hash(
         eligibility=eligibility,

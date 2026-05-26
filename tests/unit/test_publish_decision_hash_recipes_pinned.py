@@ -211,14 +211,21 @@ def test_publish_eligibility_value_strings_pinned() -> None:
 
 
 def test_publish_eligibility_reason_value_strings_pinned() -> None:
-    """Append-only contract pin per DECISIONS.md #023."""
+    """Append-only contract pin per DECISIONS.md #023.
+
+    Pre-HITL: 3 reasons. Post-HITL (specs/2026-05-26-hitl-node.md Group 6):
+    +3 (HITL_DECISION_MISSING / HITL_REJECTED / HITL_SUPPRESSED) = 6 total.
+    """
     assert PublishEligibilityReason.HITL_REQUIRED_NODE_ABSENT.value == "hitl_required_node_absent"
     assert (
         PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT.value
         == "unexpected_override_fields_present"
     )
     assert PublishEligibilityReason.ROUTING_EMISSION_FAILED.value == "routing_emission_failed"
-    assert len(PublishEligibilityReason) == 3
+    assert PublishEligibilityReason.HITL_DECISION_MISSING.value == "hitl_decision_missing"
+    assert PublishEligibilityReason.HITL_REJECTED.value == "hitl_rejected"
+    assert PublishEligibilityReason.HITL_SUPPRESSED.value == "hitl_suppressed"
+    assert len(PublishEligibilityReason) == 6
 
 
 def test_publish_attempt_outcome_value_strings_pinned() -> None:

@@ -1063,21 +1063,29 @@ class PublishEligibility(StrEnum):
 
 
 class PublishEligibilityReason(StrEnum):
-    """Why a finding was withheld at the eligibility gate (V1 reasons only).
+    """Why a finding was withheld at the eligibility gate.
 
-    V1 ships before `hitl` is wired; the `hitl_required_node_absent` and
-    `unexpected_override_fields_present` reasons cover the V1 trust gate.
-    The `routing_emission_failed` reason covers the per-finding try/except
-    recovery path. Post-V1 will add `hitl_pending`, `hitl_rejected`,
-    `hitl_suppressed` when the hitl node lands.
+    The HITL node landed per `specs/2026-05-26-hitl-node.md`; the gate now
+    consults `hitl_decision` for CRITICAL/HIGH severities. Pre-HITL
+    reasons (`hitl_required_node_absent`, `unexpected_override_fields_present`,
+    `routing_emission_failed`) remain in the enum: the first as a
+    defense-in-depth signal for the bypass case where publish runs
+    without HITL having gated (graph wiring bug); the second as a
+    fabricated-override defense; the third as the routing-emission
+    recovery path. New HITL-driven reasons cover REJECT / SUPPRESS /
+    no-matching-decision outcomes.
     """
 
-    # severity ∈ {CRITICAL, HIGH} and `hitl` node is absent.
+    # severity ∈ {CRITICAL, HIGH} and `hitl` node did not run for this
+    # review (state.hitl_request is None). Defense-in-depth — the graph
+    # always routes through HITL post-trace/analyze; reaching this branch
+    # indicates a wiring bypass.
     HITL_REQUIRED_NODE_ABSENT = "hitl_required_node_absent"
 
-    # finding carries `original_severity is not None` despite no legitimate
-    # HITL override path existing in V1 — defends against producer bugs
-    # or replay-injected state forging a pre-approved downgrade.
+    # finding carries `original_severity is not None` despite no matching
+    # SEVERITY_OVERRIDE decision being present in the HITL decision set —
+    # defends against producer bugs or replay-injected state forging a
+    # pre-approved downgrade.
     UNEXPECTED_OVERRIDE_FIELDS_PRESENT = "unexpected_override_fields_present"
 
     # Per-finding `try/except` in the publish node's routing+eligibility
@@ -1085,6 +1093,24 @@ class PublishEligibilityReason(StrEnum):
     # the eligibility event still fires (withheld) so the per-finding
     # audit contract holds even when routing emission fails.
     ROUTING_EMISSION_FAILED = "routing_emission_failed"
+
+    # severity ∈ {CRITICAL, HIGH}, HITL request landed but no decision
+    # arrived (e.g., publish reached via a future graph path bypassing
+    # the resume step, OR no matching PerFindingDecision for this
+    # finding_id in the submitted decision set — defense-in-depth
+    # against an endpoint mismatch check that missed something).
+    HITL_DECISION_MISSING = "hitl_decision_missing"
+
+    # severity ∈ {CRITICAL, HIGH}, HITL decision landed and the
+    # reviewer's outcome for this finding was REJECT — the finding is
+    # withheld from GitHub per the reviewer's explicit decision.
+    HITL_REJECTED = "hitl_rejected"
+
+    # severity ∈ {CRITICAL, HIGH}, HITL decision landed and the
+    # reviewer's outcome for this finding was SUPPRESS — same
+    # withhold semantic as REJECT but signals the finding is a
+    # known false-positive class the reviewer wants tagged forensically.
+    HITL_SUPPRESSED = "hitl_suppressed"
 
 
 class PublishAttemptOutcome(StrEnum):

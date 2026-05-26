@@ -1,4 +1,5 @@
-# V1 publish eligibility gate per specs/2026-05-21-publish-node.md Q3 + FUP-062.
+# V1 publish eligibility gate per specs/2026-05-21-publish-node.md Q3 + the
+# HITL-aware extension per specs/2026-05-26-hitl-node.md Group 6.
 """is_eligible_for_v1_publish — policy-derived publish-materialization gate.
 
 Per DECISIONS.md #023 (publish routing and eligibility are separate
@@ -8,38 +9,53 @@ of the V1 fabricated-override defense. The **schema** half lives at
 both must hold for the DECISIONS #023 "schema + gate" trust story.
 
 The gate fires BEFORE materialization — the publish node calls
-`is_eligible_for_v1_publish(finding)` per finding, and routes the
-finding to `publisher.create_review(...)` only when the return is
-`("eligible", None)`. Withholding outcomes get recorded in
-`PublishEligibilityEvent(eligibility=withheld, reason=<reason>)` and
-the finding does NOT reach GitHub.
+`is_eligible_for_v1_publish(finding, hitl_request=..., hitl_decision=...)`
+per finding, and routes the finding to `publisher.create_review(...)`
+only when the return is `("eligible", None)`. Withholding outcomes get
+recorded in `PublishEligibilityEvent(eligibility=withheld, reason=<reason>)`
+and the finding does NOT reach GitHub.
 
-V1 withholding reasons:
+The HITL context comes through as explicit kwargs (NOT read from any
+module-level state) so the gate stays a pure function over its inputs:
+
+  - `hitl_request: HITLRequest | None` — the gate envelope the HITL
+    node emitted (None means HITL didn't run for this review).
+  - `hitl_decision: HITLDecision | None` — the reviewer's decision set
+    after resume (None means HITL ran but no decision landed yet,
+    OR HITL never ran).
+
+Withholding reasons (post-HITL extension):
 
 - `hitl_required_node_absent` — finding severity is `CRITICAL` or
-  `HIGH` and the HITL node isn't shipped yet. ALL `CRITICAL`/`HIGH`
-  findings get this in V1; when HITL ships, the gate flips to consult
-  `HITLDecisionEvent` for these severities.
+  `HIGH` and the HITL node did not run for this review (request +
+  decision are both None). Defense-in-depth: the graph wiring routes
+  through HITL post-analyze/trace, so reaching this branch indicates
+  a wiring bypass.
+
+- `hitl_decision_missing` — severity ∈ {CRITICAL, HIGH}, HITL request
+  landed (request is not None) but decision is None OR no matching
+  `PerFindingDecision` for this `finding_id` in the submitted set
+  (defense-in-depth against an endpoint mismatch check that missed
+  something).
+
+- `hitl_rejected` — severity ∈ {CRITICAL, HIGH}, reviewer's outcome
+  for this finding was REJECT.
+
+- `hitl_suppressed` — severity ∈ {CRITICAL, HIGH}, reviewer's outcome
+  for this finding was SUPPRESS.
 
 - `unexpected_override_fields_present` — finding carries a non-None
-  `original_severity` despite no legitimate HITL override path
-  existing in V1. Indicates either a producer bug or replay-injected
-  state forging a pre-approved downgrade (a `CRITICAL` finding
-  showing `original_severity=CRITICAL + severity=LOW` would otherwise
-  appear to have been HITL-approved). Defended at this gate AND at
-  the audit-row schema layer; the gate fires FIRST so no GitHub call
-  ever happens for a forged-override finding.
+  `original_severity` despite no matching `SEVERITY_OVERRIDE` decision
+  in the HITL decision set. Indicates either a producer bug or
+  replay-injected state forging a pre-approved downgrade. Defended at
+  this gate AND at the audit-row schema layer; the gate fires FIRST
+  so no GitHub call ever happens for a forged-override finding.
 
 The mapping is a `MappingProxyType` keyed by `FindingSeverity` — set
 membership is FORBIDDEN per the spec's "implementation discipline"
-clause (§Severity policy of the publish-node spec, line 30). The
-mapping is total over `FindingSeverity` at import time
+clause. The mapping is total over `FindingSeverity` at import time
 (`_assert_mapping_total_at_import` runs as a module-level assertion);
 any new severity that lands without an entry crashes the import.
-This is the loud-failure pattern: a missing mapping entry is
-ambiguous between "deliberate omission" and "forgotten case," so
-the floor is "doesn't import" rather than "silently falls through
-to a default."
 """
 
 from __future__ import annotations
@@ -50,47 +66,40 @@ from typing import TYPE_CHECKING, Final
 
 from outrider.audit.events import PublishEligibility, PublishEligibilityReason
 from outrider.policy.severity import FindingSeverity
+from outrider.schemas.hitl import PerFindingOutcome
 
 if TYPE_CHECKING:
+    from outrider.schemas.hitl import HITLDecision, HITLRequest, PerFindingDecision
     from outrider.schemas.review_finding import ReviewFinding
 
 
 # ---------------------------------------------------------------------------
-# Eligibility mapping — keyed by FindingSeverity, value is the V1 outcome
-# tuple for severities WITHOUT the fabricated-override condition. The
-# override defense runs before this mapping is consulted, so the mapping
-# itself only encodes severity-based gating.
+# Eligibility mapping — keyed by FindingSeverity. The HITL gate consults
+# this mapping AFTER the fabricated-override check (which is HITL-aware)
+# and BEFORE the HITL decision lookup, so the mapping itself only encodes
+# whether a severity requires HITL gating (CRITICAL/HIGH) or passes
+# through (MEDIUM/LOW/INFO).
 # ---------------------------------------------------------------------------
 
 
 class _V1SeverityBaseline(StrEnum):
-    """V1 baseline gate outcome per severity, pre-override-check.
+    """V1 baseline gate outcome per severity, pre-HITL-decision-check.
 
-    Internal — the public surface is `is_eligible_for_v1_publish(finding)`
-    which converts this into the public `(PublishEligibility,
-    PublishEligibilityReason | None)` tuple. The intermediate enum
-    exists so `_assert_mapping_total_at_import` can pin the exhaustive
-    coverage without entangling test code with `PublishEligibility`'s
-    public values.
+    Internal — the public surface is the `is_eligible_for_v1_publish`
+    function which converts this into the public `(PublishEligibility,
+    PublishEligibilityReason | None)` tuple. CRITICAL/HIGH severities
+    require a HITL decision to materialize; MEDIUM/LOW/INFO are always
+    eligible per the gate-set partition.
     """
 
     ELIGIBLE = "eligible"
-    WITHHELD_HITL_ABSENT = "withheld_hitl_absent"
+    REQUIRES_HITL_DECISION = "requires_hitl_decision"
 
 
-# The MappingProxyType wrapper makes this immutable at runtime — a test
-# fixture or buggy caller can't mutate the mapping and silently change
-# eligibility for the rest of the process. Same defense-in-depth shape as
-# `outrider.llm.pricing.RATE_TABLE` per project convention.
-#
-# V1 policy:
-#   CRITICAL/HIGH → withheld (HITL node absent in V1)
-#   MEDIUM/LOW/INFO → eligible (no HITL gating needed; INFO is below
-#                    the CRITICAL/HIGH HITL trigger)
 _V1_SEVERITY_GATE: Final[MappingProxyType[FindingSeverity, _V1SeverityBaseline]] = MappingProxyType(
     {
-        FindingSeverity.CRITICAL: _V1SeverityBaseline.WITHHELD_HITL_ABSENT,
-        FindingSeverity.HIGH: _V1SeverityBaseline.WITHHELD_HITL_ABSENT,
+        FindingSeverity.CRITICAL: _V1SeverityBaseline.REQUIRES_HITL_DECISION,
+        FindingSeverity.HIGH: _V1SeverityBaseline.REQUIRES_HITL_DECISION,
         FindingSeverity.MEDIUM: _V1SeverityBaseline.ELIGIBLE,
         FindingSeverity.LOW: _V1SeverityBaseline.ELIGIBLE,
         FindingSeverity.INFO: _V1SeverityBaseline.ELIGIBLE,
@@ -101,15 +110,10 @@ _V1_SEVERITY_GATE: Final[MappingProxyType[FindingSeverity, _V1SeverityBaseline]]
 def _assert_mapping_total_at_import() -> None:
     """Pin the mapping's totality over `FindingSeverity` at import time.
 
-    Per the publish-node spec's implementation discipline clause
-    ("`is_eligible_for_v1_publish` MUST use exhaustive `match` over
-    every `FindingSeverity` enum member OR a frozen `MappingProxyType`
-    keyed lookup that raises `KeyError` on miss; set-
-    membership rejected at review time"), we use the MappingProxyType
-    + KeyError-on-miss shape; this import-time assertion is the
-    "exhaustive coverage" half. If a new `FindingSeverity` member lands
-    without an entry in `_V1_SEVERITY_GATE`, the module fails to import
-    rather than silently treating the new severity as ineligible.
+    See module docstring for the exhaustive-coverage rationale. A new
+    `FindingSeverity` member that lands without an entry in
+    `_V1_SEVERITY_GATE` crashes the import rather than silently treating
+    the new severity as ineligible.
     """
     missing = set(FindingSeverity) - set(_V1_SEVERITY_GATE.keys())
     extra = set(_V1_SEVERITY_GATE.keys()) - set(FindingSeverity)
@@ -132,8 +136,27 @@ _assert_mapping_total_at_import()
 # ---------------------------------------------------------------------------
 
 
+def _find_decision_for(
+    *, finding_id: object, hitl_decision: HITLDecision | None
+) -> PerFindingDecision | None:
+    """Return the `PerFindingDecision` matching `finding_id`, or None.
+
+    Bounded by the decision tuple size (<=256 per `HITLDecisionPayload`
+    schema cap); linear scan is fine.
+    """
+    if hitl_decision is None:
+        return None
+    for d in hitl_decision.decisions:
+        if d.finding_id == finding_id:
+            return d
+    return None
+
+
 def is_eligible_for_v1_publish(
     finding: ReviewFinding,
+    *,
+    hitl_request: HITLRequest | None,
+    hitl_decision: HITLDecision | None,
 ) -> tuple[PublishEligibility, PublishEligibilityReason | None]:
     """Decide whether a finding materializes via the publisher in V1.
 
@@ -141,49 +164,113 @@ def is_eligible_for_v1_publish(
         `(PublishEligibility.ELIGIBLE, None)` — publisher materializes;
         `(PublishEligibility.WITHHELD, <reason>)` — no GitHub call.
 
-    Per DECISIONS.md #023 + FUP-062, this function is a REQUIRED
-    publish-node-impl precondition. The publish node MUST call it
-    before passing a finding to `publisher.create_review(...)`. The
-    schema-layer defense (`PublishEligibilityEvent._enforce_v1_no_overrides`)
-    is a belt-and-suspenders backstop — it fires at audit-row
-    construction, but by then the GitHub call already happened. The
-    gate fires BEFORE materialization so a forged-override finding
-    never reaches GitHub.
+    Inputs (kwargs-only — the gate stays a pure function over what the
+    caller explicitly passes, not what's in a module-level state):
 
-    Withholding order (matters for the precedence story):
+      - `finding` — the candidate; the gate reads `.severity`,
+        `.original_severity`, `.finding_id`.
+      - `hitl_request` — the HITL gate envelope (None means HITL didn't
+        run for this review).
+      - `hitl_decision` — the reviewer's decision set (None means HITL
+        ran but no decision landed yet, OR HITL never ran).
+
+    Withholding order (precedence-bearing):
 
       1. **Fabricated-override defense first.** If
-         `finding.original_severity is not None`, return
-         `WITHHELD + unexpected_override_fields_present` regardless
-         of `finding.severity`. A `CRITICAL` finding showing
-         `original_severity=CRITICAL + severity=LOW` would otherwise
-         pass the severity gate (severity=LOW → eligible) and
-         materialize. The override-fields check FIRST blocks this.
+         `finding.original_severity is not None` AND no matching
+         `PerFindingDecision(outcome=SEVERITY_OVERRIDE)` exists in
+         `hitl_decision`, return WITHHELD with
+         `unexpected_override_fields_present`. A `CRITICAL` finding
+         showing `original_severity=CRITICAL + severity=LOW` would
+         otherwise pass the severity gate; the override-fields check
+         FIRST blocks this.
 
       2. **Severity gate.** Lookup in `_V1_SEVERITY_GATE` by
-         `finding.severity`. `CRITICAL`/`HIGH` → withheld
-         (hitl_required_node_absent); `MEDIUM`/`LOW` → eligible.
+         `finding.severity`. MEDIUM/LOW/INFO → ELIGIBLE (no HITL
+         needed). CRITICAL/HIGH → consult HITL state:
 
-    The exhaustive-coverage discipline (`_assert_mapping_total_at_import`)
-    runs at module import; this function uses direct dict access (raises
-    `KeyError` on miss) rather than `.get(..., default)` so a new
-    `FindingSeverity` member that somehow bypasses the import-time
-    assertion still fails loudly at runtime.
+           - `hitl_request is None`: WITHHELD with
+             `hitl_required_node_absent` (graph-wiring bypass — the
+             HITL node never ran).
+           - `hitl_decision is None` (request landed but decision
+             didn't): WITHHELD with `hitl_decision_missing`.
+           - Decision exists: lookup the per-finding outcome:
+             - APPROVE → ELIGIBLE
+             - SEVERITY_OVERRIDE → ELIGIBLE
+             - REJECT → WITHHELD with `hitl_rejected`
+             - SUPPRESS → WITHHELD with `hitl_suppressed`
+             - no matching `finding_id` (defense-in-depth):
+               WITHHELD with `hitl_decision_missing`.
     """
-    # Defense (1): fabricated-override check. Fires FIRST so a forged
-    # downgrade can't sneak past the severity gate.
-    if finding.original_severity is not None:
-        return (
-            PublishEligibility.WITHHELD,
-            PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT,
-        )
+    matching_decision = _find_decision_for(
+        finding_id=finding.finding_id, hitl_decision=hitl_decision
+    )
 
-    # Defense (2): severity gate. Direct dict access — raises KeyError
-    # on miss for the same reason the import-time totality check exists.
+    # Defense (1): fabricated-override check. Fires FIRST so a forged
+    # downgrade can't sneak past the severity gate — unless the
+    # corresponding HITL decision actually carries SEVERITY_OVERRIDE
+    # for this finding_id, in which case `original_severity` is
+    # legitimate.
+    if finding.original_severity is not None:
+        has_legit_override = (
+            matching_decision is not None
+            and matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+        )
+        if not has_legit_override:
+            return (
+                PublishEligibility.WITHHELD,
+                PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT,
+            )
+
+    # Defense (2): severity gate.
     baseline = _V1_SEVERITY_GATE[finding.severity]
     if baseline is _V1SeverityBaseline.ELIGIBLE:
         return (PublishEligibility.ELIGIBLE, None)
-    return (
-        PublishEligibility.WITHHELD,
-        PublishEligibilityReason.HITL_REQUIRED_NODE_ABSENT,
+
+    # CRITICAL/HIGH path: consult HITL state.
+    if hitl_request is None:
+        # Wiring bypass — HITL never ran. Defense-in-depth (the graph
+        # routes analyze/trace -> hitl unconditionally per Group 5).
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_REQUIRED_NODE_ABSENT,
+        )
+
+    if hitl_decision is None:
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_DECISION_MISSING,
+        )
+
+    if matching_decision is None:
+        # Decision landed but no entry for this finding_id (defense-in-
+        # depth: the endpoint's mismatch check should have rejected
+        # this before resume).
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_DECISION_MISSING,
+        )
+
+    if matching_decision.outcome == PerFindingOutcome.APPROVE:
+        return (PublishEligibility.ELIGIBLE, None)
+    if matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE:
+        return (PublishEligibility.ELIGIBLE, None)
+    if matching_decision.outcome == PerFindingOutcome.REJECT:
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_REJECTED,
+        )
+    if matching_decision.outcome == PerFindingOutcome.SUPPRESS:
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_SUPPRESSED,
+        )
+    # Exhaustive enum coverage — the four PerFindingOutcome members are
+    # all branched above. A new member that lands without a branch here
+    # fails loudly via the unreachable raise rather than silently
+    # falling through to ELIGIBLE or WITHHELD.
+    raise RuntimeError(
+        f"is_eligible_for_v1_publish: unhandled PerFindingOutcome "
+        f"{matching_decision.outcome!r}; add a branch above when a new "
+        f"outcome lands in PerFindingOutcome."
     )
