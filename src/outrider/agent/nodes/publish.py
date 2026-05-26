@@ -230,6 +230,23 @@ async def publish(
     # signal — operators diagnosing the failure couldn't distinguish
     # "intra-Outrider idempotency query crashed" from "node hung
     # mid-execution".
+    #
+    # Concurrent-invocation race window (V1 bounded; V1.5 hardening
+    # tracked as FUP): the `query_prior_publish_event` → POST →
+    # `emit_publish_result` sequence is read-before-write. If two
+    # `ainvoke(Command(resume=...))` calls run concurrently on the
+    # same `thread_id`, both could observe `prior_publish_event=None`
+    # and both POST. The V1 bound is langgraph's per-thread
+    # checkpointer serialization: concurrent `ainvoke` on the same
+    # `thread_id` conflicts at the checkpoint-write layer, so the
+    # second invocation fails or sees the prior body's state. The
+    # `find_existing_review_on_head_sha` check at step 6 is a
+    # secondary defense for the crash-after-success-before-emit case
+    # (matches by body marker). For multi-process / Celery-dispatcher
+    # deployments (V2), the proper hardening is a DB-level reservation
+    # — `pg_try_advisory_xact_lock(hash(review_id, 'publish'))`
+    # wrapping the query→POST→emit triple. Tracked as a V1.5 follow-up
+    # alongside the broader concurrency-hardening pass.
     try:
         prior_publish_event = await publish_event_sink.query_prior_publish_event(state.review_id)
     except Exception as exc:

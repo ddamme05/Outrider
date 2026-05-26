@@ -52,8 +52,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("outrider.api.lifespan_sweep_loop")
 
 
-# Per docs/spec.md §4.1.6 sweep cadence. Override via
-# OUTRIDER_SWEEP_INTERVAL_SECONDS for tests / faster operator triage.
+# Per docs/spec.md §4.1.6 sweep cadence. Tests / faster operator
+# triage can override via the `interval_seconds` kwarg on
+# `start_periodic_sweep(...)`. There is intentionally NO env-var
+# override — the lifespan owns the lifecycle, and an env-var
+# override would let operators silently destabilize the sweep
+# cadence without an explicit code-side opt-in.
 _SWEEP_INTERVAL_SECONDS: Final[float] = 300.0
 
 
