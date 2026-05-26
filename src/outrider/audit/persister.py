@@ -2068,10 +2068,14 @@ class AuditPersister:
 
         Identical-content concurrent submissions absorb cleanly (returned
         event is the existing persisted row with matching content hash);
-        divergent-content concurrent submissions raise
+        divergent-content submissions raise
         `AuditPersisterHITLDecisionNaturalKeyConflict`. The endpoint's
         failure wrapper catches the conflict and logs
-        `hitl_resume_duplicate_submission` at INFO without re-raising.
+        `hitl_resume_natural_key_conflict` at WARNING level (not INFO)
+        with a diagnostic note distinguishing the concurrent-loser case
+        from the window-(f) crash-retry case; canonical window-(f)
+        recovery (advance lifecycle from the audit row) is owned by
+        `sweep/hitl_expiry.py::reclaim_stuck_hitl_states`.
         """
         result = await self._persist_keyed_by_natural_key(event)
         if not isinstance(result, HITLDecisionEvent):
@@ -2150,3 +2154,44 @@ class AuditPersister:
         if payload is None:
             return None
         return PublishEvent.model_validate(payload)
+
+    async def query_hitl_decision_event(self, review_id: UUID) -> HITLDecisionEvent | None:
+        """Return the persisted `HITLDecisionEvent` for `review_id`, or None.
+
+        Sister of `query_prior_publish_event`. The HITL audit row's
+        natural-key partial unique index (one row per review_id per
+        spec Group 3) means there's AT MOST ONE event per review;
+        the ORDER BY is defensive — if the index is somehow violated
+        (e.g., migration regression), the most-recent row wins by
+        `(timestamp, sequence_number) DESC` so consumers see the
+        canonical "what decision actually landed".
+
+        Used by `sweep/hitl_expiry.py::reclaim_stuck_hitl_states` for
+        window-(f) crash recovery: when `emit_hitl_decision` succeeded
+        but `mark_running` never landed, the audit row IS the canonical
+        decision. The sweep reads this row, reconstructs the
+        `HITLDecision` from it, and calls `mark_running` directly to
+        advance the lifecycle past the stuck state.
+
+        Read-only — opens its own `AsyncSession` (no `session.begin()`,
+        no transaction needed for a single SELECT). Per-call session
+        discipline mirrors `query_prior_publish_event`.
+        """
+        hitl_decision_event_type: str = HITLDecisionEvent.model_fields["event_type"].default
+        async with self._session_factory() as session:
+            stmt = (
+                select(AuditEventRow.payload)
+                .where(
+                    AuditEventRow.review_id == review_id,
+                    AuditEventRow.event_type == hitl_decision_event_type,
+                )
+                .order_by(
+                    AuditEventRow.timestamp.desc(),
+                    AuditEventRow.sequence_number.desc(),
+                )
+                .limit(1)
+            )
+            payload = await session.scalar(stmt)
+        if payload is None:
+            return None
+        return HITLDecisionEvent.model_validate(payload)

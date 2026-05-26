@@ -12,18 +12,29 @@ advisory lock.
      match on the retry and the canonical anomaly would be permanently
      lost. Anomaly-first reverses that durability gap.
 
-  2. `reclaim_stuck_hitl_states` — for rows in `awaiting_approval`
-     whose LangGraph checkpoint has NO pending interrupt (window-(c)
-     crash recovery — `mark_awaiting_approval` succeeded but
-     `interrupt()` never landed), OR whose audit row carries an
-     existing `HITLDecisionEvent` but `reviews.hitl_decision IS NULL`
-     (window-(f) crash recovery — `emit_hitl_decision` succeeded but
-     `mark_running` never landed): mark the review `failed` after a
-     configurable grace period. Operator triage via the resulting
-     status row + structured logs. Per the F2 audit-fold rationale,
-     this sub-job is the canonical recovery path for divergent-content
-     window-(f) retries that the resume wrapper cannot resolve on its
-     own.
+  2. `reclaim_stuck_hitl_states` — covers two crash windows:
+     - **Window (f) recovery (audit-row-driven):** for rows in
+       `awaiting_approval` past the grace period whose
+       `audit_events` table carries an existing `HITLDecisionEvent`
+       but `reviews.hitl_decision IS NULL`, reconstruct the
+       `HITLDecision` from the canonical audit row and call
+       `mark_running` to advance the lifecycle. This is the case
+       where `emit_hitl_decision` succeeded but `mark_running`
+       never landed; the audit row IS the canonical decision per
+       `audit-events-append-only`. The sweep does NOT mark the
+       review `failed` in this case — it advances it to `running`
+       per the canonical audit content.
+     - **Window (c) recovery (checkpoint-absence):** for rows in
+       `awaiting_approval` past the grace period with NO audit row
+       AND no LangGraph checkpoint (`mark_awaiting_approval`
+       succeeded but `interrupt()` never landed), mark the review
+       `failed`. Operator triage via structured logs + the failed
+       status row.
+     The audit-row check FIRST is the critical distinction the
+     earlier checkpointer-only heuristic missed: window (f) rows
+     STILL have the HITL interrupt checkpoint (the body crashed
+     after interrupt() returned, before mark_running), so a pure
+     checkpoint-presence heuristic skipped them indefinitely.
 
 Sub-job order WITHIN `run_once()`: `reclaim_stuck_hitl_states` runs
 BEFORE `transition_expired_hitl_reviews`. Rationale (spec line 566):
@@ -31,11 +42,15 @@ a stuck-state row that ALSO has `expires_at < NOW()` would otherwise
 flip to `awaiting_approval_expired` via the expiry sub-job, which
 masks the actual crash classification ("reviewer never decided" vs
 "process crashed mid-write"). Running reclaim first correctly
-classifies as `failed` with explicit operator-triage signal.
+classifies as `failed` (or advances to `running` on window-f) with
+explicit operator-triage signal.
 
 Both sub-jobs share the existing `SWEEP_LOCK_ID` from
-`sweep/purge_expired.py` per `sweep-jobs-use-advisory-locks` — only
-one sweep process at a time across all sub-jobs.
+`sweep/purge_expired.py` per `sweep-jobs-use-advisory-locks` — the
+LOCK IS ACQUIRED ONCE in `run_once()` and held across both
+sub-jobs. Calling the sub-jobs directly (outside `run_once`) is
+permitted but the caller is responsible for the lock; each sub-job
+no longer self-acquires.
 """
 
 from __future__ import annotations
@@ -48,6 +63,7 @@ from sqlalchemy import select, text, update
 
 from outrider.anomaly.rule_names import AnomalyRuleName
 from outrider.db.models.reviews import Review
+from outrider.schemas.hitl import HITLDecision
 from outrider.sweep.purge_expired import SWEEP_LOCK_ID
 
 if TYPE_CHECKING:
@@ -55,6 +71,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
     from outrider.anomaly.sinks import AnomalySink
+    from outrider.audit.persister import AuditPersister
     from outrider.db.sinks import ReviewStatusSink
 
 
@@ -109,13 +126,14 @@ async def transition_expired_hitl_reviews(
     `awaiting_approval_expired`. Rows that errored on the anomaly
     emit do NOT count (they're retried next tick).
 
-    Acquires `SWEEP_LOCK_ID` via the provided `conn`. If another sweep
-    holds it, returns 0 without scanning.
+    **Lock-acquisition contract: this sub-job DOES NOT acquire
+    `SWEEP_LOCK_ID` itself.** The caller (typically `run_once`)
+    acquires the lock once and holds it across both sub-jobs in a
+    single transaction. This is load-bearing for the reclaim-before-
+    transition ordering: each sub-job acquiring its own lock would
+    free + reacquire between sub-jobs, letting a concurrent process
+    sneak in and break the order.
     """
-    if not await _try_acquire_sweep_lock(conn):
-        logger.info("hitl_expiry_sweep_skipped: advisory lock held by another sweep")
-        return 0
-
     # Query expired rows. Uses the partial index
     # `ix_reviews_awaiting_approval_expires_at` from Group 3.
     result = await conn.execute(
@@ -166,40 +184,46 @@ async def reclaim_stuck_hitl_states(
     *,
     conn: AsyncConnection,
     session_factory: async_sessionmaker[AsyncSession],
+    audit_persister: AuditPersister,
+    review_status_sink: ReviewStatusSink,
     checkpointer: BaseCheckpointSaver[Any],
     grace_period: timedelta = _DEFAULT_RECLAIM_GRACE_PERIOD,
-) -> int:
-    """Sub-job 2: detect + mark `failed` for stuck HITL states.
+) -> dict[str, int]:
+    """Sub-job 2: detect + recover stuck HITL states.
 
-    Two crash-window patterns this sub-job covers:
+    Two crash-window patterns, distinguished by an AUDIT-ROW check
+    (NOT a checkpointer-only heuristic — the earlier impl missed
+    window (f) because the langgraph checkpoint exists even after a
+    post-interrupt crash):
 
-      - Window (c): `mark_awaiting_approval` succeeded but
-        `interrupt()` never landed. The row is in `awaiting_approval`
-        but the LangGraph checkpointer has NO pending interrupt for
-        this thread_id. Detection: query checkpointer via
-        `checkpointer.aget(config={"configurable":
-        {"thread_id": str(review_id)}})` — None or a checkpoint
-        without a pending-interrupt marker indicates window (c).
+      - **Window (f)** (`emit_hitl_decision` succeeded but
+        `mark_running` never landed): an audit row with
+        `event_type='hitl_decision'` exists for this `review_id`,
+        but `reviews.hitl_decision IS NULL`. The audit row IS the
+        canonical decision per `audit-events-append-only`. Recovery:
+        reconstruct the `HITLDecision` domain object from the audit
+        event and call `review_status_sink.mark_running` to advance
+        the lifecycle to `running`. The graph then continues through
+        publish on the next dispatcher tick (or the sweep itself can
+        invoke). Counted under `recovered`.
 
-      - Window (f): `emit_hitl_decision` succeeded but `mark_running`
-        never landed. The row is in `awaiting_approval`,
-        `reviews.hitl_decision IS NULL`, but an audit row with
-        `event_type='hitl_decision'` exists for this review_id. The
-        F2 audit-fold flagged this case as the canonical-recovery
-        path for divergent-content retries that the resume wrapper
-        cannot resolve.
+      - **Window (c)** (`mark_awaiting_approval` succeeded but
+        `interrupt()` never landed): no audit row exists AND the
+        LangGraph checkpointer has no record for this `thread_id`.
+        Recovery: mark the review `failed`. Operator triages from
+        logs + the failed status row. Counted under `failed`.
 
-    Both windows resolve to: mark the review `failed` after the
-    grace period elapses. Operator triages from logs + the failed
-    status row.
+    Rows where the audit row is absent AND a checkpoint exists are
+    treated as "still in flight" — the body is suspended at the
+    interrupt waiting for resume; skip.
 
-    Returns the number of rows reclaimed. Acquires SWEEP_LOCK_ID via
-    the provided conn. If another sweep holds it, returns 0.
+    Returns `{"recovered": N, "failed": M}` for telemetry. `N + M` is
+    the total number of stuck rows handled this tick.
+
+    **Lock-acquisition contract: this sub-job DOES NOT acquire
+    `SWEEP_LOCK_ID` itself.** The caller (typically `run_once`)
+    acquires once and holds across both sub-jobs.
     """
-    if not await _try_acquire_sweep_lock(conn):
-        logger.info("hitl_reclaim_sweep_skipped: advisory lock held by another sweep")
-        return 0
-
     grace_cutoff = datetime.now(UTC) - grace_period
 
     # Query candidate rows: status='awaiting_approval' AND old enough
@@ -213,40 +237,69 @@ async def reclaim_stuck_hitl_states(
     )
     candidate_ids = [row.id for row in result.all()]
 
-    reclaimed = 0
+    recovered = 0
+    failed = 0
     for review_id in candidate_ids:
-        # Check LangGraph checkpointer for a pending interrupt.
+        # Step 1: check the audit layer for an orphaned
+        # HITLDecisionEvent. Window-(f) detection.
+        try:
+            audit_decision_event = await audit_persister.query_hitl_decision_event(review_id)
+        except Exception:
+            logger.exception(
+                "hitl_reclaim_audit_query_failed",
+                extra={"review_id": str(review_id)},
+            )
+            continue
+
+        if audit_decision_event is not None:
+            # Window (f) recovery: the audit row is canonical.
+            # Reconstruct the HITLDecision and advance the lifecycle.
+            canonical_decision = HITLDecision(
+                reviewer_id=audit_decision_event.reviewer_id,
+                decisions=audit_decision_event.decisions,
+                annotation=audit_decision_event.annotation,
+                decided_at=audit_decision_event.decided_at,
+            )
+            await review_status_sink.mark_running(
+                review_id=review_id,
+                hitl_decision_payload=canonical_decision.model_dump(mode="json"),
+            )
+            recovered += 1
+            logger.warning(
+                "hitl_reclaim_advanced_from_audit_row",
+                extra={
+                    "review_id": str(review_id),
+                    "audit_event_id": str(audit_decision_event.event_id),
+                    "note": (
+                        "Row stuck in awaiting_approval past grace period with "
+                        "an orphaned HITLDecisionEvent in audit_events; "
+                        "reconstructed HITLDecision from canonical audit row "
+                        "and advanced lifecycle to running (window-f recovery)."
+                    ),
+                },
+            )
+            continue
+
+        # Step 2: no audit row. Check the LangGraph checkpointer.
+        # If a checkpoint exists, the body is suspended at the
+        # interrupt waiting for resume — NOT stuck. Skip.
         config = {"configurable": {"thread_id": str(review_id)}}
         try:
             checkpoint = await checkpointer.aget(config)  # type: ignore[arg-type]
         except Exception:
-            # Checkpointer read failure — DO NOT reclaim. Log and
-            # let the next sweep tick retry. Mis-reclaiming an
-            # in-flight HITL would be catastrophic (lose the
-            # reviewer's chance to decide); the cost of an extra
-            # sweep tick is negligible.
             logger.exception(
                 "hitl_reclaim_checkpointer_read_failed",
                 extra={"review_id": str(review_id)},
             )
             continue
 
-        # If a checkpoint exists with a pending interrupt, the body
-        # IS suspended at the HITL interrupt — NOT stuck, just
-        # waiting. Skip.
         if checkpoint is not None:
-            # Heuristic: a present-but-empty checkpoint indicates
-            # an actual suspension. The full pending-interrupt
-            # detection requires reading the checkpoint's
-            # `interrupts` field via `aget_tuple`; for V1, ANY
-            # checkpoint means "graph is alive" — skip reclaim.
-            # Future refinement: use `checkpointer.aget_tuple` to
-            # inspect the `pending_writes` / `interrupts` structure
-            # and distinguish active-pause from stale checkpoint.
+            # No audit row + checkpoint exists = genuinely suspended,
+            # still in flight. Skip.
             continue
 
-        # No checkpoint → window (c) crash OR clean state. Mark
-        # the review failed. Operator triage from logs + status.
+        # Window (c) recovery: no audit row, no checkpoint, past
+        # grace period. Mark `failed` for operator triage.
         async with session_factory() as session, session.begin():
             await session.execute(
                 update(Review)
@@ -256,20 +309,20 @@ async def reclaim_stuck_hitl_states(
                 )
                 .values(status="failed")
             )
-        reclaimed += 1
+        failed += 1
         logger.warning(
             "hitl_reclaim_marked_failed",
             extra={
                 "review_id": str(review_id),
                 "note": (
                     "Row stuck in awaiting_approval past grace period with no "
-                    "pending LangGraph interrupt; reclaimed as failed for "
-                    "operator triage. Likely window-(c) or window-(f) crash."
+                    "audit row AND no LangGraph checkpoint; reclaimed as "
+                    "failed for operator triage (window-c crash)."
                 ),
             },
         )
 
-    return reclaimed
+    return {"recovered": recovered, "failed": failed}
 
 
 async def run_once(
@@ -278,27 +331,46 @@ async def run_once(
     session_factory: async_sessionmaker[AsyncSession],
     anomaly_sink: AnomalySink,
     review_status_sink: ReviewStatusSink,
+    audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
     grace_period: timedelta = _DEFAULT_RECLAIM_GRACE_PERIOD,
 ) -> dict[str, int]:
-    """Run both HITL-expiry sub-jobs in canonical order.
+    """Run both HITL-expiry sub-jobs in canonical order, under a
+    single advisory-lock window.
 
     Order is locked: `reclaim_stuck_hitl_states` BEFORE
-    `transition_expired_hitl_reviews`. Rationale: a stuck row past
-    `expires_at` would otherwise be classified as "reviewer never
-    decided" (expired) when the actual cause is "process crashed"
-    (reclaimed → failed). Reclaim-first preserves the diagnostic
-    distinction in the resulting row state.
+    `transition_expired_hitl_reviews`. Rationale (spec line 566): a
+    stuck row past `expires_at` would otherwise be classified as
+    "reviewer never decided" (expired) when the actual cause is
+    "process crashed" (reclaimed -> recovered-from-audit OR failed).
+    Reclaim-first preserves the diagnostic distinction in the
+    resulting row state.
 
-    Both sub-jobs share `SWEEP_LOCK_ID`. The first one to acquire it
-    runs; the second sees the lock still held (same transaction) and
-    proceeds inside the same lock window — no double-lock contention.
+    **Advisory lock is acquired ONCE** by this wrapper. The
+    transaction-scoped `pg_try_advisory_xact_lock` holds for the
+    duration of the `conn`'s transaction, which spans both sub-jobs
+    AND the SELECT/UPDATE statements inside them. Each sub-job
+    deliberately does NOT self-acquire — otherwise reclaim could
+    return early (lock held by a peer), then the lock could free
+    before transition runs, breaking the reclaim-before-transition
+    ordering.
 
-    Returns a dict `{reclaimed: N, transitioned: M}` for telemetry.
+    Returns `{"reclaim_recovered": N, "reclaim_failed": M,
+    "transitioned": K}` for telemetry. `(N + M)` is the reclaim
+    sub-job's total; `K` is the expiry sub-job's transition count.
+
+    On lock contention (another sweep process holds it): returns all
+    zeros without running either sub-job.
     """
-    reclaimed = await reclaim_stuck_hitl_states(
+    if not await _try_acquire_sweep_lock(conn):
+        logger.info("hitl_sweep_skipped: advisory lock held by another sweep process")
+        return {"reclaim_recovered": 0, "reclaim_failed": 0, "transitioned": 0}
+
+    reclaim_result = await reclaim_stuck_hitl_states(
         conn=conn,
         session_factory=session_factory,
+        audit_persister=audit_persister,
+        review_status_sink=review_status_sink,
         checkpointer=checkpointer,
         grace_period=grace_period,
     )
@@ -308,7 +380,11 @@ async def run_once(
         anomaly_sink=anomaly_sink,
         review_status_sink=review_status_sink,
     )
-    return {"reclaimed": reclaimed, "transitioned": transitioned}
+    return {
+        "reclaim_recovered": reclaim_result["recovered"],
+        "reclaim_failed": reclaim_result["failed"],
+        "transitioned": transitioned,
+    }
 
 
 __all__ = [
