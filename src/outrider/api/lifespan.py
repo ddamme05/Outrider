@@ -569,6 +569,19 @@ def build_lifespan(
             # Protocols.
             app.state.review_status_reader = review_status_persister
 
+            # Dashboard auth credential. Read at startup; FastAPI
+            # `Authorization: Bearer ...` HMAC-compared in
+            # `api/dashboard/auth.py::require_admin_api_key`.
+            # Construction is fail-loud per `extra="forbid"` so a
+            # missing `OUTRIDER_ADMIN_API_KEY` env var surfaces as a
+            # ValidationError at lifespan startup, NOT at the first
+            # `/decide` request.
+            from outrider.api.dashboard.config import (  # noqa: PLC0415
+                DashboardSettings,
+            )
+
+            app.state.admin_api_key = DashboardSettings().admin_api_key
+
             # Safe: `engine.url.drivername` is the scheme alone (e.g.,
             # "postgresql+psycopg") — never carries credentials. DO NOT log
             # `engine.url` itself or `engine.url.render_as_string(hide_password=False)`
