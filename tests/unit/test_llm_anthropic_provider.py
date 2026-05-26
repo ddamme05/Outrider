@@ -476,6 +476,84 @@ def test_constructor_uses_30s_read_timeout() -> None:
 
 
 # ---------------------------------------------------------------------------
+# LangSmith opt-in wrap (`feat/langsmith-tracing` arc).
+# ---------------------------------------------------------------------------
+
+
+def test_langsmith_wrap_not_invoked_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default-off: no `LANGSMITH_TRACING` env var → no wrap, no langsmith
+    import side effect on the constructor."""
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    with patch("langsmith.wrappers.wrap_anthropic") as mock_wrap:
+        provider = AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+        )
+    mock_wrap.assert_not_called()
+    # `.close()` is still callable on the unwrapped client (close-path
+    # smoke check; if the SDK rename ever drops `.close`, the audit
+    # provider's `aclose` chain at line ~645 breaks).
+    assert hasattr(provider._client, "close")  # noqa: SLF001
+
+
+@pytest.mark.parametrize("raw", ["true", "TRUE", "True", " true ", "tRuE"])
+def test_langsmith_wrap_invoked_when_env_truthy(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    raw: str,
+) -> None:
+    """`LANGSMITH_TRACING=true` (case-insensitive, whitespace-tolerant per
+    the defensive `.strip().lower()` in the constructor) activates the
+    `wrap_anthropic` shim and emits an INFO log naming the activation."""
+    monkeypatch.setenv("LANGSMITH_TRACING", raw)
+    caplog.set_level(logging.INFO, logger="outrider.llm.anthropic_provider")
+    # Sentinel return so we can confirm the wrap's output replaced the
+    # constructor-built client (the real `wrap_anthropic` returns the
+    # same instance with patched methods; the sentinel proves the
+    # assignment fired rather than relying on identity).
+    sentinel = object()
+    with patch("langsmith.wrappers.wrap_anthropic", return_value=sentinel) as mock_wrap:
+        provider = AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+        )
+    mock_wrap.assert_called_once()
+    assert provider._client is sentinel  # noqa: SLF001
+    activation_msgs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider" and r.levelno == logging.INFO
+    ]
+    assert any("LangSmith tracing enabled" in m for m in activation_msgs), (
+        f"expected activation INFO log; got {activation_msgs!r}"
+    )
+
+
+@pytest.mark.parametrize("raw", ["false", "False", "0", "", "yes", "1"])
+def test_langsmith_wrap_not_invoked_when_env_non_true(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    """Only literal "true" (case-insensitive, whitespace-tolerant) activates
+    the wrap. Other truthy-looking values (`yes`, `1`) do NOT, matching
+    LangSmith's own SDK env-var convention. Pinning the negative set
+    surfaces a regression if someone "helpfully" widens the check to a
+    general truthy-string parser."""
+    monkeypatch.setenv("LANGSMITH_TRACING", raw)
+    with patch("langsmith.wrappers.wrap_anthropic") as mock_wrap:
+        AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+        )
+    mock_wrap.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # complete() — fail-closed pre-call (AC#5).
 # ---------------------------------------------------------------------------
 
