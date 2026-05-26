@@ -210,7 +210,9 @@ def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
 
 def _valid_args() -> dict[str, Any]:
     """Build a complete, valid set of kwargs. Tests perturb one at a time."""
-    from outrider.agent.nodes.hitl_config import HITLConfig
+    from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
+
+    from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
 
     return {
         "provider": _StubProvider(),
@@ -223,6 +225,7 @@ def _valid_args() -> dict[str, Any]:
         "hitl_event_sink": _StubHITLEventSink(),
         "review_status_sink": _StubReviewStatusSink(),
         "hitl_config": HITLConfig(),
+        "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),

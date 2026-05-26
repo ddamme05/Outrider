@@ -72,6 +72,15 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     derivation. Per `nodes-receive-deps-via-closure`, config travels
     through the dependency-injection seam at `build_graph(...)` —
     the node body does not read env vars.
+  - `checkpointer: BaseCheckpointSaver` — required for HITL durability.
+    `interrupt(...)` writes state to the checkpointer; `Command(resume=...)`
+    reads it back on the next `ainvoke(..., config={"configurable":
+    {"thread_id": str(review_id)}})` call. Production is
+    `AsyncPostgresSaver`; tests use `InMemorySaver`. Per
+    `langgraph-1.1.6/narrative/persistence.md` the checkpointer is
+    load-bearing for any graph that uses `interrupt(...)` — without
+    one, the suspended state is in-memory only and is lost on process
+    restart.
   - `publisher: GitHubPublisher` — required for publish's GitHub
     `create_review` call (single-review-per-PR contract).
   - `import_path_resolver: ImportPathResolver` — required for analyze's
@@ -129,6 +138,7 @@ from outrider.llm.base import LLMProvider
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from langgraph.checkpoint.base import BaseCheckpointSaver
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from outrider.github import InstallationGitHubClient
@@ -167,6 +177,7 @@ def build_graph(
     hitl_event_sink: HITLEventSink,
     review_status_sink: ReviewStatusSink,
     hitl_config: HITLConfig,
+    checkpointer: BaseCheckpointSaver[Any],
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
@@ -202,6 +213,13 @@ def build_graph(
         raise BuildGraphError("review_status_sink must not be None")
     if hitl_config is None:
         raise BuildGraphError("hitl_config must not be None")
+    if checkpointer is None:
+        raise BuildGraphError(
+            "checkpointer must not be None — HITL `interrupt(...)` + "
+            "`Command(resume=...)` require a durable checkpointer for "
+            "cross-process state rehydration. Use `InMemorySaver` for "
+            "tests, `AsyncPostgresSaver` in production."
+        )
     if publisher is None:
         raise BuildGraphError("publisher must not be None")
     if import_path_resolver is None:
@@ -387,7 +405,7 @@ def build_graph(
     # set or post-resume after `Command(resume=...)`).
     builder.add_edge("hitl", "publish")
     builder.add_edge("publish", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 def _analyze_router(state: ReviewState) -> str:

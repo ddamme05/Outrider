@@ -163,6 +163,8 @@ def compiled_graph() -> Any:
     # gates are member-presence-only at runtime, so a duck-typed stub
     # is sufficient for introspection-only tests. mypy needs the
     # ignores because static-shape compatibility is stricter.
+    from langgraph.checkpoint.memory import InMemorySaver
+
     from outrider.agent.nodes.hitl_config import HITLConfig
 
     return build_graph(
@@ -176,6 +178,7 @@ def compiled_graph() -> Any:
         hitl_event_sink=_StubHITLEventSink(),
         review_status_sink=_StubReviewStatusSink(),
         hitl_config=HITLConfig(),
+        checkpointer=InMemorySaver(),
         publisher=_StubGitHubPublisher(),
         file_examination_sink=_StubFileSink(),
         analyze_event_sink=_StubAnalyzeEventSink(),

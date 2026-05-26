@@ -51,7 +51,7 @@ import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -91,6 +91,34 @@ async def _noop_severity_policy_fingerprint_check(_engine: object) -> None:
 def noop_severity_policy_fingerprint_check() -> Callable[[object], Awaitable[None]]:
     """Session-scoped: the no-op is stateless, safe to share."""
     return _noop_severity_policy_fingerprint_check
+
+
+def _in_memory_checkpointer_factory() -> Any:
+    """Async-context-manager-yielding checkpointer for lifespan tests.
+
+    The production `_default_checkpointer_factory` builds an
+    `AsyncPostgresSaver` against `DATABASE_URL`; tests that inject a
+    MagicMock engine cannot supply a real DB connection. Returning an
+    `InMemorySaver` wrapped in a no-op async context manager satisfies
+    the lifespan body's `stack.enter_async_context(...)` call without
+    a real psycopg parse.
+    """
+    from contextlib import asynccontextmanager  # noqa: PLC0415
+
+    from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
+
+    @asynccontextmanager
+    async def _cm() -> AsyncGenerator[InMemorySaver]:
+        yield InMemorySaver()
+
+    return _cm()
+
+
+@pytest.fixture
+def in_memory_checkpointer_factory() -> Callable[[], Any]:
+    """Returns a factory the lifespan body can call to enter the saver
+    via AsyncExitStack."""
+    return _in_memory_checkpointer_factory
 
 
 # The pyproject_async template puts source-code config (script_location etc.)

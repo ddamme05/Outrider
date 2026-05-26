@@ -397,6 +397,8 @@ def _graph_kwargs(
     + `import_path_resolver`; extended again 2026-05-22 for the
     publish-node arc (`publish_event_sink` + `publisher`).
     """
+    from langgraph.checkpoint.memory import InMemorySaver
+
     from outrider.agent.nodes.hitl_config import HITLConfig
 
     return {
@@ -412,6 +414,7 @@ def _graph_kwargs(
         "hitl_event_sink": _StubHITLEventSink(),
         "review_status_sink": _StubReviewStatusSink(),
         "hitl_config": HITLConfig(),
+        "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
@@ -495,8 +498,13 @@ async def test_naive_datetime_seed_raises_validation_error_at_first_node_input(
     """
     graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
     bad_seed = _build_seed_dict_with_naive_datetime()
+    # `thread_id` is required by the checkpointer-gate even when the
+    # input is going to fail Pydantic validation. The test's contract
+    # is "Pydantic validation fires at first-node-input"; pass a
+    # placeholder thread_id so the checkpointer gate passes and
+    # Pydantic gets the chance to raise.
     with pytest.raises(ValidationError):
-        await graph.ainvoke(bad_seed)
+        await graph.ainvoke(bad_seed, config={"configurable": {"thread_id": "test-naive-datetime"}})
 
     # Triage callable never ran; no phase events emitted
     assert recording_phase_event_sink.events == []
@@ -519,7 +527,9 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
     state = _build_valid_seed_state()
     graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
 
-    result = await graph.ainvoke(state)
+    result = await graph.ainvoke(
+        state, config={"configurable": {"thread_id": str(state.review_id)}}
+    )
 
     # LangGraph returns a dict, not a Pydantic instance
     assert isinstance(result, dict)
@@ -585,7 +595,9 @@ async def test_result_dict_rehydrates_as_review_state(
     state = _build_valid_seed_state()
     graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
 
-    result = await graph.ainvoke(state)
+    result = await graph.ainvoke(
+        state, config={"configurable": {"thread_id": str(state.review_id)}}
+    )
     rehydrated = ReviewState(**result)
 
     assert isinstance(rehydrated, ReviewState)
@@ -630,7 +642,9 @@ async def test_is_eval_survives_langgraph_merge(
         # own pre-invocation snapshot to slice the new events.
         events_before = len(recording_phase_event_sink.events)
 
-        result = await graph.ainvoke(state)
+        result = await graph.ainvoke(
+            state, config={"configurable": {"thread_id": str(state.review_id)}}
+        )
 
         # Default reducer is overwrite; triage didn't touch is_eval so it
         # comes through unchanged
@@ -671,7 +685,7 @@ async def test_phase_events_have_matching_phase_id_through_graph(
     state = _build_valid_seed_state()
     graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
 
-    await graph.ainvoke(state)
+    await graph.ainvoke(state, config={"configurable": {"thread_id": str(state.review_id)}})
 
     events = recording_phase_event_sink.events
     assert len(events) > 0, "no phase events emitted"

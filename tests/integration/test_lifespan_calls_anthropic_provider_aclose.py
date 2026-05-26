@@ -32,6 +32,7 @@ def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — 
 async def test_lifespan_calls_provider_aclose_on_shutdown(
     make_stub_llm_provider: type,
     noop_severity_policy_fingerprint_check: object,
+    in_memory_checkpointer_factory: object,
 ) -> None:
     """Lifespan teardown awaits `provider.aclose()`."""
     mock_engine = MagicMock()
@@ -47,6 +48,7 @@ async def test_lifespan_calls_provider_aclose_on_shutdown(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: stub_provider,
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
+        checkpointer_factory=in_memory_checkpointer_factory,
     )
 
     app = FastAPI()
@@ -61,6 +63,7 @@ async def test_lifespan_calls_provider_aclose_on_shutdown(
 async def test_lifespan_calls_engine_dispose_on_shutdown(
     make_stub_llm_provider: type,
     noop_severity_policy_fingerprint_check: object,
+    in_memory_checkpointer_factory: object,
 ) -> None:
     """Lifespan teardown awaits `engine.dispose()`."""
     mock_engine = MagicMock()
@@ -74,6 +77,7 @@ async def test_lifespan_calls_engine_dispose_on_shutdown(
         engine_factory=lambda: mock_engine,
         provider_factory=lambda _persister, _model_config: stub_provider,
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
+        checkpointer_factory=in_memory_checkpointer_factory,
     )
 
     app = FastAPI()

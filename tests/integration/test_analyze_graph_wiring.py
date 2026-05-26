@@ -436,6 +436,8 @@ def _build_kwargs(
     analyze_event_sink: _RecordingAnalyzeEventSink,
     total_review_budget_tokens: int | None = None,
 ) -> dict[str, Any]:
+    from langgraph.checkpoint.memory import InMemorySaver
+
     from outrider.agent.nodes.hitl_config import HITLConfig
 
     kwargs: dict[str, Any] = {
@@ -457,6 +459,10 @@ def _build_kwargs(
         "hitl_event_sink": _StubHITLEventSink(),
         "review_status_sink": _StubReviewStatusSink(),
         "hitl_config": HITLConfig(),
+        # Checkpointer is required for any compiled graph that uses
+        # `interrupt(...)` per langgraph-1.1.6/narrative/persistence.md.
+        # InMemorySaver is the canonical test-only checkpointer.
+        "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }
@@ -541,7 +547,9 @@ async def test_clean_eligible_file_flows_through_analyze(
         )
     )
 
-    result = await graph.ainvoke(state)
+    result = await graph.ainvoke(
+        state, config={"configurable": {"thread_id": str(state.review_id)}}
+    )
 
     # AnalysisRound landed in state.
     rounds = result["analysis_rounds"]
@@ -591,7 +599,9 @@ async def test_triage_excluded_file_does_not_enter_analyze(
         )
     )
 
-    result = await graph.ainvoke(state)
+    result = await graph.ainvoke(
+        state, config={"configurable": {"thread_id": str(state.review_id)}}
+    )
 
     rounds = result["analysis_rounds"]
     assert len(rounds) == 1
@@ -643,7 +653,9 @@ async def test_budget_skip_file_is_audited_as_skipped_not_clean(
         )
     )
 
-    result = await graph.ainvoke(state)
+    result = await graph.ainvoke(
+        state, config={"configurable": {"thread_id": str(state.review_id)}}
+    )
 
     rounds = result["analysis_rounds"]
     assert len(rounds) == 1
@@ -710,7 +722,7 @@ async def test_is_eval_propagates_through_full_graph(
         )
     )
 
-    await graph.ainvoke(state)
+    await graph.ainvoke(state, config={"configurable": {"thread_id": str(state.review_id)}})
 
     # Vacuous-pass guards: `all(...)` over an empty iterable is True, so
     # `assert all(e.is_eval is eval_flag for e in [])` passes regardless
