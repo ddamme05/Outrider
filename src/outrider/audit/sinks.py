@@ -38,6 +38,8 @@ from outrider.audit.events import (
     FileExaminationEvent,
     FindingEvent,
     FindingProposalRejectedEvent,
+    HITLDecisionEvent,
+    HITLRequestEvent,
     PublishAttemptEvent,
     PublishEligibilityEvent,
     PublishEvent,
@@ -383,9 +385,74 @@ class TraceEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class HITLEventSink(Protocol):
+    """Sink for the HITL node's two emit moments per the HITL node spec.
+
+    Why a single sink bundling both methods (vs separate request/decision
+    sinks): one node emits BOTH events at distinct moments
+    (`HITLRequestEvent` BEFORE `interrupt(...)`, `HITLDecisionEvent`
+    AFTER resume returns). Two separate Protocol injection slots in
+    `build_graph(...)` would gain nothing — the audit responsibility is
+    "the hitl node", not "request emission" + "decision emission". This
+    mirrors the `PublishEventSink` precedent (one node, four methods,
+    one Protocol).
+
+    **Audit-first emission contract: non-None return.** Both methods
+    return the canonical persisted event — either the just-inserted
+    incoming event (insert path) OR the existing row's event (no-op
+    path on natural-key match with identity-subset equality). The
+    producer node MUST use the returned event to construct the state-
+    layer `HITLRequest` / `HITLDecision` for the state delta, ensuring
+    state and audit stay in lockstep across retry / replay. Without
+    this lockstep, the crash-after-audit-before-state scenario would
+    diverge state from audit on retry.
+
+    **Persister-side natural-key idempotency on `(review_id)`** — the
+    durable `AuditPersister` implementation runs
+    `postgresql_insert(...).on_conflict_do_nothing(...)` against the
+    partial unique indexes (one per event_type) introduced by the HITL
+    Alembic migration; on conflict, a follow-up SELECT loads the
+    existing row and the identity-subset comparison distinguishes
+    legitimate retry (no-op return) from real divergence (raise
+    `AuditPersisterHITLRequestNaturalKeyConflict` or
+    `AuditPersisterHITLDecisionNaturalKeyConflict`). The decision-side
+    identity subset is `{decisions_content_hash, is_eval}`; the
+    request-side subset is `{findings_requiring_approval,
+    auto_post_findings, created_at, expires_at, is_eval}`.
+
+    Test recorders capture each emission for assertion; per the
+    audit-first contract, they MUST also return the incoming event (no
+    idempotency dedup in test sinks — recorders are deliberately
+    exempt so double-emit bugs surface in tests rather than being
+    silently deduped).
+    """
+
+    async def emit_hitl_request(self, event: HITLRequestEvent) -> HITLRequestEvent:
+        """Persist a `HITLRequestEvent` and return the canonical
+        persisted event (incoming on insert; existing on no-op match).
+
+        See class docstring for the audit-first return contract.
+        Natural-key idempotent on `(review_id)`.
+        """
+        ...
+
+    async def emit_hitl_decision(self, event: HITLDecisionEvent) -> HITLDecisionEvent:
+        """Persist a `HITLDecisionEvent` and return the canonical
+        persisted event (incoming on insert; existing on no-op match).
+
+        See class docstring for the audit-first return contract.
+        Natural-key idempotent on `(review_id)` with identity-subset
+        check on `decisions_content_hash` (divergent concurrent
+        submissions raise `AuditPersisterHITLDecisionNaturalKeyConflict`).
+        """
+        ...
+
+
 __all__ = [
     "AnalyzeEventSink",
     "FileExaminationSink",
+    "HITLEventSink",
     "PhaseEventSink",
     "PublishEventSink",
     "TraceEventSink",
