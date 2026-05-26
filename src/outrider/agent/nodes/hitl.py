@@ -37,13 +37,18 @@ absorbed by:
   - mark_awaiting_approval predicate-filter no-op on hitl_request != NULL
   - emit_hitl_decision natural-key no-op on (review_id) +
     identity-subset match via decisions_content_hash
-  - mark_running predicate match against `running` re-writes the same
-    JSONB content (no-op semantic)
-  - phase events idempotent on phase_id
+  - mark_running predicate filters on `hitl_decision IS NULL` AND
+    admits only `awaiting_approval` / `awaiting_approval_expired` as
+    source states — re-fire after first successful flip is
+    rowcount=0 (no-op) because `hitl_decision IS NOT NULL`
+  - phase events idempotent on phase_id (deterministic compute_phase_id)
 
 Concurrent divergent-content resume raises
 `AuditPersisterHITLDecisionNaturalKeyConflict` from step 10, caught by
-the endpoint's failure wrapper and logged at INFO.
+the endpoint's failure wrapper and logged at WARNING with the
+diagnostic message naming both the concurrent-loser case and the
+window-(f) crash-retry case (recovery for the latter is owned by
+`sweep/hitl_expiry.py::reclaim_stuck_hitl_states`).
 """
 
 from __future__ import annotations

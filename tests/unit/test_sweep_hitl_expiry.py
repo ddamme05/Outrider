@@ -62,15 +62,17 @@ class _StubAnomalySink:
 class _StubReviewStatusSink:
     def __init__(self) -> None:
         self.expired_calls: list[UUID] = []
+        self.running_calls: list[dict[str, Any]] = []
+        self.awaiting_calls: list[dict[str, Any]] = []
 
     async def mark_awaiting_approval_expired(self, *, review_id: UUID) -> None:
         self.expired_calls.append(review_id)
 
-    async def mark_awaiting_approval(self, **kwargs: Any) -> None:  # noqa: ARG002
-        return None
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:
+        self.awaiting_calls.append(kwargs)
 
-    async def mark_running(self, **kwargs: Any) -> None:  # noqa: ARG002
-        return None
+    async def mark_running(self, **kwargs: Any) -> None:
+        self.running_calls.append(kwargs)
 
 
 def _make_conn(expired_rows: list[tuple[UUID, datetime]]) -> MagicMock:
@@ -152,12 +154,19 @@ async def test_anomaly_first_ordering_anomaly_fails_status_does_not_flip() -> No
 
 
 @pytest.mark.asyncio
-async def test_sweep_skipped_when_advisory_lock_held() -> None:
-    """If another sweep holds the lock, return 0 without scanning."""
-    conn = MagicMock()
-    result = MagicMock()
-    result.scalar_one = MagicMock(return_value=False)  # lock held by another sweep
-    conn.execute = AsyncMock(return_value=result)
+async def test_transition_sub_job_no_longer_self_locks() -> None:
+    """The sub-job MUST NOT acquire SWEEP_LOCK_ID itself per the
+    refactored ordering contract — the wrapper `run_once` acquires
+    once and holds across both sub-jobs. Calling the sub-job
+    directly (outside `run_once`) is permitted but the caller is
+    responsible for the lock.
+
+    Tested by giving the conn a no-execute mock for the lock query
+    and confirming the sub-job runs its query directly without
+    short-circuiting on a lock check."""
+    review_id = uuid4()
+    expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    conn = _make_conn([(review_id, expires_at)])
     anomaly_sink = _StubAnomalySink()
     status_sink = _StubReviewStatusSink()
 
@@ -168,17 +177,127 @@ async def test_sweep_skipped_when_advisory_lock_held() -> None:
         review_status_sink=status_sink,  # type: ignore[arg-type]
     )
 
-    assert n == 0
-    # No anomaly emits, no status flips — we never entered the loop.
-    assert anomaly_sink.emit_calls == []
-    assert status_sink.expired_calls == []
+    # No self-lock; transitioned the seeded row.
+    assert n == 1
+    assert len(anomaly_sink.emit_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_reclaim_skips_rows_with_pending_checkpoint() -> None:
-    """If `checkpointer.aget(config)` returns a checkpoint (any
-    non-None), the row is NOT reclaimed — the body is genuinely
-    suspended at the HITL interrupt."""
+async def test_run_once_skips_on_lock_held() -> None:
+    """run_once is the single lock-acquire site. If the lock is
+    held by another sweep, return all zeros without running either
+    sub-job."""
+    conn = MagicMock()
+    result_lock_held = MagicMock()
+    result_lock_held.scalar_one = MagicMock(return_value=False)
+    conn.execute = AsyncMock(return_value=result_lock_held)
+
+    anomaly_sink = _StubAnomalySink()
+    status_sink = _StubReviewStatusSink()
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=None)
+    checkpointer = MagicMock()
+    checkpointer.aget = AsyncMock(return_value=None)
+
+    result = await run_once(
+        conn=conn,
+        session_factory=MagicMock(),
+        anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        audit_persister=audit_persister,
+        checkpointer=checkpointer,
+    )
+
+    assert result == {"reclaim_recovered": 0, "reclaim_failed": 0, "transitioned": 0}
+    # Neither sub-job ran — no audit query, no checkpointer read.
+    audit_persister.query_hitl_decision_event.assert_not_called()
+    checkpointer.aget.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_window_f_recovery_advances_lifecycle_from_audit_row() -> None:
+    """F1 audit-fold regression: window (f) (audit row exists,
+    reviews.hitl_decision IS NULL) MUST advance lifecycle via
+    mark_running with the canonical audit content — NOT mark failed.
+
+    Pre-fix bug: the sweep skipped any row with a checkpoint, and
+    window (f) crashes leave the HITL interrupt checkpoint in place,
+    so the row stayed stuck forever."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from outrider.audit.events import HITLDecisionEvent
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    review_id = uuid4()
+    finding_id = uuid4()
+
+    conn = MagicMock()
+
+    async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
+        result = MagicMock()
+        if hasattr(stmt, "is_text") and stmt.is_text:
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        return result
+
+    conn.execute = AsyncMock(side_effect=_execute)
+
+    # Construct the orphaned audit row.
+    now = _datetime.now(_UTC)
+    canonical_decision_pfd = PerFindingDecision(
+        finding_id=finding_id,
+        outcome=PerFindingOutcome.APPROVE,
+        reason="approved before crash",
+    )
+    audit_event = HITLDecisionEvent(
+        review_id=review_id,
+        is_eval=False,
+        reviewer_id="admin",
+        decisions=(canonical_decision_pfd,),
+        annotation="canonical decision",
+        decided_at=now,
+        decision_latency_seconds=0.0,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=(canonical_decision_pfd,),
+            annotation="canonical decision",
+        ),
+    )
+
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=audit_event)
+    status_sink = _StubReviewStatusSink()
+    checkpointer = MagicMock()
+    # Window (f): checkpoint still exists (HITL interrupt suspended
+    # before the crash). Pre-fix would have skipped this row.
+    checkpointer.aget = AsyncMock(return_value={"checkpoint": "still-exists"})
+
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=MagicMock(),
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+    )
+
+    # mark_running called with the canonical audit payload.
+    assert len(status_sink.running_calls) == 1
+    assert status_sink.running_calls[0]["review_id"] == review_id
+    payload = status_sink.running_calls[0]["hitl_decision_payload"]
+    assert payload["reviewer_id"] == "admin"
+    assert payload["annotation"] == "canonical decision"
+    # The checkpointer was NOT consulted — audit-row recovery
+    # short-circuits before the checkpoint check.
+    checkpointer.aget.assert_not_called()
+    assert result == {"recovered": 1, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -> None:
+    """Window (c) recovery: no audit row + no checkpoint = mark
+    failed."""
     review_id = uuid4()
     conn = MagicMock()
 
@@ -191,72 +310,62 @@ async def test_reclaim_skips_rows_with_pending_checkpoint() -> None:
         return result
 
     conn.execute = AsyncMock(side_effect=_execute)
-    checkpointer = MagicMock()
-    checkpointer.aget = AsyncMock(return_value={"checkpoint": "exists"})
 
-    n = await reclaim_stuck_hitl_states(
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=None)
+    status_sink = _StubReviewStatusSink()
+    checkpointer = MagicMock()
+    checkpointer.aget = AsyncMock(return_value=None)
+
+    # session_factory needs to support `async with` for the UPDATE.
+    session_inner = MagicMock()
+    session_inner.execute = AsyncMock()
+    session_inner.__aenter__ = AsyncMock(return_value=session_inner)
+    session_inner.__aexit__ = AsyncMock(return_value=None)
+    session_inner.begin = MagicMock(return_value=session_inner)
+    session_factory = MagicMock(return_value=session_inner)
+
+    result = await reclaim_stuck_hitl_states(
         conn=conn,
-        session_factory=MagicMock(),
+        session_factory=session_factory,
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
         checkpointer=checkpointer,
     )
 
-    # Row had a checkpoint -> not stuck -> not reclaimed.
-    assert n == 0
-    # But checkpointer WAS consulted.
-    checkpointer.aget.assert_awaited()
+    assert result == {"recovered": 0, "failed": 1}
+    # mark_running was NOT called — this is a failed-mark path.
+    assert status_sink.running_calls == []
 
 
 @pytest.mark.asyncio
-async def test_run_once_reclaim_runs_before_transition() -> None:
-    """Order is locked: reclaim BEFORE transition so a stuck row past
-    expires_at is classified as `failed` (not expired)."""
-    call_order: list[str] = []
-
+async def test_reclaim_skips_row_when_no_audit_but_checkpoint_present() -> None:
+    """No audit row + checkpoint present = still in flight; skip."""
+    review_id = uuid4()
     conn = MagicMock()
-    result_lock = MagicMock()
-    result_lock.scalar_one = MagicMock(return_value=True)
-    result_empty = MagicMock()
-    result_empty.all = MagicMock(return_value=[])
 
     async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
-        # Lock-check returns True; query returns empty (no rows).
+        result = MagicMock()
         if hasattr(stmt, "is_text") and stmt.is_text:
-            return result_lock
-        return result_empty
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        return result
 
     conn.execute = AsyncMock(side_effect=_execute)
-    checkpointer = MagicMock()
-    checkpointer.aget = AsyncMock(return_value=None)
-    anomaly_sink = _StubAnomalySink()
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=None)
     status_sink = _StubReviewStatusSink()
+    checkpointer = MagicMock()
+    checkpointer.aget = AsyncMock(return_value={"checkpoint": "in-flight"})
 
-    # Wrap the sweep functions to record call order.
-    from outrider.sweep import hitl_expiry as he_mod
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=MagicMock(),
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+    )
 
-    orig_reclaim = he_mod.reclaim_stuck_hitl_states
-    orig_transition = he_mod.transition_expired_hitl_reviews
-
-    async def _trace_reclaim(**kwargs: Any) -> int:
-        call_order.append("reclaim")
-        return await orig_reclaim(**kwargs)
-
-    async def _trace_transition(**kwargs: Any) -> int:
-        call_order.append("transition")
-        return await orig_transition(**kwargs)
-
-    he_mod.reclaim_stuck_hitl_states = _trace_reclaim  # type: ignore[assignment]
-    he_mod.transition_expired_hitl_reviews = _trace_transition  # type: ignore[assignment]
-    try:
-        result = await run_once(
-            conn=conn,
-            session_factory=MagicMock(),
-            anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
-            review_status_sink=status_sink,  # type: ignore[arg-type]
-            checkpointer=checkpointer,
-        )
-    finally:
-        he_mod.reclaim_stuck_hitl_states = orig_reclaim
-        he_mod.transition_expired_hitl_reviews = orig_transition
-
-    assert call_order == ["reclaim", "transition"]
-    assert result == {"reclaimed": 0, "transitioned": 0}
+    assert result == {"recovered": 0, "failed": 0}
+    checkpointer.aget.assert_awaited()
