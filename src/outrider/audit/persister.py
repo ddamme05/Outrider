@@ -1,14 +1,19 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of five sink Protocols.
+"""AuditPersister — durable single-class implementation of seven sink Protocols.
 
 Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
-`FileExaminationSink`, `AnalyzeEventSink`, and `PublishEventSink`
-(`audit/sinks.py`) from one body, sharing transaction lifecycle and
-session-per-call discipline. The non-phase events route through a
-shared `_persist_non_phase_event` helper so the idempotency +
-payload-mismatch discipline is uniform across event types. The
+`FileExaminationSink`, `AnalyzeEventSink`, `PublishEventSink`,
+`TraceEventSink`, `HITLEventSink` (`audit/sinks.py`) from one body,
+sharing transaction lifecycle and session-per-call discipline. The
+non-phase events route through a shared `_persist_non_phase_event`
+helper so the idempotency + payload-mismatch discipline is uniform
+across event types; natural-key-mode events
+(`TraceDecisionEvent`, `HITLRequestEvent`, `HITLDecisionEvent`) route
+through `_persist_keyed_by_natural_key` per `DECISIONS.md#026`. The
 PublishEventSink surface was added per DECISIONS.md #023 (publish
-routing and eligibility are separate decisions).
+routing and eligibility are separate decisions); HITLEventSink + the
+generalized natural-key dispatch landed per
+`specs/2026-05-26-hitl-node.md`.
 
 Key invariants:
 
@@ -1091,7 +1096,20 @@ _HITL_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
 # probe order shuffled (legitimate — `_resolve_via_probes` iteration order
 # is candidate-rank-dependent) would compare unequal against the existing
 # row even though the SET of resolved paths is identical.
-_SET_SEMANTIC_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset({"resolved_candidate_paths"})
+_SET_SEMANTIC_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "resolved_candidate_paths",
+        # HITLRequestEvent — both tuples are set-semantic per the
+        # `HITLRequest._enforce_finding_partition` validator (each
+        # finding appears at most once across both). The HITL node
+        # canonicalizes via `tuple(sorted(...))` on emit; this
+        # persister-side guard is defense-in-depth so a future producer
+        # change that drops sorting doesn't trigger spurious
+        # `AuditPersisterHITLRequestNaturalKeyConflict` raises.
+        "findings_requiring_approval",
+        "auto_post_findings",
+    }
+)
 
 # Registry shape so the extension surface is obvious: adding a second
 # natural-key event type is a single mapping entry (plus a partial unique
@@ -1229,12 +1247,15 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
     `proposed_import_strings` / `trace_path` (per-emission noise),
     `event_type` (pinned by partial-index WHERE).
 
-    V1 supports `trace_decision` only — the natural-key mode per
-    `DECISIONS.md#026` has no other instance yet. Unknown event types
-    are a producer bug: the caller routed to the natural-key helper for
-    an event type the persister doesn't know how to compare. Fail loud
-    on unknown event_type to surface the routing bug at the persister
-    boundary rather than silently admitting a wrong-mode write.
+    V1 supports `trace_decision`, `hitl_request`, and `hitl_decision`
+    — the natural-key mode per `DECISIONS.md#026` is shared across
+    these three event types (the trace-arc landed it first; the HITL
+    arc generalized the dispatch via the `_NATURAL_KEY_SPECS`
+    registry). Unknown event types are a producer bug: the caller
+    routed to the natural-key helper for an event type the persister
+    doesn't know how to compare. Fail loud on unknown event_type to
+    surface the routing bug at the persister boundary rather than
+    silently admitting a wrong-mode write.
     """
     try:
         return _IDENTITY_SUBSETS[event_type]
@@ -1242,8 +1263,7 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
         raise ValueError(
             f"_payload_identity_subset: unsupported event_type={event_type!r}; "
             f"natural-key idempotency mode is only defined for "
-            f"{sorted(_IDENTITY_SUBSETS)} in V1 (per DECISIONS.md#026 "
-            "first-instance scope)."
+            f"{sorted(_IDENTITY_SUBSETS)} in V1 (per DECISIONS.md#026)."
         ) from None
 
 
@@ -1301,7 +1321,8 @@ def _serialize_event_payload(
 
 class AuditPersister:
     """Durable persister; implements `LLMExchangePersister` + `PhaseEventSink`
-    + `FileExaminationSink` + `AnalyzeEventSink` + `PublishEventSink`.
+    + `FileExaminationSink` + `AnalyzeEventSink` + `PublishEventSink`
+    + `TraceEventSink` + `HITLEventSink`.
 
     Constructor accepts dependencies via keyword args:
 

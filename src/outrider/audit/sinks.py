@@ -6,7 +6,7 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships five sinks from this module: `PhaseEventSink` for
+V1 ships six sinks from this module: `PhaseEventSink` for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `AnalyzeEventSink` bundling the four analyze-emitted event types
@@ -15,18 +15,22 @@ for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `PublishEventSink` bundling the four publish-emitted event types
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
 `PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
-and `TraceEventSink` for `TraceDecisionEvent` per
-`specs/2026-05-23-trace-node.md` Q4 + M7. `LLMCallEvent` emission lives
+`TraceEventSink` for `TraceDecisionEvent` per
+`specs/2026-05-23-trace-node.md` Q4 + M7, and `HITLEventSink` bundling
+`emit_hitl_request` + `emit_hitl_decision` per
+`specs/2026-05-26-hitl-node.md` Q7. `LLMCallEvent` emission lives
 inside `LLMProvider.complete()` and uses the sibling `LLMExchangePersister`
 Protocol in `llm/base.py` — no node code emits `LLMCallEvent` directly.
 
 The durable `AuditPersister` in `outrider.audit.persister` implements
-ALL SIX (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
-+ `PublishEventSink` + `TraceEventSink` + `LLMExchangePersister`) from
-one body, sharing DB transaction lifecycle and session-per-call
-discipline. Test-only no-op implementations (`NoOpPersister`,
-`RecordingPhaseEventSink`, `RecordingPublishEventSink`) live in
-`tests/conftest.py` for fixtures that don't need durable persistence.
+ALL SEVEN (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
++ `PublishEventSink` + `TraceEventSink` + `HITLEventSink` +
+`LLMExchangePersister`) from one body, sharing DB transaction lifecycle
+and session-per-call discipline. Test-only no-op implementations
+(`NoOpPersister`, `RecordingPhaseEventSink`) live in
+`tests/conftest.py` for fixtures that don't need durable persistence;
+sink-specific recording doubles (HITL, publish, analyze) live in
+per-test-file scope inside `tests/unit/` per the existing convention.
 """
 
 from typing import Protocol, runtime_checkable
@@ -132,11 +136,11 @@ class FileExaminationSink(Protocol):
         replay equivalence.
 
     The durable `AuditPersister` implements this Protocol alongside
-    `PhaseEventSink`, `AnalyzeEventSink`, `PublishEventSink`, and
-    `LLMExchangePersister` — one class, one transaction-lifecycle
-    discipline, five sinks. Test fixtures may record to a list or
-    persist directly per the same recorder-vs-durable split documented
-    on `PhaseEventSink`.
+    `PhaseEventSink`, `AnalyzeEventSink`, `PublishEventSink`,
+    `TraceEventSink`, `HITLEventSink`, and `LLMExchangePersister` — one
+    class, one transaction-lifecycle discipline, seven sinks. Test
+    fixtures may record to a list or persist directly per the same
+    recorder-vs-durable split documented on `PhaseEventSink`.
 
     `@runtime_checkable` matches the `PhaseEventSink` precedent and enables
     `build_graph` to reject sinks lacking the `emit_file_examination` member

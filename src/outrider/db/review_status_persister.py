@@ -14,7 +14,7 @@ isinstance gating.
 """
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
 from pydantic import AwareDatetime
@@ -26,6 +26,12 @@ from outrider.db.models.reviews import Review
 from outrider.db.sinks import ReviewDecidePreflight
 from outrider.policy import FindingSeverity
 from outrider.schemas.hitl import HITLDecision, HITLRequest
+
+# Defensive cap on `_load_gated_severities` IN-list length. Mirrors the
+# `HITLRequest.findings_requiring_approval` producer-side bound; reaching
+# this cap means the producer dropped its own check, which is a fail-loud
+# condition not a silent truncation.
+_MAX_GATED_FINDING_LOOKUP: Final[int] = 256
 
 
 class ReviewStatusPersisterConfigError(ValueError):
@@ -100,10 +106,30 @@ class ReviewStatusPersister:
     ) -> None:
         """Single-transaction status flip + JSONB write on resume.
 
-        Predicate admits `awaiting_approval`, `awaiting_approval_expired`,
-        and `running` source states (last for idempotent re-fire
-        no-op). `expires_at` is intentionally left in place for
-        forensic visibility.
+        Predicate filters on `status IN ('awaiting_approval',
+        'awaiting_approval_expired') AND hitl_decision IS NULL`. The
+        `hitl_decision IS NULL` discriminator makes the method
+        first-write-only, mirroring `mark_awaiting_approval`'s
+        `hitl_request IS NULL` defense: a concurrent second background
+        task whose audit-layer emit lost the natural-key race (or whose
+        body re-runs after a window (g) crash) sees `hitl_decision`
+        already populated and no-ops (rowcount=0). Without this
+        discriminator, a divergent-content second decision whose
+        `AuditPersisterHITLDecisionNaturalKeyConflict` was caught by
+        the endpoint's failure wrapper could STILL overwrite the JSONB
+        cache with content the audit row never ratified.
+
+        Source states admitted: `awaiting_approval` (canonical
+        transition) + `awaiting_approval_expired` (remediation path per
+        spec §4.1.6). `running` is intentionally NOT in the predicate;
+        once status moves past awaiting_approval, the row is
+        terminal-from-the-HITL-node's-perspective.
+
+        `expires_at` is intentionally left in place for forensic
+        visibility — the sweep filter `status='awaiting_approval' AND
+        expires_at < NOW()` rules out the row once status moves past
+        `awaiting_approval`, so the value's persistence is correctness-
+        free and forensically useful.
         """
         async with self._session_factory() as session, session.begin():
             await session.execute(
@@ -114,8 +140,8 @@ class ReviewStatusPersister:
                         or_(
                             Review.status == "awaiting_approval",
                             Review.status == "awaiting_approval_expired",
-                            Review.status == "running",
                         ),
+                        Review.hitl_decision.is_(None),
                     )
                 )
                 .values(
@@ -207,10 +233,22 @@ class ReviewStatusPersister:
         Reads `FindingEvent.severity` from `audit_events.payload`
         JSONB, filtered to the gated finding ids via JSONB-key match.
         Returns an empty dict when `gated_ids` is empty so the caller
-        avoids constructing an unbounded IN clause.
+        avoids constructing an unbounded IN clause. Enforces the
+        spec-documented cap of <=256 finding ids defensively at the
+        persister boundary — the schema-level cap is at producer side
+        (HITLRequest construction), so this guard catches a future
+        producer drop without unbounded IN-list growth.
         """
         if not gated_ids:
             return {}
+        if len(gated_ids) > _MAX_GATED_FINDING_LOOKUP:
+            raise ValueError(
+                f"_load_gated_severities: gated_ids length "
+                f"{len(gated_ids)} exceeds the {_MAX_GATED_FINDING_LOOKUP} "
+                f"cap. The producer-side `HITLRequest.findings_requiring_approval` "
+                f"contract bounds the set at 256; reaching this raise means a "
+                f"schema-level cap regressed."
+            )
         gated_str = [str(fid) for fid in gated_ids]
         stmt = select(
             AuditEvent.payload["finding_id"].astext.label("finding_id"),

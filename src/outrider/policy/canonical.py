@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import (
+    Sequence,  # noqa: TC003  (runtime: function-signature annotation in non-TYPE_CHECKING-only path)
+)
 from typing import Any, Final
 
 __all__ = [
@@ -428,7 +431,7 @@ def compute_candidate_id(
 
 def compute_hitl_decision_content_hash(
     *,
-    decisions: tuple[Any, ...],
+    decisions: Sequence[Any],
     annotation: str | None,
 ) -> str:
     """SHA-256 hex of a `HITLDecision`'s content-derived identity hash.
@@ -439,11 +442,12 @@ def compute_hitl_decision_content_hash(
     `AuditPersisterHITLDecisionNaturalKeyConflict` at the natural-key
     check.
 
-    `decisions` is `tuple[PerFindingDecision, ...]` (typed as `Any` here
+    `decisions` is `Sequence[PerFindingDecision]` (typed loosely here
     to avoid a circular `schemas/hitl.py → policy/canonical.py` import;
-    callers pass the typed tuple). Each `PerFindingDecision` passes
-    through `.model_dump(mode="json")` so UUIDs/enums serialize to
-    strings BEFORE the hash payload is built — the canonical recipe
+    every item is required to be a `pydantic.BaseModel` instance at
+    runtime — see the type check below). Each `PerFindingDecision`
+    passes through `.model_dump(mode="json")` so UUIDs/enums serialize
+    to strings BEFORE the hash payload is built — the canonical recipe
     requires JSON-native values per `canonicalize_for_hash`'s caller
     contract. Decisions are sorted by `finding_id` (stringified) before
     folding so a reviewer who happens to submit in a different order
@@ -454,8 +458,32 @@ def compute_hitl_decision_content_hash(
     per-finding decisions but different annotations are NOT the same
     logical decision. `None` (no annotation) serializes as JSON null,
     distinct from `""` (empty string).
+
+    Raises `TypeError` if any item is not a Pydantic `BaseModel` — the
+    canonical recipe runs through `model_dump(mode="json")` and a
+    dict-shaped caller would silently produce a divergent hash from the
+    Pydantic-shaped one. Fail-loud at the helper boundary.
     """
-    serialized = [d.model_dump(mode="json") if hasattr(d, "model_dump") else d for d in decisions]
+    from pydantic import BaseModel  # noqa: PLC0415
+
+    serialized: list[dict[str, Any]] = []
+    for i, d in enumerate(decisions):
+        if not isinstance(d, BaseModel):
+            raise TypeError(
+                f"compute_hitl_decision_content_hash got a "
+                f"{type(d).__name__} at decisions[{i}]; every item must be "
+                f"a Pydantic BaseModel (PerFindingDecision). A dict-shaped "
+                f"caller would silently hash differently from the Pydantic "
+                f"shape — pass tuple[PerFindingDecision, ...]."
+            )
+        payload = d.model_dump(mode="json")
+        if "finding_id" not in payload:
+            raise TypeError(
+                f"compute_hitl_decision_content_hash got a BaseModel at "
+                f"decisions[{i}] whose model_dump output lacks `finding_id`; "
+                f"every PerFindingDecision must carry a finding_id."
+            )
+        serialized.append(payload)
     # Sort by stringified finding_id so submission order doesn't change
     # the hash for the same logical decision set.
     serialized.sort(key=lambda payload: str(payload["finding_id"]))
