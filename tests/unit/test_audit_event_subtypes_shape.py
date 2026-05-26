@@ -143,20 +143,31 @@ def _hitl_request_kwargs() -> dict[str, Any]:
     return {
         "findings_requiring_approval": (uuid4(),),
         "auto_post_findings": (uuid4(),),
+        "created_at": now,
         "expires_at": now + timedelta(minutes=30),
     }
 
 
 def _hitl_decision_kwargs() -> dict[str, Any]:
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+
     decision = PerFindingDecision(
         finding_id=uuid4(),
         outcome=PerFindingOutcome.APPROVE,
         reason="",
     )
+    decisions = (decision,)
+    annotation: str | None = None
     return {
         "reviewer_id": "reviewer@example.com",
-        "decisions": (decision,),
+        "decisions": decisions,
+        "annotation": annotation,
+        "decided_at": datetime.now(UTC),
         "decision_latency_seconds": 42.5,
+        "decisions_content_hash": compute_hitl_decision_content_hash(
+            decisions=decisions,
+            annotation=annotation,
+        ),
     }
 
 

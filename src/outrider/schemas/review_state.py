@@ -94,6 +94,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from outrider.agent.reducers import append_with_dedup_by
 from outrider.schemas.analysis_round import AnalysisRound
+from outrider.schemas.hitl import HITLDecision, HITLRequest
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.publish import PublishResult
 from outrider.schemas.trace_candidate import TraceCandidate
@@ -210,6 +211,25 @@ class ReviewState(BaseModel):
     # be false for `-N` even if trace did emit N fetches). Fail fast
     # at the schema boundary rather than at the router.
     last_trace_pass_fetched_count: int = Field(default=0, ge=0)
+
+    # Populated by the HITL node (`agent/nodes/hitl.py`) per the
+    # hitl-node spec. Both fields are scalar (overwrite reducer is
+    # correct — LangGraph's default `last-write-wins` per `replay-equivalent
+    # reducers handle scalars natively). Re-emission of identical
+    # values on body re-runs (resume + replay) is safe because the
+    # values are deterministic per `compute_phase_id`-style derivation
+    # (HITLRequest from `state.received_at`; HITLDecision from the
+    # resume value passed to `Command(resume=...)`).
+    #
+    # `hitl_request` is set at interrupt time (step 5 of node body
+    # per spec): the partition of `findings_requiring_approval` vs
+    # `auto_post_findings` + the deterministic `expires_at` derivation.
+    # `hitl_decision` is set on resume completion (step 13 of node
+    # body): the reviewer-submitted decision constructed by the
+    # endpoint with server-set `reviewer_id` + server-derived
+    # `original_severity` per the spec's Q1 + Fix 2 contracts.
+    hitl_request: HITLRequest | None = None
+    hitl_decision: HITLDecision | None = None
 
 
 __all__ = [

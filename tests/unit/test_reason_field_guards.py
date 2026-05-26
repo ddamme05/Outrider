@@ -66,16 +66,28 @@ def test_hitl_decision_event_decisions_reason_max_length_500() -> None:
             original_severity=FindingSeverity.HIGH,
         )
 
+    from datetime import UTC, datetime
+
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+
     decision_at_bound = PerFindingDecision(
         finding_id=uuid4(),
         outcome=PerFindingOutcome.REJECT,
         reason="x" * 500,
     )
+    decisions = (decision_at_bound,)
+    annotation: str | None = None
     event = HITLDecisionEvent(
         review_id=uuid4(),
         reviewer_id="reviewer@example.com",
-        decisions=(decision_at_bound,),
+        decisions=decisions,
+        annotation=annotation,
+        decided_at=datetime.now(UTC),
         decision_latency_seconds=42.5,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=decisions,
+            annotation=annotation,
+        ),
     )
     assert len(event.decisions[0].reason) == 500
 

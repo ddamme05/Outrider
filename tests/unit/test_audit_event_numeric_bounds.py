@@ -106,17 +106,27 @@ def test_agent_transition_event_negative_latency_rejects() -> None:
 
 
 def test_hitl_decision_event_negative_decision_latency_rejects() -> None:
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+
     decision = PerFindingDecision(
         finding_id=uuid4(),
         outcome=PerFindingOutcome.APPROVE,
         reason="",
     )
+    decisions = (decision,)
+    annotation: str | None = None
     with pytest.raises(ValidationError):
         HITLDecisionEvent(
             review_id=uuid4(),
             reviewer_id="reviewer@example.com",
-            decisions=(decision,),
+            decisions=decisions,
+            annotation=annotation,
+            decided_at=datetime.now(UTC),
             decision_latency_seconds=-0.01,
+            decisions_content_hash=compute_hitl_decision_content_hash(
+                decisions=decisions,
+                annotation=annotation,
+            ),
         )
 
 
@@ -158,10 +168,12 @@ def test_hitl_request_event_admits_future_expires_at() -> None:
     # the absence of an unintended constraint.
     from outrider.audit.events import HITLRequestEvent
 
+    now = datetime.now(UTC)
     event = HITLRequestEvent(
         review_id=uuid4(),
         findings_requiring_approval=(uuid4(),),
         auto_post_findings=(),
-        expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
     )
     assert event.expires_at > event.timestamp
