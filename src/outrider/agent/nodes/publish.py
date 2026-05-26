@@ -69,6 +69,7 @@ from outrider.schemas import (
     PublishDestination,
     PublishResult,
 )
+from outrider.schemas.hitl import PerFindingOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -76,7 +77,9 @@ if TYPE_CHECKING:
     from outrider.audit.sinks import PhaseEventSink, PublishEventSink
     from outrider.github import InstallationGitHubClient
     from outrider.github.publisher import GitHubPublisher
+    from outrider.policy import FindingSeverity
     from outrider.schemas import ReviewFinding, ReviewState
+    from outrider.schemas.hitl import HITLDecision, PerFindingDecision
 
 __all__ = ["publish"]
 
@@ -608,16 +611,19 @@ async def _route_and_gate_one_finding(
         line_end=finding.line_end,
         finding_type=finding.finding_type,
     )
-    # `PublishEligibilityEvent.severity` MUST equal SEVERITY_POLICY[finding_type]
-    # (the BASELINE) per the event's `_enforce_severity_matches_policy`
-    # validator. On findings WITH a HITL override (current finding.severity
-    # is the override value), the BASELINE lives at finding.original_severity.
-    # In V1 the gate already withholds any finding with original_severity set,
-    # so the override case is the WITHHELD-via-fabricated-override path; the
-    # baseline still goes on the event so the validator admits.
-    baseline_severity = (
-        finding.original_severity if finding.original_severity is not None else finding.severity
+
+    # Look up the matching HITL decision (if any) to honor a
+    # SEVERITY_OVERRIDE outcome. Per the post-HITL audit convention
+    # (mirror of ReviewFinding): when override is in effect, the audit
+    # row's `severity` carries the OVERRIDE value and
+    # `original_severity` carries the POLICY BASELINE; the rendered
+    # GitHub comment header uses the override value too. When no
+    # override, severity = baseline (= SEVERITY_POLICY[finding_type]),
+    # original_severity = None.
+    effective_severity, original_severity_for_audit = _resolve_effective_severity(
+        finding=finding, hitl_decision=state.hitl_decision
     )
+
     await publish_event_sink.emit_publish_eligibility(
         PublishEligibilityEvent(
             review_id=state.review_id,
@@ -627,8 +633,8 @@ async def _route_and_gate_one_finding(
             line_start=finding.line_start,
             line_end=finding.line_end,
             finding_type=finding.finding_type,
-            severity=baseline_severity,
-            original_severity=None,  # V1 always None; gate already rejected non-None
+            severity=effective_severity,
+            original_severity=original_severity_for_audit,
             finding_content_hash=finding_content_hash_for_eligibility,
             decision_content_hash=eligibility_decision_hash,
             eligibility=eligibility,
@@ -651,7 +657,7 @@ async def _route_and_gate_one_finding(
         # construction is V1-minimal: severity + finding type + title
         # + description. The full sanitizer pipeline applies — caller
         # never sees raw model output.
-        body = _build_finding_comment_body(finding)
+        body = _build_finding_comment_body(finding, effective_severity=effective_severity)
         eligible_inline_comments.append(
             InlineComment.from_finding(
                 finding=finding,
@@ -756,8 +762,79 @@ def _classify_coordinate_error(
     )
 
 
-def _build_finding_comment_body(finding: ReviewFinding) -> str:
+def _resolve_effective_severity(
+    *,
+    finding: ReviewFinding,
+    hitl_decision: HITLDecision | None,
+) -> tuple[FindingSeverity, FindingSeverity | None]:
+    """Apply a matching HITL `SEVERITY_OVERRIDE` decision to the
+    finding's severity for publish-time rendering.
+
+    Returns `(effective_severity, original_severity_for_audit)`:
+
+      - LEGITIMATE OVERRIDE — a matching
+        `PerFindingDecision(outcome=SEVERITY_OVERRIDE)` is present in
+        `hitl_decision`:
+          effective = decision.override_severity (reviewer's choice)
+          original_severity_for_audit = baseline (policy mapping)
+        The audit event records the override on `severity` + the
+        baseline on `original_severity` — replay reconstructs "what
+        severity did the GitHub comment show" from this pair.
+
+      - NO MATCHING OVERRIDE — either `hitl_decision is None` OR the
+        matching decision is not SEVERITY_OVERRIDE OR the finding's
+        forged `original_severity` lacks a legitimating decision:
+          effective = baseline (policy mapping)
+          original_severity_for_audit = None
+        The audit event records the baseline on `severity` + None on
+        `original_severity` — the gate's WITHHELD outcome
+        (UNEXPECTED_OVERRIDE_FIELDS_PRESENT) records that the forged
+        finding never reached GitHub.
+
+    The baseline is computed mirror-of-ReviewFinding: when the finding
+    itself carries a non-None `original_severity`, that field IS the
+    baseline (and `finding.severity` carries the would-be-override).
+    Otherwise `finding.severity` IS the baseline (LLM-produced under
+    policy, no override path involved).
+
+    Per `severity-set-by-policy`, the override REASON + reviewer
+    identity live on the paired `HITLDecisionEvent.decisions[i]`
+    joined by `finding_id` — the publish event records only the
+    override SIGNAL + the resolved effective severity.
+    """
+    # Find a matching SEVERITY_OVERRIDE decision (if any).
+    matching: PerFindingDecision | None = None
+    if hitl_decision is not None:
+        for d in hitl_decision.decisions:
+            if d.finding_id == finding.finding_id:
+                matching = d
+                break
+
+    # Compute baseline from finding state (mirror of ReviewFinding):
+    # `original_severity` IS the baseline when set; else `severity` IS.
+    baseline = (
+        finding.original_severity if finding.original_severity is not None else finding.severity
+    )
+
+    if (
+        matching is not None
+        and matching.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+        and matching.override_severity is not None
+    ):
+        return matching.override_severity, baseline
+    return baseline, None
+
+
+def _build_finding_comment_body(
+    finding: ReviewFinding, *, effective_severity: FindingSeverity
+) -> str:
     """V1-minimal comment body. Full sanitizer pipeline applies.
+
+    `effective_severity` is the post-HITL-override severity to render
+    in the header. Resolved by `_resolve_effective_severity(...)` —
+    matches what publish.py emits on `PublishEligibilityEvent.severity`
+    so the user-visible GitHub comment and the audit shadow agree on
+    the effective severity.
 
     Builds `**severity** · **finding_type** — title\n\ndescription` and
     runs it through `sanitize_display_string` + `apply_size_cap`. The
@@ -774,7 +851,7 @@ def _build_finding_comment_body(finding: ReviewFinding) -> str:
     title_sanitized = sanitize_display_string(finding.title)
     description_sanitized = sanitize_display_string(finding.description)
     header = (
-        f"**{finding.severity.value.upper()}** · "
+        f"**{effective_severity.value.upper()}** · "
         f"**{finding.finding_type.value}** — {title_sanitized}"
     )
     body = f"{header}\n\n{description_sanitized}"

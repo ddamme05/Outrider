@@ -18,11 +18,24 @@ async-task boundary that bounds the FastAPI BackgroundTasks dispatch.
 Two catch arms:
 
 1. `AuditPersisterHITLDecisionNaturalKeyConflict` — divergent-content
-   concurrent decide. The first task's decision is canonical (the
-   audit row landed with that content); the second is silently
-   absorbed with an INFO log. Identical-content races and crash-
-   replays of the SAME submission are absorbed by the idempotent
-   cascade INSIDE the node body (status-predicate discrimination on
+   conflict. Two sub-cases:
+   (a) DIVERGENT CONCURRENT race — two reviewers submitted with
+       different content; one task wins the natural-key insert, this
+       is the loser. Lifecycle advances via the winning task.
+   (b) WINDOW-(f) DIVERGENT RETRY — a first task crashed between
+       `emit_hitl_decision` and `mark_running`, leaving an audit row +
+       NULL `reviews.hitl_decision`. A later retry with different
+       content admits past the JSONB-cache preflight but hits the
+       audit-row natural-key check. Lifecycle is STUCK in
+       `awaiting_approval` pending Group 8's
+       `reclaim_stuck_hitl_states` sweep recovery.
+   The wrapper cannot reliably distinguish (a) from (b) without
+   consulting the LangGraph checkpointer (pending-interrupt presence
+   is what tells them apart). It logs at WARNING level with a
+   diagnostic note so operators see (b) in alerting; the sweep is
+   the canonical recovery. Identical-content races and crash-replays
+   of the SAME submission are absorbed by the idempotent cascade
+   INSIDE the node body (status-predicate discrimination on
    mark_awaiting_approval + natural-key no-ops on both events +
    publish-side `query_prior_publish_event`) and never reach this
    branch.
@@ -167,15 +180,44 @@ async def _run_resume_under_failure_wrapper(
             config={"configurable": {"thread_id": str(review_id)}},
         )
     except AuditPersisterHITLDecisionNaturalKeyConflict:
-        # Divergent-content concurrent decide race. The first task's
-        # decision is canonical via the natural-key partial unique
-        # index; this second submission is the silent loser. The
-        # response we already sent the second reviewer was 202
-        # Accepted — they observe via the dashboard that the FIRST
-        # submission's decision applied.
-        _LOGGER.info(
-            "hitl_resume_duplicate_submission",
-            extra={"review_id": str(review_id)},
+        # Two distinct cases land here, both characterized by "an
+        # existing HITLDecisionEvent's `decisions_content_hash` differs
+        # from the incoming submission's":
+        #
+        #   (a) DIVERGENT CONCURRENT race — two reviewers submitted
+        #       near-simultaneously with different content. One task
+        #       won the natural-key insert; this is the loser. The
+        #       lifecycle WILL advance via the winning task's
+        #       `mark_running`. The right outcome: silent absorb.
+        #
+        #   (b) WINDOW-(f) DIVERGENT RETRY — a first task crashed
+        #       after `emit_hitl_decision` but before `mark_running`,
+        #       leaving an audit row + NULL `reviews.hitl_decision`.
+        #       A later retry with different content (e.g., the
+        #       reviewer edited the annotation) admits past the
+        #       endpoint's preflight (which only checks the JSONB
+        #       cache) and reaches this catch. The audit row is
+        #       canonical; the lifecycle is STUCK at
+        #       `awaiting_approval` and won't advance without
+        #       operator intervention.
+        #
+        # The wrapper cannot reliably distinguish (a) from (b) without
+        # consulting the LangGraph checkpointer (pending interrupt
+        # presence) — which is owned by Group 8's
+        # `reclaim_stuck_hitl_states` sub-job. The wrapper logs at
+        # WARNING level (not INFO) so the case surfaces in operator
+        # alerts; the sweep job is the canonical recovery path.
+        _LOGGER.warning(
+            "hitl_resume_natural_key_conflict",
+            extra={
+                "review_id": str(review_id),
+                "note": (
+                    "Existing HITLDecisionEvent rejected the incoming submission as "
+                    "divergent content. If a concurrent task is still in flight, the "
+                    "lifecycle advances via that task. Otherwise the row is stuck in "
+                    "awaiting_approval pending sweep job reclaim_stuck_hitl_states."
+                ),
+            },
         )
         return
     except Exception:

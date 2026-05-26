@@ -334,18 +334,42 @@ def test_eligibility_historical_policy_version_skips_severity_check() -> None:
     )
 
 
-def test_eligibility_rejects_non_none_original_severity_in_v1() -> None:
-    """V1 publish ships BEFORE the hitl node, so `original_severity` should
-    always be None on emission. A non-None value is rejected at the schema
-    layer to defend the audit row against replay-injected pre-approved
-    downgrades."""
-    finding_type = FindingType.SQL_INJECTION
-    severity = SEVERITY_POLICY[finding_type]
-    with pytest.raises(ValidationError, match="V1 publish ships before the hitl node"):
+def test_eligibility_admits_severity_override_with_baseline_in_original_severity() -> None:
+    """Post-HITL convention (mirror of ReviewFinding): when override is
+    in effect, `severity` carries the OVERRIDE value and
+    `original_severity` carries the POLICY BASELINE. The baseline must
+    equal SEVERITY_POLICY[finding_type] under the active policy version.
+
+    Construction succeeds; replay can reconstruct "what severity did the
+    published comment show" from this event alone.
+    """
+    finding_type = FindingType.SQL_INJECTION  # baseline=CRITICAL
+    baseline = SEVERITY_POLICY[finding_type]
+    override = FindingSeverity.LOW
+    event = PublishEligibilityEvent(
+        **_eligibility_kwargs(
+            finding_type=finding_type,
+            severity=override,
+            original_severity=baseline,
+        )
+    )
+    assert event.severity == override
+    assert event.original_severity == baseline
+
+
+def test_eligibility_rejects_override_whose_baseline_diverges_from_policy() -> None:
+    """When `original_severity` is non-None, the baseline check uses it
+    (mirror of ReviewFinding). A forged baseline that doesn't match
+    SEVERITY_POLICY[finding_type] is rejected — defense against a
+    replay-injected event claiming an illegitimate baseline."""
+    finding_type = FindingType.SQL_INJECTION  # baseline=CRITICAL
+    # original_severity claims baseline=LOW; severity is override=INFO.
+    # Neither matches SEVERITY_POLICY[SQL_INJECTION]=CRITICAL.
+    with pytest.raises(ValidationError, match="does not match SEVERITY_POLICY"):
         PublishEligibilityEvent(
             **_eligibility_kwargs(
                 finding_type=finding_type,
-                severity=severity,
+                severity=FindingSeverity.INFO,
                 original_severity=FindingSeverity.LOW,
             )
         )

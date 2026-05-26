@@ -1574,40 +1574,60 @@ class PublishEligibilityEvent(AuditEventBase):
 
         if self.policy_version != ACTIVE_POLICY_VERSION:
             return self
+        # Compute baseline per the post-HITL convention (mirror of
+        # `ReviewFinding._enforce_severity_matches_policy`):
+        #   - When override is in effect: `severity` carries the
+        #     override; `original_severity` carries the baseline.
+        #   - When no override: `severity` IS the baseline.
+        baseline = self.original_severity if self.original_severity is not None else self.severity
         expected = SEVERITY_POLICY.get(self.finding_type)
-        if expected is None or self.severity != expected:
+        if expected is None or baseline != expected:
             raise ValueError(
-                f"PublishEligibilityEvent.severity={self.severity.value!r} does not match "
+                f"PublishEligibilityEvent.severity baseline={baseline.value!r} does not match "
                 f"SEVERITY_POLICY[{self.finding_type.value!r}]="
                 f"{(expected.value if expected else None)!r} under policy_version "
                 f"{self.policy_version!r}. Per `severity-set-by-policy`, baseline severity "
-                f"comes from SEVERITY_POLICY keyed by finding_type, never from caller."
+                f"comes from SEVERITY_POLICY keyed by finding_type, never from caller. "
+                f"If a HITL override is in effect, set `original_severity` to the policy "
+                f"baseline and put the override on `severity`."
             )
         return self
 
     @model_validator(mode="after")
-    def _enforce_v1_no_overrides(self) -> Self:
-        """V1 publish ships BEFORE the `hitl` node is wired, so no legitimate
-        HITL override path exists yet. A non-None `original_severity` on an
-        eligibility event indicates either a producer bug or replay-injected
-        state forging a pre-approved downgrade — reject at the schema layer
-        so the audit row cannot lie.
+    def _enforce_override_legitimacy(self) -> Self:
+        """`original_severity` is set iff a HITL `SEVERITY_OVERRIDE`
+        decision is in effect for this finding. Backs
+        `severity-set-by-policy` + `hitl-gates-high-severity`.
 
-        When the hitl-node spec lands, this validator relaxes to mirror
-        `ReviewFinding._enforce_override_triplet_coherence` (`original_severity`
-        is set iff override happened, with reviewer identity + reason). For
-        now the schema's "all three or none" override triplet is "none"
-        unconditionally.
+        Semantics post-HITL (mirror of `ReviewFinding`'s convention):
+
+          - When override is in effect:
+            `severity` carries the OVERRIDE value (reviewer's choice);
+            `original_severity` carries the POLICY BASELINE (what
+            SEVERITY_POLICY would map this finding_type to under the
+            event's `policy_version`).
+          - When no override:
+            `severity` carries the policy baseline;
+            `original_severity` is None.
+
+        The override REASON + reviewer identity live on the paired
+        `HITLDecisionEvent.decisions[i]` (joined on `finding_id`). The
+        publish-eligibility event records only the override SIGNAL +
+        baseline so replay can reconstruct the "what severity did the
+        published comment show" answer from publish-event alone, and
+        the "who authorized + why" answer by joining to the HITL
+        decision event.
+
+        Pre-HITL audit rows (`original_severity=None`) remain valid:
+        they encode "no override was in effect", which is correct for
+        all rows written before the HITL node landed.
         """
-        if self.original_severity is not None:
-            raise ValueError(
-                f"PublishEligibilityEvent.original_severity={self.original_severity.value!r} "
-                f"but V1 publish ships before the hitl node — no legitimate path produces "
-                f"override fields. A non-None value indicates a producer bug or "
-                f"replay-injected state forging a pre-approved downgrade; the eligibility "
-                f"gate would normally withhold via `unexpected_override_fields_present`, "
-                f"but the event-side validator rejects too so the audit row cannot lie."
-            )
+        # No schema-layer check needed here — the policy-matches check
+        # in `_enforce_severity_matches_policy` does the heavy lifting
+        # (it computes `baseline = original_severity if not None else
+        # severity` and checks against SEVERITY_POLICY). This validator
+        # remains as a named documentation site for the override-
+        # legitimacy contract.
         return self
 
     @model_validator(mode="after")
