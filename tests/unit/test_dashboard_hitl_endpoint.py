@@ -236,6 +236,40 @@ def test_extra_finding_returns_422() -> None:
     assert str(extra) in body["detail"]["extras"]
 
 
+def test_duplicate_finding_id_returns_422_not_500() -> None:
+    """F3 regression: payload with duplicate finding_id satisfies
+    set-equality against the gate, but the endpoint MUST reject it
+    BEFORE downstream HITLDecision construction (which would raise
+    mid-handler and surface as 500).
+
+    Pre-fix: `[{fid_a}, {fid_a}, {fid_b}]` against gate
+    `{fid_a, fid_b}` passed `submitted_ids != expected_ids` (both
+    are `{fid_a, fid_b}`), then HITLDecision construction blew up.
+    """
+    pf = _make_preflight()
+    client, _, compiled_graph = _build_app(preflight=pf)
+    body = {
+        "decisions": [
+            {"finding_id": str(_FINDING_A), "outcome": "approve", "reason": "ok-1"},
+            {"finding_id": str(_FINDING_A), "outcome": "approve", "reason": "ok-2"},
+            {"finding_id": str(_FINDING_B), "outcome": "approve", "reason": "ok-3"},
+        ],
+        "annotation": None,
+    }
+    resp = client.post(
+        f"/reviews/{uuid4()}/decide",
+        json=body,
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "duplicate_finding_ids" in detail
+    assert str(_FINDING_A) in detail["duplicate_finding_ids"]
+    # The background task was NOT enqueued — endpoint short-circuited
+    # before reaching the resume dispatch.
+    compiled_graph.ainvoke.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Body-schema rejection (no reviewer_id, no original_severity)
 # ---------------------------------------------------------------------------

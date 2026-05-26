@@ -55,6 +55,8 @@ test).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -262,6 +264,21 @@ def _default_engine_factory() -> AsyncEngine:
         )
 
     return create_async_engine(database_url, hide_parameters=True)
+
+
+async def _cancel_task(task: asyncio.Task[None] | None) -> None:
+    """Teardown helper for the lifespan-scoped sweep task.
+
+    Cancels the task and awaits it with the CancelledError suppressed
+    — the asyncio convention for cooperative shutdown. Pushed onto
+    `AsyncExitStack` so it runs in LIFO order alongside provider /
+    engine teardown.
+    """
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
@@ -581,6 +598,47 @@ def build_lifespan(
             )
 
             app.state.admin_api_key = DashboardSettings().admin_api_key
+
+            # Stash deps the sweep needs (anomaly_sink, audit_persister)
+            # and start the periodic background task. Per
+            # docs/spec.md §4.1.6, the HITL-expiry sweep enforces the
+            # timeout window on a 5-minute cadence. Without this
+            # task, HITL timeout enforcement + window-(c)/(f) crash
+            # recovery is inert until an external scheduler invokes
+            # `outrider.sweep.runner.run_all_sweeps` manually.
+            #
+            # APScheduler integration is intentionally out of scope
+            # for V1 — a minimal asyncio-based scheduler keeps the
+            # dep surface tight + matches the in-process lifespan
+            # ownership model. Operators wanting a heavier scheduler
+            # (cron, k8s CronJob, APScheduler) can disable this loop
+            # via OUTRIDER_SWEEP_DISABLED=1 and run
+            # `run_all_sweeps` externally.
+            from outrider.anomaly.persister import (  # noqa: PLC0415
+                AnomalyPersister,
+            )
+
+            anomaly_persister = AnomalyPersister(session_factory=session_factory)
+            app.state.anomaly_sink = anomaly_persister
+            app.state.audit_persister = persister
+
+            sweep_task: asyncio.Task[None] | None = None
+            if os.environ.get("OUTRIDER_SWEEP_DISABLED") != "1":
+                from outrider.api.lifespan_sweep_loop import (  # noqa: PLC0415
+                    start_periodic_sweep,
+                )
+
+                sweep_task = start_periodic_sweep(
+                    engine=engine,
+                    session_factory=session_factory,
+                    anomaly_sink=anomaly_persister,
+                    review_status_sink=review_status_persister,
+                    audit_persister=persister,
+                    checkpointer=checkpointer,
+                    compiled_graph=compiled_graph,
+                )
+                stack.push_async_callback(_cancel_task, sweep_task)
+            app.state.sweep_task = sweep_task
 
             # Safe: `engine.url.drivername` is the scheme alone (e.g.,
             # "postgresql+psycopg") — never carries credentials. DO NOT log
