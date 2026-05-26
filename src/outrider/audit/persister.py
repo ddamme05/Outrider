@@ -83,6 +83,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable  # noqa: TC003  (runtime use in @dataclass field annotation)
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 
@@ -131,6 +133,8 @@ if TYPE_CHECKING:
 # `TraceDecisionEvent.model_validate(existing_payload)` to reconstruct
 # the canonical persisted event for the M7 (b) return contract.
 from outrider.audit.events import (
+    HITLDecisionEvent,  # noqa: E402  (model_validate at runtime)
+    HITLRequestEvent,  # noqa: E402  (model_validate at runtime)
     PublishEvent,  # noqa: E402  (intentional post-TYPE_CHECKING runtime import)
     TraceDecisionEvent,  # noqa: E402  (model_validate at runtime)
 )
@@ -625,12 +629,17 @@ class AuditPersisterNaturalKeyConflict(ValueError):  # noqa: N818
     """Natural-key re-emission with diverging identity-subset payload.
 
     Sibling of `AuditPersisterIdempotencyConflict` for the natural-key
-    idempotency mode per `DECISIONS.md#026` (first instance: trace's
-    `TraceDecisionEvent`, keyed on `(review_id, source_finding_id)`).
-    Raised by `_persist_keyed_by_natural_key` when the partial unique
-    index fires `on_conflict_do_nothing` AND the follow-up SELECT
-    returns an existing row whose identity-subset fields disagree with
-    the incoming event.
+    idempotency mode per `DECISIONS.md#026`. Raised by
+    `_persist_keyed_by_natural_key` when the partial unique index fires
+    `on_conflict_do_nothing` AND the follow-up SELECT returns an
+    existing row whose identity-subset fields disagree with the
+    incoming event.
+
+    Polymorphic over event_type per the natural-key registry:
+
+      - trace_decision: `natural_key=(("source_finding_id", str(uuid)),)`
+      - hitl_request:   `natural_key=()` (review_id alone)
+      - hitl_decision:  `natural_key=()` (review_id alone)
 
     The PK-conflict sibling carries a single `event_id` — under
     `event_id`-PK conflict the conflicting event id IS the lookup key.
@@ -640,19 +649,21 @@ class AuditPersisterNaturalKeyConflict(ValueError):  # noqa: N818
 
     Metadata-only by contract per `DECISIONS.md#016` point 4. Attributes:
 
-    - `existing_event_id`: the PK of the row already in `audit_events`
-      (the "winner" of the natural-key conflict).
-    - `incoming_event_id`: the PK the persister attempted to insert
-      (the "loser" — distinguishable from existing by the per-emission
-      UUID default factory on `AuditEventBase.event_id`).
-    - `review_id`: the natural-key tuple's first component.
-    - `source_finding_id`: the natural-key tuple's second component
-      (TraceDecisionEvent-specific; a future natural-key event type
-      may carry a different key, but the exception name pinpoints the
-      mode, and operators consult the spec for the per-event-type key).
+    - `existing_event_id`: the PK of the row already in `audit_events`.
+    - `incoming_event_id`: the PK the persister attempted to insert.
+    - `review_id`: the natural-key tuple's first component (always).
+    - `natural_key`: tuple of `(field_name, str_value)` pairs for the
+      JSONB-payload components of the natural key (empty tuple when the
+      key is `review_id` alone). Schema identifiers + stringified values.
     - `mismatched_fields`: tuple of identity-subset field names whose
       values differ between existing and incoming. Schema identifiers
       only — never values.
+
+    `source_finding_id` accessor (deprecated, trace-only):
+      callers/tests that grew up around the trace-specific shape can
+      still read `exc.source_finding_id` when the natural key carries
+      `source_finding_id`; it raises `AttributeError` for HITL events
+      so any test that misroutes to a HITL conflict surfaces loudly.
 
     Operators investigating a natural-key conflict pull both
     `audit_events` rows out-of-band (by `event_id`) and compare full
@@ -665,7 +676,7 @@ class AuditPersisterNaturalKeyConflict(ValueError):  # noqa: N818
         existing_event_id: UUID,
         incoming_event_id: UUID,
         review_id: UUID,
-        source_finding_id: UUID,
+        natural_key: tuple[tuple[str, str], ...] = (),
         mismatched_fields: tuple[str, ...],
     ) -> None:
         # An empty mismatched_fields tuple paired with this exception is
@@ -682,18 +693,100 @@ class AuditPersisterNaturalKeyConflict(ValueError):  # noqa: N818
         self.existing_event_id = existing_event_id
         self.incoming_event_id = incoming_event_id
         self.review_id = review_id
-        self.source_finding_id = source_finding_id
+        self.natural_key = natural_key
         self.mismatched_fields = mismatched_fields
+        # Trace-style display: include the natural-key tuple inline when
+        # present, otherwise just `(review_id=...)`.
+        key_repr = (
+            f"(review_id={review_id})"
+            if not natural_key
+            else (f"(review_id={review_id}, " + ", ".join(f"{k}={v}" for k, v in natural_key) + ")")
+        )
         super().__init__(
-            f"natural-key conflict on "
-            f"(review_id={review_id}, source_finding_id={source_finding_id}): "
+            f"natural-key conflict on {key_repr}: "
             f"existing_event_id={existing_event_id}, "
             f"incoming_event_id={incoming_event_id}, "
             f"mismatched_fields={mismatched_fields}"
         )
 
+    @property
+    def source_finding_id(self) -> UUID:
+        """Trace-specific accessor preserved for backward compatibility.
 
-class AuditPersisterTraceIdempotencyLookupError(LookupError):
+        Returns the `source_finding_id` UUID if `natural_key` carries it
+        (trace-decision events). Raises `AttributeError` otherwise so a
+        test that accidentally reads this attribute on a HITL conflict
+        fails loudly rather than silently returning a misleading value.
+        """
+        for field_name, value in self.natural_key:
+            if field_name == "source_finding_id":
+                return UUID(value)
+        raise AttributeError(
+            "source_finding_id is not part of this natural-key conflict "
+            f"(natural_key={self.natural_key!r}); the field is "
+            "trace-decision-specific."
+        )
+
+
+class AuditPersisterHITLRequestNaturalKeyConflict(AuditPersisterNaturalKeyConflict):
+    """Natural-key conflict on `(review_id) WHERE event_type='hitl_request'`.
+
+    Subclass of `AuditPersisterNaturalKeyConflict` for distinct operator
+    triage. The natural-key is `review_id` alone (per V1 single-shot
+    per-review semantics); `natural_key=()` on this subclass.
+    Identity-subset divergence on `findings_requiring_approval` /
+    `auto_post_findings` / `created_at` / `expires_at` / `is_eval` raises
+    this exception — surfaces a producer-side derivation drift
+    (e.g., `state.received_at` mutation or `HITL_TIMEOUT_MINUTES` config
+    change between body invocations).
+    """
+
+
+class AuditPersisterHITLDecisionNaturalKeyConflict(AuditPersisterNaturalKeyConflict):
+    """Natural-key conflict on `(review_id) WHERE event_type='hitl_decision'`.
+
+    Subclass of `AuditPersisterNaturalKeyConflict` for distinct operator
+    triage. The natural-key is `review_id` alone (V1 single-shot per
+    Non-goals "No multi-gate semantics within a single review");
+    `natural_key=()` on this subclass. Identity-subset divergence on
+    `decisions_content_hash` / `is_eval` raises this exception — the
+    canonical signal for the divergent-content concurrent-decide race
+    the dashboard endpoint's wrapper catches as a no-op.
+    """
+
+
+class AuditPersisterNaturalKeyLookupError(LookupError):
+    """Generic base for natural-key conflict-but-empty-SELECT errors.
+
+    The `on_conflict_do_nothing` path returns "no rows" on either
+    (a) conflict — existing row blocks insert; follow-up SELECT loads it
+    and identity-subset comparison proceeds — OR (b) follow-up SELECT
+    actually returns zero rows. Case (b) should never happen under V1
+    (single-threaded per review + append-only `audit_events`), but
+    defense-in-depth matters for V1.5 parallel-analyze + concurrent
+    webhook redispatch + future audit-archive flows. Subclasses
+    specialize per event_type so operators can differentiate which
+    natural-key index fired empty.
+
+    Strict-keyword `message` per the project-wide metadata-only
+    persister-exception contract: callers cannot pass arbitrary
+    positional content into the exception's `args[0]`. Subclasses
+    construct their own message from review_id-shaped identifiers and
+    pass it through this base.
+    """
+
+    def __init__(self, message: str, *, _from_subclass: bool = False) -> None:
+        if not _from_subclass:
+            raise TypeError(
+                "AuditPersisterNaturalKeyLookupError must be constructed by "
+                "a subclass that provides _from_subclass=True with a typed "
+                "message; direct positional construction would let arbitrary "
+                "content land in args[0]."
+            )
+        super().__init__(message)
+
+
+class AuditPersisterTraceIdempotencyLookupError(AuditPersisterNaturalKeyLookupError):
     """Natural-key conflict fired but follow-up SELECT returned no row.
 
     The `postgresql_insert(...).on_conflict_do_nothing(...)` path
@@ -725,9 +818,45 @@ class AuditPersisterTraceIdempotencyLookupError(LookupError):
             "trigger should prevent this) or the natural-key SELECT "
             "predicate diverged from the partial unique index expression."
         )
-        super().__init__(message)
+        super().__init__(message, _from_subclass=True)
         self.review_id = review_id
         self.source_finding_id = source_finding_id
+
+
+class AuditPersisterHITLRequestIdempotencyLookupError(AuditPersisterNaturalKeyLookupError):
+    """HITL-request natural-key conflict fired but follow-up SELECT returned no row.
+
+    Natural-key is `(review_id) WHERE event_type='hitl_request'`. Same
+    defense-in-depth shape as the trace lookup error — should not happen
+    under V1, but distinct exception type lets operators triage on event
+    type rather than on natural-key shape.
+    """
+
+    def __init__(self, *, review_id: UUID) -> None:
+        super().__init__(
+            f"_persist_keyed_by_natural_key: hitl_request natural-key "  # noqa: S608
+            f"conflict fired but follow-up SELECT on (review_id={review_id}, "  # noqa: S608
+            "event_type='hitl_request') returned no row.",  # noqa: S608
+            _from_subclass=True,
+        )
+        self.review_id = review_id
+
+
+class AuditPersisterHITLDecisionIdempotencyLookupError(AuditPersisterNaturalKeyLookupError):
+    """HITL-decision natural-key conflict fired but follow-up SELECT returned no row.
+
+    Natural-key is `(review_id) WHERE event_type='hitl_decision'`. Sibling
+    of the request-side lookup error; same shape, distinct event_type.
+    """
+
+    def __init__(self, *, review_id: UUID) -> None:
+        super().__init__(
+            f"_persist_keyed_by_natural_key: hitl_decision natural-key "  # noqa: S608
+            f"conflict fired but follow-up SELECT on (review_id={review_id}, "  # noqa: S608
+            "event_type='hitl_decision') returned no row.",  # noqa: S608
+            _from_subclass=True,
+        )
+        self.review_id = review_id
 
 
 # Populate the allowlist now that every named exception class above is
@@ -751,7 +880,12 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterEventResponseFieldMismatchError,
     AuditPersisterIdempotencyConflict,
     AuditPersisterNaturalKeyConflict,
+    AuditPersisterHITLRequestNaturalKeyConflict,
+    AuditPersisterHITLDecisionNaturalKeyConflict,
+    AuditPersisterNaturalKeyLookupError,
     AuditPersisterTraceIdempotencyLookupError,
+    AuditPersisterHITLRequestIdempotencyLookupError,
+    AuditPersisterHITLDecisionIdempotencyLookupError,
 )
 
 
@@ -926,6 +1060,31 @@ _TRACE_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
     }
 )
 
+# HITL natural-key identity subsets per the HITL spec:
+#   - hitl_request: both `created_at` and `expires_at` are stable Q4
+#     derivations from `state.received_at`; including both surfaces drift
+#     in EITHER recipe loudly as a persister conflict.
+#   - hitl_decision: `decisions_content_hash` is the canonical
+#     content-derived digest; `reviewer_id` is EXCLUDED (advisory under
+#     V1 single-tenant scope per Non-goals — same logical decision under
+#     different reviewer_ids should collapse, not raise).
+_HITL_REQUEST_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
+    {
+        "findings_requiring_approval",
+        "auto_post_findings",
+        "created_at",
+        "expires_at",
+        "is_eval",
+    }
+)
+
+_HITL_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
+    {
+        "decisions_content_hash",
+        "is_eval",
+    }
+)
+
 # Fields whose payload value is set-semantic (per their TraceDecisionEvent
 # validator) and must be sorted before identity-equality. JSON serialization
 # preserves list order, so without this canonicalization a retry whose
@@ -941,7 +1100,79 @@ _SET_SEMANTIC_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset({"resolved_cand
 # `_IDENTITY_SUBSETS["x"] = frozenset()` and silently admit a wrong-mode
 # write.
 _IDENTITY_SUBSETS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
-    {"trace_decision": _TRACE_DECISION_IDENTITY_SUBSET}
+    {
+        "trace_decision": _TRACE_DECISION_IDENTITY_SUBSET,
+        "hitl_request": _HITL_REQUEST_IDENTITY_SUBSET,
+        "hitl_decision": _HITL_DECISION_IDENTITY_SUBSET,
+    }
+)
+
+
+@dataclass(frozen=True)
+class _NaturalKeySpec:
+    """Per-event-type natural-key shape for `_persist_keyed_by_natural_key`.
+
+    Each entry pins:
+      - `event_type`: the literal stored in `audit_events.event_type`,
+        matching the migration's partial-index WHERE clause.
+      - `jsonb_key`: the JSONB payload field extending the natural key
+        beyond `review_id` (e.g. trace's `source_finding_id`); `None`
+        means the natural key is `review_id` alone.
+      - `event_class`: for `model_validate(existing_payload)` recovery
+        on the no-op path.
+      - `conflict_cls`: distinct subclass of
+        `AuditPersisterNaturalKeyConflict` for operator triage.
+      - `build_lookup_error`: factory the helper calls when the
+        `on_conflict_do_nothing` path returns no row AND the follow-up
+        SELECT also returns no row — distinct per event_type.
+    """
+
+    event_type: str
+    jsonb_key: str | None
+    event_class: type[Any]
+    conflict_cls: type[AuditPersisterNaturalKeyConflict]
+    build_lookup_error: Callable[[Any], AuditPersisterNaturalKeyLookupError]
+
+
+def _build_trace_lookup_error(event: Any) -> AuditPersisterNaturalKeyLookupError:
+    return AuditPersisterTraceIdempotencyLookupError(
+        review_id=event.review_id,
+        source_finding_id=event.source_finding_id,
+    )
+
+
+def _build_hitl_request_lookup_error(event: Any) -> AuditPersisterNaturalKeyLookupError:
+    return AuditPersisterHITLRequestIdempotencyLookupError(review_id=event.review_id)
+
+
+def _build_hitl_decision_lookup_error(event: Any) -> AuditPersisterNaturalKeyLookupError:
+    return AuditPersisterHITLDecisionIdempotencyLookupError(review_id=event.review_id)
+
+
+_NATURAL_KEY_SPECS: Final[Mapping[str, _NaturalKeySpec]] = MappingProxyType(
+    {
+        "trace_decision": _NaturalKeySpec(
+            event_type="trace_decision",
+            jsonb_key="source_finding_id",
+            event_class=TraceDecisionEvent,
+            conflict_cls=AuditPersisterNaturalKeyConflict,
+            build_lookup_error=_build_trace_lookup_error,
+        ),
+        "hitl_request": _NaturalKeySpec(
+            event_type="hitl_request",
+            jsonb_key=None,
+            event_class=HITLRequestEvent,
+            conflict_cls=AuditPersisterHITLRequestNaturalKeyConflict,
+            build_lookup_error=_build_hitl_request_lookup_error,
+        ),
+        "hitl_decision": _NaturalKeySpec(
+            event_type="hitl_decision",
+            jsonb_key=None,
+            event_class=HITLDecisionEvent,
+            conflict_cls=AuditPersisterHITLDecisionNaturalKeyConflict,
+            build_lookup_error=_build_hitl_decision_lookup_error,
+        ),
+    }
 )
 
 
@@ -1031,6 +1262,8 @@ def _serialize_event_payload(
         | PublishAttemptEvent
         | PublishEvent
         | TraceDecisionEvent
+        | HITLRequestEvent
+        | HITLDecisionEvent
     ),
 ) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
@@ -1600,59 +1833,80 @@ class AuditPersister:
         """Persist a `PublishEvent` row (success-path review-level summary)."""
         await self._persist_non_phase_event(event)
 
-    # -- TraceEventSink surface ---------------------------------------------
-    # Per `specs/2026-05-23-trace-node.md` M7 (b) + `DECISIONS.md#026`
-    # natural-key idempotency mode. Distinct from `_persist_non_phase_event`
-    # because the idempotency key is `(review_id, payload->>'source_finding_id')`
-    # rather than `event_id` PK; the helper returns the canonical persisted
-    # event so trace can construct the state-layer `TraceDecision` in lockstep
-    # with audit per the M7 (b) audit-first emission contract.
+    # -- Natural-key idempotency surface ------------------------------------
+    # Per `DECISIONS.md#026` natural-key idempotency mode. The shape supports
+    # multiple event types (trace_decision, hitl_request, hitl_decision in
+    # V1) via `_NATURAL_KEY_SPECS` below. Each spec names: the event class
+    # (for `model_validate` reconstruction on the no-op path), the JSONB
+    # natural-key extension (None for review-id-only keys; field name for
+    # JSONB-extracted keys like trace's `source_finding_id`), the
+    # conflict / lookup-error exception classes for distinct operator
+    # triage. The helper returns the canonical persisted event so the
+    # producer node can construct the state-layer schema in lockstep
+    # with audit per the audit-first emission contract.
 
-    async def _persist_keyed_by_natural_key(self, event: TraceDecisionEvent) -> TraceDecisionEvent:
-        """Persist a TraceDecisionEvent under natural-key idempotency.
+    async def _persist_keyed_by_natural_key(
+        self, event: TraceDecisionEvent | HITLRequestEvent | HITLDecisionEvent
+    ) -> TraceDecisionEvent | HITLRequestEvent | HITLDecisionEvent:
+        """Persist a natural-key-keyed audit event under idempotency.
 
-        Insert via `postgresql_insert(...).on_conflict_do_nothing(...)` against
-        the partial unique index from migration `8f2a4c1e7b3d`. On insert path:
-        returns the incoming event verbatim. On conflict: SELECTs the existing
-        row, validates an event from its payload, compares identity-subset per
-        `_payload_identity_subset("trace_decision")`. Subset equal → return
-        existing event (the lockstep-recovery winner per M7 (b)). Subset
-        diverges → raise `AuditPersisterNaturalKeyConflict`.
+        Polymorphic over `event.event_type` via `_NATURAL_KEY_SPECS`.
+        Insert via `postgresql_insert(...).on_conflict_do_nothing(...)`
+        against the per-event-type partial unique index. Insert path:
+        returns the incoming event verbatim. Conflict path: SELECTs the
+        existing row, reconstructs an event from its payload, compares
+        identity-subset per `_payload_identity_subset(event.event_type)`.
+        Subset equal → return existing event (the lockstep-recovery
+        winner). Subset diverges → raise the event_type-specific
+        `AuditPersisterNaturalKeyConflict` subclass.
 
-        The `index_where` predicate passed to `on_conflict_do_nothing` MUST
-        exactly mirror the partial-index WHERE clause for SQLAlchemy to bind
-        to the right index (`event_type = 'trace_decision' AND payload ?
-        'source_finding_id'`). Drift here would silently fall through to a
-        full-table conflict-arbiter search, miss the partial index, and the
-        on_conflict_do_nothing semantics would not fire.
+        The `index_where` predicate passed to `on_conflict_do_nothing`
+        MUST exactly mirror the partial-index WHERE clause for SQLAlchemy
+        to bind to the right index. Drift between the SELECT predicate
+        + the index_where + the migration's `CREATE UNIQUE INDEX ... WHERE`
+        would silently fall through to a full-table conflict-arbiter
+        search and the on-conflict semantics would not fire.
 
         Raises:
-          AuditPersisterTraceIdempotencyLookupError: insert path returned no
-            row AND follow-up natural-key SELECT also returned no row.
-            Defends against the race / append-only-violation case.
-          AuditPersisterNaturalKeyConflict: insert path returned no row,
-            follow-up SELECT loaded a row, and the identity-subset comparison
-            detected at least one field divergence.
+          `AuditPersisterNaturalKeyLookupError` subclass: insert path
+            returned no row AND follow-up natural-key SELECT also returned
+            no row. Defends against the race / append-only-violation case.
+          `AuditPersisterNaturalKeyConflict` subclass: insert path returned
+            no row, follow-up SELECT loaded a row, identity-subset
+            comparison detected at least one field divergence.
         """
+        spec = _NATURAL_KEY_SPECS[event.event_type]
         payload = _serialize_event_payload(event)
-        # Canonical event_type discriminator via the schema's literal
-        # default — same pattern as `query_prior_publish_event` below.
-        # Hardcoding "trace_decision" in two places (SELECT predicate +
-        # partial-index WHERE) would silently disable both lookups if
-        # the literal got renamed in the schema. One source of truth.
-        trace_decision_event_type: str = TraceDecisionEvent.model_fields["event_type"].default
-        # SELECT predicate uses `.astext == ...` so the column reference
-        # compiles to `payload->>'source_finding_id'`, matching the partial
-        # unique index expression (db/migrations/.../8f2a4c1e7b3d). Drift
-        # here — switching to `payload["...source_finding_id"] == "..."`
-        # (which compiles to `payload->'key' = '...'::jsonb`) — would NOT
-        # match the index expression and the planner would fall through
-        # to a seq scan.
-        natural_key_select_predicate = (
-            (AuditEventRow.review_id == event.review_id)
-            & (AuditEventRow.event_type == trace_decision_event_type)
-            & (AuditEventRow.payload["source_finding_id"].astext == str(event.source_finding_id))
-        )
+        event_type_literal = spec.event_type
+        # SELECT predicate matches the partial-index expression exactly.
+        # For trace, the JSONB component is `(payload->>'source_finding_id')`;
+        # for HITL it's None (review_id alone). Drift between this
+        # predicate and the migration's `CREATE UNIQUE INDEX ... ON ...`
+        # expression would make the planner fall through to a seq scan.
+        if spec.jsonb_key is not None:
+            jsonb_value: str = str(getattr(event, spec.jsonb_key))
+            natural_key_select_predicate = (
+                (AuditEventRow.review_id == event.review_id)
+                & (AuditEventRow.event_type == event_type_literal)
+                & (AuditEventRow.payload[spec.jsonb_key].astext == jsonb_value)
+            )
+            index_elements: list[Any] = [
+                AuditEventRow.review_id,
+                sa_text(f"(payload->>'{spec.jsonb_key}')"),
+            ]
+            index_where_clause = (
+                f"event_type = '{event_type_literal}' AND payload ? '{spec.jsonb_key}'"
+            )
+            conflict_natural_key: tuple[tuple[str, str], ...] = ((spec.jsonb_key, jsonb_value),)
+        else:
+            # review_id alone — partial unique index ON (review_id)
+            # WHERE event_type = '...'. No JSONB extraction.
+            natural_key_select_predicate = (AuditEventRow.review_id == event.review_id) & (
+                AuditEventRow.event_type == event_type_literal
+            )
+            index_elements = [AuditEventRow.review_id]
+            index_where_clause = f"event_type = '{event_type_literal}'"
+            conflict_natural_key = ()
 
         # Concurrent emits with identical natural-keys serialize via PG's
         # unique-index conflict resolution: one transaction wins INSERT;
@@ -1675,29 +1929,23 @@ class AuditPersister:
                     payload=payload,
                 )
                 .on_conflict_do_nothing(
-                    index_elements=[
-                        AuditEventRow.review_id,
-                        sa_text("(payload->>'source_finding_id')"),
-                    ],
-                    # `trace_decision_event_type` is the Pydantic `Literal[...]`
-                    # default at the top of this method (line ~1612) —
-                    # never user input. The f-string interpolation here is
+                    index_elements=index_elements,
+                    # `event_type_literal` is the Pydantic `Literal[...]`
+                    # default from the schema — never user input. The
+                    # f-string interpolation in `index_where_clause` is
                     # safe (no SQL-injection surface); we use it because
                     # SQLAlchemy's partial-index WHERE needs literal SQL
                     # text matching the migration's `CREATE UNIQUE INDEX
-                    # ... WHERE event_type = 'trace_decision' ...` exactly.
-                    index_where=sa_text(
-                        f"event_type = '{trace_decision_event_type}' "
-                        "AND payload ? 'source_finding_id'"
-                    ),
+                    # ... WHERE event_type = '<lit>' ...` exactly.
+                    index_where=sa_text(index_where_clause),
                 )
                 .returning(AuditEventRow.event_id)
             )
             inserted_event_id = await session.scalar(insert_stmt)
             if inserted_event_id is not None:
                 # Insert-path: the incoming event IS the canonical persisted
-                # event. Return it verbatim per M7 (b) — caller builds the
-                # state-layer TraceDecision from this exact event.
+                # event. Return it verbatim — caller builds the state-layer
+                # schema from this exact event.
                 return event
 
             # Conflict-path: load the existing row and compare identity-subset.
@@ -1709,32 +1957,19 @@ class AuditPersister:
                 )
             ).one_or_none()
             if existing_row is None:
-                raise AuditPersisterTraceIdempotencyLookupError(
-                    review_id=event.review_id,
-                    source_finding_id=event.source_finding_id,
-                )
+                raise spec.build_lookup_error(event)
             existing_event_id, existing_payload = existing_row
 
-            # is_eval is mirrored in both the row column (`audit_events.is_eval`)
-            # AND the JSONB payload (carried by AuditEventBase serialization).
-            # Comparison reads from `payload` only — single source for all
-            # identity-subset reads keeps the loop uniform. The two surfaces
-            # can only diverge if `_serialize_event_payload` drops `is_eval`
-            # from the payload (it doesn't — `_EXCLUDE_FROM_PAYLOAD` is just
-            # `{"sequence_number"}`) or via manual row mutation (blocked by
-            # the append-only trigger).
             # `_MISSING` sentinel distinguishes "field absent" from
             # "field present with value None". Bare `.get(field)` would
-            # treat the two as equal — a drifted payload that DROPPED
-            # a nullable identity field (e.g., `target_file`) would
-            # compare equal to one that legitimately has `target_file=None`
-            # and get silently classified as a retry. Same pattern as
-            # `_diff_field_names` above (the sentinel is defined once at
-            # module scope and used by both this loop and the diff helper).
+            # treat them as equal — a drifted payload that DROPPED a
+            # nullable identity field (e.g. `target_file`) would compare
+            # equal to one that legitimately has `target_file=None` and
+            # get silently classified as a retry.
             mismatched = tuple(
                 sorted(
                     field
-                    for field in _payload_identity_subset("trace_decision")
+                    for field in _payload_identity_subset(event.event_type)
                     if _canonicalize_for_identity_compare(
                         field, existing_payload.get(field, _MISSING)
                     )
@@ -1742,22 +1977,25 @@ class AuditPersister:
                 )
             )
             if mismatched:
-                raise AuditPersisterNaturalKeyConflict(
+                raise spec.conflict_cls(
                     existing_event_id=existing_event_id,
                     incoming_event_id=event.event_id,
                     review_id=event.review_id,
-                    source_finding_id=event.source_finding_id,
+                    natural_key=conflict_natural_key,
                     mismatched_fields=mismatched,
                 )
 
             # Identity-subset equal: legitimate retry. Reconstruct the
-            # existing event and return it — trace builds the state-layer
-            # TraceDecision from THIS event (original per-emission fields),
-            # keeping state and audit in lockstep across retries even when
-            # the incoming event's `reason` / `proposed_import_strings` /
-            # `resolved_candidate_paths` / `trace_path` differ from the
+            # existing event and return it — producer builds the state-layer
+            # schema from THIS event (original per-emission fields), keeping
+            # state and audit in lockstep across retries even when the
+            # incoming event's per-emission noise fields (e.g. trace's
+            # `reason` / `proposed_import_strings`) differ from the
             # originally-persisted ones.
-            return TraceDecisionEvent.model_validate(existing_payload)
+            # `spec.event_class` is `type[Any]` in the registry (the field is
+            # bounded to natural-key event types but the dataclass storage
+            # is generic); reconstruction returns the typed event.
+            return spec.event_class.model_validate(existing_payload)  # type: ignore[no-any-return]
 
     async def emit_trace_decision(self, event: TraceDecisionEvent) -> TraceDecisionEvent:
         """Persist a TraceDecisionEvent row under natural-key idempotency.
@@ -1769,7 +2007,18 @@ class AuditPersister:
         state-layer `TraceDecision` for the state delta, keeping state
         and audit in lockstep across retry/replay.
         """
-        return await self._persist_keyed_by_natural_key(event)
+        # Narrow the union return back to TraceDecisionEvent — registry
+        # routes by event_type so the runtime instance matches.
+        result = await self._persist_keyed_by_natural_key(event)
+        if not isinstance(result, TraceDecisionEvent):
+            raise AuditPersisterSchemaInvariantError(
+                event_id=event.event_id,
+                invariant=(
+                    f"emit_trace_decision returned {type(result).__name__}, "
+                    "expected TraceDecisionEvent"
+                ),
+            )
+        return result
 
     async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
         """Return the most-recent prior `PublishEvent` for `review_id`, or None.

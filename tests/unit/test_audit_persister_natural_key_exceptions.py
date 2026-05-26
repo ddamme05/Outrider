@@ -39,15 +39,16 @@ def test_natural_key_conflict_keyword_only_construction() -> None:
     finding = uuid4()
     with pytest.raises(TypeError):
         AuditPersisterNaturalKeyConflict(  # type: ignore[misc]
-            existing, incoming, review, finding, ("target_file",)
+            existing, incoming, review, (("source_finding_id", str(finding)),), ("target_file",)
         )
 
-    # Keyword form succeeds.
+    # Keyword form succeeds — trace's natural-key shape with the JSONB
+    # component named via the generalized `natural_key` tuple.
     AuditPersisterNaturalKeyConflict(
         existing_event_id=existing,
         incoming_event_id=incoming,
         review_id=review,
-        source_finding_id=finding,
+        natural_key=(("source_finding_id", str(finding)),),
         mismatched_fields=("target_file",),
     )
 
@@ -66,7 +67,7 @@ def test_natural_key_conflict_str_carries_only_metadata() -> None:
         existing_event_id=existing,
         incoming_event_id=incoming,
         review_id=review,
-        source_finding_id=finding,
+        natural_key=(("source_finding_id", str(finding)),),
         mismatched_fields=("target_file", "resolution_status"),
     )
     rendered = str(exc)
@@ -83,7 +84,7 @@ def test_natural_key_conflict_str_carries_only_metadata() -> None:
         "existing_event_id",
         "incoming_event_id",
         "review_id",
-        "source_finding_id",
+        "natural_key",
         "mismatched_fields",
     }
     assert secret not in rendered
@@ -104,13 +105,16 @@ def test_natural_key_conflict_attributes_round_trip() -> None:
         existing_event_id=existing,
         incoming_event_id=incoming,
         review_id=review,
-        source_finding_id=finding,
+        natural_key=(("source_finding_id", str(finding)),),
         mismatched_fields=fields,
     )
     assert exc.existing_event_id == existing
     assert exc.incoming_event_id == incoming
     assert exc.review_id == review
+    # Backward-compat accessor: when `natural_key` carries `source_finding_id`
+    # the property reconstitutes the UUID for trace's existing consumers.
     assert exc.source_finding_id == finding
+    assert exc.natural_key == (("source_finding_id", str(finding)),)
     assert exc.mismatched_fields == fields
 
 
@@ -124,7 +128,7 @@ def test_natural_key_conflict_rejects_empty_mismatched_fields() -> None:
             existing_event_id=uuid4(),
             incoming_event_id=uuid4(),
             review_id=uuid4(),
-            source_finding_id=uuid4(),
+            natural_key=(("source_finding_id", str(uuid4())),),
             mismatched_fields=(),
         )
 
