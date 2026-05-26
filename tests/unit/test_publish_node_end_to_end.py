@@ -517,3 +517,95 @@ async def test_non_diffed_file_routes_dashboard_only_registry_miss() -> None:
     assert publish_sink.routing[0].reason is PublishRoutingReason.NON_DIFFED_FILE
     assert publish_sink.routing[0].coordinate_error_kind is None  # registry miss
     assert len(publisher.create_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# F1: SEVERITY_OVERRIDE renders the override in header + audit event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_severity_override_renders_override_severity_in_comment_and_audit() -> None:
+    """When a HITL SEVERITY_OVERRIDE decision matches, publish:
+      - Emits PublishEligibilityEvent with severity=override, original_severity=baseline
+      - Renders the GitHub comment header using the OVERRIDE severity
+
+    Without this fix (the F1 audit finding), publish silently dropped the
+    override on the floor — audit + GitHub showed the original CRITICAL
+    severity even though the reviewer downgraded to LOW.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from outrider.schemas.hitl import (
+        HITLDecision,
+        HITLRequest,
+        PerFindingDecision,
+        PerFindingOutcome,
+    )
+
+    # CRITICAL finding admitted from analyze (no override on the finding).
+    finding = _make_finding(
+        severity=FindingSeverity.CRITICAL,
+        original_severity=None,
+        line_start=2,
+        line_end=2,
+    )
+    now = datetime.now(UTC)
+    hitl_request = HITLRequest(
+        findings_requiring_approval=(finding.finding_id,),
+        auto_post_findings=(),
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    # Reviewer downgrades to LOW via SEVERITY_OVERRIDE.
+    decision = PerFindingDecision(
+        finding_id=finding.finding_id,
+        outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+        reason="downgrade per project context",
+        override_severity=FindingSeverity.LOW,
+        original_severity=FindingSeverity.CRITICAL,
+    )
+    hitl_decision = HITLDecision(
+        reviewer_id="admin",
+        decisions=(decision,),
+        decided_at=now,
+    )
+
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    # Inject HITL state (both request + decision) — mirrors the hitl
+    # node's state delta when reviewer authorizes the override.
+    state = state.model_copy(update={"hitl_request": hitl_request, "hitl_decision": hitl_decision})
+
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher()
+
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    # Audit event records override on severity + baseline on original_severity.
+    elig = publish_sink.eligibility[0]
+    assert elig.severity is FindingSeverity.LOW, (
+        f"expected effective severity=LOW (override), got {elig.severity}"
+    )
+    assert elig.original_severity is FindingSeverity.CRITICAL, (
+        f"expected original_severity=CRITICAL (baseline), got {elig.original_severity}"
+    )
+    assert elig.eligibility is PublishEligibility.ELIGIBLE
+
+    # GitHub comment posted; header rendered with OVERRIDE severity.
+    assert len(publisher.create_calls) == 1
+    posted_comments = publisher.create_calls[0]["comments"]
+    assert len(posted_comments) == 1
+    body = posted_comments[0].body
+    # Header begins with `**LOW**` (the override), NOT `**CRITICAL**` (baseline).
+    assert "**LOW**" in body, f"expected override severity LOW in body, got: {body[:80]!r}"
+    assert "**CRITICAL**" not in body, (
+        f"baseline CRITICAL should not appear in body, got: {body[:80]!r}"
+    )

@@ -376,9 +376,20 @@ def test_severity_override_uses_preflight_map() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failure_wrapper_absorbs_natural_key_conflict() -> None:
-    """Divergent-content concurrent decide race: wrapper logs INFO and
-    returns gracefully (no re-raise). Status is NOT flipped to failed."""
+async def test_failure_wrapper_absorbs_natural_key_conflict_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Divergent-content NaturalKeyConflict: wrapper logs at WARNING
+    level (not INFO) with the explicit diagnostic note, and returns
+    gracefully (no re-raise). Status is NOT flipped to failed.
+
+    Per the F2 audit-fold rationale: the wrapper cannot distinguish a
+    concurrent-loser case from a window-(f) crash-retry case without
+    checkpointer state. Logging at WARNING surfaces the case for
+    operator alerting; the sweep's reclaim_stuck_hitl_states is the
+    canonical recovery path."""
+    import logging
+
     from outrider.api.dashboard.hitl import _run_resume_under_failure_wrapper
     from outrider.audit.persister import (
         AuditPersisterHITLDecisionNaturalKeyConflict,
@@ -407,12 +418,19 @@ async def test_failure_wrapper_absorbs_natural_key_conflict() -> None:
         )
     )
 
-    # No raise — wrapper absorbs cleanly.
-    await _run_resume_under_failure_wrapper(
-        review_id=review_id,
-        hitl_decision=decision,
-        graph=graph,
-    )
+    with caplog.at_level(logging.WARNING, logger="outrider.api.dashboard.hitl"):
+        # No raise — wrapper absorbs cleanly.
+        await _run_resume_under_failure_wrapper(
+            review_id=review_id,
+            hitl_decision=decision,
+            graph=graph,
+        )
+
+    # Log at WARNING level, not INFO. Operators with WARNING-or-higher
+    # alerts see the case.
+    matches = [r for r in caplog.records if r.message == "hitl_resume_natural_key_conflict"]
+    assert len(matches) == 1, f"expected one WARNING log, got {[r.message for r in caplog.records]}"
+    assert matches[0].levelno == logging.WARNING
 
 
 @pytest.mark.asyncio
