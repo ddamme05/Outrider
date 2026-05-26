@@ -474,19 +474,19 @@ class TestIsValidImportString:
     @pytest.mark.parametrize(
         "trojan_codepoint",
         [
-            "​",  # Zero Width Space
-            "‎",  # LTR Mark
-            "‏",  # RTL Mark
-            "‪",  # LRE
-            "‫",  # RLE
-            "‬",  # PDF
-            "‭",  # LRO
-            "‮",  # RLO (CVE-2021-42574 canonical)
-            "⁦",  # LRI
-            "⁧",  # RLI
-            "⁨",  # FSI
-            "⁩",  # PDI
-            "﻿",  # BOM / ZWNBSP
+            "\u200b",  # Zero Width Space
+            "\u200e",  # LTR Mark (LRM)
+            "\u200f",  # RTL Mark (RLM)
+            "\u202a",  # LRE
+            "\u202b",  # RLE
+            "\u202c",  # PDF
+            "\u202d",  # LRO
+            "\u202e",  # RLO (CVE-2021-42574 canonical)
+            "\u2066",  # LRI
+            "\u2067",  # RLI
+            "\u2068",  # FSI
+            "\u2069",  # PDI
+            "\ufeff",  # BOM / ZWNBSP
         ],
     )
     def test_trojan_source_codepoints_rejected(self, trojan_codepoint: str) -> None:

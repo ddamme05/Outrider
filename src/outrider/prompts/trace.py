@@ -2,9 +2,11 @@
 """Trace-node prompt template, version, knobs, and render helper.
 
 The trace node consumes `state.trace_candidates` (the deterministic
-request channel populated by analyze pass 1) and uses a single Haiku
-call to rank the candidates by likelihood that resolving them will
-improve a finding's INFERRED-tier proof. The ranking is one call per
+request channel populated by analyze pass 0; `analyze_parser` gates
+`_collect_trace_candidates_for` on `pass_index == 0` so pass-1
+post-trace analyze calls cannot re-populate the channel) and uses a
+single Haiku call to rank the candidates by likelihood that resolving
+them will improve a finding's INFERRED-tier proof. The ranking is one call per
 trace invocation (not per finding): the LLM sees the full per-finding
 context for every candidate at once, picks an ordered subset, and the
 deterministic pipeline downstream (resolver probes, audit emission,

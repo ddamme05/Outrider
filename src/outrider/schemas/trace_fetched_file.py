@@ -71,10 +71,19 @@ class TraceFetchedFile(BaseModel):
     canonical-record discipline (same pattern as
     `ReviewFinding._enforce_canonical_file_path`)."""
 
-    content_head: str
+    content_head: Annotated[str, Field(max_length=1_000_000)]
     """Head-side file content from
     `github.fetch.fetch_file_content_at(repo, path, head_sha)`.
-    Stable across retries because head_sha is invariant per review."""
+    Stable across retries because head_sha is invariant per review.
+
+    Capped at 1,000,000 chars to mirror the producer's byte cap
+    (`github.fetch._PER_FILE_CONTENT_CAP_BYTES = 1_000_000`).
+    char-count ≤ byte-count for UTF-8, so this is the conservative
+    upper bound; the producer already skips files larger than the byte
+    cap. The schema-level constraint defends against a buggy callsite
+    that bypasses `fetch_file_content_at` and constructs a
+    `TraceFetchedFile` from unbounded content, which would otherwise
+    inflate checkpoints and the post-trace analyze prompt."""
 
     source_finding_id: UUID
     """First finding whose trace decision produced this fetch (per the

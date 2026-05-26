@@ -917,8 +917,22 @@ def _compute_content_field_digests(
 
 
 _TRACE_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
-    {"source_finding_id", "target_file", "resolution_status", "is_eval"}
+    {
+        "source_finding_id",
+        "target_file",
+        "resolution_status",
+        "resolved_candidate_paths",
+        "is_eval",
+    }
 )
+
+# Fields whose payload value is set-semantic (per their TraceDecisionEvent
+# validator) and must be sorted before identity-equality. JSON serialization
+# preserves list order, so without this canonicalization a retry whose
+# probe order shuffled (legitimate — `_resolve_via_probes` iteration order
+# is candidate-rank-dependent) would compare unequal against the existing
+# row even though the SET of resolved paths is identical.
+_SET_SEMANTIC_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset({"resolved_candidate_paths"})
 
 # Registry shape so the extension surface is obvious: adding a second
 # natural-key event type is a single mapping entry (plus a partial unique
@@ -931,6 +945,19 @@ _IDENTITY_SUBSETS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
 )
 
 
+def _canonicalize_for_identity_compare(field: str, value: Any) -> Any:
+    """Normalize set-semantic identity fields before equality.
+
+    For fields in `_SET_SEMANTIC_IDENTITY_FIELDS`, sort the value (if it's
+    a list-shaped JSON payload value) so two retries with the same set but
+    different emission order compare equal. `_MISSING` and non-list values
+    pass through unchanged.
+    """
+    if field in _SET_SEMANTIC_IDENTITY_FIELDS and isinstance(value, list):
+        return sorted(value)
+    return value
+
+
 def _payload_identity_subset(event_type: str) -> frozenset[str]:
     """Identity-subset field names for natural-key idempotency comparison.
 
@@ -941,7 +968,8 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
     divergence = real conflict (raise `AuditPersisterNaturalKeyConflict`).
 
     For `trace_decision` per `specs/2026-05-23-trace-node.md` M7 (c):
-    `{source_finding_id, target_file, resolution_status, is_eval}`.
+    `{source_finding_id, target_file, resolution_status,
+    resolved_candidate_paths, is_eval}`.
 
       - `source_finding_id`: the natural-key payload component (the
         index's other lookup column is `review_id`, pinned by the
@@ -951,15 +979,24 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
         which IS a real conflict.
       - `resolution_status`: deterministic outcome class
         (`resolved`/`unresolved`/`ambiguous`).
+      - `resolved_candidate_paths`: set-semantic per its TraceDecisionEvent
+        validator. Included so an `ambiguous` retry whose probe yielded a
+        different set of paths (e.g., the head tree changed mid-PR) is
+        flagged as a real conflict rather than silently no-op'd —
+        `target_file` is None for ambiguous outcomes and can't carry that
+        signal alone. Canonicalized (sorted) before equality via
+        `_canonicalize_for_identity_compare` because JSON serialization
+        preserves probe order (rank-dependent) while the field's contract
+        is set-semantic.
       - `is_eval`: invariant per review; cross-retry divergence is a
         config bug.
 
     Deliberately EXCLUDES (each would defeat the audit-first contract
     on legitimate retries): `event_id`, `timestamp`, `sequence_number`
     (already excluded by `_serialize_event_payload`), `review_id`
-    (pinned by index lookup), `reason` (LLM-narrative noise), `proposed_
-    import_strings` / `resolved_candidate_paths` / `trace_path`
-    (per-emission noise), `event_type` (pinned by partial-index WHERE).
+    (pinned by index lookup), `reason` (LLM-narrative noise),
+    `proposed_import_strings` / `trace_path` (per-emission noise),
+    `event_type` (pinned by partial-index WHERE).
 
     V1 supports `trace_decision` only — the natural-key mode per
     `DECISIONS.md#026` has no other instance yet. Unknown event types
@@ -1698,7 +1735,10 @@ class AuditPersister:
                 sorted(
                     field
                     for field in _payload_identity_subset("trace_decision")
-                    if existing_payload.get(field, _MISSING) != payload.get(field, _MISSING)
+                    if _canonicalize_for_identity_compare(
+                        field, existing_payload.get(field, _MISSING)
+                    )
+                    != _canonicalize_for_identity_compare(field, payload.get(field, _MISSING))
                 )
             )
             if mismatched:
