@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
-from uuid import UUID, uuid4
 
 from outrider.agent.nodes.trace_parser import (
     TraceRankingParsed,
@@ -34,11 +33,13 @@ from outrider.coordinates import validate_diff_path
 from outrider.coordinates.errors import CoordinateError
 from outrider.github.fetch import fetch_file_content_at
 from outrider.llm.base import LLMRequest
+from outrider.policy.canonical import compute_phase_id
 from outrider.prompts import trace as trace_prompt
 from outrider.schemas import TraceDecision, TraceFetchedFile
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from uuid import UUID
 
     from outrider.audit.sinks import PhaseEventSink, TraceEventSink
     from outrider.github import InstallationGitHubClient
@@ -134,7 +135,14 @@ async def trace(
     one per invocation (not per finding); the LLM sees all candidates
     at once and orders them.
     """
-    phase_id = str(uuid4())
+    # Deterministic per-invocation phase_id: same `state.analysis_rounds`
+    # length on resume re-runs produces the same key, so the PhaseEventSink
+    # idempotency collapses re-emissions.
+    phase_id = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="trace",
+        attempt_key=f"trace-pass-{len(state.analysis_rounds)}",
+    )
 
     # Step 1: start phase event.
     await phase_event_sink.emit_phase(

@@ -51,13 +51,13 @@ and schema failure (`pydantic.ValidationError`).
 
 import hashlib
 from collections.abc import Iterable, Set
-from uuid import uuid4
 
 from outrider.agent.state import ReviewState
 from outrider.audit.events import ReviewPhaseEvent
 from outrider.audit.sinks import PhaseEventSink
 from outrider.llm.base import LLMProvider, LLMRequest
 from outrider.llm.parsing import strip_outer_json_fence
+from outrider.policy.canonical import compute_phase_id
 from outrider.prompts import triage as triage_prompt
 from outrider.schemas.triage_result import ReviewTier, TriageResult
 
@@ -220,7 +220,11 @@ async def triage(
       7. Emit end phase event.
       8. Return partial state.
     """
-    phase_id = str(uuid4())
+    phase_id = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="triage",
+        attempt_key="triage",
+    )
 
     # Step 1: emit start phase event. If THIS raises (audit infra outage),
     # the node fails before any work; no dangling start.

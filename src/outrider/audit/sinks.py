@@ -59,8 +59,11 @@ class PhaseEventSink(Protocol):
     Production / durable implementations MUST:
       - Be idempotent on `(review_id, phase_id, marker)`. A future
         checkpoint replay or retry can re-emit the same start/end pair;
-        the audit row must not duplicate. (`phase_id` is UUID4 —
-        collision-free in practice; the node pre-mints via `str(uuid4())`.)
+        the audit row must not duplicate. (`phase_id` is a SHA-256
+        hex digest the node mints via
+        `policy.canonical.compute_phase_id(review_id, node_id, attempt_key)` —
+        deterministic across body re-runs so the idempotency key is
+        stable across checkpoint replay.)
       - Be safe under concurrent invocations. V1.5's parallel-analyze
         fan-out will emit per-file phase pairs concurrently from multiple
         worker tasks; the sink must serialize or per-task its DB writes

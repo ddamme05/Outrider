@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Literal
-from uuid import uuid4
 
 from langgraph.graph import END
 from langgraph.types import Command
@@ -51,6 +50,7 @@ from outrider.coordinates.diff_parser import validate_diff_path
 from outrider.coordinates.errors import CoordinateError
 from outrider.db.models.reviews import Review
 from outrider.github.fetch import fetch_file_content_at, list_pr_files
+from outrider.policy.canonical import compute_phase_id
 from outrider.schemas.pr_context import ChangedFile, PRContext
 
 if TYPE_CHECKING:
@@ -116,7 +116,11 @@ async def intake(
       - On failure: re-raises after writing `reviews.status='failed'`
         (no `Command` return — exception propagates through LangGraph).
     """
-    phase_id = str(uuid4())
+    phase_id = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="intake",
+        attempt_key="intake",
+    )
     pr_context = state.pr_context
 
     # Tracks whether the phase-start event actually persisted. The failure

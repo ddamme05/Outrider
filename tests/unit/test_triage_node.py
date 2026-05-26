@@ -991,11 +991,18 @@ async def test_triage_handles_special_path_characters(
 
 
 @pytest.mark.asyncio
-async def test_phase_id_is_a_valid_uuid_string(
+async def test_phase_id_is_deterministic_sha256_hex(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
-    """phase_id is str per ReviewPhaseEvent schema; the node uses
-    str(uuid4()) which is a valid UUID hex string."""
+    """phase_id is a 64-char lowercase SHA-256 hex digest per
+    `compute_phase_id`'s contract — deterministic over
+    `(review_id, node_id, attempt_key)` so LangGraph checkpoint replay
+    of the node body produces the same key, letting PhaseEventSink
+    collapse re-emissions on `(review_id, phase_id, marker)`."""
+    import re
+
+    from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_phase_id
+
     state = _build_state()
     plan = _Plan(response_text=_build_triage_json())
     provider = MockLLMProvider(plan)
@@ -1009,8 +1016,13 @@ async def test_phase_id_is_a_valid_uuid_string(
 
     events = recording_phase_event_sink.events
     assert len(events) >= 1
-    # str(uuid4()) is valid input to UUID(...) — round-trip test
-    UUID(events[0].phase_id)
+    assert re.fullmatch(SHA256_HEX_PATTERN, events[0].phase_id), events[0].phase_id
+    expected = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="triage",
+        attempt_key="triage",
+    )
+    assert events[0].phase_id == expected
 
 
 # ===========================================================================
