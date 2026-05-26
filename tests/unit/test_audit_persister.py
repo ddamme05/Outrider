@@ -18,8 +18,13 @@ from outrider.audit.persister import (
     AuditPersisterConfigError,
     AuditPersisterEventRequestFieldMismatchError,
     AuditPersisterEventResponseFieldMismatchError,
+    AuditPersisterHITLDecisionIdempotencyLookupError,
+    AuditPersisterHITLDecisionNaturalKeyConflict,
+    AuditPersisterHITLRequestIdempotencyLookupError,
+    AuditPersisterHITLRequestNaturalKeyConflict,
     AuditPersisterIdempotencyConflict,
     AuditPersisterNaturalKeyConflict,
+    AuditPersisterNaturalKeyLookupError,
     AuditPersisterReviewIdMismatchError,
     AuditPersisterReviewNotFoundError,
     AuditPersisterSchemaInvariantError,
@@ -556,7 +561,12 @@ def test_metadata_only_exception_types_lists_every_persister_exception() -> None
         AuditPersisterEventResponseFieldMismatchError,
         AuditPersisterIdempotencyConflict,
         AuditPersisterNaturalKeyConflict,
+        AuditPersisterHITLRequestNaturalKeyConflict,
+        AuditPersisterHITLDecisionNaturalKeyConflict,
+        AuditPersisterNaturalKeyLookupError,
         AuditPersisterTraceIdempotencyLookupError,
+        AuditPersisterHITLRequestIdempotencyLookupError,
+        AuditPersisterHITLDecisionIdempotencyLookupError,
     }
     assert set(METADATA_ONLY_EXCEPTION_TYPES) == expected
 
