@@ -14,6 +14,13 @@ dependencies = [
     "langgraph-checkpoint-postgres==3.0.5",
     "anthropic==0.100.0",
 
+    # Observability — LangSmith (opt-in via LANGSMITH_TRACING=true env var).
+    # LangGraph 1.1.6 emits node spans natively when the env var is set; the
+    # `langsmith.wrappers.wrap_anthropic` shim in `llm/anthropic_provider.py`
+    # adds LLM-call I/O traces on top. Both are no-ops when the env var is
+    # unset, so the dep doesn't activate in CI / eval / prod by default.
+    "langsmith==0.8.5",
+
     # Schema / validation / settings
     "pydantic==2.12.5",
     "pydantic-settings==2.13.1",

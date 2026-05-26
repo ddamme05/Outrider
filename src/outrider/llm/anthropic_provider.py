@@ -257,6 +257,23 @@ class AnthropicProvider:
             ),
         )
 
+        # Opt-in LangSmith I/O tracing for `messages.create(...)` calls.
+        # Gated on the same `LANGSMITH_TRACING=true` env var LangGraph
+        # itself reads, so node-level traces (LangGraph) and LLM-call
+        # traces (this wrap) activate together. The wrap is a
+        # transparent monkey-patch on the SDK client: same instance,
+        # same methods, same return types — `wrap_anthropic` pushes
+        # request/response payloads to LangSmith as a side effect.
+        # Lazy import keeps the no-trace path free of `import langsmith`
+        # (cold-start latency + the langsmith dep is technically optional
+        # at runtime when tracing is off). The import lives inside the
+        # `llm/` wrapper folder, honoring `vendor-sdks-only-in-wrappers`.
+        if os.environ.get("LANGSMITH_TRACING", "").lower() == "true":
+            from langsmith.wrappers import wrap_anthropic
+
+            self._client = wrap_anthropic(self._client)
+            _LOGGER.info("anthropic_provider: LangSmith tracing enabled via wrap_anthropic")
+
         # Privacy startup notice — canonical text per DECISIONS#015
         # point 4. Operator-attestation only; never a per-request header.
         # previous emit had only structured
