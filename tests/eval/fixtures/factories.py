@@ -260,6 +260,7 @@ class HITLRequestEventFactory:
             "is_eval": True,
             "findings_requiring_approval": (uuid4(),),
             "auto_post_findings": (),
+            "created_at": now,
             "expires_at": now + timedelta(minutes=30),
         }
         return HITLRequestEvent(**{**defaults, **overrides})
@@ -269,11 +270,16 @@ class HITLDecisionEventFactory:
     """Factory for `HITLDecisionEvent` Pydantic instances.
 
     Constructs a single APPROVE PerFindingDecision in `decisions` by default;
-    overrides can supply alternative decision sets.
+    overrides can supply alternative decision sets. `decisions_content_hash`
+    is computed automatically from the final `decisions` + `annotation`
+    pair via `compute_hitl_decision_content_hash`; pass `decisions_content_hash`
+    in `overrides` only to test mismatch/forgery rejections.
     """
 
     @classmethod
     def create(cls, **overrides: Any) -> HITLDecisionEvent:
+        from outrider.policy.canonical import compute_hitl_decision_content_hash
+
         _reject_is_eval_false(overrides)
         if "decisions" not in overrides:
             overrides["decisions"] = (
@@ -283,13 +289,22 @@ class HITLDecisionEventFactory:
                     reason="",
                 ),
             )
+        annotation: str | None = overrides.get("annotation")
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
             "is_eval": True,
             "reviewer_id": "eval-reviewer@example.com",
+            "annotation": annotation,
+            "decided_at": datetime.now(UTC),
             "decision_latency_seconds": 42.5,
         }
-        return HITLDecisionEvent(**{**defaults, **overrides})
+        merged = {**defaults, **overrides}
+        if "decisions_content_hash" not in merged:
+            merged["decisions_content_hash"] = compute_hitl_decision_content_hash(
+                decisions=merged["decisions"],
+                annotation=merged["annotation"],
+            )
+        return HITLDecisionEvent(**merged)
 
 
 def _normalize_finding_type(overrides: dict[str, Any]) -> FindingType:

@@ -146,7 +146,11 @@ class HITLDecision(BaseModel):
 
     reviewer_id: str
     decisions: tuple[PerFindingDecision, ...]
-    annotation: str | None = None
+    # Mirror of `HITLDecisionEvent.annotation` cap. Without parity, the
+    # state-layer could hold an annotation that fails the audit-event
+    # mirror's `max_length=2000` validation — breaking the state→audit
+    # shadow contract.
+    annotation: str | None = Field(default=None, max_length=2000)
     decided_at: AwareDatetime
 
     @model_validator(mode="after")

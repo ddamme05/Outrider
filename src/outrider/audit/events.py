@@ -874,12 +874,18 @@ class HITLRequestEvent(AuditEventBase):
     """Records the HITL gate envelope at interrupt time.
 
     Audit-shadow mirror of `HITLRequest`: set-semantic partition of
-    findings across the two tuples.
+    findings across the two tuples + the deterministic timestamp pair
+    (`created_at`, `expires_at`) derived from `state.received_at`. The
+    natural-key idempotency on `(review_id)` requires the producer-side
+    derivation to be stable across body re-runs; both timestamps appear
+    in `_IDENTITY_SUBSETS["hitl_request"]` so drift in either derivation
+    surfaces as a persister conflict.
     """
 
     event_type: Literal["hitl_request"] = "hitl_request"
     findings_requiring_approval: tuple[UUID, ...]
     auto_post_findings: tuple[UUID, ...]
+    created_at: AwareDatetime
     expires_at: AwareDatetime
 
     @model_validator(mode="after")
@@ -913,16 +919,43 @@ class HITLDecisionEvent(AuditEventBase):
     Field name `decisions` (not `per_finding_decisions`) matches the
     cross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`
     Amended 2026-04-29.
+
+    Carries the full `HITLDecision` field set so audit-only replay
+    reconstructs the state-layer object: `reviewer_id`, `decisions`,
+    `annotation`, `decided_at`. `decision_latency_seconds` is a derived
+    metric distinct from `decided_at` (the canonical time field for state
+    reconstruction). `decisions_content_hash` is the audit-shadow of
+    `compute_hitl_decision_content_hash(decisions, annotation)`; the
+    persister's natural-key idempotency on `(review_id)` reads this hash
+    via the `_IDENTITY_SUBSETS["hitl_decision"]` registry — divergent
+    submissions for the same review fail loudly at the persister.
     """
 
     event_type: Literal["hitl_decision"] = "hitl_decision"
     # GitHub usernames are <=39 chars; SSO logins or future auth sources
     # might be longer, so 100 is generous-but-bounded. Without the cap a
     # malformed or attacker-supplied reviewer id could fill the audit row
-    # arbitrarily and break replay aggregations keyed by reviewer.
+    # arbitrarily and break replay aggregations keyed by reviewer. V1
+    # operator scope (per DECISIONS.md#011) means `reviewer_id` is
+    # server-set to the literal `"admin"`; the endpoint refuses any
+    # body-supplied `reviewer_id` via `HITLDecisionPayload.extra="forbid"`.
     reviewer_id: str = Field(max_length=100)
     decisions: tuple[PerFindingDecision, ...]
+    # Forensic note attached at submit time; bounded to keep the audit
+    # row size reasonable. `None` means the reviewer attached no note.
+    # Hashed alongside `decisions` per
+    # `compute_hitl_decision_content_hash` so two decisions with
+    # identical per-finding decisions but different annotations remain
+    # logically distinct under the natural-key identity subset.
+    annotation: str | None = Field(default=None, max_length=2000)
+    decided_at: AwareDatetime
     decision_latency_seconds: float = Field(ge=0)
+    # Content-derived audit-shadow of `compute_hitl_decision_content_hash`.
+    # The persister's natural-key idempotency on `(review_id)` includes
+    # this field via `_IDENTITY_SUBSETS["hitl_decision"]`; divergent
+    # `decisions_content_hash` on a re-emit raises
+    # `AuditPersisterHITLDecisionNaturalKeyConflict`.
+    decisions_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_one_decision_per_finding(self) -> Self:
@@ -934,6 +967,34 @@ class HITLDecisionEvent(AuditEventBase):
             raise ValueError(
                 f"HITLDecisionEvent.decisions contains multiple decisions for the "
                 f"same finding_id: {sorted(str(fid) for fid in finding_ids)!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_decisions_content_hash(self) -> Self:
+        """`decisions_content_hash` MUST equal
+        `compute_hitl_decision_content_hash(decisions, annotation)`.
+
+        Defense against forged or producer-mismatched audit rows: the
+        canonical recipe is single-sourced in `policy/canonical.py`;
+        an event constructed with a hand-typed hash that doesn't match
+        the content raises here at construction time, BEFORE the row
+        reaches the persister's natural-key check. Pinned by
+        `test_audit_events.py`'s validator test.
+        """
+        from outrider.policy.canonical import (  # noqa: PLC0415
+            compute_hitl_decision_content_hash,
+        )
+
+        expected = compute_hitl_decision_content_hash(
+            decisions=self.decisions,
+            annotation=self.annotation,
+        )
+        if self.decisions_content_hash != expected:
+            raise ValueError(
+                f"HITLDecisionEvent.decisions_content_hash mismatches "
+                f"compute_hitl_decision_content_hash(decisions, annotation): "
+                f"got {self.decisions_content_hash!r}, expected {expected!r}"
             )
         return self
 
