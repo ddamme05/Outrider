@@ -27,7 +27,9 @@ __all__ = [
     "SHA256_HEX_PATTERN_SHORT",
     "canonicalize_for_hash",
     "compute_candidate_id",
+    "compute_hitl_decision_content_hash",
     "compute_identity_hash",
+    "compute_phase_id",
     "compute_proposal_hash",
     "compute_response_hash",
     "compute_round_id",
@@ -420,5 +422,86 @@ def compute_candidate_id(
             "source_proposal_hash": source_proposal_hash,
             "import_string": import_string,
             "reason": reason,
+        }
+    )
+
+
+def compute_hitl_decision_content_hash(
+    *,
+    decisions: tuple[Any, ...],
+    annotation: str | None,
+) -> str:
+    """SHA-256 hex of a `HITLDecision`'s content-derived identity hash.
+
+    Carries through `canonicalize_for_hash` so the recipe stays single-
+    sourced. Persister-side `_IDENTITY_SUBSETS["hitl_decision"]` keys on
+    this hash; divergent submissions for the same review surface as
+    `AuditPersisterHITLDecisionNaturalKeyConflict` at the natural-key
+    check.
+
+    `decisions` is `tuple[PerFindingDecision, ...]` (typed as `Any` here
+    to avoid a circular `schemas/hitl.py → policy/canonical.py` import;
+    callers pass the typed tuple). Each `PerFindingDecision` passes
+    through `.model_dump(mode="json")` so UUIDs/enums serialize to
+    strings BEFORE the hash payload is built — the canonical recipe
+    requires JSON-native values per `canonicalize_for_hash`'s caller
+    contract. Decisions are sorted by `finding_id` (stringified) before
+    folding so a reviewer who happens to submit in a different order
+    produces the same hash for the same logical decision set.
+
+    `annotation` is included in the recipe because it is forensic
+    content the audit row preserves; two reviewers submitting identical
+    per-finding decisions but different annotations are NOT the same
+    logical decision. `None` (no annotation) serializes as JSON null,
+    distinct from `""` (empty string).
+    """
+    serialized = [d.model_dump(mode="json") if hasattr(d, "model_dump") else d for d in decisions]
+    # Sort by stringified finding_id so submission order doesn't change
+    # the hash for the same logical decision set.
+    serialized.sort(key=lambda payload: str(payload["finding_id"]))
+    return compute_identity_hash(
+        {
+            "annotation": annotation,
+            "decisions": serialized,
+        }
+    )
+
+
+def compute_phase_id(
+    *,
+    review_id: str,
+    node_id: str,
+    attempt_key: str,
+) -> str:
+    """SHA-256 hex digest identifying one logical phase span.
+
+    `PhaseEventSink` idempotency keys on `(review_id, phase_id, marker)`;
+    under LangGraph checkpoint replay (HITL resume is the first arc that
+    exercises this path), a node body re-runs from the top and emits the
+    same logical `marker="start"` / `marker="end"` pair. A uuid4-minted
+    `phase_id` per body invocation produces a different value on the
+    replay run, defeating the idempotency key. Deriving `phase_id`
+    deterministically from `(review_id, node_id, attempt_key)` makes
+    re-emission collapse to the same row at the persister.
+
+    Cross-node uniqueness: a different `node_id` with the same other
+    inputs produces a different digest (SHA-256 over canonical JSON of
+    all three keys). Pinned by `tests/unit/test_compute_phase_id.py`.
+
+    `attempt_key` derivation per node:
+      - `intake`: `"intake"`.
+      - `triage`: `"triage"`.
+      - `analyze`: `f"analyze-pass-{len(state.analysis_rounds)}"` BEFORE
+        appending the round (same length on re-run from the same
+        pre-merge checkpoint).
+      - `trace`: `f"trace-pass-{len(state.analysis_rounds)}"`.
+      - `publish`: `"publish"`.
+      - `hitl`: `"hitl"`.
+    """
+    return compute_identity_hash(
+        {
+            "review_id": review_id,
+            "node_id": node_id,
+            "attempt_key": attempt_key,
         }
     )
