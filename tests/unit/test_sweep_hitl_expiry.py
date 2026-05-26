@@ -198,6 +198,8 @@ async def test_run_once_skips_on_lock_held() -> None:
     audit_persister.query_hitl_decision_event = AsyncMock(return_value=None)
     checkpointer = MagicMock()
     checkpointer.aget = AsyncMock(return_value=None)
+    compiled_graph = MagicMock()
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
 
     result = await run_once(
         conn=conn,
@@ -206,6 +208,7 @@ async def test_run_once_skips_on_lock_held() -> None:
         review_status_sink=status_sink,  # type: ignore[arg-type]
         audit_persister=audit_persister,
         checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
     )
 
     assert result == {"reclaim_recovered": 0, "reclaim_failed": 0, "transitioned": 0}
@@ -274,20 +277,39 @@ async def test_reclaim_window_f_recovery_advances_lifecycle_from_audit_row() -> 
     # before the crash). Pre-fix would have skipped this row.
     checkpointer.aget = AsyncMock(return_value={"checkpoint": "still-exists"})
 
+    # Sweep MUST drive the graph through Command(resume=...). Without
+    # this, the lifecycle column flips but the graph stays suspended
+    # at the interrupt and publish never runs.
+    compiled_graph = MagicMock()
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
+
     result = await reclaim_stuck_hitl_states(
         conn=conn,
         session_factory=MagicMock(),
         audit_persister=audit_persister,
         review_status_sink=status_sink,  # type: ignore[arg-type]
         checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
     )
 
-    # mark_running called with the canonical audit payload.
-    assert len(status_sink.running_calls) == 1
-    assert status_sink.running_calls[0]["review_id"] == review_id
-    payload = status_sink.running_calls[0]["hitl_decision_payload"]
-    assert payload["reviewer_id"] == "admin"
-    assert payload["annotation"] == "canonical decision"
+    # The graph was driven through Command(resume=canonical_decision)
+    # — this is the load-bearing F1 fix. A direct `mark_running` call
+    # from the sweep would have flipped the JSONB but left the graph
+    # suspended; only graph-driven recovery completes publish.
+    compiled_graph.ainvoke.assert_awaited_once()
+    call_args = compiled_graph.ainvoke.await_args
+    resume_command = call_args.args[0]
+    # The Command payload carries the canonical audit-row content
+    # (reviewer_id, annotation flow through).
+    resume_payload = resume_command.resume
+    assert resume_payload["reviewer_id"] == "admin"
+    assert resume_payload["annotation"] == "canonical decision"
+    # thread_id = str(review_id) for the resume.
+    config = call_args.kwargs["config"]
+    assert config["configurable"]["thread_id"] == str(review_id)
+    # The sweep does NOT call mark_running directly — that's the
+    # graph body's job, invoked transitively through Command(resume).
+    assert status_sink.running_calls == []
     # The checkpointer was NOT consulted — audit-row recovery
     # short-circuits before the checkpoint check.
     checkpointer.aget.assert_not_called()
@@ -324,6 +346,8 @@ async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -
     session_inner.__aexit__ = AsyncMock(return_value=None)
     session_inner.begin = MagicMock(return_value=session_inner)
     session_factory = MagicMock(return_value=session_inner)
+    compiled_graph = MagicMock()
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
 
     result = await reclaim_stuck_hitl_states(
         conn=conn,
@@ -331,6 +355,7 @@ async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -
         audit_persister=audit_persister,
         review_status_sink=status_sink,  # type: ignore[arg-type]
         checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
     )
 
     assert result == {"recovered": 0, "failed": 1}
@@ -358,6 +383,8 @@ async def test_reclaim_skips_row_when_no_audit_but_checkpoint_present() -> None:
     status_sink = _StubReviewStatusSink()
     checkpointer = MagicMock()
     checkpointer.aget = AsyncMock(return_value={"checkpoint": "in-flight"})
+    compiled_graph = MagicMock()
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
 
     result = await reclaim_stuck_hitl_states(
         conn=conn,
@@ -365,6 +392,7 @@ async def test_reclaim_skips_row_when_no_audit_but_checkpoint_present() -> None:
         audit_persister=audit_persister,
         review_status_sink=status_sink,  # type: ignore[arg-type]
         checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
     )
 
     assert result == {"recovered": 0, "failed": 0}

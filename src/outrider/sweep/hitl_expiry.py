@@ -13,17 +13,29 @@ advisory lock.
      lost. Anomaly-first reverses that durability gap.
 
   2. `reclaim_stuck_hitl_states` — covers two crash windows:
-     - **Window (f) recovery (audit-row-driven):** for rows in
-       `awaiting_approval` past the grace period whose
+     - **Window (f) recovery (graph-driven via Command(resume)):**
+       for rows in `awaiting_approval` past the grace period whose
        `audit_events` table carries an existing `HITLDecisionEvent`
        but `reviews.hitl_decision IS NULL`, reconstruct the
-       `HITLDecision` from the canonical audit row and call
-       `mark_running` to advance the lifecycle. This is the case
-       where `emit_hitl_decision` succeeded but `mark_running`
-       never landed; the audit row IS the canonical decision per
-       `audit-events-append-only`. The sweep does NOT mark the
-       review `failed` in this case — it advances it to `running`
-       per the canonical audit content.
+       `HITLDecision` from the canonical audit row and invoke
+       `graph.ainvoke(Command(resume=...), config={thread_id})`.
+       The body re-runs from the top: phase start (idempotent on
+       phase_id), partition, request rebuild + emit_hitl_request
+       (natural-key no-op, returns existing event), mark_awaiting_approval
+       (no-op via `hitl_request IS NOT NULL` predicate), interrupt()
+       returns the resume value (the canonical decision payload),
+       audit no-op (returns existing event since content matches),
+       mark_running (writes JSONB + flips status to `running`),
+       phase end, state delta returns → graph routes to publish →
+       publish runs against the recovered finding set. Lifecycle
+       AND publish both reach their canonical terminal state.
+       *Critical:* this is NOT just a DB status flip. A `mark_running`
+       call from the sweep WITHOUT graph invocation would leave the
+       graph suspended at the interrupt forever — the endpoint's
+       JSONB-cache preflight would reject every retry (409) and the
+       gated finding would never reach GitHub. Driving the recovery
+       through `Command(resume=...)` is what makes the audit-canonical
+       decision actually publish.
      - **Window (c) recovery (checkpoint-absence):** for rows in
        `awaiting_approval` past the grace period with NO audit row
        AND no LangGraph checkpoint (`mark_awaiting_approval`
@@ -59,6 +71,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
+from langgraph.types import Command
 from sqlalchemy import select, text, update
 
 from outrider.anomaly.rule_names import AnomalyRuleName
@@ -68,6 +81,7 @@ from outrider.sweep.purge_expired import SWEEP_LOCK_ID
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.graph.state import CompiledStateGraph
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
     from outrider.anomaly.sinks import AnomalySink
@@ -187,6 +201,7 @@ async def reclaim_stuck_hitl_states(
     audit_persister: AuditPersister,
     review_status_sink: ReviewStatusSink,
     checkpointer: BaseCheckpointSaver[Any],
+    compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta = _DEFAULT_RECLAIM_GRACE_PERIOD,
 ) -> dict[str, int]:
     """Sub-job 2: detect + recover stuck HITL states.
@@ -252,29 +267,58 @@ async def reclaim_stuck_hitl_states(
             continue
 
         if audit_decision_event is not None:
-            # Window (f) recovery: the audit row is canonical.
-            # Reconstruct the HITLDecision and advance the lifecycle.
+            # Window (f) recovery: the audit row is canonical, but
+            # the graph is still suspended at the HITL interrupt.
+            # We MUST drive the graph through `Command(resume=...)`
+            # so the body completes: mark_running fires INSIDE the
+            # body (writing the canonical JSONB), phase end emits,
+            # state delta returns, graph routes to publish, publish
+            # runs against the recovered finding set. A direct
+            # `mark_running` write from here would advance the
+            # lifecycle column but leave the graph permanently
+            # suspended — `/decide` would 409-reject all retries
+            # (preflight sees hitl_decision != NULL) and the gated
+            # finding never reaches GitHub.
             canonical_decision = HITLDecision(
                 reviewer_id=audit_decision_event.reviewer_id,
                 decisions=audit_decision_event.decisions,
                 annotation=audit_decision_event.annotation,
                 decided_at=audit_decision_event.decided_at,
             )
-            await review_status_sink.mark_running(
-                review_id=review_id,
-                hitl_decision_payload=canonical_decision.model_dump(mode="json"),
+            from langchain_core.runnables import (  # noqa: PLC0415, TC002
+                RunnableConfig,
             )
+
+            recovery_config: RunnableConfig = {"configurable": {"thread_id": str(review_id)}}
+            try:
+                await compiled_graph.ainvoke(
+                    Command(resume=canonical_decision.model_dump(mode="json")),
+                    config=recovery_config,
+                )
+            except Exception:
+                # Graph drive failed; lifecycle stays in
+                # awaiting_approval. Next sweep tick retries — the
+                # audit row is still canonical, and the body re-run
+                # is idempotent.
+                logger.exception(
+                    "hitl_reclaim_graph_drive_failed",
+                    extra={
+                        "review_id": str(review_id),
+                        "audit_event_id": str(audit_decision_event.event_id),
+                    },
+                )
+                continue
             recovered += 1
             logger.warning(
-                "hitl_reclaim_advanced_from_audit_row",
+                "hitl_reclaim_recovered_via_command_resume",
                 extra={
                     "review_id": str(review_id),
                     "audit_event_id": str(audit_decision_event.event_id),
                     "note": (
                         "Row stuck in awaiting_approval past grace period with "
                         "an orphaned HITLDecisionEvent in audit_events; "
-                        "reconstructed HITLDecision from canonical audit row "
-                        "and advanced lifecycle to running (window-f recovery)."
+                        "drove graph through Command(resume=canonical_decision) "
+                        "to advance lifecycle AND complete publish (window-f recovery)."
                     ),
                 },
             )
@@ -333,6 +377,7 @@ async def run_once(
     review_status_sink: ReviewStatusSink,
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
+    compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta = _DEFAULT_RECLAIM_GRACE_PERIOD,
 ) -> dict[str, int]:
     """Run both HITL-expiry sub-jobs in canonical order, under a
@@ -372,6 +417,7 @@ async def run_once(
         audit_persister=audit_persister,
         review_status_sink=review_status_sink,
         checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
         grace_period=grace_period,
     )
     transitioned = await transition_expired_hitl_reviews(

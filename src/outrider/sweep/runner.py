@@ -38,6 +38,7 @@ from outrider.sweep import hitl_expiry, purge_expired
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.graph.state import CompiledStateGraph
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
     from outrider.anomaly.sinks import AnomalySink
@@ -56,6 +57,7 @@ async def run_all_sweeps(
     review_status_sink: ReviewStatusSink,
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
+    compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta | None = None,
     purge_role: str = "sweep",
 ) -> dict[str, Any]:
@@ -88,6 +90,7 @@ async def run_all_sweeps(
         "review_status_sink": review_status_sink,
         "audit_persister": audit_persister,
         "checkpointer": checkpointer,
+        "compiled_graph": compiled_graph,
     }
     if grace_period is not None:
         hitl_kwargs["grace_period"] = grace_period

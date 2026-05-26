@@ -275,8 +275,30 @@ async def decide(
     if preflight.hitl_decision is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="conflict")
 
-    # Mismatch gate.
-    submitted_ids = {d.finding_id for d in payload.decisions}
+    # Mismatch gate (auth -> state -> mismatch; this is "mismatch").
+    #
+    # Duplicate-finding-id check FIRST: a payload like
+    # `[{fid_a}, {fid_a}, {fid_b}]` against gate `{fid_a, fid_b}`
+    # would satisfy set-equality (`{fid_a, fid_b} == {fid_a, fid_b}`)
+    # but carries two decisions for fid_a. Without this check, the
+    # endpoint admits the duplicate and downstream HITLDecision
+    # construction raises mid-handler — the caller sees 500 instead
+    # of a controlled 422.
+    submitted_id_list = [d.finding_id for d in payload.decisions]
+    submitted_ids = set(submitted_id_list)
+    if len(submitted_id_list) != len(submitted_ids):
+        # Identify the duplicates for the operator response.
+        seen: set = set()
+        duplicates: list[str] = []
+        for fid in submitted_id_list:
+            if fid in seen and str(fid) not in duplicates:
+                duplicates.append(str(fid))
+            seen.add(fid)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"duplicate_finding_ids": sorted(duplicates)},
+        )
+
     expected_ids = set(preflight.hitl_request.findings_requiring_approval)
     if submitted_ids != expected_ids:
         raise HTTPException(
