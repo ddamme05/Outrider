@@ -25,12 +25,27 @@ from outrider.audit.persister import (
 
 def test_trace_decision_identity_subset_matches_spec_enumeration() -> None:
     """Golden-pin: the M7 (c) enumeration is exactly
-    `{source_finding_id, target_file, resolution_status, is_eval}`.
-    Drift here is a spec-versus-impl divergence and should be a
-    deliberate spec update with a `DECISIONS.md` paired change, not a
-    silent rename / addition / removal."""
+    `{source_finding_id, target_file, resolution_status,
+    resolved_candidate_paths, is_eval}`. Drift here is a spec-versus-
+    impl divergence and should be a deliberate spec update with a
+    `DECISIONS.md` paired change, not a silent rename / addition /
+    removal.
+
+    `resolved_candidate_paths` is in the subset because `target_file`
+    is None for `resolution_status='ambiguous'` outcomes and can't
+    carry the divergence signal alone; set-canonicalized via
+    `_canonicalize_for_identity_compare` so probe-order shuffle on
+    legitimate retries doesn't trip identity-equality."""
     subset = _payload_identity_subset("trace_decision")
-    assert subset == frozenset({"source_finding_id", "target_file", "resolution_status", "is_eval"})
+    assert subset == frozenset(
+        {
+            "source_finding_id",
+            "target_file",
+            "resolution_status",
+            "resolved_candidate_paths",
+            "is_eval",
+        }
+    )
 
 
 def test_trace_decision_identity_subset_is_frozen() -> None:
@@ -81,17 +96,21 @@ def test_trace_decision_identity_subset_is_subset_of_actual_payload_fields() -> 
 
 def test_trace_decision_identity_subset_explicitly_excludes_per_emission_fields() -> None:
     """Per M7 (b)+(c) rationale, per-emission fields (`event_id`,
-    `timestamp`, `reason`, `proposed_import_strings`,
-    `resolved_candidate_paths`, `trace_path`) are EXCLUDED so legitimate
-    retries (which produce fresh values for these) collapse to no-ops
-    rather than firing `AuditPersisterNaturalKeyConflict`."""
+    `timestamp`, `reason`, `proposed_import_strings`, `trace_path`)
+    are EXCLUDED so legitimate retries (which produce fresh values
+    for these) collapse to no-ops rather than firing
+    `AuditPersisterNaturalKeyConflict`. `resolved_candidate_paths`
+    was added BACK to the identity subset (set-canonicalized) because
+    it's the only divergence signal for ambiguous outcomes —
+    `target_file=None` for ambiguous, so a tree-mutation mid-PR would
+    silently no-op without this field. See the spec-enumeration test
+    above for the full subset."""
     subset = _payload_identity_subset("trace_decision")
     excluded = {
         "event_id",
         "timestamp",
         "reason",
         "proposed_import_strings",
-        "resolved_candidate_paths",
         "trace_path",
         "review_id",  # tautological (index lookup pins it)
         "event_type",  # tautological (partial-index WHERE pins it)
