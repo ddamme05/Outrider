@@ -66,6 +66,17 @@ class Review(Base):
             "status",
             postgresql_where=text("status IN ('running', 'awaiting_approval')"),
         ),
+        # HITL-expiry sweep: rows whose HITL approval window has elapsed.
+        # Filtered on `status='awaiting_approval'` so the sweep's
+        # `WHERE status='awaiting_approval' AND expires_at < NOW()` query
+        # walks the index directly. The migration creates the underlying
+        # index concurrently; this declaration keeps the SQLAlchemy
+        # metadata in sync.
+        Index(
+            "ix_reviews_awaiting_approval_expires_at",
+            "expires_at",
+            postgresql_where=text("status = 'awaiting_approval'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -97,4 +108,10 @@ class Review(Base):
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # HITL approval window cutoff. Mirrors `HITLRequest.expires_at` for
+    # sweep-query efficiency (`status='awaiting_approval' AND expires_at <
+    # NOW()` per `sweep/hitl_expiry.py`). `None` outside the HITL gate;
+    # set by `ReviewStatusSink.mark_awaiting_approval`, left in place by
+    # `mark_running` so the forensic record persists past the resume.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
