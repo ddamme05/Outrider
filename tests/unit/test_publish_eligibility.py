@@ -26,6 +26,7 @@ from outrider.policy.publish_eligibility import (
 )
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewFinding
+from outrider.schemas.hitl import HITLDecision, HITLRequest
 
 
 def _make_finding(
@@ -105,7 +106,7 @@ def _make_finding(
 def test_critical_finding_is_withheld_hitl_absent() -> None:
     """V1: CRITICAL findings can't materialize until HITL ships."""
     finding = _make_finding(severity=FindingSeverity.CRITICAL)
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.WITHHELD
     assert reason is PublishEligibilityReason.HITL_REQUIRED_NODE_ABSENT
 
@@ -113,7 +114,7 @@ def test_critical_finding_is_withheld_hitl_absent() -> None:
 def test_high_finding_is_withheld_hitl_absent() -> None:
     """V1: HIGH findings can't materialize until HITL ships."""
     finding = _make_finding(severity=FindingSeverity.HIGH)
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.WITHHELD
     assert reason is PublishEligibilityReason.HITL_REQUIRED_NODE_ABSENT
 
@@ -121,7 +122,7 @@ def test_high_finding_is_withheld_hitl_absent() -> None:
 def test_medium_finding_is_eligible() -> None:
     """MEDIUM findings materialize directly in V1."""
     finding = _make_finding(severity=FindingSeverity.MEDIUM)
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.ELIGIBLE
     assert reason is None
 
@@ -129,7 +130,7 @@ def test_medium_finding_is_eligible() -> None:
 def test_low_finding_is_eligible() -> None:
     """LOW findings materialize directly in V1."""
     finding = _make_finding(severity=FindingSeverity.LOW)
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.ELIGIBLE
     assert reason is None
 
@@ -137,7 +138,7 @@ def test_low_finding_is_eligible() -> None:
 def test_info_finding_is_eligible() -> None:
     """INFO findings materialize directly in V1."""
     finding = _make_finding(severity=FindingSeverity.INFO)
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.ELIGIBLE
     assert reason is None
 
@@ -159,7 +160,7 @@ def test_fabricated_override_rejects_even_for_low_severity() -> None:
         severity=FindingSeverity.LOW,
         original_severity=FindingSeverity.CRITICAL,
     )
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.WITHHELD
     assert reason is PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT
 
@@ -175,7 +176,7 @@ def test_fabricated_override_precedes_severity_gate() -> None:
         severity=FindingSeverity.CRITICAL,
         original_severity=FindingSeverity.LOW,
     )
-    eligibility, reason = is_eligible_for_v1_publish(finding)
+    eligibility, reason = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
     assert eligibility is PublishEligibility.WITHHELD
     # NOT hitl_required_node_absent — the override-defense wins.
     assert reason is PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT
@@ -212,3 +213,145 @@ def test_severity_gate_mapping_is_immutable_proxy() -> None:
 
     with pytest.raises(TypeError):
         _V1_SEVERITY_GATE[FindingSeverity.CRITICAL] = None  # type: ignore[index]
+
+
+# ---------------------------------------------------------------------------
+# HITL-aware branches (Group 6 of specs/2026-05-26-hitl-node.md)
+# ---------------------------------------------------------------------------
+
+
+def _make_request(*, finding_ids: tuple) -> HITLRequest:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    return HITLRequest(
+        findings_requiring_approval=finding_ids,
+        auto_post_findings=(),
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+
+
+def _make_decision(*, decisions: tuple) -> HITLDecision:
+    from datetime import UTC, datetime
+
+    return HITLDecision(
+        reviewer_id="admin",
+        decisions=decisions,
+        decided_at=datetime.now(UTC),
+    )
+
+
+def test_critical_with_request_no_decision_yields_decision_missing() -> None:
+    """HITL request landed, no decision yet -> WITHHELD hitl_decision_missing."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL)
+    request = _make_request(finding_ids=(finding.finding_id,))
+    eligibility, reason = is_eligible_for_v1_publish(
+        finding, hitl_request=request, hitl_decision=None
+    )
+    assert eligibility is PublishEligibility.WITHHELD
+    assert reason is PublishEligibilityReason.HITL_DECISION_MISSING
+
+
+def test_critical_with_approve_decision_is_eligible() -> None:
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL)
+    decision = PerFindingDecision(
+        finding_id=finding.finding_id, outcome=PerFindingOutcome.APPROVE, reason="ok"
+    )
+    request = _make_request(finding_ids=(finding.finding_id,))
+    hitl_decision = _make_decision(decisions=(decision,))
+    eligibility, reason = is_eligible_for_v1_publish(
+        finding, hitl_request=request, hitl_decision=hitl_decision
+    )
+    assert eligibility is PublishEligibility.ELIGIBLE
+    assert reason is None
+
+
+def test_critical_with_reject_decision_is_hitl_rejected() -> None:
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL)
+    decision = PerFindingDecision(
+        finding_id=finding.finding_id, outcome=PerFindingOutcome.REJECT, reason="no"
+    )
+    request = _make_request(finding_ids=(finding.finding_id,))
+    hitl_decision = _make_decision(decisions=(decision,))
+    eligibility, reason = is_eligible_for_v1_publish(
+        finding, hitl_request=request, hitl_decision=hitl_decision
+    )
+    assert eligibility is PublishEligibility.WITHHELD
+    assert reason is PublishEligibilityReason.HITL_REJECTED
+
+
+def test_critical_with_suppress_decision_is_hitl_suppressed() -> None:
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL)
+    decision = PerFindingDecision(
+        finding_id=finding.finding_id,
+        outcome=PerFindingOutcome.SUPPRESS,
+        reason="known false-positive class",
+    )
+    request = _make_request(finding_ids=(finding.finding_id,))
+    hitl_decision = _make_decision(decisions=(decision,))
+    eligibility, reason = is_eligible_for_v1_publish(
+        finding, hitl_request=request, hitl_decision=hitl_decision
+    )
+    assert eligibility is PublishEligibility.WITHHELD
+    assert reason is PublishEligibilityReason.HITL_SUPPRESSED
+
+
+def test_critical_with_no_matching_decision_yields_decision_missing() -> None:
+    """Decision landed but no entry for this finding_id — defense-in-depth."""
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL)
+    other_finding_id = uuid4()
+    decision = PerFindingDecision(
+        finding_id=other_finding_id, outcome=PerFindingOutcome.APPROVE, reason="ok"
+    )
+    request = _make_request(finding_ids=(finding.finding_id, other_finding_id))
+    hitl_decision = _make_decision(decisions=(decision,))
+    eligibility, reason = is_eligible_for_v1_publish(
+        finding, hitl_request=request, hitl_decision=hitl_decision
+    )
+    assert eligibility is PublishEligibility.WITHHELD
+    assert reason is PublishEligibilityReason.HITL_DECISION_MISSING
+
+
+def test_critical_with_severity_override_decision_is_eligible() -> None:
+    """A legitimate SEVERITY_OVERRIDE decision authorizes original_severity."""
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    finding = _make_finding(
+        severity=FindingSeverity.LOW,
+        original_severity=FindingSeverity.CRITICAL,
+    )
+    decision = PerFindingDecision(
+        finding_id=finding.finding_id,
+        outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+        reason="downgrade per context",
+        original_severity=FindingSeverity.CRITICAL,
+        override_severity=FindingSeverity.LOW,
+    )
+    request = _make_request(finding_ids=(finding.finding_id,))
+    hitl_decision = _make_decision(decisions=(decision,))
+    eligibility, reason = is_eligible_for_v1_publish(
+        finding, hitl_request=request, hitl_decision=hitl_decision
+    )
+    assert eligibility is PublishEligibility.ELIGIBLE
+    assert reason is None
+
+
+def test_medium_passes_through_regardless_of_hitl_state() -> None:
+    """MEDIUM/LOW/INFO never consult HITL; ELIGIBLE regardless of inputs."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM)
+    # No HITL context.
+    e1, _ = is_eligible_for_v1_publish(finding, hitl_request=None, hitl_decision=None)
+    # HITL context present (irrelevant for MEDIUM).
+    request = _make_request(finding_ids=())
+    e2, _ = is_eligible_for_v1_publish(finding, hitl_request=request, hitl_decision=None)
+    assert e1 is PublishEligibility.ELIGIBLE
+    assert e2 is PublishEligibility.ELIGIBLE
