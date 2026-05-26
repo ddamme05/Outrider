@@ -439,6 +439,20 @@ def build_lifespan(
             # analyze + publish + LLM-exchange) per DECISIONS.md #023;
             # `import_path_resolver` is the stateless coordinates
             # singleton; `publisher` is the stateless GitHubKitPublisher.
+            # HITL dependencies: the durable AuditPersister implements
+            # HITLEventSink via emit_hitl_request + emit_hitl_decision;
+            # ReviewStatusPersister is a separate concrete class for the
+            # reviews-table lifecycle writes; HITLConfig is env-driven
+            # via pydantic-settings (OUTRIDER_HITL_TIMEOUT_MINUTES +
+            # OUTRIDER_HITL_TIMEOUT_ACTION). Startup raises ValueError
+            # if timeout_action is set to anything other than
+            # `expire_only` — V1's hitl-gates-high-severity guarantee.
+            from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
+            from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: PLC0415
+
+            review_status_persister = ReviewStatusPersister(session_factory=session_factory)
+            hitl_config = HITLConfig()  # reads env vars; fails loud on AUTO_POST
+
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -447,6 +461,9 @@ def build_lifespan(
                 analyze_event_sink=persister,
                 publish_event_sink=persister,
                 trace_sink=persister,
+                hitl_event_sink=persister,
+                review_status_sink=review_status_persister,
+                hitl_config=hitl_config,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,

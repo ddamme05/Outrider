@@ -361,6 +361,30 @@ class _StubGitHubPublisher:
         raise NotImplementedError(msg)
 
 
+class _StubHITLEventSink:
+    """No-op `HITLEventSink`. Tests in this file don't drive HITL
+    activation but build_graph's structural Protocol gate requires it."""
+
+    async def emit_hitl_request(self, event: Any) -> Any:
+        return event
+
+    async def emit_hitl_decision(self, event: Any) -> Any:
+        return event
+
+
+class _StubReviewStatusSink:
+    """No-op `ReviewStatusSink`. Same rationale."""
+
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_running(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 def _graph_kwargs(
     *,
     phase_event_sink: _RecordingPhaseEventSinkLike,
@@ -373,6 +397,8 @@ def _graph_kwargs(
     + `import_path_resolver`; extended again 2026-05-22 for the
     publish-node arc (`publish_event_sink` + `publisher`).
     """
+    from outrider.agent.nodes.hitl_config import HITLConfig
+
     return {
         "db_factory": _stub_db_factory,  # type: ignore[arg-type]
         "github_factory": _stub_github_factory,
@@ -383,6 +409,9 @@ def _graph_kwargs(
         "analyze_event_sink": _RecordingAnalyzeEventSink(),
         "publish_event_sink": _StubPublishEventSink(),
         "trace_sink": _StubTraceEventSink(),
+        "hitl_event_sink": _StubHITLEventSink(),
+        "review_status_sink": _StubReviewStatusSink(),
+        "hitl_config": HITLConfig(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }

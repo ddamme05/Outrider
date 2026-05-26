@@ -662,7 +662,10 @@ def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
     assert len(state_with_stale_fetch.trace_fetched_files) == 1
     assert state_with_stale_fetch.last_trace_pass_fetched_count == 0
 
-    assert _trace_router(state_with_stale_fetch) == "publish"
+    # Routes through `hitl` (always next non-trace destination from
+    # trace per Group 5 of the HITL spec); pass-through if no gated
+    # findings, then publish runs.
+    assert _trace_router(state_with_stale_fetch) == "hitl"
 
 
 def test_trace_router_routes_to_publish_at_max_rounds() -> None:
@@ -702,4 +705,4 @@ def test_trace_router_routes_to_publish_at_max_rounds() -> None:
     )
     assert len(state_at_ceiling.analysis_rounds) == MAX_ANALYSIS_ROUNDS
     assert state_at_ceiling.last_trace_pass_fetched_count > 0  # scalar gate would pass
-    assert _trace_router(state_at_ceiling) == "publish"  # depth gate fires
+    assert _trace_router(state_at_ceiling) == "hitl"  # depth gate fires
