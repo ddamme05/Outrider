@@ -217,10 +217,16 @@ async def reclaim_stuck_hitl_states(
         but `reviews.hitl_decision IS NULL`. The audit row IS the
         canonical decision per `audit-events-append-only`. Recovery:
         reconstruct the `HITLDecision` domain object from the audit
-        event and call `review_status_sink.mark_running` to advance
-        the lifecycle to `running`. The graph then continues through
-        publish on the next dispatcher tick (or the sweep itself can
-        invoke). Counted under `recovered`.
+        event and invoke `compiled_graph.ainvoke(Command(resume=...),
+        config={thread_id})`. The body re-runs from the top,
+        idempotent emits no-op via natural-key match, `mark_running`
+        INSIDE the body writes JSONB + flips status, phase end fires,
+        state delta returns, graph routes to publish, publish runs
+        against the recovered finding set. Direct `mark_running`
+        writes from the sweep are deliberately NOT used: they would
+        flip the lifecycle column but leave the graph suspended at
+        the interrupt forever, with the endpoint's JSONB-cache
+        preflight 409-rejecting every retry. Counted under `recovered`.
 
       - **Window (c)** (`mark_awaiting_approval` succeeded but
         `interrupt()` never landed): no audit row exists AND the
@@ -232,6 +238,23 @@ async def reclaim_stuck_hitl_states(
     treated as "still in flight" — the body is suspended at the
     interrupt waiting for resume; skip.
 
+    **Candidate-row freshness predicate (`Review.expires_at < grace_cutoff`).**
+    The freshness gate uses `expires_at`, NOT `created_at`. Rationale:
+    `created_at` is the review-row creation time (set at webhook
+    receipt), so a review that spends 10 minutes in analyze/trace
+    before entering HITL would match `created_at < now - 5min` the
+    moment it transitions to `awaiting_approval`. The reclaim could
+    then false-positive on the natural gap between
+    `mark_awaiting_approval` and the langgraph checkpoint landing.
+    `expires_at` is set atomically by `mark_awaiting_approval`
+    (`expires_at = state.received_at + timedelta(minutes=timeout_minutes)`),
+    so it reflects the END of the HITL window. A row is "stuck"
+    only when `expires_at + grace_period < now`, i.e., the natural
+    HITL window has already lapsed PLUS the grace period — at which
+    point the transition sub-job would normally have flipped to
+    `awaiting_approval_expired`, so a row still in `awaiting_approval`
+    is genuinely stuck (window c or f).
+
     Returns `{"recovered": N, "failed": M}` for telemetry. `N + M` is
     the total number of stuck rows handled this tick.
 
@@ -241,13 +264,14 @@ async def reclaim_stuck_hitl_states(
     """
     grace_cutoff = datetime.now(UTC) - grace_period
 
-    # Query candidate rows: status='awaiting_approval' AND old enough
-    # to be past the grace period. Uses the same partial index as
-    # the expiry sub-job.
+    # Query candidate rows: status='awaiting_approval' AND
+    # `expires_at < grace_cutoff` (the natural HITL window has
+    # lapsed past the grace period — see freshness-predicate
+    # rationale in the docstring above).
     result = await conn.execute(
         select(Review.id).where(
             Review.status == "awaiting_approval",
-            Review.created_at < grace_cutoff,
+            Review.expires_at < grace_cutoff,
         )
     )
     candidate_ids = [row.id for row in result.all()]
