@@ -888,6 +888,35 @@ class HITLRequestEvent(AuditEventBase):
     created_at: AwareDatetime
     expires_at: AwareDatetime
 
+    @field_validator("findings_requiring_approval", "auto_post_findings", mode="after")
+    @classmethod
+    def _canonicalize_finding_tuple(cls, v: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        """Sort the tuple deterministically by `str(UUID)` so semantically-
+        equal sets (same membership, different ordering) produce
+        byte-identical persisted payloads.
+
+        Canonical ordering matters at TWO layers:
+
+          1. Persister-side natural-key identity-subset comparison
+             (`_SET_SEMANTIC_IDENTITY_FIELDS`) already treats these
+             tuples as sets, so order-only divergence does NOT trigger
+             spurious conflicts. This validator covers the OTHER half:
+             downstream consumers (dashboard reads, replay
+             reconstructors, third-party audit-log readers) that
+             rely on raw tuple iteration would see ordering drift
+             without it.
+          2. The canonical body upstream (`_partition_findings` in
+             `agent/nodes/hitl.py`) already sorts; this validator is
+             defense-in-depth for direct-construction paths (replay,
+             tests, future call sites).
+
+        Sort by `str(UUID)` (lexicographic on the canonical 8-4-4-4-12
+        hex form) for stability across Python versions; UUID's own
+        ordering is well-defined but documenting the canonical form
+        explicitly avoids subtle bugs if the field type ever changes.
+        """
+        return tuple(sorted(v, key=str))
+
     @model_validator(mode="after")
     def _enforce_finding_partition(self) -> Self:
         """Each finding appears at most once across the two tuples — mirror

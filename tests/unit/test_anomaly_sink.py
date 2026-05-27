@@ -80,5 +80,19 @@ def test_partial_sink_rejected_by_runtime_check() -> None:
 
 
 def test_anomaly_sink_declares_one_method() -> None:
-    """Protocol surface check."""
-    assert hasattr(AnomalySink, "emit_anomaly")
+    """Protocol surface check — exact membership, not just presence.
+
+    Pins the public API to `{"emit_anomaly"}`. A new public method
+    added to `AnomalySink` (e.g., a V1.5 `emit_recovery` for the
+    `hitl_recovery` anomaly the dashboard might consume) fails this
+    test loudly — same shape as the
+    `tests/unit/test_github_publisher.py::test_publish_event_sink_method_set`
+    pin per the `Class-10` doctrine (centrally-pinned contracts
+    require call-side registration).
+    """
+    actual_public_methods = {name for name in dir(AnomalySink) if not name.startswith("_")}
+    assert actual_public_methods == {"emit_anomaly"}, (
+        f"AnomalySink public surface drift: missing={ {'emit_anomaly'} - actual_public_methods }, "
+        f"extra={actual_public_methods - {'emit_anomaly'}}. Update this test AND verify "
+        f"every AnomalySink consumer + test fixture carries the new method."
+    )

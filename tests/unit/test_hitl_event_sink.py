@@ -14,8 +14,6 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-import pytest
-
 from outrider.audit.events import HITLDecisionEvent, HITLRequestEvent
 from outrider.audit.sinks import HITLEventSink
 from outrider.policy.canonical import compute_hitl_decision_content_hash
@@ -149,7 +147,19 @@ def test_protocol_membership_rejects_completely_unrelated_class() -> None:
     assert not isinstance(sink, HITLEventSink)
 
 
-@pytest.mark.parametrize("method_name", ["emit_hitl_request", "emit_hitl_decision"])
-def test_protocol_declares_both_methods(method_name: str) -> None:
-    """Protocol surface check: HITLEventSink declares both methods."""
-    assert hasattr(HITLEventSink, method_name)
+def test_protocol_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 (centrally-pinned-contract registration) doctrine: a new
+    public method added to `HITLEventSink` (e.g., V1.5
+    `emit_hitl_acknowledgment`) must surface here AND at every
+    consumer + test fixture. Exact-membership check fails loudly on
+    silent drift.
+    """
+    expected = {"emit_hitl_request", "emit_hitl_decision"}
+    actual = {name for name in dir(HITLEventSink) if not name.startswith("_")}
+    assert actual == expected, (
+        f"HITLEventSink method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}. Update this pin AND every sink consumer + "
+        f"test fixture if adding a method."
+    )
