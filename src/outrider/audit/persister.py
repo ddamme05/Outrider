@@ -2301,6 +2301,28 @@ class AuditPersister:
         probes at default config, in practice far fewer due to
         exponential growth).
         """
+        # Validate timing kwargs at call time. Zero or negative values
+        # would degenerate the loop into a tight retry on `await
+        # asyncio.sleep(0)` or `sleep(<negative>)` — same shape as the
+        # `lifespan_sweep_loop.start_periodic_sweep` interval guard.
+        # Validation is here (not at constructor time) because these
+        # are per-call kwargs, not persister-level config.
+        if max_wait_seconds <= 0:
+            msg = f"acquire_publish_lock: max_wait_seconds must be > 0; got {max_wait_seconds}"
+            raise ValueError(msg)
+        if initial_backoff_seconds <= 0:
+            msg = (
+                f"acquire_publish_lock: initial_backoff_seconds must be > 0; "
+                f"got {initial_backoff_seconds}"
+            )
+            raise ValueError(msg)
+        if max_backoff_seconds < initial_backoff_seconds:
+            msg = (
+                f"acquire_publish_lock: max_backoff_seconds ({max_backoff_seconds}) "
+                f"must be >= initial_backoff_seconds ({initial_backoff_seconds})"
+            )
+            raise ValueError(msg)
+
         deadline = time.monotonic() + max_wait_seconds
         backoff = initial_backoff_seconds
         while True:

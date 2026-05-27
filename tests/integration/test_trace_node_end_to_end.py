@@ -625,11 +625,13 @@ def test_trace_router_routes_to_analyze_when_fetched_files_non_empty() -> None:
     assert _trace_router(state_with_fetch) == "analyze"
 
 
-def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
+def test_trace_router_routes_to_hitl_when_no_new_fetches_this_pass() -> None:
     """Trace pass produced no NEW fetches this invocation; router sends
-    to publish (no more analyze rounds needed). Per the router contract:
-    the per-invocation scalar `last_trace_pass_fetched_count` is the
-    signal, NOT the cumulative `state.trace_fetched_files`.
+    to `hitl` (next non-trace destination in the 7-node topology;
+    `hitl` then either pass-through to publish OR interrupts on a
+    CRITICAL/HIGH finding). Per the router contract: the per-invocation
+    scalar `last_trace_pass_fetched_count` is the signal, NOT the
+    cumulative `state.trace_fetched_files`.
 
     Seeds a STALE TraceFetchedFile from a prior pass while keeping
     `last_trace_pass_fetched_count=0` so the test fails if a future
@@ -658,7 +660,8 @@ def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
         }
     )
     # Cumulative list non-empty AND per-invocation scalar zero —
-    # router must read the scalar and route to publish.
+    # router must read the scalar and route to `hitl` (the next non-
+    # trace destination per the HITL spec Group 5 topology).
     assert len(state_with_stale_fetch.trace_fetched_files) == 1
     assert state_with_stale_fetch.last_trace_pass_fetched_count == 0
 
@@ -668,13 +671,15 @@ def test_trace_router_routes_to_publish_when_no_new_fetches_this_pass() -> None:
     assert _trace_router(state_with_stale_fetch) == "hitl"
 
 
-def test_trace_router_routes_to_publish_at_max_rounds() -> None:
+def test_trace_router_routes_to_hitl_at_max_rounds() -> None:
     """Depth-2 ceiling: even when the most recent trace() call yielded
     new fetches, if analysis_rounds has already reached
-    MAX_ANALYSIS_ROUNDS, route to publish to bound the loop's total
-    wall-clock cost. Sets `last_trace_pass_fetched_count=1` to ensure
-    the depth gate (not the scalar gate) is what blocks routing to
-    analyze — without that, the test would pass for the wrong reason."""
+    MAX_ANALYSIS_ROUNDS, route to `hitl` to bound the loop's total
+    wall-clock cost (`hitl` then routes to publish for non-gated
+    findings; the depth gate fires at the trace→next-node boundary).
+    Sets `last_trace_pass_fetched_count=1` to ensure the depth gate
+    (not the scalar gate) is what blocks routing to analyze — without
+    that, the test would pass for the wrong reason."""
     from outrider.agent.graph import _trace_router
     from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS
     from outrider.schemas import TraceFetchedFile

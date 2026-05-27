@@ -30,24 +30,24 @@ def _app_with_key(api_key: str | None) -> TestClient:
     return TestClient(app)
 
 
+# Canonical 401 response body — used by every unauthorized-branch test
+# below. Pinning both status AND body ensures every failure path emits
+# the SAME uniform response shape (no leak via response variation).
+_UNAUTHORIZED_BODY = {"detail": "unauthorized"}
+
+
 def test_missing_authorization_header_returns_401() -> None:
     client = _app_with_key("correct-key")
     resp = client.get("/protected")
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "unauthorized"}
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_wrong_prefix_returns_401() -> None:
     client = _app_with_key("correct-key")
     resp = client.get("/protected", headers={"Authorization": "Basic correct-key"})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "unauthorized"}
-
-
-# Canonical 401 response body — used by every unauthorized-branch test
-# below. Pinning both status AND body ensures every failure path emits
-# the SAME uniform response shape (no leak via response variation).
-_UNAUTHORIZED_BODY = {"detail": "unauthorized"}
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_wrong_key_returns_401() -> None:

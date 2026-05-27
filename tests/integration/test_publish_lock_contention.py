@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from outrider.audit.config import RetentionSettings
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def persister_for_lock(
     migrated_db: str,
 ) -> AsyncGenerator[tuple[AuditPersister, str]]:
