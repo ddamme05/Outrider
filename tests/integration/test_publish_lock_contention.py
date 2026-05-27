@@ -7,8 +7,9 @@ advisory lock must
 
   1. serialize concurrent acquisitions on the same review_id (one task
      yields only after the other's transaction commits/rolls back),
-  2. NOT block cross-review acquisitions (different review_ids hash to
-     different lock keys via `hashtext('publish:<uuid>')`),
+  2. NOT block cross-review acquisitions (different review_ids derive
+     different 64-bit lock keys from the first 8 bytes of
+     `review_id.bytes` as a signed int8),
   3. honor a bounded deadline — a holder that monopolizes the lock past
      `max_wait_seconds` causes the waiter to raise
      `AuditPersisterPublishLockAcquisitionTimeoutError`, not hang forever
@@ -107,8 +108,9 @@ async def test_distinct_review_ids_lock_independently(
     persister_for_lock: tuple[AuditPersister, str],
 ) -> None:
     """Two `acquire_publish_lock` tasks on DIFFERENT review_ids do NOT
-    contend — the partial-key namespace `hashtext('publish:<uuid>')`
-    isolates per-review locks. Both tasks acquire concurrently."""
+    contend — the 64-bit lock_id derived from the first 8 bytes of
+    `review_id.bytes` isolates per-review locks. Both tasks acquire
+    concurrently."""
     persister, _ = persister_for_lock
     review_a = uuid4()
     review_b = uuid4()

@@ -135,6 +135,22 @@ def _assert_mapping_total_at_import() -> None:
 _assert_mapping_total_at_import()
 
 
+def is_hitl_gated_severity(severity: FindingSeverity) -> bool:
+    """True iff `severity` requires a HITL decision under the V1 gate.
+
+    Derived from `_V1_SEVERITY_GATE` so the schema-side override
+    legitimacy validators (`ReviewFinding._enforce_override_triplet_
+    coherence`, `PublishEligibilityEvent._enforce_override_legitimacy`)
+    share the gated-set definition with the runtime gate function
+    `is_eligible_for_v1_publish`. A baseline severity that is NOT in
+    the gated set could not have produced a legitimate
+    `SEVERITY_OVERRIDE` decision, because HITL only fires for
+    CRITICAL/HIGH; a non-None `original_severity ∉ gated set` is
+    therefore a producer bug or replay-injected forge.
+    """
+    return _V1_SEVERITY_GATE.get(severity) is _V1SeverityBaseline.REQUIRES_HITL_DECISION
+
+
 # ---------------------------------------------------------------------------
 # Public gate function.
 # ---------------------------------------------------------------------------

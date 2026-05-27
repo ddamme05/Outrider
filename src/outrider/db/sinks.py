@@ -9,10 +9,11 @@ the dashboard `/decide` endpoint consumes at interrupt time.
 Why a sink Protocol rather than direct `db_factory: async_sessionmaker`
 injection (intake's pattern): the HITL writes pair a STATUS flip with a
 JSONB column write atomically, and the resume path is a SECOND such write
-at a SEPARATE moment. A typed Protocol with three methods documents the
-single-transaction contract cleanly and lets recording test doubles
-capture both transitions for assertion. Per the
-`nodes-receive-deps-via-closure` invariant, both Protocols are
+at a SEPARATE moment. A typed Protocol with four methods (`mark_awaiting_
+approval`, `mark_running`, `mark_awaiting_approval_expired`,
+`mark_completed`) documents the single-transaction contract cleanly and
+lets recording test doubles capture both transitions for assertion. Per
+the `nodes-receive-deps-via-closure` invariant, both Protocols are
 constructor-injected at `build_graph(...)` time.
 
 Per `DECISIONS.md#019`: cross-boundary models with a clear owner live
@@ -69,7 +70,9 @@ class ReviewDecidePreflight(BaseModel):
 @runtime_checkable
 class ReviewStatusSink(Protocol):
     """Sink for lifecycle status transitions + paired JSONB writes the
-    HITL node owns. Three methods, all idempotent against target state.
+    HITL node owns. Four methods, all idempotent against target state:
+    `mark_awaiting_approval`, `mark_running`, `mark_awaiting_approval_
+    expired`, `mark_completed`.
 
     Single-transaction contract: each method opens ONE `AsyncSession`,
     runs ONE atomic `UPDATE reviews SET ...` statement covering status +
@@ -81,8 +84,9 @@ class ReviewStatusSink(Protocol):
     body re-run path: `mark_awaiting_approval` fires twice in the happy
     case (once on first body invocation, once on resume body re-run);
     the second call must not error. Same for `mark_running` against a
-    row already in `running`, and `mark_awaiting_approval_expired`
-    against a row already in `awaiting_approval_expired`.
+    row already in `running`, `mark_awaiting_approval_expired` against
+    a row already in `awaiting_approval_expired`, and `mark_completed`
+    against a row already in `completed`.
 
     Source-of-truth contract: on cross-persister divergence (JSONB
     column vs `audit_events` row), the audit row is canonical per

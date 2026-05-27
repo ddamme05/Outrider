@@ -249,7 +249,8 @@ async def publish(
     # human-issued resume racing with a `reclaim_stuck_hitl_states`
     # graph-driven resume) could both observe `prior_publish_event=None`
     # and both POST. Defense: `acquire_publish_lock(review_id)` runs
-    # `pg_try_advisory_xact_lock(hashtext('publish:<uuid>'))` in a
+    # `pg_try_advisory_xact_lock(<lock_id>)` (where lock_id is the
+    # first 8 bytes of `review_id.bytes` as a signed int8) in a
     # bounded backoff loop. On NOT-acquired, the probe session
     # releases its connection back to the pool and sleeps with
     # exponential backoff (50ms doubling to 1s cap) before retrying;
