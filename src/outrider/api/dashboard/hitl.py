@@ -57,7 +57,7 @@ from uuid import UUID  # noqa: TC003  (runtime: Pydantic field type)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from langgraph.types import Command
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.audit.persister import (
@@ -100,6 +100,41 @@ class PerFindingDecisionPayload(BaseModel):
     outcome: PerFindingOutcome
     reason: str = Field(max_length=500)
     override_severity: FindingSeverity | None = None
+
+    @model_validator(mode="after")
+    def _enforce_payload_invariants(self) -> PerFindingDecisionPayload:
+        """Mirror `PerFindingDecision.enforce_override_fields` at the
+        payload boundary so invalid combinations surface as 422 from
+        FastAPI's request-parsing path, NOT as a 500 from the
+        downstream `_build_domain_decisions` raising `ValueError` mid-
+        handler. `original_severity` is NOT a payload field (server-
+        derived); the corresponding pairs from `PerFindingDecision`
+        that DO map here are:
+
+          - SEVERITY_OVERRIDE outcome requires non-None `override_severity`.
+          - Non-SEVERITY_OVERRIDE outcome requires `override_severity is None`.
+          - Non-APPROVE outcome requires a non-blank `reason`.
+
+        Without this validator, a reviewer payload like
+        `outcome=severity_override, override_severity=None` would pass
+        Pydantic field validation, hit `_build_domain_decisions`,
+        construct `PerFindingDecision` with the missing field, and
+        raise the domain-layer `ValueError` — surfacing as a 500
+        Internal Server Error instead of a controlled 422.
+        """
+        if self.outcome == PerFindingOutcome.SEVERITY_OVERRIDE and self.override_severity is None:
+            msg = "severity_override outcome requires override_severity"
+            raise ValueError(msg)
+        if (
+            self.outcome != PerFindingOutcome.SEVERITY_OVERRIDE
+            and self.override_severity is not None
+        ):
+            msg = f"{self.outcome.value} outcome must not carry override_severity"
+            raise ValueError(msg)
+        if self.outcome != PerFindingOutcome.APPROVE and not self.reason.strip():
+            msg = f"{self.outcome.value} outcome requires a non-blank reason"
+            raise ValueError(msg)
+        return self
 
 
 class HITLDecisionPayload(BaseModel):
@@ -310,6 +345,32 @@ async def decide(
         )
 
     # Construct typed HITLDecision with server-derived original_severity.
+    # Pre-flight completeness check: every SEVERITY_OVERRIDE finding_id
+    # MUST have an entry in `preflight.gated_finding_severities`. The
+    # persister (`_load_gated_severities`) raises if the underlying
+    # FindingEvent rows are incomplete, but defense-in-depth here
+    # surfaces missing keys as a controlled 500 with a clear diagnostic
+    # instead of letting `_build_domain_decisions` raise `KeyError`
+    # mid-handler (opaque 500 + stack-trace-only signal).
+    override_ids = {
+        d.finding_id for d in payload.decisions if d.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+    }
+    missing_severities = sorted(
+        str(fid) for fid in override_ids if fid not in preflight.gated_finding_severities
+    )
+    if missing_severities:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "preflight_gated_severities_incomplete",
+                "missing_finding_ids": missing_severities,
+                "note": (
+                    "State corruption: reviews.hitl_request.findings_requiring_approval "
+                    "diverged from audit_events FindingEvent rows. Operator triage "
+                    "via audit log + reviews.hitl_request JSONB."
+                ),
+            },
+        )
     decisions = _build_domain_decisions(
         payload=payload,
         gated_finding_severities=preflight.gated_finding_severities,

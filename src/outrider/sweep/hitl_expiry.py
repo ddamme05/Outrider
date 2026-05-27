@@ -80,6 +80,7 @@ from outrider.schemas.hitl import HITLDecision
 from outrider.sweep.purge_expired import SWEEP_LOCK_ID
 
 if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.graph.state import CompiledStateGraph
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
@@ -116,7 +117,6 @@ async def _try_acquire_sweep_lock(conn: AsyncConnection) -> bool:
 async def transition_expired_hitl_reviews(
     *,
     conn: AsyncConnection,
-    session_factory: async_sessionmaker[AsyncSession],
     anomaly_sink: AnomalySink,
     review_status_sink: ReviewStatusSink,
 ) -> int:
@@ -322,10 +322,6 @@ async def reclaim_stuck_hitl_states(
                 annotation=audit_decision_event.annotation,
                 decided_at=audit_decision_event.decided_at,
             )
-            from langchain_core.runnables import (  # noqa: PLC0415, TC002
-                RunnableConfig,
-            )
-
             recovery_config: RunnableConfig = {"configurable": {"thread_id": str(review_id)}}
             try:
                 await compiled_graph.ainvoke(
@@ -472,7 +468,6 @@ async def run_once(
     )
     transitioned = await transition_expired_hitl_reviews(
         conn=conn,
-        session_factory=session_factory,
         anomaly_sink=anomaly_sink,
         review_status_sink=review_status_sink,
     )

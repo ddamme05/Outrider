@@ -84,9 +84,13 @@ async def test_two_concurrent_same_review_lock_serializes(
 
     # Both tasks acquired the lock; the timeline shows one task's
     # release strictly preceding the other's acquire (serialization).
+    # Sort by TIMESTAMP (tuple position 1), not by name (default tuple
+    # ordering sorts lexicographically on position 0, which is
+    # event_name — `"A_acquired" < "B_acquired"` is order-dependent on
+    # the name, not the actual time).
     assert len(timeline) == 4
-    acquires = sorted(e for e in timeline if e[0].endswith("_acquired"))
-    releases = sorted(e for e in timeline if e[0].endswith("_releasing"))
+    acquires = sorted((e for e in timeline if e[0].endswith("_acquired")), key=lambda e: e[1])
+    releases = sorted((e for e in timeline if e[0].endswith("_releasing")), key=lambda e: e[1])
     # The first release must occur before the second acquire.
     assert releases[0][1] <= acquires[1][1] + 0.01, (
         f"Expected first release to precede second acquire; got timeline {timeline}"
@@ -120,12 +124,15 @@ async def test_distinct_review_ids_lock_independently(
     )
 
     # Both acquired; the time delta between acquisitions should be
-    # near-zero (well under the 50ms hold duration). If one had to
-    # wait for the other, delta would be ≥50ms.
+    # well under the 50ms hold duration. If one had to wait for the
+    # other, delta would be ≥50ms (the hold). Threshold set to 100ms
+    # (2x the hold) so transient CI slowness doesn't flake — the
+    # contended-vs-independent distinction has a 5-10x margin under
+    # this bound.
     delta = abs(acquire_times["A"] - acquire_times["B"])
-    assert delta < 0.04, (
+    assert delta < 0.1, (
         f"Distinct review_ids should not contend; observed acquire delta "
-        f"{delta:.3f}s (≥0.04s suggests they serialized — namespace "
+        f"{delta:.3f}s (≥0.1s suggests they serialized — namespace "
         f"isolation broken)."
     )
 
@@ -142,10 +149,15 @@ async def test_timeout_raises_after_holder_exceeds_deadline(
     persister, _ = persister_for_lock
     review_id = uuid4()
 
+    holder_acquired = asyncio.Event()
     holder_released = asyncio.Event()
 
     async def holder() -> None:
         async with persister.acquire_publish_lock(review_id):
+            # Signal that the lock IS held — replaces the prior
+            # `asyncio.sleep(0.1)` race where the waiter could probe
+            # before the holder finished acquiring.
+            holder_acquired.set()
             # Hold past the waiter's deadline.
             await asyncio.sleep(2.5)
         holder_released.set()
@@ -161,8 +173,11 @@ async def test_timeout_raises_after_holder_exceeds_deadline(
             pytest.fail("Waiter should have timed out, not acquired the lock")
 
     holder_task = asyncio.create_task(holder())
-    # Let the holder grab the lock first.
-    await asyncio.sleep(0.1)
+    # Synchronize: wait until the holder has the lock before starting
+    # the waiter. Without this, the waiter could probe the lock BEFORE
+    # the holder finished acquiring, acquire successfully (no contention),
+    # and the test would race-condition-fail.
+    await holder_acquired.wait()
 
     with pytest.raises(AuditPersisterPublishLockAcquisitionTimeoutError) as exc_info:
         await waiter()

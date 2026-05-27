@@ -1622,12 +1622,24 @@ class PublishEligibilityEvent(AuditEventBase):
         they encode "no override was in effect", which is correct for
         all rows written before the HITL node landed.
         """
-        # No schema-layer check needed here — the policy-matches check
-        # in `_enforce_severity_matches_policy` does the heavy lifting
-        # (it computes `baseline = original_severity if not None else
-        # severity` and checks against SEVERITY_POLICY). This validator
-        # remains as a named documentation site for the override-
-        # legitimacy contract.
+        # A real override implies `severity != original_severity` (the
+        # reviewer's choice differs from the policy baseline). When
+        # both are equal AND original_severity is set, the row claims
+        # "an override happened" but the applied severity matches the
+        # baseline — semantically a no-op override and very likely a
+        # producer bug. Reject loudly so the schema doesn't admit fake
+        # overrides that pass policy-baseline checks at
+        # `_enforce_severity_matches_policy` (which only requires
+        # `baseline == SEVERITY_POLICY[finding_type]`, not that
+        # `baseline != severity`).
+        if self.original_severity is not None and self.original_severity == self.severity:
+            raise ValueError(
+                f"PublishEligibilityEvent claims an override "
+                f"(original_severity={self.original_severity.value!r}) but "
+                f"severity matches original_severity. A real override "
+                f"requires severity != original_severity. If no override "
+                f"is in effect, set original_severity=None."
+            )
         return self
 
     @model_validator(mode="after")
