@@ -22,10 +22,24 @@ scheduler without re-wiring at every consumer.
 
 Per `sweep-jobs-use-advisory-locks`: both `hitl_expiry.run_once` and
 `purge_expired.purge_expired` acquire the SAME `SWEEP_LOCK_ID` advisory
-lock. `run_all_sweeps` runs them sequentially within one transaction,
-so the lock is held continuously across both — operators cannot
-introduce a window between hitl-expiry and retention-purge by
-scheduling them as separate calls.
+lock via `pg_try_advisory_xact_lock(SWEEP_LOCK_ID)` (transaction-
+scoped; reentrant within a single transaction). `run_all_sweeps` runs
+them sequentially passing the SAME `conn` to both, so when the
+caller wraps `conn` in a transaction the lock is held continuously
+across both sub-jobs — operators cannot introduce a window between
+hitl-expiry and retention-purge by scheduling them as separate calls.
+
+**PRECONDITION on `conn`:** callers MUST wrap the `conn` in an
+explicit transaction (`async with engine.connect() as conn,
+conn.begin(): await run_all_sweeps(conn=conn, ...)`) so the advisory
+lock acquired by `hitl_expiry.run_once` remains held when
+`purge_expired.purge_expired` runs its own `pg_try_advisory_xact_lock`
+acquire. The single in-tree caller
+(`api/lifespan_sweep_loop.py::_sweep_loop`) honors this contract; a
+future external caller that passes a non-transactional `conn` would
+silently break the cross-sub-job lock continuity. `run_all_sweeps`
+does NOT begin its own transaction to keep transaction-scope
+visibility under the caller.
 """
 
 from __future__ import annotations
