@@ -279,6 +279,20 @@ async def reclaim_stuck_hitl_states(
     `SWEEP_LOCK_ID` itself.** The caller (typically `run_once`)
     acquires once and holds across both sub-jobs.
     """
+    # Defense-in-depth at the leaf reclaim function. `run_all_sweeps`
+    # and `run_once` both validate at their entry points, but this
+    # sub-job is independently exported in `__all__` and a direct
+    # caller (test, future CLI, operator-triage script) bypassing the
+    # outer layers would otherwise inherit the same mass-mark-failed
+    # footgun. See `run_all_sweeps`/`run_once` for the full rationale.
+    if grace_period <= timedelta(0):
+        msg = (
+            f"reclaim_stuck_hitl_states: grace_period must be > timedelta(0); "
+            f"got {grace_period!r}. A non-positive grace_period makes "
+            f"the grace gate admit every awaiting-approval row regardless "
+            f"of age — mass-marks-failed."
+        )
+        raise ValueError(msg)
     grace_cutoff = datetime.now(UTC) - grace_period
 
     # Query candidate rows: status IN ('awaiting_approval',
@@ -498,6 +512,24 @@ async def run_once(
     On lock contention (another sweep process holds it): returns all
     zeros without running either sub-job.
     """
+    # Defense-in-depth: reject non-positive `grace_period` at this
+    # layer too. `run_all_sweeps` already validates at the runner-tier
+    # entry point, but `run_once` is independently exported and a
+    # direct caller (a test, a future CLI one-shot, an operator-triage
+    # script) bypassing the runner would otherwise inherit the same
+    # mass-mark-failed footgun the runner guards against. A negative
+    # `timedelta` computes `grace_cutoff = now() - grace_period =
+    # now() + |Δ|`, putting the cutoff in the future and admitting
+    # every awaiting-approval row. Reclaim then mass-marks-failed.
+    if grace_period <= timedelta(0):
+        msg = (
+            f"hitl_expiry.run_once: grace_period must be > timedelta(0); "
+            f"got {grace_period!r}. A non-positive grace_period makes "
+            f"reclaim's grace gate admit every awaiting-approval row "
+            f"regardless of age."
+        )
+        raise ValueError(msg)
+
     if not await _try_acquire_sweep_lock(conn):
         logger.info("hitl_sweep_skipped: advisory lock held by another sweep process")
         return {"reclaim_recovered": 0, "reclaim_failed": 0, "transitioned": 0}
