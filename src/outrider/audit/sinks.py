@@ -327,8 +327,9 @@ class PublishEventSink(Protocol):
         Backs the V1 defense against concurrent identical resume
         paths both reaching `publisher.create_review` and POSTing
         twice. The durable implementation uses
-        `pg_try_advisory_xact_lock(hashtext('publish:<review_id>'))`
-        in a loop with exponential backoff: each probe opens its own
+        `pg_try_advisory_xact_lock(<lock_id>)` where `lock_id` is the
+        first 8 bytes of `review_id.bytes` as a signed int8, in a
+        loop with exponential backoff: each probe opens its own
         session+transaction, releases on not-acquired, sleeps, retries.
         On acquired, holds the session+transaction for the lifetime of
         the context manager. Recording sinks no-op (no real

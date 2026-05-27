@@ -758,6 +758,15 @@ async def test_is_eval_propagates_through_full_graph(
     assert {"intake", "triage", "analyze", "hitl"} <= started_nodes, (
         f"expected full-graph node coverage through hitl, got starts from {sorted(started_nodes)}"
     )
+    # HITL gate guarantee: publish MUST NOT run without an explicit
+    # `Command(resume=...)`. The subset check above admits publish if
+    # the gate regressed (subset relationship still holds); this
+    # negative assertion locks the docstring's "publish does NOT run
+    # without a resume" guarantee as a tested invariant.
+    assert "publish" not in started_nodes, (
+        f"publish ran without a HITL resume — gate regression; "
+        f"started_nodes={sorted(started_nodes)}"
+    )
     assert all(e.is_eval is eval_flag for e in recording_phase_event_sink.events), (
         f"Phase event leaked the wrong is_eval flag (expected {eval_flag})"
     )

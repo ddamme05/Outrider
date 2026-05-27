@@ -1695,6 +1695,26 @@ class PublishEligibilityEvent(AuditEventBase):
                 f"requires severity != original_severity. If no override "
                 f"is in effect, set original_severity=None."
             )
+        # Gated-set defense: HITL only fires for CRITICAL/HIGH per
+        # `_V1_SEVERITY_GATE`. A baseline severity outside the gated
+        # set could not have produced a legitimate SEVERITY_OVERRIDE
+        # decision — therefore `original_severity ∉ gated set` is a
+        # producer bug or replay-injected forge. Shares the gated-set
+        # definition with the runtime gate via `is_hitl_gated_severity`.
+        if self.original_severity is not None:
+            from outrider.policy.publish_eligibility import (  # noqa: PLC0415
+                is_hitl_gated_severity,
+            )
+
+            if not is_hitl_gated_severity(self.original_severity):
+                raise ValueError(
+                    f"PublishEligibilityEvent.original_severity="
+                    f"{self.original_severity.value!r} is not a HITL-gated "
+                    f"severity. HITL only fires for CRITICAL/HIGH, so a "
+                    f"baseline outside that set cannot have produced a "
+                    f"legitimate SEVERITY_OVERRIDE. If no override is in "
+                    f"effect, set original_severity=None."
+                )
         return self
 
     @model_validator(mode="after")

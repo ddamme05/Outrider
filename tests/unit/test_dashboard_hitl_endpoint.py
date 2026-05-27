@@ -378,15 +378,18 @@ def test_happy_path_returns_202_and_enqueues_resume() -> None:
 def test_severity_override_uses_preflight_map() -> None:
     """A SEVERITY_OVERRIDE outcome triggers a lookup against
     `preflight.gated_finding_severities[finding_id]` for server-side
-    `original_severity`. Tests the lookup happens and produces a
-    domain HITLDecision (asserted indirectly via 202)."""
+    `original_severity`. Pins both that the lookup fires (202) AND
+    that the resume payload reaching `graph.ainvoke` carries the
+    preflight-derived original_severity (not a client-supplied or
+    defaulted value).
+    """
     pf = _make_preflight(
         gated_severities={
             _FINDING_A: FindingSeverity.CRITICAL,
             _FINDING_B: FindingSeverity.CRITICAL,
         }
     )
-    client, _, _ = _build_app(preflight=pf)
+    client, _, compiled_graph = _build_app(preflight=pf)
     body = {
         "decisions": [
             {
@@ -409,6 +412,18 @@ def test_severity_override_uses_preflight_map() -> None:
         headers=_auth_headers(),
     )
     assert resp.status_code == 202
+    # Capture the resume payload handed to the graph: the wrapper
+    # called `graph.ainvoke(Command(resume=hitl_decision.model_dump(
+    # mode="json")), config=...)`. The first positional arg is the
+    # `Command(resume=...)` object; `.resume` is the dumped dict.
+    compiled_graph.ainvoke.assert_awaited_once()
+    command_arg = compiled_graph.ainvoke.await_args.args[0]
+    resume_decisions = command_arg.resume["decisions"]
+    finding_a_decision = next(d for d in resume_decisions if d["finding_id"] == str(_FINDING_A))
+    assert finding_a_decision["original_severity"] == FindingSeverity.CRITICAL.value, (
+        f"expected server-derived original_severity={FindingSeverity.CRITICAL.value!r} "
+        f"from preflight map, got {finding_a_decision['original_severity']!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

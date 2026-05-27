@@ -401,6 +401,16 @@ class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlis
             "emit_trace_decision return-type mismatch",
             "emit_hitl_request return-type mismatch",
             "emit_hitl_decision return-type mismatch",
+            # `emit_phase`'s natural-key conflict path scans for an
+            # existing row via the same predicate the partial unique
+            # index targets; the index reported a conflict but the
+            # SELECT found nothing. Either the partial-index predicate
+            # diverged from the SELECT's predicate (schema regression)
+            # or a concurrent DELETE raced (impossible under append-
+            # only — see DECISIONS.md#016). Operator triages via
+            # event_id → audit row → diff index predicate vs SELECT
+            # predicate in `emit_phase`.
+            "natural-key conflict on review_phase but no matching row found on reload",
         }
     )
 
@@ -2355,14 +2365,16 @@ class AuditPersister:
     ) -> AsyncIterator[None]:
         """Per-review advisory lock — try-lock with bounded backoff retry.
 
-        Implementation: loop runs `pg_try_advisory_xact_lock(hashtext(
-        'publish:<uuid>'))` in a fresh session. On acquire, holds that
-        session+transaction open for the duration of the `yield` (the
-        caller's critical section); the lock auto-releases on commit at
-        context exit. On NOT-acquired, the probe session+transaction is
-        closed immediately (rollback releases the held connection back
-        to the pool) and the loop sleeps with exponential backoff before
-        retrying. After `max_wait_seconds` from the FIRST probe, raises
+        Implementation: loop runs `pg_try_advisory_xact_lock(<lock_id>)`
+        in a fresh session, where `lock_id` is the first 8 bytes of
+        `review_id.bytes` interpreted as a signed int8. On acquire,
+        holds that session+transaction open for the duration of the
+        `yield` (the caller's critical section); the lock auto-releases
+        on commit at context exit. On NOT-acquired, the probe session+
+        transaction is closed immediately (rollback releases the held
+        connection back to the pool) and the loop sleeps with
+        exponential backoff before retrying. After `max_wait_seconds`
+        from the FIRST probe, raises
         `AuditPersisterPublishLockAcquisitionTimeoutError`.
 
         Concurrency model: serialized-first-then-observe. Two FastAPI
@@ -2403,10 +2415,12 @@ class AuditPersister:
         and on the next retry our acquire succeeds and we re-read the
         committed `PublishEvent`). False-skip class eliminated.
 
-        The advisory-lock key is namespaced via `hashtext('publish:<uuid>')`
-        so it does NOT collide with `SWEEP_LOCK_ID` (a different bigint
-        namespace). The hashtext function is stable across Postgres
-        versions for ASCII inputs.
+        The advisory-lock key is the first 8 bytes of `review_id.bytes`
+        as a signed int8. UUIDs are 128-bit; the 64-bit slice gives
+        near-zero collision probability at any realistic review volume.
+        Disjoint by construction from `SWEEP_LOCK_ID=0x4F5554524452_0001`
+        (uniform UUID distribution makes a collision against the fixed
+        sweep id negligible).
 
         Timeout semantics: `max_wait_seconds=120` covers typical
         publish wall-clock (1-30s GitHub POST plus N-comment writes)
@@ -2449,13 +2463,24 @@ class AuditPersister:
             )
             raise ValueError(msg)
 
+        # Derive a 64-bit lock_id directly from the UUID's first 8 bytes
+        # interpreted as a signed int8 (Postgres advisory locks take
+        # int8). `hashtext(...)` returns int4 (32-bit) and at ~65k
+        # distinct UUIDs the birthday paradox gives ~50% collision
+        # probability — distinct reviews would falsely serialize.
+        # Using UUID bytes directly drops collision probability to
+        # ~zero at any realistic review volume; the namespace stays
+        # disjoint from `SWEEP_LOCK_ID=0x4F55545244520001` because
+        # UUIDs have ~2^120 distinct values and a uniform-distribution
+        # collision against the fixed sweep id is negligible.
+        lock_id = int.from_bytes(review_id.bytes[:8], byteorder="big", signed=True)
         deadline = time.monotonic() + max_wait_seconds
         backoff = initial_backoff_seconds
         while True:
             async with self._session_factory() as session, session.begin():
                 result = await session.execute(
-                    sa_text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-                    {"key": f"publish:{review_id}"},
+                    sa_text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
+                    {"lock_id": lock_id},
                 )
                 if bool(result.scalar_one()):
                     # Acquired. Hold session+transaction open for the

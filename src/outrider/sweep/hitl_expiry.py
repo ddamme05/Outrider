@@ -204,8 +204,19 @@ async def transition_expired_hitl_reviews(
             continue
 
         # Anomaly persisted (or already-existed via on-conflict-do-
-        # nothing). Now flip status.
-        await review_status_sink.mark_awaiting_approval_expired(review_id=review_id)
+        # nothing). Now flip status. Per-row try/except so one failing
+        # write (transient DB error, lock timeout) doesn't abort the
+        # entire sweep — the anomaly is already durable, the next
+        # sweep tick will retry the mark via the same anomaly-already-
+        # exists no-op pattern.
+        try:
+            await review_status_sink.mark_awaiting_approval_expired(review_id=review_id)
+        except Exception:
+            logger.exception(
+                "hitl_timeout_mark_expired_failed",
+                extra={"review_id": str(review_id)},
+            )
+            continue
         transitioned += 1
         logger.info(
             "hitl_timeout_transitioned",
