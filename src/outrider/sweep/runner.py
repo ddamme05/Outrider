@@ -97,6 +97,25 @@ async def run_all_sweeps(
     window. Override for operator triage (e.g., `timedelta(hours=1)`
     when diagnosing an outage where many stuck rows accumulated).
     """
+    # Runtime check on the docstring's PRECONDITION: `conn` MUST be in
+    # an explicit transaction so the `pg_try_advisory_xact_lock`
+    # acquired by `hitl_expiry.run_once` stays held when
+    # `purge_expired.purge_expired` runs its own acquire. Without this
+    # check, a non-transactional `conn` (autocommit shape) would
+    # silently free + reacquire the lock between sub-jobs, breaking
+    # the cross-sub-job serialization guarantee the docstring
+    # promises. Fail-loud over silent-drift per `sweep-jobs-use-
+    # advisory-locks`.
+    if not conn.in_transaction():
+        msg = (
+            "run_all_sweeps requires `conn` to be in an explicit "
+            "transaction so the SWEEP_LOCK_ID advisory lock stays "
+            "held across both sub-jobs. Wrap the call in `async with "
+            "engine.connect() as conn, conn.begin(): await "
+            "run_all_sweeps(conn=conn, ...)`."
+        )
+        raise RuntimeError(msg)
+
     hitl_kwargs: dict[str, Any] = {
         "conn": conn,
         "session_factory": session_factory,

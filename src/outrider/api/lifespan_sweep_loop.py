@@ -143,6 +143,19 @@ def start_periodic_sweep(
     tests / operator triage.
     """
     actual_interval = interval_seconds if interval_seconds is not None else _SWEEP_INTERVAL_SECONDS
+    # Fail-loud on non-positive intervals. A zero or negative
+    # `interval_seconds` would degenerate `_sweep_loop`'s
+    # `await asyncio.sleep(interval_seconds)` into a tight retry loop
+    # (instant-fire + instant-retry on every tick failure), saturating
+    # the event loop + the DB connection pool. Catch the misconfig at
+    # task-creation time rather than letting the loop start.
+    if actual_interval <= 0:
+        msg = (
+            f"start_periodic_sweep: interval_seconds must be > 0; got "
+            f"{actual_interval}. Pass `interval_seconds=None` to use the "
+            f"{_SWEEP_INTERVAL_SECONDS}s default."
+        )
+        raise ValueError(msg)
     return asyncio.create_task(
         _sweep_loop(
             engine=engine,

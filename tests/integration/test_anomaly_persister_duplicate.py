@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def anomaly_persister(
     migrated_db: str,
 ) -> AsyncGenerator[tuple[AnomalyPersister, UUID]]:

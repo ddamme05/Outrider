@@ -72,8 +72,10 @@ logger = logging.getLogger(__name__)
 MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 
 # Depth limit on the analyze ⇄ trace loop. After round 2, the trace
-# router unconditionally routes to publish — bounds the loop's total
-# wall-clock cost and matches the spec's depth-2 ceiling.
+# router unconditionally routes to `hitl` (the next non-trace
+# destination; `hitl` then pass-throughs or interrupts depending on
+# the finding set) — bounds the loop's total wall-clock cost and
+# matches the spec's depth-2 ceiling.
 MAX_ANALYSIS_ROUNDS: Final[int] = 2
 
 
