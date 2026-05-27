@@ -86,9 +86,15 @@ faster path to context than re-deriving from this docstring.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from collections.abc import Callable  # noqa: TC003  (runtime use in @dataclass field annotation)
+import time
+from collections.abc import (  # noqa: TC003  (runtime use in @dataclass field annotation)
+    AsyncIterator,
+    Callable,
+)
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
@@ -378,6 +384,22 @@ class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlis
     _INVARIANTS: ClassVar[frozenset[str]] = frozenset(
         {
             "audit_events.payload NOT NULL",
+            # `_persist_keyed_by_natural_key` is a polymorphic helper
+            # over `{TraceDecisionEvent, HITLRequestEvent,
+            # HITLDecisionEvent}`. The narrowing wrappers
+            # (`emit_trace_decision`, `emit_hitl_request`,
+            # `emit_hitl_decision`) assert the registry returned the
+            # matching event_type for the input. A return-type
+            # mismatch is a registry-routing bug; the per-method
+            # static identifier here lets operators pinpoint which
+            # wrapper saw the mismatch via the audit log's event_id.
+            # Dynamic `type(result).__name__` is intentionally NOT
+            # part of the identifier (allowlist requires static
+            # strings); operators correlate event_id → audit row →
+            # observed event_type to recover that information.
+            "emit_trace_decision return-type mismatch",
+            "emit_hitl_request return-type mismatch",
+            "emit_hitl_decision return-type mismatch",
         }
     )
 
@@ -760,6 +782,50 @@ class AuditPersisterHITLDecisionNaturalKeyConflict(AuditPersisterNaturalKeyConfl
     """
 
 
+# See DECISIONS.md#027 — V1 per-review publish-side advisory lock.
+class AuditPersisterPublishLockAcquisitionTimeoutError(TimeoutError):  # noqa: N818
+    """Raised by `acquire_publish_lock` when bounded try-lock retries exhaust.
+
+    Bounded by `max_wait_seconds` from the first probe attempt. Indicates
+    either a slow legitimate holder (long GitHub POST under contention)
+    or a pathologically-hung holder. The publish node's outer try/except
+    wrapping `enter_async_context` catches this exception and emits
+    `PublishAttemptEvent(outcome=failed, failure_class="AuditPersister"
+    "PublishLockAcquisitionTimeoutError")` BEFORE re-raising, honoring
+    the node's raises contract.
+
+    Carries `review_id` + `waited_seconds` for operator triage:
+    `review_id` identifies the contested review; `waited_seconds` names
+    the timeout bound that was hit (NOT the actual wait — the loop's
+    deadline check fires once `monotonic() >= start + max_wait`, so
+    waited_seconds reflects the configured bound, not a precise stopwatch).
+    """
+
+    def __init__(self, *, review_id: UUID, waited_seconds: int) -> None:
+        self.review_id = review_id
+        self.waited_seconds = waited_seconds
+        # Message renders only `review_id` (UUID identifier — class-level
+        # allowlisted in the metadata-only test). `waited_seconds` is
+        # stored as an instance attribute for programmatic access but
+        # deliberately NOT interpolated into the message string: the
+        # `test_every_metadata_only_exception_type_is_actually_metadata_only`
+        # gate injects a forbidden-content sentinel for any constructor
+        # parameter whose stringified annotation doesn't match its
+        # allowlist (UUID/tuple/Mapping/str-allowlisted/int-class).
+        # Under `from __future__ import annotations` the int annotation
+        # is stringified as `"int"`, which doesn't satisfy the test's
+        # `ann is int` identity check — so the parameter would be
+        # treated as content-bearing if interpolated. Keeping the bound
+        # off the str/repr/args channels preserves the contract;
+        # operators read `exc.waited_seconds` directly.
+        super().__init__(
+            f"Could not acquire publish lock for review {review_id} — "
+            f"possible slow holder under contention or hung-process "
+            f"scenario. See exception attribute `waited_seconds` for "
+            f"the configured timeout bound."
+        )
+
+
 class AuditPersisterNaturalKeyLookupError(LookupError):
     """Generic base for natural-key conflict-but-empty-SELECT errors.
 
@@ -887,6 +953,7 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterNaturalKeyConflict,
     AuditPersisterHITLRequestNaturalKeyConflict,
     AuditPersisterHITLDecisionNaturalKeyConflict,
+    AuditPersisterPublishLockAcquisitionTimeoutError,
     AuditPersisterNaturalKeyLookupError,
     AuditPersisterTraceIdempotencyLookupError,
     AuditPersisterHITLRequestIdempotencyLookupError,
@@ -2034,10 +2101,7 @@ class AuditPersister:
         if not isinstance(result, TraceDecisionEvent):
             raise AuditPersisterSchemaInvariantError(
                 event_id=event.event_id,
-                invariant=(
-                    f"emit_trace_decision returned {type(result).__name__}, "
-                    "expected TraceDecisionEvent"
-                ),
+                invariant="emit_trace_decision return-type mismatch",
             )
         return result
 
@@ -2055,9 +2119,7 @@ class AuditPersister:
         if not isinstance(result, HITLRequestEvent):
             raise AuditPersisterSchemaInvariantError(
                 event_id=event.event_id,
-                invariant=(
-                    f"emit_hitl_request returned {type(result).__name__}, expected HITLRequestEvent"
-                ),
+                invariant="emit_hitl_request return-type mismatch",
             )
         return result
 
@@ -2081,10 +2143,7 @@ class AuditPersister:
         if not isinstance(result, HITLDecisionEvent):
             raise AuditPersisterSchemaInvariantError(
                 event_id=event.event_id,
-                invariant=(
-                    f"emit_hitl_decision returned {type(result).__name__}, "
-                    "expected HITLDecisionEvent"
-                ),
+                invariant="emit_hitl_decision return-type mismatch",
             )
         return result
 
@@ -2155,6 +2214,121 @@ class AuditPersister:
             return None
         return PublishEvent.model_validate(payload)
 
+    # See DECISIONS.md#027 — V1 per-review publish-side advisory lock
+    # (try-lock with bounded backoff, serialize-then-observe). The
+    # rejected-alternative rationale (plain blocking vs single-shot
+    # try-lock) lives in the docstring + the DECISIONS entry.
+    @asynccontextmanager
+    async def acquire_publish_lock(
+        self,
+        review_id: UUID,
+        *,
+        max_wait_seconds: float = 120.0,
+        initial_backoff_seconds: float = 0.05,
+        max_backoff_seconds: float = 1.0,
+    ) -> AsyncIterator[None]:
+        """Per-review advisory lock — try-lock with bounded backoff retry.
+
+        Implementation: loop runs `pg_try_advisory_xact_lock(hashtext(
+        'publish:<uuid>'))` in a fresh session. On acquire, holds that
+        session+transaction open for the duration of the `yield` (the
+        caller's critical section); the lock auto-releases on commit at
+        context exit. On NOT-acquired, the probe session+transaction is
+        closed immediately (rollback releases the held connection back
+        to the pool) and the loop sleeps with exponential backoff before
+        retrying. After `max_wait_seconds` from the FIRST probe, raises
+        `AuditPersisterPublishLockAcquisitionTimeoutError`.
+
+        Concurrency model: serialized-first-then-observe. Two FastAPI
+        background tasks racing on the same `review_id` (e.g., a
+        human-issued `/decide` resume paired with
+        `sweep/hitl_expiry.py::reclaim_stuck_hitl_states`'s graph-driven
+        `Command(resume=...)`) serialize through this lock. The SECOND
+        task, on acquiring the lock, re-reads `query_prior_publish_event`
+        INSIDE the critical section — if the first task succeeded, the
+        prior event is observed and the publish node's existing Step 4
+        short-circuit emits `IDEMPOTENTLY_SKIPPED` (now AUTHENTIC: the
+        first task's `PublishEvent` is the observed evidence). If the
+        first task crashed before emitting `PublishEvent`, the prior
+        event is `None` and the second task POSTs through Step 7 — the
+        audit row's absence is the correct authority, not the lock
+        release.
+
+        Why try-lock + backoff (NOT plain blocking
+        `pg_advisory_xact_lock`): a blocking variant holds a connection
+        for the entire wait. With N same-review contenders, blocking
+        would pin N connections from the pool simultaneously — the
+        winner's emit_* calls (which open additional fresh sessions per
+        the per-emit session discipline) could be starved by the
+        waiters' held connections. Try-lock + backoff releases the
+        probe session between attempts, so waiters only occupy a
+        connection during the brief probe (~ms), not during the
+        backoff sleep. Connection pressure under contention drops
+        from N held + winner's K transient to ~1 held + occasional
+        probes — the winner's emit_* path stays unblocked.
+
+        Why NOT pure `pg_try_advisory_xact_lock` with single-shot
+        loser-skip: a try-lock loser that returns immediately cannot
+        observe whether the winner actually committed the POST.
+        Loser-skip → emit `IDEMPOTENTLY_SKIPPED` even when the winner
+        crashed between lock acquisition and POST → publish lost.
+        Bounded retry puts the loser BEHIND the winner's transaction
+        boundary on the SUCCESSFUL acquire path (winner has released,
+        and on the next retry our acquire succeeds and we re-read the
+        committed `PublishEvent`). False-skip class eliminated.
+
+        The advisory-lock key is namespaced via `hashtext('publish:<uuid>')`
+        so it does NOT collide with `SWEEP_LOCK_ID` (a different bigint
+        namespace). The hashtext function is stable across Postgres
+        versions for ASCII inputs.
+
+        Timeout semantics: `max_wait_seconds=120` covers typical
+        publish wall-clock (1-30s GitHub POST plus N-comment writes)
+        with headroom. On timeout, raises
+        `AuditPersisterPublishLockAcquisitionTimeoutError`; the publish
+        node's outer try/except wrapping `enter_async_context` catches
+        and emits `PublishAttemptEvent(outcome=failed,
+        failure_class="...PublishLockAcquisitionTimeoutError")` before
+        re-raising. Operator investigates via audit log + dashboard;
+        the row stays at its pre-publish lifecycle state for retry.
+
+        Backoff schedule: starts at `initial_backoff_seconds` (default
+        50ms), doubles each iteration up to `max_backoff_seconds` (cap
+        1s). Deterministic (no jitter for V1; V1.5 may add jitter if
+        multi-tenant scheduling synchronization becomes an issue).
+        Total maximum probe count is bounded above by
+        `max_wait_seconds / initial_backoff_seconds` (worst case ~2400
+        probes at default config, in practice far fewer due to
+        exponential growth).
+        """
+        deadline = time.monotonic() + max_wait_seconds
+        backoff = initial_backoff_seconds
+        while True:
+            async with self._session_factory() as session, session.begin():
+                result = await session.execute(
+                    sa_text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+                    {"key": f"publish:{review_id}"},
+                )
+                if bool(result.scalar_one()):
+                    # Acquired. Hold session+transaction open for the
+                    # caller's critical section; commit (and lock
+                    # release) happens at the outer `async with` exit
+                    # below.
+                    yield
+                    return
+            # Not acquired. Inner `async with` already exited — session
+            # rolled back, connection back in pool. Sleep with backoff
+            # outside session scope, then retry.
+            now = time.monotonic()
+            if now >= deadline:
+                raise AuditPersisterPublishLockAcquisitionTimeoutError(
+                    review_id=review_id,
+                    waited_seconds=int(max_wait_seconds),
+                )
+            sleep_for = min(backoff, deadline - now)
+            await asyncio.sleep(sleep_for)
+            backoff = min(backoff * 2, max_backoff_seconds)
+
     async def query_hitl_decision_event(self, review_id: UUID) -> HITLDecisionEvent | None:
         """Return the persisted `HITLDecisionEvent` for `review_id`, or None.
 
@@ -2169,9 +2343,18 @@ class AuditPersister:
         Used by `sweep/hitl_expiry.py::reclaim_stuck_hitl_states` for
         window-(f) crash recovery: when `emit_hitl_decision` succeeded
         but `mark_running` never landed, the audit row IS the canonical
-        decision. The sweep reads this row, reconstructs the
-        `HITLDecision` from it, and calls `mark_running` directly to
-        advance the lifecycle past the stuck state.
+        decision. The sweep reads this row, reconstructs the canonical
+        `HITLDecision` from its fields, and drives the graph through
+        `Command(resume=canonical_decision.model_dump(mode="json"))` —
+        the body re-runs the hitl node from the top, the natural-key
+        check returns the existing event, `mark_running` writes the
+        canonical JSONB inside the body, phase end emits, the graph
+        routes to publish, and publish runs against the recovered
+        finding set. A direct `mark_running` write from the sweep
+        would advance the lifecycle column but leave the graph
+        permanently suspended at the HITL interrupt — `/decide` would
+        409-reject all retries (preflight sees `hitl_decision IS NOT
+        NULL`) and the gated findings never reach GitHub.
 
         Read-only — opens its own `AsyncSession` (no `session.begin()`,
         no transaction needed for a single SELECT). Per-call session

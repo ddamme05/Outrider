@@ -7,8 +7,6 @@ HMAC `compare_digest` is the timing-oracle defense.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -118,13 +116,10 @@ def test_require_admin_api_key_is_async_callable() -> None:
     assert inspect.iscoroutinefunction(require_admin_api_key)
 
 
-# Type-check signature isn't violated by unused vars.
 def test_module_imports_clean() -> None:
-    # If require_admin_api_key were broken structurally, importing
-    # `outrider.api.dashboard.auth` would fail at collection time.
+    """Structural import check: `outrider.api.dashboard.auth` loads
+    cleanly and re-exports `require_admin_api_key`. A breakage here
+    would surface at collection time, not in this assert."""
     from outrider.api.dashboard import auth as _auth
 
     assert _auth.require_admin_api_key is require_admin_api_key
-    # Reference Any so the import isn't unused.
-    _: Any = None
-    assert _ is None

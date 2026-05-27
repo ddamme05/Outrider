@@ -373,6 +373,7 @@ def test_publish_event_sink_protocol_method_set_pinned() -> None:
         "emit_publish_attempt",
         "emit_publish_result",
         "query_prior_publish_event",
+        "acquire_publish_lock",
     }
     # `dir()` includes inherited dunder methods; filter for non-dunder.
     actual = {name for name in dir(PublishEventSink) if not name.startswith("_")}

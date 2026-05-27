@@ -138,21 +138,42 @@ def test_all_kwargs_required(kwarg: str) -> None:
 def test_known_golden() -> None:
     """Pin a known-input → known-output digest as a golden fixture.
 
+    Dual-anchor: the hardcoded byte sequence catches accidental drift
+    in `canonicalize_for_hash` (contributor updates canonicalize without
+    realizing it shifts the wire-shape), AND we cross-check that
+    `canonicalize_for_hash` over the same input produces the same bytes
+    (contributor updates the hardcoded bytes without updating
+    canonicalize, or vice versa).
+
     A change to the recipe (key ordering, encoding, key names) breaks
     this loudly. Update the golden ONLY when the recipe change is
     intentional and reflected in `DECISIONS.md` or the spec.
     """
+    review_id = "00000000-0000-0000-0000-000000000000"
+    node_id = "hitl"
+    attempt_key = "hitl"
     result = compute_phase_id(
-        review_id="00000000-0000-0000-0000-000000000000",
-        node_id="hitl",
-        attempt_key="hitl",
+        review_id=review_id,
+        node_id=node_id,
+        attempt_key=attempt_key,
     )
-    # Golden derived from canonical recipe over
+    # Golden bytes per canonical recipe over
     # {"attempt_key":"hitl","node_id":"hitl","review_id":"00000000-..."}
     # (sort_keys=True, separators=(",", ":"), ensure_ascii=False).
     expected_payload = (
         b'{"attempt_key":"hitl","node_id":"hitl",'
         b'"review_id":"00000000-0000-0000-0000-000000000000"}'
+    )
+    # Cross-check: canonicalize_for_hash produces the same bytes.
+    # If a contributor updates one anchor without the other this
+    # comparison fails loudly with both byte sequences visible.
+    canonicalized = canonicalize_for_hash(
+        {"review_id": review_id, "node_id": node_id, "attempt_key": attempt_key}
+    )
+    assert canonicalized == expected_payload, (
+        f"canonicalize_for_hash drifted from the golden bytes:\n"
+        f"  expected: {expected_payload!r}\n"
+        f"  actual:   {canonicalized!r}"
     )
     expected = hashlib.sha256(expected_payload).hexdigest()
     assert result == expected

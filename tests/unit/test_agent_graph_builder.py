@@ -24,6 +24,7 @@ match the gate's actual semantics.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -32,6 +33,7 @@ from outrider.agent.graph import BuildGraphError, build_graph
 from outrider.llm.config import ModelConfig
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
     from uuid import UUID
 
@@ -121,6 +123,13 @@ class _StubPublishEventSink:
 
     async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:  # noqa: ARG002
         return None
+
+    @asynccontextmanager
+    async def acquire_publish_lock(
+        self,
+        review_id: UUID,  # noqa: ARG002
+    ) -> AsyncIterator[None]:
+        yield
 
 
 class _StubTraceEventSink:

@@ -238,25 +238,35 @@ async def reclaim_stuck_hitl_states(
     treated as "still in flight" — the body is suspended at the
     interrupt waiting for resume; skip.
 
-    **Candidate-row freshness predicate (`Review.expires_at < grace_cutoff`).**
-    The freshness gate uses `expires_at`, NOT `created_at`. Rationale:
-    `created_at` is the review-row creation time (set at webhook
-    receipt), so a review that spends 10 minutes in analyze/trace
-    before entering HITL would match `created_at < now - 5min` the
-    moment it transitions to `awaiting_approval`. The reclaim could
-    then false-positive on the natural gap between
-    `mark_awaiting_approval` and the langgraph checkpoint landing.
-    `expires_at` is set atomically by `mark_awaiting_approval`
-    (`expires_at = state.received_at + timedelta(minutes=timeout_minutes)`),
-    so it reflects the END of the HITL window. A row is "stuck"
-    only when `expires_at + grace_period < now`, i.e., the natural
-    HITL window has already lapsed PLUS the grace period — at which
-    point the transition sub-job would normally have flipped to
-    `awaiting_approval_expired`, so a row still in `awaiting_approval`
-    is genuinely stuck (window c or f).
+    **Candidate-row predicate: `status IN ('awaiting_approval',
+    'awaiting_approval_expired')`** — broader than just
+    `awaiting_approval` so reclaim catches window-(f) rows that
+    `transition_expired_hitl_reviews` already flipped to
+    `awaiting_approval_expired` in a prior sweep tick (or even the
+    same tick: the spec-locked sub-job order is reclaim BEFORE
+    transition, but a row near its `expires_at` boundary could be
+    skipped by reclaim's grace-period gate and immediately flipped
+    by transition; without the broader filter, the audit row would
+    orphan permanently).
 
-    Returns `{"recovered": N, "failed": M}` for telemetry. `N + M` is
-    the total number of stuck rows handled this tick.
+    **Audit-row presence is the canonical signal — no grace gate.**
+    When a `HITLDecisionEvent` exists for the review, the emit ran;
+    the audit row is canonical per `audit-events-append-only`. The
+    `expires_at < grace_cutoff` gate ONLY applies to the no-audit-row
+    branch (window c): there we need the grace period to avoid
+    false-positive reclaim of a row that just transitioned to
+    `awaiting_approval` (the body might still be running, the
+    langgraph checkpoint might be in flight). For window (f),
+    immediate recovery is safe.
+
+    Per-row classification:
+      - audit row exists -> graph-driven recovery (window f); counted
+        as `recovered`
+      - no audit row + `expires_at < grace_cutoff` + no checkpoint
+        -> mark `failed` (window c); counted as `failed`
+      - otherwise skip (still in flight)
+
+    Returns `{"recovered": N, "failed": M}` for telemetry.
 
     **Lock-acquisition contract: this sub-job DOES NOT acquire
     `SWEEP_LOCK_ID` itself.** The caller (typically `run_once`)
@@ -264,23 +274,26 @@ async def reclaim_stuck_hitl_states(
     """
     grace_cutoff = datetime.now(UTC) - grace_period
 
-    # Query candidate rows: status='awaiting_approval' AND
-    # `expires_at < grace_cutoff` (the natural HITL window has
-    # lapsed past the grace period — see freshness-predicate
-    # rationale in the docstring above).
+    # Query candidate rows: status IN ('awaiting_approval',
+    # 'awaiting_approval_expired'). Broader than the natural-HITL
+    # set so post-transition orphans (window-f rows already flipped
+    # to awaiting_approval_expired by the transition sub-job) stay
+    # reachable for audit-row recovery. See docstring rationale.
     result = await conn.execute(
-        select(Review.id).where(
-            Review.status == "awaiting_approval",
-            Review.expires_at < grace_cutoff,
+        select(Review.id, Review.expires_at).where(
+            Review.status.in_(("awaiting_approval", "awaiting_approval_expired")),
         )
     )
-    candidate_ids = [row.id for row in result.all()]
+    candidate_rows = list(result.all())
 
     recovered = 0
     failed = 0
-    for review_id in candidate_ids:
+    for row in candidate_rows:
+        review_id = row.id
+        row_expires_at = row.expires_at
         # Step 1: check the audit layer for an orphaned
-        # HITLDecisionEvent. Window-(f) detection.
+        # HITLDecisionEvent. Window-(f) detection — audit row
+        # presence is the canonical signal, no grace gate needed.
         try:
             audit_decision_event = await audit_persister.query_hitl_decision_event(review_id)
         except Exception:
@@ -348,12 +361,21 @@ async def reclaim_stuck_hitl_states(
             )
             continue
 
-        # Step 2: no audit row. Check the LangGraph checkpointer.
-        # If a checkpoint exists, the body is suspended at the
-        # interrupt waiting for resume — NOT stuck. Skip.
-        config = {"configurable": {"thread_id": str(review_id)}}
+        # Step 2: no audit row. Apply grace gate explicitly — the
+        # candidate query is broader (status IN ('awaiting_approval',
+        # 'awaiting_approval_expired')) and doesn't filter by
+        # expires_at, so we re-check here to avoid window-c false
+        # positives. If expires_at >= grace_cutoff (or NULL), the
+        # natural HITL window hasn't lapsed past grace; skip.
+        if row_expires_at is None or row_expires_at >= grace_cutoff:
+            continue
+
+        # Step 3: check the LangGraph checkpointer. If a checkpoint
+        # exists, the body is suspended at the interrupt waiting
+        # for resume — NOT stuck. Skip.
+        thread_config = {"configurable": {"thread_id": str(review_id)}}
         try:
-            checkpoint = await checkpointer.aget(config)  # type: ignore[arg-type]
+            checkpoint = await checkpointer.aget(thread_config)  # type: ignore[arg-type]
         except Exception:
             logger.exception(
                 "hitl_reclaim_checkpointer_read_failed",
@@ -367,13 +389,17 @@ async def reclaim_stuck_hitl_states(
             continue
 
         # Window (c) recovery: no audit row, no checkpoint, past
-        # grace period. Mark `failed` for operator triage.
+        # grace period. Mark `failed` for operator triage. Predicate
+        # admits both source states so the mark-failed write works
+        # whether the row was already flipped to
+        # awaiting_approval_expired by transition or still sits in
+        # awaiting_approval.
         async with session_factory() as session, session.begin():
             await session.execute(
                 update(Review)
                 .where(
                     Review.id == review_id,
-                    Review.status == "awaiting_approval",
+                    Review.status.in_(("awaiting_approval", "awaiting_approval_expired")),
                 )
                 .values(status="failed")
             )
@@ -383,9 +409,9 @@ async def reclaim_stuck_hitl_states(
             extra={
                 "review_id": str(review_id),
                 "note": (
-                    "Row stuck in awaiting_approval past grace period with no "
-                    "audit row AND no LangGraph checkpoint; reclaimed as "
-                    "failed for operator triage (window-c crash)."
+                    "Row stuck past grace period with no audit row AND no "
+                    "LangGraph checkpoint; reclaimed as failed for operator "
+                    "triage (window-c crash)."
                 ),
             },
         )

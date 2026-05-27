@@ -25,6 +25,7 @@ START → intake admission edge.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -33,6 +34,7 @@ from langgraph.graph import START
 from outrider.agent.graph import build_graph
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from outrider.audit.events import (
@@ -103,6 +105,13 @@ class _StubPublishEventSink:
 
     async def query_prior_publish_event(self, review_id: Any) -> Any:  # noqa: ARG002
         return None
+
+    @asynccontextmanager
+    async def acquire_publish_lock(
+        self,
+        review_id: Any,  # noqa: ARG002
+    ) -> AsyncIterator[None]:
+        yield
 
 
 class _StubTraceEventSink:

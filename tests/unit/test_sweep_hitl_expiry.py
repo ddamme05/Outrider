@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.sql.elements import TextClause
 
 from outrider.anomaly.rule_names import AnomalyRuleName
 from outrider.sweep.hitl_expiry import (
@@ -77,17 +78,28 @@ class _StubReviewStatusSink:
 
 def _make_conn(expired_rows: list[tuple[UUID, datetime]]) -> MagicMock:
     """Mock AsyncConnection that returns the given expired rows on
-    SELECT + grants the advisory lock."""
+    SELECT + grants the advisory lock.
+
+    Dispatches by checking SQLAlchemy expression KIND, not duck-typing
+    via `hasattr(stmt, "is_text")`. Two statement shapes hit this mock
+    in order: (1) a `text("SELECT pg_try_advisory_xact_lock(...)")`
+    expression (TextClause) for lock acquisition; (2) a `select(...)`
+    ORM expression for the candidate-rows query. The TextClause check
+    via `isinstance(stmt, TextClause)` is the explicit dispatch
+    discriminator; a future shape change (e.g., swapping the advisory
+    lock to a typed `func.pg_try_advisory_xact_lock` ORM call) would
+    surface as a fail-loud `AssertionError` in the `else` branch.
+    """
     conn = MagicMock()
 
     async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
         result = MagicMock()
-        # First call is the advisory-lock acquire; return scalar True.
-        if hasattr(stmt, "is_text") and stmt.is_text:
+        if isinstance(stmt, TextClause):
+            # text("SELECT pg_try_advisory_xact_lock(...)") path.
             scalar = MagicMock(return_value=True)
             result.scalar_one = scalar
             return result
-        # Second call is the SELECT; return our seeded rows.
+        # ORM `select(Review.id, Review.expires_at)` path.
         rows = [MagicMock(id=r[0], expires_at=r[1]) for r in expired_rows]
         result.all = MagicMock(return_value=rows)
         return result
@@ -240,7 +252,7 @@ async def test_reclaim_window_f_recovery_advances_lifecycle_from_audit_row() -> 
 
     async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
         result = MagicMock()
-        if hasattr(stmt, "is_text") and stmt.is_text:
+        if isinstance(stmt, TextClause):
             result.scalar_one = MagicMock(return_value=True)
             return result
         result.all = MagicMock(return_value=[MagicMock(id=review_id)])
@@ -318,17 +330,22 @@ async def test_reclaim_window_f_recovery_advances_lifecycle_from_audit_row() -> 
 
 @pytest.mark.asyncio
 async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -> None:
-    """Window (c) recovery: no audit row + no checkpoint = mark
-    failed."""
+    """Window (c) recovery: no audit row + no checkpoint + expires_at
+    past grace period = mark failed."""
     review_id = uuid4()
+    # Past the grace period so the per-row grace gate admits this
+    # candidate to the checkpoint check + window-c mark-failed write.
+    past_expires_at = datetime.now(UTC) - timedelta(hours=1)
     conn = MagicMock()
 
     async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
         result = MagicMock()
-        if hasattr(stmt, "is_text") and stmt.is_text:
+        if isinstance(stmt, TextClause):
             result.scalar_one = MagicMock(return_value=True)
             return result
-        result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        result.all = MagicMock(
+            return_value=[MagicMock(id=review_id, expires_at=past_expires_at)],
+        )
         return result
 
     conn.execute = AsyncMock(side_effect=_execute)
@@ -365,16 +382,19 @@ async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -
 
 @pytest.mark.asyncio
 async def test_reclaim_skips_row_when_no_audit_but_checkpoint_present() -> None:
-    """No audit row + checkpoint present = still in flight; skip."""
+    """No audit row + checkpoint present + past grace = still in flight; skip."""
     review_id = uuid4()
+    past_expires_at = datetime.now(UTC) - timedelta(hours=1)
     conn = MagicMock()
 
     async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
         result = MagicMock()
-        if hasattr(stmt, "is_text") and stmt.is_text:
+        if isinstance(stmt, TextClause):
             result.scalar_one = MagicMock(return_value=True)
             return result
-        result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        result.all = MagicMock(
+            return_value=[MagicMock(id=review_id, expires_at=past_expires_at)],
+        )
         return result
 
     conn.execute = AsyncMock(side_effect=_execute)
