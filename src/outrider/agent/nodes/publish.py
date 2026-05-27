@@ -37,6 +37,7 @@ Pre-flight order (intra-Outrider + external):
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -231,100 +232,65 @@ async def publish(
     # "intra-Outrider idempotency query crashed" from "node hung
     # mid-execution".
     #
-    # Concurrent-invocation race window (V1 bounded; V1.5 hardening
-    # tracked as FUP): the `query_prior_publish_event` → POST →
-    # `emit_publish_result` sequence is read-before-write. If two
-    # `ainvoke(Command(resume=...))` calls run concurrently on the
-    # same `thread_id`, both could observe `prior_publish_event=None`
-    # and both POST. The V1 bound is langgraph's per-thread
-    # checkpointer serialization: concurrent `ainvoke` on the same
-    # `thread_id` conflicts at the checkpoint-write layer, so the
-    # second invocation fails or sees the prior body's state. The
-    # `find_existing_review_on_head_sha` check at step 6 is a
-    # secondary defense for the crash-after-success-before-emit case
-    # (matches by body marker). For multi-process / Celery-dispatcher
-    # deployments (V2), the proper hardening is a DB-level reservation
-    # — `pg_try_advisory_xact_lock(hash(review_id, 'publish'))`
-    # wrapping the query→POST→emit triple. Tracked as a V1.5 follow-up
-    # alongside the broader concurrency-hardening pass.
-    try:
-        prior_publish_event = await publish_event_sink.query_prior_publish_event(state.review_id)
-    except Exception as exc:
-        await _emit_attempt(
-            publish_event_sink=publish_event_sink,
-            review_id=state.review_id,
-            attempt_index=1,
-            outcome=PublishAttemptOutcome.FAILED,
-            sorted_finding_ids=sorted_finding_ids,
-            comments_attempted=len(eligible_inline_comments),
-            failure_class=type(exc).__name__,
-            is_eval=state.is_eval,
-        )
-        raise
-    if prior_publish_event is not None:
-        await _emit_attempt(
-            publish_event_sink=publish_event_sink,
-            review_id=state.review_id,
-            attempt_index=1,
-            outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED,
-            sorted_finding_ids=sorted_finding_ids,
-            comments_attempted=len(eligible_inline_comments),
-            is_eval=state.is_eval,
-        )
-        await _emit_phase_end(
-            phase_event_sink=phase_event_sink,
-            review_id=state.review_id,
-            phase_id=phase_id,
-            is_eval=state.is_eval,
-        )
-        return {"publish_result": PublishResult.skipped()}
-
-    # Step 5: empty-eligible-inline short-circuit. No GitHub call.
-    if not eligible_inline_comments:
-        await _emit_attempt(
-            publish_event_sink=publish_event_sink,
-            review_id=state.review_id,
-            attempt_index=1,
-            outcome=PublishAttemptOutcome.NO_OP_EMPTY,
-            sorted_finding_ids=sorted_finding_ids,
-            comments_attempted=0,
-            is_eval=state.is_eval,
-        )
-        await _emit_phase_end(
-            phase_event_sink=phase_event_sink,
-            review_id=state.review_id,
-            phase_id=phase_id,
-            is_eval=state.is_eval,
-        )
-        return {"publish_result": PublishResult.empty()}
-
-    # Step 6: external-record check (crash-after-success defense). The
-    # intra-Outrider check at Step 4 returns None for this scenario
-    # (the prior process died BEFORE persisting PublishEvent), so the
-    # external-record body-marker query on GitHub is the load-bearing
-    # signal here.
+    # Concurrent-invocation race defense — per-review advisory lock
+    # (try-lock with bounded backoff, serialize-then-observe).
+    # See DECISIONS.md#027 — V1 per-review publish-side advisory lock.
+    # The `query_prior_publish_event` → POST → `emit_publish_result`
+    # sequence is read-before-write. Two concurrent
+    # `ainvoke(Command(resume=...))` on the same `thread_id` (e.g., a
+    # human-issued resume racing with a `reclaim_stuck_hitl_states`
+    # graph-driven resume) could both observe `prior_publish_event=None`
+    # and both POST. Defense: `acquire_publish_lock(review_id)` runs
+    # `pg_try_advisory_xact_lock(hashtext('publish:<uuid>'))` in a
+    # bounded backoff loop. On NOT-acquired, the probe session
+    # releases its connection back to the pool and sleeps with
+    # exponential backoff (50ms doubling to 1s cap) before retrying;
+    # on acquired, holds the session+transaction for the lifetime of
+    # the critical section. The eventual acquire puts the second task
+    # BEHIND the first task's transaction boundary — Step 4's
+    # `query_prior_publish_event` then observes the first task's
+    # committed `PublishEvent` (success path → authentic
+    # `IDEMPOTENTLY_SKIPPED`) OR its absence (first task crashed
+    # before emit → second task POSTs through Step 7).
     #
-    # Symmetric with Steps 4 + 7 failure handling: if the GitHub GET
-    # raises (network drop, 403 App-uninstalled mid-run, 5xx upstream,
-    # pagination cap exhausted), emit `PublishAttemptEvent(FAILED,
-    # failure_class=type(exc).__name__)` BEFORE re-raising so the audit
-    # trail records the failure class — otherwise the dangling
-    # phase-start is the only signal and operators can't distinguish
-    # "external-record query crashed" from "node hung mid-execution".
+    # Why try-lock + bounded backoff (NOT plain blocking
+    # `pg_advisory_xact_lock`): blocking holds a connection for the
+    # entire wait. With N same-review contenders, blocking pins N
+    # connections — the winner's `emit_publish_*` calls (each opens
+    # a fresh session per the per-emit discipline) could be starved
+    # by the held waiters. Backoff releases the connection between
+    # probes; pool pressure drops from N held to ~1 held + occasional
+    # probes.
+    #
+    # Why NOT single-shot try-lock with immediate loser-skip: the
+    # immediate loser cannot observe whether the winner actually
+    # committed the POST. Skipping → false `IDEMPOTENTLY_SKIPPED`
+    # when winner crashes mid-POST → publish lost.
+    #
+    # Timeout: default 120s from first probe. On exhaustion,
+    # `AuditPersisterPublishLockAcquisitionTimeoutError` raises out
+    # of `enter_async_context` and the outer try/except below emits
+    # `PublishAttemptEvent(FAILED, failure_class="...PublishLock
+    # AcquisitionTimeoutError")` before re-raising.
+    # `find_existing_review_on_head_sha` at Step 6 remains the
+    # defense for the cross-process crash-after-success-before-emit
+    # case (matches by body marker on a process restart, when no
+    # in-process lock can apply). The structural split — lock-
+    # acquire in its own try, critical-section in a separate
+    # try/finally — means inner-step failures (Step 4/6/7) reach
+    # only their own existing FAILED emits, never the outer catch,
+    # so no double-emit.
+    # Acquire the lock BEFORE entering the critical section, in its
+    # own try/except so a failure during `__aenter__` (DB outage,
+    # connection drop) emits `PublishAttemptEvent(FAILED)` BEFORE
+    # re-raising — honoring the node's raises contract. The
+    # `AsyncExitStack` holds the lock for the lifetime of the
+    # critical section that follows; `stack.aclose()` releases on
+    # both success and exception paths.
+    lock_stack = AsyncExitStack()
     try:
-        # `github_factory(...)` is inside the try because installation-
-        # token minting can raise (App uninstalled, JWT clock skew,
-        # GitHub identity-API outage) — its failure must land in the
-        # audit chain as `PublishAttemptEvent(FAILED)`, not as a
-        # dangling phase-start.
-        gh = github_factory(state.pr_context.installation_id)
-        existing_review_id = await publisher.find_existing_review_on_head_sha(
-            gh=gh,
-            owner=state.pr_context.owner,
-            repo=state.pr_context.repo,
-            pull_number=state.pr_context.pr_number,
-            head_sha=state.pr_context.head_sha,
-            body_marker=body_marker,
+        await lock_stack.enter_async_context(
+            publish_event_sink.acquire_publish_lock(state.review_id),
         )
     except Exception as exc:
         await _emit_attempt(
@@ -335,19 +301,178 @@ async def publish(
             sorted_finding_ids=sorted_finding_ids,
             comments_attempted=len(eligible_inline_comments),
             failure_class=type(exc).__name__,
-            status_code=_extract_status_code(exc),
             is_eval=state.is_eval,
         )
         raise
-    if existing_review_id is not None:
+
+    try:
+        try:
+            prior_publish_event = await publish_event_sink.query_prior_publish_event(
+                state.review_id,
+            )
+        except Exception as exc:
+            await _emit_attempt(
+                publish_event_sink=publish_event_sink,
+                review_id=state.review_id,
+                attempt_index=1,
+                outcome=PublishAttemptOutcome.FAILED,
+                sorted_finding_ids=sorted_finding_ids,
+                comments_attempted=len(eligible_inline_comments),
+                failure_class=type(exc).__name__,
+                is_eval=state.is_eval,
+            )
+            raise
+        if prior_publish_event is not None:
+            await _emit_attempt(
+                publish_event_sink=publish_event_sink,
+                review_id=state.review_id,
+                attempt_index=1,
+                outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED,
+                sorted_finding_ids=sorted_finding_ids,
+                comments_attempted=len(eligible_inline_comments),
+                is_eval=state.is_eval,
+            )
+            await _emit_phase_end(
+                phase_event_sink=phase_event_sink,
+                review_id=state.review_id,
+                phase_id=phase_id,
+                is_eval=state.is_eval,
+            )
+            return {"publish_result": PublishResult.skipped()}
+
+        # Step 5: empty-eligible-inline short-circuit. No GitHub call.
+        if not eligible_inline_comments:
+            await _emit_attempt(
+                publish_event_sink=publish_event_sink,
+                review_id=state.review_id,
+                attempt_index=1,
+                outcome=PublishAttemptOutcome.NO_OP_EMPTY,
+                sorted_finding_ids=sorted_finding_ids,
+                comments_attempted=0,
+                is_eval=state.is_eval,
+            )
+            await _emit_phase_end(
+                phase_event_sink=phase_event_sink,
+                review_id=state.review_id,
+                phase_id=phase_id,
+                is_eval=state.is_eval,
+            )
+            return {"publish_result": PublishResult.empty()}
+
+        # Step 6: external-record check (crash-after-success defense).
+        # The intra-Outrider check at Step 4 returns None for this
+        # scenario (the prior process died BEFORE persisting
+        # PublishEvent), so the external-record body-marker query on
+        # GitHub is the load-bearing signal here.
+        #
+        # Symmetric with Steps 4 + 7 failure handling: if the GitHub
+        # GET raises (network drop, 403 App-uninstalled mid-run, 5xx
+        # upstream, pagination cap exhausted), emit
+        # `PublishAttemptEvent(FAILED, failure_class=type(exc).__name__)`
+        # BEFORE re-raising so the audit trail records the failure
+        # class — otherwise the dangling phase-start is the only signal
+        # and operators can't distinguish "external-record query
+        # crashed" from "node hung mid-execution".
+        try:
+            # `github_factory(...)` is inside the try because
+            # installation-token minting can raise (App uninstalled,
+            # JWT clock skew, GitHub identity-API outage) — its failure
+            # must land in the audit chain as `PublishAttemptEvent(FAILED)`,
+            # not as a dangling phase-start.
+            gh = github_factory(state.pr_context.installation_id)
+            existing_review_id = await publisher.find_existing_review_on_head_sha(
+                gh=gh,
+                owner=state.pr_context.owner,
+                repo=state.pr_context.repo,
+                pull_number=state.pr_context.pr_number,
+                head_sha=state.pr_context.head_sha,
+                body_marker=body_marker,
+            )
+        except Exception as exc:
+            await _emit_attempt(
+                publish_event_sink=publish_event_sink,
+                review_id=state.review_id,
+                attempt_index=1,
+                outcome=PublishAttemptOutcome.FAILED,
+                sorted_finding_ids=sorted_finding_ids,
+                comments_attempted=len(eligible_inline_comments),
+                failure_class=type(exc).__name__,
+                status_code=_extract_status_code(exc),
+                is_eval=state.is_eval,
+            )
+            raise
+        if existing_review_id is not None:
+            await _emit_attempt(
+                publish_event_sink=publish_event_sink,
+                review_id=state.review_id,
+                attempt_index=1,
+                outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD,
+                sorted_finding_ids=sorted_finding_ids,
+                comments_attempted=len(eligible_inline_comments),
+                is_eval=state.is_eval,
+            )
+            await _emit_phase_end(
+                phase_event_sink=phase_event_sink,
+                review_id=state.review_id,
+                phase_id=phase_id,
+                is_eval=state.is_eval,
+            )
+            return {
+                "publish_result": PublishResult.skipped_external(
+                    existing_review_id=existing_review_id,
+                )
+            }
+
+        # Step 7: POST the review. Failures emit attempt(failed) BEFORE
+        # re-raising so the audit trail has the failure_class on record.
+        # The phase-start remains dangling on failure (analyze convention).
+        review_status = "COMMENT"  # V1: every published review is a comment.
+        # When synthesize ships, status is derived from the highest-severity
+        # finding that actually posted (per docs/spec.md §V).
+        try:
+            review_created = await publisher.create_review(
+                gh=gh,
+                owner=state.pr_context.owner,
+                repo=state.pr_context.repo,
+                pull_number=state.pr_context.pr_number,
+                head_sha=state.pr_context.head_sha,
+                review_status=review_status,
+                body_marker=body_marker,
+                comments=tuple(eligible_inline_comments),
+            )
+        except Exception as exc:
+            await _emit_attempt(
+                publish_event_sink=publish_event_sink,
+                review_id=state.review_id,
+                attempt_index=1,
+                outcome=PublishAttemptOutcome.FAILED,
+                sorted_finding_ids=sorted_finding_ids,
+                comments_attempted=len(eligible_inline_comments),
+                failure_class=type(exc).__name__,
+                status_code=_extract_status_code(exc),
+                is_eval=state.is_eval,
+            )
+            raise
+
+        # Step 8: success path — emit attempt + canonical PublishEvent
+        # + phase end + return success result.
         await _emit_attempt(
             publish_event_sink=publish_event_sink,
             review_id=state.review_id,
             attempt_index=1,
-            outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD,
+            outcome=PublishAttemptOutcome.SUCCESS,
             sorted_finding_ids=sorted_finding_ids,
             comments_attempted=len(eligible_inline_comments),
             is_eval=state.is_eval,
+        )
+        await publish_event_sink.emit_publish_result(
+            PublishEvent(
+                review_id=state.review_id,
+                is_eval=state.is_eval,
+                github_review_id=review_created.github_review_id,
+                comments_posted=review_created.comments_posted,
+                review_status=review_status,
+            )
         )
         await _emit_phase_end(
             phase_event_sink=phase_event_sink,
@@ -355,80 +480,24 @@ async def publish(
             phase_id=phase_id,
             is_eval=state.is_eval,
         )
+
+        # Started_at is not part of the result shape — kept as a local
+        # marker for future eval-timing metrics; PublishEvent doesn't
+        # carry it because the phase event bracket is the canonical
+        # timing source.
+        _ = started_at
         return {
-            "publish_result": PublishResult.skipped_external(
-                existing_review_id=existing_review_id,
+            "publish_result": PublishResult.success(
+                github_review_id=review_created.github_review_id,
+                comments_posted=review_created.comments_posted,
             )
         }
-
-    # Step 7: POST the review. Failures emit attempt(failed) BEFORE
-    # re-raising so the audit trail has the failure_class on record.
-    # The phase-start remains dangling on failure (analyze convention).
-    review_status = "COMMENT"  # V1: every published review is a comment.
-    # When synthesize ships, status is derived from the highest-severity
-    # finding that actually posted (per docs/spec.md §V).
-    try:
-        review_created = await publisher.create_review(
-            gh=gh,
-            owner=state.pr_context.owner,
-            repo=state.pr_context.repo,
-            pull_number=state.pr_context.pr_number,
-            head_sha=state.pr_context.head_sha,
-            review_status=review_status,
-            body_marker=body_marker,
-            comments=tuple(eligible_inline_comments),
-        )
-    except Exception as exc:
-        await _emit_attempt(
-            publish_event_sink=publish_event_sink,
-            review_id=state.review_id,
-            attempt_index=1,
-            outcome=PublishAttemptOutcome.FAILED,
-            sorted_finding_ids=sorted_finding_ids,
-            comments_attempted=len(eligible_inline_comments),
-            failure_class=type(exc).__name__,
-            status_code=_extract_status_code(exc),
-            is_eval=state.is_eval,
-        )
-        raise
-
-    # Step 8: success path — emit attempt + canonical PublishEvent +
-    # phase end + return success result.
-    await _emit_attempt(
-        publish_event_sink=publish_event_sink,
-        review_id=state.review_id,
-        attempt_index=1,
-        outcome=PublishAttemptOutcome.SUCCESS,
-        sorted_finding_ids=sorted_finding_ids,
-        comments_attempted=len(eligible_inline_comments),
-        is_eval=state.is_eval,
-    )
-    await publish_event_sink.emit_publish_result(
-        PublishEvent(
-            review_id=state.review_id,
-            is_eval=state.is_eval,
-            github_review_id=review_created.github_review_id,
-            comments_posted=review_created.comments_posted,
-            review_status=review_status,
-        )
-    )
-    await _emit_phase_end(
-        phase_event_sink=phase_event_sink,
-        review_id=state.review_id,
-        phase_id=phase_id,
-        is_eval=state.is_eval,
-    )
-
-    # Started_at is not part of the result shape — kept as a local
-    # marker for future eval-timing metrics; PublishEvent doesn't carry
-    # it because the phase event bracket is the canonical timing source.
-    _ = started_at
-    return {
-        "publish_result": PublishResult.success(
-            github_review_id=review_created.github_review_id,
-            comments_posted=review_created.comments_posted,
-        )
-    }
+    finally:
+        # Release the advisory lock on every exit path (success,
+        # short-circuit return, raised exception). The acquired lock
+        # is transaction-scoped, so `aclose()` commits the lock-
+        # holding transaction and releases.
+        await lock_stack.aclose()
 
 
 # ---------------------------------------------------------------------------

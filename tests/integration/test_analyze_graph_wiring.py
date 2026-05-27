@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -42,6 +43,7 @@ from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from outrider.audit.events import (
@@ -371,6 +373,13 @@ class _StubPublishEventSink:
 
     async def query_prior_publish_event(self, review_id: Any) -> Any:  # noqa: ARG002
         return None
+
+    @asynccontextmanager
+    async def acquire_publish_lock(
+        self,
+        review_id: Any,  # noqa: ARG002
+    ) -> AsyncIterator[None]:
+        yield
 
 
 class _StubTraceEventSink:

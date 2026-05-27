@@ -33,6 +33,7 @@ sink-specific recording doubles (HITL, publish, analyze) live in
 per-test-file scope inside `tests/unit/` per the existing convention.
 """
 
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -311,6 +312,53 @@ class PublishEventSink(Protocol):
         each call opens its own `AsyncSession` (read-only, no
         `session.begin()`), runs one `SELECT ... LIMIT 1`, and
         deserializes the JSONB payload via `PublishEvent.model_validate`.
+        """
+        ...
+
+    # See DECISIONS.md#027 — V1 per-review publish-side advisory lock.
+    def acquire_publish_lock(self, review_id: UUID) -> AbstractAsyncContextManager[None]:
+        """Acquire a per-review advisory lock for the publish path.
+
+        Returns an async context manager that yields once the lock
+        is held. Acquisition is bounded by a deadline (default 120s
+        in the durable implementation); on timeout the implementation
+        raises rather than yielding.
+
+        Backs the V1 defense against concurrent identical resume
+        paths both reaching `publisher.create_review` and POSTing
+        twice. The durable implementation uses
+        `pg_try_advisory_xact_lock(hashtext('publish:<review_id>'))`
+        in a loop with exponential backoff: each probe opens its own
+        session+transaction, releases on not-acquired, sleeps, retries.
+        On acquired, holds the session+transaction for the lifetime of
+        the context manager. Recording sinks no-op (no real
+        serialization).
+
+        Why try-lock + bounded backoff (NOT plain blocking
+        `pg_advisory_xact_lock`): a blocking variant holds a connection
+        for the entire wait. N same-review contenders would pin N pool
+        connections simultaneously, starving the winner's
+        `emit_publish_*` calls (each opens a fresh session per the
+        per-emit discipline). Backoff releases the connection between
+        probes — the winner's emit path stays unstarved.
+
+        Why NOT single-shot `pg_try_advisory_xact_lock` with loser-
+        skip: the immediate loser cannot observe whether the winner
+        actually committed the POST. Skipping → emit
+        `IDEMPOTENTLY_SKIPPED` even when the winner crashed between
+        lock acquisition and POST → publish lost. Bounded retry puts
+        the loser BEHIND the winner's transaction boundary on the
+        eventual successful acquire, so the post-lock
+        `query_prior_publish_event` observes the winner's committed
+        `PublishEvent` (success → authentic skip) OR its absence
+        (winner crashed → loser POSTs). False-skip class eliminated.
+
+        The lock auto-releases on context exit (transaction
+        commit/rollback). Callers use `async with
+        publish_event_sink.acquire_publish_lock(review_id):` — no
+        bool result to inspect (acquisition is unconditional;
+        failure to acquire within the deadline raises rather than
+        returning False).
         """
         ...
 

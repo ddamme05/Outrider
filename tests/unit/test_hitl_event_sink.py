@@ -10,6 +10,7 @@ audit-first return shape.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -91,8 +92,6 @@ def test_recording_sink_records_request_and_returns_event() -> None:
     review_id = uuid4()
     event = _make_request(review_id=review_id)
 
-    import asyncio
-
     returned = asyncio.run(sink.emit_hitl_request(event))
 
     assert returned is event
@@ -104,8 +103,6 @@ def test_recording_sink_records_decision_and_returns_event() -> None:
     sink = _RecordingHITLEventSink()
     review_id = uuid4()
     event = _make_decision(review_id=review_id)
-
-    import asyncio
 
     returned = asyncio.run(sink.emit_hitl_decision(event))
 
@@ -121,8 +118,6 @@ def test_recording_sink_does_not_dedup_double_emit() -> None:
     review_id = uuid4()
     e1 = _make_request(review_id=review_id)
     e2 = _make_request(review_id=review_id)  # same review_id, different event_id
-
-    import asyncio
 
     asyncio.run(sink.emit_hitl_request(e1))
     asyncio.run(sink.emit_hitl_request(e2))

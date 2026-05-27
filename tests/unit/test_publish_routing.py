@@ -23,8 +23,9 @@ existing `test_publish_node_end_to_end.py` pattern — `tests/unit/` has no
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -53,6 +54,9 @@ from outrider.schemas import (
     ReviewFinding,
     ReviewState,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 # ---------------------------------------------------------------------------
 # Autouse env fixture — scopes the truncation-HMAC env var to test execution.
@@ -99,6 +103,13 @@ class _RecordingPublishEventSink:
 
     async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:  # noqa: ARG002
         return self.prior_publish_event
+
+    @asynccontextmanager
+    async def acquire_publish_lock(
+        self,
+        review_id: UUID,  # noqa: ARG002
+    ) -> AsyncIterator[None]:
+        yield
 
 
 class _StubPublisher:

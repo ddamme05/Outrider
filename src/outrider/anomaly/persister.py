@@ -67,12 +67,32 @@ class AnomalyPersister:
         partial unique index `(review_id, rule_name)` (rule-name-
         partitioned).
 
-        For `rule_name=hitl_timeout`, the partial unique index is
+        V1 ONLY supports `rule_name=AnomalyRuleName.HITL_TIMEOUT`.
+        The on-conflict target — `index_elements=["review_id"]` +
+        `index_where=(Anomaly.rule_name == "hitl_timeout")` —
+        mirrors the partial unique index
         `uq_anomalies_hitl_timeout_natural_key` from Group 3's
-        migration. Other rules added later need matching partial
-        unique indexes; this persister's conflict-handling assumes
-        such an index exists for every `AnomalyRuleName` value.
+        migration (`ON anomalies (review_id) WHERE rule_name =
+        'hitl_timeout'`). Without explicit index targeting,
+        PostgreSQL's conflict-arbiter inference may fail to match
+        the partial index and incorrectly treat a same-review_id
+        retry as a new insert — defeating the idempotency contract
+        the sweep's anomaly-first ordering depends on.
+
+        Future rule_names ship with matching partial unique indexes
+        AND require this method to dispatch on rule_name (V1.5
+        refactor). Fail-loud here when a non-HITL_TIMEOUT rule is
+        emitted so the gap is caught at runtime rather than
+        silently producing a non-idempotent INSERT.
         """
+        if rule_name is not AnomalyRuleName.HITL_TIMEOUT:
+            msg = (
+                f"AnomalyPersister.emit_anomaly only supports "
+                f"AnomalyRuleName.HITL_TIMEOUT in V1; got {rule_name!r}. "
+                f"New rule_names need their own partial unique index + "
+                f"a dispatch update to the on_conflict target."
+            )
+            raise NotImplementedError(msg)
         async with self._session_factory() as session, session.begin():
             stmt = (
                 postgresql_insert(Anomaly)
@@ -83,7 +103,10 @@ class AnomalyPersister:
                     details=details,
                     status="open",
                 )
-                .on_conflict_do_nothing()
+                .on_conflict_do_nothing(
+                    index_elements=["review_id"],
+                    index_where=(Anomaly.rule_name == "hitl_timeout"),
+                )
             )
             await session.execute(stmt)
 

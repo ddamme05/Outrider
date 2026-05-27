@@ -149,7 +149,20 @@ def test_concurrent_calls_each_enqueue_their_own_resume() -> None:
     # audit-layer natural-key check can correctly detect divergent
     # content (different decisions_content_hash).
     assert compiled_graph.ainvoke.await_count == 2
-    awaited_args = [c for c in compiled_graph.ainvoke.await_args_list]
+    awaited_args = list(compiled_graph.ainvoke.await_args_list)
+    # Defensive call-shape assertions: if the wrapper changes how
+    # `ainvoke` is called (kwarg vs positional, dict vs Command
+    # instance), the downstream `c.args[0].resume` would raise
+    # AttributeError or IndexError with no diagnostic context. Assert
+    # the load-bearing shape first so a wrapper-signature change
+    # surfaces a clear failure here, not a generic AttributeError.
+    assert all(len(c.args) > 0 for c in awaited_args), (
+        "Expected positional arg in ainvoke calls — wrapper signature changed?"
+    )
+    assert all(hasattr(c.args[0], "resume") for c in awaited_args), (
+        "Expected first positional arg to carry `.resume` attribute "
+        "(Command instance from langgraph) — wrapper signature changed?"
+    )
     resume_payloads = [c.args[0].resume for c in awaited_args]
     annotations = sorted(p["annotation"] for p in resume_payloads)
     assert annotations == ["annotation-A", "annotation-B"]
@@ -163,8 +176,8 @@ async def test_failure_wrapper_absorbs_loser_of_natural_key_race() -> None:
     the loser; the wrapper catches at WARNING level and returns
     gracefully. The winner's graph completes through publish.
 
-    This pins the wrapper behavior in isolation (the endpoint-level
-    pieces are exercised by the two tests above)."""
+    This pins the wrapper behavior in isolation; the
+    asyncio.gather concurrency case follows below."""
     from outrider.api.dashboard.hitl import _run_resume_under_failure_wrapper
     from outrider.audit.persister import (
         AuditPersisterHITLDecisionNaturalKeyConflict,
@@ -202,7 +215,68 @@ async def test_failure_wrapper_absorbs_loser_of_natural_key_race() -> None:
     )
 
 
-# Defensive sanity: asyncio is imported for type-completeness only;
-# the tests above use TestClient + AsyncMock, not asyncio.gather.
-# Listed here so ruff doesn't flag the import as unused.
-_ = asyncio
+@pytest.mark.asyncio
+async def test_concurrent_resume_wrappers_via_gather_loser_absorbed() -> None:
+    """Two `_run_resume_under_failure_wrapper` calls execute concurrently
+    via `asyncio.gather`. One graph succeeds (winner); the other raises
+    `AuditPersisterHITLDecisionNaturalKeyConflict` (loser the natural-
+    key partial unique index rejected). Both wrapper coroutines must
+    complete without re-raising — the loser's WARNING-level absorb is
+    exercised here under genuine concurrency, not the sync
+    `TestClient.post` serialization the earlier tests in this file use.
+    """
+    from outrider.api.dashboard.hitl import _run_resume_under_failure_wrapper
+    from outrider.audit.persister import (
+        AuditPersisterHITLDecisionNaturalKeyConflict,
+    )
+    from outrider.schemas.hitl import HITLDecision, PerFindingDecision, PerFindingOutcome
+
+    review_id = UUID("88888888-8888-8888-8888-888888888888")
+
+    winner_graph = MagicMock()
+    winner_graph.ainvoke = AsyncMock(return_value=None)
+
+    loser_graph = MagicMock()
+    loser_graph.ainvoke = AsyncMock(
+        side_effect=AuditPersisterHITLDecisionNaturalKeyConflict(
+            existing_event_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            incoming_event_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            review_id=review_id,
+            mismatched_fields=(("decisions_content_hash", "winner-hash", "loser-hash"),),
+            natural_key=(("review_id", str(review_id)),),
+        )
+    )
+
+    def _decision(reason: str) -> HITLDecision:
+        return HITLDecision(
+            reviewer_id="admin",
+            decisions=(
+                PerFindingDecision(
+                    finding_id=_FINDING_A,
+                    outcome=PerFindingOutcome.APPROVE,
+                    reason=reason,
+                ),
+            ),
+            decided_at=datetime.now(UTC),
+        )
+
+    results = await asyncio.gather(
+        _run_resume_under_failure_wrapper(
+            review_id=review_id,
+            hitl_decision=_decision("alpha"),
+            graph=winner_graph,
+        ),
+        _run_resume_under_failure_wrapper(
+            review_id=review_id,
+            hitl_decision=_decision("beta"),
+            graph=loser_graph,
+        ),
+    )
+
+    # Both wrapper calls returned None (no re-raise). The loser's
+    # NaturalKeyConflict was absorbed by the wrapper's catch arm;
+    # the winner ran through ainvoke cleanly.
+    assert len(results) == 2
+    assert all(r is None for r in results)
+    assert winner_graph.ainvoke.await_count == 1
+    assert loser_graph.ainvoke.await_count == 1

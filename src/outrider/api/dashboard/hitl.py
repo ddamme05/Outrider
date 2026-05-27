@@ -288,7 +288,7 @@ async def decide(
     submitted_ids = set(submitted_id_list)
     if len(submitted_id_list) != len(submitted_ids):
         # Identify the duplicates for the operator response.
-        seen: set = set()
+        seen: set[UUID] = set()
         duplicates: list[str] = []
         for fid in submitted_id_list:
             if fid in seen and str(fid) not in duplicates:
