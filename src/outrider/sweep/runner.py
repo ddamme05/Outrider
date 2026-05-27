@@ -116,6 +116,25 @@ async def run_all_sweeps(
         )
         raise RuntimeError(msg)
 
+    # Reject non-positive `grace_period`. A `timedelta <= 0` (e.g.,
+    # `timedelta(seconds=-3600)` from a manual operator-triage typo)
+    # computes `grace_cutoff = now() - grace_period = now() + |Δ|`,
+    # i.e., the cutoff lands in the FUTURE, and the candidate query at
+    # `hitl_expiry.py:288` (`Review.expires_at < grace_cutoff` per the
+    # per-row gate) admits every row regardless of age. Reclaim then
+    # mass-marks-failed every awaiting-approval row in the system.
+    # Catch the sign-flip at the runner entry rather than letting the
+    # mass-fail land.
+    if grace_period is not None and grace_period <= timedelta(0):
+        msg = (
+            f"run_all_sweeps: grace_period must be > timedelta(0); "
+            f"got {grace_period!r}. A non-positive grace_period makes "
+            f"reclaim's grace gate admit every awaiting-approval row "
+            f"regardless of age — mass-marks-failed every HITL-in-flight "
+            f"review in the system."
+        )
+        raise ValueError(msg)
+
     hitl_kwargs: dict[str, Any] = {
         "conn": conn,
         "session_factory": session_factory,

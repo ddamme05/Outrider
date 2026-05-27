@@ -2221,8 +2221,8 @@ class AuditPersister:
     @asynccontextmanager
     async def acquire_publish_lock(
         self,
-        review_id: UUID,
         *,
+        review_id: UUID,
         max_wait_seconds: float = 120.0,
         initial_backoff_seconds: float = 0.05,
         max_backoff_seconds: float = 1.0,

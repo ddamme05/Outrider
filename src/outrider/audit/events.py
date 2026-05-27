@@ -778,29 +778,36 @@ class TraceDecisionEvent(AuditEventBase):
     @classmethod
     def _enforce_canonical_resolved_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
         """Per-element audit-shadow `validate_diff_path` on every
-        resolved candidate path. Per DECISIONS.md#024 point 6: load-
-        bearing for the ambiguous branch where target_file is None
-        but the tuple carries multiple resolver-output paths that
-        otherwise enter audit storage unvalidated. Returns the tuple
-        of canonicalized paths.
+        resolved candidate path + deterministic sort. Per DECISIONS.md#024
+        point 6: load-bearing for the ambiguous branch where target_file
+        is None but the tuple carries multiple resolver-output paths
+        that otherwise enter audit storage unvalidated. Sorted ordering
+        matches `_SET_SEMANTIC_IDENTITY_FIELDS["trace_decision"]`
+        treating `resolved_candidate_paths` as set-semantic at
+        persister-identity compare — sorting at construction means the
+        stored row bytes are also canonical, so dashboard reads + replay
+        reconstructors don't see ordering noise (resolver-probe-order is
+        non-deterministic).
         """
-        return tuple(validate_diff_path(p) for p in paths)
+        return tuple(sorted(validate_diff_path(p) for p in paths))
 
     @field_validator("proposed_import_strings")
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         """Per-element audit-shadow `is_valid_import_string` on every
-        LLM-proposed import string. Defense in depth against a direct
-        emitter (replay path, test fixture, future callsite) bypassing
-        `TraceCandidate.import_string`'s field validator. The upstream
-        singleton field validates one import string at construction;
-        this tuple gathers many, and the audit boundary must rerun the
-        same validation so malformed / non-canonical strings cannot
-        persist into `audit_events`. Returns the tuple of NFC-normalized
-        canonical forms (matching the audit-shadow pattern used for
-        `resolved_candidate_paths` and `target_file`).
+        LLM-proposed import string + deterministic sort. Defense in depth
+        against a direct emitter (replay path, test fixture, future
+        callsite) bypassing `TraceCandidate.import_string`'s field
+        validator. The upstream singleton field validates one import
+        string at construction; this tuple gathers many, and the audit
+        boundary must rerun the same validation so malformed /
+        non-canonical strings cannot persist into `audit_events`.
+        Sorted ordering matches `_SET_SEMANTIC_IDENTITY_FIELDS` treating
+        this field as set-semantic at persister-identity compare —
+        canonical bytes on disk + identity-stable across LLM proposal
+        ordering noise.
         """
-        return tuple(is_valid_import_string(value) for value in values)
+        return tuple(sorted(is_valid_import_string(value) for value in values))
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:

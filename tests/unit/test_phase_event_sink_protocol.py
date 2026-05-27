@@ -106,3 +106,20 @@ def test_protocol_works_for_both_markers(marker: Literal["start", "end"]) -> Non
     import asyncio
 
     asyncio.run(sink.emit_phase(event))
+
+
+def test_protocol_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 (centrally-pinned-contract registration) doctrine: a new
+    method on `PhaseEventSink` (e.g., a V1.5 `emit_phase_progress`)
+    must surface here AND at every sink consumer + test fixture.
+    Exact-membership check fails loudly on silent drift.
+    """
+    expected = {"emit_phase"}
+    actual = {name for name in dir(PhaseEventSink) if not name.startswith("_")}
+    assert actual == expected, (
+        f"PhaseEventSink method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}. Update this pin AND every sink consumer + "
+        f"test fixture if adding a method."
+    )
