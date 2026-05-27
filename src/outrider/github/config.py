@@ -29,7 +29,7 @@ Env vars (prefix `OUTRIDER_GITHUB_`):
     for HMAC verification.
 """
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["GitHubAppSettings"]
@@ -56,3 +56,31 @@ class GitHubAppSettings(BaseSettings):
     app_id: int
     app_private_key: SecretStr
     webhook_secret: SecretStr
+
+    @field_validator("app_private_key", "webhook_secret", mode="after")
+    @classmethod
+    def _reject_empty_or_whitespace(cls, v: SecretStr) -> SecretStr:
+        """Empty / whitespace-only `app_private_key` or `webhook_secret`
+        would silently admit broken state at the consumer sites:
+
+          - Empty `webhook_secret` → `hmac.compare_digest(b"", b"")` is
+            True, so unsigned webhooks (empty signature header) would
+            authenticate as valid. Critical input-boundary defense.
+          - Empty `app_private_key` → JWT signing in `github/auth.py`
+            would fail at install-token mint time with an opaque
+            cryptography error; fail-loud at startup is clearer.
+
+        Mirrors the `DashboardSettings.admin_api_key` validator.
+        """
+        raw = v.get_secret_value()
+        stripped = raw.strip()
+        if not stripped:
+            msg = (
+                "OUTRIDER_GITHUB_* secret is empty or whitespace-only. "
+                "Set a non-empty value: empty webhook_secret admits "
+                "unsigned webhooks (hmac.compare_digest of two empty "
+                "byte-strings is True); empty app_private_key fails "
+                "at JWT-mint time with an opaque cryptography error."
+            )
+            raise ValueError(msg)
+        return SecretStr(stripped) if stripped != raw else v

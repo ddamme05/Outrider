@@ -264,6 +264,25 @@ class ReviewStatusPersister:
         severities: dict[UUID, FindingSeverity] = {}
         for row in result.all():
             severities[UUID(row.finding_id)] = FindingSeverity(row.severity)
+        # Completeness check: every gated_id MUST have a matching
+        # FindingEvent row. A missing id means the
+        # `reviews.hitl_request.findings_requiring_approval` JSONB cache
+        # diverged from the canonical `audit_events` stream (replay-
+        # equivalence guarantee broken) — fail loud here so the
+        # downstream `_build_domain_decisions` doesn't KeyError mid-
+        # request and produce an opaque 500. The endpoint catches this
+        # at the preflight boundary and surfaces a 500 with a clear
+        # state-corruption diagnostic, not a stack trace.
+        missing = sorted(str(fid) for fid in gated_ids if fid not in severities)
+        if missing:
+            msg = (
+                f"_load_gated_severities: {len(missing)} of {len(gated_ids)} "
+                f"gated finding_ids have no matching FindingEvent row for "
+                f"review_id={review_id}. Missing: {missing}. State corruption: "
+                f"reviews.hitl_request.findings_requiring_approval diverged "
+                f"from audit_events; replay-equivalence broken."
+            )
+            raise ValueError(msg)
         return severities
 
 

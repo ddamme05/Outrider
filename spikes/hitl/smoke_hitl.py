@@ -9,7 +9,10 @@ exception per langgraph 1.1.6 semantics), then ainvoke
 `Command(resume=...)` with the same thread_id → expect the state
 delta to carry `hitl_request` + `hitl_decision`. Verify the recording
 sinks captured exactly:
-  - phase events: start + end (same phase_id)
+  - phase events: 2 start + 1 end (same phase_id across interrupt/resume —
+    the body re-runs from the top on resume per langgraph 1.1.6 "node
+    restarts from the beginning" semantic, so `emit_phase(start)` fires
+    twice; `emit_phase(end)` fires once on the resume-side success exit)
   - HITLRequestEvent: one emit BEFORE interrupt
   - HITLDecisionEvent: one emit AFTER resume
   - ReviewStatusSink: mark_awaiting_approval BEFORE interrupt;

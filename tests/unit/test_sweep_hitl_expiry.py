@@ -119,7 +119,6 @@ async def test_anomaly_first_ordering_anomaly_succeeds_then_status_flips() -> No
 
     n = await transition_expired_hitl_reviews(
         conn=conn,
-        session_factory=MagicMock(),
         anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
         review_status_sink=status_sink,  # type: ignore[arg-type]
     )
@@ -151,7 +150,6 @@ async def test_anomaly_first_ordering_anomaly_fails_status_does_not_flip() -> No
 
     n = await transition_expired_hitl_reviews(
         conn=conn,
-        session_factory=MagicMock(),
         anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
         review_status_sink=status_sink,  # type: ignore[arg-type]
     )
@@ -184,7 +182,6 @@ async def test_transition_sub_job_no_longer_self_locks() -> None:
 
     n = await transition_expired_hitl_reviews(
         conn=conn,
-        session_factory=MagicMock(),
         anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
         review_status_sink=status_sink,  # type: ignore[arg-type]
     )

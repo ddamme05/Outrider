@@ -48,7 +48,7 @@ local Postgres is fast).
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -108,7 +108,7 @@ def _in_memory_checkpointer_factory() -> Any:
     from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
 
     @asynccontextmanager
-    async def _cm() -> AsyncGenerator[InMemorySaver]:
+    async def _cm() -> AsyncIterator[InMemorySaver]:
         yield InMemorySaver()
 
     return _cm()

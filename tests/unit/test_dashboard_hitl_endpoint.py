@@ -47,12 +47,19 @@ def _make_preflight(
         created_at=now,
         expires_at=now + timedelta(minutes=30),
     )
+    # Explicit None-check so callers passing an empty dict get an empty
+    # map (testing the missing-severity branch). `gated_severities or
+    # {...}` would coerce the empty dict to the default — silently
+    # masking tests that rely on the empty-map behavior.
     return ReviewDecidePreflight(
         status=status,
         hitl_request=hitl_request if hitl_request is not None else default_request,
         hitl_decision=hitl_decision,  # type: ignore[arg-type]
-        gated_finding_severities=gated_severities
-        or {_FINDING_A: FindingSeverity.HIGH, _FINDING_B: FindingSeverity.CRITICAL},
+        gated_finding_severities=(
+            gated_severities
+            if gated_severities is not None
+            else {_FINDING_A: FindingSeverity.HIGH, _FINDING_B: FindingSeverity.CRITICAL}
+        ),
     )
 
 
