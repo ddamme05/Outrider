@@ -239,7 +239,14 @@ async def _run_mock_smoke() -> int:
             sorted(result_before_resume.keys()),
         )
         return 1
-    interrupt_payload = result_before_resume["__interrupt__"][0].value
+    interrupts = result_before_resume["__interrupt__"]
+    if not interrupts:
+        logger.error(
+            "FAIL: __interrupt__ key present but value is empty. "
+            "Expected at least one interrupt instance (the HITL gate)."
+        )
+        return 1
+    interrupt_payload = interrupts[0].value
     if "findings_requiring_approval" not in interrupt_payload:
         logger.error(
             "FAIL: interrupt payload missing findings_requiring_approval (got %r)",

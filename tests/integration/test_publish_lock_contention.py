@@ -91,8 +91,12 @@ async def test_two_concurrent_same_review_lock_serializes(
     assert len(timeline) == 4
     acquires = sorted((e for e in timeline if e[0].endswith("_acquired")), key=lambda e: e[1])
     releases = sorted((e for e in timeline if e[0].endswith("_releasing")), key=lambda e: e[1])
-    # The first release must occur before the second acquire.
-    assert releases[0][1] <= acquires[1][1] + 0.01, (
+    # The first release must occur before the second acquire. Epsilon
+    # is subtracted from the RELEASE side (not added to the acquire
+    # side) so a broken lock implementation that lets release-time
+    # drift past acquire-time can't pass via timing-jitter slack.
+    clock_epsilon_seconds = 0.001
+    assert releases[0][1] - clock_epsilon_seconds <= acquires[1][1], (
         f"Expected first release to precede second acquire; got timeline {timeline}"
     )
 

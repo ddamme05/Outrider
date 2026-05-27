@@ -2,7 +2,7 @@
 # sweep/purge_expired.py + sweep/hitl_expiry.py.
 """Single-callsite orchestrator for the V1 sweep family.
 
-Per `docs/spec.md` §4.1.6 + the HITL spec Group 8 prescription, three
+Per `docs/spec.md` §4.1.6 + the HITL spec Group 8 prescription, two
 sweep responsibilities run on a periodic cadence:
 
   1. `hitl_expiry.run_once(...)` — reclaim stuck HITL rows + transition
