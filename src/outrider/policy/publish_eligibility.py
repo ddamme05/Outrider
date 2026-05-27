@@ -261,6 +261,23 @@ def is_eligible_for_v1_publish(
             PublishEligibilityReason.HITL_DECISION_MISSING,
         )
 
+    # Defense-in-depth: the decision's `finding_id` MUST be in the
+    # canonical `hitl_request.findings_requiring_approval` gated set.
+    # The /decide endpoint already enforces payload→request set-equality
+    # at 422 (`/decide` rejects mismatched payloads); this is the
+    # publish-side check for a forged-state scenario where a
+    # `PerFindingDecision` was constructed for a finding_id the
+    # original HITLRequest never gated. Without this check, a decision
+    # not backed by the canonical request would be honored at publish
+    # — bypassing `hitl-gates-high-severity` for findings the request
+    # never listed. Reject as HITL_DECISION_MISSING (the canonical
+    # "this finding has no decision backing it" reason).
+    if finding.finding_id not in hitl_request.findings_requiring_approval:
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_DECISION_MISSING,
+        )
+
     if matching_decision.outcome == PerFindingOutcome.APPROVE:
         return (PublishEligibility.ELIGIBLE, None)
     if matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE:
