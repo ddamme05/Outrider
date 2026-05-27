@@ -16,8 +16,13 @@ V1 uses a minimal asyncio-based loop bound to the FastAPI lifespan:
     doesn't kill the loop — logged + skipped + retried next interval.
 
 Operators wanting a heavier scheduler (cron, k8s CronJob, APScheduler)
-can disable this loop via `OUTRIDER_SWEEP_DISABLED=1` and invoke
-`outrider.sweep.runner.run_all_sweeps` externally on their own cadence.
+can avoid this loop by not calling `start_periodic_sweep(...)` at
+lifespan-init time and invoking `outrider.sweep.runner.run_all_sweeps`
+externally on their own cadence. There is intentionally NO env-var
+disable flag — disabling is a code-level wiring decision in
+`api/lifespan.py`, not a runtime toggle (mirrors the same
+deliberate-no-env-override stance the `_SWEEP_INTERVAL_SECONDS`
+comment names below).
 
 Why not APScheduler: it's an extra dep with its own design surface
 (job stores, executors, persistence) for a single-tick periodic task.

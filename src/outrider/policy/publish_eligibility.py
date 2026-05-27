@@ -209,12 +209,22 @@ def is_eligible_for_v1_publish(
     # Defense (1): fabricated-override check. Fires FIRST so a forged
     # downgrade can't sneak past the severity gate — unless the
     # corresponding HITL decision actually carries SEVERITY_OVERRIDE
-    # for this finding_id, in which case `original_severity` is
-    # legitimate.
+    # for this finding_id AND that finding_id appears in the
+    # `findings_requiring_approval` set of an actual HITL request.
+    # Three-condition gate (defense-in-depth):
+    #   1. A SEVERITY_OVERRIDE decision exists for this finding_id.
+    #   2. A `hitl_request` ran (it's not None).
+    #   3. This finding_id was in the gated set of that request.
+    # Without (2)+(3), a forged `finding.original_severity` paired with
+    # a forged-but-Pydantic-valid `HITLDecision` (no `hitl_request`
+    # backing it) would pass (1) alone — the gated-set membership check
+    # closes that surface.
     if finding.original_severity is not None:
         has_legit_override = (
             matching_decision is not None
             and matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+            and hitl_request is not None
+            and finding.finding_id in hitl_request.findings_requiring_approval
         )
         if not has_legit_override:
             return (
