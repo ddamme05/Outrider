@@ -1,8 +1,14 @@
 """AuditPersister natural-key idempotency — DB-touching contract pin.
 
 Per specs/2026-05-23-trace-node.md M7 (b) + DECISIONS.md#026 (first
-instance: trace's TraceDecisionEvent). Verifies the three load-bearing
-paths through `_persist_keyed_by_natural_key`:
+instance: trace's TraceDecisionEvent). The identity subset is
+`{source_finding_id, target_file, resolution_status, is_eval}` —
+`resolved_candidate_paths` is EXCLUDED per #026 point 3 because it
+is derived from LLM-ranking-order-variant `proposed_import_strings`
+and would defeat the lockstep contract on legitimate retries.
+
+Verifies the three load-bearing paths through
+`_persist_keyed_by_natural_key`:
 
   1. **Insert path** — first emission with a fresh
      `(review_id, source_finding_id)` writes the row and returns the
@@ -214,16 +220,17 @@ async def test_conflict_path_raises_on_target_file_divergence(
     assert exc.review_id == persister_setup.review_id
     assert exc.source_finding_id == source_finding_id
     # Exact-equality on the contract: the helper sorts identity-subset
-    # divergences into a tuple before raising. For a `resolved` outcome
-    # the cross-field validator forces `target_file ==
-    # resolved_candidate_paths[0]`, so updating `target_file` REQUIRES
-    # updating `resolved_candidate_paths` to keep the diverging event
-    # admissible by the schema. Both fields are now in the identity
-    # subset (per the ambiguous-fix round), so both surface as
-    # mismatched. The sorted-tuple discipline pins the contract; a
-    # bare `in mismatched_fields` membership check would mask a wider-
-    # than-intended divergence per the vacuous-pass test anti-pattern.
-    assert exc.mismatched_fields == ("resolved_candidate_paths", "target_file")
+    # divergences into a tuple before raising. Per `DECISIONS.md#026`
+    # `resolved_candidate_paths` is EXCLUDED from the identity subset
+    # (it is derived from LLM-ranking-order-variant
+    # `proposed_import_strings`), so even though the cross-field
+    # validator forces the diverging event to update
+    # `resolved_candidate_paths` in lockstep with `target_file`, only
+    # `target_file` surfaces in `mismatched_fields`. The sorted-tuple
+    # discipline pins the contract; a bare `in mismatched_fields`
+    # membership check would mask a regression that started flagging
+    # the excluded field too.
+    assert exc.mismatched_fields == ("target_file",)
 
     # Still exactly one row — conflict short-circuited the INSERT.
     count = await _count_trace_decision_rows(
@@ -259,31 +266,34 @@ async def test_conflict_path_raises_on_resolution_status_divergence(
     with pytest.raises(AuditPersisterNaturalKeyConflict) as exc_info:
         await persister_setup.persister.emit_trace_decision(diverging)
 
-    # Sorted tuple per the helper's `sorted(...)` discipline. Exact-
-    # equality pins the cross-field validator behavior:
-    # `resolution_status='unresolved'` forces `target_file=None` AND
-    # `resolved_candidate_paths=()`, so the diverging event has THREE
-    # fields different from the persisted `resolved` /
-    # `src/middleware/auth.py` / `("src/middleware/auth.py",)`
-    # original. All three are in the identity subset (per the
-    # ambiguous-fix round).
+    # Sorted tuple per the helper's `sorted(...)` discipline. Per
+    # `DECISIONS.md#026` `resolved_candidate_paths` is EXCLUDED from
+    # the identity subset (LLM-ranking variance via its
+    # `proposed_import_strings` derivation), so the cross-field
+    # validator's lockstep update of resolved_candidate_paths to ()
+    # does NOT surface here. Only the two identity-subset members
+    # (`resolution_status` and `target_file`) appear in the divergence.
     assert exc_info.value.mismatched_fields == (
         "resolution_status",
-        "resolved_candidate_paths",
         "target_file",
     )
 
 
-async def test_conflict_path_raises_on_ambiguous_resolved_paths_divergence(
+async def test_ambiguous_resolved_paths_divergence_collapses_to_no_op(
     persister_setup: PersisterTestSetup,
 ) -> None:
     """For `resolution_status='ambiguous'` outcomes `target_file` is None
-    (cross-field validator) — `resolved_candidate_paths` is the only
-    field carrying the divergence signal across retries. The identity
-    subset includes it (set-canonicalized via
-    `_canonicalize_for_identity_compare`) so an ambiguous retry whose
-    probe yielded a different set of paths (e.g., head tree mutated
-    mid-PR) raises rather than silently no-op'ing on the natural key."""
+    (cross-field validator), and per `DECISIONS.md#026`
+    `resolved_candidate_paths` is EXCLUDED from the identity subset
+    (LLM-ranking-order variance via its `proposed_import_strings`
+    derivation defeats lockstep). The identity-subset members
+    (`source_finding_id`, `target_file=None`, `resolution_status=
+    ambiguous`, `is_eval`) are identical across retries, so a second
+    emission whose ambiguous candidate SET differs from the first
+    no-ops back to the persisted original. The returned event carries
+    the original's `resolved_candidate_paths`, preserving the lockstep
+    contract between state-mirror and audit row across retries even
+    though the LLM proposed a different ranking the second time."""
     source_finding_id = uuid4()
     first = _build_trace_decision_event(
         persister_setup.review_id,
@@ -292,7 +302,7 @@ async def test_conflict_path_raises_on_ambiguous_resolved_paths_divergence(
         resolution_status="ambiguous",
         resolved_candidate_paths=("src/foo.py", "src/bar.py"),
     )
-    await persister_setup.persister.emit_trace_decision(first)
+    persisted_first = await persister_setup.persister.emit_trace_decision(first)
 
     diverging = _build_trace_decision_event(
         persister_setup.review_id,
@@ -302,26 +312,30 @@ async def test_conflict_path_raises_on_ambiguous_resolved_paths_divergence(
         resolved_candidate_paths=("src/foo.py", "src/baz.py"),
     )
 
-    with pytest.raises(AuditPersisterNaturalKeyConflict) as exc_info:
-        await persister_setup.persister.emit_trace_decision(diverging)
+    persisted_retry = await persister_setup.persister.emit_trace_decision(diverging)
 
-    # Only `resolved_candidate_paths` diverges — target_file (None) +
-    # resolution_status (ambiguous) + is_eval + source_finding_id all
-    # match. Exact-equality pins the contract per the sorted-tuple
-    # discipline; a vacuous `in mismatched_fields` membership check
-    # would mask a regression that ALSO flagged target_file (the
-    # divergence we want is solely on the canonicalized set).
-    assert exc_info.value.mismatched_fields == ("resolved_candidate_paths",)
+    # No-op recovery path: returned event is the persisted ORIGINAL.
+    # `resolved_candidate_paths` is OUT of the identity subset per
+    # #026, so divergence here collapses to no-op rather than raising.
+    assert persisted_retry.event_id == persisted_first.event_id
+    assert persisted_retry.resolved_candidate_paths == first.resolved_candidate_paths
+
+    # Still exactly one row.
+    count = await _count_trace_decision_rows(
+        persister_setup, persister_setup.review_id, source_finding_id
+    )
+    assert count == 1
 
 
 async def test_no_conflict_when_ambiguous_resolved_paths_reordered(
     persister_setup: PersisterTestSetup,
 ) -> None:
-    """`resolved_candidate_paths` is set-semantic per its
-    TraceDecisionEvent validator — a retry whose probe shuffled the
-    order but produced the SAME set is a legitimate idempotent retry,
-    not a conflict. The persister's `_canonicalize_for_identity_compare`
-    sorts before equality so reorder doesn't trip the identity check."""
+    """Per `DECISIONS.md#026` `resolved_candidate_paths` is EXCLUDED
+    from the identity subset entirely — any reorder OR set divergence
+    collapses to a no-op (legitimate retry with different LLM ranking).
+    This test pins the reorder-specific path; the set-divergence path
+    is covered by
+    `test_ambiguous_resolved_paths_divergence_collapses_to_no_op` above."""
     source_finding_id = uuid4()
     first = _build_trace_decision_event(
         persister_setup.review_id,

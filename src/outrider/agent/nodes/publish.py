@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from outrider.audit.sinks import PhaseEventSink, PublishEventSink
+    from outrider.db.sinks import ReviewStatusSink
     from outrider.github import InstallationGitHubClient
     from outrider.github.publisher import GitHubPublisher
     from outrider.policy import FindingSeverity
@@ -99,6 +100,7 @@ async def publish(
     publisher: GitHubPublisher,
     publish_event_sink: PublishEventSink,
     phase_event_sink: PhaseEventSink,
+    review_status_sink: ReviewStatusSink,
     # `InstallationGitHubClient` is the typed `GitHub[AppInstallationAuthStrategy]`
     # alias from `outrider.github.auth`; the TYPE_CHECKING import keeps
     # the runtime free of the githubkit wrapper-module dependency (the
@@ -118,6 +120,12 @@ async def publish(
             event types (production: `AuditPersister`).
         phase_event_sink: `PhaseEventSink` for the start/end phase
             event bracket.
+        review_status_sink: `ReviewStatusSink` used at terminal-success
+            paths to write `reviews.status='completed'` +
+            `completed_at=NOW()` per canonical lifecycle (`docs/spec.md`
+            §3.3 step 10; `docs/architecture.md` step 10). The write
+            is predicate-gated on `status='running'`; a re-run sees
+            `completed` already and no-ops.
         github_factory: per-installation githubkit client factory
             per `nodes-receive-deps-via-closure`.
         active_policy_version: V1 default is `ACTIVE_POLICY_VERSION`;
@@ -332,6 +340,13 @@ async def publish(
                 comments_attempted=len(eligible_inline_comments),
                 is_eval=state.is_eval,
             )
+            # Terminal-success lifecycle write per canonical
+            # `docs/spec.md` §3.3 step 10. Placed BEFORE
+            # `_emit_phase_end` so a lifecycle-write failure leaves
+            # phase-start dangling (the canonical "publish interrupted"
+            # signal); a sweep-driven retry hits the prior PublishEvent
+            # short-circuit again and re-attempts the completion write.
+            await review_status_sink.mark_completed(review_id=state.review_id)
             await _emit_phase_end(
                 phase_event_sink=phase_event_sink,
                 review_id=state.review_id,
@@ -351,6 +366,10 @@ async def publish(
                 comments_attempted=0,
                 is_eval=state.is_eval,
             )
+            # Terminal-success lifecycle write per canonical
+            # `docs/spec.md` §3.3 step 10. See the equivalent comment
+            # at the Step-4 short-circuit above for ordering rationale.
+            await review_status_sink.mark_completed(review_id=state.review_id)
             await _emit_phase_end(
                 phase_event_sink=phase_event_sink,
                 review_id=state.review_id,
@@ -410,7 +429,15 @@ async def publish(
                 sorted_finding_ids=sorted_finding_ids,
                 comments_attempted=len(eligible_inline_comments),
                 is_eval=state.is_eval,
+                # Required for this outcome — audit-only replay needs
+                # the github_review_id binding (no paired PublishEvent
+                # lands on the recovery path).
+                recovered_github_review_id=existing_review_id,
             )
+            # Terminal-success lifecycle write per canonical
+            # `docs/spec.md` §3.3 step 10. See the equivalent comment
+            # at the Step-4 short-circuit above for ordering rationale.
+            await review_status_sink.mark_completed(review_id=state.review_id)
             await _emit_phase_end(
                 phase_event_sink=phase_event_sink,
                 review_id=state.review_id,
@@ -474,6 +501,14 @@ async def publish(
                 review_status=review_status,
             )
         )
+        # Terminal-success lifecycle write per canonical `docs/spec.md`
+        # §3.3 step 10. Placed BEFORE `_emit_phase_end` so a lifecycle-
+        # write failure leaves phase-start dangling (the canonical
+        # "publish interrupted" signal); the `PublishEvent` is already
+        # committed so a sweep-driven retry sees prior-publish-event at
+        # Step 4 and short-circuits to IDEMPOTENTLY_SKIPPED, where
+        # `mark_completed` retries.
+        await review_status_sink.mark_completed(review_id=state.review_id)
         await _emit_phase_end(
             phase_event_sink=phase_event_sink,
             review_id=state.review_id,
@@ -960,10 +995,14 @@ async def _emit_attempt(
     is_eval: bool,
     failure_class: str | None = None,
     status_code: int | None = None,
+    recovered_github_review_id: int | None = None,
 ) -> None:
     """Build and emit a `PublishAttemptEvent`.
 
     Single emission per attempt, per Q2 (no in_flight pre-call).
+    `recovered_github_review_id` is required (not None) iff
+    `outcome == IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` and forbidden
+    (None) otherwise — the event's model validator raises on misuse.
     """
     attempt_content_hash = compute_publish_attempt_content_hash(
         review_id=review_id,
@@ -973,6 +1012,7 @@ async def _emit_attempt(
         status_code=status_code,
         failure_class=failure_class,
         comments_attempted=comments_attempted,
+        recovered_github_review_id=recovered_github_review_id,
     )
     await publish_event_sink.emit_publish_attempt(
         PublishAttemptEvent(
@@ -985,6 +1025,7 @@ async def _emit_attempt(
             comments_attempted=comments_attempted,
             sorted_finding_ids=sorted_finding_ids,
             attempt_content_hash=attempt_content_hash,
+            recovered_github_review_id=recovered_github_review_id,
         )
     )
 

@@ -49,9 +49,13 @@ class HITLConfig(BaseSettings):
     `hitl-gates-high-severity` guarantee depends on no
     auto-post-on-expiry path existing.
 
-    Tests construct `HITLConfig(timeout_minutes=0, ...)` directly and
+    Tests construct `HITLConfig(timeout_minutes=1, ...)` directly and
     inject through `build_graph(...)` to exercise expiry paths without
-    waiting 30 minutes.
+    waiting 30 minutes; combined with a clock injection, expiry can be
+    forced without sleeping. `timeout_minutes=0` is rejected by the
+    field's `gt=0` constraint (see field comment below) — the zero-
+    minute production misconfiguration would silently time out every
+    gated finding under `expire_only`.
     """
 
     model_config = SettingsConfigDict(

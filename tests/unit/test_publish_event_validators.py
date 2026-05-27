@@ -425,6 +425,7 @@ def _attempt_kwargs(**overrides: Any) -> dict[str, Any]:
     status_code = overrides.pop("status_code", None)
     failure_class = overrides.pop("failure_class", None)
     comments_attempted = overrides.pop("comments_attempted", 0)
+    recovered_github_review_id = overrides.pop("recovered_github_review_id", None)
     base = {
         "review_id": review_id,
         "attempt_index": attempt_index,
@@ -433,6 +434,7 @@ def _attempt_kwargs(**overrides: Any) -> dict[str, Any]:
         "failure_class": failure_class,
         "comments_attempted": comments_attempted,
         "sorted_finding_ids": sorted_finding_ids,
+        "recovered_github_review_id": recovered_github_review_id,
         "attempt_content_hash": compute_publish_attempt_content_hash(
             review_id=review_id,
             attempt_index=attempt_index,
@@ -441,6 +443,7 @@ def _attempt_kwargs(**overrides: Any) -> dict[str, Any]:
             status_code=status_code,
             failure_class=failure_class,
             comments_attempted=comments_attempted,
+            recovered_github_review_id=recovered_github_review_id,
         ),
     }
     base.update(overrides)
@@ -498,4 +501,61 @@ def test_attempt_rejects_oversized_failure_class() -> None:
         failure_class="X" * 129,
     )
     with pytest.raises(ValidationError, match="at most 128"):
+        PublishAttemptEvent(**kwargs)
+
+
+def test_attempt_external_record_skip_requires_recovered_github_review_id() -> None:
+    """`outcome=idempotently_skipped_external_record` MUST carry a
+    non-None `recovered_github_review_id`. Audit-only replay needs the
+    binding to reconstruct the recovery — no paired `PublishEvent`
+    lands on this path."""
+    kwargs = _attempt_kwargs(
+        outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD,
+        recovered_github_review_id=None,
+    )
+    with pytest.raises(
+        ValidationError,
+        match=("outcome=idempotently_skipped_external_record requires recovered_github_review_id"),
+    ):
+        PublishAttemptEvent(**kwargs)
+
+
+def test_attempt_external_record_skip_admits_with_recovered_id() -> None:
+    """Happy path: external-record skip with a positive
+    `recovered_github_review_id` constructs cleanly."""
+    kwargs = _attempt_kwargs(
+        outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD,
+        recovered_github_review_id=12345,
+    )
+    event = PublishAttemptEvent(**kwargs)
+    assert event.recovered_github_review_id == 12345
+
+
+def test_attempt_non_external_record_skip_rejects_recovered_github_review_id() -> None:
+    """Every outcome OTHER than `idempotently_skipped_external_record`
+    MUST have `recovered_github_review_id=None`. The field is exclusive
+    to the external-record skip path; admitting it elsewhere would
+    suggest a github review id binding in audit replay where none
+    actually applies."""
+    kwargs = _attempt_kwargs(
+        outcome=PublishAttemptOutcome.SUCCESS,
+        recovered_github_review_id=42,
+    )
+    with pytest.raises(ValidationError, match="must have recovered_github_review_id=None"):
+        PublishAttemptEvent(**kwargs)
+
+
+@pytest.mark.parametrize("bad_id", [0, -1])
+def test_attempt_rejects_zero_or_negative_recovered_github_review_id(bad_id: int) -> None:
+    """`recovered_github_review_id` must be a positive int per the
+    `Field(ge=1)` constraint — GitHub review ids are positive
+    integers; zero AND negative both surface a producer bug.
+    Parametrized over `[0, -1]` so the test name's "zero or negative"
+    claim is honored across both boundary cases (CodeRabbit 2026-05-27
+    pin)."""
+    kwargs = _attempt_kwargs(
+        outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD,
+        recovered_github_review_id=bad_id,
+    )
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
         PublishAttemptEvent(**kwargs)

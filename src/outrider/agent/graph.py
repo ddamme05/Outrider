@@ -66,7 +66,9 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     `HITLRequestEvent` + `HITLDecisionEvent` audit-first emissions.
   - `review_status_sink: ReviewStatusSink` — required for hitl's
     `reviews.status` lifecycle transitions (mark_awaiting_approval +
-    mark_running) and the sweep's `mark_awaiting_approval_expired`.
+    mark_running), publish's terminal-success transition (mark_completed
+    per canonical `docs/spec.md` §3.3 step 10), and the sweep's
+    `mark_awaiting_approval_expired`.
   - `hitl_config: HITLConfig` — required for hitl's deterministic
     `expires_at = state.received_at + timedelta(minutes=...)`
     derivation. Per `nodes-receive-deps-via-closure`, config travels
@@ -309,7 +311,7 @@ def build_graph(
             f"review_status_sink does not satisfy ReviewStatusSink Protocol "
             f"(passed type: {type(review_status_sink).__name__}; "
             f"missing one of `mark_awaiting_approval` / `mark_running` / "
-            f"`mark_awaiting_approval_expired`; "
+            f"`mark_awaiting_approval_expired` / `mark_completed`; "
             f"see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(hitl_config, HITLConfig):
@@ -360,6 +362,7 @@ def build_graph(
         publisher=publisher,
         publish_event_sink=publish_event_sink,
         phase_event_sink=phase_event_sink,
+        review_status_sink=review_status_sink,
         github_factory=github_factory,
     )
     trace_callable = functools.partial(

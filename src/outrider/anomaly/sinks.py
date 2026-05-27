@@ -10,8 +10,10 @@ on_conflict_do_nothing(...)` against the partial unique index
 `uq_anomalies_hitl_timeout_natural_key` (from Group 3's migration).
 A retry of the same `(review_id, rule_name)` is a clean no-op.
 
-The Protocol parameter is typed as `AnomalyRuleName` (StrEnum), not
-bare `str`, so a typo at call-site fails mypy before reaching the DB.
+Both `rule_name` and `severity` are typed StrEnums (not bare str),
+so a typo at call-site fails mypy before reaching the DB. The DB
+columns remain `Text` so future rule/severity additions don't force
+a migration.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from outrider.anomaly.rule_names import AnomalyRuleName
+    from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 
 
 @runtime_checkable
@@ -38,9 +40,11 @@ class AnomalySink(Protocol):
     Contract:
       - Returns `None` on success (no payload echo; the audit shadow
         is the `anomalies` row).
-      - `severity` and `details` are caller-controlled — `severity`
-        as plain str (DB column is Text), `details` as JSON-native
-        dict.
+      - `severity` (`AnomalySeverity` StrEnum) and `details` are
+        caller-controlled — the StrEnum prevents typos at the
+        producer boundary (e.g. "Medium" with uppercase or "med")
+        even though the DB column is Text. `details` is a JSON-
+        native dict.
       - `status` defaults to "open" inside the persister; not
         exposed on the Protocol because V1 has no other terminal
         state at emit-time.
@@ -51,7 +55,7 @@ class AnomalySink(Protocol):
         *,
         review_id: UUID,
         rule_name: AnomalyRuleName,
-        severity: str,
+        severity: AnomalySeverity,
         details: dict[str, Any],
     ) -> None:
         """Persist one anomaly row.

@@ -21,7 +21,7 @@ from uuid import UUID
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from outrider.anomaly.rule_names import AnomalyRuleName
+from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.db.models.anomalies import Anomaly
 
 
@@ -60,7 +60,7 @@ class AnomalyPersister:
         *,
         review_id: UUID,
         rule_name: AnomalyRuleName,
-        severity: str,
+        severity: AnomalySeverity,
         details: dict[str, Any],
     ) -> None:
         """Insert one anomaly row with on-conflict-do-nothing on the
@@ -99,7 +99,7 @@ class AnomalyPersister:
                 .values(
                     review_id=review_id,
                     rule_name=rule_name.value,
-                    severity=severity,
+                    severity=severity.value,
                     details=details,
                     status="open",
                 )

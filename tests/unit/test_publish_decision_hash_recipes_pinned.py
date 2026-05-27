@@ -134,13 +134,17 @@ def test_eligibility_hash_recipe_pinned_withheld_hitl_absent() -> None:
 
 
 def test_attempt_hash_recipe_pinned_success_empty_findings() -> None:
-    """SUCCESS / zero-findings boundary case. Pins the seven-field
+    """SUCCESS / zero-findings boundary case. Pins the eight-field
     recipe (review_id, attempt_index, sorted_finding_ids, outcome,
-    status_code, failure_class, comments_attempted). Re-pinned when
-    the recipe expanded to include the three attempt-distinguishing
-    fields so two FAILED attempts with different status_code can't
-    collapse on read-time dedup."""
-    expected = "e89e6f4ed4ff68ce19c489c2ecc33b5ac1c729a94f4178583a45957408dfa29a"
+    status_code, failure_class, comments_attempted,
+    recovered_github_review_id). Recipe re-pinned 2026-05-27 to add
+    `recovered_github_review_id` for integrity protection on the
+    IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD outcome path (the field is
+    the only persisted github_review_id binding on that path per
+    DECISIONS.md#023 Amended 2026-05-27; without inclusion a
+    forged/replay emit could swap the id and pass
+    `_verify_attempt_content_hash`)."""
+    expected = "e5bb3f3ce98d523bd9142856af79bd3bdd051b51225a776b1500254125f5fe19"
     actual = compute_publish_attempt_content_hash(
         review_id=_FIXED_REVIEW_ID,
         attempt_index=1,
@@ -149,11 +153,13 @@ def test_attempt_hash_recipe_pinned_success_empty_findings() -> None:
         status_code=200,
         failure_class=None,
         comments_attempted=0,
+        recovered_github_review_id=None,
     )
     assert actual == expected, (
         f"compute_publish_attempt_content_hash recipe drift detected.\n"
         f"  Inputs: SUCCESS + attempt_index=1 + empty sorted_finding_ids "
-        f"+ status_code=200 + no failure_class + comments_attempted=0.\n"
+        f"+ status_code=200 + no failure_class + comments_attempted=0 "
+        f"+ recovered_github_review_id=None.\n"
         f"  Expected: {expected}\n  Actual:   {actual}\n"
         f"  See this file's module docstring before updating the golden."
     )
@@ -166,7 +172,7 @@ def test_attempt_hash_recipe_pinned_failed_two_findings_sorted() -> None:
     comments_attempted). Renaming `failed` → `failed_v2`, dropping any
     field from the recipe, or re-encoding the UUID list to a different
     string form would each break this golden."""
-    expected = "dc651ca70fbb6251411b302cb2d320c1b7566795612105ec33fffea382730220"
+    expected = "a9e75a36f3def1d4be8b5dbdc5d0b28ec61977f62f7032784e8b3e63c0c258f3"
     actual = compute_publish_attempt_content_hash(
         review_id=_FIXED_REVIEW_ID,
         attempt_index=2,
@@ -175,12 +181,41 @@ def test_attempt_hash_recipe_pinned_failed_two_findings_sorted() -> None:
         status_code=422,
         failure_class="GitHubReviewValidationError",
         comments_attempted=2,
+        recovered_github_review_id=None,
     )
     assert actual == expected, (
         f"compute_publish_attempt_content_hash recipe drift detected.\n"
         f"  Inputs: FAILED + attempt_index=2 + 2 sorted finding IDs "
         f"+ status_code=422 + GitHubReviewValidationError + "
-        f"comments_attempted=2.\n"
+        f"comments_attempted=2 + recovered_github_review_id=None.\n"
+        f"  Expected: {expected}\n  Actual:   {actual}\n"
+        f"  See this file's module docstring before updating the golden."
+    )
+
+
+def test_attempt_hash_recipe_pinned_external_record_recovery() -> None:
+    """IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD outcome with
+    `recovered_github_review_id=999`. New golden 2026-05-27 — pins
+    the inclusion of `recovered_github_review_id` in the hash for the
+    integrity-protection contract per `DECISIONS.md#023` Amended
+    2026-05-27. A forged emit swapping `recovered_github_review_id`
+    from 999 to any other id would produce a different hash and fail
+    `_verify_attempt_content_hash`."""
+    expected = "2a03ee4896e7b2d6fa26e5761e8f3d4329bf33e1ee5e827ffa46ff8fdd92dc4a"
+    actual = compute_publish_attempt_content_hash(
+        review_id=_FIXED_REVIEW_ID,
+        attempt_index=1,
+        sorted_finding_ids=(),
+        outcome=PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD,
+        status_code=None,
+        failure_class=None,
+        comments_attempted=0,
+        recovered_github_review_id=999,
+    )
+    assert actual == expected, (
+        f"compute_publish_attempt_content_hash recipe drift detected.\n"
+        f"  Inputs: IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD + "
+        f"recovered_github_review_id=999.\n"
         f"  Expected: {expected}\n  Actual:   {actual}\n"
         f"  See this file's module docstring before updating the golden."
     )

@@ -148,6 +148,24 @@ class _StubPublisher:
         return self._existing_review_id
 
 
+class _StubReviewStatusSink:
+    """No-op ReviewStatusSink stub — publish only calls mark_completed
+    at terminal-success paths in these tests; the other three methods
+    exist solely to satisfy Protocol membership."""
+
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_running(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_completed(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
     return object()
 
@@ -281,6 +299,7 @@ async def test_same_review_id_dispatched_twice_emits_idempotently_skipped() -> N
         publisher=publisher,
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -349,6 +368,7 @@ async def test_query_prior_publish_event_fires_before_empty_eligible_check() -> 
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -388,6 +408,7 @@ async def test_query_prior_publish_event_failure_emits_attempt_failed_before_rai
             publisher=publisher,
             publish_event_sink=sink,
             phase_event_sink=_RecordingPhaseEventSink(),
+            review_status_sink=_StubReviewStatusSink(),
             github_factory=_stub_github_factory,
         )
 
@@ -435,6 +456,7 @@ async def test_failed_attempt_records_wrapper_exception_status_code() -> None:
             publisher=publisher,
             publish_event_sink=sink,
             phase_event_sink=_RecordingPhaseEventSink(),
+            review_status_sink=_StubReviewStatusSink(),
             github_factory=_stub_github_factory,
         )
 
@@ -463,6 +485,7 @@ async def test_no_prior_publish_event_proceeds_normally() -> None:
         publisher=publisher,
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -504,6 +527,7 @@ async def test_content_hash_dedup_identical_decision_two_executions() -> None:
         publisher=_StubPublisher(),
         publish_event_sink=sink_a,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
     sink_b = _RecordingPublishEventSink()
@@ -512,6 +536,7 @@ async def test_content_hash_dedup_identical_decision_two_executions() -> None:
         publisher=_StubPublisher(),
         publish_event_sink=sink_b,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -541,6 +566,7 @@ async def test_decision_drift_surfaces_as_distinct_decision_hash(
         publisher=_StubPublisher(),
         publish_event_sink=sink_a,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -555,6 +581,7 @@ async def test_decision_drift_surfaces_as_distinct_decision_hash(
         publisher=_StubPublisher(),
         publish_event_sink=sink_b,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -644,6 +671,7 @@ async def test_duplicate_finding_ids_across_rounds_rejected_by_publish() -> None
             publisher=_StubPublisher(),
             publish_event_sink=_RecordingPublishEventSink(),
             phase_event_sink=_RecordingPhaseEventSink(),
+            review_status_sink=_StubReviewStatusSink(),
             github_factory=_stub_github_factory,
         )
 
@@ -674,6 +702,7 @@ async def test_external_record_returns_none_proceeds_to_post() -> None:
         publisher=publisher,
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -700,6 +729,7 @@ async def test_external_record_match_short_circuits_no_post() -> None:
         publisher=publisher,
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -746,6 +776,7 @@ async def test_external_record_query_failure_emits_attempt_failed_before_raising
             publisher=publisher,
             publish_event_sink=sink,
             phase_event_sink=_RecordingPhaseEventSink(),
+            review_status_sink=_StubReviewStatusSink(),
             github_factory=_stub_github_factory,
         )
 
@@ -792,6 +823,7 @@ async def test_publish_event_emits_with_canonical_dedup_identity() -> None:
         publisher=publisher,
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 

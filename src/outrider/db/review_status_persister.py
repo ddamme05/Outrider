@@ -14,6 +14,7 @@ isinstance gating.
 """
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -112,8 +113,9 @@ class ReviewStatusPersister:
         first-write-only, mirroring `mark_awaiting_approval`'s
         `hitl_request IS NULL` defense: a concurrent second background
         task whose audit-layer emit lost the natural-key race (or whose
-        body re-runs after a window (g) crash) sees `hitl_decision`
-        already populated and no-ops (rowcount=0). Without this
+        body re-runs after a window (g) crash per spec §"Window (g)" —
+        after `mark_running`, before `emit_phase(end)`) sees
+        `hitl_decision` already populated and no-ops (rowcount=0). Without this
         discriminator, a divergent-content second decision whose
         `AuditPersisterHITLDecisionNaturalKeyConflict` was caught by
         the endpoint's failure wrapper could STILL overwrite the JSONB
@@ -171,6 +173,34 @@ class ReviewStatusPersister:
                     )
                 )
                 .values(status="awaiting_approval_expired")
+            )
+
+    async def mark_completed(self, *, review_id: UUID) -> None:
+        """Single-transaction status flip + `completed_at` write at the
+        publish node's terminal success path.
+
+        Predicate: `status='running'`. Idempotent on re-fire: a row
+        already at `completed` matches rowcount=0 and the call returns
+        cleanly — same shape as the other mark_* methods so a body
+        replay or sweep-driven `Command(resume=)` recovery that hits
+        the publish path again does not raise.
+
+        Closes the canonical-lifecycle gap (`docs/spec.md` §3.3 step
+        10 + `docs/architecture.md` step 10): without this write,
+        successful reviews accumulate at `status='running'` and are
+        excluded from retention purge by
+        `sweep/purge_expired.py:_REVIEWS_ACTIVE_STATUSES`.
+        """
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                update(Review)
+                .where(
+                    and_(
+                        Review.id == review_id,
+                        Review.status == "running",
+                    )
+                )
+                .values(status="completed", completed_at=datetime.now(UTC))
             )
 
     async def fetch_for_decide(self, *, review_id: UUID) -> ReviewDecidePreflight | None:
@@ -250,15 +280,27 @@ class ReviewStatusPersister:
                 f"schema-level cap regressed."
             )
         gated_str = [str(fid) for fid in gated_ids]
-        stmt = select(
-            AuditEvent.payload["finding_id"].astext.label("finding_id"),
-            AuditEvent.payload["severity"].astext.label("severity"),
-        ).where(
-            and_(
-                AuditEvent.review_id == review_id,
-                AuditEvent.event_type == "finding",
-                AuditEvent.payload["finding_id"].astext.in_(gated_str),
+        # ORDER BY sequence_number ASC: when a finding_id has multiple
+        # FindingEvent rows (round-1 LOW, round-2 promoted to HIGH after
+        # trace), the iterator's dict-overwrite assignment ends on the
+        # row with the highest sequence_number — the canonical "latest
+        # severity for this finding" used by the publish gate. Without
+        # the ORDER BY, `result.all()` returns rows in unspecified order
+        # and the resulting severity becomes nondeterministic across
+        # engine row-arrival reorderings.
+        stmt = (
+            select(
+                AuditEvent.payload["finding_id"].astext.label("finding_id"),
+                AuditEvent.payload["severity"].astext.label("severity"),
             )
+            .where(
+                and_(
+                    AuditEvent.review_id == review_id,
+                    AuditEvent.event_type == "finding",
+                    AuditEvent.payload["finding_id"].astext.in_(gated_str),
+                )
+            )
+            .order_by(AuditEvent.sequence_number.asc())
         )
         result = await session.execute(stmt)
         severities: dict[UUID, FindingSeverity] = {}

@@ -127,6 +127,25 @@ class _StubPublisher:
         return None
 
 
+class _StubReviewStatusSink:
+    """No-op ReviewStatusSink stub — publish only calls mark_completed
+    at terminal-success paths; the other three methods exist solely to
+    satisfy Protocol membership in case future test changes route into
+    the HITL node body via the same fixture."""
+
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_running(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_completed(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
     return object()
 
@@ -265,6 +284,7 @@ async def test_reviewable_diff_line_routes_inline_comment() -> None:
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -296,6 +316,7 @@ async def test_unchanged_region_routes_review_body(monkeypatch: pytest.MonkeyPat
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -332,6 +353,7 @@ async def test_non_diffed_file_routes_dashboard_only_never_calls_sitter(
         publisher=_StubPublisher(),
         publish_event_sink=_RecordingPublishEventSink(),
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -417,6 +439,7 @@ async def test_each_coordinate_error_kind_routes_correctly(
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -446,6 +469,7 @@ async def test_always_route_one_event_per_finding() -> None:
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -470,6 +494,7 @@ async def test_publish_destination_preset_is_overwritten() -> None:
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -508,6 +533,7 @@ async def test_coordinate_error_message_never_leaks_into_routing_payload(
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -548,6 +574,7 @@ async def test_critical_finding_routes_inline_then_eligibility_withholds() -> No
         publisher=_StubPublisher(),
         publish_event_sink=sink,
         phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 

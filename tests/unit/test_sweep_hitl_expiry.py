@@ -26,7 +26,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.sql.elements import TextClause
 
-from outrider.anomaly.rule_names import AnomalyRuleName
+from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.sweep.hitl_expiry import (
     reclaim_stuck_hitl_states,
     run_once,
@@ -44,7 +44,7 @@ class _StubAnomalySink:
         *,
         review_id: UUID,
         rule_name: AnomalyRuleName,
-        severity: str,
+        severity: AnomalySeverity,
         details: dict[str, Any],
     ) -> None:
         if self.raise_for_review_id == review_id:
@@ -65,6 +65,7 @@ class _StubReviewStatusSink:
         self.expired_calls: list[UUID] = []
         self.running_calls: list[dict[str, Any]] = []
         self.awaiting_calls: list[dict[str, Any]] = []
+        self.completed_calls: list[UUID] = []
 
     async def mark_awaiting_approval_expired(self, *, review_id: UUID) -> None:
         self.expired_calls.append(review_id)
@@ -74,6 +75,9 @@ class _StubReviewStatusSink:
 
     async def mark_running(self, **kwargs: Any) -> None:
         self.running_calls.append(kwargs)
+
+    async def mark_completed(self, *, review_id: UUID) -> None:
+        self.completed_calls.append(review_id)
 
 
 def _make_conn(expired_rows: list[tuple[UUID, datetime]]) -> MagicMock:
@@ -421,3 +425,285 @@ async def test_reclaim_skips_row_when_no_audit_but_checkpoint_present() -> None:
 
     assert result == {"recovered": 0, "failed": 0}
     checkpointer.aget.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_window_g_recovery_advances_graph_from_running_state() -> None:
+    """Window (g) recovery: row at status='running' with hitl_decision
+    populated, the canonical HITLDecisionEvent exists in audit, AND the
+    LangGraph state is still suspended at the HITL interrupt
+    (mark_running committed but emit_phase(end) / state-delta-return
+    never landed). Per spec line 215 + the doctrine that normal retry
+    paths are closed for this row (`/decide` rejects on status !=
+    awaiting; mark_running predicate misses on hitl_decision IS NOT
+    NULL), the sweep MUST drive the graph through Command(resume=) so
+    the body advances phase end + state delta + publish.
+
+    The candidate-row predicate `status='running' + hitl_decision IS
+    NOT NULL` is the second SELECT inside `reclaim_stuck_hitl_states`;
+    the first SELECT (awaiting-approval scan) returns [] here so the
+    window-(f) / window-(c) branches don't fire."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from outrider.audit.events import HITLDecisionEvent
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    review_id = uuid4()
+    finding_id = uuid4()
+
+    # Decision was written BEFORE the grace period — so `decided_at +
+    # grace_period < now` admits the candidate. A fresh decision would
+    # be (correctly) skipped by the grace gate (publish might still
+    # be in flight).
+    decided_at = _datetime.now(_UTC) - timedelta(minutes=30)
+
+    conn = MagicMock()
+
+    # First execute call: window-(f) candidate scan returns []. Second
+    # call: window-(g) candidate scan returns the running+decided row.
+    # The two scans are distinguished by call order — the function
+    # runs awaiting-approval scan first, then running scan.
+    call_counter = {"n": 0}
+
+    async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
+        result = MagicMock()
+        if isinstance(stmt, TextClause):
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        call_counter["n"] += 1
+        if call_counter["n"] == 1:
+            # Window-(f) scan — no candidates.
+            result.all = MagicMock(return_value=[])
+        else:
+            # Window-(g) scan — single candidate.
+            result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        return result
+
+    conn.execute = AsyncMock(side_effect=_execute)
+
+    canonical_decision_pfd = PerFindingDecision(
+        finding_id=finding_id,
+        outcome=PerFindingOutcome.APPROVE,
+        reason="approved before window-g crash",
+    )
+    audit_event = HITLDecisionEvent(
+        review_id=review_id,
+        is_eval=False,
+        reviewer_id="admin",
+        decisions=(canonical_decision_pfd,),
+        annotation="window-g canonical",
+        decided_at=decided_at,
+        decision_latency_seconds=0.0,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=(canonical_decision_pfd,),
+            annotation="window-g canonical",
+        ),
+    )
+
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=audit_event)
+    status_sink = _StubReviewStatusSink()
+    checkpointer = MagicMock()
+    # Window-(g) uses compiled_graph.aget_state, NOT checkpointer.aget,
+    # to inspect node-next. checkpointer is unused in this path.
+
+    compiled_graph = MagicMock()
+    # State snapshot reports the HITL interrupt is still the next node
+    # — discriminator the recovery branch checks. A graph that already
+    # advanced past hitl would have `("publish",)` or `()` instead,
+    # and the recovery would skip.
+    state_snapshot = MagicMock()
+    state_snapshot.next = ("hitl",)
+    compiled_graph.aget_state = AsyncMock(return_value=state_snapshot)
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
+
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=MagicMock(),
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
+    )
+
+    # The sweep drove the graph through Command(resume=audit_canonical).
+    # State-flip happens inside the body; the sweep does NOT call
+    # mark_running directly.
+    compiled_graph.ainvoke.assert_awaited_once()
+    call_args = compiled_graph.ainvoke.await_args
+    resume_command = call_args.args[0]
+    resume_payload = resume_command.resume
+    assert resume_payload["reviewer_id"] == "admin"
+    assert resume_payload["annotation"] == "window-g canonical"
+    config = call_args.kwargs["config"]
+    assert config["configurable"]["thread_id"] == str(review_id)
+    assert status_sink.running_calls == []
+    # `recovered` aggregates window-(f) AND window-(g) since both
+    # use the same Command(resume=) drive mechanism. Log lines
+    # distinguish via the structured-log discriminator.
+    assert result == {"recovered": 1, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_reclaim_window_g_skips_when_graph_advanced_past_hitl() -> None:
+    """Window-(g) discriminator: if `compiled_graph.aget_state(...).next`
+    does NOT contain `hitl`, the graph has advanced past the HITL
+    interrupt (publish in flight, or terminal). The sweep MUST NOT
+    re-drive Command(resume=) — doing so would either raise (no
+    pending interrupt) or replay the graph in an unexpected state.
+    Skip is the correct action."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from outrider.audit.events import HITLDecisionEvent
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    review_id = uuid4()
+    finding_id = uuid4()
+    decided_at = _datetime.now(_UTC) - timedelta(minutes=30)
+
+    conn = MagicMock()
+    call_counter = {"n": 0}
+
+    async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
+        result = MagicMock()
+        if isinstance(stmt, TextClause):
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        call_counter["n"] += 1
+        if call_counter["n"] == 1:
+            result.all = MagicMock(return_value=[])
+        else:
+            result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        return result
+
+    conn.execute = AsyncMock(side_effect=_execute)
+
+    canonical_decision_pfd = PerFindingDecision(
+        finding_id=finding_id,
+        outcome=PerFindingOutcome.APPROVE,
+        reason="approved",
+    )
+    audit_event = HITLDecisionEvent(
+        review_id=review_id,
+        is_eval=False,
+        reviewer_id="admin",
+        decisions=(canonical_decision_pfd,),
+        annotation=None,
+        decided_at=decided_at,
+        decision_latency_seconds=0.0,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=(canonical_decision_pfd,),
+            annotation=None,
+        ),
+    )
+
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=audit_event)
+    status_sink = _StubReviewStatusSink()
+    checkpointer = MagicMock()
+
+    compiled_graph = MagicMock()
+    # Graph has advanced past hitl — publish is the next node.
+    # Recovery should skip (the publish path is in flight; the sweep
+    # MUST NOT interfere).
+    state_snapshot = MagicMock()
+    state_snapshot.next = ("publish",)
+    compiled_graph.aget_state = AsyncMock(return_value=state_snapshot)
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
+
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=MagicMock(),
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
+    )
+
+    compiled_graph.ainvoke.assert_not_awaited()
+    assert result == {"recovered": 0, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_reclaim_window_g_skips_when_decided_at_within_grace() -> None:
+    """Window-(g) grace gate: a fresh decision (decided_at + grace_period
+    > now) is skipped. Publish might still be in flight — racing it
+    would re-drive an in-progress graph. The grace cutoff is gated on
+    the canonical audit timestamp, not the row's expires_at (which
+    measures the HITL gate, not the decision write time)."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from outrider.audit.events import HITLDecisionEvent
+    from outrider.policy.canonical import compute_hitl_decision_content_hash
+    from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+
+    review_id = uuid4()
+    finding_id = uuid4()
+    # Decision JUST written — within the grace window. Recovery
+    # SHOULD skip.
+    decided_at = _datetime.now(_UTC) - timedelta(seconds=10)
+
+    conn = MagicMock()
+    call_counter = {"n": 0}
+
+    async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
+        result = MagicMock()
+        if isinstance(stmt, TextClause):
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        call_counter["n"] += 1
+        if call_counter["n"] == 1:
+            result.all = MagicMock(return_value=[])
+        else:
+            result.all = MagicMock(return_value=[MagicMock(id=review_id)])
+        return result
+
+    conn.execute = AsyncMock(side_effect=_execute)
+
+    canonical_decision_pfd = PerFindingDecision(
+        finding_id=finding_id,
+        outcome=PerFindingOutcome.APPROVE,
+        reason="approved",
+    )
+    audit_event = HITLDecisionEvent(
+        review_id=review_id,
+        is_eval=False,
+        reviewer_id="admin",
+        decisions=(canonical_decision_pfd,),
+        annotation=None,
+        decided_at=decided_at,
+        decision_latency_seconds=0.0,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=(canonical_decision_pfd,),
+            annotation=None,
+        ),
+    )
+
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=audit_event)
+    status_sink = _StubReviewStatusSink()
+    checkpointer = MagicMock()
+
+    compiled_graph = MagicMock()
+    compiled_graph.aget_state = AsyncMock()
+    compiled_graph.ainvoke = AsyncMock(return_value=None)
+
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=MagicMock(),
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+        compiled_graph=compiled_graph,
+    )
+
+    # Grace gate fires BEFORE aget_state — the state-introspection
+    # call should not happen for a fresh decision.
+    compiled_graph.aget_state.assert_not_awaited()
+    compiled_graph.ainvoke.assert_not_awaited()
+    assert result == {"recovered": 0, "failed": 0}

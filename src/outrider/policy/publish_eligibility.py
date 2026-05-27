@@ -4,9 +4,13 @@
 
 Per DECISIONS.md #023 (publish routing and eligibility are separate
 decisions, not one combined gate): this module is the **policy** half
-of the V1 fabricated-override defense. The **schema** half lives at
-`PublishEligibilityEvent._enforce_v1_no_overrides` in `audit/events.py`;
+of the fabricated-override defense. The **schema** half lives at
+`PublishEligibilityEvent._enforce_override_legitimacy` in `audit/events.py`;
 both must hold for the DECISIONS #023 "schema + gate" trust story.
+The validator was renamed from `_enforce_v1_no_overrides` after HITL
+shipped — non-None `original_severity` is now admissible when paired
+with a reviewer-issued `PerFindingDecision(outcome=SEVERITY_OVERRIDE)`
+per `DECISIONS.md#023` Amended 2026-05-27.
 
 The gate fires BEFORE materialization — the publish node calls
 `is_eligible_for_v1_publish(finding, hitl_request=..., hitl_decision=...)`

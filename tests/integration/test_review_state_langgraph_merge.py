@@ -394,6 +394,9 @@ class _StubReviewStatusSink:
     async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:  # noqa: ARG002
         return None
 
+    async def mark_completed(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
 
 def _graph_kwargs(
     *,

@@ -112,6 +112,32 @@ class TriageResult(BaseModel):
         the proxy (defeats the immutability gate)."""
         return MappingProxyType(dict(value))
 
+    @field_validator("relevant_dimensions", mode="after")
+    @classmethod
+    def _canonicalize_relevant_dimensions(
+        cls, value: tuple[ReviewDimension, ...]
+    ) -> tuple[ReviewDimension, ...]:
+        """Reject duplicates AND canonical-sort the dimension tuple so
+        set-semantic equality becomes structural equality on the wire.
+
+        Two TriageResults whose dimensions agree as sets but differ in
+        order would otherwise serialize to distinct JSON payloads,
+        breaking checkpoint-comparison and audit content-hashing. A
+        duplicate dimension (`["security", "security"]`) is a producer
+        bug — the LLM output should never repeat a dimension — and
+        silently dedup'ing would mask the bug. Fail loud matches the
+        `HITLRequest._enforce_finding_partition` sibling precedent
+        (rejects duplicate `finding_id`s rather than dedup'ing).
+        """
+        if len(value) != len(set(value)):
+            raise ValueError(
+                f"TriageResult.relevant_dimensions contains duplicate "
+                f"dimensions: {sorted(d.value for d in value)!r}; the "
+                f"field is set-semantic and duplicates indicate a "
+                f"producer bug (LLM repeating an output element)."
+            )
+        return tuple(sorted(value))
+
     @field_serializer("file_tiers")
     def _serialize_file_tiers(self, value: Mapping[str, ReviewTier]) -> dict[str, ReviewTier]:
         """Convert MappingProxyType to dict for JSON serialization. Pydantic's

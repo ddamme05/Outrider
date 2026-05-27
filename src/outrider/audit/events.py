@@ -782,12 +782,14 @@ class TraceDecisionEvent(AuditEventBase):
         point 6: load-bearing for the ambiguous branch where target_file
         is None but the tuple carries multiple resolver-output paths
         that otherwise enter audit storage unvalidated. Sorted ordering
-        matches `_SET_SEMANTIC_IDENTITY_FIELDS["trace_decision"]`
-        treating `resolved_candidate_paths` as set-semantic at
-        persister-identity compare — sorting at construction means the
-        stored row bytes are also canonical, so dashboard reads + replay
-        reconstructors don't see ordering noise (resolver-probe-order is
-        non-deterministic).
+        keeps the stored row bytes canonical so dashboard reads + replay
+        reconstructors don't see resolver-probe-order noise (probe order
+        is non-deterministic). The field is NOT in
+        `_SET_SEMANTIC_IDENTITY_FIELDS` per `DECISIONS.md#026` (point 3:
+        excluded from `trace_decision`'s identity subset because it is
+        derived from LLM-ranking-order-variant `proposed_import_strings`),
+        so this sort exists for on-disk readability only — not for
+        natural-key identity comparison.
         """
         return tuple(sorted(validate_diff_path(p) for p in paths))
 
@@ -1252,6 +1254,7 @@ def compute_publish_attempt_content_hash(
     status_code: int | None,
     failure_class: str | None,
     comments_attempted: int,
+    recovered_github_review_id: int | None,
 ) -> str:
     """SHA-256 hex over the attempt content tuple.
 
@@ -1269,10 +1272,21 @@ def compute_publish_attempt_content_hash(
       different fixture, eligibility gate flipped a finding).
     - `sorted_finding_ids` ensures iteration-order permutations of
       the same set hash identically.
+    - `recovered_github_review_id` is **integrity-protecting** for the
+      IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD outcome: this is the only
+      audit row that binds the recovered github_review_id (no paired
+      PublishEvent lands on that path per DECISIONS.md#023 Amended
+      2026-05-27), so a forged/replay emit could swap the id and still
+      pass `_verify_attempt_content_hash` without this inclusion —
+      breaking the audit-only recovery contract. For every other
+      outcome the field is None; JSON encodes `null` distinct from
+      any int, so absence is itself a hash-distinguishing value (same
+      shape as `status_code` + `failure_class`).
 
-    `status_code` + `failure_class` are nullable (success attempts
-    carry `None` on both); JSON encodes `None` → `null` distinct from
-    any string, so the absence is itself a hash-distinguishing value.
+    `status_code` + `failure_class` + `recovered_github_review_id`
+    are all nullable; JSON encodes `None` → `null` distinct from
+    any string/int, so the absence is itself a hash-distinguishing
+    value.
     """
     payload = json.dumps(
         [
@@ -1283,6 +1297,7 @@ def compute_publish_attempt_content_hash(
             status_code,
             failure_class,
             comments_attempted,
+            recovered_github_review_id,
         ],
         separators=(",", ":"),
     )
@@ -1549,11 +1564,15 @@ class PublishEligibilityEvent(AuditEventBase):
     line_end: int = Field(ge=1)
     finding_type: FindingType
     severity: FindingSeverity
-    # V1 requires None: no legitimate HITL override path exists yet, so a
-    # non-None value indicates either a producer bug or replay-injected
-    # state forging a pre-approved downgrade. Enforced at the gate
-    # (is_eligible_for_v1_publish returns withheld with
-    # unexpected_override_fields_present) and validated here on the event.
+    # Post-HITL ship (per `DECISIONS.md#023` Amended 2026-05-27): non-None
+    # `original_severity` is admissible when the gated finding carries a
+    # reviewer-issued `PerFindingDecision(outcome=SEVERITY_OVERRIDE)` — that
+    # IS the legitimate override path. Non-None WITHOUT a matching
+    # HITLDecision override is a producer bug or replay-injected forged
+    # downgrade. Enforced at the gate (`is_eligible_for_v1_publish` returns
+    # withheld with `unexpected_override_fields_present` when override
+    # fields are present but unauthorized) and validated here on the event
+    # via `_enforce_override_legitimacy` below.
     original_severity: FindingSeverity | None = None
     finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     decision_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
@@ -1745,6 +1764,20 @@ class PublishAttemptEvent(AuditEventBase):
     comments_attempted: int = Field(ge=0)
     sorted_finding_ids: tuple[UUID, ...] = ()
     attempt_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
+    # The canonical GitHub review id recovered via body-marker scan when
+    # `outcome == IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` (the crash-after-
+    # success-before-emit recovery path at publish.py Step 6). Required
+    # for that outcome AND forbidden for every other outcome — the
+    # external-record skip is the only path that recovers a github review
+    # id without emitting a paired PublishEvent. Without this field,
+    # audit-only replay for the recovery path loses the github_review_id
+    # binding (PublishAttemptEvent alone otherwise carries no github
+    # identifier, and PublishEvent is the canonical review-summary record
+    # per `DECISIONS.md#023`). NOT included in `compute_publish_attempt_
+    # content_hash` — recovered_github_review_id is OUTCOME data
+    # (deterministic for a given review's body marker; doesn't define
+    # attempt identity) rather than INPUT data.
+    recovered_github_review_id: int | None = Field(default=None, ge=1)
 
     @field_validator("sorted_finding_ids")
     @classmethod
@@ -1801,6 +1834,40 @@ class PublishAttemptEvent(AuditEventBase):
         return self
 
     @model_validator(mode="after")
+    def _enforce_recovered_github_review_id_iff_external_record_skip(self) -> Self:
+        """`recovered_github_review_id` required iff
+        `outcome == IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` AND forbidden
+        for every other outcome.
+
+        The external-record-skip path discovers a prior GitHub review
+        via body-marker scan and recovers its id WITHOUT emitting a
+        paired PublishEvent (the canonical review-summary record):
+        without this field, audit-only replay loses the github_review_id
+        binding for that recovery path. For every other outcome the
+        attempt either DID emit a PublishEvent (success path carries
+        the id in PublishEvent.github_review_id) or didn't discover a
+        github review at all (failed / no_op_empty / idempotently_skipped
+        — the prior PublishEvent is the canonical record).
+        """
+        is_external_skip = (
+            self.outcome is PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD
+        )
+        if is_external_skip and self.recovered_github_review_id is None:
+            raise ValueError(
+                "PublishAttemptEvent outcome=idempotently_skipped_external_record "
+                "requires recovered_github_review_id (the github review id "
+                "discovered via body-marker scan); audit-only replay needs the "
+                "binding."
+            )
+        if not is_external_skip and self.recovered_github_review_id is not None:
+            raise ValueError(
+                f"PublishAttemptEvent outcome={self.outcome.value!r} must have "
+                f"recovered_github_review_id=None, got {self.recovered_github_review_id!r} "
+                "(field is exclusive to the external-record skip path)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _verify_attempt_content_hash(self) -> Self:
         """MUST call `compute_publish_attempt_content_hash(...)` — recipe pinning
         for consumer-side dedup correctness."""
@@ -1812,6 +1879,7 @@ class PublishAttemptEvent(AuditEventBase):
             status_code=self.status_code,
             failure_class=self.failure_class,
             comments_attempted=self.comments_attempted,
+            recovered_github_review_id=self.recovered_github_review_id,
         )
         if self.attempt_content_hash != expected:
             raise ValueError(
