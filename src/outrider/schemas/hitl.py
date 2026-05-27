@@ -94,15 +94,18 @@ class PerFindingDecision(BaseModel):
         # only, can't undo), `mark_running` flips `reviews.status` to
         # `running`, and the publish-time
         # `PublishEligibilityEvent._enforce_override_legitimacy`
-        # validator rejects the row — wedging the review outside both
-        # `/decide` retry (preflight sees `hitl_decision != NULL` →
-        # 409) AND `reclaim_stuck_hitl_states` (status is `running`,
-        # not `awaiting_approval` / `awaiting_approval_expired`).
-        # Reject at the decision-construction site so the audit row
-        # never lands. The endpoint's pre-construction check produces
-        # the 422; this validator is defense-in-depth for any path
-        # constructing PerFindingDecision (replay code, sweep code,
-        # tests).
+        # validator rejects the row — wedging the review at
+        # `status='running'` past `/decide` retry (preflight sees
+        # `hitl_decision != NULL` → 409). `reclaim_stuck_hitl_states`'
+        # window-(g) scan technically admits the row, but the
+        # graph-driven `Command(resume=)` recovery cannot break the
+        # publish-eligibility rejection loop — every replay hits the
+        # same validator. The row stays wedged at `running` until
+        # operator intervention. Reject at the decision-construction
+        # site so the audit row never lands. The endpoint's pre-
+        # construction check produces the 422; this validator is
+        # defense-in-depth for any path constructing PerFindingDecision
+        # (replay code, sweep code, tests).
         if (
             self.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
             and self.override_severity == self.original_severity
@@ -184,7 +187,11 @@ class HITLDecision(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    reviewer_id: str
+    # Mirror of `HITLDecisionEvent.reviewer_id` cap. Without parity, the
+    # state-layer could hold a reviewer_id that fails the audit-event
+    # mirror's `max_length=100` validation — breaking the state→audit
+    # shadow contract identically to the `annotation` field below.
+    reviewer_id: str = Field(max_length=100)
     decisions: tuple[PerFindingDecision, ...]
     # Mirror of `HITLDecisionEvent.annotation` cap. Without parity, the
     # state-layer could hold an annotation that fails the audit-event

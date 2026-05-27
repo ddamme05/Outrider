@@ -405,9 +405,12 @@ async def decide(
     # `HITLDecisionEvent` lands (append-only — can't undo), the body
     # flips `reviews.status` to `running`, and the publish-time
     # `PublishEligibilityEvent._enforce_override_legitimacy` rejects —
-    # wedging the review outside both `/decide` retry (preflight sees
-    # `hitl_decision != NULL` → 409) and `reclaim_stuck_hitl_states`
-    # (status != awaiting_approval*). Schema-layer defense lives in
+    # wedging the review at `status='running'` past `/decide` retry
+    # (preflight sees `hitl_decision != NULL` → 409). The sweep's
+    # `reclaim_stuck_hitl_states` window-(g) scan admits status=running
+    # candidates, but the graph-driven `Command(resume=)` recovery
+    # cannot break the publish-eligibility rejection loop — every
+    # replay hits the same validator. Schema-layer defense lives in
     # `PerFindingDecision.enforce_override_fields`; this endpoint-side
     # check produces the controlled 422 (the schema raise would become
     # 500 if it reached `_build_domain_decisions`).

@@ -63,6 +63,7 @@ class _RecordingStatusSink:
         self.awaiting: list[dict[str, Any]] = []
         self.running: list[dict[str, Any]] = []
         self.expired: list[dict[str, Any]] = []
+        self.completed: list[dict[str, Any]] = []
 
     async def mark_awaiting_approval(self, **kwargs: Any) -> None:
         self.awaiting.append(kwargs)
@@ -72,6 +73,9 @@ class _RecordingStatusSink:
 
     async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:
         self.expired.append(kwargs)
+
+    async def mark_completed(self, **kwargs: Any) -> None:
+        self.completed.append(kwargs)
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ class _RecordingReviewStatusSink:
         self.awaiting_approval_calls: list[dict[str, Any]] = []
         self.running_calls: list[dict[str, Any]] = []
         self.expired_calls: list[dict[str, Any]] = []
+        self.completed_calls: list[dict[str, Any]] = []
 
     async def mark_awaiting_approval(
         self,
@@ -56,6 +57,9 @@ class _RecordingReviewStatusSink:
 
     async def mark_awaiting_approval_expired(self, *, review_id: UUID) -> None:
         self.expired_calls.append({"review_id": review_id})
+
+    async def mark_completed(self, *, review_id: UUID) -> None:
+        self.completed_calls.append({"review_id": review_id})
 
 
 def test_protocol_is_runtime_checkable() -> None:
@@ -104,6 +108,16 @@ def test_recording_sink_records_expired() -> None:
     assert sink.expired_calls[0]["review_id"] == review_id
 
 
+def test_recording_sink_records_completed() -> None:
+    sink = _RecordingReviewStatusSink()
+    review_id = uuid4()
+
+    asyncio.run(sink.mark_completed(review_id=review_id))
+
+    assert len(sink.completed_calls) == 1
+    assert sink.completed_calls[0]["review_id"] == review_id
+
+
 def test_recording_sink_does_not_dedup_idempotent_calls() -> None:
     """Recording sinks deliberately exempt from idempotency semantics."""
     sink = _RecordingReviewStatusSink()
@@ -141,7 +155,12 @@ def test_protocol_declares_exact_method_set() -> None:
     operator-triage transitions) must surface here AND every consumer.
     Exact-membership check fails loudly on silent drift.
     """
-    expected = {"mark_awaiting_approval", "mark_running", "mark_awaiting_approval_expired"}
+    expected = {
+        "mark_awaiting_approval",
+        "mark_running",
+        "mark_awaiting_approval_expired",
+        "mark_completed",
+    }
     actual = {name for name in dir(ReviewStatusSink) if not name.startswith("_")}
     assert actual == expected, (
         f"ReviewStatusSink method set drift: missing={expected - actual}, "

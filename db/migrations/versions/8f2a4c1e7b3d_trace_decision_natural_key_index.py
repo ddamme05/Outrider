@@ -126,6 +126,38 @@ def upgrade() -> None:
             """
         )
 
+    # Post-build verification: confirm the index landed VALID. A
+    # failed `CREATE INDEX CONCURRENTLY` leaves an INVALID `pg_index`
+    # row that `IF NOT EXISTS` would silently skip on retry, marking
+    # the migration complete without enforcing the uniqueness
+    # contract — production trace-decision emits would then never
+    # hit the natural-key conflict path. Mirror of the HITL
+    # migration's `--- 6. Fail-loud verification` block at
+    # 33f8fe051bec_hitl_node_indexes.py:141.
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            expected_index text := 'uq_audit_events_trace_decision_natural_key';
+            is_valid_ready boolean;
+        BEGIN
+            SELECT i.indisvalid AND i.indisready
+            INTO is_valid_ready
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = expected_index;
+            IF is_valid_ready IS DISTINCT FROM true THEN
+                RAISE EXCEPTION
+                    'trace_decision natural-key index migration failed: '
+                    '% is missing or INVALID after CREATE INDEX CONCURRENTLY. '
+                    'Recovery: DROP INDEX CONCURRENTLY IF EXISTS %, '
+                    'then re-run `alembic upgrade head`.',
+                    expected_index, expected_index;
+            END IF;
+        END $$;
+        """
+    )
+
 
 def downgrade() -> None:
     """Drop the partial unique index concurrently (mirror of upgrade)."""

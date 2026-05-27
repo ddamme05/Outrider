@@ -510,11 +510,24 @@ async def receive_pull_request_webhook(
         async def _mark_failed() -> None:
             try:
                 async with session_factory() as failure_session, failure_session.begin():
+                    from sqlalchemy import and_ as _and  # noqa: PLC0415
                     from sqlalchemy import update as _update  # noqa: PLC0415
 
-                    await failure_session.execute(
-                        _update(Review).where(Review.id == review_id).values(status="failed")
+                    # WHERE-on-status guards against stomping a row that
+                    # already advanced past `running` (V2 Celery dispatch
+                    # may enqueue successfully then raise on the return
+                    # path; an opportunistic worker that picks up the job
+                    # AND moves the row to `awaiting_approval` BEFORE
+                    # this cleanup task runs would otherwise see its
+                    # state overwritten to `failed`). rowcount=0 path
+                    # logs explicitly so the dispatch-failure-vs-row-
+                    # advancement ambiguity is observable.
+                    result = await failure_session.execute(
+                        _update(Review)
+                        .where(_and(Review.id == review_id, Review.status == "running"))
+                        .values(status="failed")
                     )
+                    rowcount = getattr(result, "rowcount", 0) or 0
             except Exception:
                 logger.exception(
                     "webhook dispatch failed AND failed-status cleanup also failed; "
@@ -525,10 +538,23 @@ async def receive_pull_request_webhook(
                     },
                 )
             else:
-                logger.exception(
-                    "webhook dispatch failed after row commit; review marked failed",
-                    extra={"review_id": str(review_id), "x_github_delivery": x_github_delivery},
-                )
+                if rowcount == 0:
+                    logger.error(
+                        "webhook dispatch failed but review no longer 'running' "
+                        "(concurrent advancement); failed-status write skipped",
+                        extra={
+                            "review_id": str(review_id),
+                            "x_github_delivery": x_github_delivery,
+                        },
+                    )
+                else:
+                    logger.error(
+                        "webhook dispatch failed after row commit; review marked failed",
+                        extra={
+                            "review_id": str(review_id),
+                            "x_github_delivery": x_github_delivery,
+                        },
+                    )
 
         cleanup_task = asyncio.create_task(_mark_failed())
         try:

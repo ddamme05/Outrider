@@ -20,6 +20,7 @@ from outrider.anomaly import (
     AnomalyPersister,
     AnomalyPersisterConfigError,
     AnomalyRuleName,
+    AnomalySeverity,
     AnomalySink,
 )
 
@@ -54,7 +55,7 @@ def test_recording_sink_satisfies_protocol_structurally() -> None:
             *,
             review_id: UUID,
             rule_name: AnomalyRuleName,
-            severity: str,
+            severity: AnomalySeverity,
             details: dict[str, Any],
         ) -> None:
             self.calls.append(

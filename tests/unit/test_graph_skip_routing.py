@@ -138,6 +138,9 @@ class _StubReviewStatusSink:
     async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:
         return None
 
+    async def mark_completed(self, **kwargs: Any) -> None:
+        return None
+
 
 class _StubGitHubPublisher:
     async def create_review(self, **kwargs: Any) -> Any:  # noqa: ARG002

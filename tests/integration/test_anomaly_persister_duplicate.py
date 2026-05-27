@@ -27,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from outrider.anomaly.persister import AnomalyPersister
-from outrider.anomaly.rule_names import AnomalyRuleName
+from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -107,13 +107,13 @@ async def test_duplicate_emit_collapses_to_one_row(
     await persister.emit_anomaly(
         review_id=review_id,
         rule_name=AnomalyRuleName.HITL_TIMEOUT,
-        severity="medium",
+        severity=AnomalySeverity.MEDIUM,
         details={"expired_at": "2026-05-26T00:00:00Z"},
     )
     await persister.emit_anomaly(
         review_id=review_id,
         rule_name=AnomalyRuleName.HITL_TIMEOUT,
-        severity="medium",
+        severity=AnomalySeverity.MEDIUM,
         details={"expired_at": "2026-05-26T00:00:00Z"},
     )
 
@@ -170,7 +170,7 @@ async def test_distinct_review_ids_admit_separate_rows(
             await persister.emit_anomaly(
                 review_id=rid,
                 rule_name=AnomalyRuleName.HITL_TIMEOUT,
-                severity="medium",
+                severity=AnomalySeverity.MEDIUM,
                 details={"expired_at": "2026-05-26T00:00:00Z"},
             )
 

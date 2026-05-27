@@ -166,6 +166,27 @@ class ReviewStatusSink(Protocol):
         """
         ...
 
+    async def mark_completed(self, *, review_id: UUID) -> None:
+        """Flip `reviews.status` -> `completed` AND write
+        `completed_at = NOW()` at publish-node terminal success.
+
+        Predicate: `WHERE id=:r AND status='running'`. The narrow
+        `running` source-state matches the post-`mark_running` (HITL
+        path) AND the no-HITL graph path (intake/triage/analyze/trace
+        all leave the row at `running` until publish terminates).
+        Idempotent on re-fire: rowcount=0 if the row is already
+        `completed` (a prior body re-run that succeeded) — same no-
+        error semantics as the other three mark_* methods.
+
+        Closes the lifecycle gap per canonical `docs/spec.md` §3.3
+        step 10 + `docs/architecture.md` step 10: the publish node
+        is canonical owner of the `completed` write, and without
+        this write successful reviews accumulate forever at
+        `status='running'`, excluded from `sweep/purge_expired.py`'s
+        retention purge by `_REVIEWS_ACTIVE_STATUSES`.
+        """
+        ...
+
 
 @runtime_checkable
 class ReviewStatusReader(Protocol):

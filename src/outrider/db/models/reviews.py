@@ -107,6 +107,10 @@ class Review(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False
     )
+    # Terminal-success timestamp set by `ReviewStatusSink.mark_completed`
+    # at the publish node's terminal-success paths (`docs/spec.md` §3.3
+    # step 10). `None` while the review is in flight; populated alongside
+    # the `status='completed'` flip.
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # HITL approval window cutoff. Mirrors `HITLRequest.expires_at` for
     # sweep-query efficiency (`status='awaiting_approval' AND expires_at <

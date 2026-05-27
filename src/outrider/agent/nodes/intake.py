@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from langgraph.graph import END
 from langgraph.types import Command
-from sqlalchemy import update
+from sqlalchemy import and_, update
 
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
@@ -787,9 +787,29 @@ async def _set_review_status(
     `awaiting_approval` at HITL, `completed` at publish) happen
     elsewhere in the graph and through different paths. Narrow Literal
     catches fat-fingered values (`"skiped"`, `"pending"`) at type-check.
+
+    Predicate-gated on `Review.status == 'running'` so a concurrent
+    sweep that already marked the row `failed` (or a peer code path
+    that flipped it past `running`) does NOT get silently overwritten
+    by intake's late-arriving status decision. rowcount=0 is logged
+    at WARNING so operators see the predicate-miss instead of a
+    silent stomp.
     """
     async with db_factory() as session, session.begin():
-        await session.execute(update(Review).where(Review.id == review_id).values(status=status))
+        result = await session.execute(
+            update(Review)
+            .where(and_(Review.id == review_id, Review.status == "running"))
+            .values(status=status)
+        )
+        rowcount = getattr(result, "rowcount", 0) or 0
+        if rowcount == 0:
+            logger.warning(
+                "intake _set_review_status no-op: review %s is no longer "
+                "'running' (concurrent sweep / peer write); refusing to "
+                "overwrite to %r",
+                review_id,
+                status,
+            )
 
 
 def _merge_skip_reasons(base: SkipReason | None, head: SkipReason | None) -> SkipReason | None:

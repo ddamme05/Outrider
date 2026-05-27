@@ -121,6 +121,29 @@ class _RecordingPublishEventSink:
         yield
 
 
+class _RecordingReviewStatusSink:
+    """Recording ReviewStatusSink stub — tracks `mark_completed` calls so
+    tests pin the canonical lifecycle write at publish's terminal-success
+    paths. Other methods (mark_awaiting_approval, mark_running,
+    mark_awaiting_approval_expired) are no-op stubs — publish only ever
+    calls mark_completed."""
+
+    def __init__(self) -> None:
+        self.completed_calls: list[UUID] = []
+
+    async def mark_awaiting_approval(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_running(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_awaiting_approval_expired(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_completed(self, *, review_id: UUID) -> None:
+        self.completed_calls.append(review_id)
+
+
 class _StubPublisher:
     """Hand-rolled GitHubPublisher stub.
 
@@ -315,6 +338,7 @@ async def test_publish_node_happy_path_emits_all_four_event_types() -> None:
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -364,6 +388,7 @@ async def test_critical_finding_withheld_publisher_not_called() -> None:
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -403,6 +428,7 @@ async def test_fabricated_override_withheld_publisher_not_called() -> None:
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -437,6 +463,7 @@ async def test_existing_review_on_head_sha_short_circuits() -> None:
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -445,6 +472,11 @@ async def test_existing_review_on_head_sha_short_circuits() -> None:
     assert publish_sink.attempts[0].outcome is (
         PublishAttemptOutcome.IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD
     )
+    # The recovered github_review_id rides on the PublishAttemptEvent
+    # because no paired PublishEvent lands on the external-record skip
+    # path. Without this binding, audit-only replay cannot reconstruct
+    # which GitHub review was recovered.
+    assert publish_sink.attempts[0].recovered_github_review_id == 999
     assert result["publish_result"].github_review_id == 999
 
 
@@ -485,6 +517,7 @@ async def test_removed_file_routes_dashboard_only_with_head_content_unavailable(
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -522,6 +555,7 @@ async def test_non_diffed_file_routes_dashboard_only_registry_miss() -> None:
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -598,6 +632,7 @@ async def test_severity_override_renders_override_severity_in_comment_and_audit(
         publisher=publisher,
         publish_event_sink=publish_sink,
         phase_event_sink=phase_sink,
+        review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
     )
 
@@ -620,4 +655,180 @@ async def test_severity_override_renders_override_severity_in_comment_and_audit(
     assert "**LOW**" in body, f"expected override severity LOW in body, got: {body[:80]!r}"
     assert "**CRITICAL**" not in body, (
         f"baseline CRITICAL should not appear in body, got: {body[:80]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Canonical lifecycle: publish writes status='completed' on every terminal
+# success path (`docs/spec.md` §3.3 step 10; `docs/architecture.md` step 10).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_publish_success_path_marks_review_completed() -> None:
+    """Step-8 happy path: publish posts to GitHub → calls
+    `review_status_sink.mark_completed(review_id=state.review_id)`
+    EXACTLY ONCE before returning. Without this write, successful
+    reviews accumulate at `status='running'` forever and are excluded
+    from retention purge per `purge_expired.py:_REVIEWS_ACTIVE_STATUSES`.
+    """
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher()
+    review_status_sink = _RecordingReviewStatusSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        review_status_sink=review_status_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "success"
+    assert review_status_sink.completed_calls == [state.review_id], (
+        "publish success path must call mark_completed exactly once with "
+        "state.review_id; without this write the lifecycle stays at "
+        "'running' indefinitely (canonical spec §3.3 step 10 / architecture "
+        "step 10)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_empty_inline_path_marks_review_completed() -> None:
+    """Step-5 no-op empty path: every withheld-or-non-INLINE finding →
+    `PublishResult.empty()`. Even though the empty path skips GitHub,
+    the lifecycle write MUST still fire — the review reached a terminal
+    state."""
+    # CRITICAL finding gets withheld (no HITL approval); zero eligible
+    # inline comments hit the empty short-circuit.
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher()
+    review_status_sink = _RecordingReviewStatusSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        review_status_sink=review_status_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "empty"
+    assert review_status_sink.completed_calls == [state.review_id], (
+        "publish empty short-circuit must call mark_completed exactly once — "
+        "the review reached its terminal state regardless of inline-comment "
+        "count."
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_prior_event_idempotent_skip_marks_review_completed() -> None:
+    """Step-4 idempotent intra-Outrider skip: a prior PublishEvent
+    short-circuits with `PublishResult.skipped()`. The lifecycle write
+    MUST still fire — a prior body crash that committed the PublishEvent
+    but failed `mark_completed` (e.g., DB outage between emit + sink
+    call) leaves the row at `status='running'`; the retry's
+    idempotent-skip path is the canonical recovery point for the
+    completion write."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    # Inject a prior PublishEvent to hit the Step-4 idempotent short-
+    # circuit.
+    publish_sink.prior_publish_event = PublishEvent(
+        review_id=state.review_id,
+        is_eval=state.is_eval,
+        github_review_id=11,
+        comments_posted=1,
+        review_status="COMMENT",
+    )
+    publisher = _StubPublisher()
+    review_status_sink = _RecordingReviewStatusSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        review_status_sink=review_status_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "idempotently_skipped"
+    assert review_status_sink.completed_calls == [state.review_id], (
+        "publish idempotent-skip (Step 4) must call mark_completed exactly "
+        "once — the retry's job is to recover the lifecycle write that the "
+        "prior crashed run failed to commit."
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_external_record_skip_marks_review_completed() -> None:
+    """Step-6 external-record short-circuit: the prior GitHub review
+    body marker matches → `PublishResult.skipped_external()`. Same
+    lifecycle-recovery rationale as Step-4."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher(existing_review_id=777)
+    review_status_sink = _RecordingReviewStatusSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        review_status_sink=review_status_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "idempotently_skipped_external_record"
+    assert review_status_sink.completed_calls == [state.review_id], (
+        "publish external-record skip (Step 6) must call mark_completed "
+        "exactly once — the same crash-recovery rationale applies as Step 4."
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_failure_path_does_not_mark_review_completed() -> None:
+    """Step-7 failure: GitHub POST raises → publish re-raises after
+    emitting PublishAttemptEvent(FAILED). The lifecycle MUST stay at
+    `status='running'` (the failure surface for retry); mark_completed
+    must NOT fire — that would foreclose the retry path."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher(should_raise=RuntimeError("simulated GitHub outage"))
+    review_status_sink = _RecordingReviewStatusSink()
+
+    with pytest.raises(RuntimeError, match="simulated GitHub outage"):
+        await publish(
+            state,
+            publisher=publisher,
+            publish_event_sink=publish_sink,
+            phase_event_sink=phase_sink,
+            review_status_sink=review_status_sink,
+            github_factory=_stub_github_factory,
+        )
+
+    assert review_status_sink.completed_calls == [], (
+        "publish failure path MUST NOT call mark_completed — lifecycle must "
+        "stay at 'running' so the retry path (sweep-driven or manual) can "
+        "re-attempt; a premature 'completed' would foreclose recovery."
     )

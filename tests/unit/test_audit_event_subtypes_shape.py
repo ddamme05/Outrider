@@ -263,6 +263,7 @@ def _publish_attempt_kwargs() -> dict[str, Any]:
             status_code=status_code,
             failure_class=failure_class,
             comments_attempted=comments_attempted,
+            recovered_github_review_id=None,
         ),
     }
 

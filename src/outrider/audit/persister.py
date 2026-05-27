@@ -105,6 +105,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 # parameter shapes benefit from a real type at module import.
 from uuid import UUID  # noqa: TC003 — runtime annotation needed for typed exception constructors
 
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -1127,7 +1128,6 @@ _TRACE_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
         "source_finding_id",
         "target_file",
         "resolution_status",
-        "resolved_candidate_paths",
         "is_eval",
     }
 )
@@ -1157,15 +1157,16 @@ _HITL_DECISION_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
     }
 )
 
-# Fields whose payload value is set-semantic (per their TraceDecisionEvent
-# validator) and must be sorted before identity-equality. JSON serialization
-# preserves list order, so without this canonicalization a retry whose
-# probe order shuffled (legitimate — `_resolve_via_probes` iteration order
-# is candidate-rank-dependent) would compare unequal against the existing
-# row even though the SET of resolved paths is identical.
+# Fields whose payload value is set-semantic and must be sorted before
+# identity-equality. JSON serialization preserves list order, so without
+# this canonicalization a retry whose tuple ordering shuffled would
+# compare unequal against the existing row even though the SET of values
+# is identical. Per DECISIONS.md#026 the trace_decision identity subset
+# does NOT include `resolved_candidate_paths` (LLM-ranking-order variance
+# via its `proposed_import_strings` derivation defeats lockstep), so the
+# only set-semantic identity fields here are HITLRequestEvent's pair.
 _SET_SEMANTIC_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
     {
-        "resolved_candidate_paths",
         # HITLRequestEvent — both tuples are set-semantic per the
         # `HITLRequest._enforce_finding_partition` validator (each
         # finding appears at most once across both). The HITL node
@@ -1283,9 +1284,9 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
     the subset = legitimate retry (return existing row's event); any
     divergence = real conflict (raise `AuditPersisterNaturalKeyConflict`).
 
-    For `trace_decision` per `specs/2026-05-23-trace-node.md` M7 (c):
-    `{source_finding_id, target_file, resolution_status,
-    resolved_candidate_paths, is_eval}`.
+    For `trace_decision` per `DECISIONS.md#026` (point 3) +
+    `specs/2026-05-23-trace-node.md` M7 (c): `{source_finding_id,
+    target_file, resolution_status, is_eval}`.
 
       - `source_finding_id`: the natural-key payload component (the
         index's other lookup column is `review_id`, pinned by the
@@ -1295,15 +1296,6 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
         which IS a real conflict.
       - `resolution_status`: deterministic outcome class
         (`resolved`/`unresolved`/`ambiguous`).
-      - `resolved_candidate_paths`: set-semantic per its TraceDecisionEvent
-        validator. Included so an `ambiguous` retry whose probe yielded a
-        different set of paths (e.g., the head tree changed mid-PR) is
-        flagged as a real conflict rather than silently no-op'd —
-        `target_file` is None for ambiguous outcomes and can't carry that
-        signal alone. Canonicalized (sorted) before equality via
-        `_canonicalize_for_identity_compare` because JSON serialization
-        preserves probe order (rank-dependent) while the field's contract
-        is set-semantic.
       - `is_eval`: invariant per review; cross-retry divergence is a
         config bug.
 
@@ -1311,7 +1303,9 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
     on legitimate retries): `event_id`, `timestamp`, `sequence_number`
     (already excluded by `_serialize_event_payload`), `review_id`
     (pinned by index lookup), `reason` (LLM-narrative noise),
-    `proposed_import_strings` / `trace_path` (per-emission noise),
+    `proposed_import_strings` / `resolved_candidate_paths` / `trace_path`
+    (per-emission noise — `resolved_candidate_paths` is derived from
+    LLM-ranking-order-variant `proposed_import_strings` per #026 point 3),
     `event_type` (pinned by partial-index WHERE).
 
     V1 supports `trace_decision`, `hitl_request`, and `hitl_decision`
@@ -1755,14 +1749,25 @@ class AuditPersister:
     async def emit_phase(self, event: ReviewPhaseEvent) -> None:
         """Persist a ReviewPhaseEvent row to audit_events.
 
-        Idempotent on `event.event_id`; payload-mismatch on PK conflict raises
-        `AuditPersisterIdempotencyConflict`. No content side-table; no
-        resurrection guard needed.
+        Idempotent on the natural key `(review_id, phase_id,
+        COALESCE(phase_key, ''), marker)` per the partial unique index
+        `uq_audit_events_review_phase_natural_key`. The HITL node body
+        re-emits `marker='start'` on every resume (LangGraph durable-
+        execution restarts the body from the top); without natural-key
+        idempotency, fresh `event_id`s would land duplicate `start`
+        rows on every resume — defeating `phase-events-bound-work`
+        replay tooling that treats the start/end pair as a single
+        causal barrier per node entry. The deterministic `phase_id`
+        from `compute_phase_id(...)` is the producer-side half of the
+        contract; this `on_conflict_do_nothing` is the consumer-side
+        gate.
 
         Populates the top-level denormalized `phase_key` column from
         `event.phase_key` (typically `None` in V1; V1.5 parallel-analyze
         will populate per-file). V1.5's per-file index queries depend on
-        this column being populated correctly today.
+        this column being populated correctly today; the natural-key
+        index's `COALESCE(phase_key, '')` expression makes the dedup
+        work for both V1 (all-NULL) and V1.5 (per-file string) rows.
         """
         payload = _serialize_event_payload(event)
 
@@ -1778,24 +1783,121 @@ class AuditPersister:
                     is_eval=event.is_eval,
                     payload=payload,
                 )
-                .on_conflict_do_nothing(index_elements=["event_id"])
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        AuditEventRow.review_id,
+                        sa_text("(payload->>'phase_id')"),
+                        sa_text("COALESCE(phase_key, '')"),
+                        sa_text("(payload->>'marker')"),
+                    ],
+                    # Literal text MUST match the migration's
+                    # `CREATE UNIQUE INDEX ... WHERE ...` predicate
+                    # exactly so the planner targets the partial index.
+                    # Drift between this string and the migration would
+                    # fall through to a sequential conflict scan or skip
+                    # the index entirely. No SQL-injection surface: all
+                    # tokens are literal.
+                    index_where=sa_text(
+                        "event_type = 'review_phase' "
+                        "AND payload ? 'phase_id' "
+                        "AND payload ? 'marker'"
+                    ),
+                )
                 .returning(AuditEventRow.event_id)
             )
-            inserted = await session.scalar(stmt)
-            if inserted is None:
+            inserted_event_id = await session.scalar(stmt)
+            if inserted_event_id is None:
+                # Natural-key conflict fired (the partial unique index
+                # matched on `(review_id, phase_id, COALESCE(phase_key,
+                # ''), marker)`). Load the existing row and compare the
+                # non-ephemeral, non-natural-key fields. Per CodeRabbit
+                # 2026-05-27: phase_id is a `str` field so a producer
+                # bug could mint a phase_id that collides with a real
+                # row but carry different `node_id` or `is_eval` —
+                # without this reload+compare the producer bug
+                # silently no-ops instead of surfacing as a loud
+                # conflict. The reload reads by the SAME predicate
+                # the index targets (review_id + JSONB-extracted
+                # phase_id + COALESCE(phase_key, '') + JSONB-extracted
+                # marker) so it deterministically resolves to the
+                # single existing row.
                 existing_payload = await session.scalar(
-                    select(AuditEventRow.payload).where(AuditEventRow.event_id == event.event_id)
+                    select(AuditEventRow.payload).where(
+                        AuditEventRow.review_id == event.review_id,
+                        AuditEventRow.event_type == "review_phase",
+                        AuditEventRow.payload["phase_id"].astext == event.phase_id,
+                        sa_func.coalesce(AuditEventRow.phase_key, "") == (event.phase_key or ""),
+                        AuditEventRow.payload["marker"].astext == event.marker,
+                    )
                 )
                 if existing_payload is None:
+                    # Index reported conflict but our reload found
+                    # nothing — schema invariant violation. The
+                    # partial-index predicate diverged from this
+                    # query's predicate, OR a concurrent DELETE
+                    # raced the SELECT (impossible under append-only).
                     raise AuditPersisterSchemaInvariantError(
                         event_id=event.event_id,
-                        invariant="audit_events.payload NOT NULL",
+                        invariant=(
+                            "natural-key conflict on review_phase but "
+                            "no matching row found on reload"
+                        ),
                     )
-                if existing_payload != payload:
+                # Compare non-ephemeral fields. `event_id` + `timestamp`
+                # are per-emission and excluded. The natural-key fields
+                # (`phase_id`, `marker`, `phase_key`) match by index
+                # definition. The remaining payload fields are
+                # `node_id`. `is_eval` is a top-level column, not
+                # payload, so include it in the existing-row load
+                # explicitly via a second SELECT or fold into payload
+                # comparison — for emit_phase the simpler shape is
+                # JSONB-only compare on `node_id`, with `is_eval`
+                # cross-check via the existing row's column.
+                # Build a single-field digest map for each compare to
+                # keep `field_digests` keys aligned with `mismatched_fields`
+                # (constructor invariant: digest keys ⊆ mismatched fields).
+                # Per-emission noise (`event_id`, `timestamp`) and natural-
+                # key fields (already matched by definition) are excluded.
+                if existing_payload.get("node_id") != event.node_id:
                     raise AuditPersisterIdempotencyConflict(
                         event_id=event.event_id,
-                        mismatched_fields=_diff_field_names(existing_payload, payload),
-                        field_digests=_compute_field_digests(existing_payload, payload),
+                        mismatched_fields=("node_id",),
+                        field_digests={
+                            "node_id": FieldDigest(
+                                existing_sha256=_value_or_missing_sha256(
+                                    existing_payload.get("node_id", _MISSING)
+                                ),
+                                attempted_sha256=_value_or_missing_sha256(event.node_id),
+                                existing_length=_value_or_missing_length(
+                                    existing_payload.get("node_id", _MISSING)
+                                ),
+                                attempted_length=_value_or_missing_length(event.node_id),
+                            )
+                        },
+                    )
+                existing_is_eval = await session.scalar(
+                    select(AuditEventRow.is_eval).where(
+                        AuditEventRow.review_id == event.review_id,
+                        AuditEventRow.event_type == "review_phase",
+                        AuditEventRow.payload["phase_id"].astext == event.phase_id,
+                        sa_func.coalesce(AuditEventRow.phase_key, "") == (event.phase_key or ""),
+                        AuditEventRow.payload["marker"].astext == event.marker,
+                    )
+                )
+                if existing_is_eval != event.is_eval:
+                    # `is_eval` is a top-level column, not a payload field;
+                    # the digest is computed against the bool directly.
+                    raise AuditPersisterIdempotencyConflict(
+                        event_id=event.event_id,
+                        mismatched_fields=("is_eval",),
+                        field_digests={
+                            "is_eval": FieldDigest(
+                                existing_sha256=_value_or_missing_sha256(existing_is_eval),
+                                attempted_sha256=_value_or_missing_sha256(event.is_eval),
+                                existing_length=_value_or_missing_length(existing_is_eval),
+                                attempted_length=_value_or_missing_length(event.is_eval),
+                            )
+                        },
                     )
 
     # -- FileExaminationSink surface ----------------------------------------
@@ -1803,21 +1905,34 @@ class AuditPersister:
     async def emit_file_examination(self, event: FileExaminationEvent) -> None:
         """Persist a FileExaminationEvent row to audit_events.
 
-        Mirrors `emit_phase` semantics: idempotent on `event.event_id`;
-        payload-mismatch on PK conflict raises `AuditPersisterIdempotencyConflict`;
-        no content side-table (FileExaminationEvent carries only structural
-        identifiers — file_path, examination_type, parse_status, skip_reason —
-        none of which is content per `DECISIONS.md#014` point 5's borderline-
-        fields rule).
+        Idempotent on `event.event_id` via the `event_id`-PK
+        `on_conflict_do_nothing` path inside `_persist_non_phase_event`.
+        Payload-mismatch on PK conflict raises
+        `AuditPersisterIdempotencyConflict`. No content side-table —
+        FileExaminationEvent carries only structural identifiers
+        (file_path, examination_type, parse_status, skip_reason) and
+        none of those is content per `DECISIONS.md#014` point 5's
+        borderline-fields rule.
 
-        `phase_key` is written as NULL (the denormalized top-level column is
-        populated only for `ReviewPhaseEvent`; per the `_NO_PHASE_KEY` sentinel
-        rule, every other event type writes NULL).
+        Distinct idempotency mode from `emit_phase`: per
+        `DECISIONS.md#026` (and the `uq_audit_events_review_phase_
+        natural_key` partial unique index added 2026-05-27),
+        `emit_phase` dedupes on the natural key `(review_id, phase_id,
+        COALESCE(phase_key, ''), marker)` because the HITL node body
+        re-emits phase events with fresh `event_id`s on resume. File-
+        examination emissions have no body-replay path that mints
+        fresh event_ids for the same logical row, so the simpler
+        `event_id`-PK dedup remains correct here.
 
-        Intake's phase-2 content fan-out emits these concurrently under
-        `asyncio.TaskGroup`; each emission opens its own `AsyncSession` so
-        the fan-out is safe under the per-call session discipline shared
-        with `emit_phase`.
+        `phase_key` is written as NULL (the denormalized top-level
+        column is populated only for `ReviewPhaseEvent`; per the
+        `_NO_PHASE_KEY` sentinel rule, every other event type writes
+        NULL).
+
+        Intake's phase-2 content fan-out emits these concurrently
+        under `asyncio.TaskGroup`; each emission opens its own
+        `AsyncSession` so the fan-out is safe under the per-call
+        session discipline shared with `emit_phase`.
         """
         await self._persist_non_phase_event(event)
 
@@ -1840,8 +1955,19 @@ class AuditPersister:
         """Persist any non-phase audit event row to audit_events.
 
         Shared body for `FileExaminationSink` + `AnalyzeEventSink`
-        emit_* methods — every event whose `phase_key` is NULL. Mirrors
-        `emit_phase`'s idempotency + payload-mismatch discipline.
+        emit_* methods — every event whose `phase_key` is NULL.
+        Idempotent on `event.event_id` via the `event_id`-PK
+        `on_conflict_do_nothing` path below; on conflict, the existing
+        row's payload is loaded and compared against the incoming
+        payload — mismatch raises `AuditPersisterIdempotencyConflict`,
+        match returns silently. `emit_phase` deliberately diverges from
+        this discipline as of 2026-05-27: phase events use natural-key
+        idempotency on `(review_id, phase_id, COALESCE(phase_key, ''),
+        marker)` because the HITL node body re-emits phase events with
+        fresh `event_id`s on resume (LangGraph durable execution
+        restarts the body from the top). Non-phase events have no
+        body-replay path that mints fresh event_ids for the same
+        logical row, so event_id-PK dedup remains correct here.
 
         Per-call session discipline: each emission opens its own
         `AsyncSession` (no concurrent reuse). Safe under the V1.5

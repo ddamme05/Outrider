@@ -14,8 +14,10 @@ Pins H4 + the metadata-only exception contract:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import text
 
 from outrider.audit.persister import AuditPersisterIdempotencyConflict, FieldDigest
@@ -265,21 +267,134 @@ async def test_persist_content_is_eval_mismatch_raises_conflict(
     assert "is_eval" not in exc_info.value.field_digests
 
 
-async def test_emit_phase_payload_mismatch_raises_conflict(
+async def test_emit_phase_idempotent_on_natural_key_no_op_on_resume(
     persister_setup: PersisterTestSetup,
     review_phase_event_factory: ReviewPhaseEventFactory,
 ) -> None:
-    """emit_phase() uses the same idempotency mechanism; same event_id with
-    different payload (e.g., different node_id) → AuditPersisterIdempotencyConflict."""
+    """emit_phase() dedupes on the natural key
+    `(review_id, phase_id, COALESCE(phase_key, ''), marker)` per the
+    `uq_audit_events_review_phase_natural_key` partial unique index.
+    Two emits with the SAME natural key but FRESH `event_id`s — the
+    canonical HITL-resume / body-replay scenario, where
+    `compute_phase_id` produces the deterministic phase_id and each
+    re-run mints a fresh event_id — collapse to a single audit row.
+
+    Previously this test pinned the OLD `on_conflict_do_nothing(
+    index_elements=['event_id'])` shape, which raised
+    `AuditPersisterIdempotencyConflict` on event_id collision. The
+    natural-key index migration (4b9f1c5a7e21) shifted the dedup
+    surface to the natural key; resume body re-runs no longer
+    accumulate duplicate `start` rows."""
     event1 = review_phase_event_factory(
         persister_setup.review_id, marker="start", phase_key="analyze:src/a.py"
     )
     await persister_setup.persister.emit_phase(event1)
 
-    event2 = event1.model_copy(update={"phase_key": "analyze:src/b.py"})
-    assert event2.event_id == event1.event_id
+    # Fresh `event_id` (uuid4 default) but identical natural key.
+    event2 = event1.model_copy(update={"event_id": uuid4()})
+    assert event2.event_id != event1.event_id
+    assert event2.phase_id == event1.phase_id
+    assert event2.marker == event1.marker
+    assert event2.phase_key == event1.phase_key
+
+    # Second emit silently no-ops (no raise; row count stays at 1).
+    await persister_setup.persister.emit_phase(event2)
+
+    async with persister_setup.engine.connect() as conn:
+        row = await conn.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM audit_events "
+                "WHERE review_id = :r AND event_type = 'review_phase'"
+            ),
+            {"r": persister_setup.review_id},
+        )
+        assert row.scalar_one() == 1
+
+
+async def test_emit_phase_distinct_marker_admits_pair(
+    persister_setup: PersisterTestSetup,
+    review_phase_event_factory: ReviewPhaseEventFactory,
+) -> None:
+    """`start` and `end` markers for the same `(review_id, phase_id,
+    phase_key)` are distinct natural keys — both rows MUST coexist
+    for the start/end pair `phase-events-bound-work` invariant to
+    hold."""
+    start_event = review_phase_event_factory(
+        persister_setup.review_id, marker="start", phase_key="analyze:src/a.py"
+    )
+    end_event = start_event.model_copy(update={"event_id": uuid4(), "marker": "end"})
+    await persister_setup.persister.emit_phase(start_event)
+    await persister_setup.persister.emit_phase(end_event)
+
+    async with persister_setup.engine.connect() as conn:
+        row = await conn.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM audit_events "
+                "WHERE review_id = :r AND event_type = 'review_phase'"
+            ),
+            {"r": persister_setup.review_id},
+        )
+        assert row.scalar_one() == 2
+
+
+async def test_emit_phase_natural_key_conflict_raises_on_node_id_drift(
+    persister_setup: PersisterTestSetup,
+    review_phase_event_factory: ReviewPhaseEventFactory,
+) -> None:
+    """Per CodeRabbit 2026-05-27: a producer bug that mints a phase_id
+    colliding with another node's natural key (phase_id is a `str` —
+    no schema-level enforcement that the value came from `compute_phase_id`
+    for the right (node_id, attempt_key)) MUST surface as a loud
+    `AuditPersisterIdempotencyConflict`, not a silent no-op. Without the
+    reload+compare on natural-key conflict, the producer bug would write
+    the wrong-node-id row and the index would silently skip — replay
+    tooling would never know two distinct logical phases shared a key.
+    """
+    first_event = review_phase_event_factory(
+        persister_setup.review_id,
+        marker="start",
+        phase_key=None,
+    )
+    await persister_setup.persister.emit_phase(first_event)
+
+    # Construct a second event with the SAME (review_id, phase_id,
+    # phase_key, marker) natural key but a DIFFERENT node_id —
+    # simulates a producer bug or replay-injected row. Factory default
+    # is node_id="triage"; model_copy flips it to "hitl".
+    drifted_event = first_event.model_copy(update={"event_id": uuid4(), "node_id": "hitl"})
+    assert drifted_event.phase_id == first_event.phase_id
+    assert drifted_event.marker == first_event.marker
+    assert drifted_event.phase_key == first_event.phase_key
+    assert drifted_event.node_id != first_event.node_id
 
     with pytest.raises(AuditPersisterIdempotencyConflict) as exc_info:
-        await persister_setup.persister.emit_phase(event2)
+        await persister_setup.persister.emit_phase(drifted_event)
 
-    assert "phase_key" in exc_info.value.mismatched_fields
+    assert "node_id" in exc_info.value.mismatched_fields
+
+
+async def test_emit_phase_natural_key_conflict_raises_on_is_eval_drift(
+    persister_setup: PersisterTestSetup,
+    review_phase_event_factory: ReviewPhaseEventFactory,
+) -> None:
+    """Sibling of the node_id-drift test: same natural key but flipped
+    `is_eval` flag MUST raise. The eval-isolation invariant per
+    `docs/testing.md` requires that prod and eval rows never collapse
+    onto each other; without the is_eval reload-and-compare, a producer
+    bug or replay-injected row could silently mix the two."""
+    first_event = review_phase_event_factory(
+        persister_setup.review_id,
+        marker="start",
+        phase_key=None,
+        is_eval=False,
+    )
+    await persister_setup.persister.emit_phase(first_event)
+
+    drifted_event = first_event.model_copy(update={"event_id": uuid4(), "is_eval": True})
+    assert drifted_event.is_eval is True
+    assert drifted_event.phase_id == first_event.phase_id
+
+    with pytest.raises(AuditPersisterIdempotencyConflict) as exc_info:
+        await persister_setup.persister.emit_phase(drifted_event)
+
+    assert "is_eval" in exc_info.value.mismatched_fields

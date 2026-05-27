@@ -153,7 +153,7 @@ class _StubHITLEventSink:
 
 
 class _StubReviewStatusSink:
-    """Satisfies ReviewStatusSink Protocol structurally (three async
+    """Satisfies ReviewStatusSink Protocol structurally (four async
     methods, all no-op stubs)."""
 
     async def mark_awaiting_approval(
@@ -165,6 +165,9 @@ class _StubReviewStatusSink:
         return None
 
     async def mark_awaiting_approval_expired(self, *, review_id: Any) -> None:
+        return None
+
+    async def mark_completed(self, *, review_id: Any) -> None:
         return None
 
 
