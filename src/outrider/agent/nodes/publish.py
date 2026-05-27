@@ -290,7 +290,7 @@ async def publish(
     lock_stack = AsyncExitStack()
     try:
         await lock_stack.enter_async_context(
-            publish_event_sink.acquire_publish_lock(state.review_id),
+            publish_event_sink.acquire_publish_lock(review_id=state.review_id),
         )
     except Exception as exc:
         await _emit_attempt(

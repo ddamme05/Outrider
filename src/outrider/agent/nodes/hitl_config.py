@@ -61,7 +61,15 @@ class HITLConfig(BaseSettings):
         frozen=True,
     )
 
-    timeout_minutes: int = Field(default=30, ge=0)
+    # `gt=0` (not `ge=0`): zero would set `expires_at == created_at` so
+    # every HITL gate fires expired immediately, and under `expire_only`
+    # (the V1 default + only legal value per the validator below) every
+    # CRITICAL/HIGH finding silently times out without a successful
+    # publish path. Production misconfiguration via
+    # `OUTRIDER_HITL_TIMEOUT_MINUTES=0` would be a silent quality
+    # regression with no error signal. Tests inject a clock or use a
+    # short positive value (e.g., `timeout_minutes=1`) rather than zero.
+    timeout_minutes: int = Field(default=30, gt=0)
     timeout_action: HITLTimeoutAction = Field(default=HITLTimeoutAction.EXPIRE_ONLY)
 
     @model_validator(mode="after")

@@ -115,6 +115,7 @@ class _RecordingPublishEventSink:
     @asynccontextmanager
     async def acquire_publish_lock(
         self,
+        *,
         review_id: UUID,  # noqa: ARG002
     ) -> AsyncIterator[None]:
         yield

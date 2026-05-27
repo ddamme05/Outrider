@@ -316,7 +316,7 @@ class PublishEventSink(Protocol):
         ...
 
     # See DECISIONS.md#027 — V1 per-review publish-side advisory lock.
-    def acquire_publish_lock(self, review_id: UUID) -> AbstractAsyncContextManager[None]:
+    def acquire_publish_lock(self, *, review_id: UUID) -> AbstractAsyncContextManager[None]:
         """Acquire a per-review advisory lock for the publish path.
 
         Returns an async context manager that yields once the lock

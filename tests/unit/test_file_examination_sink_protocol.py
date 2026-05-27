@@ -100,3 +100,19 @@ def test_audit_persister_satisfies_protocol() -> None:
     # the class has the attribute.
     assert hasattr(AuditPersister, "emit_file_examination")
     assert callable(AuditPersister.emit_file_examination)
+
+
+def test_protocol_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 (centrally-pinned-contract registration) doctrine: a new
+    method on `FileExaminationSink` must surface here AND at every
+    sink consumer + test fixture. Exact-membership check fails loudly
+    on silent drift.
+    """
+    expected = {"emit_file_examination"}
+    actual = {name for name in dir(FileExaminationSink) if not name.startswith("_")}
+    assert actual == expected, (
+        f"FileExaminationSink method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}."
+    )

@@ -87,24 +87,30 @@ class TraceDecision(BaseModel):
     @field_validator("resolved_candidate_paths")
     @classmethod
     def _enforce_canonical_resolved_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
-        """Per-element `validate_diff_path` per #024 point 6. Load-bearing
-        for the ambiguous branch where `target_file is None` but the
-        tuple still carries multiple resolver-output paths that
-        consumers (analyze round 2, replay reconstruction) rely on."""
-        return tuple(validate_diff_path(p) for p in paths)
+        """Per-element `validate_diff_path` + deterministic sort per #024
+        point 6. Load-bearing for the ambiguous branch where
+        `target_file is None` but the tuple still carries multiple
+        resolver-output paths that consumers (analyze round 2, replay
+        reconstruction) rely on. Sorted ordering mirrors
+        `TraceDecisionEvent._enforce_canonical_resolved_paths` —
+        state ↔ audit canonical-bytes lockstep under replay."""
+        return tuple(sorted(validate_diff_path(p) for p in paths))
 
     @field_validator("proposed_import_strings")
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        """Per-element `is_valid_import_string` so the schema layer
-        enforces the same canonical form `TraceCandidate.import_string`
-        guarantees at the singleton boundary. Defense in depth against a
-        direct state-layer construction (replay path, test fixture)
-        bypassing the upstream singleton validator. Mirror of
-        `TraceDecisionEvent._enforce_canonical_proposed_import_strings`.
-        Returns the tuple of NFC-normalized canonical forms.
+        """Per-element `is_valid_import_string` + deterministic sort so
+        the schema layer enforces the same canonical form
+        `TraceCandidate.import_string` guarantees at the singleton
+        boundary. Defense in depth against a direct state-layer
+        construction (replay path, test fixture) bypassing the
+        upstream singleton validator. Sorted ordering mirrors
+        `TraceDecisionEvent._enforce_canonical_proposed_import_strings`
+        — state ↔ audit lockstep across replay (LLM proposal ordering
+        is non-deterministic; sorting canonicalizes both layers).
+        Returns the sorted tuple of NFC-normalized canonical forms.
         """
-        return tuple(is_valid_import_string(value) for value in values)
+        return tuple(sorted(is_valid_import_string(value) for value in values))
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:

@@ -377,6 +377,7 @@ class _StubPublishEventSink:
     @asynccontextmanager
     async def acquire_publish_lock(
         self,
+        *,
         review_id: Any,  # noqa: ARG002
     ) -> AsyncIterator[None]:
         yield

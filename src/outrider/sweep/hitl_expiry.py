@@ -150,10 +150,17 @@ async def transition_expired_hitl_reviews(
     """
     # Query expired rows. Uses the partial index
     # `ix_reviews_awaiting_approval_expires_at` from Group 3.
+    # `is_eval=False` filter per `docs/testing.md:59` ("Sweep jobs:
+    # ignore is_eval=True rows. An eval review that checkpoints
+    # mid-HITL won't be marked stuck by the sweep.") — the contract
+    # the dashboard's is_eval filter depends on. Latent under test-DB
+    # isolation today; the filter is the structural defense if
+    # eval data ever shares a DB with prod.
     result = await conn.execute(
         select(Review.id, Review.expires_at).where(
             Review.status == "awaiting_approval",
             Review.expires_at < datetime.now(UTC),
+            Review.is_eval.is_(False),
         )
     )
     expired_rows = list(result.all())
@@ -279,9 +286,13 @@ async def reclaim_stuck_hitl_states(
     # set so post-transition orphans (window-f rows already flipped
     # to awaiting_approval_expired by the transition sub-job) stay
     # reachable for audit-row recovery. See docstring rationale.
+    # `is_eval=False` filter per `docs/testing.md:59` contract — see
+    # the sibling filter on `transition_expired_hitl_reviews` for the
+    # full rationale.
     result = await conn.execute(
         select(Review.id, Review.expires_at).where(
             Review.status.in_(("awaiting_approval", "awaiting_approval_expired")),
+            Review.is_eval.is_(False),
         )
     )
     candidate_rows = list(result.all())

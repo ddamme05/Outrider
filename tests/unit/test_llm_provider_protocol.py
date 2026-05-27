@@ -39,6 +39,24 @@ def test_llm_provider_is_protocol() -> None:
     assert issubclass(LLMProvider, Protocol)
 
 
+def test_llm_provider_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 (centrally-pinned-contract registration) doctrine: a new
+    method on `LLMProvider` (e.g., a V1.5 `stream` for token-streaming
+    or `embeddings` for retrieval) must surface here AND at every
+    provider implementation + test fixture. Exact-membership check
+    fails loudly on silent drift.
+    """
+    expected = {"complete"}
+    actual = {name for name in dir(LLMProvider) if not name.startswith("_")}
+    assert actual == expected, (
+        f"LLMProvider method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}. Update this pin AND every provider impl "
+        f"(AnthropicProvider, V1.5 OpenAIProvider) if adding a method."
+    )
+
+
 def test_llm_provider_has_async_complete_method() -> None:
     assert hasattr(LLMProvider, "complete")
     sig = inspect.signature(LLMProvider.complete)
@@ -70,6 +88,21 @@ def test_llm_exchange_persister_persist_is_async() -> None:
     assert hasattr(LLMExchangePersister, "persist")
     method = LLMExchangePersister.persist
     assert inspect.iscoroutinefunction(method) or asyncio_protocol_check(method)
+
+
+def test_llm_exchange_persister_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 doctrine: a new method on `LLMExchangePersister` (e.g.,
+    `persist_retry_attempt` if FUP-025's retry-policy work lands) must
+    surface here AND at the durable `AuditPersister` + test doubles.
+    """
+    expected = {"persist"}
+    actual = {name for name in dir(LLMExchangePersister) if not name.startswith("_")}
+    assert actual == expected, (
+        f"LLMExchangePersister method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}."
+    )
 
 
 def asyncio_protocol_check(method: object) -> bool:

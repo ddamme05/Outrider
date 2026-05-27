@@ -73,7 +73,7 @@ async def test_two_concurrent_same_review_lock_serializes(
     loop = asyncio.get_running_loop()
 
     async def hold_lock(task_name: str, hold_for: float) -> None:
-        async with persister.acquire_publish_lock(review_id):
+        async with persister.acquire_publish_lock(review_id=review_id):
             timeline.append((f"{task_name}_acquired", loop.time()))
             await asyncio.sleep(hold_for)
             timeline.append((f"{task_name}_releasing", loop.time()))
@@ -117,7 +117,7 @@ async def test_distinct_review_ids_lock_independently(
     loop = asyncio.get_running_loop()
 
     async def hold_and_record(name: str, review_id: UUID) -> None:
-        async with persister.acquire_publish_lock(review_id):
+        async with persister.acquire_publish_lock(review_id=review_id):
             acquire_times[name] = loop.time()
             # Hold the lock briefly so the test can observe whether
             # the other task waited or acquired in parallel.
@@ -158,7 +158,7 @@ async def test_timeout_raises_after_holder_exceeds_deadline(
     holder_released = asyncio.Event()
 
     async def holder() -> None:
-        async with persister.acquire_publish_lock(review_id):
+        async with persister.acquire_publish_lock(review_id=review_id):
             # Signal that the lock IS held — replaces the prior
             # `asyncio.sleep(0.1)` race where the waiter could probe
             # before the holder finished acquiring.
@@ -170,7 +170,7 @@ async def test_timeout_raises_after_holder_exceeds_deadline(
     async def waiter() -> None:
         # Tight deadline relative to the holder's hold duration.
         async with persister.acquire_publish_lock(
-            review_id,
+            review_id=review_id,
             max_wait_seconds=1.0,
             initial_backoff_seconds=0.05,
             max_backoff_seconds=0.2,
