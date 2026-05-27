@@ -298,7 +298,34 @@ async def decide(
          `BackgroundTasks`; return 202 immediately.
     """
     reader = request.app.state.review_status_reader
-    preflight = await reader.fetch_for_decide(review_id=review_id)
+    # `fetch_for_decide` raises `ValueError` from
+    # `ReviewStatusPersister._load_gated_severities` when the gated
+    # finding_ids on `reviews.hitl_request` diverge from the
+    # `audit_events` FindingEvent rows (state-corruption signal).
+    # Translate to the same structured 500 shape as the
+    # endpoint-side completeness check below so production (durable
+    # persister, raises) and tests (stubbed reader, returns incomplete
+    # map) produce the same operator-visible response.
+    try:
+        preflight = await reader.fetch_for_decide(review_id=review_id)
+    except ValueError as exc:
+        _LOGGER.exception(
+            "preflight_gated_severities_incomplete_persister",
+            extra={"review_id": str(review_id)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "preflight_gated_severities_incomplete",
+                "note": (
+                    "State corruption surfaced at the persister: "
+                    "reviews.hitl_request.findings_requiring_approval "
+                    "diverged from audit_events FindingEvent rows. "
+                    "Operator triage via audit log + reviews.hitl_request "
+                    "JSONB; structured detail in the persister exception."
+                ),
+            },
+        ) from exc
 
     # State gate.
     if preflight is None:
@@ -368,6 +395,40 @@ async def decide(
                     "State corruption: reviews.hitl_request.findings_requiring_approval "
                     "diverged from audit_events FindingEvent rows. Operator triage "
                     "via audit log + reviews.hitl_request JSONB."
+                ),
+            },
+        )
+
+    # No-op override defense: reject SEVERITY_OVERRIDE outcomes where
+    # `override_severity` equals the persisted baseline. Without this
+    # pre-check the payload passes endpoint validation, the audit
+    # `HITLDecisionEvent` lands (append-only — can't undo), the body
+    # flips `reviews.status` to `running`, and the publish-time
+    # `PublishEligibilityEvent._enforce_override_legitimacy` rejects —
+    # wedging the review outside both `/decide` retry (preflight sees
+    # `hitl_decision != NULL` → 409) and `reclaim_stuck_hitl_states`
+    # (status != awaiting_approval*). Schema-layer defense lives in
+    # `PerFindingDecision.enforce_override_fields`; this endpoint-side
+    # check produces the controlled 422 (the schema raise would become
+    # 500 if it reached `_build_domain_decisions`).
+    no_op_overrides = sorted(
+        str(d.finding_id)
+        for d in payload.decisions
+        if d.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+        and d.finding_id in preflight.gated_finding_severities
+        and d.override_severity == preflight.gated_finding_severities[d.finding_id]
+    )
+    if no_op_overrides:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "noop_severity_override",
+                "finding_ids": no_op_overrides,
+                "note": (
+                    "severity_override requires override_severity != "
+                    "original_severity (a real override implies a "
+                    "baseline-to-applied transition). If no severity "
+                    "change is intended, submit outcome=approve instead."
                 ),
             },
         )
