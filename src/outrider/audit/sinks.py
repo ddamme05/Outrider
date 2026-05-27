@@ -289,7 +289,7 @@ class PublishEventSink(Protocol):
         """
         ...
 
-    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
+    async def query_prior_publish_event(self, *, review_id: UUID) -> PublishEvent | None:
         """Return the most-recent prior `PublishEvent` for `review_id`,
         or `None` if no prior event was emitted.
 

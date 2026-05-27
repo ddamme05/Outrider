@@ -2147,7 +2147,7 @@ class AuditPersister:
             )
         return result
 
-    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:
+    async def query_prior_publish_event(self, *, review_id: UUID) -> PublishEvent | None:
         """Return the most-recent prior `PublishEvent` for `review_id`, or None.
 
         Per FUP-064: the V1 publish node's intra-Outrider idempotency
@@ -2351,7 +2351,7 @@ class AuditPersister:
             await asyncio.sleep(sleep_for)
             backoff = min(backoff * 2, max_backoff_seconds)
 
-    async def query_hitl_decision_event(self, review_id: UUID) -> HITLDecisionEvent | None:
+    async def query_hitl_decision_event(self, *, review_id: UUID) -> HITLDecisionEvent | None:
         """Return the persisted `HITLDecisionEvent` for `review_id`, or None.
 
         Sister of `query_prior_publish_event`. The HITL audit row's

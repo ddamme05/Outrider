@@ -308,7 +308,7 @@ async def publish(
     try:
         try:
             prior_publish_event = await publish_event_sink.query_prior_publish_event(
-                state.review_id,
+                review_id=state.review_id,
             )
         except Exception as exc:
             await _emit_attempt(

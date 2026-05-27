@@ -101,7 +101,7 @@ class _RecordingPublishEventSink:
     async def emit_publish_result(self, event: PublishEvent) -> None:
         self.results.append(event)
 
-    async def query_prior_publish_event(self, review_id: UUID) -> PublishEvent | None:  # noqa: ARG002
+    async def query_prior_publish_event(self, *, review_id: UUID) -> PublishEvent | None:  # noqa: ARG002
         return self.prior_publish_event
 
     @asynccontextmanager
