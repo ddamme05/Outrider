@@ -14,8 +14,6 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-import pytest
-
 from outrider.db.sinks import ReviewStatusReader, ReviewStatusSink
 
 
@@ -135,12 +133,21 @@ def test_partial_sink_rejected_by_runtime_check() -> None:
     assert not isinstance(_Partial(), ReviewStatusSink)
 
 
-@pytest.mark.parametrize(
-    "method_name",
-    ["mark_awaiting_approval", "mark_running", "mark_awaiting_approval_expired"],
-)
-def test_protocol_declares_three_methods(method_name: str) -> None:
-    assert hasattr(ReviewStatusSink, method_name)
+def test_protocol_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 (centrally-pinned-contract registration) doctrine: a new
+    method on `ReviewStatusSink` (e.g., a V1.5 `mark_failed` for
+    operator-triage transitions) must surface here AND every consumer.
+    Exact-membership check fails loudly on silent drift.
+    """
+    expected = {"mark_awaiting_approval", "mark_running", "mark_awaiting_approval_expired"}
+    actual = {name for name in dir(ReviewStatusSink) if not name.startswith("_")}
+    assert actual == expected, (
+        f"ReviewStatusSink method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}. Update this pin AND every sink consumer + "
+        f"test fixture if adding a method."
+    )
 
 
 def test_reader_protocol_is_runtime_checkable_with_durable_persister() -> None:

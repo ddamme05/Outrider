@@ -100,13 +100,30 @@ def _partition_findings(
     admitted by multiple analyze passes appears at most once in either
     tuple — load-bearing for the re-entrancy invariant (same state ->
     same partition on re-run).
+
+    **Gated-takes-precedence rule.** A finding_id that appears in
+    multiple rounds with different severities (e.g., round-1 LOW then
+    round-2 HIGH, or vice versa) lands in `gated` if ANY round flagged
+    it CRITICAL/HIGH. Without this rule, a finding seen as MEDIUM in
+    round-1 + HIGH in round-2 would end up in BOTH sets and trigger
+    the downstream `HITLRequest._enforce_finding_partition` overlap
+    rejection — wedging the body. Two-pass: first sweep collects the
+    gated set; second sweep adds to autopost only if NOT already
+    gated. The auto-promotion to gated is the safe direction:
+    over-gating a finding produces an unnecessary HITL gate that
+    reviewers can APPROVE; under-gating publishes a CRITICAL/HIGH
+    finding without review.
     """
     gated: set[UUID] = set()
+    for round_ in state.analysis_rounds:
+        for finding in round_.findings:
+            if finding.severity in _GATED_SEVERITIES:
+                gated.add(finding.finding_id)
     autopost: set[UUID] = set()
     for round_ in state.analysis_rounds:
         for finding in round_.findings:
-            target = gated if finding.severity in _GATED_SEVERITIES else autopost
-            target.add(finding.finding_id)
+            if finding.severity not in _GATED_SEVERITIES and finding.finding_id not in gated:
+                autopost.add(finding.finding_id)
     return tuple(sorted(gated)), tuple(sorted(autopost))
 
 

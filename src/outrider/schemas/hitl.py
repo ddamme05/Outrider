@@ -36,7 +36,7 @@ from enum import StrEnum
 from typing import Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from outrider.policy import FindingSeverity
 
@@ -132,6 +132,19 @@ class HITLRequest(BaseModel):
     auto_post_findings: tuple[UUID, ...]
     created_at: AwareDatetime
     expires_at: AwareDatetime
+
+    @field_validator("findings_requiring_approval", "auto_post_findings", mode="after")
+    @classmethod
+    def _canonicalize_finding_tuple(cls, v: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        """Sort deterministically so semantically-equal sets produce
+        byte-identical state payloads. Mirrors the audit-event sibling at
+        `HITLRequestEvent._canonicalize_finding_tuple` — both must
+        canonicalize so the state ↔ audit lockstep contract holds across
+        replay (deserialized audit row + freshly-constructed schema must
+        compare equal when content is equal regardless of tuple ordering
+        at the source).
+        """
+        return tuple(sorted(v, key=str))
 
     @model_validator(mode="after")
     def _enforce_finding_partition(self) -> Self:

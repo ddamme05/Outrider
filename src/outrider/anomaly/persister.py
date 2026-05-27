@@ -105,7 +105,12 @@ class AnomalyPersister:
                 )
                 .on_conflict_do_nothing(
                     index_elements=["review_id"],
-                    index_where=(Anomaly.rule_name == "hitl_timeout"),
+                    # Use the enum constant rather than a string literal
+                    # so a future enum-value rename surfaces as a
+                    # mypy/test error instead of a silently-mismatched
+                    # partial-index predicate. `.value` extracts the
+                    # `Text` form the DB column stores.
+                    index_where=(Anomaly.rule_name == AnomalyRuleName.HITL_TIMEOUT.value),
                 )
             )
             await session.execute(stmt)
