@@ -354,8 +354,15 @@ async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -
     checkpointer.aget = AsyncMock(return_value=None)
 
     # session_factory needs to support `async with` for the UPDATE.
+    # `update_result.rowcount > 0` gates the failed-count + log emit.
+    # Return a result with rowcount=1 so the test exercises the
+    # "match found, increment failed" branch (the happy path for
+    # window-c reclaim). A separate test could mock rowcount=0 to
+    # exercise the concurrent-actor-changed-status branch.
+    update_result = MagicMock()
+    update_result.rowcount = 1
     session_inner = MagicMock()
-    session_inner.execute = AsyncMock()
+    session_inner.execute = AsyncMock(return_value=update_result)
     session_inner.__aenter__ = AsyncMock(return_value=session_inner)
     session_inner.__aexit__ = AsyncMock(return_value=None)
     session_inner.begin = MagicMock(return_value=session_inner)

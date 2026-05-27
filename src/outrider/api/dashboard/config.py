@@ -49,8 +49,7 @@ class DashboardSettings(BaseSettings):
         value) would compare equal to the empty configured secret.
         """
         raw = v.get_secret_value()
-        stripped = raw.strip()
-        if not stripped:
+        if not raw.strip():
             msg = (
                 "OUTRIDER_ADMIN_API_KEY is empty or whitespace-only. "
                 "An empty admin key would admit empty `Bearer` headers "
@@ -58,4 +57,9 @@ class DashboardSettings(BaseSettings):
                 "byte-strings is True). Set a non-empty secret."
             )
             raise ValueError(msg)
-        return SecretStr(stripped) if stripped != raw else v
+        # Validation only — return v unchanged. Stripping the secret
+        # would mutate credential material; the auth comparison at
+        # `api/dashboard/auth.py` uses `compare_digest` on the raw
+        # bytes, so any rewrite here would silently desync from the
+        # operator's configured value.
+        return v

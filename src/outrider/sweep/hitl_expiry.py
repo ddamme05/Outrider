@@ -390,8 +390,19 @@ async def reclaim_stuck_hitl_states(
         # whether the row was already flipped to
         # awaiting_approval_expired by transition or still sits in
         # awaiting_approval.
+        #
+        # Concurrent-actor defense: between the candidate SELECT and
+        # this UPDATE, another actor (a parallel sweep, a manual SQL
+        # operator triage, the dashboard) could have changed the
+        # status (e.g., to `running` via a window-(f) graph-driven
+        # recovery on a peer process). The UPDATE's WHERE clause
+        # filters to the two admitted source states, so a status
+        # change would land rowcount=0 — incrementing `failed` and
+        # logging "reclaimed as failed" without a matched row would
+        # be a phantom signal. Gate the counter + log on the actual
+        # rowcount.
         async with session_factory() as session, session.begin():
-            await session.execute(
+            update_result = await session.execute(
                 update(Review)
                 .where(
                     Review.id == review_id,
@@ -399,18 +410,39 @@ async def reclaim_stuck_hitl_states(
                 )
                 .values(status="failed")
             )
-        failed += 1
-        logger.warning(
-            "hitl_reclaim_marked_failed",
-            extra={
-                "review_id": str(review_id),
-                "note": (
-                    "Row stuck past grace period with no audit row AND no "
-                    "LangGraph checkpoint; reclaimed as failed for operator "
-                    "triage (window-c crash)."
-                ),
-            },
-        )
+        # `AsyncSession.execute(...)` returns `Result[Any]` per the
+        # async stubs; `CursorResult` (the runtime type for UPDATE/
+        # INSERT/DELETE) carries `rowcount` but mypy's `Result` base
+        # type doesn't expose it. `getattr` keeps the static check
+        # honest without a cast (the runtime attribute is reliable
+        # across SQLAlchemy 2.x).
+        update_rowcount: int = getattr(update_result, "rowcount", 0) or 0
+        if update_rowcount > 0:
+            failed += 1
+            logger.warning(
+                "hitl_reclaim_marked_failed",
+                extra={
+                    "review_id": str(review_id),
+                    "note": (
+                        "Row stuck past grace period with no audit row AND no "
+                        "LangGraph checkpoint; reclaimed as failed for operator "
+                        "triage (window-c crash)."
+                    ),
+                },
+            )
+        else:
+            logger.info(
+                "hitl_reclaim_status_changed_concurrently",
+                extra={
+                    "review_id": str(review_id),
+                    "note": (
+                        "Window-(c) mark-failed UPDATE matched 0 rows — status "
+                        "changed between SELECT and UPDATE (parallel sweep, "
+                        "manual operator action, or peer-process window-(f) "
+                        "graph-driven recovery). No phantom failed-count emit."
+                    ),
+                },
+            )
 
     return {"recovered": recovered, "failed": failed}
 

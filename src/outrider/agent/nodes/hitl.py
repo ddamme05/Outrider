@@ -148,6 +148,7 @@ def _build_decision(
     review_id: UUID,
     resume_value: dict[str, object],
     is_eval: bool,
+    request_created_at: datetime,
 ) -> tuple[HITLDecision, HITLDecisionEvent]:
     """Construct the state-layer HITLDecision + audit-shadow event from
     the resume value the endpoint enqueued via `Command(resume=...)`.
@@ -165,12 +166,18 @@ def _build_decision(
         decisions=decision.decisions,
         annotation=decision.annotation,
     )
-    # `decision_latency_seconds` is a derived metric: created_at on the
-    # request is the reference, decided_at on the decision is the
-    # observation. The HITL node has visibility to neither directly
-    # without reading `reviews.hitl_request` JSONB; compute as zero
-    # here, the dashboard renders the difference from the audit-row
-    # pair at query time.
+    # `decision_latency_seconds`: the elapsed wall-clock between the
+    # canonical HITLRequest's `created_at` and the reviewer's
+    # `decided_at`. Computed here at audit-emit time so the field is
+    # canonical on the persisted row (alternative: leave at 0.0 and
+    # let dashboard compute from the audit-row pair at query time;
+    # rejected because storing the derived metric at emit time keeps
+    # consumers simpler + the value is available right here without
+    # the dashboard needing to join HITLRequestEvent ↔ HITLDecisionEvent
+    # for every read). `max(0.0, ...)` guards against a clock-skew
+    # case where decided_at < created_at (shouldn't happen in V1's
+    # in-process clock, but defensive).
+    latency = max(0.0, (decision.decided_at - request_created_at).total_seconds())
     event = HITLDecisionEvent(
         event_id=uuid4(),
         review_id=review_id,
@@ -180,7 +187,7 @@ def _build_decision(
         annotation=decision.annotation,
         decided_at=decision.decided_at,
         decisions_content_hash=content_hash,
-        decision_latency_seconds=0.0,
+        decision_latency_seconds=latency,
     )
     return decision, event
 
@@ -305,6 +312,7 @@ async def hitl(
         review_id=state.review_id,
         resume_value=resume_value,
         is_eval=state.is_eval,
+        request_created_at=canonical_request.created_at,
     )
     _validate_resume_against_request(request=canonical_request, decision=decision)
 

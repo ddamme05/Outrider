@@ -73,8 +73,7 @@ class GitHubAppSettings(BaseSettings):
         Mirrors the `DashboardSettings.admin_api_key` validator.
         """
         raw = v.get_secret_value()
-        stripped = raw.strip()
-        if not stripped:
+        if not raw.strip():
             msg = (
                 "OUTRIDER_GITHUB_* secret is empty or whitespace-only. "
                 "Set a non-empty value: empty webhook_secret admits "
@@ -83,4 +82,9 @@ class GitHubAppSettings(BaseSettings):
                 "at JWT-mint time with an opaque cryptography error."
             )
             raise ValueError(msg)
-        return SecretStr(stripped) if stripped != raw else v
+        # Validation only — return v unchanged. Stripping the secret
+        # would mutate credential material; legitimate secrets that
+        # happen to include leading/trailing whitespace (rare but
+        # possible for some key formats) would silently fail at
+        # consumer sites if rewritten here.
+        return v
