@@ -44,10 +44,17 @@ def test_wrong_prefix_returns_401() -> None:
     assert resp.json() == {"detail": "unauthorized"}
 
 
+# Canonical 401 response body — used by every unauthorized-branch test
+# below. Pinning both status AND body ensures every failure path emits
+# the SAME uniform response shape (no leak via response variation).
+_UNAUTHORIZED_BODY = {"detail": "unauthorized"}
+
+
 def test_wrong_key_returns_401() -> None:
     client = _app_with_key("correct-key")
     resp = client.get("/protected", headers={"Authorization": "Bearer wrong-key"})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_correct_key_returns_200() -> None:
@@ -63,12 +70,14 @@ def test_unwired_admin_key_returns_401() -> None:
     client = _app_with_key(None)
     resp = client.get("/protected", headers={"Authorization": "Bearer anything"})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_empty_token_after_bearer_returns_401() -> None:
     client = _app_with_key("correct-key")
     resp = client.get("/protected", headers={"Authorization": "Bearer "})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_longer_submitted_key_returns_401() -> None:
@@ -78,6 +87,7 @@ def test_longer_submitted_key_returns_401() -> None:
     client = _app_with_key("short")
     resp = client.get("/protected", headers={"Authorization": "Bearer shortlongersuffix"})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_shorter_submitted_key_returns_401() -> None:
@@ -85,6 +95,7 @@ def test_shorter_submitted_key_returns_401() -> None:
     client = _app_with_key("longer-key-text")
     resp = client.get("/protected", headers={"Authorization": "Bearer longer"})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 @pytest.mark.parametrize(
@@ -100,6 +111,7 @@ def test_malformed_authorization_header_returns_401(header_value: str) -> None:
     client = _app_with_key("correct-key")
     resp = client.get("/protected", headers={"Authorization": header_value})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 def test_app_with_partial_authorization_prefix_returns_401() -> None:
@@ -107,6 +119,7 @@ def test_app_with_partial_authorization_prefix_returns_401() -> None:
     client = _app_with_key("correct-key")
     resp = client.get("/protected", headers={"Authorization": "Bearertoken"})
     assert resp.status_code == 401
+    assert resp.json() == _UNAUTHORIZED_BODY
 
 
 # Defensive: confirm the module exports.

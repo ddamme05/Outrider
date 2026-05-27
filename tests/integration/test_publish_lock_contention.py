@@ -180,8 +180,18 @@ async def test_timeout_raises_after_holder_exceeds_deadline(
     # Synchronize: wait until the holder has the lock before starting
     # the waiter. Without this, the waiter could probe the lock BEFORE
     # the holder finished acquiring, acquire successfully (no contention),
-    # and the test would race-condition-fail.
-    await holder_acquired.wait()
+    # and the test would race-condition-fail. Bound with `wait_for` so
+    # a holder that errors before calling `holder_acquired.set()`
+    # surfaces as a TimeoutError + the holder_task's exception, not as
+    # an infinite hang.
+    try:
+        await asyncio.wait_for(holder_acquired.wait(), timeout=5.0)
+    except TimeoutError:
+        # Surface any holder-side exception that prevented set()
+        # from being called.
+        if holder_task.done():
+            holder_task.result()  # re-raises holder's exception
+        raise
 
     with pytest.raises(AuditPersisterPublishLockAcquisitionTimeoutError) as exc_info:
         await waiter()

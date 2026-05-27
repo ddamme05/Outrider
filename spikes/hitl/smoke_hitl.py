@@ -286,7 +286,16 @@ async def _run_mock_smoke() -> int:
     # Build a resume payload (HITLDecision) that approves the gated
     # finding. This is what the dashboard endpoint constructs server-
     # side from the reviewer's HITLDecisionPayload submission.
-    gated_finding_id = UUID(interrupt_payload["findings_requiring_approval"][0])
+    gated_findings = interrupt_payload.get("findings_requiring_approval", [])
+    if not gated_findings:
+        logger.error(
+            "FAIL: interrupt payload's findings_requiring_approval is empty "
+            "(expected at least one CRITICAL/HIGH finding seeded by the smoke "
+            "harness): %r",
+            interrupt_payload,
+        )
+        return 1
+    gated_finding_id = UUID(gated_findings[0])
     resume_value: dict[str, Any] = {
         "reviewer_id": "admin",
         "decisions": [
