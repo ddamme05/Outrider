@@ -306,7 +306,9 @@ async def reclaim_stuck_hitl_states(
         # HITLDecisionEvent. Window-(f) detection — audit row
         # presence is the canonical signal, no grace gate needed.
         try:
-            audit_decision_event = await audit_persister.query_hitl_decision_event(review_id)
+            audit_decision_event = await audit_persister.query_hitl_decision_event(
+                review_id=review_id,
+            )
         except Exception:
             logger.exception(
                 "hitl_reclaim_audit_query_failed",

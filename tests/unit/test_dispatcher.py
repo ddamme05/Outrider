@@ -66,6 +66,23 @@ def test_dispatcher_protocol_member_presence() -> None:
     assert not isinstance(_MissingDispatch(), ReviewDispatcher)
 
 
+def test_review_dispatcher_declares_exact_method_set() -> None:
+    """Protocol surface check — exact membership, not just presence.
+
+    Class-10 (centrally-pinned-contract registration) doctrine: a new
+    method on `ReviewDispatcher` (e.g., V2 `CeleryDispatcher` adding
+    `dispatch_with_priority` or similar) must surface here AND at
+    every concrete dispatcher impl + test fixture.
+    """
+    expected = {"dispatch"}
+    actual = {name for name in dir(ReviewDispatcher) if not name.startswith("_")}
+    assert actual == expected, (
+        f"ReviewDispatcher method set drift: missing={expected - actual}, "
+        f"extra={actual - expected}. Update this pin AND every dispatcher impl "
+        f"(BackgroundTasksDispatcher, V2 CeleryDispatcher) if adding a method."
+    )
+
+
 def test_dispatch_enqueues_run_graph() -> None:
     """`dispatch(state)` calls `background_tasks.add_task(run_graph, state)`."""
     bg_tasks = BackgroundTasks()
