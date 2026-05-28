@@ -30,6 +30,10 @@ TEST_ANALYZE.md
 SMOKE_TEST.md
 SESSION_HANDOFF.md
 SANDBOX_Q6_RUNBOOK.md
+ROADMAP.md
+SMOKE_TEST_HITL.md
+spikes/hitl/smoke_hitl_happy.sh
+spikes/hitl/smoke_hitl_edges.sh
 
 # --- Environment and secrets ---
 .env
