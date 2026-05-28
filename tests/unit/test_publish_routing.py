@@ -631,9 +631,10 @@ def test_collect_admitted_findings_raises_when_review_report_is_none() -> None:
         changed_files=(_make_changed_file(),),
     )
     # The `_make_state` helper constructs a synthesize-canonical state
-    # with `review_report` populated; explicitly null it to exercise
-    # the fail-loud branch.
-    object.__setattr__(state, "review_report", None)
+    # with `review_report` populated; null it to exercise the
+    # fail-loud branch. `ReviewState` is not frozen so plain
+    # attribute assignment works.
+    state.review_report = None
 
     with pytest.raises(RuntimeError, match="synthesize node must have run"):
         _collect_admitted_findings(state)

@@ -59,6 +59,7 @@ Order of operations (failure-path-significant):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import time
@@ -70,7 +71,9 @@ from outrider.llm.base import LLMRequest
 from outrider.llm.parsing import strip_outer_json_fence
 from outrider.llm.pricing import PRICING_VERSION
 from outrider.policy.canonical import compute_phase_id
-from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+# ACTIVE_POLICY_VERSION used only in docstring references for context;
+# the runtime snapshot anchor is `state.triage_result.policy_version`.
 from outrider.prompts import synthesize as synthesize_prompt
 from outrider.schemas.review_report import ReviewMetrics, ReviewReport
 
@@ -181,41 +184,52 @@ def _enforce_synthesize_input_invariants(state: ReviewState) -> None:
     Both surfaces raise `FindingForgeryDetectedError`; ops triage
     routes the same way as cross-round severity divergence.
     """
-    # Snapshot the policy_version from the first finding seen.
-    # Analyze captures the active policy at node-entry time and embeds
-    # it on every finding it emits; the review's "active policy" is
-    # therefore that captured snapshot, NOT the live
-    # `ACTIVE_POLICY_VERSION` (which can drift if a deploy bumps the
-    # version mid-review). Comparing against the snapshot:
-    #   - Catches mid-batch smuggle (one forged finding with a
-    #     different version → mismatch fires)
-    #   - Does NOT deny completion on mid-deploy hot-reload bumps
-    #     (legitimate findings all share the snapshot regardless of
-    #     where the live constant has moved to)
-    # The residual gap (all-findings-forged with a coherent fake
-    # snapshot) requires full analyze compromise; tracked as a future
-    # snapshot-fortification FUP. The cross-round divergence detector
-    # (`_detect_and_report_divergence`) is the load-bearing defense
-    # against MIXED legit + forged batches via the content_hash group
-    # check below.
-    expected_policy_version: str | None = None
+    # Snapshot anchor: `state.triage_result.policy_version`. Triage
+    # runs FIRST in the graph and captures `ACTIVE_POLICY_VERSION` at
+    # its own node-entry time; that capture is upstream of any
+    # attacker-controllable analyze output. Comparing each finding's
+    # `policy_version` against the triage snapshot:
+    #   - Catches single-finding-poisoning DoS (attacker plants ONE
+    #     forged finding with a different version; trusted triage
+    #     snapshot makes it visible).
+    #   - Survives mid-deploy hot-reload bumps (legitimate findings
+    #     and triage all share the version captured at review START,
+    #     regardless of where the live `ACTIVE_POLICY_VERSION`
+    #     constant has moved by synthesize time).
+    #   - Catches mid-batch divergence (mixed legit + forged batches).
+    # The residual gap (full triage + analyze + state compromise with
+    # coherent fake triage_result snapshot) requires multiple-node
+    # graph compromise; the persister-side known-version check
+    # (matching `severity_policies` row) is the next defense layer
+    # and is tracked as a future snapshot-fortification FUP.
+    if state.triage_result is None:
+        # Triage MUST have run before synthesize per the canonical
+        # graph topology. The orchestration error is itself a
+        # corruption signal (graph routed past triage somehow).
+        msg = (
+            "synthesize requires state.triage_result to be set as "
+            "the policy_version snapshot anchor (triage node must "
+            "have run before synthesize). Aborting before any audit "
+            "row lands."
+        )
+        raise FindingForgeryDetectedError(msg)
+    expected_policy_version = state.triage_result.policy_version
     for round_index, analysis_round in enumerate(state.analysis_rounds):
         for finding in analysis_round.findings:
-            if expected_policy_version is None:
-                expected_policy_version = finding.policy_version
             if finding.policy_version != expected_policy_version:
                 raise FindingForgeryDetectedError(
                     f"synthesize rejected finding with "
                     f"policy_version={finding.policy_version!r} "
-                    f"differing from the review's snapshot "
+                    f"differing from the triage snapshot "
                     f"({expected_policy_version!r}) at "
                     f"round_index={round_index}, "
                     f"content_hash={finding.content_hash!r}. "
                     f"`ReviewFinding._enforce_severity_matches_policy` "
                     f"short-circuits on non-active policy_version "
                     f"(review_finding.py:352); a finding carrying a "
-                    f"different version mid-batch indicates a forge "
-                    f"attempt. Aborting before audit row lands."
+                    f"different version than the triage snapshot "
+                    f"indicates a forge attempt. Aborting before audit "
+                    f"row lands."
                 )
             if finding.original_severity is not None:
                 raise FindingForgeryDetectedError(
@@ -297,14 +311,21 @@ async def _detect_and_report_divergence(
                 # Log via the imported `logging` module — the divergence
                 # raise below is the authoritative signal regardless of
                 # the emit outcome. Do NOT swallow the divergence.
-                logging.getLogger(__name__).exception(
-                    "synthesize_anomaly_emit_failed_during_divergence",
-                    extra={
-                        "review_id": str(state.review_id),
-                        "content_hash": content_hash,
-                        "emit_exception_type": type(emit_exc).__name__,
-                    },
-                )
+                # Defense-in-depth: a broken-logger configuration could
+                # cause `logging.exception()` itself to raise, which
+                # would replace the divergence raise below. Wrap in a
+                # nested try/except so the divergence raise is
+                # unconditionally reached even when observability is
+                # degraded.
+                with contextlib.suppress(Exception):
+                    logging.getLogger(__name__).exception(
+                        "synthesize_anomaly_emit_failed_during_divergence",
+                        extra={
+                            "review_id": str(state.review_id),
+                            "content_hash": content_hash,
+                            "emit_exception_type": type(emit_exc).__name__,
+                        },
+                    )
                 # Fall through to the SynthesizeAggregationError raise.
             raise SynthesizeAggregationError(
                 content_hash=content_hash,
@@ -520,7 +541,11 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             total_cost_usd=final_metrics.total_cost_usd,
             wall_clock_seconds=final_metrics.wall_clock_seconds,
             pricing_version=PRICING_VERSION,
-            policy_version=ACTIVE_POLICY_VERSION,
+            # Use the triage snapshot (captured at review start) for
+            # replay-correctness, NOT the live `ACTIVE_POLICY_VERSION`.
+            # state.triage_result is guaranteed non-None at this point
+            # (checked at `_enforce_synthesize_input_invariants` entry).
+            policy_version=state.triage_result.policy_version,
             synthesize_model=synthesize_model,
         )
     )

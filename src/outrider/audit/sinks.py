@@ -6,7 +6,11 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships eight sinks from this module: `PhaseEventSink` for
+V1 defines seven sink Protocols in this module (the eighth that
+`AuditPersister` implements, `LLMExchangePersister`, lives at
+`llm/base.py` because LLM-exchange persistence is owned by the LLM
+provider boundary, not by the audit-events surface): `PhaseEventSink`
+for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `AnalyzeEventSink` bundling the four analyze-emitted event types
