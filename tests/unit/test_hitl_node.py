@@ -17,7 +17,6 @@ from uuid import UUID, uuid4
 import pytest
 
 from outrider.agent.nodes.hitl import (
-    _GATED_SEVERITIES,
     _partition_findings,
     _validate_resume_against_request,
     hitl,
@@ -29,6 +28,7 @@ from outrider.audit.events import (  # noqa: TC001  (used in test-double type an
 )
 from outrider.policy import FindingSeverity
 from outrider.policy.canonical import compute_hitl_decision_content_hash
+from outrider.policy.publish_eligibility import is_hitl_gated_severity
 from outrider.schemas.hitl import HITLDecision, HITLRequest, PerFindingDecision, PerFindingOutcome
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,19 @@ def test_partition_returns_sorted_tuples_for_determinism() -> None:
 
 
 def test_gated_severities_are_exactly_critical_and_high() -> None:
-    assert frozenset({FindingSeverity.CRITICAL, FindingSeverity.HIGH}) == _GATED_SEVERITIES
+    """Pin the gated-severity set per the policy/publish_eligibility helper.
+
+    Earlier shape pinned a `_GATED_SEVERITIES` literal local to hitl.py;
+    after synthesize-node refactor, the gated-set is the responsibility
+    of `policy/publish_eligibility.py::is_hitl_gated_severity` (single
+    source of truth). Per the helper's docstring: V1 gates CRITICAL +
+    HIGH only.
+    """
+    assert is_hitl_gated_severity(FindingSeverity.CRITICAL) is True
+    assert is_hitl_gated_severity(FindingSeverity.HIGH) is True
+    assert is_hitl_gated_severity(FindingSeverity.MEDIUM) is False
+    assert is_hitl_gated_severity(FindingSeverity.LOW) is False
+    assert is_hitl_gated_severity(FindingSeverity.INFO) is False
 
 
 # ---------------------------------------------------------------------------

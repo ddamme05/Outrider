@@ -121,9 +121,11 @@ from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.intake import intake
 from outrider.agent.nodes.publish import publish
+from outrider.agent.nodes.synthesize import synthesize
 from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS, trace
 from outrider.agent.nodes.triage import triage
 from outrider.agent.state import ReviewState
+from outrider.anomaly import AnomalySink
 from outrider.ast_facts.base import ImportPathResolver
 from outrider.audit.sinks import (
     AnalyzeEventSink,
@@ -131,6 +133,7 @@ from outrider.audit.sinks import (
     HITLEventSink,
     PhaseEventSink,
     PublishEventSink,
+    SynthesizeEventSink,
     TraceEventSink,
 )
 from outrider.db.sinks import ReviewStatusSink
@@ -165,7 +168,7 @@ class BuildGraphError(ValueError):
     """
 
 
-def build_graph(
+def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg per node-injected resource
     *,
     db_factory: async_sessionmaker[AsyncSession],
     github_factory: Callable[[int], InstallationGitHubClient],
@@ -177,14 +180,16 @@ def build_graph(
     publish_event_sink: PublishEventSink,
     trace_sink: TraceEventSink,
     hitl_event_sink: HITLEventSink,
+    synthesize_event_sink: SynthesizeEventSink,
     review_status_sink: ReviewStatusSink,
+    anomaly_sink: AnomalySink,
     hitl_config: HITLConfig,
     checkpointer: BaseCheckpointSaver[Any],
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
 ) -> _CompiledTriageGraph:
-    """Build the six-node intake → triage → analyze ⇄ trace → hitl → publish graph.
+    """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
     Keyword-only arguments prevent positional-confusion bugs at callsites
     with multiple deps. Validation order: None checks first (cheaper),
@@ -211,8 +216,12 @@ def build_graph(
         raise BuildGraphError("trace_sink must not be None")
     if hitl_event_sink is None:
         raise BuildGraphError("hitl_event_sink must not be None")
+    if synthesize_event_sink is None:
+        raise BuildGraphError("synthesize_event_sink must not be None")
     if review_status_sink is None:
         raise BuildGraphError("review_status_sink must not be None")
+    if anomaly_sink is None:
+        raise BuildGraphError("anomaly_sink must not be None")
     if hitl_config is None:
         raise BuildGraphError("hitl_config must not be None")
     if checkpointer is None:
@@ -306,6 +315,20 @@ def build_graph(
             f"missing one of `emit_hitl_request` / `emit_hitl_decision`; "
             f"see PEP 544 runtime-checkable semantics)"
         )
+    if not isinstance(synthesize_event_sink, SynthesizeEventSink):
+        raise BuildGraphError(
+            f"synthesize_event_sink does not satisfy SynthesizeEventSink Protocol "
+            f"(passed type: {type(synthesize_event_sink).__name__}; "
+            f"missing `emit_synthesize_completed` member; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
+    if not isinstance(anomaly_sink, AnomalySink):
+        raise BuildGraphError(
+            f"anomaly_sink does not satisfy AnomalySink Protocol "
+            f"(passed type: {type(anomaly_sink).__name__}; "
+            f"missing `emit_anomaly` member; "
+            f"see PEP 544 runtime-checkable semantics)"
+        )
     if not isinstance(review_status_sink, ReviewStatusSink):
         raise BuildGraphError(
             f"review_status_sink does not satisfy ReviewStatusSink Protocol "
@@ -380,12 +403,21 @@ def build_graph(
         review_status_sink=review_status_sink,
         hitl_config=hitl_config,
     )
+    synthesize_callable = functools.partial(
+        synthesize,
+        provider=provider,
+        synthesize_model=model_config.synthesize_model,
+        phase_event_sink=phase_event_sink,
+        synthesize_event_sink=synthesize_event_sink,
+        anomaly_sink=anomaly_sink,
+    )
 
     builder = StateGraph(ReviewState)
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
     builder.add_node("analyze", analyze_callable)
     builder.add_node("trace", trace_callable)
+    builder.add_node("synthesize", synthesize_callable)
     builder.add_node("hitl", hitl_callable)
     builder.add_node("publish", publish_callable)
     builder.add_edge(START, "intake")
@@ -402,6 +434,11 @@ def build_graph(
     # AND we're below the depth-2 round limit. Otherwise → hitl.
     builder.add_conditional_edges("analyze", _analyze_router)
     builder.add_conditional_edges("trace", _trace_router)
+    # synthesize is the canonical 7th node: after analyze ⇄ trace
+    # terminates, synthesize aggregates findings into a ReviewReport
+    # before hitl partitions and publish emits. Static edge — synthesize
+    # has no router (no fan-out, no branching).
+    builder.add_edge("synthesize", "hitl")
     # hitl always proceeds to publish. The node body's `interrupt(...)`
     # is what pauses the graph for human approval; the static edge fires
     # only when the body completes (either pass-through on empty gated
@@ -423,7 +460,7 @@ def _analyze_router(state: ReviewState) -> str:
     """
     if len(state.analysis_rounds) == 1 and state.trace_candidates:
         return "trace"
-    return "hitl"
+    return "synthesize"
 
 
 def _trace_router(state: ReviewState) -> str:
@@ -444,7 +481,7 @@ def _trace_router(state: ReviewState) -> str:
     """
     if state.last_trace_pass_fetched_count > 0 and len(state.analysis_rounds) < MAX_ANALYSIS_ROUNDS:
         return "analyze"
-    return "hitl"
+    return "synthesize"
 
 
 __all__ = [

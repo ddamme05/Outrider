@@ -6,9 +6,11 @@ audit events.
 13-step body (audit-first emit -> status-write -> interrupt ordering):
 
   1. Phase event start (deterministic phase_id via compute_phase_id).
-  2. Partition state.analysis_rounds[*].findings by severity, deduped
-     by finding_id: CRITICAL/HIGH -> findings_requiring_approval;
-     MEDIUM/LOW/INFO -> auto_post_findings.
+  2. Partition state.review_report.findings by severity (already
+     deduplicated by synthesize): CRITICAL/HIGH ->
+     findings_requiring_approval; MEDIUM/LOW/INFO -> auto_post_findings.
+     Uses `is_hitl_gated_severity` from policy/publish_eligibility.py
+     as the single source of truth for the gated set.
   3. Empty gate set -> emit phase end + return {} (no state delta;
      LangGraph proceeds to publish).
   4. Else build HITLRequest with deterministic sorted tuples +
@@ -65,11 +67,11 @@ from outrider.audit.events import (
     HITLRequestEvent,
     ReviewPhaseEvent,
 )
-from outrider.policy import FindingSeverity
 from outrider.policy.canonical import (
     compute_hitl_decision_content_hash,
     compute_phase_id,
 )
+from outrider.policy.publish_eligibility import is_hitl_gated_severity
 from outrider.schemas.hitl import HITLDecision, HITLRequest
 
 if TYPE_CHECKING:
@@ -85,45 +87,56 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_GATED_SEVERITIES: frozenset[FindingSeverity] = frozenset(
-    {FindingSeverity.CRITICAL, FindingSeverity.HIGH}
-)
-
-
 def _partition_findings(
     state: ReviewState,
 ) -> tuple[tuple[UUID, ...], tuple[UUID, ...]]:
-    """Split admitted findings by severity, deduped by finding_id.
+    """Split synthesize-deduplicated findings by severity.
 
     Returns `(findings_requiring_approval, auto_post_findings)` both
-    sorted by `finding_id` for deterministic body output. A finding
-    admitted by multiple analyze passes appears at most once in either
-    tuple — load-bearing for the re-entrancy invariant (same state ->
-    same partition on re-run).
+    sorted by `finding_id` for deterministic body output.
 
-    **Gated-takes-precedence rule.** A finding_id that appears in
-    multiple rounds with different severities (e.g., round-1 LOW then
-    round-2 HIGH, or vice versa) lands in `gated` if ANY round flagged
-    it CRITICAL/HIGH. Without this rule, a finding seen as MEDIUM in
-    round-1 + HIGH in round-2 would end up in BOTH sets and trigger
-    the downstream `HITLRequest._enforce_finding_partition` overlap
-    rejection — wedging the body. Two-pass: first sweep collects the
-    gated set; second sweep adds to autopost only if NOT already
-    gated. The auto-promotion to gated is the safe direction:
-    over-gating a finding produces an unnecessary HITL gate that
-    reviewers can APPROVE; under-gating publishes a CRITICAL/HIGH
-    finding without review.
+    Consumes `state.review_report.findings` (the deduplicated +
+    severity-sorted tuple produced by synthesize). The earlier shape
+    of this function walked `state.analysis_rounds[*].findings`
+    directly and carried a two-pass "gated-takes-precedence" rule for
+    cross-round severity disagreement; per the synthesize-node spec
+    (pre-spec gate #7) that disagreement is corruption per
+    `severity-set-by-policy` and synthesize raises
+    SynthesizeAggregationError before HITL ever sees the state. So the
+    partition is a simple single-pass classification on the
+    pre-deduplicated tuple — gated if severity is in the V1 gated set,
+    autopost otherwise.
+
+    Uses `is_hitl_gated_severity` from `policy/publish_eligibility.py`
+    as the single source of truth for "what counts as gated severity"
+    (V1: CRITICAL + HIGH). The earlier `_GATED_SEVERITIES` literal at
+    this site was a sibling copy; consolidating to the policy helper
+    keeps every consumer of "gated severity" pointed at one canonical
+    definition. See `policy/publish_eligibility.py:138`.
     """
     gated: set[UUID] = set()
-    for round_ in state.analysis_rounds:
-        for finding in round_.findings:
-            if finding.severity in _GATED_SEVERITIES:
-                gated.add(finding.finding_id)
     autopost: set[UUID] = set()
-    for round_ in state.analysis_rounds:
-        for finding in round_.findings:
-            if finding.severity not in _GATED_SEVERITIES and finding.finding_id not in gated:
+    # Test-compat fallback (transitional): pre-synthesize fixtures
+    # populate analysis_rounds only. Production path always has
+    # review_report set (post-Phase-6 graph wiring), so the canonical
+    # path is the if-branch. `getattr` defends against test doubles that
+    # don't carry the review_report attribute at all.
+    review_report = getattr(state, "review_report", None)
+    if review_report is not None:
+        for finding in review_report.findings:
+            if is_hitl_gated_severity(finding.severity):
+                gated.add(finding.finding_id)
+            else:
                 autopost.add(finding.finding_id)
+    else:
+        for round_ in state.analysis_rounds:
+            for finding in round_.findings:
+                if is_hitl_gated_severity(finding.severity):
+                    gated.add(finding.finding_id)
+        for round_ in state.analysis_rounds:
+            for finding in round_.findings:
+                if not is_hitl_gated_severity(finding.severity) and finding.finding_id not in gated:
+                    autopost.add(finding.finding_id)
     return tuple(sorted(gated)), tuple(sorted(autopost))
 
 

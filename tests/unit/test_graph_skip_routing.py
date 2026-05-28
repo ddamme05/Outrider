@@ -128,6 +128,16 @@ class _StubHITLEventSink:
         return event
 
 
+class _StubSynthesizeEventSink:
+    async def emit_synthesize_completed(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubAnomalySink:
+    async def emit_anomaly(self, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 class _StubReviewStatusSink:
     async def mark_awaiting_approval(self, **kwargs: Any) -> None:
         return None
@@ -156,6 +166,7 @@ class _StubModelConfig:
     triage_model = "stub-model"
     analyze_model = "stub-analyze-model"
     trace_model = "stub-trace-model"
+    synthesize_model = "stub-synthesize-model"
 
 
 def _stub_db_factory() -> Any:
@@ -189,7 +200,9 @@ def compiled_graph() -> Any:
         publish_event_sink=_StubPublishEventSink(),
         trace_sink=_StubTraceEventSink(),
         hitl_event_sink=_StubHITLEventSink(),
+        synthesize_event_sink=_StubSynthesizeEventSink(),
         review_status_sink=_StubReviewStatusSink(),
+        anomaly_sink=_StubAnomalySink(),
         hitl_config=HITLConfig(),
         checkpointer=InMemorySaver(),
         publisher=_StubGitHubPublisher(),

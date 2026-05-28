@@ -152,6 +152,28 @@ class _StubHITLEventSink:
         return event
 
 
+class _StubSynthesizeEventSink:
+    """Satisfies SynthesizeEventSink Protocol structurally."""
+
+    async def emit_synthesize_completed(self, event: Any) -> None:
+        return None
+
+
+class _StubAnomalySink:
+    """Satisfies AnomalySink Protocol structurally."""
+
+    async def emit_anomaly(
+        self,
+        *,
+        review_id: Any,
+        rule_name: Any,
+        severity: Any,
+        details: dict[str, Any],
+        is_eval: bool,
+    ) -> None:
+        return None
+
+
 class _StubReviewStatusSink:
     """Satisfies ReviewStatusSink Protocol structurally (four async
     methods, all no-op stubs)."""
@@ -236,7 +258,9 @@ def _valid_args() -> dict[str, Any]:
         "publish_event_sink": _StubPublishEventSink(),
         "trace_sink": _StubTraceEventSink(),
         "hitl_event_sink": _StubHITLEventSink(),
+        "synthesize_event_sink": _StubSynthesizeEventSink(),
         "review_status_sink": _StubReviewStatusSink(),
+        "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
         "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),
