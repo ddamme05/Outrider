@@ -168,7 +168,7 @@ def test_protocol_declares_exact_method_set() -> None:
         "mark_awaiting_approval_expired",
         "mark_completed",
     }
-    actual = {name for name in dir(ReviewStatusSink) if not name.startswith("_")}
+    actual = {name for name in ReviewStatusSink.__dict__ if not name.startswith("_")}
     assert actual == expected, (
         f"ReviewStatusSink method set drift: missing={expected - actual}, "
         f"extra={actual - expected}. Update this pin AND every sink consumer + "

@@ -117,7 +117,7 @@ def test_protocol_declares_exact_method_set() -> None:
     Exact-membership check fails loudly on silent drift.
     """
     expected = {"emit_phase"}
-    actual = {name for name in dir(PhaseEventSink) if not name.startswith("_")}
+    actual = {name for name in PhaseEventSink.__dict__ if not name.startswith("_")}
     assert actual == expected, (
         f"PhaseEventSink method set drift: missing={expected - actual}, "
         f"extra={actual - expected}. Update this pin AND every sink consumer + "

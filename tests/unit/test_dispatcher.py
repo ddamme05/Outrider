@@ -75,7 +75,7 @@ def test_review_dispatcher_declares_exact_method_set() -> None:
     every concrete dispatcher impl + test fixture.
     """
     expected = {"dispatch"}
-    actual = {name for name in dir(ReviewDispatcher) if not name.startswith("_")}
+    actual = {name for name in ReviewDispatcher.__dict__ if not name.startswith("_")}
     assert actual == expected, (
         f"ReviewDispatcher method set drift: missing={expected - actual}, "
         f"extra={actual - expected}. Update this pin AND every dispatcher impl "

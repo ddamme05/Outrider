@@ -111,7 +111,7 @@ def test_protocol_declares_exact_method_set() -> None:
     on silent drift.
     """
     expected = {"emit_file_examination"}
-    actual = {name for name in dir(FileExaminationSink) if not name.startswith("_")}
+    actual = {name for name in FileExaminationSink.__dict__ if not name.startswith("_")}
     assert actual == expected, (
         f"FileExaminationSink method set drift: missing={expected - actual}, "
         f"extra={actual - expected}."

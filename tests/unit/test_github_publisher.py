@@ -354,16 +354,19 @@ def test_422_exception_classes_carry_status_and_body_attributes() -> None:
 
 
 def test_publish_event_sink_protocol_method_set_pinned() -> None:
-    """`PublishEventSink` has exactly 5 methods (4 emit + 1 query).
+    """`PublishEventSink` has exactly 6 methods (4 emit + 1 query + 1 lock acquire).
 
-    Pins the Protocol surface so a future addition (6th method)
+    `acquire_publish_lock` (the lock-acquire method) landed per
+    `DECISIONS.md#027` for the V1 per-review publish-side advisory lock.
+
+    Pins the Protocol surface so a future addition (7th method)
     surfaces as a test failure rather than silently breaking test
     stubs that don't implement it. Without this pin, a Protocol
     member added in V1.5 wouldn't crash existing test fixtures —
     Python's structural typing only flags MISSING declared members
     at isinstance() time, NOT extra members on the implementation
     side. So a new Protocol method = silent stub-incompleteness
-    across all 5+ test fixtures.
+    across all 6+ test fixtures.
     """
     from outrider.audit.sinks import PublishEventSink
 
@@ -375,8 +378,9 @@ def test_publish_event_sink_protocol_method_set_pinned() -> None:
         "query_prior_publish_event",
         "acquire_publish_lock",
     }
-    # `dir()` includes inherited dunder methods; filter for non-dunder.
-    actual = {name for name in dir(PublishEventSink) if not name.startswith("_")}
+    # `__dict__` is the Protocol's own namespace (excludes inherited
+    # `typing.Protocol` machinery); filter for non-dunder.
+    actual = {name for name in PublishEventSink.__dict__ if not name.startswith("_")}
     # Remove typing.Protocol's machinery (`_is_protocol`, etc are already
     # filtered by the underscore check above).
     assert actual == expected, (
