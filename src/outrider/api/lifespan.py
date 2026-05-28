@@ -25,11 +25,12 @@ Constructs at startup, in dependency order:
      lifespan-validated settings. Per `DECISIONS.md#020` + the
      `nodes-receive-deps-via-closure` invariant, installation-token
      minting happens at intake call-site, not at webhook receipt.
-  8. `compiled_graph = build_graph(...)` — the V1 six-node intake →
-     triage → analyze ⇄ trace → hitl → publish graph with all required deps
-     injected at construction time (`db_factory`, `github_factory`,
-     `provider`, `model_config`, the seven sink Protocols, `publisher`,
-     and `import_path_resolver`).
+  8. `compiled_graph = build_graph(...)` — the V1 seven-node intake →
+     triage → analyze ⇄ trace → synthesize → hitl → publish graph with
+     all required deps injected at construction time (`db_factory`,
+     `github_factory`, `provider`, `model_config`, eight audit-side sink
+     Protocols + one anomaly sink, `publisher`, and
+     `import_path_resolver`).
   9. `run_graph` async closure that the V1 `BackgroundTasksDispatcher`
      invokes per request to call `compiled_graph.ainvoke(state)`.
   10. `register_filter_on_all_handlers()` — re-applies the log-content
@@ -516,6 +517,16 @@ def build_lifespan(
             if setup is not None:
                 await setup()
 
+            # Construct AnomalyPersister before build_graph: synthesize
+            # is the first in-graph anomaly emitter (sweep was the only
+            # prior emitter). Same instance is reused by the sweep loop
+            # below.
+            from outrider.anomaly.persister import (  # noqa: PLC0415
+                AnomalyPersister,
+            )
+
+            anomaly_persister = AnomalyPersister(session_factory=session_factory)
+
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -525,7 +536,9 @@ def build_lifespan(
                 publish_event_sink=persister,
                 trace_sink=persister,
                 hitl_event_sink=persister,
+                synthesize_event_sink=persister,
                 review_status_sink=review_status_persister,
+                anomaly_sink=anomaly_persister,
                 hitl_config=hitl_config,
                 checkpointer=checkpointer,
                 publisher=GitHubKitPublisher(),
@@ -614,11 +627,6 @@ def build_lifespan(
             # (cron, k8s CronJob, APScheduler) can disable this loop
             # via OUTRIDER_SWEEP_DISABLED=1 and run
             # `run_all_sweeps` externally.
-            from outrider.anomaly.persister import (  # noqa: PLC0415
-                AnomalyPersister,
-            )
-
-            anomaly_persister = AnomalyPersister(session_factory=session_factory)
             app.state.anomaly_sink = anomaly_persister
             app.state.audit_persister = persister
 

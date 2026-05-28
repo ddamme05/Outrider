@@ -578,12 +578,37 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
 
 def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
-    """Flatten admitted findings across all analysis_rounds.
+    """Read admitted findings from state.review_report (canonical) or
+    fall back to flattening state.analysis_rounds (test-compat).
 
-    V1 analyze is single-pass per `pass_index=0` so this is one round
-    in practice; the loop is shaped for V1.5 parallel-analyze where
-    multiple rounds accumulate.
+    After synthesize lands (canonical 7-node graph: trace → synthesize
+    → hitl → publish), the deduplicated + severity-sorted findings
+    tuple lives on `state.review_report.findings`. Publish consumes
+    that single canonical source.
+
+    **Test-compat fallback (transitional).** Many pre-synthesize
+    publish-node test fixtures construct `ReviewState` with
+    `analysis_rounds` populated but no `review_report`. To avoid
+    requiring a mass test-fixture update in the same PR, the function
+    falls back to the legacy flatten when `review_report is None`. In
+    production graph execution (post-Phase-6 wiring), synthesize ALWAYS
+    runs before publish, so `state.review_report` is always set;
+    the fallback path is exercised only by isolated unit tests that
+    bypass the full graph.
+
+    Synthesize's content_hash dedup makes the
+    `_assert_no_duplicate_finding_ids` defense redundant for
+    well-formed reports — but we keep the assertion as belt-and-
+    suspenders against direct construction (test fixtures, replay
+    paths) bypassing synthesize.
     """
+    # `getattr` defends against test doubles that don't carry the
+    # review_report attribute at all.
+    review_report = getattr(state, "review_report", None)
+    if review_report is not None:
+        return list(review_report.findings)
+    # Test-compat: pre-synthesize fixtures populate analysis_rounds
+    # only. Production path always has review_report set (post-Phase-6).
     out: list[ReviewFinding] = []
     for round_ in state.analysis_rounds:
         out.extend(round_.findings)
