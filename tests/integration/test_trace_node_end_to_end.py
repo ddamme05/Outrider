@@ -625,11 +625,11 @@ def test_trace_router_routes_to_analyze_when_fetched_files_non_empty() -> None:
     assert _trace_router(state_with_fetch) == "analyze"
 
 
-def test_trace_router_routes_to_hitl_when_no_new_fetches_this_pass() -> None:
+def test_trace_router_routes_to_synthesize_when_no_new_fetches_this_pass() -> None:
     """Trace pass produced no NEW fetches this invocation; router sends
-    to `hitl` (next non-trace destination in the 7-node topology;
-    `hitl` then either pass-through to publish OR interrupts on a
-    CRITICAL/HIGH finding). Per the router contract: the per-invocation
+    to `synthesize` (next non-trace destination in the 7-node topology;
+    synthesize aggregates findings into ReviewReport, then HITL gates,
+    then publish runs). Per the router contract: the per-invocation
     scalar `last_trace_pass_fetched_count` is the signal, NOT the
     cumulative `state.trace_fetched_files`.
 
@@ -660,26 +660,24 @@ def test_trace_router_routes_to_hitl_when_no_new_fetches_this_pass() -> None:
         }
     )
     # Cumulative list non-empty AND per-invocation scalar zero —
-    # router must read the scalar and route to `hitl` (the next non-
-    # trace destination per the HITL spec Group 5 topology).
+    # router must read the scalar and route to `synthesize` (the next
+    # non-trace destination per the 7-node topology; synthesize folds
+    # findings, HITL gates, then publish).
     assert len(state_with_stale_fetch.trace_fetched_files) == 1
     assert state_with_stale_fetch.last_trace_pass_fetched_count == 0
 
-    # Routes through `hitl` (always next non-trace destination from
-    # trace per Group 5 of the HITL spec); pass-through if no gated
-    # findings, then publish runs.
-    assert _trace_router(state_with_stale_fetch) == "hitl"
+    assert _trace_router(state_with_stale_fetch) == "synthesize"
 
 
-def test_trace_router_routes_to_hitl_at_max_rounds() -> None:
+def test_trace_router_routes_to_synthesize_at_max_rounds() -> None:
     """Depth-2 ceiling: even when the most recent trace() call yielded
     new fetches, if analysis_rounds has already reached
-    MAX_ANALYSIS_ROUNDS, route to `hitl` to bound the loop's total
-    wall-clock cost (`hitl` then routes to publish for non-gated
-    findings; the depth gate fires at the trace→next-node boundary).
-    Sets `last_trace_pass_fetched_count=1` to ensure the depth gate
-    (not the scalar gate) is what blocks routing to analyze — without
-    that, the test would pass for the wrong reason."""
+    MAX_ANALYSIS_ROUNDS, route to `synthesize` to bound the loop's
+    total wall-clock cost (synthesize folds findings, then HITL gates,
+    then publish; the depth gate fires at the trace→next-node
+    boundary). Sets `last_trace_pass_fetched_count=1` to ensure the
+    depth gate (not the scalar gate) is what blocks routing to
+    analyze — without that, the test would pass for the wrong reason."""
     from outrider.agent.graph import _trace_router
     from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS
     from outrider.schemas import TraceFetchedFile
@@ -710,4 +708,4 @@ def test_trace_router_routes_to_hitl_at_max_rounds() -> None:
     )
     assert len(state_at_ceiling.analysis_rounds) == MAX_ANALYSIS_ROUNDS
     assert state_at_ceiling.last_trace_pass_fetched_count > 0  # scalar gate would pass
-    assert _trace_router(state_at_ceiling) == "hitl"  # depth gate fires
+    assert _trace_router(state_at_ceiling) == "synthesize"  # depth gate fires

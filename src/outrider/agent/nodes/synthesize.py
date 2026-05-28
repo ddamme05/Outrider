@@ -150,13 +150,22 @@ class SynthesizeAggregationError(RuntimeError):
 
 
 def _compute_summary_content_hash(text: str) -> str:
-    """SHA-256 hex of the summary text (UTF-8 bytes).
+    """SHA-256 hex of the RAW LLM response text (UTF-8 bytes).
 
     Identity check for retention-conditional replay per pre-spec gate
-    #6 option (c). Within the LLM-content TTL window, an audit reader
-    can join on this hash to fetch the prose from llm_call_content;
-    outside it, the hash is the only proof of which summary was
-    produced.
+    #6 option (c). The hash MUST bind to the same canonical text the
+    LLM provider persists to `llm_call_content.completion` (raw
+    `response.text` per `audit/persister.py::_persist_llm_call_event`),
+    NOT the post-`strip_outer_json_fence` display text. Within the
+    LLM-content TTL window, an audit reader recomputes this hash over
+    the stored `completion` row to prove identity; if the inputs
+    differ (e.g., hash over stripped, completion stores raw), the
+    binding breaks the moment Anthropic wraps a response in a fence.
+
+    The displayed summary on `ReviewReport.summary` IS the
+    `strip_outer_json_fence(response.text).strip()` form — clean for
+    consumption. The hash is the audit-event identity proof and
+    intentionally diverges from the display.
     """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -513,8 +522,12 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # present and removes the wrapper when one is.
     summary_text = strip_outer_json_fence(response.text).strip()
 
-    # Step 9: compute the canonical summary content hash.
-    summary_content_hash = _compute_summary_content_hash(summary_text)
+    # Step 9: compute the canonical summary content hash over the RAW
+    # `response.text` (matches what the LLM provider persists into
+    # `llm_call_content.completion` — see _compute_summary_content_hash
+    # docstring). Hashing the stripped text would break identity-binding
+    # the moment Anthropic wraps a response in ```json``` fences.
+    summary_content_hash = _compute_summary_content_hash(response.text)
 
     # Step 10: construct the final ReviewReport. Schema validators
     # run: Field(max_length=2000) on summary, _canonicalize_findings

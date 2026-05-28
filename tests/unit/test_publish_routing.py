@@ -187,6 +187,7 @@ def _make_finding(
     file_path: str = "src/foo.py",
     line_start: int = 1,
     line_end: int = 1,
+    policy_version: str = ACTIVE_POLICY_VERSION,
 ) -> ReviewFinding:
     finding_type = _FINDING_TYPE_BY_SEVERITY[severity]
     return ReviewFinding(
@@ -203,7 +204,7 @@ def _make_finding(
         evidence="e",
         dimension=lookup_dimension(finding_type),
         evidence_tier=EvidenceTier.JUDGED,
-        policy_version=ACTIVE_POLICY_VERSION,
+        policy_version=policy_version,
         content_hash=compute_finding_content_hash(
             file_path=file_path,
             line_start=line_start,
@@ -638,3 +639,48 @@ def test_collect_admitted_findings_raises_when_review_report_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="synthesize node must have run"):
         _collect_admitted_findings(state)
+
+
+# ---------------------------------------------------------------------------
+# Eligibility event stamps the finding's policy_version snapshot, not live
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_publish_eligibility_stamps_finding_policy_version_not_active() -> None:
+    """`PublishEligibilityEvent.policy_version` MUST mirror
+    `finding.policy_version` (the snapshot under which the finding was
+    classified) — NOT the live `ACTIVE_POLICY_VERSION`.
+
+    Scenario: a review classified findings under historical policy
+    `0.0.1`. A HITL pause spans a deploy that bumps ACTIVE to `1.0.0`.
+    When publish resumes from checkpoint and emits the eligibility event,
+    the row MUST record `0.0.1` (the snapshot the finding's severity was
+    computed under) — stamping live `1.0.0` would break
+    `severity-policy-versioned-for-replay`.
+
+    Pins Codex 2026-05-28 finding: eligibility was using process-current
+    `active_policy_version` parameter, which can drift from the
+    finding's snapshot across HITL pauses + deploy bumps.
+    """
+    # Construct a finding whose policy_version diverges from live ACTIVE
+    # (simulating a finding produced under a prior deploy).
+    historical_version = "0.0.1"
+    assert historical_version != ACTIVE_POLICY_VERSION
+    finding = _make_finding(line_start=2, line_end=2, policy_version=historical_version)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    sink = _RecordingPublishEventSink()
+
+    await publish_module.publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert len(sink.eligibility) == 1
+    # The audit row carries the finding's snapshot — NOT the live ACTIVE.
+    assert sink.eligibility[0].policy_version == historical_version
+    assert sink.eligibility[0].policy_version != ACTIVE_POLICY_VERSION

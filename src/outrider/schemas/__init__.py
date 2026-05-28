@@ -25,6 +25,10 @@ from outrider.schemas.review_finding import (
     ReviewDimension,
     ReviewFinding,
 )
+from outrider.schemas.review_report import (
+    ReviewMetrics,
+    ReviewReport,
+)
 from outrider.schemas.review_state import ReviewState
 from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.trace_decision import TraceDecision
@@ -49,6 +53,8 @@ __all__ = [
     "PublishResult",
     "ReviewDimension",
     "ReviewFinding",
+    "ReviewMetrics",
+    "ReviewReport",
     "ReviewState",
     "ReviewTier",
     "RiskLevel",

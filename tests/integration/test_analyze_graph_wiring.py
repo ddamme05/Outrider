@@ -94,6 +94,12 @@ class _RoutingMockLLMProvider:
             text = self.triage_response
         elif request.node_id == "analyze":
             text = self.analyze_response
+        elif request.node_id == "synthesize":
+            # Synthesize's call is prose summary; tests in this file
+            # exercise analyze wiring but the graph runs to publish via
+            # synthesize → hitl → publish. A minimal short prose string
+            # lets ReviewReport.summary land below max_length=2000.
+            text = "Test mock: synthesize summary."
         else:
             msg = f"unexpected node_id in test mock: {request.node_id!r}"
             raise AssertionError(msg)
@@ -441,6 +447,31 @@ class _StubReviewStatusSink:
         return None
 
 
+class _StubSynthesizeEventSink:
+    """No-op `SynthesizeEventSink`. Same Protocol-gate rationale as
+    the sibling HITL/ReviewStatus stubs — these tests don't reach
+    synthesize but `build_graph` requires the sink at construction time."""
+
+    async def emit_synthesize_completed(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubAnomalySink:
+    """No-op `AnomalySink` (graph-caller variant per anomaly/sinks.py
+    docstring). `is_eval` is mandatory at the Protocol level."""
+
+    async def emit_anomaly(
+        self,
+        *,
+        review_id: Any,  # noqa: ARG002
+        rule_name: Any,  # noqa: ARG002
+        severity: Any,  # noqa: ARG002
+        details: dict[str, Any],  # noqa: ARG002
+        is_eval: bool,  # noqa: ARG002
+    ) -> None:
+        return None
+
+
 def _build_kwargs(
     *,
     provider: _RoutingMockLLMProvider,
@@ -471,6 +502,11 @@ def _build_kwargs(
         # Protocol gate requires all three.
         "hitl_event_sink": _StubHITLEventSink(),
         "review_status_sink": _StubReviewStatusSink(),
+        # Synthesize deps added 2026-05-28 per the synthesize-node arc;
+        # these tests don't reach synthesize but `build_graph` requires
+        # both at construction time.
+        "synthesize_event_sink": _StubSynthesizeEventSink(),
+        "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
         # Checkpointer is required for any compiled graph that uses
         # `interrupt(...)` per langgraph-1.1.6/narrative/persistence.md.
