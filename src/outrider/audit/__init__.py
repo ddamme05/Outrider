@@ -30,6 +30,7 @@ from outrider.audit.events import (
     PublishEvent,
     PublishRoutingEvent,
     ReviewPhaseEvent,
+    SynthesizeCompletedEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "PublishRoutingEvent",
     "RetentionSettings",
     "ReviewPhaseEvent",
+    "SynthesizeCompletedEvent",
     "TraceDecisionEvent",
     "compute_finding_content_hash",
 ]

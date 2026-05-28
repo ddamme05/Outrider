@@ -482,8 +482,18 @@ async def test_always_route_one_event_per_finding() -> None:
 
 
 @pytest.mark.asyncio
-async def test_publish_destination_preset_is_overwritten() -> None:
-    """Pre-set `finding.publish_destination` MUST be overwritten by routing."""
+async def test_publish_destination_preset_is_overwritten_in_routing_event() -> None:
+    """Pre-set `finding.publish_destination` is ignored — routing decisions
+    are sourced from coordinates, not from the finding attribute.
+
+    Post-synthesize: publish clones each finding via `model_copy()` at
+    `_collect_admitted_findings` before any downstream handling (so the
+    original `state.review_report.findings[i]` is NEVER mutated). The
+    canonical contract is therefore: the emitted `PublishRoutingEvent`
+    carries the coordinates-derived destination, regardless of any
+    stale pre-set on the original finding. The original finding's
+    `publish_destination` attribute is no longer modified by publish.
+    """
     finding = _make_finding(line_start=2, line_end=2)
     finding.publish_destination = PublishDestination.DASHBOARD_ONLY  # stale pre-set
     state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
@@ -498,8 +508,11 @@ async def test_publish_destination_preset_is_overwritten() -> None:
         github_factory=_stub_github_factory,
     )
 
+    # Routing event carries the routing-derived destination.
     assert sink.routing[0].destination is PublishDestination.INLINE_COMMENT
-    assert finding.publish_destination is PublishDestination.INLINE_COMMENT
+    # Original finding's pre-set is UNCHANGED — publish clones before
+    # mutating, so the state-layer object stays as constructed.
+    assert finding.publish_destination is PublishDestination.DASHBOARD_ONLY
 
 
 # ---------------------------------------------------------------------------

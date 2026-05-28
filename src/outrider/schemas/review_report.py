@@ -112,21 +112,37 @@ class ReviewMetrics(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Deterministically computed from state.analysis_rounds.
     files_examined: int = Field(ge=0)
+    # Deterministically computed from state.trace_decisions.
     files_traced_beyond_diff: int = Field(ge=0)
-    llm_calls_made: int = Field(ge=0)
-    total_input_tokens: int = Field(ge=0)
-    total_output_tokens: int = Field(ge=0)
+    # LLM-aggregate metrics. V1 placeholder semantics:
+    # `None` indicates "audit-query helper not yet wired" rather than
+    # "zero." The audit truth for these aggregates lives in
+    # `audit_events`: sum `LLMCallEvent.input_tokens` /
+    # `LLMCallEvent.output_tokens` / `LLMCallEvent.cost_usd` joined on
+    # `review_id`. The dashboard reads audit truth; ReviewMetrics
+    # is a denormalized convenience snapshot. FUP: wire the audit-query
+    # helper + populate these from the helper at synthesize-emit time.
+    # False-zero defense per the synthesize-node spec audit
+    # (`Codex Q3 + sharp-edges F1`): Optional+None makes the
+    # "unknown vs. zero" distinction explicit on the audit row.
+    llm_calls_made: int | None = Field(default=None, ge=0)
+    total_input_tokens: int | None = Field(default=None, ge=0)
+    total_output_tokens: int | None = Field(default=None, ge=0)
     # Upper cap defends against `float('inf')` propagating into Postgres
     # JSONB (some JSONB configs reject non-standard JSON `Infinity`).
     # le=100.0 is "this would already be a runaway"; real V1 reviews land
     # well under $1. Cap is policy-driven, not architectural — bump if
-    # average cost rises.
-    total_cost_usd: float = Field(ge=0, le=100.0)
-    # Same defense-in-depth + sanity gate as total_cost_usd. le=86400 (24h)
-    # bounds wall-clock to a single day; HITL-paused reviews use
-    # `state.received_at` + HITL expiry rather than letting the synthesize
-    # wall-clock balloon. A multi-day review is a bug, not a workload.
+    # average cost rises. Optional+None per the same V1-placeholder
+    # rationale as the token fields above.
+    total_cost_usd: float | None = Field(default=None, ge=0, le=100.0)
+    # Wall-clock IS deterministically computable from node-side
+    # time.monotonic() delta — not a placeholder.
+    # le=86400 (24h) bounds wall-clock to a single day; HITL-paused
+    # reviews use `state.received_at` + HITL expiry rather than letting
+    # the synthesize wall-clock balloon. A multi-day review is a bug,
+    # not a workload.
     wall_clock_seconds: float = Field(ge=0, le=86400)
 
 

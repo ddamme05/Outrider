@@ -107,17 +107,31 @@ def _make_state(
     findings: list[_FindingStub],
     review_id: UUID,
     received_at: datetime,
+    use_review_report: bool = False,
 ) -> Any:
     """Build a minimal ReviewState-like object the hitl body reads.
 
     The node body only reads `state.review_id`, `state.is_eval`,
-    `state.received_at`, and `state.analysis_rounds[*].findings`. Use a
-    duck-typed stub rather than constructing a full ReviewState (which
-    has many required fields and would couple this test to the
-    review-state schema details unnecessarily).
+    `state.received_at`, `state.review_report`, and (test-compat
+    fallback) `state.analysis_rounds[*].findings`. Use a duck-typed
+    stub rather than constructing a full ReviewState (which has many
+    required fields and would couple this test to the review-state
+    schema details unnecessarily).
+
+    `use_review_report=True` builds a stub with `review_report.findings`
+    set (canonical post-synthesize path); the default `False` keeps the
+    legacy `analysis_rounds`-only shape that pre-synthesize tests assumed.
+    The HITL partition function reads `state.review_report` first; if
+    absent it falls back to flattening `state.analysis_rounds`. Both
+    paths must be covered; pass `use_review_report=True` in at least one
+    test to exercise the canonical branch.
     """
 
     class _Round:
+        def __init__(self, findings_: tuple[_FindingStub, ...]) -> None:
+            self.findings = findings_
+
+    class _ReviewReport:
         def __init__(self, findings_: tuple[_FindingStub, ...]) -> None:
             self.findings = findings_
 
@@ -127,6 +141,7 @@ def _make_state(
             self.is_eval = False
             self.received_at = received_at
             self.analysis_rounds = (_Round(tuple(findings)),)
+            self.review_report = _ReviewReport(tuple(findings)) if use_review_report else None
 
     return _State()
 
@@ -149,6 +164,42 @@ def test_partition_separates_high_severity_from_low() -> None:
         review_id=review_id,
         received_at=datetime.now(UTC),
     )
+    gated, autopost = _partition_findings(state)
+
+    assert set(gated) == {crit.finding_id, high.finding_id}
+    assert set(autopost) == {med.finding_id, low.finding_id, info.finding_id}
+
+
+def test_partition_canonical_review_report_path() -> None:
+    """Canonical path coverage: when `state.review_report.findings` is set
+    (post-synthesize), `_partition_findings` reads it (NOT
+    `state.analysis_rounds`).
+
+    Addresses the audit gap that all other partition tests exercise the
+    fallback branch only — leaving the production-canonical
+    `state.review_report.findings` consumer untested. Mirrors the
+    CRITICAL/HIGH gating + auto-post separation from
+    `test_partition_separates_high_severity_from_low` but on the new
+    canonical input shape.
+    """
+    review_id = uuid4()
+    crit = _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+    high = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    med = _make_finding(review_id=review_id, severity=FindingSeverity.MEDIUM)
+    low = _make_finding(review_id=review_id, severity=FindingSeverity.LOW)
+    info = _make_finding(review_id=review_id, severity=FindingSeverity.INFO)
+
+    state = _make_state(
+        findings=[crit, high, med, low, info],
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+        use_review_report=True,  # canonical post-synthesize path
+    )
+    # Verify the test setup actually populates review_report (not
+    # accidentally falling through to the analysis_rounds branch).
+    assert state.review_report is not None
+    assert len(state.review_report.findings) == 5
+
     gated, autopost = _partition_findings(state)
 
     assert set(gated) == {crit.finding_id, high.finding_id}
