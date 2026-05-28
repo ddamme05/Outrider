@@ -101,6 +101,13 @@ class _MockLLMProvider:
             text = self.triage_response
         elif request.node_id == "analyze":
             text = self.analyze_response
+        elif request.node_id == "synthesize":
+            # Synthesize's call is a prose summary, not structured JSON.
+            # A minimal short string lets ReviewReport.summary land below
+            # the max_length=2000 cap without exercising any branch in
+            # `strip_outer_json_fence`. Real Sonnet output is multi-
+            # paragraph prose; this stub doesn't try to mimic that.
+            text = "Test mock: synthesize summary (SKIM tier; no findings)."
         else:
             msg = f"_MockLLMProvider: unexpected node_id {request.node_id!r}"
             raise AssertionError(msg)
@@ -399,6 +406,34 @@ class _StubReviewStatusSink:
         return None
 
 
+class _StubSynthesizeEventSink:
+    """No-op `SynthesizeEventSink`. Synthesize's per-review aggregate event
+    has no side-effects this test cares about — the structural Protocol
+    gate at `build_graph` requires the sink to be present."""
+
+    async def emit_synthesize_completed(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubAnomalySink:
+    """No-op `AnomalySink` (graph-caller variant per anomaly/sinks.py
+    docstring). Synthesize's cross-round severity divergence emits here;
+    the SKIP-tier test path produces no divergence, so the sink is
+    structurally required but never invoked. `is_eval` is mandatory at
+    the Protocol level."""
+
+    async def emit_anomaly(
+        self,
+        *,
+        review_id: Any,  # noqa: ARG002
+        rule_name: Any,  # noqa: ARG002
+        severity: Any,  # noqa: ARG002
+        details: dict[str, Any],  # noqa: ARG002
+        is_eval: bool,  # noqa: ARG002
+    ) -> None:
+        return None
+
+
 def _graph_kwargs(
     *,
     phase_event_sink: _RecordingPhaseEventSinkLike,
@@ -427,6 +462,8 @@ def _graph_kwargs(
         "trace_sink": _StubTraceEventSink(),
         "hitl_event_sink": _StubHITLEventSink(),
         "review_status_sink": _StubReviewStatusSink(),
+        "synthesize_event_sink": _StubSynthesizeEventSink(),
+        "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
         "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),

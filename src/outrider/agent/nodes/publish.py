@@ -64,7 +64,6 @@ from outrider.coordinates import (
 from outrider.coordinates.errors import CoordinateErrorKind
 from outrider.policy.canonical import compute_phase_id
 from outrider.policy.publish_eligibility import is_eligible_for_v1_publish
-from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import (
     InlineComment,
     PublishDestination,
@@ -107,7 +106,6 @@ async def publish(
     # node never references the type at runtime — it just calls the
     # factory and passes the result to the publisher).
     github_factory: Callable[[int], InstallationGitHubClient],
-    active_policy_version: str = ACTIVE_POLICY_VERSION,
 ) -> dict[str, object]:
     """Run the V1 publish flow over admitted findings.
 
@@ -128,9 +126,6 @@ async def publish(
             `completed` already and no-ops.
         github_factory: per-installation githubkit client factory
             per `nodes-receive-deps-via-closure`.
-        active_policy_version: V1 default is `ACTIVE_POLICY_VERSION`;
-            tests override to pin replay equivalence under historical
-            policies.
 
     Returns:
         `{"publish_result": PublishResult}` for LangGraph's default
@@ -210,7 +205,6 @@ async def publish(
             state=state,
             changed_paths=changed_paths,
             publish_event_sink=publish_event_sink,
-            active_policy_version=active_policy_version,
             eligible_inline_comments=eligible_inline_comments,
         )
 
@@ -665,7 +659,6 @@ async def _route_and_gate_one_finding(
     state: ReviewState,
     changed_paths: set[str],
     publish_event_sink: PublishEventSink,
-    active_policy_version: str,
     eligible_inline_comments: list[InlineComment],
 ) -> None:
     """Route + gate one finding, emit both per-finding events, optionally
@@ -810,7 +803,14 @@ async def _route_and_gate_one_finding(
             decision_content_hash=eligibility_decision_hash,
             eligibility=eligibility,
             reason=eligibility_reason,
-            policy_version=active_policy_version,
+            # Mirror the finding's captured policy_version snapshot, NOT the
+            # live `active_policy_version` constant. HITL pauses can span a
+            # deploy that bumps ACTIVE_POLICY_VERSION; stamping the live
+            # value here would record the eligibility row under a policy
+            # the finding's severity was NOT classified under, breaking
+            # `severity-policy-versioned-for-replay`. Same defense class
+            # as the triage-anchored snapshot in synthesize.
+            policy_version=finding.policy_version,
         )
     )
 

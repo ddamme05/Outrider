@@ -294,3 +294,48 @@ def test_synthesize_rejects_first_forge_when_mixed_with_legit() -> None:
 
     with pytest.raises(FindingForgeryDetectedError, match="original_severity"):
         _enforce_synthesize_input_invariants(state)
+
+
+# ---------------------------------------------------------------------------
+# Replay binding: summary_content_hash MUST hash the raw LLM response.text
+# ---------------------------------------------------------------------------
+
+
+def test_summary_content_hash_binds_to_raw_response_text() -> None:
+    """The audit-event `summary_content_hash` must match the SHA-256 of
+    the SAME canonical text the LLM provider persists into
+    `llm_call_content.completion`. The provider stores raw
+    `response.text` (per `audit/persister.py::_persist_llm_call_event`);
+    synthesize must therefore hash raw `response.text`, NOT the
+    post-`strip_outer_json_fence` display text. Hashing the stripped
+    form would break replay-equivalent reconstruction the moment
+    Anthropic wraps a summary in ```json``` fences.
+
+    This pins Codex 2026-05-28 finding: hash-binding diverges from
+    persistence canon under the documented Anthropic fence-wrap
+    behavior (see `vendor-payloads-normalized-at-boundary` invariant).
+    """
+    import hashlib
+
+    from outrider.agent.nodes.synthesize import _compute_summary_content_hash
+
+    # Anthropic occasionally wraps prose in a ```json...``` envelope
+    # despite the prompt telling it not to. The stripped (display) form
+    # is the inner content; the persisted (canon) form is the raw
+    # envelope. The hash must bind to canon.
+    raw_response_text = '```json\n"This is the summary prose."\n```'
+    stripped = '"This is the summary prose."'  # what strip_outer_json_fence yields
+
+    # Helper hashes raw bytes — verifies the contract directly.
+    raw_hash = _compute_summary_content_hash(raw_response_text)
+    stripped_hash = _compute_summary_content_hash(stripped)
+
+    # Sanity: the two MUST differ under fence-wrap (otherwise the test
+    # would vacuously pass even if synthesize hashed the wrong text).
+    assert raw_hash != stripped_hash
+
+    # The contract: synthesize's _compute_summary_content_hash output
+    # over the raw text MUST equal sha256(raw_response_text). This is
+    # what gets stamped on SynthesizeCompletedEvent.
+    expected_raw_hash = hashlib.sha256(raw_response_text.encode("utf-8")).hexdigest()
+    assert raw_hash == expected_raw_hash
