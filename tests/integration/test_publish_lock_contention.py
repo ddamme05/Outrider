@@ -115,6 +115,7 @@ async def test_distinct_review_ids_lock_independently(
     review_a = uuid4()
     review_b = uuid4()
 
+    hold_duration = 0.05
     acquire_times: dict[str, float] = {}
     loop = asyncio.get_running_loop()
 
@@ -123,25 +124,33 @@ async def test_distinct_review_ids_lock_independently(
             acquire_times[name] = loop.time()
             # Hold the lock briefly so the test can observe whether
             # the other task waited or acquired in parallel.
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(hold_duration)
 
+    # Capture a shared attempt-start timestamp BEFORE both tasks try
+    # to acquire. A delta-between-acquisitions check would pass even
+    # under serialization (A at t=0, B at t=hold_duration → delta =
+    # hold_duration, fits a 2x-hold window); comparing each acquire
+    # against the common attempt_start catches that case.
+    attempt_start = loop.time()
     await asyncio.gather(
         hold_and_record("A", review_a),
         hold_and_record("B", review_b),
     )
 
-    # Both acquired; the time delta between acquisitions should be
-    # well under the 50ms hold duration. If one had to wait for the
-    # other, delta would be ≥50ms (the hold). Threshold set to 100ms
-    # (2x the hold) so transient CI slowness doesn't flake — the
-    # contended-vs-independent distinction has a 5-10x margin under
-    # this bound.
-    delta = abs(acquire_times["A"] - acquire_times["B"])
-    assert delta < 0.1, (
-        f"Distinct review_ids should not contend; observed acquire delta "
-        f"{delta:.3f}s (≥0.1s suggests they serialized — namespace "
-        f"isolation broken)."
-    )
+    # Both must have acquired within `hold_duration` of attempt_start
+    # — if one serialized behind the other, its acquire would be at
+    # attempt_start + hold_duration (the holder's release time) or
+    # later, failing this bound. Independent acquires complete within
+    # milliseconds; the hold_duration bound gives realistic CI slack
+    # while still catching serialization.
+    for name in ("A", "B"):
+        wait_for = acquire_times[name] - attempt_start
+        assert wait_for < hold_duration, (
+            f"Distinct review_ids should not contend; observed task {name!r} "
+            f"acquired {wait_for:.3f}s after attempt_start (≥{hold_duration}s "
+            f"suggests it serialized behind the other task — namespace "
+            f"isolation broken)."
+        )
 
 
 @pytest.mark.asyncio
