@@ -133,14 +133,26 @@ async def transition_expired_hitl_reviews(
     conn: AsyncConnection,
     anomaly_sink: AnomalySink,
     review_status_sink: ReviewStatusSink,
+    audit_persister: AuditPersister,
 ) -> int:
     """Sub-job 1: expire reviews past their HITL deadline.
 
     Per the anomaly-FIRST ordering contract:
       1. Query rows in `awaiting_approval` with `expires_at < NOW()`.
       2. For each row:
-         a. Emit the `hitl_timeout` anomaly via `anomaly_sink`.
-         b. ONLY if (a) succeeded, flip status to
+         a. Check the audit layer for a persisted `HITLDecisionEvent`.
+            A row in `awaiting_approval + expires_at < NOW()` carrying
+            an orphaned `HITLDecisionEvent` is a window-(f) crash
+            (reviewer DID decide; mark_running never landed), NOT a
+            timeout — skip without emitting `hitl_timeout` or flipping
+            status. `reclaim_stuck_hitl_states` (which runs FIRST in
+            `run_once`) is the canonical recovery for these rows; if
+            it failed to drive the graph this tick, the next sweep
+            tick retries. Without this skip, a reclaim-failed window-
+            (f) row would land in the anomaly queue as a hitl_timeout
+            despite the reviewer having decided.
+         b. Emit the `hitl_timeout` anomaly via `anomaly_sink`.
+         c. ONLY if (b) succeeded, flip status to
             `awaiting_approval_expired` via `review_status_sink`.
 
     If anomaly emit RAISES, the loop body for that row short-circuits
@@ -183,6 +195,38 @@ async def transition_expired_hitl_reviews(
     for row in expired_rows:
         review_id = row.id
         expires_at = row.expires_at
+        # Window-(f) skip: if a HITLDecisionEvent already exists for
+        # this review_id, the reviewer decided — this is a stuck
+        # window-f row, not a true timeout. `reclaim_stuck_hitl_states`
+        # owns the graph-drive recovery; skip to avoid double-classifying
+        # as both hitl_timeout (here) and recovered-via-reclaim (next
+        # tick). If the audit query itself fails (transient DB error),
+        # log and continue — defensive against blocking the entire sweep
+        # on one bad row.
+        try:
+            audit_decision_event = await audit_persister.query_hitl_decision_event(
+                review_id=review_id,
+            )
+        except Exception:
+            logger.exception(
+                "hitl_timeout_audit_query_failed",
+                extra={"review_id": str(review_id)},
+            )
+            continue
+        if audit_decision_event is not None:
+            logger.info(
+                "hitl_timeout_skip_decided_row",
+                extra={
+                    "review_id": str(review_id),
+                    "note": (
+                        "row in awaiting_approval past expires_at carries an "
+                        "orphaned HITLDecisionEvent (window-f); skipping "
+                        "hitl_timeout — reclaim_stuck_hitl_states owns recovery."
+                    ),
+                },
+            )
+            continue
+
         try:
             await anomaly_sink.emit_anomaly(
                 review_id=review_id,
@@ -733,6 +777,7 @@ async def run_once(
         conn=conn,
         anomaly_sink=anomaly_sink,
         review_status_sink=review_status_sink,
+        audit_persister=audit_persister,
     )
     return {
         "reclaim_recovered": reclaim_result["recovered"],

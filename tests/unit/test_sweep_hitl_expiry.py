@@ -80,6 +80,23 @@ class _StubReviewStatusSink:
         self.completed_calls.append(review_id)
 
 
+class _StubAuditPersister:
+    """Captures `query_hitl_decision_event` calls. Returns the value set
+    via `set_decision_for(review_id, event)` (default: None — no
+    persisted decision)."""
+
+    def __init__(self) -> None:
+        self.queries: list[UUID] = []
+        self._decisions: dict[UUID, Any] = {}
+
+    def set_decision_for(self, review_id: UUID, event: Any) -> None:
+        self._decisions[review_id] = event
+
+    async def query_hitl_decision_event(self, *, review_id: UUID) -> Any:
+        self.queries.append(review_id)
+        return self._decisions.get(review_id)
+
+
 def _make_conn(expired_rows: list[tuple[UUID, datetime]]) -> MagicMock:
     """Mock AsyncConnection that returns the given expired rows on
     SELECT + grants the advisory lock.
@@ -125,6 +142,7 @@ async def test_anomaly_first_ordering_anomaly_succeeds_then_status_flips() -> No
         conn=conn,
         anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
         review_status_sink=status_sink,  # type: ignore[arg-type]
+        audit_persister=_StubAuditPersister(),  # type: ignore[arg-type]
     )
 
     assert n == 1
@@ -156,6 +174,7 @@ async def test_anomaly_first_ordering_anomaly_fails_status_does_not_flip() -> No
         conn=conn,
         anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
         review_status_sink=status_sink,  # type: ignore[arg-type]
+        audit_persister=_StubAuditPersister(),  # type: ignore[arg-type]
     )
 
     # Only the OK review transitioned.
@@ -165,6 +184,44 @@ async def test_anomaly_first_ordering_anomaly_fails_status_does_not_flip() -> No
     assert status_sink.expired_calls == [review_id_ok]
     # The failing review never reached the status flip.
     assert review_id_fail not in status_sink.expired_calls
+
+
+@pytest.mark.asyncio
+async def test_transition_skips_when_audit_decision_event_exists() -> None:
+    """Window-(f) skip: a row in `awaiting_approval + expires_at < NOW()`
+    that ALSO carries an orphaned `HITLDecisionEvent` is a window-f
+    crash (reviewer decided, mark_running never landed), NOT a
+    timeout. `transition_expired_hitl_reviews` MUST skip — no
+    `hitl_timeout` anomaly, no status flip. `reclaim_stuck_hitl_states`
+    (which runs first in `run_once`) owns the graph-drive recovery."""
+    review_id_decided = uuid4()
+    review_id_undecided = uuid4()
+    expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    conn = _make_conn([(review_id_decided, expires_at), (review_id_undecided, expires_at)])
+    anomaly_sink = _StubAnomalySink()
+    status_sink = _StubReviewStatusSink()
+    audit_persister = _StubAuditPersister()
+    # The decided row has an orphaned audit event; the undecided row
+    # has none. Use a sentinel object — the sweep only checks "is not
+    # None", it doesn't inspect the event's content here.
+    audit_persister.set_decision_for(review_id_decided, object())
+
+    n = await transition_expired_hitl_reviews(
+        conn=conn,
+        anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        audit_persister=audit_persister,  # type: ignore[arg-type]
+    )
+
+    # Only the UNDECIDED review transitioned.
+    assert n == 1
+    assert anomaly_sink.emit_calls[0]["review_id"] == review_id_undecided
+    assert status_sink.expired_calls == [review_id_undecided]
+    # The decided row was checked but no anomaly was emitted, no status flip.
+    assert review_id_decided not in [c["review_id"] for c in anomaly_sink.emit_calls]
+    assert review_id_decided not in status_sink.expired_calls
+    # Both rows were queried.
+    assert set(audit_persister.queries) == {review_id_decided, review_id_undecided}
 
 
 @pytest.mark.asyncio
@@ -188,6 +245,7 @@ async def test_transition_sub_job_no_longer_self_locks() -> None:
         conn=conn,
         anomaly_sink=anomaly_sink,  # type: ignore[arg-type]
         review_status_sink=status_sink,  # type: ignore[arg-type]
+        audit_persister=_StubAuditPersister(),  # type: ignore[arg-type]
     )
 
     # No self-lock; transitioned the seeded row.
