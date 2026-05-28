@@ -131,7 +131,11 @@ def test_recording_sink_does_not_dedup_idempotent_calls() -> None:
 
 def test_partial_sink_rejected_by_runtime_check() -> None:
     """A class missing `mark_awaiting_approval_expired` fails
-    `isinstance(ReviewStatusSink)`."""
+    `isinstance(ReviewStatusSink)`. `_Partial` carries every other
+    Protocol method so the assertion isolates the named missing
+    method — without `mark_completed` present, the test could pass
+    for the wrong reason (either missing method would fail isinstance).
+    """
 
     class _Partial:
         async def mark_awaiting_approval(
@@ -142,6 +146,9 @@ def test_partial_sink_rejected_by_runtime_check() -> None:
         async def mark_running(
             self, *, review_id: UUID, hitl_decision_payload: dict[str, Any]
         ) -> None:
+            pass
+
+        async def mark_completed(self, *, review_id: UUID) -> None:
             pass
 
     assert not isinstance(_Partial(), ReviewStatusSink)

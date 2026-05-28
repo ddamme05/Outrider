@@ -47,7 +47,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from outrider.agent.nodes.hitl import hitl
-from outrider.agent.nodes.hitl_config import HITLConfig
+from outrider.agent.nodes.hitl_config import HITLConfig, HITLTimeoutAction
 from outrider.audit.events import (  # noqa: TC001  (runtime: recording-sink list element types)
     HITLDecisionEvent,
     HITLRequestEvent,
@@ -212,7 +212,10 @@ async def _run_mock_smoke() -> int:
     phase_sink = _RecordingPhaseEventSink()
     hitl_sink = _RecordingHITLEventSink()
     status_sink = _RecordingReviewStatusSink()
-    hitl_config = HITLConfig(timeout_minutes=30)
+    hitl_config = HITLConfig(
+        timeout_minutes=30,
+        timeout_action=HITLTimeoutAction.EXPIRE_ONLY,
+    )
     checkpointer = InMemorySaver()
 
     # Build a tiny graph: START -> hitl -> END.
