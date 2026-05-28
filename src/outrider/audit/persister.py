@@ -1375,6 +1375,7 @@ def _serialize_event_payload(
         | TraceDecisionEvent
         | HITLRequestEvent
         | HITLDecisionEvent
+        | SynthesizeCompletedEvent
     ),
 ) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
@@ -1980,6 +1981,7 @@ class AuditPersister:
             | PublishEligibilityEvent
             | PublishAttemptEvent
             | PublishEvent
+            | SynthesizeCompletedEvent
         ),
     ) -> None:
         """Persist any non-phase audit event row to audit_events.

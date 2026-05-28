@@ -48,6 +48,7 @@ from types import MappingProxyType
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from outrider.policy.severity import ACTIVE_POLICY_VERSION, BARE_SEMVER_PATTERN
 from outrider.schemas.review_finding import ReviewDimension
 
 
@@ -100,6 +101,21 @@ class TriageResult(BaseModel):
     overall_risk: RiskLevel
     relevant_dimensions: tuple[ReviewDimension, ...]
     reasoning: str = Field(max_length=500)
+    # Snapshot of `ACTIVE_POLICY_VERSION` at triage construction time.
+    # Triage runs FIRST in the canonical graph; capturing the active
+    # policy here gives downstream nodes a trusted anchor for
+    # per-review policy_version validation that cannot be poisoned by
+    # a single forged finding emitted later by analyze. Synthesize's
+    # `_enforce_synthesize_input_invariants` uses this field as the
+    # snapshot anchor (review_finding's `policy_version` must match);
+    # `SynthesizeCompletedEvent.policy_version` mirrors it for
+    # replay-correctness. `default_factory` captures live at triage
+    # node-entry time; producers MAY override (e.g., replay path that
+    # rehydrates from audit row carries the historical version).
+    policy_version: str = Field(
+        default_factory=lambda: ACTIVE_POLICY_VERSION,
+        pattern=BARE_SEMVER_PATTERN,
+    )
 
     @field_validator("file_tiers", mode="after")
     @classmethod

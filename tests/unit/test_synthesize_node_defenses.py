@@ -121,40 +121,62 @@ def _make_finding_stub(
     return _FindingStub()
 
 
-def _make_state_stub(*, findings: list[Any]) -> Any:
+def _make_state_stub(
+    *,
+    findings: list[Any],
+    triage_policy_version: str = ACTIVE_POLICY_VERSION,
+    rounds: list[list[Any]] | None = None,
+) -> Any:
+    """Build a minimal ReviewState-like stub for the synthesize defenses.
+
+    `triage_policy_version` controls the snapshot anchor — synthesize's
+    `_enforce_synthesize_input_invariants` reads it from
+    `state.triage_result.policy_version`. Defaults to
+    `ACTIVE_POLICY_VERSION` (the legitimate fresh-review path).
+    `rounds=[[f1], [f2]]` lets callers exercise multi-round paths;
+    when None, all findings land in a single round.
+    """
+
     class _Round:
         def __init__(self, fs: list[Any]) -> None:
             self.findings = tuple(fs)
 
+    class _Triage:
+        def __init__(self, version: str) -> None:
+            self.policy_version = version
+
     class _State:
         def __init__(self) -> None:
-            self.analysis_rounds = (_Round(findings),)
+            if rounds is None:
+                self.analysis_rounds = (_Round(findings),)
+            else:
+                self.analysis_rounds = tuple(_Round(r) for r in rounds)
+            self.triage_result = _Triage(triage_policy_version)
 
     return _State()
 
 
-def test_synthesize_admits_uniform_policy_version() -> None:
-    """The H-1 defense uses a snapshot semantic: the first finding's
-    `policy_version` becomes the review's "active policy" snapshot;
-    subsequent findings MUST match it. A single finding (or all
-    findings carrying the same version) admits, regardless of whether
-    the value equals the live `ACTIVE_POLICY_VERSION` — operational
-    mid-deploy bumps must not deny completion for in-flight reviews.
-
-    `_enforce_severity_matches_policy` short-circuits on non-active
-    versions, so the residual "all findings forged with coherent fake
-    snapshot" case requires full analyze compromise; tracked as a
-    snapshot-fortification FUP.
+def test_synthesize_admits_findings_matching_triage_snapshot() -> None:
+    """The H-1 defense uses a triage-anchored snapshot: findings MUST
+    match `state.triage_result.policy_version`. The snapshot is
+    captured at triage entry, upstream of analyze, so it survives
+    mid-deploy ACTIVE_POLICY_VERSION bumps AND defeats first-finding
+    poisoning (an attacker who controls analyze cannot poison the
+    snapshot).
     """
+    # Happy path: findings match the triage snapshot (current active).
     legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
     state = _make_state_stub(findings=[legit])
-    # MUST NOT raise.
     _enforce_synthesize_input_invariants(state)
 
-    # Also admits a non-active version when ALL findings share it
-    # (legitimate replay path against a historical policy snapshot).
+    # Replay path: a historical review's triage carries the historical
+    # version; the findings under that review match. Synthesize must
+    # admit (not deny completion based on live ACTIVE_POLICY_VERSION).
     legit_historical = _make_finding_stub(policy_version="0.0.1")
-    state = _make_state_stub(findings=[legit_historical])
+    state = _make_state_stub(
+        findings=[legit_historical],
+        triage_policy_version="0.0.1",
+    )
     _enforce_synthesize_input_invariants(state)
 
 
@@ -206,25 +228,55 @@ def test_synthesize_admits_finding_with_none_original_severity() -> None:
 def test_synthesize_detects_forge_in_later_round() -> None:
     """Multi-round path: forge in `analysis_rounds[1]` with legitimate
     findings in `analysis_rounds[0]`. The outer round-loop must reach
-    round_index=1 and trigger the snapshot mismatch."""
-
-    class _MultiRoundState:
-        def __init__(self) -> None:
-            legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
-            forged = _make_finding_stub(policy_version="0.0.0")
-
-            class _R0:
-                def __init__(self) -> None:
-                    self.findings = (legit,)
-
-            class _R1:
-                def __init__(self) -> None:
-                    self.findings = (forged,)
-
-            self.analysis_rounds = (_R0(), _R1())
+    round_index=1 and trigger the snapshot mismatch.
+    """
+    legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
+    forged = _make_finding_stub(policy_version="0.0.0")
+    state = _make_state_stub(findings=[], rounds=[[legit], [forged]])
 
     with pytest.raises(FindingForgeryDetectedError, match="round_index=1"):
-        _enforce_synthesize_input_invariants(_MultiRoundState())  # type: ignore[arg-type]
+        _enforce_synthesize_input_invariants(state)
+
+
+def test_synthesize_blocks_first_finding_poisoning() -> None:
+    """The triage-anchored snapshot defeats the first-finding-poisoning
+    DoS: an attacker who plants one forged finding in round 0 index 0
+    cannot use it as the snapshot anchor — triage's captured
+    policy_version is the trusted source. Legitimate findings then
+    succeed; the SINGLE forged finding is detected.
+    """
+    forged_first = _make_finding_stub(policy_version="evil-snapshot")
+    legit_second = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
+    # Triage captured ACTIVE_POLICY_VERSION at review start (upstream
+    # of the analyze compromise). The forged finding is detected as
+    # the divergent one — NOT the legitimate finding.
+    state = _make_state_stub(
+        findings=[forged_first, legit_second],
+        triage_policy_version=ACTIVE_POLICY_VERSION,
+    )
+
+    with pytest.raises(FindingForgeryDetectedError, match="evil-snapshot"):
+        _enforce_synthesize_input_invariants(state)
+
+
+def test_synthesize_requires_triage_result_to_anchor_snapshot() -> None:
+    """Synthesize cannot derive the policy_version snapshot if triage
+    has not run. Missing triage_result is itself a corruption signal
+    (graph routed past triage somehow). Raises FindingForgeryDetectedError
+    with a clear message naming the missing anchor.
+    """
+
+    class _RoundEmpty:
+        def __init__(self) -> None:
+            self.findings = ()
+
+    class _StateNoTriage:
+        def __init__(self) -> None:
+            self.analysis_rounds = (_RoundEmpty(),)
+            self.triage_result = None
+
+    with pytest.raises(FindingForgeryDetectedError, match="triage_result"):
+        _enforce_synthesize_input_invariants(_StateNoTriage())  # type: ignore[arg-type]
 
 
 def test_synthesize_rejects_first_forge_when_mixed_with_legit() -> None:
