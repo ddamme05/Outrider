@@ -30,10 +30,22 @@ def test_anomaly_rule_name_hitl_timeout_value_pinned() -> None:
     assert AnomalyRuleName.HITL_TIMEOUT.value == "hitl_timeout"
 
 
-def test_anomaly_rule_name_only_one_v1_value() -> None:
-    """V1 ships one rule. New rules extend the enum + need matching
-    partial unique indexes on the anomalies table."""
-    assert {m.value for m in AnomalyRuleName} == {"hitl_timeout"}
+def test_anomaly_rule_name_v1_value_set() -> None:
+    """V1 ships two rules. New rules extend the enum + need matching
+    partial unique indexes on the anomalies table.
+
+    HITL_TIMEOUT — sweep-emitted from `sweep/hitl_expiry.py` per
+    `docs/spec.md` §16.
+    CROSS_ROUND_SEVERITY_DIVERGENCE — graph-emitted from
+    `agent/nodes/synthesize.py` per the synthesize-node spec; surfaces
+    cross-round `(content_hash, severity)` divergence as corruption
+    (severity-set-by-policy invariant + per-element validator chain
+    guarantee same content_hash + same finding_type => same severity).
+    """
+    assert {m.value for m in AnomalyRuleName} == {
+        "hitl_timeout",
+        "cross_round_severity_divergence",
+    }
 
 
 def test_persister_rejects_none_session_factory() -> None:
@@ -57,6 +69,7 @@ def test_recording_sink_satisfies_protocol_structurally() -> None:
             rule_name: AnomalyRuleName,
             severity: AnomalySeverity,
             details: dict[str, Any],
+            is_eval: bool,
         ) -> None:
             self.calls.append(
                 {
@@ -64,6 +77,7 @@ def test_recording_sink_satisfies_protocol_structurally() -> None:
                     "rule_name": rule_name,
                     "severity": severity,
                     "details": details,
+                    "is_eval": is_eval,
                 }
             )
 

@@ -109,12 +109,14 @@ async def test_duplicate_emit_collapses_to_one_row(
         rule_name=AnomalyRuleName.HITL_TIMEOUT,
         severity=AnomalySeverity.MEDIUM,
         details={"expired_at": "2026-05-26T00:00:00Z"},
+        is_eval=False,
     )
     await persister.emit_anomaly(
         review_id=review_id,
         rule_name=AnomalyRuleName.HITL_TIMEOUT,
         severity=AnomalySeverity.MEDIUM,
         details={"expired_at": "2026-05-26T00:00:00Z"},
+        is_eval=False,
     )
 
     count = await _count_anomaly_rows(migrated_db, review_id, "hitl_timeout")
@@ -172,6 +174,7 @@ async def test_distinct_review_ids_admit_separate_rows(
                 rule_name=AnomalyRuleName.HITL_TIMEOUT,
                 severity=AnomalySeverity.MEDIUM,
                 details={"expired_at": "2026-05-26T00:00:00Z"},
+                is_eval=False,
             )
 
         async with engine.begin() as conn:
@@ -188,14 +191,18 @@ async def test_distinct_review_ids_admit_separate_rows(
         await engine.dispose()
 
 
-# Forward-compat: a future addition to `AnomalyRuleName` (e.g.,
-# `MISSING_TRACE_PATH = "missing_trace_path"`) reaches the persister
-# WITHOUT a dispatch update for its own partial unique index. V1 guards
-# against this at the Python layer (`raise NotImplementedError`).
-# That contract is exercised at the unit tier in `tests/unit/test_anomaly_sink.py`
-# because StrEnum construction at the integration tier requires bypassing
-# Python's identity guarantees in ways that don't reflect real-world
-# extensibility (a real new enum value would be a one-line addition to
-# `rule_names.py`, not a hot-patched instance). Integration coverage
-# here focuses on the on-conflict idempotency contract that depends on
-# real Postgres + the partial unique index.
+# Forward-compat: the AnomalyPersister now dispatches on rule_name —
+# `index_where=(Anomaly.rule_name == rule_name.value)` picks the
+# matching partial unique index at INSERT time. Every new
+# AnomalyRuleName MUST ship with a paired Alembic migration creating
+# its own partial unique index (`uq_anomalies_<rule>_natural_key` ON
+# anomalies (review_id) WHERE rule_name = '<rule>'). Without the
+# matching index, on_conflict_do_nothing falls through silently — the
+# INSERT lands as a new row each time, breaking idempotency. This
+# producer-side discipline is exercised at the unit tier by
+# `test_anomaly_rule_name_v1_value_set` in `tests/unit/test_anomaly_sink.py`
+# (enumerates the supported set) plus the migration's own integration
+# test (every rule_name in AnomalyRuleName has a matching partial
+# unique index in the live schema). Integration coverage here focuses
+# on the on-conflict idempotency contract that depends on real
+# Postgres + the partial unique index.

@@ -7,7 +7,9 @@ migration. The StrEnums are the Python-side contract: producers
 MUST emit values from these sets, and the persister's partial
 unique index keys on the canonical string `rule_name` value.
 
-V1 ships one rule. Future detectors extend the enums.
+V1 ships two rules: HITL_TIMEOUT (sweep-emitted) and
+CROSS_ROUND_SEVERITY_DIVERGENCE (graph-emitted by synthesize).
+Future detectors extend the enums.
 """
 
 from enum import StrEnum
@@ -21,9 +23,24 @@ class AnomalyRuleName(StrEnum):
     `medium` per canonical record. Idempotent on `(review_id,
     rule_name='hitl_timeout')` via the partial unique index from
     Group 3's HITL migration.
+
+    `CROSS_ROUND_SEVERITY_DIVERGENCE` — emitted by
+    `agent/nodes/synthesize.py` when two findings sharing a
+    `content_hash` across different analysis rounds carry different
+    `severity` values. Per the `severity-set-by-policy` invariant +
+    `compute_finding_content_hash` recipe (keyed over `finding_type`)
+    + `ReviewFinding._verify_baseline_severity` (forces severity =
+    SEVERITY_POLICY[finding_type]), same content_hash within a single
+    review under a single policy_version MUST have identical severity
+    by construction — divergence indicates corruption (validator
+    bypass, hash-recipe drift, mid-review policy-version change), not
+    "model variance." Severity `high` per pre-spec gate #7. Idempotent
+    on `(review_id, rule_name='cross_round_severity_divergence')` via
+    the partial unique index from the synthesize-node migration.
     """
 
     HITL_TIMEOUT = "hitl_timeout"
+    CROSS_ROUND_SEVERITY_DIVERGENCE = "cross_round_severity_divergence"
 
 
 class AnomalySeverity(StrEnum):

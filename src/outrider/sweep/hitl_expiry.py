@@ -183,7 +183,7 @@ async def transition_expired_hitl_reviews(
     # isolation today; the filter is the structural defense if
     # eval data ever shares a DB with prod.
     result = await conn.execute(
-        select(Review.id, Review.expires_at).where(
+        select(Review.id, Review.expires_at, Review.is_eval).where(
             Review.status == "awaiting_approval",
             Review.expires_at < datetime.now(UTC),
             Review.is_eval.is_(False),
@@ -195,6 +195,15 @@ async def transition_expired_hitl_reviews(
     for row in expired_rows:
         review_id = row.id
         expires_at = row.expires_at
+        # Read is_eval from the row directly rather than hardcoding
+        # `False` at the call site. The WHERE clause above filters to
+        # production rows; the row-derived value is `False` today, but
+        # if the WHERE clause is ever weakened (e.g., a future "eval
+        # also expires" feature flag) the emit's `is_eval` argument
+        # stays self-consistent with the actual review row. Sharp-edges
+        # Phase 2 audit finding: hardcoded value drift-risk under
+        # future WHERE-clause changes — derive from row instead.
+        review_is_eval = row.is_eval
         # Window-(f) skip: if a HITLDecisionEvent already exists for
         # this review_id, the reviewer decided — this is a stuck
         # window-f row, not a true timeout. `reclaim_stuck_hitl_states`
@@ -228,6 +237,11 @@ async def transition_expired_hitl_reviews(
             continue
 
         try:
+            # `is_eval` derived from the row above — self-consistent
+            # with the actual review even if the WHERE clause's
+            # `is_eval=False` filter is ever weakened. Loud-failure
+            # discipline per docs/testing.md: every is_eval-bearing
+            # producer call site sets the flag explicitly.
             await anomaly_sink.emit_anomaly(
                 review_id=review_id,
                 rule_name=AnomalyRuleName.HITL_TIMEOUT,
@@ -236,6 +250,7 @@ async def transition_expired_hitl_reviews(
                     "expired_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at.isoformat() if expires_at else None,
                 },
+                is_eval=review_is_eval,
             )
         except Exception:
             # Anomaly-first ordering: do NOT flip status if anomaly
