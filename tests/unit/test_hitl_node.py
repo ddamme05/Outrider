@@ -107,24 +107,22 @@ def _make_state(
     findings: list[_FindingStub],
     review_id: UUID,
     received_at: datetime,
-    use_review_report: bool = False,
+    use_review_report: bool = True,
 ) -> Any:
     """Build a minimal ReviewState-like object the hitl body reads.
 
-    The node body only reads `state.review_id`, `state.is_eval`,
-    `state.received_at`, `state.review_report`, and (test-compat
-    fallback) `state.analysis_rounds[*].findings`. Use a duck-typed
-    stub rather than constructing a full ReviewState (which has many
-    required fields and would couple this test to the review-state
-    schema details unnecessarily).
+    The node body reads `state.review_id`, `state.is_eval`,
+    `state.received_at`, and `state.review_report.findings`. Use a
+    duck-typed stub rather than constructing a full ReviewState (which
+    has many required fields and would couple this test to the
+    review-state schema details unnecessarily).
 
-    `use_review_report=True` builds a stub with `review_report.findings`
-    set (canonical post-synthesize path); the default `False` keeps the
-    legacy `analysis_rounds`-only shape that pre-synthesize tests assumed.
-    The HITL partition function reads `state.review_report` first; if
-    absent it falls back to flattening `state.analysis_rounds`. Both
-    paths must be covered; pass `use_review_report=True` in at least one
-    test to exercise the canonical branch.
+    `use_review_report=True` (default) builds a stub with
+    `review_report.findings` set (canonical post-synthesize path).
+    `use_review_report=False` is reserved for the fail-loud test —
+    the production helper raises RuntimeError when `review_report` is
+    None to prevent miswired graphs from bypassing synthesize's
+    content-hash dedup + cross-round severity-divergence detection.
     """
 
     class _Round:
@@ -206,24 +204,35 @@ def test_partition_canonical_review_report_path() -> None:
     assert set(autopost) == {med.finding_id, low.finding_id, info.finding_id}
 
 
-def test_partition_dedupes_finding_admitted_across_passes() -> None:
+def test_partition_consumes_synthesize_deduplicated_findings() -> None:
+    """Post-synthesize: HITL consumes the already-deduplicated tuple from
+    `state.review_report.findings`. Multi-round dedup semantics moved
+    to synthesize (where the content_hash dedup + cross-round severity-
+    divergence detection live); HITL no longer walks raw
+    analysis_rounds. The legacy
+    `test_partition_dedupes_finding_admitted_across_passes` semantics
+    are now covered at the synthesize layer; this test verifies HITL's
+    contract on the new shape: each finding in `review_report.findings`
+    is classified exactly once.
+    """
     review_id = uuid4()
-    finding = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    high1 = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    high2 = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    med = _make_finding(review_id=review_id, severity=FindingSeverity.MEDIUM)
 
-    class _Round:
-        findings = (finding,)
+    # Canonical shape: review_report.findings already deduplicated by
+    # synthesize. HITL classifies each entry exactly once.
+    state = _make_state(
+        findings=[high1, high2, med],
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+    )
+    gated, autopost = _partition_findings(state)
 
-    class _MultiRoundState:
-        def __init__(self) -> None:
-            self.review_id = review_id
-            self.is_eval = False
-            self.received_at = datetime.now(UTC)
-            self.analysis_rounds = (_Round(), _Round())  # same finding admitted twice
-
-    gated, _ = _partition_findings(_MultiRoundState())  # type: ignore[arg-type]
-
-    assert len(gated) == 1
-    assert gated[0] == finding.finding_id
+    assert len(gated) == 2
+    assert set(gated) == {high1.finding_id, high2.finding_id}
+    assert len(autopost) == 1
+    assert autopost[0] == med.finding_id
 
 
 def test_partition_returns_sorted_tuples_for_determinism() -> None:

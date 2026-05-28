@@ -266,9 +266,13 @@ def _make_state(
     findings: tuple[ReviewFinding, ...] = (),
     changed_files: tuple[ChangedFile, ...] = (),
 ) -> ReviewState:
-    """Build a ReviewState with one AnalysisRound carrying the findings."""
+    """Build a ReviewState with one AnalysisRound + a synthesize-canonical
+    ReviewReport carrying the findings (publish requires the canonical
+    review_report shape post-Phase-5 fail-loud)."""
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas.analysis_round import AnalysisRound
+    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
+    from outrider.schemas.triage_result import RiskLevel
 
     review_id = uuid4()
     pr_context = PRContext(
@@ -284,8 +288,8 @@ def _make_state(
         total_deletions=0,
         changed_files=changed_files,
     )
+    files_examined = tuple(cf.path for cf in changed_files)
     if findings:
-        files_examined = tuple(cf.path for cf in changed_files)
         round_id = compute_round_id(
             pass_index=0,
             files_examined=files_examined,
@@ -304,12 +308,23 @@ def _make_state(
         analysis_rounds = [analysis_round]
     else:
         analysis_rounds = []
+    review_report = ReviewReport(
+        summary="test summary",
+        overall_risk=RiskLevel.LOW,
+        findings=findings,
+        metrics=ReviewMetrics(
+            files_examined=len(files_examined),
+            files_traced_beyond_diff=0,
+            wall_clock_seconds=0.0,
+        ),
+    )
     return ReviewState(
         review_id=review_id,
         pr_context=pr_context,
         received_at=datetime.now(UTC),
         is_eval=False,
         analysis_rounds=analysis_rounds,
+        review_report=review_report,
     )
 
 

@@ -2295,6 +2295,7 @@ AuditEventAdapter: Final[
         | AnalyzeCompletedEvent
         | FindingProposalRejectedEvent
         | AnalyzeResponseRejectedEvent
+        | SynthesizeCompletedEvent
     ]
 ] = TypeAdapter(AuditEvent)
 

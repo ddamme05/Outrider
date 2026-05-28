@@ -229,6 +229,8 @@ def _make_state(
 ) -> ReviewState:
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas.analysis_round import AnalysisRound
+    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
+    from outrider.schemas.triage_result import RiskLevel
 
     files_examined = tuple(cf.path for cf in changed_files)
     round_id = compute_round_id(
@@ -245,6 +247,17 @@ def _make_state(
         files_skipped=(),
         started_at=datetime.now(UTC),
         ended_at=datetime.now(UTC),
+    )
+    # Synthesize-canonical state for publish's fail-loud check.
+    review_report = ReviewReport(
+        summary="test summary",
+        overall_risk=RiskLevel.LOW,
+        findings=findings,
+        metrics=ReviewMetrics(
+            files_examined=len(files_examined),
+            files_traced_beyond_diff=0,
+            wall_clock_seconds=0.0,
+        ),
     )
     return ReviewState(
         review_id=review_id if review_id is not None else uuid4(),
@@ -264,6 +277,7 @@ def _make_state(
         received_at=datetime.now(UTC),
         is_eval=False,
         analysis_rounds=[analysis_round],
+        review_report=review_report,
     )
 
 
@@ -599,51 +613,42 @@ async def test_decision_drift_surfaces_as_distinct_decision_hash(
 @pytest.mark.asyncio
 async def test_duplicate_finding_ids_across_rounds_rejected_by_publish() -> None:
     """`_assert_no_duplicate_finding_ids` rejects duplicate finding_ids
-    AFTER flattening across analysis_rounds.
+    on the canonical post-synthesize ReviewReport path.
 
-    AnalysisRound's own validator rejects duplicates WITHIN a single
-    round (analyze's primary defense). The publish-node check is the
-    cross-round defense: two distinct rounds, each individually valid,
-    that share a finding_id would silently double-post without this
-    check. The append-with-dedup reducer on `analysis_rounds` keys
-    on `round_id`, NOT finding_ids — so the cross-round duplicate is
-    a real bypass path the publish node must defend against.
+    Post-synthesize, the primary defense against cross-round duplicate
+    findings is synthesize's content_hash dedup + cross-round severity-
+    divergence detection (`_detect_and_report_divergence`). The publish
+    node's `_assert_no_duplicate_finding_ids` is the belt-and-suspenders
+    second layer: a forged or test-fixture-constructed ReviewReport
+    that bypassed synthesize (different content_hashes but same
+    finding_id — which the ReviewReport schema validator does NOT
+    catch, since it only checks content_hash uniqueness) is still
+    rejected by publish before any GitHub call.
+
+    This test constructs such a forged state: two findings with
+    different content_hashes (line_start differs) but the same
+    finding_id. ReviewReport schema admits the construction; publish's
+    finding-id-uniqueness check fires.
     """
-    from outrider.policy.canonical import compute_round_id
-    from outrider.schemas.analysis_round import AnalysisRound
+    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
+    from outrider.schemas.triage_result import RiskLevel
 
     finding_id = uuid4()
-    f1 = _make_finding(finding_id=finding_id)
-    f2 = _make_finding(finding_id=finding_id)  # same id, different round
     cf = _make_changed_file()
+    # Distinct content_hashes (line_start differs) so ReviewReport
+    # schema validator admits the tuple — only finding_id collides.
+    f1 = _make_finding(finding_id=finding_id, line_start=2, line_end=2)
+    f2 = _make_finding(finding_id=finding_id, line_start=3, line_end=3)
 
-    round_a = AnalysisRound(
-        round_id=compute_round_id(
-            pass_index=0,
-            files_examined=(cf.path,),
-            files_skipped=(),
-            finding_content_hashes=(f1.content_hash,),
+    review_report = ReviewReport(
+        summary="test summary",
+        overall_risk=RiskLevel.LOW,
+        findings=(f1, f2),
+        metrics=ReviewMetrics(
+            files_examined=1,
+            files_traced_beyond_diff=0,
+            wall_clock_seconds=0.0,
         ),
-        pass_index=0,
-        findings=(f1,),
-        files_examined=(cf.path,),
-        files_skipped=(),
-        started_at=datetime.now(UTC),
-        ended_at=datetime.now(UTC),
-    )
-    round_b = AnalysisRound(
-        round_id=compute_round_id(
-            pass_index=1,  # different pass — different round_id
-            files_examined=(cf.path,),
-            files_skipped=(),
-            finding_content_hashes=(f2.content_hash,),
-        ),
-        pass_index=1,
-        findings=(f2,),
-        files_examined=(cf.path,),
-        files_skipped=(),
-        started_at=datetime.now(UTC),
-        ended_at=datetime.now(UTC),
     )
     state = ReviewState(
         review_id=uuid4(),
@@ -662,7 +667,8 @@ async def test_duplicate_finding_ids_across_rounds_rejected_by_publish() -> None
         ),
         received_at=datetime.now(UTC),
         is_eval=False,
-        analysis_rounds=[round_a, round_b],
+        analysis_rounds=[],
+        review_report=review_report,
     )
 
     with pytest.raises(ValueError, match="duplicate finding_id"):

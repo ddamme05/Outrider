@@ -1,5 +1,5 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of seven sink Protocols.
+"""AuditPersister — durable single-class implementation of eight sink Protocols.
 
 Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
 `FileExaminationSink`, `AnalyzeEventSink`, `PublishEventSink`,

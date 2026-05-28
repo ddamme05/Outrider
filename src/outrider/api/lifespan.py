@@ -477,8 +477,11 @@ def build_lifespan(
             # parameter per `docs/spec.md §9.3`. `model_config` is the
             # SAME instance already passed to the provider at step 5b —
             # single-source guarantee. The same `persister` implements
-            # all FIVE sink Protocols (phase + file-examination +
-            # analyze + publish + LLM-exchange) per DECISIONS.md #023;
+            # eight audit-side sink Protocols (phase + file-examination +
+            # analyze + trace + publish + hitl + review-status + synthesize)
+            # plus the anomaly sink (separate Protocol for the cross-cutting
+            # anomaly subsystem). Routing/eligibility split per
+            # DECISIONS.md #023;
             # `import_path_resolver` is the stateless coordinates
             # singleton; `publisher` is the stateless GitHubKitPublisher.
             # HITL dependencies: the durable AuditPersister implements

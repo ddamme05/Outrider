@@ -164,9 +164,13 @@ async def publish(
         )
     )
 
-    # Step 2: collect admitted findings from analysis_rounds. Per the
-    # spec's "intra-execution drift detection" test, defend against
-    # producer regression that emits duplicate finding_ids.
+    # Step 2: collect admitted findings from state.review_report
+    # (canonical post-synthesize). Per the spec's "intra-execution
+    # drift detection" test, defend against producer regression that
+    # emits duplicate finding_ids — even though synthesize's
+    # content_hash dedup makes this redundant for well-formed reports,
+    # the assert is belt-and-suspenders against forged ReviewReport
+    # construction bypassing synthesize.
     admitted_findings = _collect_admitted_findings(state)
     _assert_no_duplicate_finding_ids(admitted_findings)
 
@@ -455,7 +459,9 @@ async def publish(
         # re-raising so the audit trail has the failure_class on record.
         # The phase-start remains dangling on failure (analyze convention).
         review_status = "COMMENT"  # V1: every published review is a comment.
-        # When synthesize ships, status is derived from the highest-severity
+        # Status derivation lives upstream of publish (synthesize/HITL
+        # gate); future enhancement may compute review status from the
+        # highest-severity
         # finding that actually posted (per docs/spec.md §V).
         try:
             review_created = await publisher.create_review(
@@ -578,13 +584,17 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
 
 def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
-    """Read admitted findings from state.review_report (canonical) or
-    fall back to flattening state.analysis_rounds (test-compat).
+    """Read admitted findings from `state.review_report.findings`.
 
     After synthesize lands (canonical 7-node graph: trace → synthesize
     → hitl → publish), the deduplicated + severity-sorted findings
     tuple lives on `state.review_report.findings`. Publish consumes
-    that single canonical source.
+    that single canonical source. Fails LOUDLY if synthesize did not
+    run — a miswired graph that reaches publish without a populated
+    `review_report` would otherwise silently bypass synthesize's
+    content-hash dedup + cross-round severity-divergence detection,
+    proceeding under stale aggregation semantics. Fail-closed is the
+    audit-recommended posture (Codex 2026-05-28).
 
     **Findings are cloned via `model_copy()` before return.** Publish
     mutates `finding.publish_destination` downstream
@@ -599,37 +609,34 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
     `model_copy` patterns: clone outer immutable parent's mutable
     children before downstream mutation.
 
-    **Test-compat fallback (transitional).** Many pre-synthesize
-    publish-node test fixtures construct `ReviewState` with
-    `analysis_rounds` populated but no `review_report`. To avoid
-    requiring a mass test-fixture update in the same PR, the function
-    falls back to the legacy flatten when `review_report is None`. In
-    production graph execution (post-Phase-6 wiring), synthesize ALWAYS
-    runs before publish, so `state.review_report` is always set;
-    the fallback path is exercised only by isolated unit tests that
-    bypass the full graph. The clone applies to the fallback path too
-    (defense-in-depth in case fixture state is reused across tests).
-
     Synthesize's content_hash dedup makes the
     `_assert_no_duplicate_finding_ids` defense redundant for
     well-formed reports — but we keep the assertion as belt-and-
     suspenders against direct construction (test fixtures, replay
     paths) bypassing synthesize.
     """
-    # `getattr` defends against test doubles that don't carry the
-    # review_report attribute at all.
-    review_report = getattr(state, "review_report", None)
-    if review_report is not None:
-        # Clone via model_copy so downstream publish_destination
-        # mutation does not bleed back into state.review_report.findings.
-        return [f.model_copy() for f in review_report.findings]
-    # Test-compat: pre-synthesize fixtures populate analysis_rounds
-    # only. Production path always has review_report set (post-Phase-6).
-    # Same clone discipline as the canonical path.
-    out: list[ReviewFinding] = []
-    for round_ in state.analysis_rounds:
-        out.extend(f.model_copy() for f in round_.findings)
-    return out
+    # Direct attribute access (not getattr-with-default) so a future
+    # schema rename of `review_report` surfaces as `AttributeError`
+    # rather than silently triggering the "synthesize must have run"
+    # RuntimeError — sharp-edges audit F3.
+    if state.review_report is None:
+        msg = (
+            "publish requires state.review_report to be set "
+            "(synthesize node must have run before publish — graph wiring "
+            "or test fixture bug). Fail-closed: a miswired path that "
+            "bypasses synthesize would otherwise silently lose the "
+            "content-hash dedup + cross-round severity-divergence "
+            "detection contracts."
+        )
+        raise RuntimeError(msg)
+    # `model_copy()` is shallow per Pydantic V2 "Faux immutability".
+    # NEVER pass `update={...}` here: model_copy with update bypasses
+    # ReviewFinding's `model_validator` chain (per the schema's own
+    # warning at `review_finding.py`'s docstring). Any future mutation
+    # of a finding must use the explicit-rebuild path: `ReviewFinding
+    # .model_validate({**finding.model_dump(), **{...}})` which
+    # re-runs validators.
+    return [f.model_copy() for f in state.review_report.findings]
 
 
 def _assert_no_duplicate_finding_ids(findings: list[ReviewFinding]) -> None:
