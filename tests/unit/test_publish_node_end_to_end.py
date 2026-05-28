@@ -270,8 +270,8 @@ def _make_state(
     ReviewReport carrying the findings (publish requires the canonical
     review_report shape post-Phase-5 fail-loud)."""
     from outrider.policy.canonical import compute_round_id
+    from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.analysis_round import AnalysisRound
-    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
     from outrider.schemas.triage_result import RiskLevel
 
     review_id = uuid4()

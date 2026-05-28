@@ -2173,16 +2173,29 @@ class SynthesizeCompletedEvent(AuditEventBase):
     Metadata-only per `DECISIONS.md#016`: the summary prose lives in
     `llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint
     payload (operational-side; see spec gate #6 option (c) retention
-    model). `summary_content_hash` is the sha256 of the canonicalized
-    summary text — within the LLM-content TTL window, replay can
-    reconstruct prose by joining on this hash; outside the window,
-    metadata-only replay is the canonical claim.
+    model). `summary_content_hash` is the sha256 of the RAW LLM
+    `response.text` (matches the canon `llm_call_content.completion`
+    persister stores — see synthesize.py `_compute_summary_content_hash`
+    docstring for the display-vs-canon split rationale). Within the
+    LLM-content TTL window, replay can reconstruct prose by joining on
+    this hash; outside the window, metadata-only replay is the
+    canonical claim.
 
     Idempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-
     key was rejected at pre-spec gate #1 because the natural-key
     persister cannot return enough payload to reconstruct
     `ReviewReport` (the summary text lives in `llm_call_content`, not
-    in the audit-row payload) — state-lockstep gate iii fails.
+    in the audit-row payload) — state-lockstep gate iii fails. The
+    event_id-PK contract catches CONCURRENT re-emit of the same logical
+    event (e.g., dispatcher fires twice for one checkpoint state) but
+    does NOT catch crash-recovery re-emit (Synthesize body crashes
+    AFTER this event lands but BEFORE node return → resume mints a
+    fresh UUID → second row lands). V1's in-process BackgroundTasks
+    dispatcher does not durably retry; V2 Celery + Redis adds durable
+    retry semantics and will need a natural-key add-on before durable
+    retry lands (sibling of `emit_phase` which already keys natural).
+    Per-review-aggregate dashboard queries should DISTINCT ON
+    `(review_id, event_type)` or use MAX(timestamp) to be robust.
 
     No content-hash binding on findings here (unlike `FindingEvent`):
     every finding in the deduplicated `ReviewReport.findings` is already
@@ -2193,12 +2206,17 @@ class SynthesizeCompletedEvent(AuditEventBase):
     event_type: Literal["synthesize_completed"] = "synthesize_completed"
     node_id: Literal["synthesize"] = "synthesize"
     summary_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
-    """SHA-256 hex over the canonicalized summary text (UTF-8 bytes of
-    the post-Sonnet, pre-sanitization prose). Identity check for
-    replay-conditional reconstruction: within the LLM-content TTL
-    window, an audit reader can join on this hash to fetch the prose
-    from `llm_call_content`; outside it, the hash is the only proof of
-    which summary was produced."""
+    """SHA-256 hex over the RAW LLM `response.text` (UTF-8 bytes).
+    Binds to `llm_call_content.completion` which persists raw — NOT
+    the post-`strip_outer_json_fence` display text used by
+    `ReviewReport.summary`. Hashing stripped would break replay
+    identity the moment Anthropic wraps a response in ```json```
+    fences. Identity check for replay-conditional reconstruction:
+    within the LLM-content TTL window, an audit reader can join on
+    this hash to fetch the prose from `llm_call_content`; outside it,
+    the hash is the only proof of which summary was produced. See
+    `agent/nodes/synthesize.py::_compute_summary_content_hash` for the
+    display-vs-canon split."""
     overall_risk: RiskLevel
     """Mirror of `ReviewReport.overall_risk`. PR-level risk classification
     carried forward from triage's `RiskLevel` ladder; synthesize does

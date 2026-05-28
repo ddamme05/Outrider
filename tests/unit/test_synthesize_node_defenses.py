@@ -40,7 +40,7 @@ from outrider.agent.nodes.synthesize import (
 from outrider.policy import FindingSeverity, FindingType
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts.synthesize import render
-from outrider.schemas.review_report import ReviewMetrics
+from outrider.schemas import ReviewMetrics
 from outrider.schemas.triage_result import RiskLevel
 
 # ---------------------------------------------------------------------------
@@ -301,41 +301,70 @@ def test_synthesize_rejects_first_forge_when_mixed_with_legit() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_summary_content_hash_binds_to_raw_response_text() -> None:
-    """The audit-event `summary_content_hash` must match the SHA-256 of
-    the SAME canonical text the LLM provider persists into
-    `llm_call_content.completion`. The provider stores raw
-    `response.text` (per `audit/persister.py::_persist_llm_call_event`);
-    synthesize must therefore hash raw `response.text`, NOT the
-    post-`strip_outer_json_fence` display text. Hashing the stripped
-    form would break replay-equivalent reconstruction the moment
-    Anthropic wraps a summary in ```json``` fences.
+def test_summary_content_hash_helper_binds_sha256_to_input_bytes() -> None:
+    """Helper-level contract: `_compute_summary_content_hash` returns
+    `sha256(text.encode("utf-8")).hexdigest()` over the input bytes.
 
-    This pins Codex 2026-05-28 finding: hash-binding diverges from
-    persistence canon under the documented Anthropic fence-wrap
-    behavior (see `vendor-payloads-normalized-at-boundary` invariant).
+    This is a tautological pin on the helper's identity — the call site
+    contract (synthesize MUST pass raw `response.text` not stripped) is
+    pinned by `test_synthesize_call_site_hashes_raw_response_text_not_stripped`
+    below. Keeping the helper test for documentation; the call-site
+    test is the non-vacuous regression gate.
     """
     import hashlib
 
     from outrider.agent.nodes.synthesize import _compute_summary_content_hash
 
-    # Anthropic occasionally wraps prose in a ```json...``` envelope
-    # despite the prompt telling it not to. The stripped (display) form
-    # is the inner content; the persisted (canon) form is the raw
-    # envelope. The hash must bind to canon.
     raw_response_text = '```json\n"This is the summary prose."\n```'
-    stripped = '"This is the summary prose."'  # what strip_outer_json_fence yields
+    stripped = '"This is the summary prose."'
 
-    # Helper hashes raw bytes — verifies the contract directly.
     raw_hash = _compute_summary_content_hash(raw_response_text)
     stripped_hash = _compute_summary_content_hash(stripped)
 
-    # Sanity: the two MUST differ under fence-wrap (otherwise the test
-    # would vacuously pass even if synthesize hashed the wrong text).
+    # The two MUST differ under fence-wrap — locks in that the helper
+    # is sensitive to its input (catches a regression that, e.g.,
+    # always returned a constant).
     assert raw_hash != stripped_hash
-
-    # The contract: synthesize's _compute_summary_content_hash output
-    # over the raw text MUST equal sha256(raw_response_text). This is
-    # what gets stamped on SynthesizeCompletedEvent.
     expected_raw_hash = hashlib.sha256(raw_response_text.encode("utf-8")).hexdigest()
     assert raw_hash == expected_raw_hash
+
+
+def test_synthesize_call_site_hashes_raw_response_text_not_stripped() -> None:
+    """Call-site contract: `synthesize.py` MUST pass raw `response.text`
+    to `_compute_summary_content_hash`, NOT `summary_text` (the
+    post-`strip_outer_json_fence` form).
+
+    Pins the regression Codex 2026-05-28 caught. Hashing stripped would
+    break identity binding to `llm_call_content.completion` (which
+    persists raw — see `audit/persister.py::_persist_llm_call_event`)
+    the moment Anthropic wraps a response in ```json``` fences.
+
+    Non-vacuous regression gate: source inspection catches a swap of
+    `response.text` ↔ `summary_text` at the call site. A behavior-level
+    test would require a 50-line state stub + mock provider just to
+    invoke synthesize() once; this catches the same regression in two
+    asserts. Pairs with the helper-level test above which pins the
+    helper's identity. Both layers needed: helper proves
+    "sha256 of bytes," call site proves "passed the right bytes."
+    """
+    import inspect
+
+    from outrider.agent.nodes import synthesize as synthesize_module
+
+    source = inspect.getsource(synthesize_module.synthesize)
+
+    # Positive: the canonical call site MUST appear verbatim.
+    assert "_compute_summary_content_hash(response.text)" in source, (
+        "synthesize call site must hash RAW response.text (NOT "
+        "summary_text). Hashing stripped text breaks identity with "
+        "llm_call_content.completion under fence-wrap (Codex finding "
+        "2026-05-28). See _compute_summary_content_hash docstring + "
+        "DECISIONS.md#016 for replay-equivalence rationale."
+    )
+    # Negative: the regression pattern MUST NOT appear.
+    assert "_compute_summary_content_hash(summary_text)" not in source, (
+        "synthesize call site hashes summary_text — this is the Codex "
+        "2026-05-28 regression. The hash MUST bind to raw response.text "
+        "so the audit row's summary_content_hash matches the canon "
+        "stored in llm_call_content.completion."
+    )
