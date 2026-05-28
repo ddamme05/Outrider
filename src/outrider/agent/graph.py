@@ -459,14 +459,15 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
 
 
 def _analyze_router(state: ReviewState) -> str:
-    """Route analyze's output: trace if pass 1 produced candidates, else hitl.
+    """Route analyze's output: trace if pass 1 produced candidates, else synthesize.
 
     Per the trace-node spec: after analyze pass 1 (i.e.,
     `len(state.analysis_rounds) == 1`), route to trace to consume the
     accumulated trace_candidates. After analyze pass 2 (depth-2 limit),
-    route straight to hitl — no further trace work allowed. The hitl
-    node partitions by severity; empty gate-set sends the graph through
-    to publish without an interrupt.
+    route straight to synthesize — no further trace work allowed.
+    Synthesize folds findings into a ReviewReport; HITL then partitions
+    by severity (empty gate-set passes through to publish without an
+    interrupt).
     """
     if len(state.analysis_rounds) == 1 and state.trace_candidates:
         return "trace"
@@ -474,13 +475,14 @@ def _analyze_router(state: ReviewState) -> str:
 
 
 def _trace_router(state: ReviewState) -> str:
-    """Route trace's output: analyze if NEW files fetched this pass, else hitl.
+    """Route trace's output: analyze if NEW files fetched this pass, else synthesize.
 
     Per the trace-node spec: route back to analyze iff trace fetched at
     least one new file IN THE MOST RECENT trace() CALL AND we're still
     below `MAX_ANALYSIS_ROUNDS` (depth-2 ceiling). Otherwise proceed to
-    hitl. The depth bound is enforced HERE because trace runs after
-    analyze pass N, so re-entering analyze produces round N+1.
+    synthesize (which then routes through HITL to publish). The depth
+    bound is enforced HERE because trace runs after analyze pass N, so
+    re-entering analyze produces round N+1.
 
     Reads `state.last_trace_pass_fetched_count` (the per-invocation
     delta trace() writes on every call), NOT the cumulative

@@ -228,8 +228,8 @@ def _make_state(
     review_id: UUID | None = None,
 ) -> ReviewState:
     from outrider.policy.canonical import compute_round_id
+    from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.analysis_round import AnalysisRound
-    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
     from outrider.schemas.triage_result import RiskLevel
 
     files_examined = tuple(cf.path for cf in changed_files)
@@ -630,7 +630,7 @@ async def test_duplicate_finding_ids_across_rounds_rejected_by_publish() -> None
     finding_id. ReviewReport schema admits the construction; publish's
     finding-id-uniqueness check fires.
     """
-    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
+    from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.triage_result import RiskLevel
 
     finding_id = uuid4()

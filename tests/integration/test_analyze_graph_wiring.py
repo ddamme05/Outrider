@@ -791,8 +791,10 @@ async def test_is_eval_propagates_through_full_graph(
     # marker then suspends via `interrupt(...)`. publish does NOT run
     # without a resume; that's the V1 HITL gate guarantee. is_eval
     # propagation is checked across the nodes that DO run.
-    assert {"intake", "triage", "analyze", "hitl"} <= started_nodes, (
-        f"expected full-graph node coverage through hitl, got starts from {sorted(started_nodes)}"
+    assert {"intake", "triage", "analyze", "synthesize", "hitl"} <= started_nodes, (
+        f"expected full-graph node coverage through hitl (7-node topology: "
+        f"intake → triage → analyze ⇄ trace → synthesize → hitl → publish), "
+        f"got starts from {sorted(started_nodes)}"
     )
     # HITL gate guarantee: publish MUST NOT run without an explicit
     # `Command(resume=...)`. The subset check above admits publish if
