@@ -94,9 +94,9 @@ class FindingForgeryDetectedError(RuntimeError):
 
     - A finding's `policy_version` is not `ACTIVE_POLICY_VERSION`.
       `ReviewFinding._enforce_severity_matches_policy` short-circuits
-      on non-active versions (review_finding.py:352), so a forged
-      finding with arbitrary severity would survive into the audit
-      row + HITL partition. Synthesize rejects at entry.
+      on non-active versions, so a forged finding with arbitrary
+      severity would survive into the audit row + HITL partition.
+      Synthesize rejects at entry.
 
     - A finding's `original_severity` is not None at synthesize entry.
       `original_severity` is set only by HITL after a reviewer
@@ -165,14 +165,16 @@ def _enforce_synthesize_input_invariants(state: ReviewState) -> None:
     """Reject forged findings at synthesize entry.
 
     `ReviewFinding._enforce_severity_matches_policy` short-circuits when
-    `policy_version != ACTIVE_POLICY_VERSION` (review_finding.py:352) —
-    the historical replay path. An attacker (or a buggy upstream) can
-    smuggle in a finding with arbitrary severity by setting
-    `policy_version` to a non-active version string. Synthesize emits
-    `SynthesizeCompletedEvent.policy_version = ACTIVE_POLICY_VERSION`;
-    if a finding arrives carrying a different policy_version, it would
-    survive the schema check AND the audit row would mis-record the
-    aggregate. Reject the policy_version smuggle at node entry.
+    `policy_version != ACTIVE_POLICY_VERSION` — the historical replay
+    path. An attacker (or a buggy upstream) can smuggle in a finding
+    with arbitrary severity by setting `policy_version` to a
+    non-active version string. Synthesize compares
+    every finding's `policy_version` to the triage-captured snapshot
+    (`state.triage_result.policy_version`, set upstream of analyze) and
+    emits the SAME snapshot as `SynthesizeCompletedEvent.policy_version`
+    so the audit row records the snapshot under which findings were
+    classified — survives mid-deploy bumps and replay correctly.
+    Reject any divergence at node entry.
 
     `ReviewFinding.original_severity` is the pre-override baseline used
     by HITL `_resolve_effective_severity`. At synthesize entry HITL has
@@ -225,11 +227,10 @@ def _enforce_synthesize_input_invariants(state: ReviewState) -> None:
                     f"round_index={round_index}, "
                     f"content_hash={finding.content_hash!r}. "
                     f"`ReviewFinding._enforce_severity_matches_policy` "
-                    f"short-circuits on non-active policy_version "
-                    f"(review_finding.py:352); a finding carrying a "
-                    f"different version than the triage snapshot "
-                    f"indicates a forge attempt. Aborting before audit "
-                    f"row lands."
+                    f"short-circuits on non-active policy_version; "
+                    f"a finding carrying a different version than the "
+                    f"triage snapshot indicates a forge attempt. "
+                    f"Aborting before audit row lands."
                 )
             if finding.original_severity is not None:
                 raise FindingForgeryDetectedError(
@@ -460,13 +461,17 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # (Step 5's metrics computation is interleaved: a pre-call snapshot
     # below feeds the prompt; the final snapshot at step 10 captures the
     # post-call wall-clock for the audit row.)
-    # `overall_risk` is required upstream (triage produces it).
+    # `_enforce_synthesize_input_invariants` (step 3) already raised
+    # `FindingForgeryDetectedError` if `triage_result` was None. The
+    # runtime check below is structurally dead — kept for type
+    # narrowing (mypy can't prove the invariant) and as defense in
+    # depth if step ordering is ever broken.
     if state.triage_result is None:
-        msg = (
-            "synthesize requires state.triage_result to be set "
-            "(triage node must have run before synthesize)"
+        raise FindingForgeryDetectedError(
+            "synthesize: triage_result missing past invariant gate "
+            "(_enforce_synthesize_input_invariants should have raised "
+            "at step 3 — step ordering is broken)"
         )
-        raise RuntimeError(msg)
     overall_risk = state.triage_result.overall_risk
 
     # Pre-compute the user prompt with PLACEHOLDER metrics — the

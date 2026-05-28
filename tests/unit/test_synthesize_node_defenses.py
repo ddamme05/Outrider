@@ -9,12 +9,13 @@ Pins:
   `NoneType`; the fix renders "unknown" for None.
 
 - **H-1 defense** (policy_version smuggle): synthesize rejects findings
-  carrying `policy_version != ACTIVE_POLICY_VERSION` at node entry.
+  carrying `policy_version != state.triage_result.policy_version` at
+  node entry. The triage-captured snapshot is the trusted anchor (set
+  upstream of analyze, immune to attacker control via forged finding[0]).
   `ReviewFinding._enforce_severity_matches_policy` short-circuits on
-  non-active policy_version (`review_finding.py:352`) — a forged
-  finding with arbitrary severity would survive the schema check
-  and the audit row. Synthesize fails closed via
-  `FindingForgeryDetectedError`.
+  non-active policy_version — a forged finding with arbitrary severity
+  would survive the schema check and the audit row. Synthesize fails
+  closed via `FindingForgeryDetectedError`.
 
 - **H-2 defense** (original_severity smuggle): synthesize rejects
   findings carrying `original_severity != None` at node entry. HITL
@@ -181,11 +182,11 @@ def test_synthesize_admits_findings_matching_triage_snapshot() -> None:
 
 
 def test_synthesize_rejects_mid_batch_policy_version_drift() -> None:
-    """H-1 detection fires on MIXED policy_version values across the
-    finding batch. The first finding's version anchors the snapshot;
-    any subsequent finding with a different value is a mid-batch
-    forge attempt and raises before the divergence detector + audit
-    row emit."""
+    """H-1 detection fires when any finding's `policy_version` diverges
+    from the triage-captured snapshot (`state.triage_result.policy_version`,
+    set upstream of analyze by the triage node's Rule (d) gate). The
+    triage snapshot is the trusted anchor; any divergent finding
+    raises before the divergence detector + audit row emit."""
     anchor = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
     forged = _make_finding_stub(policy_version="0.0.0")
     state = _make_state_stub(findings=[anchor, forged])

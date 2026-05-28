@@ -2240,11 +2240,15 @@ class SynthesizeCompletedEvent(AuditEventBase):
     audits — total_cost_usd should equal the sum across this review's
     LLMCallEvent rows under the pinned pricing_version."""
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
-    """Active severity policy version at synthesize-emit time. Per
-    pre-spec gate #1 + the canonical-amendment route, `policy_version`
-    is scoped to this event (NOT promoted to `ReviewReport`-on-state).
-    Replay reads this field; per-finding `FindingEvent.policy_version`
-    must match (audit-side cross-consistency check)."""
+    """Severity policy version captured at the triage-snapshot
+    (review-start). Mirrors `state.triage_result.policy_version` so a
+    single review's findings, summary, and replay share one policy
+    snapshot regardless of mid-deploy `ACTIVE_POLICY_VERSION` bumps.
+    Per pre-spec gate #1 + the canonical-amendment route,
+    `policy_version` is scoped to this event (NOT promoted to
+    `ReviewReport`-on-state). Replay reads this field; per-finding
+    `FindingEvent.policy_version` must match (audit-side
+    cross-consistency check)."""
     synthesize_model: str
     """Model string for the Sonnet summary call (e.g.,
     'claude-sonnet-4-6-20250101'). From config per
