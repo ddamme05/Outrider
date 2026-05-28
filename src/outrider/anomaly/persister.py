@@ -1,18 +1,42 @@
 """Durable AnomalySink implementation.
 
 Per-emit fresh `AsyncSession`; uses `postgresql_insert(...).
-on_conflict_do_nothing(...)` against the partial unique index
-`uq_anomalies_hitl_timeout_natural_key` (from Group 3's HITL
-migration: `WHERE rule_name='hitl_timeout'`).
+on_conflict_do_nothing(...)` against per-rule partial unique indexes
+(e.g. `uq_anomalies_hitl_timeout_natural_key`,
+`uq_anomalies_cross_round_severity_divergence_natural_key`). The
+`index_where` predicate is computed from the runtime `rule_name`
+value — each rule's partial index has the form
+`WHERE rule_name='<rule_value>'`, and PostgreSQL's conflict-arbiter
+needs the exact `index_where` form to match a partial index.
 
-Idempotency contract: same `(review_id, rule_name='hitl_timeout')`
-pair is admitted by the partial unique index AT MOST ONCE; retries
-collapse to a no-op. The sweep job's anomaly-first ordering depends
-on this — if the anomaly emit raises spuriously, the sweep
-short-circuits and the row stays in `awaiting_approval` for the next
-sweep tick. With `on_conflict_do_nothing`, a retry of an already-
-recorded anomaly returns cleanly and the sweep proceeds to the
-status flip.
+Idempotency contract: same `(review_id, rule_name)` pair is admitted
+by the partial unique index AT MOST ONCE; retries collapse to a
+no-op. Per `AnomalySink` Protocol docstring, the persister serves
+two caller classes:
+
+- **Sweep callers** (`sweep/hitl_expiry.py`): rely on `SWEEP_LOCK_ID`
+  for surrounding-operation serialization; the partial unique index
+  here provides per-row idempotency. Anomaly-first ordering depends
+  on this — if the anomaly emit raises spuriously, the sweep
+  short-circuits and the row stays in `awaiting_approval` for the
+  next sweep tick. With `on_conflict_do_nothing`, a retry of an
+  already-recorded anomaly returns cleanly and the sweep proceeds
+  to the status flip.
+
+- **Graph callers** (`agent/nodes/synthesize.py`): no surrounding
+  advisory lock — anomaly emission has no non-idempotent external
+  side effect; concurrent or replayed inserts collapse via the
+  partial unique index. Same DB-layer idempotency mechanism; the
+  caller-class distinction lives entirely in the surrounding
+  concurrency story (sweep needs the advisory lock for the
+  surrounding status flip; graph does not).
+
+The `is_eval` column is written explicitly per `docs/testing.md`'s
+loud-failure convention (every is_eval-bearing row's flag is set
+by the producer; the column's `server_default=text("false")` is
+defense in depth, NOT the primary contract). Eval-scenario emissions
+land with `is_eval=True` and are filtered out of the production
+anomaly queue + pass the eval-DB teardown integrity gate.
 """
 
 from typing import Any
@@ -35,7 +59,7 @@ class AnomalyPersisterConfigError(ValueError):
         super().__init__(
             "AnomalyPersister requires session_factory: "
             "pass an async_sessionmaker[AsyncSession] at "
-            "sweep-runner-startup time."
+            "startup time (sweep-runner OR build_graph)."
         )
 
 
@@ -43,11 +67,16 @@ class AnomalyPersister:
     """Durable implementation of `AnomalySink`.
 
     Per-emit fresh `AsyncSession`. `on_conflict_do_nothing` against
-    the partial unique index makes the emit idempotent on
-    `(review_id, rule_name='hitl_timeout')`. `severity` and
-    `status='open'` are V1-hardcoded for the `hitl_timeout` rule;
-    future rules extending `AnomalyRuleName` can carry per-rule
-    defaults inline at the emit call-site.
+    the runtime-`rule_name`'s partial unique index makes the emit
+    idempotent on `(review_id, rule_name)`. `severity` and
+    `is_eval` are caller-controlled (no V1 defaults — both are
+    loud-failure surfaces); `status='open'` is V1-hardcoded because
+    V1 has no other terminal state at emit-time.
+
+    Serves both sweep callers (HITL_TIMEOUT) and graph callers
+    (CROSS_ROUND_SEVERITY_DIVERGENCE). The dispatch is implicit in
+    the `index_where=(Anomaly.rule_name == rule_name.value)` clause
+    — each rule's partial unique index has a matching predicate.
     """
 
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -62,37 +91,30 @@ class AnomalyPersister:
         rule_name: AnomalyRuleName,
         severity: AnomalySeverity,
         details: dict[str, Any],
+        is_eval: bool,
     ) -> None:
         """Insert one anomaly row with on-conflict-do-nothing on the
-        partial unique index `(review_id, rule_name)` (rule-name-
-        partitioned).
+        partial unique index `(review_id, rule_name)` matching the
+        runtime `rule_name`.
 
-        V1 ONLY supports `rule_name=AnomalyRuleName.HITL_TIMEOUT`.
         The on-conflict target — `index_elements=["review_id"]` +
-        `index_where=(Anomaly.rule_name == "hitl_timeout")` —
-        mirrors the partial unique index
-        `uq_anomalies_hitl_timeout_natural_key` from Group 3's
-        migration (`ON anomalies (review_id) WHERE rule_name =
-        'hitl_timeout'`). Without explicit index targeting,
-        PostgreSQL's conflict-arbiter inference may fail to match
-        the partial index and incorrectly treat a same-review_id
-        retry as a new insert — defeating the idempotency contract
-        the sweep's anomaly-first ordering depends on.
+        `index_where=(Anomaly.rule_name == rule_name.value)` —
+        dispatches on the runtime rule_name. PostgreSQL's
+        conflict-arbiter requires the `index_where` predicate to
+        match the partial unique index exactly; without it the
+        inference may fall through to a non-partial unique index or
+        treat a same-review_id retry as a new insert — defeating the
+        idempotency contract.
 
-        Future rule_names ship with matching partial unique indexes
-        AND require this method to dispatch on rule_name (V1.5
-        refactor). Fail-loud here when a non-HITL_TIMEOUT rule is
-        emitted so the gap is caught at runtime rather than
-        silently producing a non-idempotent INSERT.
+        Every AnomalyRuleName value must have a matching partial
+        unique index in the DB (created by a Group 3-or-later
+        migration with `WHERE rule_name = '<value>'`). If the
+        migration is missing for a new rule_name, the
+        on_conflict_do_nothing falls through silently — the insert
+        succeeds AS A NEW ROW each time, breaking idempotency.
+        Producer-side discipline: every new AnomalyRuleName ships
+        with a matching migration in the same PR.
         """
-        if rule_name is not AnomalyRuleName.HITL_TIMEOUT:
-            msg = (
-                f"AnomalyPersister.emit_anomaly only supports "
-                f"AnomalyRuleName.HITL_TIMEOUT in V1; got {rule_name!r}. "
-                f"New rule_names need their own partial unique index + "
-                f"a dispatch update to the on_conflict target."
-            )
-            raise NotImplementedError(msg)
         async with self._session_factory() as session, session.begin():
             stmt = (
                 postgresql_insert(Anomaly)
@@ -102,15 +124,15 @@ class AnomalyPersister:
                     severity=severity.value,
                     details=details,
                     status="open",
+                    is_eval=is_eval,
                 )
                 .on_conflict_do_nothing(
                     index_elements=["review_id"],
-                    # Use the enum constant rather than a string literal
-                    # so a future enum-value rename surfaces as a
-                    # mypy/test error instead of a silently-mismatched
-                    # partial-index predicate. `.value` extracts the
-                    # `Text` form the DB column stores.
-                    index_where=(Anomaly.rule_name == AnomalyRuleName.HITL_TIMEOUT.value),
+                    # `.value` extracts the `Text` form the DB column
+                    # stores; the partial-index predicate is matched
+                    # by the runtime rule_name (each rule_name has its
+                    # own partial unique index).
+                    index_where=(Anomaly.rule_name == rule_name.value),
                 )
             )
             await session.execute(stmt)

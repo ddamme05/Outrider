@@ -50,6 +50,7 @@ from outrider.audit.events import (
     PublishEvent,
     PublishRoutingEvent,
     ReviewPhaseEvent,
+    SynthesizeCompletedEvent,
     TraceDecisionEvent,
 )
 
@@ -502,11 +503,53 @@ class HITLEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class SynthesizeEventSink(Protocol):
+    """Sink for the synthesize node's one audit event type.
+
+    Synthesize emits exactly one audit event per review:
+    `SynthesizeCompletedEvent` at end-of-work (after the Sonnet summary
+    call returns, after deduplication + sort, before returning the state
+    delta). One Protocol with one method matches the analyze-completed
+    pattern conceptually but with simpler shape (no per-pass
+    multiplicity, no per-finding sub-events — every finding in the
+    deduplicated `ReviewReport.findings` was already emitted as its own
+    `FindingEvent` upstream by analyze).
+
+    Production / durable implementations MUST:
+      - Be idempotent on `event.event_id`. Retry / checkpoint replay
+        must not duplicate rows. Per pre-spec gate #1, synthesize uses
+        event_id-PK idempotency (NOT natural-key) — see
+        `SynthesizeCompletedEvent` class docstring for the rationale.
+      - Be safe under concurrent invocations. `DECISIONS.md#027` line
+        946 says LangGraph does NOT serialize concurrent `ainvoke` on
+        the same `thread_id` — the durable persister relies on
+        event_id-PK uniqueness, NOT on serial-execution assumptions.
+      - Persist before returning, OR raise. Silent drop is never
+        acceptable.
+
+    Test recorders (e.g., `RecordingSynthesizeEventSink`) record every
+    emission into a per-type list for assertion; they are deliberately
+    exempt from the idempotency rule (so double-emit bugs surface in
+    tests rather than being silently deduped).
+
+    `@runtime_checkable` matches the sibling-Protocol precedent —
+    `build_graph` can reject sinks lacking `emit_synthesize_completed`
+    at construction time. PEP 544 caveat: member-presence only, not
+    signature shape; mypy strict is the write-time gate.
+    """
+
+    async def emit_synthesize_completed(self, event: SynthesizeCompletedEvent) -> None:
+        """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
+        ...
+
+
 __all__ = [
     "AnalyzeEventSink",
     "FileExaminationSink",
     "HITLEventSink",
     "PhaseEventSink",
     "PublishEventSink",
+    "SynthesizeEventSink",
     "TraceEventSink",
 ]

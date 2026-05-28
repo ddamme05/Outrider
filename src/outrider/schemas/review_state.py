@@ -40,12 +40,6 @@ Now landed beyond the analyze-foundation set:
   on path collision; multi-cause provenance recovers via
   `query state.trace_decisions where target_file == self.path` (M2).
 
-Still deferred:
-- `review_report: ReviewReport | None` (synthesize-node spec).
-- `hitl_request: HITLRequest | None` (hitl-node spec).
-- `hitl_decision: HITLDecision | None` (hitl-node spec; reviewer-set,
-  consumed by publish).
-
 ReviewState is NOT frozen: nodes return partial-update dicts that LangGraph
 merges through reducers (per docs/conventions.md "LangGraph specifics").
 A frozen state would force every node to construct a fully-formed instance
@@ -97,6 +91,7 @@ from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.hitl import HITLDecision, HITLRequest
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.publish import PublishResult
+from outrider.schemas.review_report import ReviewReport
 from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.trace_decision import TraceDecision
 from outrider.schemas.trace_fetched_file import TraceFetchedFile
@@ -211,6 +206,16 @@ class ReviewState(BaseModel):
     # be false for `-N` even if trace did emit N fetches). Fail fast
     # at the schema boundary rather than at the router.
     last_trace_pass_fetched_count: int = Field(default=0, ge=0)
+
+    # Populated by the synthesize node (`agent/nodes/synthesize.py`) per
+    # specs/2026-05-28-synthesize-node.md. Scalar overwrite reducer
+    # (LangGraph default for un-annotated fields). Aggregates findings
+    # from `analysis_rounds` (deduped by `content_hash`, severity-sorted),
+    # computes deterministic `ReviewMetrics` from audit events, and
+    # carries the Sonnet-generated summary prose. HITL and publish nodes
+    # consume `review_report.findings` instead of walking
+    # `analysis_rounds[*].findings` directly. `None` until synthesize runs.
+    review_report: ReviewReport | None = None
 
     # Populated by the HITL node (`agent/nodes/hitl.py`) per the
     # hitl-node spec. Both fields are scalar (overwrite reducer is

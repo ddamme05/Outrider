@@ -46,6 +46,7 @@ class _StubAnomalySink:
         rule_name: AnomalyRuleName,
         severity: AnomalySeverity,
         details: dict[str, Any],
+        is_eval: bool,
     ) -> None:
         if self.raise_for_review_id == review_id:
             msg = "synthetic anomaly emit failure"
@@ -56,6 +57,7 @@ class _StubAnomalySink:
                 "rule_name": rule_name,
                 "severity": severity,
                 "details": details,
+                "is_eval": is_eval,
             }
         )
 
@@ -120,8 +122,11 @@ def _make_conn(expired_rows: list[tuple[UUID, datetime]]) -> MagicMock:
             scalar = MagicMock(return_value=True)
             result.scalar_one = scalar
             return result
-        # ORM `select(Review.id, Review.expires_at)` path.
-        rows = [MagicMock(id=r[0], expires_at=r[1]) for r in expired_rows]
+        # ORM `select(Review.id, Review.expires_at, Review.is_eval)` path.
+        # is_eval=False on all mock rows (mirrors the WHERE clause's
+        # production-only filter — any value emerging from the SELECT
+        # is necessarily is_eval=False in real execution).
+        rows = [MagicMock(id=r[0], expires_at=r[1], is_eval=False) for r in expired_rows]
         result.all = MagicMock(return_value=rows)
         return result
 
@@ -150,6 +155,11 @@ async def test_anomaly_first_ordering_anomaly_succeeds_then_status_flips() -> No
     assert anomaly_sink.emit_calls[0]["review_id"] == review_id
     assert anomaly_sink.emit_calls[0]["rule_name"] == AnomalyRuleName.HITL_TIMEOUT
     assert anomaly_sink.emit_calls[0]["severity"] == "medium"
+    # is_eval=False propagates from the production-only row (WHERE
+    # Review.is_eval.is_(False) filter + row-derived value). Pin the
+    # value at the assertion layer per docs/CODE_REVIEW_STYLES.md Class 5
+    # (avoid vacuous-pass on the loud-failure is_eval contract).
+    assert anomaly_sink.emit_calls[0]["is_eval"] is False
     assert status_sink.expired_calls == [review_id]
 
 

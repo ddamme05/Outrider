@@ -96,6 +96,7 @@ from outrider.schemas import (
     PerFindingDecision,
     PublishDestination,
     ReviewDimension,
+    RiskLevel,
 )
 
 # SHA-256 hashes are 256 bits = 64 hex characters per spec §8.5
@@ -2153,6 +2154,92 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
         return validate_diff_path(path)
 
 
+class SynthesizeCompletedEvent(AuditEventBase):
+    """Per-review aggregate emitted at the end of the synthesize node.
+
+    One per review (not per-pass like `AnalyzeCompletedEvent`). Carries
+    the canonical `ReviewMetrics` fields (mirror of
+    `outrider.schemas.review_report.ReviewMetrics`), plus the binding
+    metadata (`summary_content_hash`, `overall_risk`, `n_findings`,
+    `llm_call_event_id`) that lets replay reconstruct what summary text
+    + what report shape this synthesize-node invocation produced.
+
+    Metadata-only per `DECISIONS.md#016`: the summary prose lives in
+    `llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint
+    payload (operational-side; see spec gate #6 option (c) retention
+    model). `summary_content_hash` is the sha256 of the canonicalized
+    summary text — within the LLM-content TTL window, replay can
+    reconstruct prose by joining on this hash; outside the window,
+    metadata-only replay is the canonical claim.
+
+    Idempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-
+    key was rejected at pre-spec gate #1 because the natural-key
+    persister cannot return enough payload to reconstruct
+    `ReviewReport` (the summary text lives in `llm_call_content`, not
+    in the audit-row payload) — state-lockstep gate iii fails.
+
+    No content-hash binding on findings here (unlike `FindingEvent`):
+    every finding in the deduplicated `ReviewReport.findings` is already
+    recorded as its own `FindingEvent` upstream. `n_findings` is the
+    aggregate; replay can join to per-finding events via `review_id`.
+    """
+
+    event_type: Literal["synthesize_completed"] = "synthesize_completed"
+    node_id: Literal["synthesize"] = "synthesize"
+    summary_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    """SHA-256 hex over the canonicalized summary text (UTF-8 bytes of
+    the post-Sonnet, pre-sanitization prose). Identity check for
+    replay-conditional reconstruction: within the LLM-content TTL
+    window, an audit reader can join on this hash to fetch the prose
+    from `llm_call_content`; outside it, the hash is the only proof of
+    which summary was produced."""
+    overall_risk: RiskLevel
+    """Mirror of `ReviewReport.overall_risk`. PR-level risk classification
+    carried forward from triage's `RiskLevel` ladder; synthesize does
+    NOT re-derive it from the Sonnet call (the summary call produces
+    prose, not classification — `severity-set-by-policy` analog at the
+    PR level)."""
+    n_findings: int = Field(ge=0)
+    """Total count of deduplicated findings in the `ReviewReport.findings`
+    tuple. Aggregate; per-finding details are joinable via the
+    upstream `FindingEvent` rows."""
+    # ReviewMetrics fields — mirror of
+    # `outrider.schemas.review_report.ReviewMetrics`. Field names match
+    # the canonical ReviewMetrics shape (spec.md:1106-1114), NOT the
+    # `n_*` per-pass-counter convention of `AnalyzeCompletedEvent` —
+    # these are review-level aggregates, not per-pass counters.
+    files_examined: int = Field(ge=0)
+    files_traced_beyond_diff: int = Field(ge=0)
+    llm_calls_made: int = Field(ge=0)
+    total_input_tokens: int = Field(ge=0)
+    total_output_tokens: int = Field(ge=0)
+    total_cost_usd: float = Field(ge=0, le=100.0)
+    """Upper cap matches `ReviewMetrics.total_cost_usd` (le=100.0) —
+    defense against `float('inf')` propagating into JSONB. Real V1
+    reviews land well under $1; le=100 is "this would already be a
+    runaway."""
+    wall_clock_seconds: float = Field(ge=0, le=86400)
+    """Upper cap matches `ReviewMetrics.wall_clock_seconds` (le=86400,
+    24h). A multi-day review is a bug, not a workload."""
+    pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
+    """Active LLM pricing version at synthesize-emit time, mirrored from
+    `LLMCallEvent.pricing_version` semantics. Enables cost-recomputation
+    audits — total_cost_usd should equal the sum across this review's
+    LLMCallEvent rows under the pinned pricing_version."""
+    policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
+    """Active severity policy version at synthesize-emit time. Per
+    pre-spec gate #1 + the canonical-amendment route, `policy_version`
+    is scoped to this event (NOT promoted to `ReviewReport`-on-state).
+    Replay reads this field; per-finding `FindingEvent.policy_version`
+    must match (audit-side cross-consistency check)."""
+    synthesize_model: str
+    """Model string for the Sonnet summary call (e.g.,
+    'claude-sonnet-4-6-20250101'). From config per
+    `model-strings-from-config-not-hardcoded`. Replay needs this to
+    know which model produced the canonicalized summary text the hash
+    binds."""
+
+
 # Discriminated union for replay: TypeAdapter(AuditEvent).validate_python({...})
 # selects the right concrete subtype using the event_type field.
 AuditEvent = Annotated[
@@ -2170,7 +2257,8 @@ AuditEvent = Annotated[
     | PublishAttemptEvent
     | AnalyzeCompletedEvent
     | FindingProposalRejectedEvent
-    | AnalyzeResponseRejectedEvent,
+    | AnalyzeResponseRejectedEvent
+    | SynthesizeCompletedEvent,
     Field(discriminator="event_type"),
 ]
 

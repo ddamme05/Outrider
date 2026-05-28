@@ -135,6 +135,7 @@ if TYPE_CHECKING:
         PublishEligibilityEvent,
         PublishRoutingEvent,
         ReviewPhaseEvent,
+        SynthesizeCompletedEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
 
@@ -2074,6 +2075,19 @@ class AuditPersister:
 
     async def emit_publish_result(self, event: PublishEvent) -> None:
         """Persist a `PublishEvent` row (success-path review-level summary)."""
+        await self._persist_non_phase_event(event)
+
+    # -- SynthesizeEventSink surface ----------------------------------------
+    # Per pre-spec gate #1: synthesize uses event_id-PK idempotency
+    # (NOT natural-key). The natural-key state-lockstep gate iii fails
+    # because `ReviewReport.summary` text lives in `llm_call_content`,
+    # not in the audit-row payload — a natural-key persister couldn't
+    # return enough payload to reconstruct ReviewReport on retry.
+    # Mirrors `AnalyzeCompletedEvent` shape (event_id-PK,
+    # `_persist_non_phase_event` body).
+
+    async def emit_synthesize_completed(self, event: SynthesizeCompletedEvent) -> None:
+        """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
         await self._persist_non_phase_event(event)
 
     # -- Natural-key idempotency surface ------------------------------------
