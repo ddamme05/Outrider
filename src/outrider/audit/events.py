@@ -2160,9 +2160,15 @@ class SynthesizeCompletedEvent(AuditEventBase):
     One per review (not per-pass like `AnalyzeCompletedEvent`). Carries
     the canonical `ReviewMetrics` fields (mirror of
     `outrider.schemas.review_report.ReviewMetrics`), plus the binding
-    metadata (`summary_content_hash`, `overall_risk`, `n_findings`,
-    `llm_call_event_id`) that lets replay reconstruct what summary text
-    + what report shape this synthesize-node invocation produced.
+    metadata (`summary_content_hash`, `overall_risk`, `n_findings`)
+    that lets replay reconstruct what summary text + what report shape
+    this synthesize-node invocation produced. Replay joins the
+    paired `LLMCallEvent` by `review_id` + `node_id="synthesize"` —
+    `LLMCallEvent` carries its own `event_id` AND scans `llm_call_content`
+    by that key per `DECISIONS.md#016`; no explicit `llm_call_event_id`
+    FK is needed on this event because the synthesize node emits
+    exactly one LLM call per review (joinable unambiguously) and the
+    `summary_content_hash` here cross-validates the content match.
 
     Metadata-only per `DECISIONS.md#016`: the summary prose lives in
     `llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint
@@ -2210,14 +2216,21 @@ class SynthesizeCompletedEvent(AuditEventBase):
     # these are review-level aggregates, not per-pass counters.
     files_examined: int = Field(ge=0)
     files_traced_beyond_diff: int = Field(ge=0)
-    llm_calls_made: int = Field(ge=0)
-    total_input_tokens: int = Field(ge=0)
-    total_output_tokens: int = Field(ge=0)
-    total_cost_usd: float = Field(ge=0, le=100.0)
+    # LLM-aggregate metrics. V1 placeholder semantics per spec audit:
+    # `None` indicates "audit-query helper not yet wired" rather than
+    # "zero." Dashboard joins `LLMCallEvent` rows by `review_id` for
+    # the truth; these fields are denormalized convenience and ship
+    # nullable in V1 to honestly distinguish "unknown" from "zero."
+    # Mirror of `ReviewMetrics`; see review_report.py for full
+    # rationale + FUP for the audit-query helper.
+    llm_calls_made: int | None = Field(default=None, ge=0)
+    total_input_tokens: int | None = Field(default=None, ge=0)
+    total_output_tokens: int | None = Field(default=None, ge=0)
+    total_cost_usd: float | None = Field(default=None, ge=0, le=100.0)
     """Upper cap matches `ReviewMetrics.total_cost_usd` (le=100.0) —
     defense against `float('inf')` propagating into JSONB. Real V1
     reviews land well under $1; le=100 is "this would already be a
-    runaway."""
+    runaway." Optional+None per the V1-placeholder rationale above."""
     wall_clock_seconds: float = Field(ge=0, le=86400)
     """Upper cap matches `ReviewMetrics.wall_clock_seconds` (le=86400,
     24h). A multi-day review is a bug, not a workload."""
@@ -2309,6 +2322,7 @@ __all__ = [
     "PublishRoutingEvent",
     "PublishRoutingReason",
     "ReviewPhaseEvent",
+    "SynthesizeCompletedEvent",
     "TraceDecisionEvent",
     "compute_publish_attempt_content_hash",
     "compute_publish_eligibility_decision_hash",

@@ -154,8 +154,21 @@ async def _detect_and_report_divergence(
     kept: dict[str, ReviewFinding] = {}
     for content_hash, entries in by_hash.items():
         severities = {entry[1].severity for entry in entries}
-        if len(severities) > 1:
+        policy_versions = {entry[1].policy_version for entry in entries}
+        # Cross-round divergence detection: severity OR policy_version
+        # mismatch within a content_hash group both indicate corruption
+        # per `severity-set-by-policy` + `severity-policy-versioned-
+        # for-replay`. Same content_hash within a single review SHOULD
+        # have a single policy_version (the review runs under one
+        # policy snapshot); divergence on EITHER axis means a deploy /
+        # replay path is mixing policy snapshots OR the policy lookup
+        # itself drifted. Either axis triggers the same
+        # CROSS_ROUND_SEVERITY_DIVERGENCE anomaly + fail-loud raise
+        # because the recovery action is identical: stop the review,
+        # investigate the upstream policy-resolution layer.
+        if len(severities) > 1 or len(policy_versions) > 1:
             severity_tuple = tuple(sorted({e[1].severity for e in entries}, key=lambda s: s.value))
+            policy_version_tuple = tuple(sorted(policy_versions))
             round_indices_tuple = tuple(sorted({e[0] for e in entries}))
             await anomaly_sink.emit_anomaly(
                 review_id=state.review_id,
@@ -164,6 +177,7 @@ async def _detect_and_report_divergence(
                 details={
                     "content_hash": content_hash,
                     "severities": [s.value for s in severity_tuple],
+                    "policy_versions": list(policy_version_tuple),
                     "round_indices": list(round_indices_tuple),
                 },
                 is_eval=state.is_eval,
@@ -202,14 +216,17 @@ def _compute_metrics(
 ) -> ReviewMetrics:
     """Build ReviewMetrics from state + wall-clock measurement.
 
-    V1 caveat: LLM-aggregate metrics (llm_calls_made, total_*_tokens,
-    total_cost_usd) are placeholder zeros — the deterministic
-    derivation requires querying audit_events for this review_id and
-    summing LLMCallEvent rows. Tracked as FUP: the dashboard reads
-    audit truth, not these denormalized fields, so V1 ships with
-    placeholders + the FUP for the audit-query helper. Adding the
-    helper changes the values but does not change the schema or any
-    downstream contract.
+    V1: LLM-aggregate metrics (llm_calls_made, total_*_tokens,
+    total_cost_usd) ship as `None` — honest "unknown" semantics rather
+    than false zeros. The deterministic derivation requires querying
+    `audit_events` for this review_id and summing `LLMCallEvent` rows;
+    that audit-query helper is a FUP. Dashboard reads audit truth
+    (joining LLMCallEvent by review_id), not these denormalized fields,
+    so V1 ships nullable; downstream consumers that need the aggregate
+    today must query audit directly.
+
+    files_examined, files_traced_beyond_diff, and wall_clock_seconds
+    are computed deterministically and ship as real values.
     """
     files_examined: set[str] = set()
     for analysis_round in state.analysis_rounds:
@@ -218,11 +235,12 @@ def _compute_metrics(
     return ReviewMetrics(
         files_examined=len(files_examined),
         files_traced_beyond_diff=_compute_files_traced_beyond_diff(state),
-        # V1 placeholders — FUP for audit-query-derived aggregates.
-        llm_calls_made=0,
-        total_input_tokens=0,
-        total_output_tokens=0,
-        total_cost_usd=0.0,
+        # V1 placeholders — None semantics, not zero. FUP for
+        # audit-query-derived aggregates. See ReviewMetrics docstring.
+        llm_calls_made=None,
+        total_input_tokens=None,
+        total_output_tokens=None,
+        total_cost_usd=None,
         wall_clock_seconds=wall_clock_seconds,
     )
 

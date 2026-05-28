@@ -586,6 +586,19 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
     tuple lives on `state.review_report.findings`. Publish consumes
     that single canonical source.
 
+    **Findings are cloned via `model_copy()` before return.** Publish
+    mutates `finding.publish_destination` downstream
+    (`_route_and_gate_one_finding`), and `ReviewFinding` is
+    intentionally NOT frozen (`validate_assignment=True` only). Without
+    the clone, the mutation would bleed back into
+    `state.review_report.findings` — violating the shallow-frozen
+    contract documented at `schemas/review_report.py:60` and breaking
+    LangGraph's reducer model (state values are supposed to be returned
+    via state-delta dicts, not mutated in place). Pydantic V2 idiom per
+    `pydantic/concepts/models/index.md` "Faux immutability" +
+    `model_copy` patterns: clone outer immutable parent's mutable
+    children before downstream mutation.
+
     **Test-compat fallback (transitional).** Many pre-synthesize
     publish-node test fixtures construct `ReviewState` with
     `analysis_rounds` populated but no `review_report`. To avoid
@@ -594,7 +607,8 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
     production graph execution (post-Phase-6 wiring), synthesize ALWAYS
     runs before publish, so `state.review_report` is always set;
     the fallback path is exercised only by isolated unit tests that
-    bypass the full graph.
+    bypass the full graph. The clone applies to the fallback path too
+    (defense-in-depth in case fixture state is reused across tests).
 
     Synthesize's content_hash dedup makes the
     `_assert_no_duplicate_finding_ids` defense redundant for
@@ -606,12 +620,15 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
     # review_report attribute at all.
     review_report = getattr(state, "review_report", None)
     if review_report is not None:
-        return list(review_report.findings)
+        # Clone via model_copy so downstream publish_destination
+        # mutation does not bleed back into state.review_report.findings.
+        return [f.model_copy() for f in review_report.findings]
     # Test-compat: pre-synthesize fixtures populate analysis_rounds
     # only. Production path always has review_report set (post-Phase-6).
+    # Same clone discipline as the canonical path.
     out: list[ReviewFinding] = []
     for round_ in state.analysis_rounds:
-        out.extend(round_.findings)
+        out.extend(f.model_copy() for f in round_.findings)
     return out
 
 

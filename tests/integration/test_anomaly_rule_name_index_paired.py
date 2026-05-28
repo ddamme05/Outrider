@@ -62,10 +62,19 @@ async def test_every_anomaly_rule_has_paired_partial_unique_index(
     engine = create_async_engine(migrated_db, hide_parameters=True)
     try:
         async with engine.begin() as conn:
+            # Full shape check: index name + indisvalid + indisready +
+            # indisunique + indexed columns + predicate text. Audit
+            # finding: name-only check passes a wrongly-shaped index
+            # (right name, wrong uniqueness, wrong columns, wrong
+            # predicate) — that would silently break idempotency.
             result = await conn.execute(
                 text(
                     """
-                    SELECT i.indisvalid, i.indisready
+                    SELECT
+                        i.indisvalid,
+                        i.indisready,
+                        i.indisunique,
+                        pg_get_indexdef(i.indexrelid) AS index_def
                     FROM pg_index i
                     JOIN pg_class c ON c.oid = i.indexrelid
                     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -89,7 +98,7 @@ async def test_every_anomaly_rule_has_paired_partial_unique_index(
                 f"idempotency for this rule_name (on_conflict_do_nothing "
                 f"falls through and every retry lands a new row)."
             )
-        indisvalid, indisready = row
+        indisvalid, indisready, indisunique, index_def = row
         assert indisvalid, (
             f"Partial unique index {expected_index_name!r} exists but "
             f"`indisvalid=false`. A `CREATE INDEX CONCURRENTLY` build failed "
@@ -101,6 +110,38 @@ async def test_every_anomaly_rule_has_paired_partial_unique_index(
             f"Partial unique index {expected_index_name!r} exists but "
             f"`indisready=false`. Same recovery as INVALID — drop and "
             f"recreate."
+        )
+        assert indisunique, (
+            f"Index {expected_index_name!r} exists but is NOT a UNIQUE "
+            f"index (`indisunique=false`). The `on_conflict_do_nothing` "
+            f"idempotency contract requires uniqueness on (review_id) "
+            f"under the rule_name predicate; a non-unique index of the "
+            f"same name silently lets duplicate INSERTs land."
+        )
+        # `pg_get_indexdef` returns the CREATE INDEX SQL. Verify it
+        # targets `anomalies(review_id)` and has the correct
+        # `WHERE rule_name = '<value>'` predicate. The exact normalized
+        # form Postgres emits looks like:
+        #   CREATE UNIQUE INDEX uq_... ON public.anomalies USING btree
+        #   (review_id) WHERE (rule_name = '<value>'::text)
+        index_def_str = str(index_def)
+        assert "anomalies" in index_def_str.lower(), (
+            f"Index {expected_index_name!r} is not on the `anomalies` table: "
+            f"index_def={index_def_str!r}"
+        )
+        assert "(review_id)" in index_def_str, (
+            f"Index {expected_index_name!r} does not target the "
+            f"(review_id) column: index_def={index_def_str!r}. "
+            f"The on-conflict arbiter requires `index_elements=['review_id']` "
+            f"to match this index's column list."
+        )
+        expected_predicate_fragment = f"rule_name = '{rule_name.value}'"
+        assert expected_predicate_fragment in index_def_str, (
+            f"Index {expected_index_name!r} predicate does not match the "
+            f"expected `WHERE {expected_predicate_fragment}` clause: "
+            f"index_def={index_def_str!r}. A wrong predicate makes the "
+            f"on-conflict arbiter fail to match this index — silent "
+            f"idempotency break for this rule_name."
         )
     finally:
         await engine.dispose()

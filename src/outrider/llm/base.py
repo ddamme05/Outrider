@@ -505,19 +505,23 @@ class LLMRequest(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_context_for_scope_nodes(self) -> Self:
-        """`analyze` and `synthesize` always pack scope context; an empty
-        `context_summary` from those nodes is a node-side bug worth
-        catching at request construction.
+        """`analyze` packs per-file scope context; an empty
+        `context_summary` from analyze is a node-side bug worth catching
+        at request construction.
 
         Per §0b: analyze admits empty `context_summary` ONLY when
-        `degraded_mode=True` AND a typed `degradation_reason` is supplied
-        — the provenance validator above already enforces that the two
-        are coupled, so we only need to check one. Synthesize is
-        unconditional regardless of degraded state (it never carries
-        the analyze-specific degraded contract per
-        `_enforce_degradation_provenance`).
+        `degraded_mode=True` AND a typed `degradation_reason` is
+        supplied — the provenance validator above already enforces that
+        the two are coupled, so we only need to check one.
+
+        **Synthesize is NOT in this allowlist** (corrected per the
+        synthesize-node spec audit). Synthesize aggregates already-
+        produced findings into a `ReviewReport` and runs ONE Sonnet
+        call for free-form summary prose; it does NOT walk per-file
+        scope, so it does not pack a `context_summary` manifest.
+        Triage + trace also legitimately omit the manifest.
         """
-        nodes_requiring_context = frozenset({"analyze", "synthesize"})
+        nodes_requiring_context = frozenset({"analyze"})
         if self.node_id in nodes_requiring_context and len(self.context_summary) == 0:
             # Degraded analyze admits empty context, but the provenance
             # validator above already required degradation_reason to be
@@ -527,7 +531,7 @@ class LLMRequest(BaseModel):
                 return self
             raise ValueError(
                 f"node_id={self.node_id!r} requires non-empty context_summary; "
-                f"the analyze/synthesize node always packs scope context"
+                f"the analyze node always packs per-file scope context"
             )
         return self
 

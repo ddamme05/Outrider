@@ -112,9 +112,9 @@ def test_review_id_must_be_uuid() -> None:
 
 @pytest.mark.parametrize("node_id", ["triage", "analyze", "synthesize", "trace"])
 def test_node_id_admits_canonical_values(node_id: str) -> None:
-    # analyze/synthesize need non-empty context_summary; provide one for those
+    # analyze needs non-empty context_summary; provide one for analyze only
     extra: dict[str, object] = {"node_id": node_id}
-    if node_id in {"analyze", "synthesize"}:
+    if node_id == "analyze":
         extra["context_summary"] = (_entry(),)
     req = LLMRequest(**_kwargs(**extra))
     assert req.node_id == node_id
@@ -218,14 +218,20 @@ def test_analyze_with_empty_context_summary_raises() -> None:
         LLMRequest(**_kwargs(node_id="analyze", context_summary=()))
 
 
-def test_synthesize_with_empty_context_summary_raises() -> None:
-    with pytest.raises(ValidationError, match="non-empty context_summary"):
-        LLMRequest(**_kwargs(node_id="synthesize", context_summary=()))
+def test_synthesize_admits_empty_context_summary() -> None:
+    """Synthesize legitimately calls without a scope manifest — it
+    aggregates findings already produced by analyze, NOT per-file
+    scope context. Synthesize is correctly excluded from the
+    `_enforce_context_for_scope_nodes` allowlist (analyze is the
+    only node that walks per-file scope).
+    """
+    req = LLMRequest(**_kwargs(node_id="synthesize", context_summary=()))
+    assert req.context_summary == ()
 
 
 def test_triage_admits_empty_context_summary() -> None:
-    """Triage legitimately calls without a scope manifest — the cross-field
-    rule only fires for analyze/synthesize."""
+    """Triage legitimately calls without a scope manifest — the
+    cross-field rule only fires for analyze."""
     req = LLMRequest(**_kwargs(node_id="triage", context_summary=()))
     assert req.context_summary == ()
 
@@ -455,12 +461,13 @@ def test_degradation_reason_rejects_arbitrary_string() -> None:
 def test_provenance_validator_fires_before_context_on_conflict() -> None:
     """SE-2 audit fold: declaration-order behavioral pin.
 
-    A request with `synthesize + degraded_mode=True + empty
-    context_summary` would fail BOTH validators (provenance: only analyze
-    admits degraded_mode; context: synthesize requires non-empty context).
-    The more-informative provenance error must fire FIRST — if the order
-    inverted, callers would chase the "missing context" error instead of
-    the "wrong node for degraded_mode" cause. Pydantic V2 runs
+    A request with `synthesize + degraded_mode=True` fails the
+    provenance validator (only analyze admits degraded_mode). The
+    context validator no longer fires for synthesize (synthesize-node
+    spec audit dropped it from the allowlist — synthesize doesn't pack
+    per-file scope context). But the provenance-first ordering is still
+    load-bearing for any future scope-context node that might re-add a
+    second axis of failure on the same request. Pydantic V2 runs
     `@model_validator(mode="after")` in declaration order; this test
     surfaces a future refactor that re-orders the validators (auto-sort,
     mixin migration, model_rebuild) by behavioral assertion rather than
