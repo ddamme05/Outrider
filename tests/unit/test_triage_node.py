@@ -513,6 +513,45 @@ def test_enforce_policy_empty_expected_with_empty_actual() -> None:
     _enforce_triage_policy(result, expected_paths=frozenset())
 
 
+def test_enforce_policy_rejects_llm_injected_policy_version() -> None:
+    """Rule (d) — `policy_version != ACTIVE_POLICY_VERSION` raises.
+
+    Synthesize's H-1 forge defense uses `state.triage_result.policy_version`
+    as the trusted snapshot anchor. The field's `pattern=BARE_SEMVER_PATTERN`
+    rejects shape garbage but admits ANY valid semver, including
+    attacker-chosen ones. The gate at the triage-node level closes
+    the producer-side path: if the post-validation TriageResult carries
+    a policy_version that diverges from the live active version,
+    we KNOW the LLM emitted an explicit value (training-data leakage,
+    prompt injection, schema doc-leak) — fail-loud.
+    """
+    from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+    forged = TriageResult(
+        file_tiers={"src/a.py": ReviewTier.STANDARD},
+        overall_risk=RiskLevel.MEDIUM,
+        relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
+        reasoning="ok",
+        policy_version="0.0.0",  # valid semver shape, wrong value
+    )
+    # Sanity: the active version is NOT "0.0.0" (would make the test vacuous).
+    assert ACTIVE_POLICY_VERSION != "0.0.0"
+
+    with pytest.raises(TriagePolicyViolationError, match="policy_version"):
+        _enforce_triage_policy(forged, expected_paths={"src/a.py"})
+
+
+def test_enforce_policy_admits_default_factory_policy_version() -> None:
+    """Negative pin: when the LLM omits `policy_version` from its JSON
+    output, Pydantic fires the `default_factory=lambda: ACTIVE_POLICY_VERSION`,
+    the value matches live ACTIVE, and Rule (d) admits. This is the
+    canonical happy path — the gate must not false-positive on the
+    legitimate fresh-review flow."""
+    result = _build_triage_result()  # default_factory fires
+    # No raise.
+    _enforce_triage_policy(result, expected_paths={"src/a.py"})
+
+
 # ---------------------------------------------------------------------------
 # Log-content discipline: bounded sample + hash, not verbatim path list
 # ---------------------------------------------------------------------------

@@ -58,6 +58,7 @@ from outrider.audit.sinks import PhaseEventSink
 from outrider.llm.base import LLMProvider, LLMRequest
 from outrider.llm.parsing import strip_outer_json_fence
 from outrider.policy.canonical import compute_phase_id
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import triage as triage_prompt
 from outrider.schemas.triage_result import ReviewTier, TriageResult
 
@@ -193,6 +194,32 @@ def _enforce_triage_policy(
             "STANDARD, or SKIM. A missing path means the downstream "
             "analyze node has no instruction for that file: silent drop "
             "is the failure mode the policy-gate exists to prevent."
+        )
+
+    # Rule (d): policy_version MUST equal the live ACTIVE_POLICY_VERSION.
+    # The field's `pattern=BARE_SEMVER_PATTERN` admits ANY valid semver
+    # — an LLM that emits `{"policy_version": "0.0.0", ...}` in its JSON
+    # output (training-data leakage, prompt injection through PR
+    # content, or a future system prompt that documents the field)
+    # would survive Pydantic. Synthesize's H-1 forge defense uses
+    # `state.triage_result.policy_version` as the trusted snapshot
+    # anchor; without this gate, the anchor itself is LLM-reachable
+    # and the defense narrows to "attacker picks any bare-semver."
+    # This rule closes the producer-side path: the snapshot landed
+    # in state MUST match what the deployment thinks is active.
+    if result.policy_version != ACTIVE_POLICY_VERSION:
+        raise TriagePolicyViolationError(
+            f"triage_result.policy_version={result.policy_version!r} "
+            f"does not match the live ACTIVE_POLICY_VERSION="
+            f"{ACTIVE_POLICY_VERSION!r}. The field is the snapshot "
+            "anchor for synthesize's H-1 forge defense; an LLM-emitted "
+            "value (training-data leakage, prompt injection, schema "
+            "doc-leak) would survive the BARE_SEMVER_PATTERN floor "
+            "and let a downstream forged finding match the poisoned "
+            "anchor. At fresh-review time the value MUST equal live "
+            "ACTIVE. Replay reconstruction reads audit rows directly "
+            "and does NOT re-execute this gate; the gate fires only "
+            "on the live-review path."
         )
 
 

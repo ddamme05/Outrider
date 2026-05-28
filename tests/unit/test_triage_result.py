@@ -217,3 +217,55 @@ def test_triage_result_file_tiers_input_dict_is_copied_not_aliased() -> None:
     input_dict["src/sneaky.py"] = ReviewTier.SKIM
     # The proxy must NOT see the mutation.
     assert "src/sneaky.py" not in result.file_tiers
+
+
+def test_triage_result_policy_version_defaults_to_active() -> None:
+    """The `policy_version` field captures `ACTIVE_POLICY_VERSION` via
+    default_factory at construction time. This snapshot rides on state
+    downstream and is the trusted anchor that synthesize uses to detect
+    policy_version smuggle (see specs/2026-05-28-synthesize-node.md
+    Severity policy section, triage-anchored snapshot resolution)."""
+    from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+    result = _minimal_triage_result()
+    assert result.policy_version == ACTIVE_POLICY_VERSION
+
+
+def test_triage_result_policy_version_explicit_override_admits() -> None:
+    """Replay path: a historical TriageResult rehydrated from audit can
+    carry a historical policy_version string. The field accepts any
+    bare-semver string (no mid-flight clamping to ACTIVE)."""
+    result = _minimal_triage_result(policy_version="0.0.1")
+    assert result.policy_version == "0.0.1"
+
+
+def test_triage_result_policy_version_rejects_non_semver() -> None:
+    """The field's regex constrains the SHAPE to bare semver
+    (X.Y.Z). Attacker-controlled strings or accidental garbage with
+    invalid shape reject at construction time — the schema floor."""
+    with pytest.raises(ValidationError):
+        _minimal_triage_result(policy_version="evil-snapshot")
+    with pytest.raises(ValidationError):
+        _minimal_triage_result(policy_version="1.2")  # missing patch
+    with pytest.raises(ValidationError):
+        _minimal_triage_result(policy_version="1.2.3-rc1")  # prerelease suffix
+
+
+def test_triage_result_policy_version_admits_any_valid_semver() -> None:
+    """The schema-level `pattern=BARE_SEMVER_PATTERN` is shape-only —
+    `"0.0.0"`, `"99.99.99"`, `"5.0.0"` ALL pass. Demonstrates that the
+    schema floor alone does NOT prevent an LLM-emitted explicit value
+    from landing on the field. The trusted-snapshot property depends
+    on the triage-node gate (`_enforce_triage_policy` Rule (d), see
+    `tests/unit/test_triage_node.py::test_enforce_policy_rejects_llm_injected_policy_version`)
+    which compares the post-validation value to live ACTIVE.
+
+    This test exists as the deliberate negative pin: any change that
+    tightens the schema-level pattern to a single-value match would
+    make Rule (d) redundant, and vice versa — the two gates serve
+    different purposes (shape vs value). Removing either is a
+    regression."""
+    for valid_semver in ("0.0.0", "99.99.99", "5.0.0", "10.20.30"):
+        # MUST NOT raise — the schema admits any valid-shape semver.
+        result = _minimal_triage_result(policy_version=valid_semver)
+        assert result.policy_version == valid_semver

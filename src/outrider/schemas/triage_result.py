@@ -101,17 +101,26 @@ class TriageResult(BaseModel):
     overall_risk: RiskLevel
     relevant_dimensions: tuple[ReviewDimension, ...]
     reasoning: str = Field(max_length=500)
-    # Snapshot of `ACTIVE_POLICY_VERSION` at triage construction time.
-    # Triage runs FIRST in the canonical graph; capturing the active
-    # policy here gives downstream nodes a trusted anchor for
-    # per-review policy_version validation that cannot be poisoned by
-    # a single forged finding emitted later by analyze. Synthesize's
-    # `_enforce_synthesize_input_invariants` uses this field as the
-    # snapshot anchor (review_finding's `policy_version` must match);
-    # `SynthesizeCompletedEvent.policy_version` mirrors it for
-    # replay-correctness. `default_factory` captures live at triage
-    # node-entry time; producers MAY override (e.g., replay path that
-    # rehydrates from audit row carries the historical version).
+    # Snapshot anchor for synthesize's H-1 forge defense. Triage runs
+    # FIRST in the canonical graph; the live `ACTIVE_POLICY_VERSION`
+    # is captured here so a single review's findings + summary share
+    # one anchor regardless of mid-deploy bumps. The schema-level
+    # `pattern=BARE_SEMVER_PATTERN` rejects shape garbage, but admits
+    # ANY valid semver — an LLM emitting an explicit
+    # `{"policy_version": "0.0.0", ...}` in its triage JSON would
+    # survive Pydantic. The triage-node gate `_enforce_triage_policy`
+    # closes that producer path: Rule (d) raises
+    # `TriagePolicyViolationError` if the post-validation value does
+    # not equal the live `ACTIVE_POLICY_VERSION`. After the gate runs
+    # the anchor is non-LLM-reachable. Synthesize compares each
+    # finding's `policy_version` against this captured snapshot and
+    # mirrors it onto `SynthesizeCompletedEvent.policy_version` so the
+    # audit row records the snapshot under which findings were
+    # classified. `default_factory` captures live at TriageResult
+    # construction time; producers MAY pass an explicit value (e.g.,
+    # replay paths that rehydrate from a historical audit row), in
+    # which case the field's pattern is the only floor — the
+    # triage-node gate runs only on the live-review path.
     policy_version: str = Field(
         default_factory=lambda: ACTIVE_POLICY_VERSION,
         pattern=BARE_SEMVER_PATTERN,
