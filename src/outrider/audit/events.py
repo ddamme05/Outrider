@@ -1812,10 +1812,16 @@ class PublishAttemptEvent(AuditEventBase):
     # audit-only replay for the recovery path loses the github_review_id
     # binding (PublishAttemptEvent alone otherwise carries no github
     # identifier, and PublishEvent is the canonical review-summary record
-    # per `DECISIONS.md#023`). NOT included in `compute_publish_attempt_
-    # content_hash` — recovered_github_review_id is OUTCOME data
-    # (deterministic for a given review's body marker; doesn't define
-    # attempt identity) rather than INPUT data.
+    # per `DECISIONS.md#023`). INCLUDED in
+    # `compute_publish_attempt_content_hash` + verified at
+    # `_verify_attempt_content_hash` — the IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD
+    # outcome is the only audit row that binds the recovered
+    # github_review_id (no paired PublishEvent on that path), so a
+    # forged/replay emit could swap the id and still pass the hash check
+    # without inclusion; integrity-protecting binding closes that surface.
+    # For every other outcome the field is None (JSON `null` is a
+    # hash-distinguishing value, same shape as `status_code` +
+    # `failure_class`).
     recovered_github_review_id: int | None = Field(default=None, ge=1)
 
     @field_validator("sorted_finding_ids")

@@ -91,7 +91,7 @@ def test_anomaly_sink_declares_one_method() -> None:
     pin per the `Class-10` doctrine (centrally-pinned contracts
     require call-side registration).
     """
-    actual_public_methods = {name for name in dir(AnomalySink) if not name.startswith("_")}
+    actual_public_methods = {name for name in AnomalySink.__dict__ if not name.startswith("_")}
     assert actual_public_methods == {"emit_anomaly"}, (
         f"AnomalySink public surface drift: missing={ {'emit_anomaly'} - actual_public_methods }, "
         f"extra={actual_public_methods - {'emit_anomaly'}}. Update this test AND verify "

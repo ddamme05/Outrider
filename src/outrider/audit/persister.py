@@ -843,6 +843,14 @@ class AuditPersisterPublishLockAcquisitionTimeoutError(TimeoutError):  # noqa: N
         )
 
 
+# Module-private sentinel for subclass-only construction of
+# `AuditPersisterNaturalKeyLookupError`. Replaces a prior `_from_subclass: bool`
+# kwarg — a boolean kwarg could be passed from external callers
+# (`Cls("attacker text", _from_subclass=True)`) bypassing the protection;
+# a sentinel object is constructible only inside this module.
+_AUDIT_PERSISTER_INTERNAL_TOKEN = object()
+
+
 class AuditPersisterNaturalKeyLookupError(LookupError):
     """Generic base for natural-key conflict-but-empty-SELECT errors.
 
@@ -860,16 +868,21 @@ class AuditPersisterNaturalKeyLookupError(LookupError):
     persister-exception contract: callers cannot pass arbitrary
     positional content into the exception's `args[0]`. Subclasses
     construct their own message from review_id-shaped identifiers and
-    pass it through this base.
+    pass it through this base, gated by the module-private sentinel
+    `_AUDIT_PERSISTER_INTERNAL_TOKEN` — boolean gates are bypassable
+    by external callers passing `_from_subclass=True`, sentinel-based
+    gates are not (the sentinel object identity cannot be replicated
+    from outside the module).
     """
 
-    def __init__(self, message: str, *, _from_subclass: bool = False) -> None:
-        if not _from_subclass:
+    def __init__(self, message: str, *, _token: object = None) -> None:
+        if _token is not _AUDIT_PERSISTER_INTERNAL_TOKEN:
             raise TypeError(
                 "AuditPersisterNaturalKeyLookupError must be constructed by "
-                "a subclass that provides _from_subclass=True with a typed "
-                "message; direct positional construction would let arbitrary "
-                "content land in args[0]."
+                "a subclass that passes the module-private "
+                "`_AUDIT_PERSISTER_INTERNAL_TOKEN` sentinel; direct "
+                "construction would let arbitrary content land in args[0], "
+                "breaking the metadata-only persister-exception contract."
             )
         super().__init__(message)
 
@@ -906,7 +919,7 @@ class AuditPersisterTraceIdempotencyLookupError(AuditPersisterNaturalKeyLookupEr
             "trigger should prevent this) or the natural-key SELECT "
             "predicate diverged from the partial unique index expression."
         )
-        super().__init__(message, _from_subclass=True)
+        super().__init__(message, _token=_AUDIT_PERSISTER_INTERNAL_TOKEN)
         self.review_id = review_id
         self.source_finding_id = source_finding_id
 
@@ -925,7 +938,7 @@ class AuditPersisterHITLRequestIdempotencyLookupError(AuditPersisterNaturalKeyLo
             f"_persist_keyed_by_natural_key: hitl_request natural-key "  # noqa: S608
             f"conflict fired but follow-up SELECT on (review_id={review_id}, "  # noqa: S608
             "event_type='hitl_request') returned no row.",  # noqa: S608
-            _from_subclass=True,
+            _token=_AUDIT_PERSISTER_INTERNAL_TOKEN,
         )
         self.review_id = review_id
 
@@ -942,7 +955,7 @@ class AuditPersisterHITLDecisionIdempotencyLookupError(AuditPersisterNaturalKeyL
             f"_persist_keyed_by_natural_key: hitl_decision natural-key "  # noqa: S608
             f"conflict fired but follow-up SELECT on (review_id={review_id}, "  # noqa: S608
             "event_type='hitl_decision') returned no row.",  # noqa: S608
-            _from_subclass=True,
+            _token=_AUDIT_PERSISTER_INTERNAL_TOKEN,
         )
         self.review_id = review_id
 

@@ -231,20 +231,31 @@ def is_eligible_for_v1_publish(
     # corresponding HITL decision actually carries SEVERITY_OVERRIDE
     # for this finding_id AND that finding_id appears in the
     # `findings_requiring_approval` set of an actual HITL request.
-    # Three-condition gate (defense-in-depth):
+    # Five-condition gate (defense-in-depth):
     #   1. A SEVERITY_OVERRIDE decision exists for this finding_id.
     #   2. A `hitl_request` ran (it's not None).
     #   3. This finding_id was in the gated set of that request.
+    #   4. The decision's `original_severity` matches the finding's
+    #      claimed baseline.
+    #   5. The decision's `override_severity` matches the finding's
+    #      applied severity.
     # Without (2)+(3), a forged `finding.original_severity` paired with
     # a forged-but-Pydantic-valid `HITLDecision` (no `hitl_request`
-    # backing it) would pass (1) alone — the gated-set membership check
-    # closes that surface.
+    # backing it) would pass (1) alone. Without (4)+(5), a forged finding
+    # could reuse a legitimate decision intended for a different severity
+    # transition — e.g., reviewer approved CRITICAL→MEDIUM, finding
+    # claims CRITICAL→LOW; outcome+finding_id match but the approved
+    # values differ. Schema-side `PerFindingDecision` requires both
+    # severity fields under SEVERITY_OVERRIDE, so the comparison is
+    # always against non-None values.
     if finding.original_severity is not None:
         has_legit_override = (
             matching_decision is not None
             and matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
             and hitl_request is not None
             and finding.finding_id in hitl_request.findings_requiring_approval
+            and matching_decision.original_severity == finding.original_severity
+            and matching_decision.override_severity == finding.severity
         )
         if not has_legit_override:
             return (

@@ -157,7 +157,7 @@ def test_protocol_declares_exact_method_set() -> None:
     silent drift.
     """
     expected = {"emit_hitl_request", "emit_hitl_decision"}
-    actual = {name for name in dir(HITLEventSink) if not name.startswith("_")}
+    actual = {name for name in HITLEventSink.__dict__ if not name.startswith("_")}
     assert actual == expected, (
         f"HITLEventSink method set drift: missing={expected - actual}, "
         f"extra={actual - expected}. Update this pin AND every sink consumer + "
