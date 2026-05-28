@@ -609,3 +609,31 @@ async def test_critical_finding_routes_inline_then_eligibility_withholds() -> No
 
     assert sink.routing[0].destination is PublishDestination.INLINE_COMMENT
     assert sink.eligibility[0].eligibility is PublishEligibility.WITHHELD
+
+
+# ---------------------------------------------------------------------------
+# Fail-loud: publish must reject states without review_report
+# ---------------------------------------------------------------------------
+
+
+def test_collect_admitted_findings_raises_when_review_report_is_none() -> None:
+    """Production fail-loud: publish must not silently fall back to
+    flattening analysis_rounds when synthesize hasn't populated
+    review_report. A miswired graph that reaches publish with
+    `state.review_report=None` would otherwise bypass synthesize's
+    content_hash dedup + cross-round severity-divergence detection
+    contracts.
+    """
+    from outrider.agent.nodes.publish import _collect_admitted_findings
+
+    state = _make_state(
+        findings=(),
+        changed_files=(_make_changed_file(),),
+    )
+    # The `_make_state` helper constructs a synthesize-canonical state
+    # with `review_report` populated; explicitly null it to exercise
+    # the fail-loud branch.
+    object.__setattr__(state, "review_report", None)
+
+    with pytest.raises(RuntimeError, match="synthesize node must have run"):
+        _collect_admitted_findings(state)

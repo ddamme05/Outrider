@@ -477,10 +477,14 @@ def build_lifespan(
             # parameter per `docs/spec.md §9.3`. `model_config` is the
             # SAME instance already passed to the provider at step 5b —
             # single-source guarantee. The same `persister` implements
-            # eight audit-side sink Protocols (phase + file-examination +
-            # analyze + trace + publish + hitl + review-status + synthesize)
-            # plus the anomaly sink (separate Protocol for the cross-cutting
-            # anomaly subsystem). Routing/eligibility split per
+            # seven audit-side sink Protocols (phase + file-examination +
+            # analyze + publish + trace + hitl + synthesize) plus the
+            # `LLMExchangePersister` Protocol, all from one class.
+            # `ReviewStatusPersister` and `AnomalyPersister` are
+            # separate concrete classes (different table-lifecycle vs
+            # audit-event semantics); they're constructed alongside
+            # AuditPersister and passed to `build_graph(...)`
+            # individually. Routing/eligibility split per
             # DECISIONS.md #023;
             # `import_path_resolver` is the stateless coordinates
             # singleton; `publisher` is the stateless GitHubKitPublisher.

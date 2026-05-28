@@ -152,10 +152,9 @@ def render(
 
     # LLM-aggregate metrics ship as Optional[X] = None in V1 (audit-query
     # helper not yet wired). Render "unknown" for None values rather than
-    # crashing on `:.4f` format-spec against NoneType — the audit-fold
-    # caught the false-zero problem but the prompt-render call site
-    # missed the corresponding None-safety. _render_metric_value handles
-    # the None/numeric union safely.
+    # crashing on `:.4f` format-spec against NoneType.
+    # _render_metric_value / _render_cost_value handle the
+    # None/numeric union safely.
     metrics_summary = (
         f"- Files examined: {metrics.files_examined}\n"
         f"- Files traced beyond diff: {metrics.files_traced_beyond_diff}\n"

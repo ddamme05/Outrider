@@ -117,9 +117,9 @@ def _partition_findings(
     # Direct attribute access (not getattr-with-default) so a future
     # schema rename of `review_report` surfaces as `AttributeError`
     # rather than silently triggering the "synthesize must have run"
-    # RuntimeError — sharp-edges audit F3. Test doubles must include
-    # the attribute (set to None or to a stub); the `_make_state`
-    # helper in `tests/unit/test_hitl_node.py` does.
+    # RuntimeError. Test doubles must include the attribute (set to
+    # None or to a stub); the `_make_state` helper in
+    # `tests/unit/test_hitl_node.py` does.
     if state.review_report is None:
         msg = (
             "HITL requires state.review_report to be set "

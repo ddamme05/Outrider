@@ -93,12 +93,12 @@ class FindingForgeryDetectedError(RuntimeError):
       `ReviewFinding._enforce_severity_matches_policy` short-circuits
       on non-active versions (review_finding.py:352), so a forged
       finding with arbitrary severity would survive into the audit
-      row + HITL partition. Synthesize rejects at entry — H-1.
+      row + HITL partition. Synthesize rejects at entry.
 
     - A finding's `original_severity` is not None at synthesize entry.
       `original_severity` is set only by HITL after a reviewer
       override; finding it set BEFORE HITL means the producer
-      forged the override triplet to bypass the gated set. H-2.
+      forged the override triplet to bypass the gated set.
 
     Same operational handling as `SynthesizeAggregationError`: the
     review parks, ops triages the forge attempt as a corruption signal.
@@ -159,44 +159,63 @@ def _compute_summary_content_hash(text: str) -> str:
 
 
 def _enforce_synthesize_input_invariants(state: ReviewState) -> None:
-    """Reject forged findings at synthesize entry — H-1 + H-2 defenses.
+    """Reject forged findings at synthesize entry.
 
-    `ReviewFinding._enforce_severity_matches_policy` SHORT-CIRCUITS when
-    `policy_version != ACTIVE_POLICY_VERSION` (see review_finding.py:352)
-    — historical replay path. An attacker (or a buggy upstream) can
+    `ReviewFinding._enforce_severity_matches_policy` short-circuits when
+    `policy_version != ACTIVE_POLICY_VERSION` (review_finding.py:352) —
+    the historical replay path. An attacker (or a buggy upstream) can
     smuggle in a finding with arbitrary severity by setting
     `policy_version` to a non-active version string. Synthesize emits
     `SynthesizeCompletedEvent.policy_version = ACTIVE_POLICY_VERSION`;
     if a finding arrives carrying a different policy_version, it would
     survive the schema check AND the audit row would mis-record the
-    aggregate. Reject at entry — H-1 adversarial defense.
+    aggregate. Reject the policy_version smuggle at node entry.
 
     `ReviewFinding.original_severity` is the pre-override baseline used
     by HITL `_resolve_effective_severity`. At synthesize entry HITL has
     NOT run yet — every finding must have `original_severity is None`.
     A finding with `original_severity != None` indicates the producer
-    forged a fake HITL-override triplet to bypass the gated set.
-    Reject at entry — H-2 adversarial defense.
+    forged a HITL-override triplet to bypass the gated set. Reject the
+    original_severity smuggle at node entry.
 
-    Both raise `SynthesizeAggregationError` with a forge-class
-    description so ops triage routes the same way as cross-round
-    severity divergence.
+    Both surfaces raise `FindingForgeryDetectedError`; ops triage
+    routes the same way as cross-round severity divergence.
     """
+    # Snapshot the policy_version from the first finding seen.
+    # Analyze captures the active policy at node-entry time and embeds
+    # it on every finding it emits; the review's "active policy" is
+    # therefore that captured snapshot, NOT the live
+    # `ACTIVE_POLICY_VERSION` (which can drift if a deploy bumps the
+    # version mid-review). Comparing against the snapshot:
+    #   - Catches mid-batch smuggle (one forged finding with a
+    #     different version → mismatch fires)
+    #   - Does NOT deny completion on mid-deploy hot-reload bumps
+    #     (legitimate findings all share the snapshot regardless of
+    #     where the live constant has moved to)
+    # The residual gap (all-findings-forged with a coherent fake
+    # snapshot) requires full analyze compromise; tracked as a future
+    # snapshot-fortification FUP. The cross-round divergence detector
+    # (`_detect_and_report_divergence`) is the load-bearing defense
+    # against MIXED legit + forged batches via the content_hash group
+    # check below.
+    expected_policy_version: str | None = None
     for round_index, analysis_round in enumerate(state.analysis_rounds):
         for finding in analysis_round.findings:
-            if finding.policy_version != ACTIVE_POLICY_VERSION:
+            if expected_policy_version is None:
+                expected_policy_version = finding.policy_version
+            if finding.policy_version != expected_policy_version:
                 raise FindingForgeryDetectedError(
                     f"synthesize rejected finding with "
                     f"policy_version={finding.policy_version!r} "
-                    f"(ACTIVE_POLICY_VERSION={ACTIVE_POLICY_VERSION!r}) "
-                    f"at round_index={round_index}, "
+                    f"differing from the review's snapshot "
+                    f"({expected_policy_version!r}) at "
+                    f"round_index={round_index}, "
                     f"content_hash={finding.content_hash!r}. "
-                    f"ReviewFinding._enforce_severity_matches_policy "
+                    f"`ReviewFinding._enforce_severity_matches_policy` "
                     f"short-circuits on non-active policy_version "
-                    f"(review_finding.py:352) — a finding carrying a "
-                    f"non-active version is either a forge attempt or "
-                    f"a replay path that should not reach a fresh "
-                    f"synthesize emit. Aborting before audit row lands."
+                    f"(review_finding.py:352); a finding carrying a "
+                    f"different version mid-batch indicates a forge "
+                    f"attempt. Aborting before audit row lands."
                 )
             if finding.original_severity is not None:
                 raise FindingForgeryDetectedError(
@@ -253,9 +272,14 @@ async def _detect_and_report_divergence(
             # Anomaly-emit-then-raise: emit the anomaly so ops sees
             # corruption in the queue; if the emit itself fails (DB
             # outage, partial-index missing for a new rule), log at
-            # ERROR and STILL raise SynthesizeAggregationError —
-            # the divergence signal is the load-bearing fact, the
-            # anomaly row is a best-effort observability shadow.
+            # ERROR and STILL raise SynthesizeAggregationError. The
+            # divergence signal is the load-bearing fact; the anomaly
+            # row is a best-effort observability shadow. Broad
+            # `except Exception` deliberately swallows transport
+            # failures from the anomaly DB so the raise below always
+            # propagates; programming errors (TypeError on kwargs,
+            # AttributeError on Protocol drift) WILL be logged here
+            # too — see logs for the emit_exception_type tag.
             try:
                 await anomaly_sink.emit_anomaly(
                     review_id=state.review_id,
@@ -395,11 +419,10 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         )
     )
 
-    # Step 3a: forge-class invariants (adversarial H-1 + H-2). Reject
-    # findings carrying non-active policy_version OR pre-set
-    # original_severity BEFORE the divergence loop sees them — both
-    # are smuggle paths that would otherwise survive into the audit
-    # row + HITL partition.
+    # Step 3a: forge-class invariants. Reject findings carrying
+    # non-active policy_version OR pre-set original_severity BEFORE
+    # the divergence loop sees them — both are smuggle paths that
+    # would otherwise survive into the audit row + HITL partition.
     _enforce_synthesize_input_invariants(state)
     # Step 3-4: flatten + dedup with severity-divergence detection.
     # Raises SynthesizeAggregationError on corruption (anomaly emitted

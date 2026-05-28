@@ -48,9 +48,9 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
 
   - `provider: LLMProvider` — LLM transport for triage, analyze, and
     trace (Haiku ranking).
-  - `model_config: ModelConfig` — `triage_model`, `analyze_model`, and
-    `trace_model` are captured at callsite (per
-    `model-strings-from-config-not-hardcoded`).
+  - `model_config: ModelConfig` — `triage_model`, `analyze_model`,
+    `trace_model`, and `synthesize_model` are captured at callsite
+    (per `model-strings-from-config-not-hardcoded`).
   - `phase_event_sink: PhaseEventSink` — required for all seven nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
@@ -67,6 +67,13 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     `TraceDecisionEvent` audit-first emission per M7.
   - `hitl_event_sink: HITLEventSink` — required for hitl's
     `HITLRequestEvent` + `HITLDecisionEvent` audit-first emissions.
+  - `synthesize_event_sink: SynthesizeEventSink` — required for
+    synthesize's `SynthesizeCompletedEvent` per-review aggregate
+    emission.
+  - `anomaly_sink: AnomalySink` — required for synthesize's in-graph
+    anomaly emission on cross-round severity divergence detection
+    (CROSS_ROUND_SEVERITY_DIVERGENCE rule); sweep callers use the
+    same sink with `SWEEP_LOCK_ID` acquired around the call.
   - `review_status_sink: ReviewStatusSink` — required for hitl's
     `reviews.status` lifecycle transitions (mark_awaiting_approval +
     mark_running), publish's terminal-success transition (mark_completed

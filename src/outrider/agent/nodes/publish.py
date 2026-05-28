@@ -594,7 +594,7 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
     `review_report` would otherwise silently bypass synthesize's
     content-hash dedup + cross-round severity-divergence detection,
     proceeding under stale aggregation semantics. Fail-closed is the
-    audit-recommended posture (Codex 2026-05-28).
+    audit-recommended posture.
 
     **Findings are cloned via `model_copy()` before return.** Publish
     mutates `finding.publish_destination` downstream
@@ -618,7 +618,7 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
     # Direct attribute access (not getattr-with-default) so a future
     # schema rename of `review_report` surfaces as `AttributeError`
     # rather than silently triggering the "synthesize must have run"
-    # RuntimeError — sharp-edges audit F3.
+    # RuntimeError.
     if state.review_report is None:
         msg = (
             "publish requires state.review_report to be set "

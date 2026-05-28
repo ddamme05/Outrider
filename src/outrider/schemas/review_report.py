@@ -124,9 +124,9 @@ class ReviewMetrics(BaseModel):
     # `review_id`. The dashboard reads audit truth; ReviewMetrics
     # is a denormalized convenience snapshot. FUP: wire the audit-query
     # helper + populate these from the helper at synthesize-emit time.
-    # False-zero defense per the synthesize-node spec audit
-    # (`Codex Q3 + sharp-edges F1`): Optional+None makes the
-    # "unknown vs. zero" distinction explicit on the audit row.
+    # Optional+None makes the "unknown vs. zero" distinction explicit
+    # on the audit row — a placeholder-zero would land as durable
+    # false metadata.
     llm_calls_made: int | None = Field(default=None, ge=0)
     total_input_tokens: int | None = Field(default=None, ge=0)
     total_output_tokens: int | None = Field(default=None, ge=0)

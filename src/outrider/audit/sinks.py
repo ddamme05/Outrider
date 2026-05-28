@@ -6,7 +6,7 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships seven sinks from this module: `PhaseEventSink` for
+V1 ships eight sinks from this module: `PhaseEventSink` for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `AnalyzeEventSink` bundling the four analyze-emitted event types
@@ -16,17 +16,21 @@ for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
 `PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
 `TraceEventSink` for `TraceDecisionEvent` per
-`specs/2026-05-23-trace-node.md` Q4 + M7, and `HITLEventSink` bundling
+`specs/2026-05-23-trace-node.md` Q4 + M7, `HITLEventSink` bundling
 `emit_hitl_request` + `emit_hitl_decision` per
-`specs/2026-05-26-hitl-node.md` Q7. `LLMCallEvent` emission lives
-inside `LLMProvider.complete()` and uses the sibling `LLMExchangePersister`
-Protocol in `llm/base.py` — no node code emits `LLMCallEvent` directly.
+`specs/2026-05-26-hitl-node.md` Q7, and `SynthesizeEventSink` for
+`SynthesizeCompletedEvent` per `specs/2026-05-28-synthesize-node.md`
+(per-review aggregate emitted at end-of-synthesize-work).
+`LLMCallEvent` emission lives inside `LLMProvider.complete()` and uses
+the sibling `LLMExchangePersister` Protocol in `llm/base.py` — no node
+code emits `LLMCallEvent` directly.
 
 The durable `AuditPersister` in `outrider.audit.persister` implements
-ALL SEVEN (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
+ALL EIGHT (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
 + `PublishEventSink` + `TraceEventSink` + `HITLEventSink` +
-`LLMExchangePersister`) from one body, sharing DB transaction lifecycle
-and session-per-call discipline. Test-only no-op implementations
+`SynthesizeEventSink` + `LLMExchangePersister`) from one body, sharing
+DB transaction lifecycle and session-per-call discipline. Test-only
+no-op implementations
 (`NoOpPersister`, `RecordingPhaseEventSink`) live in
 `tests/conftest.py` for fixtures that don't need durable persistence;
 sink-specific recording doubles (HITL, publish, analyze) live in

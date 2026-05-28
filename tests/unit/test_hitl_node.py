@@ -168,6 +168,28 @@ def test_partition_separates_high_severity_from_low() -> None:
     assert set(autopost) == {med.finding_id, low.finding_id, info.finding_id}
 
 
+def test_partition_raises_when_review_report_is_none() -> None:
+    """Production fail-loud: HITL must not silently fall back to
+    analysis_rounds when synthesize hasn't populated review_report.
+    A miswired graph that reaches HITL with `state.review_report=None`
+    would otherwise bypass synthesize's content_hash dedup +
+    cross-round severity-divergence detection contracts.
+    """
+    review_id = uuid4()
+    finding = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    state = _make_state(
+        findings=[finding],
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+        use_review_report=False,  # bypass canonical path
+    )
+    # Sanity: the fixture genuinely produced a None review_report.
+    assert state.review_report is None
+
+    with pytest.raises(RuntimeError, match="synthesize node must have run"):
+        _partition_findings(state)
+
+
 def test_partition_canonical_review_report_path() -> None:
     """Canonical path coverage: when `state.review_report.findings` is set
     (post-synthesize), `_partition_findings` reads it (NOT

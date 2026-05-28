@@ -133,25 +133,43 @@ def _make_state_stub(*, findings: list[Any]) -> Any:
     return _State()
 
 
-def test_synthesize_rejects_finding_with_non_active_policy_version() -> None:
-    """H-1: a finding carrying `policy_version != ACTIVE_POLICY_VERSION`
-    bypasses `_enforce_severity_matches_policy` short-circuit at
-    `review_finding.py:352`. Synthesize fails closed at node entry
-    BEFORE the divergence detector or audit-row emit can run."""
-    forged = _make_finding_stub(policy_version="0.0.0")
-    state = _make_state_stub(findings=[forged])
+def test_synthesize_admits_uniform_policy_version() -> None:
+    """The H-1 defense uses a snapshot semantic: the first finding's
+    `policy_version` becomes the review's "active policy" snapshot;
+    subsequent findings MUST match it. A single finding (or all
+    findings carrying the same version) admits, regardless of whether
+    the value equals the live `ACTIVE_POLICY_VERSION` — operational
+    mid-deploy bumps must not deny completion for in-flight reviews.
 
-    with pytest.raises(FindingForgeryDetectedError, match="policy_version"):
-        _enforce_synthesize_input_invariants(state)
-
-
-def test_synthesize_admits_finding_with_active_policy_version() -> None:
-    """Negative pin: a finding carrying the canonical
-    `ACTIVE_POLICY_VERSION` passes the entry check."""
+    `_enforce_severity_matches_policy` short-circuits on non-active
+    versions, so the residual "all findings forged with coherent fake
+    snapshot" case requires full analyze compromise; tracked as a
+    snapshot-fortification FUP.
+    """
     legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
     state = _make_state_stub(findings=[legit])
     # MUST NOT raise.
     _enforce_synthesize_input_invariants(state)
+
+    # Also admits a non-active version when ALL findings share it
+    # (legitimate replay path against a historical policy snapshot).
+    legit_historical = _make_finding_stub(policy_version="0.0.1")
+    state = _make_state_stub(findings=[legit_historical])
+    _enforce_synthesize_input_invariants(state)
+
+
+def test_synthesize_rejects_mid_batch_policy_version_drift() -> None:
+    """H-1 detection fires on MIXED policy_version values across the
+    finding batch. The first finding's version anchors the snapshot;
+    any subsequent finding with a different value is a mid-batch
+    forge attempt and raises before the divergence detector + audit
+    row emit."""
+    anchor = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
+    forged = _make_finding_stub(policy_version="0.0.0")
+    state = _make_state_stub(findings=[anchor, forged])
+
+    with pytest.raises(FindingForgeryDetectedError, match="policy_version"):
+        _enforce_synthesize_input_invariants(state)
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +203,41 @@ def test_synthesize_admits_finding_with_none_original_severity() -> None:
     _enforce_synthesize_input_invariants(state)
 
 
+def test_synthesize_detects_forge_in_later_round() -> None:
+    """Multi-round path: forge in `analysis_rounds[1]` with legitimate
+    findings in `analysis_rounds[0]`. The outer round-loop must reach
+    round_index=1 and trigger the snapshot mismatch."""
+
+    class _MultiRoundState:
+        def __init__(self) -> None:
+            legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
+            forged = _make_finding_stub(policy_version="0.0.0")
+
+            class _R0:
+                def __init__(self) -> None:
+                    self.findings = (legit,)
+
+            class _R1:
+                def __init__(self) -> None:
+                    self.findings = (forged,)
+
+            self.analysis_rounds = (_R0(), _R1())
+
+    with pytest.raises(FindingForgeryDetectedError, match="round_index=1"):
+        _enforce_synthesize_input_invariants(_MultiRoundState())  # type: ignore[arg-type]
+
+
 def test_synthesize_rejects_first_forge_when_mixed_with_legit() -> None:
-    """When multiple findings are present and ANY one is forged,
-    synthesize raises on the FIRST forge encountered. Verifies the
-    defense fires deterministically rather than silently filtering."""
+    """When multiple findings are present and the original_severity
+    forge is mixed with legit findings, synthesize raises on the FIRST
+    forge encountered. Verifies the defense fires deterministically
+    rather than silently filtering."""
     legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
-    forged = _make_finding_stub(policy_version="0.0.0")
+    forged = _make_finding_stub(
+        policy_version=ACTIVE_POLICY_VERSION,  # uniform snapshot
+        original_severity=FindingSeverity.CRITICAL,  # forge axis
+    )
     state = _make_state_stub(findings=[legit, forged])
 
-    with pytest.raises(FindingForgeryDetectedError):
+    with pytest.raises(FindingForgeryDetectedError, match="original_severity"):
         _enforce_synthesize_input_invariants(state)
