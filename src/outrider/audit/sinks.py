@@ -6,7 +6,7 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 ships six sinks from this module: `PhaseEventSink` for
+V1 ships seven sinks from this module: `PhaseEventSink` for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `AnalyzeEventSink` bundling the four analyze-emitted event types
@@ -140,7 +140,7 @@ class FileExaminationSink(Protocol):
     The durable `AuditPersister` implements this Protocol alongside
     `PhaseEventSink`, `AnalyzeEventSink`, `PublishEventSink`,
     `TraceEventSink`, `HITLEventSink`, and `LLMExchangePersister` — one
-    class, one transaction-lifecycle discipline, seven sinks. Test
+    class, one transaction-lifecycle discipline, eight sinks. Test
     fixtures may record to a list or persist directly per the same
     recorder-vs-durable split documented on `PhaseEventSink`.
 

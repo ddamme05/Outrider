@@ -57,10 +57,13 @@ def test_cross_node_uniqueness() -> None:
     triage = compute_phase_id(review_id=review_id, node_id="triage", attempt_key=attempt_key)
     analyze = compute_phase_id(review_id=review_id, node_id="analyze", attempt_key=attempt_key)
     trace = compute_phase_id(review_id=review_id, node_id="trace", attempt_key=attempt_key)
+    synthesize = compute_phase_id(
+        review_id=review_id, node_id="synthesize", attempt_key=attempt_key
+    )
     publish = compute_phase_id(review_id=review_id, node_id="publish", attempt_key=attempt_key)
     hitl = compute_phase_id(review_id=review_id, node_id="hitl", attempt_key=attempt_key)
-    digests = {intake, triage, analyze, trace, publish, hitl}
-    assert len(digests) == 6, "all six node_ids must produce distinct phase_ids"
+    digests = {intake, triage, analyze, trace, synthesize, publish, hitl}
+    assert len(digests) == 7, "all seven node_ids must produce distinct phase_ids"
 
 
 def test_cross_attempt_key_uniqueness() -> None:

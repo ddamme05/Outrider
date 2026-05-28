@@ -60,6 +60,7 @@ Order of operations (failure-path-significant):
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -80,6 +81,31 @@ if TYPE_CHECKING:
     from outrider.policy.severity import FindingSeverity
     from outrider.schemas.review_finding import ReviewFinding
     from outrider.schemas.review_state import ReviewState
+
+
+class FindingForgeryDetectedError(RuntimeError):
+    """Raised when synthesize detects a forge-class invariant violation
+    at entry — distinct from cross-round severity divergence.
+
+    Two surfaces fire this:
+
+    - A finding's `policy_version` is not `ACTIVE_POLICY_VERSION`.
+      `ReviewFinding._enforce_severity_matches_policy` short-circuits
+      on non-active versions (review_finding.py:352), so a forged
+      finding with arbitrary severity would survive into the audit
+      row + HITL partition. Synthesize rejects at entry — H-1.
+
+    - A finding's `original_severity` is not None at synthesize entry.
+      `original_severity` is set only by HITL after a reviewer
+      override; finding it set BEFORE HITL means the producer
+      forged the override triplet to bypass the gated set. H-2.
+
+    Same operational handling as `SynthesizeAggregationError`: the
+    review parks, ops triages the forge attempt as a corruption signal.
+    A future enhancement may emit an anomaly here too (separate
+    rule_name) for surfacing in the anomaly queue; V1 fail-loud is
+    sufficient.
+    """
 
 
 class SynthesizeAggregationError(RuntimeError):
@@ -132,6 +158,60 @@ def _compute_summary_content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _enforce_synthesize_input_invariants(state: ReviewState) -> None:
+    """Reject forged findings at synthesize entry — H-1 + H-2 defenses.
+
+    `ReviewFinding._enforce_severity_matches_policy` SHORT-CIRCUITS when
+    `policy_version != ACTIVE_POLICY_VERSION` (see review_finding.py:352)
+    — historical replay path. An attacker (or a buggy upstream) can
+    smuggle in a finding with arbitrary severity by setting
+    `policy_version` to a non-active version string. Synthesize emits
+    `SynthesizeCompletedEvent.policy_version = ACTIVE_POLICY_VERSION`;
+    if a finding arrives carrying a different policy_version, it would
+    survive the schema check AND the audit row would mis-record the
+    aggregate. Reject at entry — H-1 adversarial defense.
+
+    `ReviewFinding.original_severity` is the pre-override baseline used
+    by HITL `_resolve_effective_severity`. At synthesize entry HITL has
+    NOT run yet — every finding must have `original_severity is None`.
+    A finding with `original_severity != None` indicates the producer
+    forged a fake HITL-override triplet to bypass the gated set.
+    Reject at entry — H-2 adversarial defense.
+
+    Both raise `SynthesizeAggregationError` with a forge-class
+    description so ops triage routes the same way as cross-round
+    severity divergence.
+    """
+    for round_index, analysis_round in enumerate(state.analysis_rounds):
+        for finding in analysis_round.findings:
+            if finding.policy_version != ACTIVE_POLICY_VERSION:
+                raise FindingForgeryDetectedError(
+                    f"synthesize rejected finding with "
+                    f"policy_version={finding.policy_version!r} "
+                    f"(ACTIVE_POLICY_VERSION={ACTIVE_POLICY_VERSION!r}) "
+                    f"at round_index={round_index}, "
+                    f"content_hash={finding.content_hash!r}. "
+                    f"ReviewFinding._enforce_severity_matches_policy "
+                    f"short-circuits on non-active policy_version "
+                    f"(review_finding.py:352) — a finding carrying a "
+                    f"non-active version is either a forge attempt or "
+                    f"a replay path that should not reach a fresh "
+                    f"synthesize emit. Aborting before audit row lands."
+                )
+            if finding.original_severity is not None:
+                raise FindingForgeryDetectedError(
+                    f"synthesize rejected finding with non-None "
+                    f"original_severity={finding.original_severity!r} "
+                    f"at round_index={round_index}, "
+                    f"content_hash={finding.content_hash!r}. HITL has "
+                    f"not run at synthesize entry — original_severity "
+                    f"is set ONLY after a reviewer override at HITL. "
+                    f"A finding carrying original_severity here "
+                    f"indicates a forge attempt to bypass the gated "
+                    f"set. Aborting before audit row lands."
+                )
+
+
 async def _detect_and_report_divergence(
     *,
     state: ReviewState,
@@ -170,18 +250,38 @@ async def _detect_and_report_divergence(
             severity_tuple = tuple(sorted({e[1].severity for e in entries}, key=lambda s: s.value))
             policy_version_tuple = tuple(sorted(policy_versions))
             round_indices_tuple = tuple(sorted({e[0] for e in entries}))
-            await anomaly_sink.emit_anomaly(
-                review_id=state.review_id,
-                rule_name=AnomalyRuleName.CROSS_ROUND_SEVERITY_DIVERGENCE,
-                severity=AnomalySeverity.HIGH,
-                details={
-                    "content_hash": content_hash,
-                    "severities": [s.value for s in severity_tuple],
-                    "policy_versions": list(policy_version_tuple),
-                    "round_indices": list(round_indices_tuple),
-                },
-                is_eval=state.is_eval,
-            )
+            # Anomaly-emit-then-raise: emit the anomaly so ops sees
+            # corruption in the queue; if the emit itself fails (DB
+            # outage, partial-index missing for a new rule), log at
+            # ERROR and STILL raise SynthesizeAggregationError —
+            # the divergence signal is the load-bearing fact, the
+            # anomaly row is a best-effort observability shadow.
+            try:
+                await anomaly_sink.emit_anomaly(
+                    review_id=state.review_id,
+                    rule_name=AnomalyRuleName.CROSS_ROUND_SEVERITY_DIVERGENCE,
+                    severity=AnomalySeverity.HIGH,
+                    details={
+                        "content_hash": content_hash,
+                        "severities": [s.value for s in severity_tuple],
+                        "policy_versions": list(policy_version_tuple),
+                        "round_indices": list(round_indices_tuple),
+                    },
+                    is_eval=state.is_eval,
+                )
+            except Exception as emit_exc:
+                # Log via the imported `logging` module — the divergence
+                # raise below is the authoritative signal regardless of
+                # the emit outcome. Do NOT swallow the divergence.
+                logging.getLogger(__name__).exception(
+                    "synthesize_anomaly_emit_failed_during_divergence",
+                    extra={
+                        "review_id": str(state.review_id),
+                        "content_hash": content_hash,
+                        "emit_exception_type": type(emit_exc).__name__,
+                    },
+                )
+                # Fall through to the SynthesizeAggregationError raise.
             raise SynthesizeAggregationError(
                 content_hash=content_hash,
                 severities=severity_tuple,
@@ -295,6 +395,12 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         )
     )
 
+    # Step 3a: forge-class invariants (adversarial H-1 + H-2). Reject
+    # findings carrying non-active policy_version OR pre-set
+    # original_severity BEFORE the divergence loop sees them — both
+    # are smuggle paths that would otherwise survive into the audit
+    # row + HITL partition.
+    _enforce_synthesize_input_invariants(state)
     # Step 3-4: flatten + dedup with severity-divergence detection.
     # Raises SynthesizeAggregationError on corruption (anomaly emitted
     # before the raise; review parks).
@@ -306,10 +412,10 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # pass arbitrary order here (the schema canonicalizes).
     deduplicated_findings = tuple(kept_by_hash.values())
 
-    # Step 5: compute metrics (wall-clock not yet final — assembled
-    # after the LLM call).
-
     # Step 6: build LLMRequest for the Sonnet summary call.
+    # (Step 5's metrics computation is interleaved: a pre-call snapshot
+    # below feeds the prompt; the final snapshot at step 10 captures the
+    # post-call wall-clock for the audit row.)
     # `overall_risk` is required upstream (triage produces it).
     if state.triage_result is None:
         msg = (
@@ -414,6 +520,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
 
 
 __all__ = [
+    "FindingForgeryDetectedError",
     "SynthesizeAggregationError",
     "synthesize",
 ]

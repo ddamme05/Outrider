@@ -11,9 +11,15 @@ prose-only.
 Surfaces (per the synthesize-node spec's Reference Reconciliation):
 
 - `SYSTEM_PROMPT: Final[str]` — fully static instructions. Goes into
-  `LLMRequest.system_prompt`; cache_control: ephemeral set by the
-  wrapper. Reuses the analyze/trace prefix cache where possible (the
-  prompt is small enough that cache hits are valuable).
+  `LLMRequest.system_prompt`. NB: prompt caching has a minimum-tokens
+  threshold (Sonnet 4.6: 2048 tokens; Sonnet 4.5: 1024); this prompt
+  is well below the floor (~700 tokens), so cache_control attempts
+  fall through with a per-(model, hash) wrapper warning. V1 is fine
+  with no cache hit — synthesize fires once per review and the
+  per-call latency is dominated by completion-time, not prompt
+  hydration. Future enhancement: expand the prompt with shared
+  boilerplate to clear the 2048-token floor IF the warn-spam becomes
+  noisy in production logs.
 - `USER_TEMPLATE: Final[str]` — per-review `str.format` template with
   structural placeholders (`{overall_risk}`, `{findings_summary}`,
   `{metrics_summary}`). Values are filled at `render()` time; the
@@ -144,13 +150,19 @@ def render(
             )
         findings_summary = "\n".join(lines)
 
+    # LLM-aggregate metrics ship as Optional[X] = None in V1 (audit-query
+    # helper not yet wired). Render "unknown" for None values rather than
+    # crashing on `:.4f` format-spec against NoneType — the audit-fold
+    # caught the false-zero problem but the prompt-render call site
+    # missed the corresponding None-safety. _render_metric_value handles
+    # the None/numeric union safely.
     metrics_summary = (
         f"- Files examined: {metrics.files_examined}\n"
         f"- Files traced beyond diff: {metrics.files_traced_beyond_diff}\n"
-        f"- LLM calls made: {metrics.llm_calls_made}\n"
-        f"- Tokens: {metrics.total_input_tokens} in / "
-        f"{metrics.total_output_tokens} out\n"
-        f"- Cost: ${metrics.total_cost_usd:.4f}\n"
+        f"- LLM calls made: {_render_metric_value(metrics.llm_calls_made)}\n"
+        f"- Tokens: {_render_metric_value(metrics.total_input_tokens)} in / "
+        f"{_render_metric_value(metrics.total_output_tokens)} out\n"
+        f"- Cost: {_render_cost_value(metrics.total_cost_usd)}\n"
         f"- Wall clock: {metrics.wall_clock_seconds:.1f}s"
     )
 
@@ -161,3 +173,24 @@ def render(
         metrics_summary=metrics_summary,
     )
     return SynthesizePromptParts(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt)
+
+
+def _render_metric_value(value: int | None) -> str:
+    """Render an Optional[int] metric for prose output.
+
+    V1 ships LLM-aggregate metrics as `None` (audit-query helper not
+    yet wired); render "unknown" so the prompt remains valid prose
+    when the value is absent. None values formatted via `:d` or
+    `:.4f` raise TypeError — this helper is the safety adapter at
+    the prompt-render boundary.
+    """
+    return "unknown" if value is None else str(value)
+
+
+def _render_cost_value(value: float | None) -> str:
+    """Render an Optional[float] cost metric for prose output.
+
+    Same None-safety rationale as `_render_metric_value` but with a
+    `$N.NNNN` shape when the value is present.
+    """
+    return "unknown" if value is None else f"${value:.4f}"

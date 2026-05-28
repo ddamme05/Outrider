@@ -114,29 +114,29 @@ def _partition_findings(
     keeps every consumer of "gated severity" pointed at one canonical
     definition. See `policy/publish_eligibility.py:138`.
     """
+    # Direct attribute access (not getattr-with-default) so a future
+    # schema rename of `review_report` surfaces as `AttributeError`
+    # rather than silently triggering the "synthesize must have run"
+    # RuntimeError — sharp-edges audit F3. Test doubles must include
+    # the attribute (set to None or to a stub); the `_make_state`
+    # helper in `tests/unit/test_hitl_node.py` does.
+    if state.review_report is None:
+        msg = (
+            "HITL requires state.review_report to be set "
+            "(synthesize node must have run before hitl — graph wiring "
+            "or test fixture bug). Fail-closed: a miswired path that "
+            "bypasses synthesize would otherwise silently lose the "
+            "content-hash dedup + cross-round severity-divergence "
+            "detection contracts."
+        )
+        raise RuntimeError(msg)
     gated: set[UUID] = set()
     autopost: set[UUID] = set()
-    # Test-compat fallback (transitional): pre-synthesize fixtures
-    # populate analysis_rounds only. Production path always has
-    # review_report set (post-Phase-6 graph wiring), so the canonical
-    # path is the if-branch. `getattr` defends against test doubles that
-    # don't carry the review_report attribute at all.
-    review_report = getattr(state, "review_report", None)
-    if review_report is not None:
-        for finding in review_report.findings:
-            if is_hitl_gated_severity(finding.severity):
-                gated.add(finding.finding_id)
-            else:
-                autopost.add(finding.finding_id)
-    else:
-        for round_ in state.analysis_rounds:
-            for finding in round_.findings:
-                if is_hitl_gated_severity(finding.severity):
-                    gated.add(finding.finding_id)
-        for round_ in state.analysis_rounds:
-            for finding in round_.findings:
-                if not is_hitl_gated_severity(finding.severity) and finding.finding_id not in gated:
-                    autopost.add(finding.finding_id)
+    for finding in state.review_report.findings:
+        if is_hitl_gated_severity(finding.severity):
+            gated.add(finding.finding_id)
+        else:
+            autopost.add(finding.finding_id)
     return tuple(sorted(gated)), tuple(sorted(autopost))
 
 

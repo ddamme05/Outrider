@@ -229,6 +229,8 @@ def _make_state(
 ) -> ReviewState:
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas.analysis_round import AnalysisRound
+    from outrider.schemas.review_report import ReviewMetrics, ReviewReport
+    from outrider.schemas.triage_result import RiskLevel
 
     files_examined = tuple(cf.path for cf in changed_files)
     round_id = compute_round_id(
@@ -245,6 +247,19 @@ def _make_state(
         files_skipped=(),
         started_at=datetime.now(UTC),
         ended_at=datetime.now(UTC),
+    )
+    # Synthesize-canonical state: post-Phase-5, publish reads findings
+    # from `state.review_report.findings`. Build a minimal valid
+    # ReviewReport so the publish node's fail-loud check passes.
+    review_report = ReviewReport(
+        summary="test summary",
+        overall_risk=RiskLevel.LOW,
+        findings=findings,
+        metrics=ReviewMetrics(
+            files_examined=len(files_examined),
+            files_traced_beyond_diff=0,
+            wall_clock_seconds=0.0,
+        ),
     )
     return ReviewState(
         review_id=uuid4(),
@@ -264,6 +279,7 @@ def _make_state(
         received_at=datetime.now(UTC),
         is_eval=False,
         analysis_rounds=[analysis_round],
+        review_report=review_report,
     )
 
 

@@ -1,8 +1,11 @@
-# Six-node StateGraph(ReviewState) factory: intake → triage → analyze ⇄ trace → hitl → publish.
-"""Six-node `StateGraph(ReviewState)` factory: intake → triage → analyze ⇄ trace → hitl → publish.
+# Seven-node StateGraph(ReviewState) factory for the V1 review pipeline.
+"""Seven-node `StateGraph(ReviewState)` factory.
 
-V1 ships SIX nodes: `intake`, `triage`, `analyze`, `trace`, `hitl`,
-`publish`. Intake enriches `pr_context.changed_files` per
+Graph topology: intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
+
+V1 ships SEVEN nodes: `intake`, `triage`, `analyze`, `trace`,
+`synthesize`, `hitl`, `publish`. Intake enriches
+`pr_context.changed_files` per
 `DECISIONS.md#020`; triage runs a fast LLM pass for tier
 classification; analyze runs one Sonnet call per DEEP/STANDARD-tier
 file and emits findings; trace consumes `state.trace_candidates`,
@@ -48,7 +51,7 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `model_config: ModelConfig` — `triage_model`, `analyze_model`, and
     `trace_model` are captured at callsite (per
     `model-strings-from-config-not-hardcoded`).
-  - `phase_event_sink: PhaseEventSink` — required for all six nodes;
+  - `phase_event_sink: PhaseEventSink` — required for all seven nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
     per-file content-fetch events AND analyze's per-file examination
@@ -104,7 +107,7 @@ only, not signature shape.
 
 ## Async invocation
 
-All six nodes are `async def`. Per LangGraph 1.1.6 docs, async-node
+All seven nodes are `async def`. Per LangGraph 1.1.6 docs, async-node
 graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
 """
 
