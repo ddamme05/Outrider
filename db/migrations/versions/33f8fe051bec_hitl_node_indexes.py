@@ -93,7 +93,8 @@ def upgrade() -> None:
         sa.text(
             """
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'reviews'
+            WHERE table_schema = current_schema()
+              AND table_name = 'reviews'
               AND column_name = 'expires_at'
             """
         )
@@ -182,7 +183,9 @@ def upgrade() -> None:
                 SELECT 1
                 FROM pg_index i
                 JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE c.relname = name
+                  AND n.nspname = current_schema()
                   AND i.indisvalid = true
                   AND i.indisready = true
             );

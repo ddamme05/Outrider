@@ -1715,6 +1715,25 @@ class PublishEligibilityEvent(AuditEventBase):
                     f"legitimate SEVERITY_OVERRIDE. If no override is in "
                     f"effect, set original_severity=None."
                 )
+        # Eligibility-coherence defense: a non-None `original_severity`
+        # records that a SEVERITY_OVERRIDE was applied to the published
+        # comment. WITHHELD rows by definition never published, so a
+        # WITHHELD row carrying `original_severity` is a producer-bug or
+        # replay-injected forge — the publish path's
+        # `_resolve_effective_severity` returns `original_severity_for_
+        # audit=None` whenever no matching `PerFindingDecision(outcome=
+        # SEVERITY_OVERRIDE)` exists. Reject loudly so the schema doesn't
+        # admit override metadata on rows that never reached GitHub.
+        if self.original_severity is not None and self.eligibility is PublishEligibility.WITHHELD:
+            raise ValueError(
+                f"PublishEligibilityEvent.original_severity="
+                f"{self.original_severity.value!r} set on a WITHHELD row "
+                f"(reason={self.reason.value if self.reason else None!r}). "
+                f"Override metadata records a SEVERITY_OVERRIDE applied at "
+                f"publish time; a WITHHELD row never published, so the "
+                f"override claim has no referent. If no override is in "
+                f"effect, set original_severity=None."
+            )
         return self
 
     @model_validator(mode="after")

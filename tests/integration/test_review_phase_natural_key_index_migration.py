@@ -239,6 +239,61 @@ async def test_index_does_not_restrict_other_event_types(
         await engine.dispose()
 
 
+async def test_index_excludes_rows_missing_payload_keys(
+    fresh_db: str, alembic_runner: AlembicRunner
+) -> None:
+    """The partial WHERE's `payload ? 'phase_id' AND payload ? 'marker'`
+    conjuncts exclude rows missing either key from the unique index.
+    Insert two `review_phase` rows with identical
+    `(review_id, phase_key)` but payload MISSING the 'marker' key —
+    both INSERTs succeed (no IntegrityError) and both rows persist,
+    proving the partial-WHERE's payload-key guard works."""
+    await alembic_runner("upgrade", "head", fresh_db)
+
+    engine = create_async_engine(fresh_db)
+    try:
+        review_id = uuid4()
+        timestamp = datetime.now(UTC)
+
+        async with engine.begin() as conn:
+            metadata = sa.MetaData()
+            await conn.run_sync(
+                lambda sync_conn: metadata.reflect(sync_conn, only=["audit_events"])
+            )
+            audit_events_table = metadata.tables["audit_events"]
+
+            # Two `review_phase` rows with identical natural-key fields
+            # but payload missing 'marker'. The partial WHERE excludes
+            # both rows from the unique index entirely; both INSERTs land.
+            for _ in range(2):
+                await conn.execute(
+                    audit_events_table.insert().values(
+                        event_id=uuid4(),
+                        review_id=review_id,
+                        event_type="review_phase",
+                        timestamp=timestamp,
+                        is_eval=False,
+                        phase_key=None,
+                        payload={"phase_id": "x"},  # 'marker' deliberately missing
+                    )
+                )
+
+        async with engine.connect() as conn:
+            count = await conn.scalar(
+                sa.text(
+                    "SELECT COUNT(*) FROM audit_events "
+                    "WHERE review_id = :rid AND event_type = 'review_phase'"
+                ),
+                {"rid": review_id},
+            )
+            assert count == 2, (
+                f"expected both INSERTs to land (partial-WHERE excludes payload-"
+                f"missing rows from the index), got {count} rows"
+            )
+    finally:
+        await engine.dispose()
+
+
 async def test_downgrade_removes_index_and_upgrade_recreates_it(
     fresh_db: str, alembic_runner: AlembicRunner
 ) -> None:
