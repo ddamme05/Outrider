@@ -37,10 +37,14 @@ def test_anomaly_rule_name_v1_value_set() -> None:
     HITL_TIMEOUT — sweep-emitted from `sweep/hitl_expiry.py` per
     `docs/spec.md` §16.
     CROSS_ROUND_SEVERITY_DIVERGENCE — graph-emitted from
-    `agent/nodes/synthesize.py` per the synthesize-node spec; surfaces
-    cross-round `(content_hash, severity)` divergence as corruption
-    (severity-set-by-policy invariant + per-element validator chain
-    guarantee same content_hash + same finding_type => same severity).
+    `agent/nodes/synthesize.py::_detect_and_report_divergence` per
+    the synthesize-node spec; surfaces cross-round divergence on
+    EITHER `severity` OR `policy_version` for the same content_hash
+    as corruption (severity-set-by-policy +
+    severity-policy-versioned-for-replay invariants + per-element
+    validator chain guarantee same content_hash + same finding_type
+    + same policy_version => same severity). Either axis triggers
+    the same rule; recovery action is identical.
     """
     assert {m.value for m in AnomalyRuleName} == {
         "hitl_timeout",

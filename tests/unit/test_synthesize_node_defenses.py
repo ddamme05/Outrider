@@ -297,6 +297,83 @@ def test_synthesize_rejects_first_forge_when_mixed_with_legit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dead-branch defense: policy_version axis in _detect_and_report_divergence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_policy_version_axis_divergence_emits_anomaly_and_raises() -> None:
+    """`_detect_and_report_divergence` MUST fail-loud on the
+    policy_version axis even when severity matches.
+
+    This pins the dead-branch annotation at synthesize.py:298-322 against
+    future deletion. The check `len(policy_versions) > 1` is structurally
+    unreachable on the canonical path (because
+    `_enforce_synthesize_input_invariants` upstream raises
+    `FindingForgeryDetectedError` on mixed versions BEFORE this function
+    runs). The check exists as defense-in-depth against future producer
+    bypasses (direct ReviewState construction in tests, alternate
+    dispatchers, ad-hoc tooling) — exactly what this test exercises:
+    invoking `_detect_and_report_divergence` directly with mixed
+    policy_versions, bypassing the upstream gate.
+
+    If a future maintainer deletes the `len(policy_versions) > 1`
+    clause from synthesize.py:323 ("structurally unreachable, drop it"),
+    this test fails — proving the dead-branch is load-bearing for any
+    non-canonical producer path.
+    """
+    import uuid
+    from unittest.mock import AsyncMock
+
+    from outrider.agent.nodes.synthesize import (
+        SynthesizeAggregationError,
+        _detect_and_report_divergence,
+    )
+
+    # Two findings: SAME content_hash, SAME severity, SAME finding_type,
+    # DIFFERENT policy_version. The policy_version axis is the SOLE
+    # divergence signal — the severity axis (the rule's namesake) is
+    # uniform across both findings.
+    f_v1 = _make_finding_stub(policy_version="1.0.0")
+    f_v2 = _make_finding_stub(policy_version="0.0.1")
+    assert f_v1.severity == f_v2.severity  # severity axis uniform
+    assert f_v1.content_hash == f_v2.content_hash  # same content
+    assert f_v1.policy_version != f_v2.policy_version  # only divergence
+
+    # Synthesize state with both findings + a triage snapshot that
+    # WOULD have caught this at the upstream gate (we intentionally
+    # skip that gate in this test to exercise the dead branch).
+    state = _make_state_stub(
+        findings=[f_v1, f_v2],
+        triage_policy_version="1.0.0",
+    )
+    # Stub the state's review_id + is_eval the helper doesn't carry.
+    state.review_id = uuid.uuid4()  # noqa: SLF001
+    state.is_eval = False  # noqa: SLF001
+
+    anomaly_sink = AsyncMock()
+    anomaly_sink.emit_anomaly = AsyncMock(return_value=None)
+
+    # Bypassing _enforce_synthesize_input_invariants → directly invoke
+    # the divergence detector. The dead-branch annotation says this
+    # path is "structurally unreachable" on canonical execution — yet
+    # any non-canonical producer can land here, which is exactly why
+    # the check exists.
+    with pytest.raises(SynthesizeAggregationError):
+        await _detect_and_report_divergence(state=state, anomaly_sink=anomaly_sink)
+
+    # Anomaly was emitted with both policy_versions in the details
+    # payload — proves the emit-then-raise contract on the
+    # policy_version axis specifically.
+    assert anomaly_sink.emit_anomaly.await_count == 1
+    emit_call = anomaly_sink.emit_anomaly.await_args
+    details = emit_call.kwargs["details"]
+    assert set(details["policy_versions"]) == {"1.0.0", "0.0.1"}, (
+        f"expected both policy_versions in anomaly details, got {details!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Replay binding: summary_content_hash MUST hash the raw LLM response.text
 # ---------------------------------------------------------------------------
 
