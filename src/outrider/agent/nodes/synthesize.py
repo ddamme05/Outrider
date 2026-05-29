@@ -1,15 +1,21 @@
 # Synthesize-node body per specs/2026-05-28-synthesize-node.md
 """Synthesize node — aggregate findings into a `ReviewReport`.
 
-Per spec gate #7 (fail-loud on cross-round severity divergence): when
-two findings share a `content_hash` across analysis rounds but disagree
-on `severity`, the `severity-set-by-policy` invariant is violated by
-construction (the hash is keyed over `finding_type` and severity is
-SEVERITY_POLICY[finding_type], so same content_hash → same severity
-must hold). Divergence is corruption, not variance. Synthesize emits
-an `AnomalyRuleName.CROSS_ROUND_SEVERITY_DIVERGENCE` anomaly via the
+Per spec gate #7 (fail-loud on cross-round divergence): when two
+findings share a `content_hash` across analysis rounds but disagree
+on EITHER `severity` OR `policy_version`, the
+`severity-set-by-policy` + `severity-policy-versioned-for-replay`
+invariants are violated by construction (the hash is keyed over
+`finding_type` + the review runs under one triage-anchored policy
+snapshot, so same content_hash → same severity AND same
+policy_version must hold). Divergence on either axis is corruption,
+not variance. Synthesize emits an
+`AnomalyRuleName.CROSS_ROUND_SEVERITY_DIVERGENCE` anomaly via the
 injected `AnomalySink` THEN raises `SynthesizeAggregationError`. The
-anomaly row commits before the raise so ops sees the corruption signal
+anomaly emit is best-effort observability shadow; the raise is the
+authoritative signal regardless of emit outcome (per
+`_detect_and_report_divergence` docstring contract). When emit
+succeeds, ops sees the corruption signal
 in the queue while the review parks for triage.
 
 Per pre-spec gate #1: `SynthesizeCompletedEvent` uses event_id-PK
@@ -313,6 +319,13 @@ async def _detect_and_report_divergence(
         # ad-hoc tooling) that skip the upstream gate — strict
         # subset/superset relationship: any path triggering this
         # branch on policy_version axis is a producer-side bug.
+        # **DO NOT remove the policy_versions check even when the
+        # upstream gate is the only canonical-path enforcer.** The
+        # subset/superset property makes this branch a structural
+        # safety net for non-canonical producers; deleting it would
+        # silently admit forged-policy_version findings on any future
+        # bypass path. Pinned by
+        # `test_policy_version_axis_divergence_emits_anomaly_and_raises`.
         if len(severities) > 1 or len(policy_versions) > 1:
             severity_tuple = tuple(sorted({e[1].severity for e in entries}, key=lambda s: s.value))
             policy_version_tuple = tuple(sorted(policy_versions))
