@@ -2,7 +2,8 @@
 
 Re-exports the public symbols of the audit package. The emitter
 (`audit/emitter.py`, separate spec) constructs concrete events; replay
-(`audit/replay.py`, separate spec) reconstructs them via `AuditEvent`.
+(`audit/replay.py`) reconstructs them via `AuditEvent` and exposes
+`AuditReplayer` (re-exported below).
 The durable persister (`audit/persister.py`) implements four Protocol
 contracts atomically per `DECISIONS.md#016`: `LLMExchangePersister`
 (`llm/base.py`) plus `PhaseEventSink`, `FileExaminationSink`, and
@@ -46,6 +47,19 @@ from outrider.audit.persister import (
     AuditPersisterSchemaInvariantError,
     FieldDigest,
 )
+from outrider.audit.replay import (
+    AuditReplayer,
+    FindingContent,
+    ReconstructedFinding,
+    ReconstructedLLMExchange,
+    ReconstructedPhase,
+    ReconstructedReview,
+    ReconstructedReviewMetadata,
+    ReplayEquivalenceError,
+    ReplayError,
+    ReplayMode,
+    ReplayReviewNotFoundError,
+)
 from outrider.audit.sinks import AnalyzeEventSink, FileExaminationSink, PhaseEventSink
 
 __all__ = [
@@ -64,11 +78,13 @@ __all__ = [
     "AuditPersisterReviewIdMismatchError",
     "AuditPersisterReviewNotFoundError",
     "AuditPersisterSchemaInvariantError",
+    "AuditReplayer",
     "ContextManifestEntry",
     "FieldDigest",
     "METADATA_ONLY_EXCEPTION_TYPES",
     "FileExaminationEvent",
     "FileExaminationSink",
+    "FindingContent",
     "FindingEvent",
     "FindingProposalRejectedEvent",
     "HITLDecisionEvent",
@@ -77,6 +93,15 @@ __all__ = [
     "PhaseEventSink",
     "PublishEvent",
     "PublishRoutingEvent",
+    "ReconstructedFinding",
+    "ReconstructedLLMExchange",
+    "ReconstructedPhase",
+    "ReconstructedReview",
+    "ReconstructedReviewMetadata",
+    "ReplayEquivalenceError",
+    "ReplayError",
+    "ReplayMode",
+    "ReplayReviewNotFoundError",
     "RetentionSettings",
     "ReviewPhaseEvent",
     "SynthesizeCompletedEvent",
