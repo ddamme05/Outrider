@@ -119,9 +119,12 @@ async def test_integrity_gate_flags_a_non_eval_row(session: AsyncSession) -> Non
     await session.commit()
 
     conn = await session.connection()
-    with pytest.raises(AssertionError, match="is_eval discipline violation"):
-        await _assert_no_is_eval_violations(conn)
-
-    # Remove the planted row so eval_db's own teardown gate (same helper) passes.
-    await session.execute(text("DELETE FROM reviews WHERE id = :id"), {"id": row["id"]})
-    await session.commit()
+    try:
+        with pytest.raises(AssertionError, match="is_eval discipline violation"):
+            await _assert_no_is_eval_violations(conn)
+    finally:
+        # Remove the planted row in a finally so a failed assertion can't leave it
+        # behind — eval_db's own teardown gate (same helper) would otherwise also
+        # raise and mask the primary failure.
+        await session.execute(text("DELETE FROM reviews WHERE id = :id"), {"id": row["id"]})
+        await session.commit()

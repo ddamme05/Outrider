@@ -196,7 +196,7 @@ async def _assert_no_is_eval_violations(conn: AsyncConnection) -> None:
     if violations:
         raise AssertionError(
             f"is_eval discipline violation: {len(violations)} "
-            "row(s) with is_eval=False in eval-test DB. "
+            "row(s) where is_eval is not TRUE (FALSE or NULL) in eval-test DB. "
             "Factories MUST set is_eval=True; this gate is the "
             "loud-failure check (per `PerFindingDecision.reason` "
             "no-default + `proposed_import_strings` no-default + "
