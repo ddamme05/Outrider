@@ -1550,6 +1550,13 @@ class PublishRoutingEvent(AuditEventBase):
 class PublishEligibilityEvent(AuditEventBase):
     """Records the per-finding materialization decision, separate from routing.
 
+    `policy_version` mirrors `finding.policy_version` (the snapshot under
+    which the finding's severity was classified) per
+    DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
+    Stamping the live process-current `ACTIVE_POLICY_VERSION` would break
+    `severity-policy-versioned-for-replay` across HITL-pause-then-deploy
+    boundaries.
+
     Per Q3: eligibility is policy-derived (gates on severity + HITL absence).
     Fires AFTER `PublishRoutingEvent` for each finding under the interleaved
     per-finding routing+eligibility loop. Carries identity fields so
@@ -2156,6 +2163,11 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
 
 class SynthesizeCompletedEvent(AuditEventBase):
     """Per-review aggregate emitted at the end of the synthesize node.
+
+    `policy_version` mirrors the triage-captured snapshot per
+    DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
+    See also DECISIONS.md#029 for the V2 durable-retry idempotency
+    + content-binding via `llm_call_event_id` (out of scope for V1).
 
     One per review (not per-pass like `AnalyzeCompletedEvent`). Carries
     the canonical `ReviewMetrics` fields (mirror of

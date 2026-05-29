@@ -978,3 +978,143 @@ The lock acquisition is **try-lock with bounded backoff**, NOT plain blocking, N
 3. **Context unreconstructable from code alone** — the rejected alternatives (plain blocking, single-shot try-lock) are NOT visible in the current code. A future reader without this entry would not know why try-lock + backoff was chosen over the simpler alternatives, and could "simplify" the code into a bug.
 
 **Referenced from.** `src/outrider/audit/persister.py::acquire_publish_lock` (durable impl + rejected-alternative rationale in docstring), `src/outrider/audit/persister.py::AuditPersisterPublishLockAcquisitionTimeoutError` (exception class + enrolled in `METADATA_ONLY_EXCEPTION_TYPES`), `src/outrider/audit/sinks.py::PublishEventSink.acquire_publish_lock` (Protocol surface), `src/outrider/agent/nodes/publish.py` (call site at the lock-acquire block; outer try/except for FAILED emit on acquire failure), `tests/integration/test_publish_lock_contention.py` (executable contract pin — serialize-then-observe + cross-review-independence + timeout-raises), `tests/integration/test_anomaly_persister_duplicate.py` (sibling integration test on the partial-unique-index pattern this entry's `index_elements`+`index_where` discipline shares with), `FOLLOWUPS.md#FUP-068` (precursor — Attack 2 closed in V1 per this entry; Attack 1 remains V2 work), `tests/unit/test_github_publisher.py` (Protocol-method-set pin including `acquire_publish_lock`). Spec amendment to `docs/spec.md` §V (publish-node design narrative) is deferred to a separate commit per the workflow's docs-only commit discipline.
+
+## 028. Per-review policy_version snapshot anchor on TriageResult; triage gate enforces producer-side integrity (V1 scope)
+
+**Status:** Accepted, 2026-05-28.
+
+**Context.** Synthesize's H-1 forge defense needs a trusted per-review `policy_version` snapshot so that (a) a single review's findings, summary, and replay share one policy version regardless of mid-deploy `ACTIVE_POLICY_VERSION` bumps, and (b) a downstream attacker-influenced producer (analyze proposals, prompt-injection from PR content) cannot poison the anchor by planting a forged finding with a divergent `policy_version` value.
+
+Two earlier resolutions were tried during the synthesize-node audit-the-audit loop and rejected:
+
+- **Direct comparison against the live `ACTIVE_POLICY_VERSION` constant** (Pass-2). The constant is uninfluenceable but fails under mid-deploy hot-reload: a review whose triage classified findings under version 0.0.0 then hits synthesize after the constant bumps to 0.0.1 — every legitimate finding now diverges from live and synthesize denies completion. Operational hazard, not a security one, but a release blocker.
+
+- **First-finding-anchored snapshot** (Pass-3). Capturing the anchor from `analysis_rounds[0].findings[0].policy_version` survives the bump but moves the trust root into attacker-influenceable space: a single forged finding planted in round 0 index 0 poisons the snapshot for every subsequent legitimate finding, denying completion via single-finding-poisoning DoS.
+
+Remaining design space — move the snapshot UPSTREAM of analyze (only triage is upstream and runs before any attacker-influenced LLM call other than its own — which itself can be gated), and add a producer-side gate at triage that rejects any LLM-injected divergent `policy_version` (an LLM emitting `{"policy_version": "0.0.0", ...}` in its triage JSON survives Pydantic's `pattern=BARE_SEMVER_PATTERN` shape floor because the field admits any valid semver).
+
+**Decision.** #028 establishes the snapshot anchor surface and the producer-side triage gate; the downstream-consumer story for analyze in cross-process durable-retry deployments is the subject of #029.
+
+1. `TriageResult` gains a `policy_version: str = Field(default_factory=lambda: ACTIVE_POLICY_VERSION, pattern=BARE_SEMVER_PATTERN)` field. `default_factory` fires on field omission (the canonical happy path — triage LLM should not emit this field); the pattern is the schema-level shape floor.
+
+2. `agent/nodes/triage.py::_enforce_triage_policy` gains Rule (d): post-validation, raise `TriagePolicyViolationError` if `result.policy_version != ACTIVE_POLICY_VERSION`. The rule rejects DIVERGENT values; exact-active injection is acceptable (an LLM that injects exactly the active version produces an audit-row indistinguishable from the legitimate default_factory path, and the attacker gains nothing). If exact-active injection must ALSO be impossible — i.e., the field should never appear in triage LLM output at all — the right fix is a separate LLM-only DTO that excludes the field, OR a pre-validation reject of raw JSON containing the key. V1 ships value-integrity rejection only.
+
+3. `agent/nodes/synthesize.py::_enforce_synthesize_input_invariants` compares every finding's `policy_version` against `state.triage_result.policy_version` (the triage-captured snapshot) and raises `FindingForgeryDetectedError` on divergence.
+
+4. `SynthesizeCompletedEvent.policy_version` mirrors `state.triage_result.policy_version` so the audit row records the snapshot under which findings were classified. `PublishEligibilityEvent.policy_version` mirrors `finding.policy_version` (same snapshot, propagated through the finding).
+
+5. The replay path is exempt from Rule (d). Replay reconstruction reads `audit_events` rows directly and does NOT re-execute the triage node, so a historical `policy_version` rehydrated from an old TriageResult stays valid for the replay.
+
+**V1 scope limitation (explicit, not an oversight).** Analyze stamps findings with its own `active_policy_version` parameter (defaulting to live `ACTIVE_POLICY_VERSION` at module-import time), NOT with `state.triage_result.policy_version`. Within V1's in-process `BackgroundTasksDispatcher`, this is safe: `ACTIVE_POLICY_VERSION` is `Final` per process lifetime; no mid-process bump. A mid-deploy bump kills the in-flight review via process death (BackgroundTasks doesn't cross process boundaries), so the snapshot mismatch between `finding.policy_version` (live) and `triage.policy_version` (snapshot) doesn't fire on resume. The trust root is complete under V1's in-process dispatcher assumptions. **V2 Celery durable-retry crosses processes** and will require analyze to consume the triage snapshot at runtime; see #029.
+
+**Consequences.**
+
+- `TriageResult` deviates from `docs/spec.md` §7.2's four-field shape (adds a fifth field). The canonical record (spec.md §7.2) carries an `Amended 2026-05-28 — see DECISIONS.md#028` note referencing this decision; the field is documented as the snapshot-anchor surface for synthesize's H-1 defense.
+
+- Triage's deterministic policy gate (`_enforce_triage_policy`) acquires a fourth rule beyond the existing path-set rules (a/b/c). The new rule shares the same exception class (`TriagePolicyViolationError`) and bounded-sample log-content discipline.
+
+- A future "explicit historical-version triage" code path (e.g., a tool that constructs a TriageResult from an old audit row to feed a what-if analysis) must bypass Rule (d) by NOT going through `_enforce_triage_policy`. The replay path already satisfies this by not calling the triage node at all.
+
+- The schema-level `pattern=BARE_SEMVER_PATTERN` floor is retained even though Rule (d) is a strictly tighter gate at the only production write site. The pattern catches malformed `policy_version` values that arrive through other construction paths (rehydration from a corrupted audit row, future test fixture mistakes); removing it would narrow the safety net without operational benefit.
+
+- The Pydantic `default_factory` semantics are load-bearing: it fires on field omission via `model_validate_json` (verified against `pydantic/concepts/fields/index.md` during the synthesize-node audit-the-audit). A future Pydantic upgrade that changes this contract would silently break the happy path; pin the version + add an integration test that asserts the factory fires on missing-field JSON.
+
+- The V1 trust root is complete within the deployment model V1 ships (in-process BackgroundTasks). #029 extends the trust root to cross-process durable retry before V2 Celery + Redis lands.
+
+**Referenced from.** `src/outrider/schemas/triage_result.py` (the `policy_version` field), `src/outrider/agent/nodes/triage.py` (`_enforce_triage_policy` Rule (d) + `TriagePolicyViolationError` enrollment), `src/outrider/agent/nodes/synthesize.py` (`_enforce_synthesize_input_invariants` triage-anchored comparison + `FindingForgeryDetectedError`), `src/outrider/audit/events.py` (`SynthesizeCompletedEvent.policy_version` snapshot mirror + `PublishEligibilityEvent.policy_version` snapshot mirror), `src/outrider/agent/nodes/publish.py` (`PublishEligibilityEvent` emit site stamping `finding.policy_version`), `tests/unit/test_triage_node.py` (`test_enforce_policy_rejects_llm_injected_policy_version` pin), `tests/unit/test_triage_result.py` (`test_triage_result_policy_version_admits_any_valid_semver` shape-vs-value pin), `tests/unit/test_synthesize_node_defenses.py` (`test_synthesize_blocks_first_finding_poisoning` triage-anchored snapshot defense pin), `tests/unit/test_publish_routing.py` (`test_publish_eligibility_stamps_finding_policy_version_not_active` snapshot mirror pin).
+
+## 029. Cross-process durable-retry policy snapshot consumption: analyze consumes triage snapshot via closure-injected loader; synthesize retry idempotency via DB-arbitrated reconstruction
+
+**Status:** Drafted, 2026-05-28. Trigger-gated on V2 Celery + Redis landing — points 1-8 below MUST land before the dispatcher swap ships.
+
+**Context.** #028 establishes the per-review policy_version snapshot anchor on `TriageResult` and the producer-side triage gate. The trust root is complete under V1's in-process dispatcher assumptions: `Final ACTIVE_POLICY_VERSION` per process lifetime; mid-deploy bumps kill in-flight reviews via process death.
+
+V2 changes the deployment model. `CeleryDispatcher` provides durable retry — a task that crashes mid-execution requeues and runs in a new worker process whose `ACTIVE_POLICY_VERSION` and `SEVERITY_POLICY` mapping may have bumped since the original triage. Three coupled break modes emerge:
+
+1. **Analyze-side label drift.** `analyze.py::analyze` defaults `active_policy_version` to live `ACTIVE_POLICY_VERSION`; the parser stamps that value on every finding. Cross-process retry stamps v2 onto findings from a v1-anchored review. Synthesize compares against `triage_result.policy_version` (v1) → divergence raises.
+
+2. **Analyze-side mapping drift.** Parser reads live `SEVERITY_POLICY[finding_type]` synchronously at classification time. If the mapping (not just the version label) bumps, the row's (label, severity) pair is incoherent. Replay reconstruction asserting severity matches the labelled mapping fails.
+
+3. **Synthesize retry state-audit lockstep + concurrent-retry race.** Two failure shapes that compound:
+   - **Sequential crash recovery:** crash after `SynthesizeCompletedEvent` emit + before node return → retry makes fresh LLM call → fresh summary text → returned `ReviewReport`'s `summary_content_hash` ≠ persisted event's. `DECISIONS.md#026` gate iii (state-lockstep) violated.
+   - **Concurrent retry race** (V2 Celery dispatcher may double-fire under network-partition / lost-ack): two synthesize invocations both observe no prior `SynthesizeCompletedEvent`, both call the LLM, both emit fresh event-id-PK rows. Pre-flight check alone is insufficient; same race class as `DECISIONS.md#027`'s publish-side advisory lock concern.
+
+These three break modes are coupled: all three fire when V2 lands without further work. Bundling them avoids a partial-V2-trust-root intermediate state.
+
+**Decision.** Land the following before V2 Celery + Redis enters the hot path. The nine points fall into three groups: items 1-3 are analyze-side (close break modes 1 + 2); items 4-8 are synthesize-side (close break mode 3, both layers required — pre-flight as fast path + DB arbitration as correctness path); item 9 is the shared rehydration test gate.
+
+1. **Analyze fails loud on missing `triage_result`.** `analyze.py::analyze` asserts at entry; raises `AnalyzeMissingTriageError` (new typed exception, sibling of synthesize-side `FindingForgeryDetectedError`). The current Pass-3 fallback that treats missing triage as all-files-SKIP becomes wrong under #029's trust-root model — a silent all-SKIP review under the wrong snapshot leaves a poisoned audit trail.
+
+2. **Analyze reads `policy_version` from state at runtime.** Drop `active_policy_version: str = ACTIVE_POLICY_VERSION` from the node-entrypoint `analyze.py::analyze` signature. Body reads `policy_version = state.triage_result.policy_version` immediately after the fail-loud assertion. Internal helpers (`_process_one_file`, `parse_analyze_response`, etc.) continue to accept `policy_version: str` AND newly accept a `severity_policy: Mapping[FindingType, FindingSeverity]` kwarg. The change is scoped to the entrypoint signature + the new mapping parameter that joins it; no internal helper is renamed.
+
+3. **Closure-injected versioned-policy loader.** `build_graph` injects a versioned policy loader dep into `analyze` per `nodes-receive-deps-via-closure`. The loader is async (matches the existing `policy/versions.py::load_policy_for_version(version, conn: AsyncConnection)` shape). A closure-owned async-aware cache keyed by version string returns the resolved immutable mapping to callers; `functools.lru_cache` is NOT correct here (it would cache the coroutine object, not its awaited result, and awaiting the same coroutine twice raises `RuntimeError`). Implementation options: plain `dict[str, Mapping[FindingType, FindingSeverity]]` populated on first await (single-writer per process is the V2 dispatcher contract); `asyncio.Lock` + dict if concurrent awaits within one process become possible; or a third-party `async-lru` if its availability is acceptable. The decision is SHAPE not implementation: one async resolution per (process, version), result is immutable, passed sync to the parser. Analyze awaits the loader ONCE per node invocation, then passes the resolved `severity_policy: Mapping[FindingType, FindingSeverity]` into the sync parser path as plain data. The parser stays sync; async I/O stays on the node.
+
+4. **Pre-flight reconstruction (fast path).** *(Synthesize-side; closes break mode 3. Both layers — pre-flight + DB arbitration — are required.)* Synthesize body queries `audit_events` for an existing `SynthesizeCompletedEvent` keyed on `(review_id, event_type='synthesize_completed')` at step 1 (before any LLM work). If found → reconstruct (step 7 below) and return. If not found → proceed with normal flow. This is an optimization, NOT the correctness mechanism; it short-circuits the LLM call cost when retry obviously fires.
+
+5. **DB-arbitrated dedup (correctness path).** A new partial unique index lands on `audit_events`, keyed on the normalized top-level `event_type` column (NOT a JSONB payload lookup): `CREATE UNIQUE INDEX synthesize_completed_per_review_idx ON audit_events (review_id, event_type) WHERE event_type = 'synthesize_completed'`. Same pattern as the anomaly-subsystem per-rule partial unique indexes. At emit time, the persister uses `postgresql_insert(...).on_conflict_do_nothing(...).returning(event_id)`. If the conflict path fires (concurrent second invocation arrived first), `RETURNING` yields no row → the caller (synthesize body) discards the fresh LLM response, queries the persisted winning row, reconstructs from it, and returns the reconstructed state delta. This satisfies `DECISIONS.md#026` gate iii because the returned state IS the persisted state, not a regenerated one.
+
+6. **Deterministic content-join binding via `llm_call_event_id`.** Today's `LLMResponse` (`llm/base.py:599`) does not expose the persisted `LLMCallEvent.event_id` — the join from `SynthesizeCompletedEvent` back to `llm_call_content` is under-specified; retry/crash paths can leave multiple synthesize LLM call rows in the audit log, making `(review_id, node_id='synthesize')` cardinality > 1. Two changes close this:
+
+   - `LLMResponse` gains a new required field `llm_call_event_id: UUID` (the event_id the provider persisted alongside the response in the same transaction). All Protocol implementations populate it; the field is non-Optional to prevent silent drift.
+
+   - `SynthesizeCompletedEvent` gains `llm_call_event_id: UUID | None` (Optional, NOT required). Carried verbatim from the `LLMResponse` for any row emitted at #029 deployment or later. The field is Optional because pre-#029 V1 production rows exist (synthesize-node ships in V1; #029 triggers when V2 work begins, by which time historical V1 rows are in `audit_events`). `audit-events-append-only` prohibits backfilling — historical rows stay `llm_call_event_id=None` forever; Pydantic discriminator parses them via the Optional path.
+
+   Reconstruction path branches on the field's presence:
+
+   - **Post-#029 row** (`llm_call_event_id is not None`): direct join on `llm_call_content.event_id = synthesize_event.llm_call_event_id` — exactly-one cardinality by schema (LLMCallEvent event_ids are append-only PK unique).
+   - **Pre-#029 row** (`llm_call_event_id is None`): fallback join on `(review_id, node_id='synthesize')` with explicit cardinality check — if rows returned == 1, reconstruct; if > 1 (the under-specified case that motivated this fix in the first place), raise `SynthesizeLegacyAmbiguousJoinError`. The fallback is the only correct path for V1 audit rows; #029 doesn't backfill, doesn't mutate, doesn't pretend the legacy rows are V2-shape.
+
+   The alternative (join by `summary_content_hash` exact-match with a cardinality check) was considered but rejected: it requires a runtime cardinality assertion as the integrity gate, while the `llm_call_event_id` foreign-key-style binding pushes the integrity into the schema for new rows. Cardinality is structural for new rows, runtime-checked only for the legacy bridge.
+
+7. **Full-aggregate state-audit lockstep validation.** `llm_call_event_id` fixes the summary-content join, but `DECISIONS.md#026` gate iii is full state-audit lockstep — not just summary. The reconstruction path validates EVERY field that appears on both the persisted `SynthesizeCompletedEvent` and the reconstructed `ReviewReport`:
+
+   - `overall_risk` (event mirror of `ReviewReport.overall_risk`)
+   - `n_findings` (event mirror of `len(ReviewReport.findings)`)
+   - `policy_version` (event mirror of triage snapshot)
+   - `synthesize_model` (event mirror of the LLM model that produced the summary)
+   - `summary_content_hash` (event mirror of sha256(raw response.text))
+   - Metrics aggregates if they're on the event (`files_examined`, `wall_clock_seconds`, etc. — whichever the event carries; metrics not on the event are reconstructed from state and not validated).
+
+   On any drift, raise `SynthesizeReconstructionMismatchError(field=<which>, persisted=<value>, reconstructed=<value>)`. Drift is a bug, not a recoverable retry state — it means the rehydrated `state.analysis_rounds` or `state.triage_result` itself drifted between original emit and retry, which is a deeper integrity failure than the dedup mechanism is designed to absorb.
+
+   For finding-level identity (the deepest lockstep), the event carries `n_findings` only; per-finding content_hashes would require either expanding the event payload (rejected per #026's metadata-only stance) OR joining `audit_events` on individual `FindingEvent` rows (already emitted per finding under `audit-events-append-only`). The reconstruction path uses the latter, scoped to what the current audit schema actually carries: `FindingEvent` rows do NOT carry a `round_index` / `pass_index` field (verified against `audit/events.py::FindingEvent` at #029 draft time), so per-finding validation is review-scoped, not round-scoped. Query `FindingEvent` rows for `(review_id,)`, extract the distinct set of `finding_content_hash` values, and compare against the set of `content_hash` values on reconstructed `ReviewReport.findings`. Set comparison (NOT sequence comparison) is the correct shape because:
+
+   - `content_hash` is the synthesize-spec dedup key — duplicate content_hashes across rounds collapse to one entry in `ReviewReport.findings` per `ReviewReport._canonicalize_findings`, and the set comparison absorbs that collapse symmetrically.
+   - Cross-round emission of the same finding (analyze pass 1 + pass 2 both surfacing the same proposal) lands as multiple `FindingEvent` rows with identical `finding_content_hash`; the DISTINCT projection on the audit-query side mirrors the synthesize-side dedup. Without DISTINCT, the cardinalities would diverge structurally and the validation would false-positive on every multi-round review.
+   - The event's `n_findings` aggregate is validated separately (against `len(reconstructed.findings)`); together with the set-equality check, this catches both "extra finding in reconstructed but not persisted" and "missing finding in reconstructed".
+
+   This brings the lockstep to per-finding identity at review granularity without expanding the `SynthesizeCompletedEvent` payload. If a future need surfaces for round-scoped validation (e.g., replay reconstructs `analysis_rounds[0]` vs `analysis_rounds[1]` independently and must validate each round's findings separately), a separate decision adds a `round_index: int` field to `FindingEvent`. That binding does NOT exist today and #029 does NOT add it; #029's lockstep is review-scoped because the audit surface is review-scoped.
+
+8. **Retry-after-TTL fail-loud.** Reconstruction depends on `llm_call_content` being within retention. V2 durable retry should fire within the dispatcher's retry-policy timeout (seconds to minutes), well within LLM-content TTL. If the dispatcher EVER retries after TTL (not the V2 design intent), the persisted event exists but the joined content row is gone. Fail-loud with `SynthesizeRetryAfterContentPurgedError` rather than silently regenerating: regeneration would silently break state-audit lockstep against the prior event.
+
+9. **Checkpoint-rehydration integration test.** *(Shared; applies to both analyze-side and synthesize-side correctness.)* Verify via integration test that rehydrating a `ReviewState` from a LangGraph checkpoint preserves `triage_result.policy_version` exactly (no `default_factory` fire on the rehydrated path; the field carries its captured snapshot verbatim). Load-bearing Pydantic contract under V2; regression backstop against a future Pydantic upgrade that changes default_factory semantics.
+
+Items 1-3 close break modes 1 and 2 (analyze-side label / mapping drift). Items 4-8 close break mode 3 (synthesize-side state-audit lockstep + concurrent-retry race). Item 9 is the shared rehydration test gate.
+
+**Out of scope.**
+
+- LangGraph checkpoint summary-content retention (FUP-095). That's a retention-authority decision (does the checkpoint payload have its own TTL? does it mirror llm_call_content TTL?), not a policy-snapshot-consumption decision. Bundling would muddy the scope.
+- Replacing `BackgroundTasksDispatcher` → `CeleryDispatcher` itself. The dispatcher swap is V2's spec concern; #029 covers the policy-snapshot + idempotency prerequisites that must land before the swap is safe.
+- LLM-only DTO that excludes `policy_version` from triage's Pydantic admission surface (the stronger "LLM cannot mention hidden fields" boundary). V1+V2 ship value-integrity rejection only.
+
+**Consequences.**
+
+- Analyze's entry signature simplifies (one fewer parameter) but gains a closure-injected loader dependency. Tests that monkeypatched `active_policy_version=` lose the override hook; the new contract is "test sets `state.triage_result.policy_version` directly + stubs the loader to return the desired mapping."
+
+- `load_policy_for_version` becomes a hot-path lookup. The closure-owned async-aware cache (keyed by version string) keeps it cheap — per-process amortization across reviews of the same version. The parser stays sync; no per-finding async hop.
+
+- `LLMResponse` schema gains a non-Optional `llm_call_event_id: UUID`. All providers (`AnthropicProvider`, future `OpenAIProvider`) + the test `_MockLLMProvider` set it. Mocks that previously returned a hand-rolled `LLMResponse` need updating; the migration is mechanical (every emit site populates the field).
+
+- `SynthesizeCompletedEvent.llm_call_event_id` is `UUID | None` (Optional). New rows (post-#029 deployment) populate it; legacy V1 rows (pre-#029) stay `None` forever per `audit-events-append-only`. Reconstruction code branches: direct join for new rows, cardinality-checked legacy join + fail-loud on ambiguity for legacy rows. No migration touches existing `audit_events` payloads.
+
+- A new partial unique index lands on `audit_events`, keyed on the normalized top-level `event_type` column (NOT a JSONB payload lookup): `CREATE UNIQUE INDEX synthesize_completed_per_review_idx ON audit_events (review_id, event_type) WHERE event_type = 'synthesize_completed'`. Same shape as the anomaly-subsystem per-rule indexes; migration template is reusable.
+
+- `_persist_non_phase_event` learns the same conflict-RETURNING pattern `emit_phase` already uses for natural-key dedup. The caller-side hook (returning None from `emit_synthesize_completed` means "row already exists; reconstruct") is the new Protocol contract — `SynthesizeEventSink.emit_synthesize_completed` return type changes from `None` to `EventEmitOutcome` (an enum with `INSERTED` / `EXISTING`). Sink Protocol versioning required.
+
+- The pre-flight + DB-arbitration shape is sibling of `#027`'s publish-side advisory lock (same race class, different resolution mechanism — publish uses lock because it has side effects; synthesize uses unique index because the side effect IS the audit row).
+
+- A future "reconstruct prior synthesize for an audit-replay test" utility reuses the same reconstruction logic (steps 4-7 above). Worth landing as a shared `audit/reconstruct_synthesize.py` helper so V2 retry path + audit-replay path share one canonical implementation.
+
+- The `event_id-PK idempotency` claim in `SynthesizeCompletedEvent`'s class docstring stays correct for individual rows (each row's `event_id` is unique). What the docstring NEEDS to add is the per-review-aggregate semantics via the partial unique index — DB arbitration replaces the event_id-PK contract for per-review uniqueness. Update the docstring as part of the #029 implementation PR.
+
+**Referenced from.** `src/outrider/agent/nodes/analyze.py` (entry signature change, fail-loud, runtime read from triage snapshot), `src/outrider/agent/nodes/synthesize.py` (pre-flight reconstruction + DB-arbitrated conflict path + full-aggregate validation), `src/outrider/llm/base.py` (`LLMResponse.llm_call_event_id`), `src/outrider/llm/anthropic_provider.py` (event_id population), `src/outrider/audit/events.py` (`SynthesizeCompletedEvent.llm_call_event_id` optional field + docstring amendment), `src/outrider/audit/sinks.py` (`SynthesizeEventSink.emit_synthesize_completed` return type changes to `EventEmitOutcome`), `src/outrider/audit/persister.py` (conflict-RETURNING + partial unique index handling), `src/outrider/audit/reconstruct_synthesize.py` (TBD — shared retry + replay helper), `src/outrider/policy/versions.py` (`load_policy_for_version` becomes hot-path), `src/outrider/agent/graph.py` (loader injection at `build_graph`), `db/migrations/versions/<TBD>_synthesize_completed_natural_key.py` (partial unique index migration), `tests/integration/test_synthesize_durable_retry_db_arbitration.py` (TBD), `tests/integration/test_analyze_consumes_triage_snapshot.py` (TBD), `tests/integration/test_review_state_rehydration_preserves_policy_version.py` (TBD).

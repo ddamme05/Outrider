@@ -101,6 +101,7 @@ class TriageResult(BaseModel):
     overall_risk: RiskLevel
     relevant_dimensions: tuple[ReviewDimension, ...]
     reasoning: str = Field(max_length=500)
+    # See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
     # Snapshot anchor for synthesize's H-1 forge defense. Triage runs
     # FIRST in the canonical graph; the live `ACTIVE_POLICY_VERSION`
     # is captured here so a single review's findings + summary share

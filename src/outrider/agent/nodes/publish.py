@@ -803,6 +803,7 @@ async def _route_and_gate_one_finding(
             decision_content_hash=eligibility_decision_hash,
             eligibility=eligibility,
             reason=eligibility_reason,
+            # See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
             # Mirror the finding's captured policy_version snapshot, NOT the
             # live `active_policy_version` constant. HITL pauses can span a
             # deploy that bumps ACTIVE_POLICY_VERSION; stamping the live

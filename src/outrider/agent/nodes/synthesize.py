@@ -173,6 +173,10 @@ def _compute_summary_content_hash(text: str) -> str:
 def _enforce_synthesize_input_invariants(state: ReviewState) -> None:
     """Reject forged findings at synthesize entry.
 
+    See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
+    for the trust-root rationale (triage-captured snapshot, producer-side
+    Rule (d) gate, V1 scope limitation).
+
     `ReviewFinding._enforce_severity_matches_policy` short-circuits when
     `policy_version != ACTIVE_POLICY_VERSION` — the historical replay
     path. An attacker (or a buggy upstream) can smuggle in a finding
