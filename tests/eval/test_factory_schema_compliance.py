@@ -26,6 +26,7 @@ from outrider.audit.events import (
     compute_finding_content_hash,
 )
 from outrider.policy import EvidenceTier, FindingType, lookup_severity
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import PerFindingDecision, ReviewFinding
 
 from .fixtures import (
@@ -346,3 +347,132 @@ def test_every_is_eval_carrying_factory_permits_explicit_true(factory: Any) -> N
     """
     result = factory.create(is_eval=True)
     assert _is_eval_value(result) is True
+
+
+# --- PR-1 (eval-harness truthful) coverage for the factory fixes ---
+# #1 policy_version tracks ACTIVE_POLICY_VERSION (not a hard-coded "1.0.0").
+# #2 _normalize_evidence_tier: str/enum coercion + proof-boundary loud-fail.
+# #3 optional finding_id linkage on the two HITL factories.
+# #8 FindingEventFactory.proposal_hash is unique-per-call (sibling parity).
+
+
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
+def test_factory_policy_version_tracks_active_policy_version(factory: Any) -> None:
+    """Both finding factories stamp ACTIVE_POLICY_VERSION, not a hard-coded literal.
+
+    Encodes the policy-version-tracking rule rather than today's value, so a
+    future ACTIVE_POLICY_VERSION bump is reflected automatically and a
+    regression back to a hard-coded string is caught.
+    """
+    assert factory.create().policy_version == ACTIVE_POLICY_VERSION
+
+
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
+@pytest.mark.parametrize(
+    "input_value",
+    [EvidenceTier.JUDGED, EvidenceTier.JUDGED.value],
+    ids=["enum", "str"],
+)
+def test_factory_normalizes_evidence_tier_str_or_enum(
+    factory: Any, input_value: EvidenceTier | str
+) -> None:
+    """Both finding factories accept the EvidenceTier enum or its str-enum value.
+
+    Companion to the finding_type normalization tests — guards both
+    `_normalize_evidence_tier()` call sites symmetrically.
+    """
+    assert factory.create(evidence_tier=input_value).evidence_tier == EvidenceTier.JUDGED
+
+
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
+def test_factory_rejects_invalid_evidence_tier_string(factory: Any) -> None:
+    """Both factories raise ValueError at the call site for an invalid tier string."""
+    with pytest.raises(ValueError, match="not a valid EvidenceTier"):
+        factory.create(evidence_tier="not_a_real_tier")
+
+
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
+def test_factory_rejects_non_judged_tier_without_proof_artifact(factory: Any) -> None:
+    """OBSERVED/INFERRED overrides without their proof artifact fail loud at the factory.
+
+    The factories supply no proof artifacts by default. Without the
+    `_normalize_evidence_tier` guard this would surface as a less obvious
+    `enforce_proof_boundary` ValidationError during model construction.
+    """
+    with pytest.raises(ValueError, match="OBSERVED requires a query_match_id"):
+        factory.create(evidence_tier=EvidenceTier.OBSERVED)
+    with pytest.raises(ValueError, match="INFERRED requires a trace_path"):
+        factory.create(evidence_tier=EvidenceTier.INFERRED)
+
+
+@pytest.mark.parametrize("factory", _FINDING_TYPE_FACTORIES)
+def test_factory_accepts_non_judged_tier_with_proof_artifact(factory: Any) -> None:
+    """A non-JUDGED tier constructs cleanly when its proof artifact is supplied.
+
+    Symmetric with `test_factory_rejects_non_judged_tier_without_proof_artifact`:
+    both OBSERVED (query_match_id) and INFERRED (trace_path) admit when the
+    matching artifact is present. `trace_path` is `tuple[str, ...]` — a bare
+    string would fail the proof-boundary validator (or coerce to a tuple of
+    characters), so it must be a tuple of scope-unit strings.
+    """
+    observed = factory.create(evidence_tier=EvidenceTier.OBSERVED, query_match_id="q-eval-1")
+    assert observed.evidence_tier == EvidenceTier.OBSERVED
+    assert observed.query_match_id == "q-eval-1"
+
+    inferred = factory.create(
+        evidence_tier=EvidenceTier.INFERRED,
+        trace_path=("src.foo.changed_scope", "src.bar.target_scope"),
+    )
+    assert inferred.evidence_tier == EvidenceTier.INFERRED
+    assert inferred.trace_path == ("src.foo.changed_scope", "src.bar.target_scope")
+
+
+def test_finding_event_factory_proposal_hash_unique_per_call() -> None:
+    """FindingEventFactory stamps a unique proposal_hash per call (sibling of FindingFactory).
+
+    The default was previously the constant ``"a" * 64``, so two factory events
+    composed into one batch shared a proposal_hash. Unique-per-call matches the
+    FindingFactory default and avoids collisions on the SHA-256-shaped field.
+    """
+    hashes = {FindingEventFactory.create().proposal_hash for _ in range(5)}
+    assert len(hashes) == 5
+    for digest in hashes:
+        assert len(digest) == 64
+        assert all(c in "0123456789abcdef" for c in digest)
+
+
+def test_hitl_factories_link_finding_id_into_defaults() -> None:
+    """Sharing review_id + finding_id composes a coherent request+decision pair.
+
+    A real HITL request and its decision live on the same review and reference
+    the same finding; passing both ids to both factories models that pair. The
+    factories default each id independently, so finding_id alone links the
+    finding but leaves review_id divergent -- share both for a replay-coherent
+    pair.
+    """
+    from uuid import uuid4
+
+    rid, fid = uuid4(), uuid4()
+    request = HITLRequestEventFactory.create(review_id=rid, finding_id=fid)
+    decision = HITLDecisionEventFactory.create(review_id=rid, finding_id=fid)
+    assert request.review_id == decision.review_id == rid
+    assert request.findings_requiring_approval == (fid,)
+    assert decision.decisions[0].finding_id == fid
+
+
+def test_hitl_decision_factory_explicit_decisions_win_over_finding_id() -> None:
+    """An explicit decisions tuple wins; the finding_id linkage shortcut is ignored."""
+    from uuid import uuid4
+
+    from outrider.schemas import PerFindingOutcome
+
+    other_fid = uuid4()
+    custom = (
+        PerFindingDecision(
+            finding_id=other_fid,
+            outcome=PerFindingOutcome.APPROVE,
+            reason="",
+        ),
+    )
+    event = HITLDecisionEventFactory.create(finding_id=uuid4(), decisions=custom)
+    assert event.decisions[0].finding_id == other_fid
