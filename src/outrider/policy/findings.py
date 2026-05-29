@@ -16,11 +16,14 @@ This module exposes:
   - ``enforce_proof_boundary``: validator function that raises on
     OBSERVED-without-query_match_id or INFERRED-without-trace_path
 
-Replay-time verification (that ``query_match_id`` corresponds to a real
-query in ``queries/python/*.scm`` and that the query actually matches
-the stored evidence span) is application-layer work in
-``audit/replay.py`` (when written), not part of this module. This module
-covers the admission gate; replay covers the integrity gate.
+Replay-time verification of these artifacts is application-layer work in
+``audit/replay.py``: V1 re-verifies that ``query_match_id`` resolves in the
+queries registry and recomputes ``finding_content_hash`` (verify-only). The
+stronger check — that the query actually matches the stored evidence span,
+a tree-sitter re-run against source bytes — is future scope per
+``DECISIONS.md#031`` (it needs a durable source store, not checkpoint
+state). This module covers the admission gate; replay covers the integrity
+gate.
 """
 
 from enum import StrEnum
