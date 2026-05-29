@@ -108,6 +108,7 @@ def _make_state(
     review_id: UUID,
     received_at: datetime,
     use_review_report: bool = True,
+    analysis_round_findings: list[_FindingStub] | None = None,
 ) -> Any:
     """Build a minimal ReviewState-like object the hitl body reads.
 
@@ -116,6 +117,19 @@ def _make_state(
     duck-typed stub rather than constructing a full ReviewState (which
     has many required fields and would couple this test to the
     review-state schema details unnecessarily).
+
+    `findings` populates `review_report.findings` (the canonical
+    post-synthesize consumer path).
+
+    `analysis_round_findings` populates `analysis_rounds[0].findings`
+    INDEPENDENTLY. Defaults to `findings` (mirror) for backward
+    compatibility with existing tests; callers that want to pin
+    `_partition_findings` actually reads `review_report.findings` and
+    NOT `analysis_rounds` pass `analysis_round_findings=[]` or a
+    distinct list so a regression to the analysis_rounds branch would
+    surface as an assertion failure. Sibling pattern to the
+    `use_review_report=False` flag (which exists for the missing-
+    `review_report` fail-loud test).
 
     `use_review_report=True` (default) builds a stub with
     `review_report.findings` set (canonical post-synthesize path).
@@ -133,12 +147,16 @@ def _make_state(
         def __init__(self, findings_: tuple[_FindingStub, ...]) -> None:
             self.findings = findings_
 
+    rounds_findings: tuple[_FindingStub, ...] = (
+        tuple(analysis_round_findings) if analysis_round_findings is not None else tuple(findings)
+    )
+
     class _State:
         def __init__(self) -> None:
             self.review_id = review_id
             self.is_eval = False
             self.received_at = received_at
-            self.analysis_rounds = (_Round(tuple(findings)),)
+            self.analysis_rounds = (_Round(rounds_findings),)
             self.review_report = _ReviewReport(tuple(findings)) if use_review_report else None
 
     return _State()
@@ -214,11 +232,18 @@ def test_partition_canonical_review_report_path() -> None:
         review_id=review_id,
         received_at=datetime.now(UTC),
         use_review_report=True,  # canonical post-synthesize path
+        # Empty analysis_rounds so a regression to the old fallback
+        # (reading state.analysis_rounds[*].findings) yields ZERO
+        # findings and the assertions below fail loudly. Per CodeRabbit
+        # 2026-05-28 catch: mirror-default _make_state admitted a
+        # silent regression to the analysis_rounds branch.
+        analysis_round_findings=[],
     )
     # Verify the test setup actually populates review_report (not
     # accidentally falling through to the analysis_rounds branch).
     assert state.review_report is not None
     assert len(state.review_report.findings) == 5
+    assert len(state.analysis_rounds[0].findings) == 0  # regression pin
 
     gated, autopost = _partition_findings(state)
 
@@ -248,6 +273,12 @@ def test_partition_consumes_synthesize_deduplicated_findings() -> None:
         findings=[high1, high2, med],
         review_id=review_id,
         received_at=datetime.now(UTC),
+        # Empty analysis_rounds — same regression pin as the sibling
+        # canonical-path test above. A future regression to
+        # `state.analysis_rounds[*].findings` would yield zero entries
+        # and the assertions below would fail loudly instead of
+        # silently passing on the mirror.
+        analysis_round_findings=[],
     )
     gated, autopost = _partition_findings(state)
 
@@ -255,6 +286,10 @@ def test_partition_consumes_synthesize_deduplicated_findings() -> None:
     assert set(gated) == {high1.finding_id, high2.finding_id}
     assert len(autopost) == 1
     assert autopost[0] == med.finding_id
+    # Negative pin: state.analysis_rounds was empty, so a regression
+    # to the fallback branch would have returned (), () — the gated
+    # assertion above already catches it; this is documentation.
+    assert len(state.analysis_rounds[0].findings) == 0
 
 
 def test_partition_returns_sorted_tuples_for_determinism() -> None:

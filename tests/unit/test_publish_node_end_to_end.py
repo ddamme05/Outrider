@@ -265,10 +265,23 @@ def _make_state(
     *,
     findings: tuple[ReviewFinding, ...] = (),
     changed_files: tuple[ChangedFile, ...] = (),
+    analysis_round_findings: tuple[ReviewFinding, ...] | None = None,
 ) -> ReviewState:
     """Build a ReviewState with one AnalysisRound + a synthesize-canonical
     ReviewReport carrying the findings (publish requires the canonical
-    review_report shape post-Phase-5 fail-loud)."""
+    review_report shape post-Phase-5 fail-loud).
+
+    `analysis_round_findings` populates `analysis_rounds[0].findings`
+    INDEPENDENTLY of `findings` (which always populates
+    `review_report.findings`). Defaults to `findings` (mirror) for
+    backward compatibility with existing tests. Callers wanting a
+    regression pin against publish accidentally reading from
+    `analysis_rounds` instead of `review_report.findings` can pass
+    `analysis_round_findings=()` so a regression would surface as an
+    empty admitted-set instead of silently passing on the mirror.
+    Sibling capability to the HITL-side `_make_state` helper (per
+    CodeRabbit 2026-05-28).
+    """
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.analysis_round import AnalysisRound
@@ -289,17 +302,18 @@ def _make_state(
         changed_files=changed_files,
     )
     files_examined = tuple(cf.path for cf in changed_files)
-    if findings:
+    rounds_findings = analysis_round_findings if analysis_round_findings is not None else findings
+    if rounds_findings:
         round_id = compute_round_id(
             pass_index=0,
             files_examined=files_examined,
             files_skipped=(),
-            finding_content_hashes=tuple(f.content_hash for f in findings),
+            finding_content_hashes=tuple(f.content_hash for f in rounds_findings),
         )
         analysis_round = AnalysisRound(
             round_id=round_id,
             pass_index=0,
-            findings=findings,
+            findings=rounds_findings,
             files_examined=files_examined,
             files_skipped=(),
             started_at=datetime.now(UTC),
@@ -376,6 +390,48 @@ async def test_publish_node_happy_path_emits_all_four_event_types() -> None:
     assert isinstance(result["publish_result"], PublishResult)
     assert result["publish_result"].outcome == "success"
     # Publisher was called.
+    assert len(publisher.create_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_reads_review_report_not_analysis_rounds() -> None:
+    """Regression pin: publish's `_collect_admitted_findings` MUST
+    read `state.review_report.findings`, NOT
+    `state.analysis_rounds[*].findings`. Per Pass-1 multi-lens audit
+    F2: the mirror-default `_make_state` admitted a silent regression
+    to the older aggregation path.
+
+    Pass `analysis_round_findings=()` so the analysis_rounds branch
+    has no AnalysisRound at all. The canonical review_report branch
+    carries the finding; a regression would route zero findings."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(
+        findings=(finding,),
+        changed_files=(changed_file,),
+        analysis_round_findings=(),
+    )
+    # Setup-side pin: prove the override is in effect.
+    assert len(state.review_report.findings) == 1
+    assert state.analysis_rounds == []
+
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher()
+
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    # Behavior-side pin: routing event emitted exactly once + publisher
+    # called — proves publish read the finding from review_report.
+    # An analysis_rounds-reading regression would route zero findings.
+    assert len(publish_sink.routing) == 1
+    assert publish_sink.routing[0].finding_id == finding.finding_id
     assert len(publisher.create_calls) == 1
 
 

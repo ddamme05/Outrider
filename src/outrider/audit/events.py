@@ -2245,6 +2245,11 @@ class SynthesizeCompletedEvent(AuditEventBase):
     # `n_*` per-pass-counter convention of `AnalyzeCompletedEvent` —
     # these are review-level aggregates, not per-pass counters.
     files_examined: int = Field(ge=0)
+    # Union of trace_decisions[*].(target_file | resolved_candidate_paths)
+    # and trace_fetched_files[*].path, minus pr_context.changed_files
+    # paths. See `_compute_files_traced_beyond_diff` for the recipe and
+    # the "beyond diff = outside changed-files set, NOT Phase-2-fetched
+    # specifically" semantic. Mirror of `ReviewMetrics.files_traced_beyond_diff`.
     files_traced_beyond_diff: int = Field(ge=0)
     # LLM-aggregate metrics. V1 placeholder semantics per spec audit:
     # `None` indicates "audit-query helper not yet wired" rather than

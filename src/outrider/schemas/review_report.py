@@ -115,7 +115,12 @@ class ReviewMetrics(BaseModel):
 
     # Deterministically computed from state.analysis_rounds.
     files_examined: int = Field(ge=0)
-    # Deterministically computed from state.trace_decisions.
+    # Deterministically computed from
+    # `state.trace_decisions[*].(target_file | resolved_candidate_paths)`
+    # ∪ `state.trace_fetched_files[*].path`, minus `pr_context.changed_files`
+    # paths. See `_compute_files_traced_beyond_diff` for the union recipe
+    # and the "beyond diff = outside changed-files set, NOT
+    # Phase-2-fetched specifically" semantic.
     files_traced_beyond_diff: int = Field(ge=0)
     # LLM-aggregate metrics. V1 placeholder semantics:
     # `None` indicates "audit-query helper not yet wired" rather than
