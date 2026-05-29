@@ -25,18 +25,27 @@ class AnomalyRuleName(StrEnum):
     Group 3's HITL migration.
 
     `CROSS_ROUND_SEVERITY_DIVERGENCE` — emitted by
-    `agent/nodes/synthesize.py` when two findings sharing a
-    `content_hash` across different analysis rounds carry different
-    `severity` values. Per the `severity-set-by-policy` invariant +
+    `agent/nodes/synthesize.py::_detect_and_report_divergence` when
+    two findings sharing a `content_hash` across analysis rounds
+    carry divergent values on EITHER axis: `severity` OR
+    `policy_version`. Per `severity-set-by-policy` +
     `compute_finding_content_hash` recipe (keyed over `finding_type`)
     + `ReviewFinding._verify_baseline_severity` (forces severity =
-    SEVERITY_POLICY[finding_type]), same content_hash within a single
-    review under a single policy_version MUST have identical severity
-    by construction — divergence indicates corruption (validator
-    bypass, hash-recipe drift, mid-review policy-version change), not
-    "model variance." Severity `high` per pre-spec gate #7. Idempotent
-    on `(review_id, rule_name='cross_round_severity_divergence')` via
-    the partial unique index from the synthesize-node migration.
+    SEVERITY_POLICY[finding_type]) + `severity-policy-versioned-for-
+    replay`, same content_hash within a single review under a single
+    policy_version MUST have identical severity by construction —
+    divergence on EITHER axis indicates corruption (validator bypass,
+    hash-recipe drift, mid-review policy-version change), not "model
+    variance." The recovery action is identical regardless of axis:
+    stop the review, investigate the upstream policy-resolution
+    layer. Same anomaly rule + same partial unique index serve both
+    axes. Severity `high` per pre-spec gate #7. Idempotent on
+    `(review_id, rule_name='cross_round_severity_divergence')` via
+    the partial unique index from the synthesize-node migration. The
+    rule's name is kept narrow (`SEVERITY_DIVERGENCE`) because the
+    severity axis was the originally specified trigger; the
+    policy_version axis was added in the Pass-3 audit fold and is
+    structurally co-emitted, not a separate concept.
     """
 
     HITL_TIMEOUT = "hitl_timeout"

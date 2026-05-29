@@ -20,11 +20,12 @@ synthesize-node construction.
 
 ReviewReport.findings is the deduplicated set keyed by content_hash. Same-
 content_hash + same finding_type + same policy_version => same severity by
-construction (severity-set-by-policy invariant + ReviewFinding.
-_verify_baseline_severity + compute_finding_content_hash recipe). Synthesize
-fails loud on cross-round severity divergence for the same content_hash —
-that's corruption, not variance — via SynthesizeAggregationError + paired
-AnomalySink.emit_anomaly(rule_name=CROSS_ROUND_SEVERITY_DIVERGENCE)
+construction (severity-set-by-policy + severity-policy-versioned-for-replay
++ ReviewFinding._verify_baseline_severity + compute_finding_content_hash
+recipe). Synthesize fails loud on cross-round divergence for the same
+content_hash on EITHER axis (severity OR policy_version — both are
+corruption signals, same recovery action) via SynthesizeAggregationError +
+paired AnomalySink.emit_anomaly(rule_name=CROSS_ROUND_SEVERITY_DIVERGENCE)
 emission. See pre-spec gate #7 in specs/_2026-05-27-synthesize-pre-spec-
 gates.md.
 
