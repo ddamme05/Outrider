@@ -264,8 +264,21 @@ async def _detect_and_report_divergence(
     state: ReviewState,
     anomaly_sink: AnomalySink,
 ) -> dict[str, ReviewFinding]:
-    """Walk analysis_rounds, group by content_hash, detect severity
-    divergence. On first divergence: emit anomaly + raise.
+    """Walk analysis_rounds, group by content_hash, detect severity/
+    policy_version divergence. On first divergence: best-effort emit
+    anomaly, then UNCONDITIONALLY raise SynthesizeAggregationError.
+
+    Contract — emit-vs-raise dependency direction:
+      * Anomaly emission is a best-effort observability shadow.
+      * The SynthesizeAggregationError raise is the authoritative
+        signal. It propagates regardless of emit outcome.
+      * A transient anomaly-DB outage MUST NOT delay or mask the
+        authoritative raise path. The wrong direction — coupling
+        corruption detection to anomaly-table availability — would
+        let an anomaly-sink outage compromise the dependency direction
+        the raise depends on. Defended by the broad `except Exception`
+        around emit + nested `contextlib.suppress` around the logger;
+        both preserve the unconditional raise on the way out.
 
     Returns a `content_hash → kept_finding` mapping for the dedup step.
     Tie-breaks on (round_index ASC, finding_id ASC) within a group of
@@ -297,17 +310,9 @@ async def _detect_and_report_divergence(
             severity_tuple = tuple(sorted({e[1].severity for e in entries}, key=lambda s: s.value))
             policy_version_tuple = tuple(sorted(policy_versions))
             round_indices_tuple = tuple(sorted({e[0] for e in entries}))
-            # Anomaly-emit-then-raise: emit the anomaly so ops sees
-            # corruption in the queue; if the emit itself fails (DB
-            # outage, partial-index missing for a new rule), log at
-            # ERROR and STILL raise SynthesizeAggregationError. The
-            # divergence signal is the load-bearing fact; the anomaly
-            # row is a best-effort observability shadow. Broad
-            # `except Exception` deliberately swallows transport
-            # failures from the anomaly DB so the raise below always
-            # propagates; programming errors (TypeError on kwargs,
-            # AttributeError on Protocol drift) WILL be logged here
-            # too — see logs for the emit_exception_type tag.
+            # See docstring: anomaly emit is best-effort; the raise below
+            # is authoritative (broad `except Exception` preserves the
+            # dependency direction on emit/transport failure).
             try:
                 await anomaly_sink.emit_anomaly(
                     review_id=state.review_id,
