@@ -1,4 +1,7 @@
 # See specs/2026-05-28-synthesize-node.md §Audit append-only.
+# See DECISIONS.md#030-reviewreport-tuple-not-list-findings-field
+# (the canonical-record anchor for the metric's union recipe semantic;
+# this file is the executable contract pin in #030's Referenced from line).
 """Unit tests for `_compute_files_traced_beyond_diff`.
 
 Pins the union semantic CodeRabbit 2026-05-28 catch + Codex narrowing

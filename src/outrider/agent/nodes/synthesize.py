@@ -394,6 +394,11 @@ def _compute_files_traced_beyond_diff(state: ReviewState) -> int:
     all TraceDecision rows) ∪ (trace_fetched_files.path)` minus
     `pr_context.changed_files` paths.
 
+    See DECISIONS.md#030-reviewreport-tuple-not-list-findings-field
+    for the canonical-record anchor on the union recipe semantic.
+    Executable contract pin:
+    `tests/unit/test_synthesize_files_traced_metric.py`.
+
     "Beyond diff" here means "outside the PR's changed-files set" —
     NOT "Phase-2-fetched" specifically. Per the trace-node spec,
     paths can land in three states relative to the metric:
