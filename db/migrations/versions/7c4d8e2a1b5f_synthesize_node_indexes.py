@@ -182,11 +182,20 @@ def upgrade() -> None:
                     expected_index_name, expected_rule_value;
             END IF;
 
+            -- Quote-anchor the rule-value substring so collisions like
+            -- `rule_name = 'cross_round_severity_divergence_extra'` or
+            -- `rule_name LIKE 'cross_round_severity_divergence%'` fail
+            -- the check. `pg_get_expr` renders the predicate with the
+            -- literal wrapped in single quotes (PG-escaped as ''); the
+            -- substring search now requires the CLOSING quote to be
+            -- present immediately after the rule value, which rejects
+            -- the collision class. Per Pass-1 multi-lens audit DB lens
+            -- (substring-match collision LOW).
             IF position('rule_name' in actual_predicate) = 0
-               OR position(expected_rule_value in actual_predicate) = 0 THEN
+               OR position('''' || expected_rule_value || '''' in actual_predicate) = 0 THEN
                 RAISE EXCEPTION
                     'Synthesize migration failed: index % predicate ''%'' does not '
-                    'reference both ''rule_name'' and ''%''.',
+                    'reference both ''rule_name'' AND the exactly-quoted literal ''%''.',
                     expected_index_name, actual_predicate, expected_rule_value;
             END IF;
         END$$;

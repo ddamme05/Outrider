@@ -39,6 +39,27 @@ class Anomaly(Base):
             "severity",
             desc("created_at"),
         ),
+        # Partial unique indexes — per-rule_name natural-key idempotency for
+        # `AnomalyPersister.emit_anomaly` `on_conflict_do_nothing` arbiter
+        # inference. Declared in metadata to keep `alembic revision
+        # --autogenerate` clean (the migrations actually create them via
+        # CREATE INDEX CONCURRENTLY for production-safety — see
+        # `33f8fe051bec_hitl_node_indexes.py` and
+        # `7c4d8e2a1b5f_synthesize_node_indexes.py`). Per Pass-1 multi-lens
+        # audit DB-lens §4. Mirrors `reviews.py` precedent for partial-index
+        # metadata declaration.
+        Index(
+            "uq_anomalies_hitl_timeout_natural_key",
+            "review_id",
+            unique=True,
+            postgresql_where=text("rule_name = 'hitl_timeout'"),
+        ),
+        Index(
+            "uq_anomalies_cross_round_severity_divergence_natural_key",
+            "review_id",
+            unique=True,
+            postgresql_where=text("rule_name = 'cross_round_severity_divergence'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

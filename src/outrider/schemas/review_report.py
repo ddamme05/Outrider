@@ -40,23 +40,28 @@ relevant_dimensions for the same JSON-payload-identity reason). Two
 ReviewReport instances built from the same set of findings (regardless of
 emission order from analyze rounds) serialize to byte-identical JSON.
 
-Canonical-shape note: spec.md:1103 declares `findings: list[ReviewFinding]`,
-but project convention favors `tuple[ReviewFinding, ...]` for true
-immutability (matches AnalysisRound.findings, HITLRequest fields, PRContext
-.changed_files). Spec amendment route taken: deviate from canonical list →
-tuple here, flagged in pre-spec gate-resolution doc for upstream amendment
-when canonical record is next revised. Other call-sites already drift the
-same way (AnalysisRound, HITLRequest) — this is uniform project-side
-convention, not a one-off divergence.
+Canonical-shape note: spec.md §7.3 originally declared `findings: list[
+ReviewFinding]`, but the canonical record was amended by
+`DECISIONS.md#030-reviewreport-tuple-not-list-findings-field` (Accepted
+2026-05-28) to make `tuple[ReviewFinding, ...]` permanent — matches the
+established precedent at `PRContext.changed_files`, `HITLDecision.decisions`
+(#014), and `AnalysisRound.findings`. The frozen contract on `ReviewReport`
+is shallow over a `list` field; tuple closes the gap. Spec.md §7.3 carries
+an `Amended 2026-05-28 — see DECISIONS.md#030` pointer at the canonical
+declaration site.
 
 policy_version is intentionally OMITTED from ReviewReport per pre-spec gate
 #1: the field is scoped to SynthesizeCompletedEvent (audit-event mirror)
 and per-finding ReviewFinding.policy_version, not promoted to the
-ReviewReport state slot. This is the lower-risk amendment route — the
-canonical-shape change to spec.md is deferred until a future spec arc
-revisits it. Per-finding versioning + audit-event versioning together
-provide the replay-correctness the `severity-policy-versioned-for-replay`
-invariant requires.
+ReviewReport state slot. Per-finding versioning + audit-event versioning
+together provide the replay-correctness the
+`severity-policy-versioned-for-replay` invariant requires. The omission is
+a deliberate scoping decision from the synthesize-node pre-spec gates; not
+covered by an existing accepted DECISIONS entry — would need its own
+amendment if the canonical record's silence on ReviewReport.policy_version
+ever became load-bearing. Today it's the documented-silent-deferral path
+(the canonical shape has no `policy_version` on ReviewReport, and the impl
+matches the canonical shape — no divergence to anchor).
 
 Frozen=True on both models: ReviewReport rides on ReviewState through every
 LangGraph checkpoint after synthesize lands; mutation after construction
