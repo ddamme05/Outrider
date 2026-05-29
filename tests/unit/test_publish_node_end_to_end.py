@@ -692,7 +692,9 @@ async def test_severity_override_renders_override_severity_in_comment_and_audit(
     state = _make_state(findings=(finding,), changed_files=(changed_file,))
     # Inject HITL state (both request + decision) — mirrors the hitl
     # node's state delta when reviewer authorizes the override.
-    state = state.model_copy(update={"hitl_request": hitl_request, "hitl_decision": hitl_decision})
+    state = state.__class__.model_validate(
+        {**state.model_dump(), "hitl_request": hitl_request, "hitl_decision": hitl_decision}
+    )
 
     phase_sink = _RecordingPhaseEventSink()
     publish_sink = _RecordingPublishEventSink()

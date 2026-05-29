@@ -1,3 +1,4 @@
+# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
 """REVIEWS.
 
 One row per agent review run. Idempotency is enforced by the

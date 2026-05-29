@@ -1,3 +1,4 @@
+# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
 """FINDINGS.
 
 One row per analyst finding produced by the agent. Three foreign keys:
