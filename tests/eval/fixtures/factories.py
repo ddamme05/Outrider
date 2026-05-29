@@ -54,6 +54,7 @@ from outrider.policy import (
     FindingType,
     lookup_severity,
 )
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import (
     PerFindingDecision,
     PerFindingOutcome,
@@ -122,6 +123,7 @@ class FindingFactory:
     @classmethod
     def create(cls, **overrides: Any) -> ReviewFinding:
         finding_type = _normalize_finding_type(overrides)
+        _normalize_evidence_tier(overrides)
         file_path = overrides.get("file_path", "src/foo.py")
         line_start = overrides.get("line_start", 10)
         line_end = overrides.get("line_end", 12)
@@ -145,7 +147,7 @@ class FindingFactory:
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
             "installation_id": _EVAL_SYNTHETIC_INSTALLATION_ID,
-            "policy_version": "1.0.0",
+            "policy_version": ACTIVE_POLICY_VERSION,
             "finding_type": finding_type,
             "dimension": ReviewDimension.SECURITY,
             "evidence_tier": EvidenceTier.JUDGED,
@@ -183,6 +185,7 @@ class FindingEventFactory:
     def create(cls, **overrides: Any) -> FindingEvent:
         _reject_is_eval_false(overrides)
         finding_type = _normalize_finding_type(overrides)
+        _normalize_evidence_tier(overrides)
         file_path = overrides.get("file_path", "src/foo.py")
         line_start = overrides.get("line_start", 10)
         line_end = overrides.get("line_end", 12)
@@ -210,9 +213,12 @@ class FindingEventFactory:
             "line_end": line_end,
             "dimension": ReviewDimension.SECURITY,
             "evidence_tier": EvidenceTier.JUDGED,
-            "policy_version": "1.0.0",
-            # Per DECISIONS.md#025: audit-shadow mirror of ReviewFinding.proposal_hash.
-            "proposal_hash": "a" * 64,
+            "policy_version": ACTIVE_POLICY_VERSION,
+            # Audit-shadow mirror of ReviewFinding.proposal_hash (DECISIONS.md#025).
+            # Unique-per-call (64 hex chars, SHA-256 shape) so multiple factory
+            # events composed into one batch don't collide on an identical hash —
+            # matches the FindingFactory.proposal_hash default above.
+            "proposal_hash": uuid4().hex + uuid4().hex,
         }
         return FindingEvent(**{**defaults, **overrides})
 
@@ -222,9 +228,9 @@ class TraceDecisionEventFactory:
 
     Defaults to `resolution_status="resolved"` with `target_file` equal
     to the single `resolved_candidate_paths` entry (satisfies the
-    three-rule cross-field validator per `DECISIONS.md#017` × #024
-    amendment — `candidates_considered` was renamed to the parallel
-    `proposed_import_strings` + `resolved_candidate_paths` tuples).
+    three-rule cross-field validator per `DECISIONS.md#017` × #024: the
+    parallel `proposed_import_strings` + `resolved_candidate_paths` tuples
+    carry the proposed imports and resolved candidate paths).
     Overrides for unresolved/ambiguous outcomes must also set
     `target_file=None` and adjust the two tuples accordingly.
     """
@@ -254,11 +260,16 @@ class HITLRequestEventFactory:
     @classmethod
     def create(cls, **overrides: Any) -> HITLRequestEvent:
         _reject_is_eval_false(overrides)
+        # Optional `finding_id` linkage — see HITLDecisionEventFactory. For a
+        # coherent request+decision pair, pass the same review_id AND finding_id
+        # to both factories. Ignored when an explicit findings_requiring_approval
+        # is supplied.
+        linked_finding_id = overrides.pop("finding_id", None)
         now = datetime.now(UTC)
         defaults: dict[str, Any] = {
             "review_id": uuid4(),
             "is_eval": True,
-            "findings_requiring_approval": (uuid4(),),
+            "findings_requiring_approval": (linked_finding_id or uuid4(),),
             "auto_post_findings": (),
             "created_at": now,
             "expires_at": now + timedelta(minutes=30),
@@ -281,10 +292,17 @@ class HITLDecisionEventFactory:
         from outrider.policy.canonical import compute_hitl_decision_content_hash
 
         _reject_is_eval_false(overrides)
+        # Optional `finding_id` links the default decision to a specific
+        # finding (e.g., one named in a sibling HITLRequestEventFactory's
+        # findings_requiring_approval). For a replay-coherent request+decision
+        # pair, pass the same review_id AND finding_id to both factories —
+        # finding_id alone links the finding but leaves review_id independent.
+        # Ignored when an explicit `decisions` tuple is supplied.
+        linked_finding_id = overrides.pop("finding_id", None)
         if "decisions" not in overrides:
             overrides["decisions"] = (
                 PerFindingDecision(
-                    finding_id=uuid4(),
+                    finding_id=linked_finding_id or uuid4(),
                     outcome=PerFindingOutcome.APPROVE,
                     reason="",
                 ),
@@ -341,6 +359,45 @@ def _normalize_finding_type(overrides: dict[str, Any]) -> FindingType:
     return finding_type
 
 
+def _normalize_evidence_tier(overrides: dict[str, Any]) -> EvidenceTier:
+    """Coerce `evidence_tier` override to an `EvidenceTier` enum, defaulting to JUDGED.
+
+    Companion to `_normalize_finding_type`. Accepts the enum
+    (`EvidenceTier.JUDGED`) or a valid str-enum value; anything else raises
+    `ValueError` at the factory call site naming the bad value.
+
+    The factories supply no proof artifacts by default — JUDGED needs none.
+    A non-JUDGED override without its matching artifact would otherwise fail
+    the `enforce_proof_boundary` model validator with a less obvious message,
+    so this helper fails loud here instead: OBSERVED requires a
+    `query_match_id` and INFERRED requires a `trace_path` in the same
+    overrides. Mutates `overrides` in place so model construction sees the
+    canonical enum.
+    """
+    tier = overrides.get("evidence_tier", EvidenceTier.JUDGED)
+    if not isinstance(tier, EvidenceTier):
+        try:
+            tier = EvidenceTier(tier)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Factory received evidence_tier={tier!r} which is not a valid "
+                f"EvidenceTier. Pass the enum (e.g., EvidenceTier.JUDGED) or a "
+                f"valid str-enum value."
+            ) from exc
+        overrides["evidence_tier"] = tier
+    if tier is EvidenceTier.OBSERVED and not overrides.get("query_match_id"):
+        raise ValueError(
+            "evidence_tier=OBSERVED requires a query_match_id=... override "
+            "(the factory supplies no proof artifacts by default)."
+        )
+    if tier is EvidenceTier.INFERRED and not overrides.get("trace_path"):
+        raise ValueError(
+            "evidence_tier=INFERRED requires a trace_path=... override "
+            "(the factory supplies no proof artifacts by default)."
+        )
+    return tier
+
+
 def _reject_is_eval_false(overrides: dict[str, Any]) -> None:
     """Reject any `is_eval` override that isn't exactly `True`.
 
@@ -348,8 +405,7 @@ def _reject_is_eval_false(overrides: dict[str, Any]) -> None:
     (UNION ALL across 5 tables); this helper catches them at construction so
     the error names the factory + caller, not just the row id at teardown.
     Loud-failure pattern matches `PerFindingDecision.reason` no-default and
-    `proposed_import_strings` no-default (formerly `candidates_considered`,
-    renamed per #024) — fail where the bug is, not later.
+    `proposed_import_strings` no-default — fail where the bug is, not later.
 
     The check is `is not True` (not `is False`) because Pydantic V2 will
     coerce truthy/falsy values like `0`, `""`, `"false"` to `False` in

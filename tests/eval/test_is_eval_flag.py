@@ -12,12 +12,14 @@ both checks fire — the explicit assertions in this test and the gate's
 UNION-over-5-tables. Belt + suspenders.
 """
 
-import json
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from outrider.db.models import AuditEvent, Installation, Review
 
 from .fixtures import FindingEventFactory, ReviewFactory
 
@@ -38,15 +40,15 @@ async def session(eval_db: str) -> Any:
 
 async def _insert_installation(session: AsyncSession, installation_id: int) -> None:
     """Seed an installations row so the reviews FK target exists."""
-    await session.execute(
-        text(
-            "INSERT INTO installations "
-            "(installation_id, app_slug, account_id, account_login, "
-            "account_type, permissions_at_install) "
-            "VALUES (:installation_id, 'outrider-test', 99, 'eval-account', "
-            "'User', '{}'::jsonb)"
-        ),
-        {"installation_id": installation_id},
+    session.add(
+        Installation(
+            installation_id=installation_id,
+            app_slug="outrider-test",
+            account_id=99,
+            account_login="eval-account",
+            account_type="User",
+            permissions_at_install={},
+        )
     )
     await session.commit()
 
@@ -56,23 +58,7 @@ async def test_review_factory_inserts_with_is_eval_true(session: AsyncSession) -
     row = ReviewFactory.create()
     await _insert_installation(session, row["installation_id"])
 
-    await session.execute(
-        text(
-            "INSERT INTO reviews ("
-            "id, installation_id, repo_id, pr_number, head_sha, status, "
-            "files_examined, files_traced_beyond_diff, llm_calls_made, "
-            "total_input_tokens, total_output_tokens, total_cost_usd, "
-            "wall_clock_seconds, is_eval, retention_expires_at"
-            ") VALUES ("
-            ":id, :installation_id, :repo_id, :pr_number, :head_sha, "
-            "CAST(:status AS review_status_enum), "
-            ":files_examined, :files_traced_beyond_diff, :llm_calls_made, "
-            ":total_input_tokens, :total_output_tokens, :total_cost_usd, "
-            ":wall_clock_seconds, :is_eval, :retention_expires_at"
-            ")"
-        ),
-        row,
-    )
+    session.add(Review(**row))
     await session.commit()
 
     result = await session.execute(
@@ -95,23 +81,15 @@ async def test_finding_event_factory_inserts_with_is_eval_true(
     event = FindingEventFactory.create()
     payload = event.model_dump(mode="json", exclude={"sequence_number"})
 
-    await session.execute(
-        text(
-            "INSERT INTO audit_events "
-            "(event_id, review_id, event_type, timestamp, is_eval, payload) "
-            "VALUES ("
-            ":event_id, :review_id, :event_type, :timestamp, :is_eval, "
-            "CAST(:payload AS jsonb)"
-            ")"
-        ),
-        {
-            "event_id": event.event_id,
-            "review_id": event.review_id,
-            "event_type": event.event_type,
-            "timestamp": event.timestamp,
-            "is_eval": event.is_eval,
-            "payload": json.dumps(payload),
-        },
+    session.add(
+        AuditEvent(
+            event_id=event.event_id,
+            review_id=event.review_id,
+            event_type=event.event_type,
+            timestamp=event.timestamp,
+            is_eval=event.is_eval,
+            payload=payload,
+        )
     )
     await session.commit()
 
@@ -120,3 +98,30 @@ async def test_finding_event_factory_inserts_with_is_eval_true(
         {"event_id": event.event_id},
     )
     assert result.scalar_one() is True
+
+
+async def test_integrity_gate_flags_a_non_eval_row(session: AsyncSession) -> None:
+    """The eval_db integrity gate raises on an is_eval=False row the factory rejects.
+
+    Plants a review with is_eval=False by mutating the factory dict AFTER
+    construction — `_reject_is_eval_false` only guards the create() kwargs, so
+    this models the "direct insertion forgot the flag" bug the gate exists to
+    catch. No other test exercises the gate's raise path (every factory refuses
+    to produce a violating row), so without this the `IS DISTINCT FROM TRUE`
+    predicate and the gate mechanism go untested.
+    """
+    from .conftest import _assert_no_is_eval_violations
+
+    row = ReviewFactory.create()
+    row["is_eval"] = False  # bypass the factory guard to plant a violation
+    await _insert_installation(session, row["installation_id"])
+    session.add(Review(**row))
+    await session.commit()
+
+    conn = await session.connection()
+    with pytest.raises(AssertionError, match="is_eval discipline violation"):
+        await _assert_no_is_eval_violations(conn)
+
+    # Remove the planted row so eval_db's own teardown gate (same helper) passes.
+    await session.execute(text("DELETE FROM reviews WHERE id = :id"), {"id": row["id"]})
+    await session.commit()

@@ -11,15 +11,16 @@ Two responsibilities:
    end of teardown. The integrity gate is loud-failure: it queries every
    `is_eval`-bearing table (`reviews`, `audit_events`, `findings`,
    `llm_call_content`, `anomalies` per `docs/schema.md` "Eval isolation")
-   for rows with `is_eval = FALSE` and raises `AssertionError` if any are
-   found. Does NOT auto-coerce — that would mask the exact bug class the
+   for rows where `is_eval` is not TRUE (FALSE or NULL, via `IS DISTINCT
+   FROM TRUE` — robust against a future nullable `is_eval` column) and
+   raises `AssertionError` if any are found. Does NOT auto-coerce — that
+   would mask the exact bug class the
    gate exists to catch (factories that forget the flag). Setting
    `is_eval=True` is the factory's responsibility (see
    `tests/eval/fixtures/factories.py`); this gate is the after-the-fact
    check. Pattern matches the project's loud-failure discipline
    (`PerFindingDecision.reason` required-no-default,
-   `proposed_import_strings` required-no-default (formerly
-   `candidates_considered`, renamed per #024),
+   `proposed_import_strings` required-no-default,
    `FindingEvent.finding_content_hash` equality verifier).
 
    Earlier drafts split this into a separate `is_eval_injection` autouse
@@ -51,7 +52,9 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -103,22 +106,37 @@ def _redact_url_password(url: str) -> str:
 
 
 def _assert_test_url_is_isolated(url: str) -> None:
-    """Refuse to run if TEST_DATABASE_URL doesn't target the postgres-test container."""
+    """Refuse to run if TEST_DATABASE_URL doesn't target the postgres-test container.
+
+    Parses the URL with SQLAlchemy `make_url` and checks the port and database
+    as structured components. Substring matching could false-match a port-like
+    or "test"-like sequence embedded in a password or host.
+    """
     safe_url = _redact_url_password(url)
-    if f":{_EXPECTED_TEST_PORT}" not in url:
+    try:
+        parsed = make_url(url)
+    except (ArgumentError, ValueError) as exc:
+        # make_url raises ArgumentError for an unparseable URL, but a bare
+        # builtins.ValueError (NOT an ArgumentError subclass) when the port
+        # component is non-numeric (int() on the port) — catch both so a
+        # typo'd/non-numeric port surfaces this RuntimeError, not a raw ValueError.
+        raise RuntimeError(
+            f"TEST_DATABASE_URL is not a parseable database URL; got: "
+            f"{safe_url!r}. See docs/testing.md 'Two-container model'."
+        ) from exc
+    if parsed.port != int(_EXPECTED_TEST_PORT):
         raise RuntimeError(
             f"TEST_DATABASE_URL must target port {_EXPECTED_TEST_PORT} "
-            f"(the postgres-test container); got: {safe_url!r}. "
-            "Refusing to run eval tests against an unexpected URL — "
-            "see docs/testing.md 'Two-container model' for the rationale."
+            f"(the postgres-test container); got port {parsed.port!r} in "
+            f"{safe_url!r}. Refusing to run eval tests against an unexpected "
+            "URL — see docs/testing.md 'Two-container model' for the rationale."
         )
-    db_segment = url.rsplit("/", 1)[-1]
-    if _EXPECTED_TEST_DB_NAME_FRAGMENT not in db_segment.lower():
+    db_name = parsed.database or ""
+    if _EXPECTED_TEST_DB_NAME_FRAGMENT not in db_name.lower():
         raise RuntimeError(
-            f"TEST_DATABASE_URL database name must contain '"
-            f"{_EXPECTED_TEST_DB_NAME_FRAGMENT}'; got database segment: "
-            f"{db_segment!r}. Refusing to run eval tests against an "
-            "unexpected DB."
+            f"TEST_DATABASE_URL database name must contain "
+            f"'{_EXPECTED_TEST_DB_NAME_FRAGMENT}'; got database {db_name!r}. "
+            "Refusing to run eval tests against an unexpected DB."
         )
 
 
@@ -139,6 +157,53 @@ async def _run_alembic_upgrade_head(db_url: str) -> None:
             os.environ.pop("DATABASE_URL", None)
         else:
             os.environ["DATABASE_URL"] = original_url
+
+
+async def _assert_no_is_eval_violations(conn: AsyncConnection) -> None:
+    """Raise AssertionError if any is_eval-bearing table holds a non-eval row.
+
+    Loud-failure integrity gate: every row in a table that carries `is_eval`
+    (per `docs/schema.md` "Eval isolation": reviews, audit_events, findings,
+    llm_call_content, anomalies) must have is_eval=True. Factories own setting
+    the flag; this gate catches a factory or direct insertion that forgot it.
+    The predicate is `IS DISTINCT FROM TRUE` so it flags FALSE and NULL alike
+    (robust against a future nullable column). Adding a new is_eval-bearing
+    table requires extending this UNION. Extracted from `eval_db`'s teardown so
+    the gate is directly testable (see tests/eval/test_is_eval_flag.py).
+    """
+    result = await conn.execute(
+        text(
+            "SELECT 'reviews' AS table_name, id::text AS row_id "
+            "FROM reviews WHERE is_eval IS DISTINCT FROM TRUE "
+            "UNION ALL "
+            "SELECT 'audit_events' AS table_name, "
+            "event_id::text AS row_id "
+            "FROM audit_events WHERE is_eval IS DISTINCT FROM TRUE "
+            "UNION ALL "
+            "SELECT 'findings' AS table_name, "
+            "finding_id::text AS row_id "
+            "FROM findings WHERE is_eval IS DISTINCT FROM TRUE "
+            "UNION ALL "
+            "SELECT 'llm_call_content' AS table_name, "
+            "event_id::text AS row_id "
+            "FROM llm_call_content WHERE is_eval IS DISTINCT FROM TRUE "
+            "UNION ALL "
+            "SELECT 'anomalies' AS table_name, id::text AS row_id "
+            "FROM anomalies WHERE is_eval IS DISTINCT FROM TRUE"
+        )
+    )
+    violations = result.all()
+    if violations:
+        raise AssertionError(
+            f"is_eval discipline violation: {len(violations)} "
+            "row(s) with is_eval=False in eval-test DB. "
+            "Factories MUST set is_eval=True; this gate is the "
+            "loud-failure check (per `PerFindingDecision.reason` "
+            "no-default + `proposed_import_strings` no-default + "
+            "`FindingEvent.finding_content_hash` equality "
+            "verifier discipline). Violations: "
+            f"{[(v.table_name, v.row_id) for v in violations]}"
+        )
 
 
 @pytest_asyncio.fixture
@@ -190,52 +255,14 @@ async def eval_db() -> AsyncGenerator[str]:
         await _run_alembic_upgrade_head(test_url)
         yield test_url
 
-        # Integrity gate: query the live DB BEFORE the drop. Loud-failure
-        # pattern — every row in any table that carries `is_eval` (per
-        # `docs/schema.md` "Eval isolation") must have is_eval=True;
-        # factories own setting the flag; this gate catches bugs where a
-        # factory or direct insertion forgot to set it. Pure-Pydantic tests
-        # that don't use eval_db never reach this code.
-        # Tables checked: reviews, audit_events, findings, llm_call_content,
-        # anomalies — all five carry the is_eval column per the schema-layer
-        # migration. Adding a new is_eval-bearing table requires extending
-        # this UNION.
+        # Integrity gate (extracted to `_assert_no_is_eval_violations` so the
+        # gate is directly testable — see tests/eval/test_is_eval_flag.py):
+        # query the live DB BEFORE the drop. Pure-Pydantic tests that don't use
+        # eval_db never reach this code.
         check_engine = create_async_engine(test_url)
         try:
             async with check_engine.connect() as conn:
-                result = await conn.execute(
-                    text(
-                        "SELECT 'reviews' AS table_name, id::text AS row_id "
-                        "FROM reviews WHERE is_eval = FALSE "
-                        "UNION ALL "
-                        "SELECT 'audit_events' AS table_name, "
-                        "event_id::text AS row_id "
-                        "FROM audit_events WHERE is_eval = FALSE "
-                        "UNION ALL "
-                        "SELECT 'findings' AS table_name, "
-                        "finding_id::text AS row_id "
-                        "FROM findings WHERE is_eval = FALSE "
-                        "UNION ALL "
-                        "SELECT 'llm_call_content' AS table_name, "
-                        "event_id::text AS row_id "
-                        "FROM llm_call_content WHERE is_eval = FALSE "
-                        "UNION ALL "
-                        "SELECT 'anomalies' AS table_name, id::text AS row_id "
-                        "FROM anomalies WHERE is_eval = FALSE"
-                    )
-                )
-                violations = result.all()
-                if violations:
-                    raise AssertionError(
-                        f"is_eval discipline violation: {len(violations)} "
-                        "row(s) with is_eval=False in eval-test DB. "
-                        "Factories MUST set is_eval=True; this gate is the "
-                        "loud-failure check (per `PerFindingDecision.reason` "
-                        "no-default + `proposed_import_strings` no-default + "
-                        "`FindingEvent.finding_content_hash` equality "
-                        "verifier discipline). Violations: "
-                        f"{[(v.table_name, v.row_id) for v in violations]}"
-                    )
+                await _assert_no_is_eval_violations(conn)
         finally:
             await check_engine.dispose()
     finally:
