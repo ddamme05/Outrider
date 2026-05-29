@@ -113,6 +113,16 @@ class ReviewMetrics(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # See DECISIONS.md#030-reviewreport-tuple-not-list-findings-field
+    # for the canonical-record amendment establishing:
+    #   (a) `ReviewReport.findings: tuple[...]` as the permanent shape
+    #       (vs spec.md §7.3's `list[...]` — unmaintained drift), AND
+    #   (b) `ReviewMetrics` LLM-aggregate fields as V1-transition
+    #       `int | None` / `float | None` per the audit-truth contract.
+    # The `files_traced_beyond_diff` union recipe Pass-1-folded under
+    # #030 is documented at `_compute_files_traced_beyond_diff` and
+    # pinned by `tests/unit/test_synthesize_files_traced_metric.py`.
+
     # Deterministically computed from state.analysis_rounds.
     files_examined: int = Field(ge=0)
     # Deterministically computed from
