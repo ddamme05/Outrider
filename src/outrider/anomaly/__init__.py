@@ -17,15 +17,19 @@ V1 ships two rules:
   `SWEEP_LOCK_ID` per the `sweep-jobs-use-advisory-locks` invariant.
 
 - `cross_round_severity_divergence` (severity=high) — graph-emitted
-  from `agent/nodes/synthesize.py` when same-`content_hash` findings
-  carry divergent severity across analysis rounds (corruption per
-  `severity-set-by-policy` + `compute_finding_content_hash` recipe +
-  `ReviewFinding._verify_baseline_severity`). Graph callers do NOT
-  acquire any advisory lock — anomaly emission has no non-idempotent
-  external side effect, and the per-rule partial unique index +
-  `on_conflict_do_nothing` provides DB-layer idempotency regardless
-  of ordering. See `AnomalySink` Protocol docstring for the
-  two-caller-class contract.
+  from `agent/nodes/synthesize.py::_detect_and_report_divergence`
+  when same-`content_hash` findings carry divergent severity OR
+  divergent policy_version across analysis rounds (corruption per
+  `severity-set-by-policy` + `severity-policy-versioned-for-replay`
+  + `compute_finding_content_hash` recipe +
+  `ReviewFinding._verify_baseline_severity`). Either axis triggers
+  the same anomaly rule because the recovery action is identical
+  (stop, investigate upstream policy-resolution layer). Graph
+  callers do NOT acquire any advisory lock — anomaly emission has no
+  non-idempotent external side effect, and the per-rule partial
+  unique index + `on_conflict_do_nothing` provides DB-layer
+  idempotency regardless of ordering. See `AnomalySink` Protocol
+  docstring for the two-caller-class contract.
 """
 
 from outrider.anomaly.persister import (

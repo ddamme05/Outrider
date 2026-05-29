@@ -298,14 +298,21 @@ async def _detect_and_report_divergence(
         # Cross-round divergence detection: severity OR policy_version
         # mismatch within a content_hash group both indicate corruption
         # per `severity-set-by-policy` + `severity-policy-versioned-
-        # for-replay`. Same content_hash within a single review SHOULD
-        # have a single policy_version (the review runs under one
-        # policy snapshot); divergence on EITHER axis means a deploy /
-        # replay path is mixing policy snapshots OR the policy lookup
-        # itself drifted. Either axis triggers the same
+        # for-replay`. Either axis triggers the same
         # CROSS_ROUND_SEVERITY_DIVERGENCE anomaly + fail-loud raise
         # because the recovery action is identical: stop the review,
         # investigate the upstream policy-resolution layer.
+        #
+        # Defense-in-depth: the policy_version axis is structurally
+        # unreachable on the canonical path because
+        # `_enforce_synthesize_input_invariants` (step 3) already
+        # raises FindingForgeryDetectedError on any
+        # `finding.policy_version != state.triage_result.policy_version`.
+        # The check here catches future producer bypasses (direct
+        # ReviewState construction in tests, alternate dispatchers,
+        # ad-hoc tooling) that skip the upstream gate — strict
+        # subset/superset relationship: any path triggering this
+        # branch on policy_version axis is a producer-side bug.
         if len(severities) > 1 or len(policy_versions) > 1:
             severity_tuple = tuple(sorted({e[1].severity for e in entries}, key=lambda s: s.value))
             policy_version_tuple = tuple(sorted(policy_versions))
@@ -327,15 +334,11 @@ async def _detect_and_report_divergence(
                     is_eval=state.is_eval,
                 )
             except Exception as emit_exc:
-                # Log via the imported `logging` module — the divergence
-                # raise below is the authoritative signal regardless of
-                # the emit outcome. Do NOT swallow the divergence.
-                # Defense-in-depth: a broken-logger configuration could
-                # cause `logging.exception()` itself to raise, which
-                # would replace the divergence raise below. Wrap in a
-                # nested try/except so the divergence raise is
-                # unconditionally reached even when observability is
-                # degraded.
+                # See docstring: emit is best-effort; the raise below is
+                # authoritative. Nested contextlib.suppress defends
+                # against a broken-logger configuration raising during
+                # `logging.exception()` — preserving the unconditional
+                # divergence raise even when observability is degraded.
                 with contextlib.suppress(Exception):
                     logging.getLogger(__name__).exception(
                         "synthesize_anomaly_emit_failed_during_divergence",
