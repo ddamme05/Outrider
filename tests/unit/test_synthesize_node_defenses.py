@@ -90,6 +90,19 @@ def test_render_handles_concrete_llm_aggregates_when_present() -> None:
     assert "$1.2345" in parts.user_prompt
 
 
+def _non_active_policy_version() -> str:
+    """Return a valid bare-semver guaranteed != `ACTIVE_POLICY_VERSION`.
+
+    Bumps the major component of `ACTIVE_POLICY_VERSION`; the result is
+    deterministically different from ACTIVE regardless of which patch /
+    minor / major ACTIVE lands on, so forge-test paths don't age into
+    equality + silently change semantics when policy versions bump in
+    the future.
+    """
+    major = int(ACTIVE_POLICY_VERSION.split(".", 1)[0])
+    return f"{major + 1}.0.0"
+
+
 # ---------------------------------------------------------------------------
 # H-1 defense — policy_version smuggle (synthesize entry rejects)
 # ---------------------------------------------------------------------------
@@ -188,7 +201,7 @@ def test_synthesize_rejects_mid_batch_policy_version_drift() -> None:
     triage snapshot is the trusted anchor; any divergent finding
     raises before the divergence detector + audit row emit."""
     anchor = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
-    forged = _make_finding_stub(policy_version="0.0.0")
+    forged = _make_finding_stub(policy_version=_non_active_policy_version())
     state = _make_state_stub(findings=[anchor, forged])
 
     with pytest.raises(FindingForgeryDetectedError, match="policy_version"):
@@ -232,7 +245,7 @@ def test_synthesize_detects_forge_in_later_round() -> None:
     round_index=1 and trigger the snapshot mismatch.
     """
     legit = _make_finding_stub(policy_version=ACTIVE_POLICY_VERSION)
-    forged = _make_finding_stub(policy_version="0.0.0")
+    forged = _make_finding_stub(policy_version=_non_active_policy_version())
     state = _make_state_stub(findings=[], rounds=[[legit], [forged]])
 
     with pytest.raises(FindingForgeryDetectedError, match="round_index=1"):
@@ -370,6 +383,18 @@ async def test_policy_version_axis_divergence_emits_anomaly_and_raises() -> None
     details = emit_call.kwargs["details"]
     assert set(details["policy_versions"]) == {"1.0.0", "0.0.1"}, (
         f"expected both policy_versions in anomaly details, got {details!r}"
+    )
+    # is_eval kwarg pin: `AnomalySink.emit_anomaly` Protocol declares
+    # `is_eval` as mandatory; the synthesize node MUST forward
+    # `state.is_eval` verbatim. Per CodeRabbit catch, the prior assertion
+    # block validated only severity / policy_versions / round_indices and
+    # would have admitted a regression that dropped is_eval (silent
+    # data-isolation breach for eval runs).
+    assert "is_eval" in emit_call.kwargs, (
+        f"emit_anomaly call missing is_eval kwarg, got {emit_call.kwargs!r}"
+    )
+    assert emit_call.kwargs["is_eval"] is False, (
+        f"expected is_eval=False (stub set on state); got {emit_call.kwargs['is_eval']!r}"
     )
 
 

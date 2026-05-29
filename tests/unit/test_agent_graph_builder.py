@@ -355,6 +355,31 @@ def test_build_graph_rejects_import_path_resolver_none() -> None:
         build_graph(**args)
 
 
+def test_build_graph_rejects_synthesize_event_sink_none() -> None:
+    """`synthesize_event_sink` parity with the other required sinks —
+    None must raise BuildGraphError, not silently propagate a NoneType
+    down to the first `await synthesize_event_sink.emit_synthesize_completed(...)`
+    call. Per CodeRabbit catch: new constructor parameters need the
+    same negative-path coverage as siblings."""
+    args = _valid_args()
+    args["synthesize_event_sink"] = None
+    with pytest.raises(BuildGraphError, match="synthesize_event_sink must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_anomaly_sink_none() -> None:
+    """`anomaly_sink` parity with the other required sinks — None must
+    raise BuildGraphError. Per CodeRabbit catch + the two-caller-class
+    contract on `AnomalySink`: synthesize is the first in-graph caller
+    and structural rejection at build_graph closes the silent-None
+    propagation path before the divergence-detection emit hits the
+    sink."""
+    args = _valid_args()
+    args["anomaly_sink"] = None
+    with pytest.raises(BuildGraphError, match="anomaly_sink must not be None"):
+        build_graph(**args)
+
+
 def test_build_graph_rejects_db_factory_none() -> None:
     args = _valid_args()
     args["db_factory"] = None

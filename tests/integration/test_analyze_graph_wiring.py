@@ -448,9 +448,14 @@ class _StubReviewStatusSink:
 
 
 class _StubSynthesizeEventSink:
-    """No-op `SynthesizeEventSink`. Same Protocol-gate rationale as
-    the sibling HITL/ReviewStatus stubs — these tests don't reach
-    synthesize but `build_graph` requires the sink at construction time."""
+    """No-op `SynthesizeEventSink` for graph wiring tests.
+
+    Some scenarios in this file run the full graph through synthesize
+    (e.g., `test_is_eval_propagates_through_full_graph` asserts the
+    `synthesize` phase event fired); others stop earlier. This stub
+    just provides a structurally-valid sink without asserting on
+    synthesize-side effects — assertions about whether synthesize
+    actually ran live on the recording phase-event sink, not here."""
 
     async def emit_synthesize_completed(self, event: Any) -> None:  # noqa: ARG002
         return None
