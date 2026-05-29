@@ -756,8 +756,23 @@ class TraceDecisionEvent(AuditEventBase):
     # `validate_diff_path` each entry, but Pydantic's per-element
     # length constraint is a separate gate that fires BEFORE the
     # validators — defense in depth at the append-only audit boundary.
-    proposed_import_strings: tuple[Annotated[str, Field(max_length=1024)], ...]
-    resolved_candidate_paths: tuple[Annotated[str, Field(max_length=1024)], ...]
+    # Outer-container caps mirror the state-layer twin
+    # `TraceDecision.proposed_import_strings` /
+    # `.resolved_candidate_paths` at `schemas/trace_decision.py:80-87`.
+    # Module docstring there declares "same fields and same cross-field
+    # validators so a producer cannot construct a TraceDecision that
+    # would fail validation when lifted to the audit event" — the cap
+    # belongs on both sides for the lockstep contract to hold. 32
+    # matches `ReviewFinding.trace_path` at
+    # `schemas/review_finding.py:164`.
+    proposed_import_strings: Annotated[
+        tuple[Annotated[str, Field(max_length=1024)], ...],
+        Field(max_length=32),
+    ]
+    resolved_candidate_paths: Annotated[
+        tuple[Annotated[str, Field(max_length=1024)], ...],
+        Field(max_length=32),
+    ]
     trace_path: tuple[str, ...] | None = None
 
     @field_validator("target_file")
