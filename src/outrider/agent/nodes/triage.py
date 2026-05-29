@@ -196,7 +196,8 @@ def _enforce_triage_policy(
             "is the failure mode the policy-gate exists to prevent."
         )
 
-    # Rule (d): policy_version MUST equal the live ACTIVE_POLICY_VERSION.
+    # Rule (d) — see DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
+    # policy_version MUST equal the live ACTIVE_POLICY_VERSION.
     # The field's `pattern=BARE_SEMVER_PATTERN` admits ANY valid semver
     # — an LLM that emits `{"policy_version": "0.0.0", ...}` in its JSON
     # output (training-data leakage, prompt injection through PR
