@@ -3,14 +3,18 @@
 Per spec §11.2: PR introduces auth bypass in login flow; agent produces
 `FindingType.AUTH_BYPASS` with the correct tier + severity per policy.
 
-V1: scaffolded; assertions wire up when analyze node lands per §15.3.
+V1: scaffolded; assertions wire up when the eval graph driver lands
+(analyze node shipped) per §15.3.
 """
 
 import pytest
 
 from outrider.policy import FindingType, lookup_severity
 
-pytestmark = pytest.mark.skip(reason="requires analyze node")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver: mock LLM provider + run_review shim + "
+    "mock_github fixtures (not yet shipped)"
+)
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.AUTH_BYPASS,

@@ -5,14 +5,18 @@ renames a variable inside a function) without introducing any security
 issue; expected: zero security findings. Asserts the agent doesn't
 hallucinate findings on cosmetic changes.
 
-V1: scaffolded; assertions wire up when analyze node lands per §15.3.
+V1: scaffolded; assertions wire up when the eval graph driver lands
+(analyze node shipped) per §15.3.
 """
 
 import pytest
 
 from outrider.schemas import ReviewDimension
 
-pytestmark = pytest.mark.skip(reason="requires analyze node")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver: mock LLM provider + run_review shim + "
+    "mock_github fixtures (not yet shipped)"
+)
 
 EXPECTED_SECURITY_FINDING_COUNT = 0
 

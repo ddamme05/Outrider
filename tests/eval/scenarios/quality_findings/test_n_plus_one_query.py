@@ -5,14 +5,17 @@ Per spec §11.2: PR adds a loop that issues a DB query per item; expected:
 + severity from `SEVERITY_POLICY[N_PLUS_ONE_QUERY]` + tier per the
 structural evidence.
 
-V1: scaffolded; assertions wire up when analyze node lands.
+V1: scaffolded; assertions wire up when the eval graph driver lands (analyze node shipped).
 """
 
 import pytest
 
 from outrider.policy import FindingType, lookup_severity
 
-pytestmark = pytest.mark.skip(reason="requires analyze node")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver: mock LLM provider + run_review shim + "
+    "mock_github fixtures (not yet shipped)"
+)
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.N_PLUS_ONE_QUERY,

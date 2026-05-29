@@ -30,7 +30,9 @@ combine: (1) `diff_line_to_scope == None` AND (2) a separate
 in coordinates and NOT in ast_facts' current public surface, and would
 need a new ast_facts method (e.g., `tree_has_error_at_line`) before
 the degraded derivation can be implemented. This scenario flips when
-both that ast_facts extension and the analyze-node spec land.
+both that ast_facts extension AND an LLM-free importable degraded-
+derivation helper land (the analyze node shipped, but its degraded
+logic is inline + LLM-coupled).
 """
 
 from __future__ import annotations
@@ -45,7 +47,10 @@ import pytest
 # skipped scenarios.
 
 pytestmark = pytest.mark.skip(
-    reason="requires analyze-node degraded derivation + ast_facts tree-level error signal"
+    reason="requires (1) the analyze-node degraded derivation as an LLM-free "
+    "importable helper AND (2) a public ast_facts tree-level error surface (e.g. "
+    "tree_has_error_at_line) for no-scope syntax errors — per-scope has_error "
+    "doesn't cover regions that yield no scope"
 )
 
 # Syntax error is inside the changed region; the diff line itself lies

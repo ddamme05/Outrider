@@ -4,14 +4,17 @@ Per spec §11.2: agent identifies the CVE-fixed vulnerability with the
 correct finding type + tier on a real PR taken from a public project's
 git history.
 
-V1: scaffolded; assertions wire up when analyze node lands. The specific
-CVE + project pair is pinned when the analyze node spec ships
-ground-truth fixtures.
+V1: scaffolded; assertions wire up when the eval graph driver + CVE
+fixture selection land (analyze node shipped). The specific CVE + project
+pair is pinned when CVE fixture selection lands (its own follow-up).
 """
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires analyze node + CVE fixture selection")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver + CVE fixture selection (which CVE / "
+    "sourcing / ground-truth); analyze node shipped"
+)
 
 # Specific CVE + repo pinned at analyze-node spec time; eval ground truth
 # defines the canonical finding shape (type, tier, severity, file_path).
