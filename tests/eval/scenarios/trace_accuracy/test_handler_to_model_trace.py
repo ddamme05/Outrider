@@ -4,11 +4,8 @@ Per spec §11.2: PR modifies a request handler where the vulnerability is
 resolvable via simple direct import to a model definition file. Expected:
 `TraceDecision.resolution_status="resolved"` + `target_file` pointing at
 the model file + `resolved_candidate_paths` containing exactly one path
-equal to `target_file` (per DECISIONS.md#017 × #024 amendment —
-`candidates_considered` was renamed to the parallel
-`proposed_import_strings` + `resolved_candidate_paths` tuples, and the
-resolved-selection contract shifted from "member of candidates_considered"
-to "equals the single resolved_candidate_paths entry").
+equal to `target_file` (per DECISIONS.md#017 × #024: the resolved
+selection equals the single `resolved_candidate_paths` entry).
 
 `trace_path` is NOT a field on `TraceDecision` (`docs/spec.md` §7.2). It
 lives on:
@@ -18,12 +15,16 @@ lives on:
 - `TraceDecisionEvent.trace_path` (audit event) — same data, on the
   audit-log side.
 
-V1: scaffolded; assertions wire up when the trace node lands per §15.3.
+V1: scaffolded; assertions wire up when the eval graph driver lands
+(trace node + import resolver shipped) per §15.3.
 """
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires trace node + ast_facts import resolver")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver (mock LLM provider + run_review shim + "
+    "mock_github fixtures); trace node + import resolver already shipped"
+)
 
 EXPECTED_DECISION = {
     "resolution_status": "resolved",
@@ -48,10 +49,9 @@ def test_handler_to_model_trace_resolves_via_direct_import() -> None:
     decision = trace_decisions[0]
     assert decision.resolution_status == EXPECTED_DECISION["resolution_status"]
     assert decision.target_file is not None
-    # Per DECISIONS.md#017 × #024 amendment: resolved target_file must
-    # equal the single resolved_candidate_paths entry (no longer
-    # `member of candidates_considered` after the rename to import strings).
-    # The schema-level validator enforces it on construction; this
-    # assertion documents the contract at the test surface for clarity.
+    # Per DECISIONS.md#017 × #024: a resolved target_file must equal the
+    # single resolved_candidate_paths entry. The schema-level validator
+    # enforces it on construction; this assertion documents the contract
+    # at the test surface for clarity.
     assert len(decision.resolved_candidate_paths) == 1
     assert decision.target_file == decision.resolved_candidate_paths[0]

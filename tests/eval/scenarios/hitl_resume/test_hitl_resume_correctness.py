@@ -13,18 +13,22 @@ silently double-accumulate `analysis_rounds` on resume; the
 `append_with_dedup_by` reducer makes resume idempotent regardless of
 LangGraph's internal rehydration behavior.
 
-V1: scaffolded; the scenario definition + fixtures land here. Two
-dependencies must ship before this scenario becomes executable:
-  - `agent/nodes/hitl.py` (the HITL node + `interrupt()` mechanics)
+V1: scaffolded; the scenario definition + fixtures land here.
+`agent/nodes/hitl.py` (the HITL node + `interrupt()` mechanics) shipped
+2026-05-26. Remaining blockers before this scenario becomes executable:
   - `audit/replay.py` (the replay-equivalence assertion harness)
+  - the `run_review_with_resume` resume shim + a mock LLM provider
+  - the `mock_github/hitl_resume_critical.json` fixture
 
-The skip marker lifts only when BOTH ship. Whichever ships first does
-not unblock this scenario alone.
+The skip marker lifts when the remaining blockers ship.
 """
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="requires hitl node + audit/replay")
+pytestmark = pytest.mark.skip(
+    reason="requires audit/replay module + the run_review_with_resume resume shim + "
+    "the mock_github/hitl_resume_critical.json fixture; hitl node already shipped"
+)
 
 EXPECTED_FINAL_STATE = {
     "analysis_rounds_count": 1,  # one analysis pass, then HITL gate, then publish

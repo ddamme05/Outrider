@@ -4,8 +4,9 @@ Per spec §11.2: PR introduces SQL injection in a search view; the agent
 should produce `FindingType.SQL_INJECTION` + `EvidenceTier.OBSERVED` +
 `query_match_id` matching a real entry in the queries registry.
 
-V1: scaffolded; assertions wire up when the analyze node lands per
-§15.3. The expected-output fixture pins the canonical FindingType +
+V1: scaffolded; assertions wire up when the eval graph driver lands
+(analyze node + queries registry shipped) per §15.3. The expected-output
+fixture pins the canonical FindingType +
 severity + tier; the specific `query_match_id` string is intentionally
 left as "matches a real registry entry" since the queries spec is
 canonical for that naming convention.
@@ -15,7 +16,10 @@ import pytest
 
 from outrider.policy import EvidenceTier, FindingType, lookup_severity
 
-pytestmark = pytest.mark.skip(reason="requires analyze node + queries registry")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver (mock LLM provider + run_review shim + "
+    "mock_github fixtures); analyze node + queries registry already shipped"
+)
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.SQL_INJECTION,

@@ -10,7 +10,10 @@ result (with whatever `scope_units` tree-sitter recovers from the
 parseable region); coordinates ships `diff_line_to_scope` (maps a
 parseable-region diff line to its scope). The "graceful" derivation
 that combines both into a degraded=False marker lives in the analyze
-node — this scenario flips when the analyze-node spec lands.
+node, but is not yet exposed as an LLM-free importable helper (it is
+inline in the node body, interleaved with LLM calls). Structural
+scenarios are LLM-free, so this flips when that derivation is extracted
+into a callable helper.
 """
 
 from __future__ import annotations
@@ -24,7 +27,11 @@ import pytest
 # imports behind the skipmark preserves the import-light contract for
 # skipped scenarios.
 
-pytestmark = pytest.mark.skip(reason="requires analyze-node degraded derivation")
+pytestmark = pytest.mark.skip(
+    reason="requires the analyze-node degraded derivation exposed as an LLM-free "
+    "importable helper (it is currently inline in the analyze node, interleaved "
+    "with LLM calls; structural scenarios are LLM-free)"
+)
 
 # The syntax error is at the bottom of the file (unmatched paren); the
 # diff hunk lies in the parseable region above.

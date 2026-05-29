@@ -5,14 +5,17 @@ parse a literal in test setup) is NOT a security finding — the call
 lives in test code, not production code paths. Expected: zero security
 findings.
 
-V1: scaffolded; assertions wire up when analyze node lands.
+V1: scaffolded; assertions wire up when the eval graph driver lands (analyze node shipped).
 """
 
 import pytest
 
 from outrider.schemas import ReviewDimension
 
-pytestmark = pytest.mark.skip(reason="requires analyze node")
+pytestmark = pytest.mark.skip(
+    reason="requires eval graph driver: mock LLM provider + run_review shim + "
+    "mock_github fixtures (not yet shipped)"
+)
 
 EXPECTED_SECURITY_FINDING_COUNT = 0
 
