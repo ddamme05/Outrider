@@ -226,23 +226,34 @@ def _make_state(
     findings: tuple[ReviewFinding, ...],
     changed_files: tuple[ChangedFile, ...],
     review_id: UUID | None = None,
+    analysis_round_findings: tuple[ReviewFinding, ...] | None = None,
 ) -> ReviewState:
+    """Sibling of `test_hitl_node.py::_make_state` /
+    `test_publish_routing.py::_make_state` /
+    `test_publish_node_end_to_end.py::_make_state`. `findings`
+    populates `review_report.findings` (publish's consumer surface);
+    `analysis_round_findings` defaults to mirror but can be overridden
+    so a regression to reading `state.analysis_rounds` instead of
+    `state.review_report.findings` surfaces loudly. Per CodeRabbit /
+    Pass-1 multi-lens audit sibling sweep 2026-05-28.
+    """
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.analysis_round import AnalysisRound
     from outrider.schemas.triage_result import RiskLevel
 
     files_examined = tuple(cf.path for cf in changed_files)
+    rounds_findings = analysis_round_findings if analysis_round_findings is not None else findings
     round_id = compute_round_id(
         pass_index=0,
         files_examined=files_examined,
         files_skipped=(),
-        finding_content_hashes=tuple(f.content_hash for f in findings),
+        finding_content_hashes=tuple(f.content_hash for f in rounds_findings),
     )
     analysis_round = AnalysisRound(
         round_id=round_id,
         pass_index=0,
-        findings=findings,
+        findings=rounds_findings,
         files_examined=files_examined,
         files_skipped=(),
         started_at=datetime.now(UTC),

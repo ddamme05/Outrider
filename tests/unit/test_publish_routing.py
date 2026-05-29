@@ -240,23 +240,32 @@ def _make_state(
     *,
     findings: tuple[ReviewFinding, ...],
     changed_files: tuple[ChangedFile, ...],
+    analysis_round_findings: tuple[ReviewFinding, ...] | None = None,
 ) -> ReviewState:
+    """Build a ReviewState post-Phase-5: `findings` populates
+    `review_report.findings` (the publish-side consumer surface);
+    `analysis_round_findings` defaults to `findings` (mirror) but can
+    be overridden to pin that publish reads from `review_report`
+    rather than `analysis_rounds`. Sibling capability to the HITL-side
+    `_make_state` helper (per CodeRabbit 2026-05-28).
+    """
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.analysis_round import AnalysisRound
     from outrider.schemas.triage_result import RiskLevel
 
     files_examined = tuple(cf.path for cf in changed_files)
+    rounds_findings = analysis_round_findings if analysis_round_findings is not None else findings
     round_id = compute_round_id(
         pass_index=0,
         files_examined=files_examined,
         files_skipped=(),
-        finding_content_hashes=tuple(f.content_hash for f in findings),
+        finding_content_hashes=tuple(f.content_hash for f in rounds_findings),
     )
     analysis_round = AnalysisRound(
         round_id=round_id,
         pass_index=0,
-        findings=findings,
+        findings=rounds_findings,
         files_examined=files_examined,
         files_skipped=(),
         started_at=datetime.now(UTC),
@@ -696,3 +705,46 @@ async def test_publish_eligibility_stamps_finding_policy_version_not_active() ->
     # The audit row carries the finding's snapshot — NOT the live ACTIVE.
     assert sink.eligibility[0].policy_version == historical_version
     assert sink.eligibility[0].policy_version != ACTIVE_POLICY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_publish_reads_from_review_report_not_analysis_rounds() -> None:
+    """Regression pin: publish's `_collect_admitted_findings` MUST
+    read `state.review_report.findings`, NOT
+    `state.analysis_rounds[*].findings`. Per Pass-1 adversarial F2:
+    the mirror-default `_make_state` admitted a silent regression to
+    the old aggregation path.
+
+    Pass `analysis_round_findings=()` so the analysis_rounds branch
+    yields zero findings — a regression to that branch would emit
+    zero routing events, while the canonical review_report.findings
+    branch emits one per finding."""
+    finding = _make_finding(line_start=2, line_end=2)
+    state = _make_state(
+        findings=(finding,),
+        changed_files=(_make_changed_file(),),
+        # Empty analysis_rounds — only review_report.findings carries
+        # the finding. If publish ever regressed to reading from
+        # analysis_rounds, the assertions below would fail loudly.
+        analysis_round_findings=(),
+    )
+    # Setup-side regression pin: prove the override is in effect.
+    assert len(state.review_report.findings) == 1
+    assert len(state.analysis_rounds[0].findings) == 0
+
+    sink = _RecordingPublishEventSink()
+    await publish_module.publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    # Behavior-side regression pin: routing event emitted exactly once,
+    # which proves publish read the finding from review_report
+    # (an analysis_rounds-reading regression would have routed zero
+    # findings and emitted zero routing events).
+    assert len(sink.routing) == 1
+    assert sink.routing[0].finding_id == finding.finding_id

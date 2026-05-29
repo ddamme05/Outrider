@@ -389,17 +389,47 @@ async def _detect_and_report_divergence(
 
 
 def _compute_files_traced_beyond_diff(state: ReviewState) -> int:
-    """Count of files trace fetched that weren't already in the PR
-    diff. Reads `state.trace_decisions` for resolution_status='resolved'
-    entries whose `target_file` was outside the original
-    `pr_context.changed_files` set.
+    """Count of distinct file paths that trace REFERENCED outside the
+    original PR diff — `(target_file ∪ resolved_candidate_paths across
+    all TraceDecision rows) ∪ (trace_fetched_files.path)` minus
+    `pr_context.changed_files` paths.
+
+    "Beyond diff" here means "outside the PR's changed-files set" —
+    NOT "Phase-2-fetched" specifically. Per the trace-node spec,
+    paths can land in three states relative to the metric:
+
+    - **target_file on a resolved decision** — the canonical Phase-2
+      target. Counted.
+    - **resolved_candidate_paths on an ambiguous decision** — multiple
+      candidates were resolved by `ast_facts/` but trace declined to
+      auto-pick a Phase-2 fetch target; no fetch occurred, but those
+      paths WERE referenced by trace's resolution work. Counted.
+    - **trace_fetched_files.path** — files actually fetched by trace
+      Phase-2. On the canonical path this is a subset of
+      target_files, but reducer-replay or trace-side filtering paths
+      can land entries here without a matching `target_file` on the
+      decision (per `trace_fetched_files`' state-vs-event divergence
+      notes in `schemas/review_state.py`). Counted via union, so
+      either side surfacing the path admits it once.
+
+    Unresolved decisions contribute nothing — their
+    `resolved_candidate_paths` is empty by schema (see
+    `schemas/trace_decision.py`: `unresolved → len(...) == 0`).
+
+    Per CodeRabbit 2026-05-28 catch (narrowed by Codex): the prior
+    implementation counted only `target_file` on resolved decisions,
+    missing the ambiguous-resolution + fetched-without-decision-target
+    paths.
     """
     diff_paths = {cf.path for cf in state.pr_context.changed_files}
-    traced: set[str] = set()
+    referenced: set[str] = set()
     for decision in state.trace_decisions:
-        if decision.target_file is not None and decision.target_file not in diff_paths:
-            traced.add(decision.target_file)
-    return len(traced)
+        if decision.target_file is not None:
+            referenced.add(decision.target_file)
+        referenced.update(decision.resolved_candidate_paths)
+    for fetched in state.trace_fetched_files:
+        referenced.add(fetched.path)
+    return len(referenced - diff_paths)
 
 
 def _compute_metrics(
