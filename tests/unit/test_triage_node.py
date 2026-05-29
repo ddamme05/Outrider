@@ -527,15 +527,22 @@ def test_enforce_policy_rejects_llm_injected_policy_version() -> None:
     """
     from outrider.policy.severity import ACTIVE_POLICY_VERSION
 
+    # Deterministic non-ACTIVE bare-semver: bumps major component so the
+    # value is guaranteed != ACTIVE regardless of which version ACTIVE
+    # lands on. Inlined here (no shared test util) per the existing
+    # convention in this repo — see test_publish_routing.py
+    # / test_synthesize_node_defenses.py for the sibling pattern.
+    non_active_major = int(ACTIVE_POLICY_VERSION.split(".", 1)[0]) + 1
+    forged_version = f"{non_active_major}.0.0"
     forged = TriageResult(
         file_tiers={"src/a.py": ReviewTier.STANDARD},
         overall_risk=RiskLevel.MEDIUM,
         relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
         reasoning="ok",
-        policy_version="0.0.0",  # valid semver shape, wrong value
+        policy_version=forged_version,
     )
-    # Sanity: the active version is NOT "0.0.0" (would make the test vacuous).
-    assert ACTIVE_POLICY_VERSION != "0.0.0"
+    # Sanity: the forged version is provably != ACTIVE.
+    assert forged_version != ACTIVE_POLICY_VERSION
 
     with pytest.raises(TriagePolicyViolationError, match="policy_version"):
         _enforce_triage_policy(forged, expected_paths={"src/a.py"})

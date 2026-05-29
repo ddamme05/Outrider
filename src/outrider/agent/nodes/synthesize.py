@@ -98,11 +98,16 @@ class FindingForgeryDetectedError(RuntimeError):
 
     Two surfaces fire this:
 
-    - A finding's `policy_version` is not `ACTIVE_POLICY_VERSION`.
-      `ReviewFinding._enforce_severity_matches_policy` short-circuits
-      on non-active versions, so a forged finding with arbitrary
-      severity would survive into the audit row + HITL partition.
-      Synthesize rejects at entry.
+    - A finding's `policy_version` diverges from the per-review
+      triage snapshot (`state.triage_result.policy_version`, captured
+      at triage entry by the Rule (d) gate). The trust root is the
+      snapshot, NOT the live `ACTIVE_POLICY_VERSION` — replay paths
+      legitimately carry historical values that match a historical
+      snapshot. `ReviewFinding._enforce_severity_matches_policy`
+      short-circuits when `policy_version != ACTIVE_POLICY_VERSION`,
+      so a finding whose version diverges from the snapshot would
+      bypass severity validation and survive into the audit row +
+      HITL partition. Synthesize rejects at entry.
 
     - A finding's `original_severity` is not None at synthesize entry.
       `original_severity` is set only by HITL after a reviewer
@@ -118,22 +123,24 @@ class FindingForgeryDetectedError(RuntimeError):
 
 
 class SynthesizeAggregationError(RuntimeError):
-    """Raised when cross-round severity divergence is detected.
+    """Raised when cross-round divergence is detected on EITHER axis
+    (severity OR policy_version) for the same finding `content_hash`.
 
     `compute_finding_content_hash` is keyed over `(file_path,
     line_start, line_end, finding_type)`, and
     `ReviewFinding._verify_baseline_severity` requires severity =
     SEVERITY_POLICY[finding_type]. Same content_hash within a single
-    review (single policy_version) MUST have identical severity by
-    construction — divergence indicates corruption (validator bypass,
-    hash-recipe drift, mid-review policy-version change), NOT model
-    variance.
+    review (single policy_version snapshot) MUST have identical
+    severity by construction — divergence on EITHER axis indicates
+    corruption (validator bypass, hash-recipe drift, mid-review
+    policy-version change), NOT model variance.
 
-    Carries the diverging content_hash + the severity-set + round
-    indices for the anomaly payload + ops triage. The emit-then-raise
-    contract in the node body commits the anomaly row before this
-    exception propagates, so ops sees the signal in the queue while
-    the review parks unfinished.
+    Carries the diverging content_hash + the severity-set + the
+    policy_version-set + round indices. Anomaly emission is
+    best-effort observability per `_detect_and_report_divergence`'s
+    docstring contract; when emit fails this exception is the only
+    diagnostic, so all axes worth investigating travel on the
+    exception payload.
     """
 
     def __init__(
@@ -141,17 +148,22 @@ class SynthesizeAggregationError(RuntimeError):
         *,
         content_hash: str,
         severities: tuple[FindingSeverity, ...],
+        policy_versions: tuple[str, ...],
         round_indices: tuple[int, ...],
     ) -> None:
         self.content_hash = content_hash
         self.severities = severities
+        self.policy_versions = policy_versions
         self.round_indices = round_indices
         super().__init__(
-            f"Cross-round severity divergence for content_hash={content_hash!r}: "
-            f"severities={[s.value for s in severities]!r} across "
-            f"round_indices={list(round_indices)!r}. This is corruption per the "
-            f"severity-set-by-policy invariant — same content_hash MUST have "
-            f"same severity by construction. Anomaly emitted; review parked."
+            f"Cross-round divergence for content_hash={content_hash!r}: "
+            f"severities={[s.value for s in severities]!r} "
+            f"policy_versions={list(policy_versions)!r} across "
+            f"round_indices={list(round_indices)!r}. Indicates corruption "
+            f"(severity and/or policy_version drift for one content_hash) "
+            f"per severity-set-by-policy + severity-policy-versioned-for-"
+            f"replay invariants. Anomaly emission is best-effort; review "
+            f"parked regardless of emit outcome."
         )
 
 
@@ -365,6 +377,7 @@ async def _detect_and_report_divergence(
             raise SynthesizeAggregationError(
                 content_hash=content_hash,
                 severities=severity_tuple,
+                policy_versions=policy_version_tuple,
                 round_indices=round_indices_tuple,
             )
         # No divergence — pick deterministic representative (lowest

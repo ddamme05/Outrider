@@ -164,6 +164,19 @@ _FINDING_TYPE_BY_SEVERITY = {
 }
 
 
+def _non_active_policy_version() -> str:
+    """Return a valid bare-semver guaranteed != `ACTIVE_POLICY_VERSION`.
+
+    Bumps the major component of `ACTIVE_POLICY_VERSION`; the result is
+    deterministically different from ACTIVE regardless of which patch /
+    minor / major ACTIVE lands on, so historical-version test paths
+    don't age into equality + silently change semantics when policy
+    versions bump in the future.
+    """
+    major = int(ACTIVE_POLICY_VERSION.split(".", 1)[0])
+    return f"{major + 1}.0.0"
+
+
 def _make_changed_file(
     *,
     path: str = "src/foo.py",
@@ -665,8 +678,7 @@ async def test_publish_eligibility_stamps_finding_policy_version_not_active() ->
     """
     # Construct a finding whose policy_version diverges from live ACTIVE
     # (simulating a finding produced under a prior deploy).
-    historical_version = "0.0.1"
-    assert historical_version != ACTIVE_POLICY_VERSION
+    historical_version = _non_active_policy_version()
     finding = _make_finding(line_start=2, line_end=2, policy_version=historical_version)
     state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
     sink = _RecordingPublishEventSink()
