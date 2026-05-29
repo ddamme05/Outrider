@@ -1,4 +1,7 @@
 # See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
+# See also DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
+# (same content-table pattern: `retention_expires_at` purge column, kept
+# alongside `llm_call_content` under the V1 content-tier retention policy).
 """REVIEWS.
 
 One row per agent review run. Idempotency is enforced by the

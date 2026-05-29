@@ -1,5 +1,7 @@
 # See DECISIONS.md#018, #025 (proposal_hash threaded through admitted
 # and rejected lift sites per #025 point 1).
+# See also DECISIONS.md#024-trace-candidates-are-dotted-python-import-strings-v1
+# (admission path; same-file inline handling).
 """Analyze node body — orchestration around the proof-boundary parser.
 
 Assembles inputs, enforces triage gating, calls the provider, hands the

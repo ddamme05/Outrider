@@ -1,4 +1,6 @@
-# Sink Protocols for agent-node-emitted audit events.
+# See DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
+# (this module defines the sink Protocols consumed by the persister
+# whose atomic-emit contract `#016` establishes).
 """Sink Protocols for agent-node-emitted audit events.
 
 Nodes consume sink Protocols defined here rather than touching DB code
