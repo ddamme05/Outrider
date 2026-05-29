@@ -490,8 +490,9 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
 
     Closure-injected dependencies per `nodes-receive-deps-via-closure`:
     `provider` for the Sonnet call, `synthesize_model` from config per
-    `model-strings-from-config-not-hardcoded`, the four sinks for the
-    four audit/anomaly surfaces this node touches.
+    `model-strings-from-config-not-hardcoded`, three sinks for the
+    three audit/anomaly surfaces this node touches (phase events,
+    synthesize completion, anomaly emission).
 
     Raises:
         SynthesizeAggregationError: cross-round severity divergence

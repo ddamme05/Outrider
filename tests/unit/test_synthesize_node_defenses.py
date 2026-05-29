@@ -1,4 +1,7 @@
 # See specs/2026-05-28-synthesize-node.md §Severity policy.
+# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
+# — `test_synthesize_blocks_first_finding_poisoning` + the H-1 / H-2
+# defense suite are #028's snapshot-anchor + forge-defense contract pins.
 """Regression + defense tests for the synthesize node body.
 
 Pins:
@@ -69,7 +72,15 @@ def test_render_does_not_crash_on_none_llm_aggregates() -> None:
     # Verify the None values render as "unknown" rather than "None"
     # (more reader-friendly + signals the V1 placeholder semantics).
     assert "unknown" in parts.user_prompt
-    assert "None" not in parts.user_prompt.split("Metrics:")[1].split("Wall clock:")[0]
+    # Per Pass-1 multi-lens audit test-quality lens: the prior slice
+    # `split("Metrics:")[1].split("Wall clock:")[0]` was anchored on
+    # template heading layout. A regression that rendered `None` AFTER
+    # "Wall clock:" would silently pass. Stronger property assertion:
+    # the entire user_prompt must not contain the literal " None" or
+    # ": None" — both patterns that would surface a `format(None)` or
+    # `str(None)` leak.
+    assert " None" not in parts.user_prompt
+    assert ": None" not in parts.user_prompt
 
 
 def test_render_handles_concrete_llm_aggregates_when_present() -> None:
@@ -403,18 +414,22 @@ async def test_policy_version_axis_divergence_emits_anomaly_and_raises() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_summary_content_hash_helper_binds_sha256_to_input_bytes() -> None:
-    """Helper-level contract: `_compute_summary_content_hash` returns
-    `sha256(text.encode("utf-8")).hexdigest()` over the input bytes.
+def test_summary_content_hash_helper_is_input_sensitive() -> None:
+    """Helper-level contract: `_compute_summary_content_hash` produces
+    DIFFERENT outputs for different inputs. Catches a return-constant
+    regression (the helper accidentally hardcoded a value, or stopped
+    consuming its argument).
 
-    This is a tautological pin on the helper's identity — the call site
-    contract (synthesize MUST pass raw `response.text` not stripped) is
-    pinned by `test_synthesize_call_site_hashes_raw_response_text_not_stripped`
-    below. Keeping the helper test for documentation; the call-site
-    test is the non-vacuous regression gate.
+    Per Pass-1 multi-lens audit test-quality lens: previously this test
+    also re-derived `expected = sha256(text.encode("utf-8")).hexdigest()`
+    and asserted equality — tautological with the impl. Dropped that
+    assertion; kept the input-sensitivity inequality which catches a
+    distinct (if narrower) regression class. The call-site contract
+    (synthesize MUST pass raw `response.text` not stripped) is pinned by
+    `test_synthesize_call_site_hashes_raw_response_text_not_stripped`
+    below via source inspection — that's the non-vacuous regression
+    gate.
     """
-    import hashlib
-
     from outrider.agent.nodes.synthesize import _compute_summary_content_hash
 
     raw_response_text = '```json\n"This is the summary prose."\n```'
@@ -423,12 +438,8 @@ def test_summary_content_hash_helper_binds_sha256_to_input_bytes() -> None:
     raw_hash = _compute_summary_content_hash(raw_response_text)
     stripped_hash = _compute_summary_content_hash(stripped)
 
-    # The two MUST differ under fence-wrap — locks in that the helper
-    # is sensitive to its input (catches a regression that, e.g.,
-    # always returned a constant).
+    # Catches return-constant + dropped-argument regressions.
     assert raw_hash != stripped_hash
-    expected_raw_hash = hashlib.sha256(raw_response_text.encode("utf-8")).hexdigest()
-    assert raw_hash == expected_raw_hash
 
 
 def test_synthesize_call_site_hashes_raw_response_text_not_stripped() -> None:

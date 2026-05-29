@@ -1,3 +1,7 @@
+# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
+# — `test_triage_result_policy_version_admits_any_valid_semver` is #028's
+# shape-vs-value pin (BARE_SEMVER_PATTERN is the schema floor; the
+# triage Rule (d) gate is what closes the value-injection path).
 """TriageResult: construction-time validation, enum gates, frozen guard.
 
 Per spec §7.2: TriageResult is the typed output contract of the triage node.
@@ -229,6 +233,40 @@ def test_triage_result_policy_version_defaults_to_active() -> None:
 
     result = _minimal_triage_result()
     assert result.policy_version == ACTIVE_POLICY_VERSION
+
+
+def test_triage_result_default_factory_fires_on_model_validate_json_absent_key() -> None:
+    """`DECISIONS.md#028` depends on Pydantic firing
+    `default_factory=lambda: ACTIVE_POLICY_VERSION` when the JSON input
+    omits the `policy_version` key. Per Pass-1 multi-lens audit
+    MCP-grounded lens recommendation: Pydantic docs document
+    `default_factory` as a field-init mechanism but DON'T explicitly
+    assert it fires on `model_validate_json` for an absent key. This
+    test converts the implicit-by-docs claim into an asserted contract
+    — protects DECISIONS#028's trust-root analysis against a future
+    Pydantic upgrade silently changing the JSON-input default path."""
+    from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+    # JSON input deliberately OMITS policy_version. All four other
+    # required fields present.
+    json_input = (
+        '{"file_tiers": {"src/auth.py": "deep"}, '
+        '"overall_risk": "medium", '
+        '"relevant_dimensions": ["security"], '
+        '"reasoning": "snapshot-anchor default_factory pin"}'
+    )
+
+    result = TriageResult.model_validate_json(json_input)
+
+    # If Pydantic did NOT fire the default_factory on the absent key,
+    # this would either error during validation (required-field
+    # missing) OR ship a sentinel value. Asserting equality with
+    # ACTIVE pins the documented behavior.
+    assert result.policy_version == ACTIVE_POLICY_VERSION, (
+        f"default_factory did not fire on absent JSON key — "
+        f"DECISIONS#028 trust-root depends on this. Got "
+        f"{result.policy_version!r}, expected {ACTIVE_POLICY_VERSION!r}."
+    )
 
 
 def test_triage_result_policy_version_explicit_override_admits() -> None:

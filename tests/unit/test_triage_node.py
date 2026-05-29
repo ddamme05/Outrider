@@ -1,3 +1,6 @@
+# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
+# — `test_enforce_policy_rejects_llm_injected_policy_version` is the
+# executable contract pin for #028's Rule (d) producer-side gate.
 """Triage node body unit tests per the triage-node spec.
 
 Tests cover:

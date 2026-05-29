@@ -70,8 +70,21 @@ class TraceDecision(BaseModel):
     target_file: Annotated[str, Field(max_length=1024)] | None
     reason: Annotated[str, Field(max_length=500)]
     resolution_status: Literal["resolved", "unresolved", "ambiguous"]
-    proposed_import_strings: tuple[Annotated[str, Field(max_length=1024)], ...]
-    resolved_candidate_paths: tuple[Annotated[str, Field(max_length=1024)], ...]
+    # Outer-container caps defend against pathological producers
+    # constructing decisions with unbounded candidate / import-string
+    # lists. Per-element max_length=1024 was already capped; the outer
+    # cap is per Pass-1 multi-lens audit performance-lens edge case (c).
+    # 32 matches the established tuple cap pattern across the codebase
+    # (mirrors `ReviewFinding.trace_path` Field(max_length=32) at
+    # schemas/review_finding.py:164).
+    proposed_import_strings: Annotated[
+        tuple[Annotated[str, Field(max_length=1024)], ...],
+        Field(max_length=32),
+    ]
+    resolved_candidate_paths: Annotated[
+        tuple[Annotated[str, Field(max_length=1024)], ...],
+        Field(max_length=32),
+    ]
     trace_path: tuple[str, ...] | None = None
 
     @field_validator("target_file")

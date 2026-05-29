@@ -1,4 +1,8 @@
 # Per spec §V lines 204-211: publish-routing branch coverage (FUP-066).
+# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
+# — `test_publish_eligibility_stamps_finding_policy_version_not_active` is
+# #028's snapshot-mirror contract pin (eligibility stamps the captured
+# snapshot, NOT live ACTIVE).
 """Pin the publish node's routing decision matrix.
 
 Per the publish-node spec at §V lines 204-211, the publish node MUST:
@@ -485,6 +489,45 @@ async def test_each_coordinate_error_kind_routes_correctly(
     assert sink.routing[0].destination is expected_destination
     assert sink.routing[0].reason is expected_reason
     assert sink.routing[0].coordinate_error_kind == kind.value
+
+
+def test_classify_coordinate_error_covers_every_enum_value() -> None:
+    """Pin: `_classify_coordinate_error` MUST handle EVERY
+    `CoordinateErrorKind` enum member with a deterministic
+    `(destination, reason, kind)` triple. Per Pass-1 multi-lens audit
+    error-handling lens F1: if a future enum value lands without a
+    matching branch in `_classify_coordinate_error`, the publish
+    `_route_and_gate_one_finding` would propagate the un-handled case
+    through the `except CoordinateError` branch and crash the finding
+    loop. This test catches enum-value addition without handler update
+    at the routing-shape level (the existing parametrized
+    `test_each_coordinate_error_kind_routes_correctly` only covers the
+    `_KIND_TO_ROUTING` dict — which itself may drift).
+    """
+    from outrider.agent.nodes.publish import _classify_coordinate_error
+
+    for kind in CoordinateErrorKind:
+        exc = CoordinateError("test", kind=kind)
+        destination, reason, returned_kind = _classify_coordinate_error(exc)
+        # Type pins: return shape MUST be (PublishDestination,
+        # PublishRoutingReason, CoordinateErrorKind). A future refactor
+        # that returned None or a 4-tuple would fail here for every
+        # enum value.
+        assert isinstance(destination, PublishDestination)
+        assert isinstance(reason, PublishRoutingReason)
+        assert isinstance(returned_kind, CoordinateErrorKind)
+
+
+def test_classify_coordinate_error_routing_dict_covers_every_enum_value() -> None:
+    """Sibling pin to the function-level test above: the
+    `_KIND_TO_ROUTING` dict used by
+    `test_each_coordinate_error_kind_routes_correctly` covers every
+    `CoordinateErrorKind` member. Without this, the parametrized test
+    would silently skip new enum members."""
+    assert set(_KIND_TO_ROUTING.keys()) == set(CoordinateErrorKind), (
+        f"_KIND_TO_ROUTING missing enum values: "
+        f"{set(CoordinateErrorKind) - set(_KIND_TO_ROUTING.keys())}"
+    )
 
 
 # ---------------------------------------------------------------------------

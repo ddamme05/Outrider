@@ -81,8 +81,13 @@ class TriagePolicyViolationError(ValueError):
     Raised when (a) file_tiers contains a `ReviewTier.SKIP` value (SKIP is
     the policy-gate path per the triage-node spec's non-goal #1, never
     node output), (b) file_tiers has a key not in the changed-files-under-
-    review set, or (c) the set of keys does not cover every changed file
-    under review.
+    review set, (c) the set of keys does not cover every changed file
+    under review, or (d) `policy_version != ACTIVE_POLICY_VERSION` at
+    fresh-review time (snapshot-anchor producer-side gate per
+    `DECISIONS.md#028` — closes LLM-reachability of the per-review
+    policy_version snapshot that synthesize's H-1 forge defense depends
+    on; bypasses the rule on the replay path because replay reads audit
+    rows directly without re-executing this gate).
 
     The wrapper's internal persister has already written `LLMCallEvent` +
     content rows by the time this exception fires (`provider.complete()`

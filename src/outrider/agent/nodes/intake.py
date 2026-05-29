@@ -237,7 +237,17 @@ async def intake(
         # (skipped) entries; the rest assemble into the immutable tuple.
         changed_files = tuple(cf for cf in changed_file_results if cf is not None)
 
-        new_pr_context = pr_context.model_copy(update={"changed_files": changed_files})
+        # Use model_validate({**dump(), **delta}) NOT model_copy(update=...)
+        # because the latter silently skips ALL model_validators. PRContext
+        # has none today, but the same codebase elsewhere (review_finding.py,
+        # review_state.py) carries WARNING comments forbidding the update-
+        # kwarg idiom precisely because future validators would be bypassed
+        # without local-edit signal. Cited Pass-1 multi-lens audit
+        # adversarial sharp-edges F2 (the same anti-pattern this codebase
+        # already forbids elsewhere).
+        new_pr_context = pr_context.__class__.model_validate(
+            {**pr_context.model_dump(), "changed_files": changed_files}
+        )
 
         await _emit_phase_end(phase_event_sink, state, phase_id)
         return Command(update={"pr_context": new_pr_context}, goto="triage")
