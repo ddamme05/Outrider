@@ -341,7 +341,9 @@ def _verify_sequence_monotonic(events: tuple[AuditEvent, ...]) -> None:
             )
 
 
-def _verify_phase_wellformed(events: tuple[AuditEvent, ...]) -> None:
+def _verify_phase_wellformed(
+    events: tuple[AuditEvent, ...], *, require_all_terminated: bool = False
+) -> None:
     """Assert phases are well-formed and bound every node-work event.
 
     `phase-events-bound-work` (spec §8.4): per-operation work events must fall
@@ -356,9 +358,13 @@ def _verify_phase_wellformed(events: tuple[AuditEvent, ...]) -> None:
       order).
     - **Uniqueness.** A phase_id has ≤1 start and ≤1 end.
     - **Marker agreement.** An end's `node_id` / `phase_key` match its start.
-
-    A trailing unterminated phase (start with no end) is tolerated — it is a
-    real crash state, not a corruption.
+    - **Termination on success.** When `require_all_terminated` is set, every
+      started phase must also have an end. The invariant's "missing phase end
+      events on success are violations" clause: the caller sets this only for a
+      `completed` review. A trailing start-without-end is tolerated otherwise —
+      for a crashed / in-flight / failed review it is a real state, not a
+      corruption — and for a metadata-only reconstruction the review row is
+      purged so success can't be observed (so it can't be required).
     """
     started: dict[str, ReviewPhaseEvent] = {}
     ended: set[str] = set()
@@ -401,6 +407,13 @@ def _verify_phase_wellformed(events: tuple[AuditEvent, ...]) -> None:
                 f"{type(event).__name__} (sequence {event.sequence_number}) occurs outside "
                 f"any open review phase; node work must be bounded by ReviewPhaseEvent "
                 f"start/end markers (phase-events-bound-work)"
+            )
+    if require_all_terminated:
+        unterminated = sorted(phase_id for phase_id in started if phase_id not in ended)
+        if unterminated:
+            raise ReplayEquivalenceError(
+                f"completed review has unterminated phase(s) {unterminated}; "
+                "phase-events-bound-work requires a phase end event on success"
             )
 
 
@@ -553,6 +566,49 @@ def _verify_full_finding(finding: ReconstructedFinding) -> None:
         )
 
 
+def _verify_row_consistent(
+    event: AuditEvent,
+    *,
+    event_id: UUID,
+    review_id: UUID,
+    event_type: str,
+    timestamp: datetime,
+    is_eval: bool,
+    phase_key: str | None,
+) -> None:
+    """Assert an `audit_events` row's base columns agree with its payload.
+
+    The persister mirrors `event_id` / `review_id` / `event_type` / `timestamp`
+    / `is_eval` / `phase_key` into dedicated columns AND into the JSONB payload
+    from the same event (`persister._row_kwargs_from_event`): the columns are
+    the query surface, the payload is the durable record, and they must match.
+    Replay reconstructs from the payload, so a column that drifts from the
+    payload (direct DB tampering, a future persister bug) would otherwise go
+    undetected. `phase_key` is only populated for `ReviewPhaseEvent` (NULL for
+    every other event type), matching the persister. Timestamps compare by
+    instant (Python aware-datetime equality), so a column and payload that
+    encode the same moment in different tz offsets still agree.
+    """
+    expected_phase_key = event.phase_key if isinstance(event, ReviewPhaseEvent) else None
+    mismatches = [
+        name
+        for name, column_value, payload_value in (
+            ("event_id", event_id, event.event_id),
+            ("review_id", review_id, event.review_id),
+            ("event_type", event_type, event.event_type),
+            ("timestamp", timestamp, event.timestamp),
+            ("is_eval", is_eval, event.is_eval),
+            ("phase_key", phase_key, expected_phase_key),
+        )
+        if column_value != payload_value
+    ]
+    if mismatches:
+        raise ReplayEquivalenceError(
+            f"audit row {event_id} base column(s) disagree with the payload on: "
+            f"{', '.join(mismatches)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # The reconstructor
 # ---------------------------------------------------------------------------
@@ -583,24 +639,45 @@ class AuditReplayer:
         joins the content tables, and classifies the mode by content-row
         presence. Raises `ReplayReviewNotFoundError` if no audit rows exist.
         A corrupted payload surfaces as `pydantic.ValidationError` at this
-        read boundary (the frozen + extra=forbid validator chain re-fires).
+        read boundary (the frozen + extra=forbid validator chain re-fires);
+        a row whose base columns drift from its payload surfaces as
+        `ReplayEquivalenceError` (see `_verify_row_consistent`).
         """
         async with self._session_factory() as session:
             rows = (
                 await session.execute(
-                    select(AuditEventRow.payload, AuditEventRow.sequence_number)
+                    select(
+                        AuditEventRow.event_id,
+                        AuditEventRow.review_id,
+                        AuditEventRow.event_type,
+                        AuditEventRow.timestamp,
+                        AuditEventRow.is_eval,
+                        AuditEventRow.phase_key,
+                        AuditEventRow.payload,
+                        AuditEventRow.sequence_number,
+                    )
                     .where(AuditEventRow.review_id == review_id)
                     .order_by(AuditEventRow.sequence_number.asc())
                 )
             ).all()
             if not rows:
                 raise ReplayReviewNotFoundError(f"no audit_events rows for review_id {review_id}")
-            events: tuple[AuditEvent, ...] = tuple(
-                AuditEventAdapter.validate_python(
+            reconstructed: list[AuditEvent] = []
+            for row in rows:
+                event = AuditEventAdapter.validate_python(
                     {**row.payload, "sequence_number": row.sequence_number}
                 )
-                for row in rows
-            )
+                _verify_row_consistent(
+                    event,
+                    event_id=row.event_id,
+                    review_id=row.review_id,
+                    event_type=row.event_type,
+                    timestamp=row.timestamp,
+                    is_eval=row.is_eval,
+                    phase_key=row.phase_key,
+                )
+                reconstructed.append(event)
+            events: tuple[AuditEvent, ...] = tuple(reconstructed)
 
             review_row = (
                 await session.execute(select(Review).where(Review.id == review_id))
@@ -639,8 +716,10 @@ class AuditReplayer:
         llm_exchanges = tuple(
             ReconstructedLLMExchange(
                 event=event,
-                prompt=row.prompt if (row := content_rows.get(event.event_id)) else None,
-                completion=row.completion if (row := content_rows.get(event.event_id)) else None,
+                prompt=content.prompt if (content := content_rows.get(event.event_id)) else None,
+                completion=(
+                    content.completion if (content := content_rows.get(event.event_id)) else None
+                ),
             )
             for event in events
             if isinstance(event, LLMCallEvent)
@@ -677,7 +756,12 @@ class AuditReplayer:
         """
         review = await self.reconstruct(review_id)
         _verify_sequence_monotonic(review.events)
-        _verify_phase_wellformed(review.events)
+        # A completed review must have terminated every phase ("missing phase
+        # end events on success are violations"). A review whose row is purged
+        # (metadata-only) or non-completed can't assert success, so it tolerates
+        # a trailing unterminated phase.
+        require_all_terminated = review.review is not None and review.review.status == "completed"
+        _verify_phase_wellformed(review.events, require_all_terminated=require_all_terminated)
         _verify_proof_boundary(review.events)
         _verify_cross_event_refs(review.events)
         _verify_mode_consistency(review)

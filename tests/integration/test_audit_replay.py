@@ -404,3 +404,47 @@ async def test_orphan_stored_finding_raises(engine: AsyncEngine) -> None:
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     with pytest.raises(ReplayEquivalenceError, match="no FindingEvent in the audit stream"):
         await replayer.assert_replay_equivalent(review_id)
+
+
+async def test_completed_review_unterminated_phase_raises(engine: AsyncEngine) -> None:
+    # A completed review must close every phase (phase-events-bound-work:
+    # missing phase-end on success is a violation). The analyze phase opens
+    # with a finding but never ends.
+    review_id = uuid4()
+    finding = _finding_event(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id)  # status='completed'
+    await _insert_event(engine, _phase_event(review_id, node_id="analyze", marker="start"))
+    await _insert_event(engine, finding)
+    await _seed_finding_row(engine, finding)
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    with pytest.raises(ReplayEquivalenceError, match="unterminated phase"):
+        await replayer.assert_replay_equivalent(review_id)
+
+
+async def test_row_base_field_drift_raises(engine: AsyncEngine) -> None:
+    # The audit row's is_eval column drifts from its payload's is_eval; replay
+    # reconstructs from the payload and must catch the column/payload divergence.
+    review_id = uuid4()
+    finding = _finding_event(review_id)  # is_eval defaults False in payload
+    payload = finding.model_dump(mode="json", exclude={"sequence_number"})
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events (event_id, review_id, event_type, phase_key, "
+                "timestamp, is_eval, payload) VALUES (:event_id, :review_id, :event_type, "
+                "NULL, :timestamp, TRUE, CAST(:payload AS jsonb))"  # column TRUE vs payload false
+            ),
+            {
+                "event_id": finding.event_id,
+                "review_id": review_id,
+                "event_type": finding.event_type,
+                "timestamp": finding.timestamp,
+                "payload": json.dumps(payload),
+            },
+        )
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    with pytest.raises(ReplayEquivalenceError, match="disagree with the payload"):
+        await replayer.reconstruct(review_id)
