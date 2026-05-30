@@ -303,24 +303,41 @@ def _classify_mode(
 ) -> ReplayMode:
     """Select the reconstruction mode from content-row presence.
 
-    FULL iff the review row is present and every finding + LLM call carries
-    content; METADATA_ONLY iff the review row is absent and no content is
-    present; MIXED otherwise. A review with no findings/LLM calls and a
-    present row classifies FULL (vacuously).
+    Three legitimate states under the retention ordering (LLM content 90d ≤
+    findings/reviews 180d, per `DECISIONS#014`/`#016`):
+
+    - **FULL** — review row present and every finding + LLM call carries content
+      (within the shortest TTL). A review with no findings/LLM calls and a
+      present row classifies FULL vacuously.
+    - **MIXED** — review row present, the shorter-lived LLM content purged
+      (the 90–180d window); finding content still present.
+    - **METADATA_ONLY** — review row absent ⇒ all content purged before it.
+
+    Raises `ReplayEquivalenceError` on the impossible state: review row absent
+    while any content row (finding OR LLM) survives. Because LLM content
+    (90d) purges no later than the review (180d), a purged review implies all
+    its content already purged — a surviving content row with no review is
+    corruption (partial / out-of-order purge or tampering), NOT a legitimate
+    mixed window. The mixed window always has the review row present.
     """
+    any_finding_content = any(f.content is not None for f in findings)
+    any_llm_content = any(x.prompt is not None for x in llm_exchanges)
+    if not review_present and (any_finding_content or any_llm_content):
+        raise ReplayEquivalenceError(
+            "review row is purged but content rows survive "
+            f"(finding_content={any_finding_content}, llm_content={any_llm_content}); "
+            "under the retention ordering a purged review implies all content already "
+            "purged — surviving content with no review row is corruption, not a "
+            "legitimate mixed window"
+        )
     all_present = (
         review_present
         and all(f.content is not None for f in findings)
         and all(x.prompt is not None for x in llm_exchanges)
     )
-    none_present = (
-        not review_present
-        and all(f.content is None for f in findings)
-        and all(x.prompt is None for x in llm_exchanges)
-    )
     if all_present:
         return ReplayMode.FULL
-    if none_present:
+    if not review_present:  # guard above guarantees no content survives here
         return ReplayMode.METADATA_ONLY
     return ReplayMode.MIXED
 

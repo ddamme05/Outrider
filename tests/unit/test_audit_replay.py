@@ -252,6 +252,22 @@ def test_classify_mode_mixed_when_llm_content_purged() -> None:
     )
 
 
+def test_classify_mode_review_absent_with_llm_content_raises() -> None:
+    # Impossible under retention (LLM 90d ≤ review 180d): a purged review with a
+    # surviving LLM content row is corruption, not a legitimate mixed window.
+    exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt="p", completion="c")
+    with pytest.raises(ReplayEquivalenceError, match="surviving content with no review row"):
+        _classify_mode(review_present=False, findings=(), llm_exchanges=(exchange,))
+
+
+def test_classify_mode_review_absent_with_finding_content_raises() -> None:
+    # Same impossibility via a surviving finding content row.
+    finding = ReconstructedFinding(event=_finding_event(), content=None)
+    finding = finding.model_copy(update={"content": _content_for(finding.event)})
+    with pytest.raises(ReplayEquivalenceError, match="surviving content with no review row"):
+        _classify_mode(review_present=False, findings=(finding,), llm_exchanges=())
+
+
 # ---------------------------------------------------------------------------
 # Phase grouping
 # ---------------------------------------------------------------------------
