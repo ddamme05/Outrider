@@ -465,3 +465,23 @@ async def test_review_absent_with_surviving_content_raises(engine: AsyncEngine) 
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     with pytest.raises(ReplayEquivalenceError, match="surviving content with no review row"):
         await replayer.reconstruct(review_id)
+
+
+async def test_review_present_llm_survives_finding_purged_raises(engine: AsyncEngine) -> None:
+    # Sibling of the review-absent corruption case: review present, LLM content
+    # surviving, but the finding's content row purged. Impossible under the
+    # retention ordering (LLM 90d <= findings 180d) -- LLM content cannot outlive
+    # finding content -- so reconstruct() must reject it, not classify MIXED.
+    review_id = uuid4()
+    finding = _finding_event(review_id)
+    llm_call = _llm_call_event(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id)
+    for event in _phase_pair(review_id, "analyze", llm_call, finding):
+        await _insert_event(engine, event)
+    # LLM content survives; finding content row deliberately NOT seeded (purged).
+    await _seed_llm_content(engine, llm_call)
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    with pytest.raises(ReplayEquivalenceError, match="LLM content survives while finding content"):
+        await replayer.reconstruct(review_id)

@@ -313,15 +313,24 @@ def _classify_mode(
       (the 90–180d window); finding content still present.
     - **METADATA_ONLY** — review row absent ⇒ all content purged before it.
 
-    Raises `ReplayEquivalenceError` on the impossible state: review row absent
-    while any content row (finding OR LLM) survives. Because LLM content
-    (90d) purges no later than the review (180d), a purged review implies all
-    its content already purged — a surviving content row with no review is
-    corruption (partial / out-of-order purge or tampering), NOT a legitimate
-    mixed window. The mixed window always has the review row present.
+    Raises `ReplayEquivalenceError` on two impossible states under that
+    ordering:
+
+    - **Review absent + any content survives.** Because content (LLM 90d,
+      findings 180d) purges no later than the review (180d), a purged review
+      implies all its content already purged — surviving content with no
+      review row is corruption (partial / out-of-order purge or tampering).
+    - **LLM content survives + any finding content purged.** Because LLM
+      content (90d) purges no later than finding content (180d), surviving
+      LLM content guarantees the findings window is still open — so a purged
+      finding alongside surviving LLM content is an out-of-order purge /
+      tampering, the sibling of the case above. The legitimate MIXED window
+      is the opposite shape: findings present, the shorter-lived LLM purged.
     """
     any_finding_content = any(f.content is not None for f in findings)
+    all_finding_content = all(f.content is not None for f in findings)
     any_llm_content = any(x.prompt is not None for x in llm_exchanges)
+    all_llm_content = all(x.prompt is not None for x in llm_exchanges)
     if not review_present and (any_finding_content or any_llm_content):
         raise ReplayEquivalenceError(
             "review row is purged but content rows survive "
@@ -330,11 +339,16 @@ def _classify_mode(
             "purged — surviving content with no review row is corruption, not a "
             "legitimate mixed window"
         )
-    all_present = (
-        review_present
-        and all(f.content is not None for f in findings)
-        and all(x.prompt is not None for x in llm_exchanges)
-    )
+    if any_llm_content and not all_finding_content:
+        raise ReplayEquivalenceError(
+            "LLM content survives while finding content is purged "
+            f"(any_llm_content={any_llm_content}, all_finding_content={all_finding_content}); "
+            "the retention ordering (LLM content TTL ≤ findings TTL) requires LLM "
+            "content to purge no later than finding content — surviving LLM content "
+            "with a purged finding is corruption, not a legitimate mixed window "
+            "(MIXED is the opposite shape: findings present, LLM purged)"
+        )
+    all_present = review_present and all_finding_content and all_llm_content
     if all_present:
         return ReplayMode.FULL
     if not review_present:  # guard above guarantees no content survives here
