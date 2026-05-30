@@ -47,6 +47,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import argparse
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -75,9 +79,10 @@ from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
 
-# Reuse the committed e2e-smoke fakes + scenario verbatim (no drift).
+# Reuse the committed e2e-smoke fakes + scenario verbatim (no drift). The default
+# (no --diff-file) path runs the exact proven scenario; --diff-file swaps the
+# analyzed file via the local Scenario stubs below.
 from tests.integration.test_e2e_smoke import (  # noqa: E402
-    _FILE_PATH,
     _RecordingPublisher,
     _StubImportPathResolver,
     _seed_installation,
@@ -87,6 +92,142 @@ from tests.integration.test_e2e_smoke import (  # noqa: E402
 )
 
 _RULE = "=" * 62
+_INSTALLATION_ID = 12345  # matches tests.integration.test_e2e_smoke._INSTALLATION_ID
+_HEAD_SHA = "b" * 40  # matches the seed PRContext head_sha
+
+
+@dataclass(frozen=True)
+class _Scenario:
+    """A file for the live run: path + head content + an all-added patch.
+
+    Intake re-fetches content from the (stubbed) GitHub client and rebuilds
+    `ChangedFile`, so the analyzed content comes from these stubs, NOT the seed
+    state. `--diff-file` builds one of these as an ADDED file (every line is a
+    changed line, so any finding Claude raises lands inline).
+    """
+
+    path: str
+    head_content: str
+    patch: str
+
+
+def _scenario_from_file(diff_path: Path) -> _Scenario:
+    content = diff_path.read_text()
+    rel = f"demo/{diff_path.name}"
+    body_lines = content.splitlines()
+    # Synthetic all-added unified-diff patch (status="added"): /dev/null -> file.
+    patch = (
+        f"--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1,{len(body_lines)} @@\n"
+        + "\n".join(f"+{line}" for line in body_lines)
+        + "\n"
+    )
+    return _Scenario(path=rel, head_content=content, patch=patch)
+
+
+def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object]:
+    """Stub GitHub client serving `scenario` as an added file (intake path)."""
+
+    @dataclass
+    class _Meta:
+        filename: str
+        status: str
+        additions: int
+        deletions: int
+        patch: str | None = None
+        previous_filename: str | None = None
+
+    @dataclass
+    class _ContentFile:
+        encoding: str
+        content: str
+
+    @dataclass
+    class _Resp:
+        parsed_data: object
+
+    class _Repos:
+        async def async_get_content(self, owner: str, repo: str, path: str, *, ref: str) -> _Resp:
+            # Added file: only the head ref is read.
+            return _Resp(
+                _ContentFile(
+                    encoding="base64",
+                    content=base64.b64encode(scenario.head_content.encode()).decode("ascii"),
+                )
+            )
+
+    class _Pulls:
+        async def async_list_files(
+            self, owner: str, repo: str, pull_number: int, **kwargs: object
+        ) -> _Resp:
+            return _Resp(
+                [
+                    _Meta(
+                        filename=scenario.path,
+                        status="added",
+                        additions=len(scenario.head_content.splitlines()),
+                        deletions=0,
+                        patch=scenario.patch,
+                    )
+                ]
+            )
+
+    class _Rest:
+        def __init__(self) -> None:
+            self.repos = _Repos()
+            self.pulls = _Pulls()
+
+    class _GitHub:
+        def __init__(self) -> None:
+            self.rest = _Rest()
+
+    def _factory(installation_id: int) -> object:
+        assert installation_id == _INSTALLATION_ID, f"unexpected installation_id {installation_id}"
+        return _GitHub()
+
+    return _factory
+
+
+def _seed_state_for_scenario(review_id: UUID, scenario: _Scenario) -> object:
+    """Seed ReviewState whose PRContext points at the scenario's added file.
+
+    Intake rebuilds `changed_files` from the stub fetch, so only the PR
+    coordinates (owner/repo/pr_number/shas/installation) are load-bearing here;
+    the seed's `changed_files` entry just has to be a valid added-file shape.
+    """
+    from outrider.schemas.pr_context import ChangedFile, PRContext
+    from outrider.schemas.review_state import ReviewState
+
+    return ReviewState(
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+        pr_context=PRContext(
+            installation_id=_INSTALLATION_ID,
+            owner="acme",
+            repo="widget",
+            pr_number=7,
+            base_sha="a" * 40,
+            head_sha=_HEAD_SHA,
+            pr_title=f"Add {scenario.path}",
+            pr_body=None,
+            author="someone",
+            total_additions=len(scenario.head_content.splitlines()),
+            total_deletions=0,
+            changed_files=(
+                ChangedFile(
+                    path=scenario.path,
+                    status="added",
+                    additions=len(scenario.head_content.splitlines()),
+                    deletions=0,
+                    patch=scenario.patch,
+                    content_base=None,
+                    content_head=scenario.head_content,
+                    previous_path=None,
+                    language="python",
+                ),
+            ),
+        ),
+        is_eval=False,
+    )
 
 
 def _say(msg: str = "") -> None:
@@ -182,15 +323,15 @@ def _migrate(db_url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run(db_url: str, api_key: str) -> bool:
+async def _run(db_url: str, api_key: str, scenario: _Scenario | None) -> bool:
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:
-        return await _drive(engine, api_key)
+        return await _drive(engine, api_key, scenario)
     finally:
         await engine.dispose()
 
 
-async def _drive(engine: AsyncEngine, api_key: str) -> bool:
+async def _drive(engine: AsyncEngine, api_key: str, scenario: _Scenario | None) -> bool:
     review_id = uuid4()
     await _seed_installation(engine)
     await _seed_review(engine, review_id)
@@ -208,9 +349,20 @@ async def _drive(engine: AsyncEngine, api_key: str) -> bool:
         persister=persister,
     )
 
+    # Default (no --diff-file): the exact proven e2e scenario. With --diff-file:
+    # local stubs serve the supplied file (intake re-fetches from these).
+    if scenario is None:
+        github_factory: Callable[[int], object] = _stub_github_factory
+        seed_state = _seed_state(review_id)
+        analyzed_label = "src/handler.py (built-in synthetic diff)"
+    else:
+        github_factory = _make_scenario_github_factory(scenario)
+        seed_state = _seed_state_for_scenario(review_id, scenario)
+        analyzed_label = scenario.path
+
     graph = build_graph(
         db_factory=session_factory,
-        github_factory=_stub_github_factory,
+        github_factory=github_factory,
         provider=provider,
         model_config=ModelConfig(),
         phase_event_sink=persister,
@@ -231,12 +383,10 @@ async def _drive(engine: AsyncEngine, api_key: str) -> bool:
         f"  Models ............... {ModelConfig().analyze_model} (analyze) + "
         f"{ModelConfig().triage_model} (triage/synthesize)"
     )
-    _say(f"  Calling real Claude .. analyzing synthetic diff ({_FILE_PATH})")
+    _say(f"  Calling real Claude .. analyzing {analyzed_label}")
     _say()
 
-    result = await graph.ainvoke(
-        _seed_state(review_id), config={"configurable": {"thread_id": str(review_id)}}
-    )
+    result = await graph.ainvoke(seed_state, config={"configurable": {"thread_id": str(review_id)}})
     await provider.aclose()
 
     interrupted = "__interrupt__" in result
@@ -356,6 +506,26 @@ async def _verify(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--diff-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a source file to analyze as an ADDED file (real Claude reviews "
+            "its full contents). Try scripts/demo_fixtures/blocking_async.py for a "
+            "reliable MEDIUM finding. Omit to run the built-in synthetic diff."
+        ),
+    )
+    args = parser.parse_args()
+
+    scenario: _Scenario | None = None
+    if args.diff_file is not None:
+        if not args.diff_file.is_file():
+            _say(f"  --diff-file not found: {args.diff_file}")
+            return 2
+        scenario = _scenario_from_file(args.diff_file)
+
     _say(_RULE)
     _say("  Outrider — live Claude smoke (real LLM · fake GitHub · real DB)")
     _say(_RULE)
@@ -378,7 +548,7 @@ def main() -> int:
         _migrate(db_url)
         _say("  Migrated ............. alembic upgrade head")
         _say()
-        ok = asyncio.run(_run(db_url, api_key))
+        ok = asyncio.run(_run(db_url, api_key, scenario))
     finally:
         asyncio.run(_drop_db(admin_url, db_name))
         _say(f"  Ephemeral DB ......... {db_name} (dropped)")
