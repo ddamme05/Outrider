@@ -38,12 +38,16 @@ from outrider.audit.replay import (
     _group_phases,
     _verify_cross_event_refs,
     _verify_full_finding,
+    _verify_is_eval_consistent,
     _verify_mode_consistency,
     _verify_phase_wellformed,
     _verify_proof_boundary,
     _verify_row_consistent,
     _verify_sequence_monotonic,
 )
+from outrider.db.models.findings import Finding
+from outrider.db.models.llm_call_content import LLMCallContent
+from outrider.db.models.reviews import Review
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
@@ -170,6 +174,7 @@ def _review_metadata() -> ReconstructedReviewMetadata:
         review_id=_REVIEW_ID,
         installation_id=12345,
         status="completed",
+        is_eval=False,
         repo_id=100,
         pr_number=1,
         head_sha="sha1",
@@ -286,6 +291,67 @@ def test_classify_mode_llm_present_no_findings_ok() -> None:
         _classify_mode(review_present=True, findings=(), llm_exchanges=(exchange,))
         == ReplayMode.FULL
     )
+
+
+# ---------------------------------------------------------------------------
+# is_eval coherence (stream + content tables)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_is_eval_consistent_all_agree_ok() -> None:
+    _verify_is_eval_consistent(
+        stream_is_eval=False,
+        events=(_finding_event(),),
+        review_row=Review(is_eval=False),
+        finding_rows=(Finding(is_eval=False),),
+        content_rows=(LLMCallContent(is_eval=False),),
+    )  # no raise
+
+
+def test_verify_is_eval_consistent_rejects_review_row_drift() -> None:
+    with pytest.raises(ReplayEquivalenceError, match="reviews row is_eval"):
+        _verify_is_eval_consistent(
+            stream_is_eval=False,
+            events=(_finding_event(),),
+            review_row=Review(is_eval=True),  # drifts from stream
+            finding_rows=(),
+            content_rows=(),
+        )
+
+
+def test_verify_is_eval_consistent_rejects_finding_row_drift() -> None:
+    with pytest.raises(ReplayEquivalenceError, match="findings row"):
+        _verify_is_eval_consistent(
+            stream_is_eval=False,
+            events=(_finding_event(),),
+            review_row=None,
+            finding_rows=(Finding(is_eval=True),),  # drifts
+            content_rows=(),
+        )
+
+
+def test_verify_is_eval_consistent_rejects_llm_content_row_drift() -> None:
+    with pytest.raises(ReplayEquivalenceError, match="llm_call_content row"):
+        _verify_is_eval_consistent(
+            stream_is_eval=False,
+            events=(_finding_event(),),
+            review_row=None,
+            finding_rows=(),
+            content_rows=(LLMCallContent(is_eval=True),),  # drifts
+        )
+
+
+def test_verify_is_eval_consistent_rejects_mixed_events() -> None:
+    eval_event = _finding_event()
+    eval_event = eval_event.model_copy(update={"is_eval": True})
+    with pytest.raises(ReplayEquivalenceError, match="mixed is_eval"):
+        _verify_is_eval_consistent(
+            stream_is_eval=False,
+            events=(_finding_event(), eval_event),  # second event drifts
+            review_row=None,
+            finding_rows=(),
+            content_rows=(),
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -485,3 +485,30 @@ async def test_review_present_llm_survives_finding_purged_raises(engine: AsyncEn
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     with pytest.raises(ReplayEquivalenceError, match="LLM content survives while finding content"):
         await replayer.reconstruct(review_id)
+
+
+async def test_review_row_is_eval_drift_raises(engine: AsyncEngine) -> None:
+    # Eval-isolation drift: the reviews row carries is_eval=TRUE while the audit
+    # stream is is_eval=False (the _insert_event default). reconstruct() must
+    # reject the table-vs-stream divergence rather than mis-bucket the review.
+    review_id = uuid4()
+    finding = _finding_event(review_id)  # is_eval=False in payload + column
+    await _seed_installation(engine)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
+                "status, is_eval, files_examined, files_traced_beyond_diff, llm_calls_made, "
+                "total_input_tokens, total_output_tokens, total_cost_usd, wall_clock_seconds, "
+                "retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', 'completed', "
+                "TRUE, 1, 0, 1, 100, 50, 0.01, 1.5, NOW() + INTERVAL '180 days')"
+            ),
+            {"id": review_id, "iid": _INSTALLATION_ID},
+        )
+    for event in _phase_pair(review_id, "analyze", finding):
+        await _insert_event(engine, event)
+    await _seed_finding_row(engine, finding)
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    with pytest.raises(ReplayEquivalenceError, match="reviews row is_eval"):
+        await replayer.reconstruct(review_id)

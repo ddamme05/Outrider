@@ -54,7 +54,13 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -280,3 +286,23 @@ async def eval_db() -> AsyncGenerator[str]:
                 await conn.execute(text(f'DROP DATABASE IF EXISTS "{test_db_name}"'))
         finally:
             await admin_engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def eval_db_session_factory(
+    eval_db: str,
+) -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
+    """An ``async_sessionmaker`` bound to the per-test eval database.
+
+    The HITL-resume scenario (FUP-105) injects this into ``AuditReplayer``
+    so replay reconstructs from the same eval DB the run was recorded in.
+    Built from ``eval_db``'s URL with ``expire_on_commit=False`` (mirrors the
+    ``AuditPersister`` construction discipline) and ``NullPool`` so no idle
+    connection lingers to race ``eval_db``'s teardown DROP — the engine is
+    disposed here (inner fixture) before ``eval_db`` drops the database.
+    """
+    engine = create_async_engine(eval_db, poolclass=NullPool)
+    try:
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
