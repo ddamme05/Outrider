@@ -312,8 +312,12 @@ def _classify_mode(
     - **FULL** — review row present and every finding + LLM call carries content
       (within the shortest TTL). A review with no findings/LLM calls and a
       present row classifies FULL vacuously.
-    - **MIXED** — review row present, the shorter-lived LLM content purged
-      (the 90–180d window); finding content still present.
+    - **MIXED** — review row present but not every content item is full. The
+      canonical case is the 90–180d window where the shorter-lived LLM content
+      has purged while finding content remains; more generally it is the
+      residual partial-presence state that is neither FULL nor one of the two
+      impossible shapes below. Every item is labelled individually rather than
+      silently hybridized.
     - **METADATA_ONLY** — review row absent ⇒ all content purged before it.
 
     Raises `ReplayEquivalenceError` on two impossible states under that
@@ -674,8 +678,8 @@ def _verify_full_finding(finding: ReconstructedFinding) -> None:
         )
     event = finding.event
     mismatches = [
-        field
-        for field, content_value, event_value in (
+        field_name
+        for field_name, content_value, event_value in (
             ("content_hash", content.content_hash, event.finding_content_hash),
             ("finding_type", content.finding_type, event.finding_type),
             ("severity", content.severity, event.severity),
@@ -774,6 +778,13 @@ class AuditReplayer:
         read boundary (the frozen + extra=forbid validator chain re-fires);
         a row whose base columns drift from its payload surfaces as
         `ReplayEquivalenceError` (see `_verify_row_consistent`).
+
+        Also enforced here (so direct read-model consumers such as the
+        timeline UI get them without calling `assert_replay_equivalent`):
+        `is_eval` coherence across the stream and every joined content row
+        (raising `ReplayEquivalenceError` on drift, see
+        `_verify_is_eval_consistent`), and population of `orphan_finding_ids`
+        (stored `findings` rows with no `FindingEvent` in the stream).
         """
         async with self._session_factory() as session:
             rows = (
@@ -889,15 +900,18 @@ class AuditReplayer:
     async def assert_replay_equivalent(self, review_id: UUID) -> None:
         """Reconstruct and assert the review replays faithfully (verify-only).
 
-        Runs the mode-aware checklist: deserialization (via `reconstruct`),
-        sequence monotonicity, phase well-formedness (work bounded by phase
-        markers + node-containment, ordering, marker agreement), proof re-verification (registry
-        membership + hash recompute + proof-artifact agreement in full mode),
-        cross-event reference resolution, no-orphan-stored-findings, historical-
-        policy severity reconstruction, and the mode-appropriate content checks
-        (full content equality only in FULL mode; metadata-only mode asserts
-        shape/stubs, never content equality). Raises `ReplayEquivalenceError`
-        naming the failing check; returns `None` on success.
+        Runs the mode-aware checklist: deserialization, row-vs-payload
+        base-column consistency, and `is_eval` coherence across the stream +
+        content tables (all three via `reconstruct`), then sequence
+        monotonicity, phase well-formedness (work bounded by phase markers +
+        node-containment, ordering, marker agreement), proof re-verification
+        (registry membership + hash recompute + proof-artifact agreement in
+        full mode), cross-event reference resolution, no-orphan-stored-findings,
+        historical-policy severity reconstruction, and the mode-appropriate
+        content checks (full content equality only in FULL mode; metadata-only
+        mode asserts shape/stubs, never content equality). Raises
+        `ReplayEquivalenceError` naming the failing check; returns `None` on
+        success.
         """
         review = await self.reconstruct(review_id)
         _verify_sequence_monotonic(review.events)
