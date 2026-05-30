@@ -474,6 +474,39 @@ def test_verify_phase_wellformed_allows_transition_outside_phase() -> None:
     _verify_phase_wellformed(events)  # no raise
 
 
+def test_verify_phase_wellformed_rejects_node_mismatched_work() -> None:
+    # Node containment: an analyze LLM call inside a triage phase is not
+    # graph-faithful — the work's node_id must match an open phase's node.
+    events = (
+        _phase_event(node_id="triage", marker="start", phase_id="triage:0"),
+        _llm_call_event(),  # node_id="analyze" (unit builder default)
+        _phase_event(node_id="triage", marker="end", phase_id="triage:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="no open phase matches that node"):
+        _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_allows_node_matched_work() -> None:
+    # The same LLM call inside its own analyze phase is fine.
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _llm_call_event(),  # node_id="analyze"
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:0"),
+    )
+    _verify_phase_wellformed(events)  # no raise
+
+
+def test_verify_phase_wellformed_node_less_work_skips_node_check() -> None:
+    # FindingEvent carries no node_id, so it is bounded but not node-matched —
+    # a finding in any open phase (here triage) is accepted.
+    events = (
+        _phase_event(node_id="triage", marker="start", phase_id="triage:0"),
+        _finding_event(),  # no node_id
+        _phase_event(node_id="triage", marker="end", phase_id="triage:0"),
+    )
+    _verify_phase_wellformed(events)  # no raise
+
+
 def test_verify_phase_wellformed_rejects_end_before_start() -> None:
     # In sequence order, the end precedes the start → no preceding start.
     events = (

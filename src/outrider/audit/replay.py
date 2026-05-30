@@ -385,6 +385,14 @@ def _verify_phase_wellformed(
     - **Boundedness.** Every work event occurs while a phase is open.
       `AgentTransitionEvent` and the phase markers themselves are exempt —
       transitions legitimately occur before/between phases.
+    - **Node containment.** A work event that carries its own `node_id`
+      (`LLMCallEvent`, `FileExaminationEvent`, the analyze/synthesize
+      aggregates) must occur inside a phase whose `node_id` matches — an
+      `analyze` LLM call belongs in an `analyze` phase, not a `triage` one.
+      This makes the stream graph-faithful, not merely phase-bounded: a graph
+      node emits its work between its own phase markers. Events without a
+      `node_id` (`FindingEvent`, `TraceDecisionEvent`, HITL / publish events)
+      are bounded but not node-matched — they have no node to match against.
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).
@@ -440,6 +448,22 @@ def _verify_phase_wellformed(
                 f"any open review phase; node work must be bounded by ReviewPhaseEvent "
                 f"start/end markers (phase-events-bound-work)"
             )
+        else:
+            # Node containment: a work event that carries a node_id must sit in
+            # an open phase for that same node (graph-faithfulness). Events with
+            # no node_id (FindingEvent, TraceDecisionEvent, HITL/publish) are
+            # bounded above but have no node to match, so they skip this.
+            event_node_id = getattr(event, "node_id", None)
+            if event_node_id is not None and not any(
+                phase.node_id == event_node_id for phase in open_phases.values()
+            ):
+                open_node_ids = sorted({phase.node_id for phase in open_phases.values()})
+                raise ReplayEquivalenceError(
+                    f"{type(event).__name__} (sequence {event.sequence_number}) carries "
+                    f"node_id={event_node_id!r} but no open phase matches that node "
+                    f"(open phases: {open_node_ids}); a graph node's work must be bounded "
+                    f"by its own phase markers (phase-events-bound-work)"
+                )
     if require_all_terminated:
         unterminated = sorted(phase_id for phase_id in started if phase_id not in ended)
         if unterminated:
@@ -791,7 +815,7 @@ class AuditReplayer:
 
         Runs the mode-aware checklist: deserialization (via `reconstruct`),
         sequence monotonicity, phase well-formedness (work bounded by phase
-        markers, ordering, marker agreement), proof re-verification (registry
+        markers + node-containment, ordering, marker agreement), proof re-verification (registry
         membership + hash recompute + proof-artifact agreement in full mode),
         cross-event reference resolution, no-orphan-stored-findings, historical-
         policy severity reconstruction, and the mode-appropriate content checks
