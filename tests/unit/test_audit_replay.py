@@ -268,6 +268,26 @@ def test_classify_mode_review_absent_with_finding_content_raises() -> None:
         _classify_mode(review_present=False, findings=(finding,), llm_exchanges=())
 
 
+def test_classify_mode_llm_present_finding_purged_raises() -> None:
+    # Sibling of the review-absent guard: LLM content (90d) purges no later than
+    # finding content (180d), so surviving LLM content with a purged finding is
+    # an out-of-order purge — corruption, not a legitimate MIXED window.
+    stub_finding = ReconstructedFinding(event=_finding_event(), content=None)  # content purged
+    exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt="p", completion="c")
+    with pytest.raises(ReplayEquivalenceError, match="LLM content survives while finding content"):
+        _classify_mode(review_present=True, findings=(stub_finding,), llm_exchanges=(exchange,))
+
+
+def test_classify_mode_llm_present_no_findings_ok() -> None:
+    # A review with LLM calls but zero findings is FULL, not corruption:
+    # all_finding_content is vacuously true, so Guard 2 does not fire.
+    exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt="p", completion="c")
+    assert (
+        _classify_mode(review_present=True, findings=(), llm_exchanges=(exchange,))
+        == ReplayMode.FULL
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase grouping
 # ---------------------------------------------------------------------------
