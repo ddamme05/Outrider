@@ -41,6 +41,7 @@ from outrider.audit.replay import (
     _verify_mode_consistency,
     _verify_phase_wellformed,
     _verify_proof_boundary,
+    _verify_row_consistent,
     _verify_sequence_monotonic,
 )
 from outrider.policy.findings import EvidenceTier
@@ -388,6 +389,68 @@ def test_verify_phase_wellformed_rejects_node_id_mismatch() -> None:
     )
     with pytest.raises(ReplayEquivalenceError, match="node_id"):
         _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_require_terminated_rejects_unterminated() -> None:
+    # A completed review (require_all_terminated=True) must close every phase.
+    events = (_phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),)
+    with pytest.raises(ReplayEquivalenceError, match="requires a phase end event on success"):
+        _verify_phase_wellformed(events, require_all_terminated=True)
+
+
+def test_verify_phase_wellformed_require_terminated_allows_balanced() -> None:
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:0"),
+    )
+    _verify_phase_wellformed(events, require_all_terminated=True)  # no raise
+
+
+# ---------------------------------------------------------------------------
+# Row-vs-payload base-field consistency
+# ---------------------------------------------------------------------------
+
+
+def _row_kwargs(event: object) -> dict[str, object]:
+    """Build matching row-column kwargs from an event (the happy path)."""
+    return {
+        "event_id": event.event_id,
+        "review_id": event.review_id,
+        "event_type": event.event_type,
+        "timestamp": event.timestamp,
+        "is_eval": event.is_eval,
+        "phase_key": event.phase_key if isinstance(event, ReviewPhaseEvent) else None,
+    }
+
+
+def test_verify_row_consistent_matching_ok() -> None:
+    event = _finding_event()
+    _verify_row_consistent(event, **_row_kwargs(event))  # type: ignore[arg-type]  # no raise
+
+
+def test_verify_row_consistent_rejects_is_eval_drift() -> None:
+    event = _finding_event()
+    kwargs = _row_kwargs(event)
+    kwargs["is_eval"] = not event.is_eval
+    with pytest.raises(ReplayEquivalenceError, match="is_eval"):
+        _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
+
+
+def test_verify_row_consistent_rejects_event_type_drift() -> None:
+    event = _finding_event()
+    kwargs = _row_kwargs(event)
+    kwargs["event_type"] = "llm_call"
+    with pytest.raises(ReplayEquivalenceError, match="event_type"):
+        _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
+
+
+def test_verify_row_consistent_rejects_phase_key_on_non_phase_event() -> None:
+    # phase_key column must be NULL for a non-ReviewPhaseEvent row.
+    event = _finding_event()
+    kwargs = _row_kwargs(event)
+    kwargs["phase_key"] = "analyze:0"
+    with pytest.raises(ReplayEquivalenceError, match="phase_key"):
+        _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
