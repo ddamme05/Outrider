@@ -338,10 +338,9 @@ class LLMCallEvent(AuditEventBase):
     # the bool means audit-stream queries like "how many parse_failed
     # analyze calls did we make this month" become unanswerable. Same
     # bidirectional coupling as `LLMRequest.degradation_reason` enforced
-    # by `_enforce_degradation_reason_consistency` below. Spec gap
-    # surfaced by the §0b ; landing in the same commit per
-    # `feedback_spec_gaps_surface_as_suggestions` since omission would
-    # corrupt replay reconstruction.
+    # by `_enforce_degradation_reason_consistency` below. Modeled as an
+    # enum rather than a bool because dropping the reason would corrupt
+    # replay reconstruction.
     degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
 
     @model_validator(mode="after")
@@ -1978,8 +1977,8 @@ class AnalyzeCompletedEvent(AuditEventBase):
 
     Counter fields are cross-validated by two model validators so a counter
     that lies (`n_findings_emitted=5` with only 3 findings actually fired)
-    fails Pydantic construction, not just reads weird. Per §5 of
-    `specs/2026-05-19-analyze-foundation.md` and
+    fails Pydantic construction, not just reads weird. See §5 of
+    `specs/2026-05-19-analyze-foundation.md`.
     """
 
     event_type: Literal["analyze_completed"] = "analyze_completed"
