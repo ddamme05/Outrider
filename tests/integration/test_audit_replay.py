@@ -448,3 +448,20 @@ async def test_row_base_field_drift_raises(engine: AsyncEngine) -> None:
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     with pytest.raises(ReplayEquivalenceError, match="disagree with the payload"):
         await replayer.reconstruct(review_id)
+
+
+async def test_review_absent_with_surviving_content_raises(engine: AsyncEngine) -> None:
+    # Impossible under the retention ordering (LLM 90d ≤ reviews 180d): a purged
+    # review row with a surviving llm_call_content row is corruption, not a
+    # legitimate mixed window. No reviews row is seeded; the audit LLMCallEvent
+    # + its content row are. reconstruct() classifies the mode and must reject.
+    review_id = uuid4()
+    llm_call = _llm_call_event(review_id)
+    await _seed_installation(engine)
+    # NO _seed_review — the review row is absent (purged).
+    await _insert_event(engine, llm_call)
+    await _seed_llm_content(engine, llm_call)  # content survives the (absent) review
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    with pytest.raises(ReplayEquivalenceError, match="surviving content with no review row"):
+        await replayer.reconstruct(review_id)
