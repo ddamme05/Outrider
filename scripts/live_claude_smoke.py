@@ -121,10 +121,10 @@ class _Scenario:
 
 def _scenario_from_file(diff_path: Path) -> _Scenario:
     content = diff_path.read_text()
-    # `src/` (not `demo/`): triage is path-aware and tiers `demo/`-prefixed
-    # paths down to SKIM, which makes analyze skip the file entirely (it only
-    # LLM-analyzes DEEP/STANDARD tiers). A production-looking path lets triage
-    # judge the code, not the directory.
+    # Serve under `src/` so the synthetic ADDED file lands inline like real
+    # production code under review. Triage tiers on the diff content (which it
+    # sees in full), not on the directory; the path mainly affects how the
+    # finding routes at publish, not whether analyze runs.
     rel = f"src/{diff_path.name}"
     body_lines = content.splitlines()
     # Synthetic all-added unified-diff patch (status="added"): /dev/null -> file.
@@ -599,8 +599,11 @@ def main() -> int:
         default=None,
         help=(
             "Path to a source file to analyze as an ADDED file (real Claude reviews "
-            "its full contents). Try scripts/demo_fixtures/blocking_async.py for a "
-            "reliable MEDIUM finding. Omit to run the built-in synthetic diff."
+            "its full contents). Try scripts/demo_fixtures/api_request_handler.py — its "
+            "diff is substantial and clearly security-relevant so triage tiers it "
+            "DEEP/STANDARD (triage reads the diff content, the precondition for analyze "
+            "to run), and its body has MEDIUM vulns that publish. Omit to run the "
+            "built-in synthetic diff."
         ),
     )
     args = parser.parse_args()
