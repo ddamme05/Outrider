@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
 import pytest
@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from outrider.audit.events import (
+    AuditEventBase,
     FindingEvent,
     LLMCallEvent,
     ReviewPhaseEvent,
@@ -127,14 +128,37 @@ def _llm_call_event(review_id: UUID) -> LLMCallEvent:
     )
 
 
-def _phase_event(review_id: UUID, *, node_id: str, marker: str) -> ReviewPhaseEvent:
+def _phase_event(
+    review_id: UUID,
+    *,
+    node_id: Literal["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"],
+    marker: Literal["start", "end"],
+) -> ReviewPhaseEvent:
     return ReviewPhaseEvent(
         review_id=review_id,
         phase_id=f"{node_id}:0",
-        node_id=node_id,  # type: ignore[arg-type]
-        marker=marker,  # type: ignore[arg-type]
+        node_id=node_id,
+        marker=marker,
         phase_key=None,
     )
+
+
+def _phase_pair(
+    review_id: UUID,
+    node_id: Literal["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"],
+    *work: AuditEventBase,
+) -> list[AuditEventBase]:
+    """Wrap work events in a `node_id` phase start/end pair.
+
+    Phase markers survive retention (they are audit rows), so a faithful
+    metadata-only stream still carries them — and `phase-events-bound-work`
+    requires every work event to be phase-bounded.
+    """
+    return [
+        _phase_event(review_id, node_id=node_id, marker="start"),
+        *work,
+        _phase_event(review_id, node_id=node_id, marker="end"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +193,8 @@ async def _seed_review(engine: AsyncEngine, review_id: UUID) -> None:
         )
 
 
-async def _insert_event(engine: AsyncEngine, event: object) -> None:
-    payload = event.model_dump(mode="json", exclude={"sequence_number"})  # type: ignore[attr-defined]
+async def _insert_event(engine: AsyncEngine, event: AuditEventBase) -> None:
+    payload = event.model_dump(mode="json", exclude={"sequence_number"})
     phase_key = event.phase_key if isinstance(event, ReviewPhaseEvent) else None
     async with engine.begin() as conn:
         await conn.execute(
@@ -180,11 +204,11 @@ async def _insert_event(engine: AsyncEngine, event: object) -> None:
                 ":timestamp, CAST(:payload AS jsonb))"
             ),
             {
-                "event_id": event.event_id,  # type: ignore[attr-defined]
-                "review_id": event.review_id,  # type: ignore[attr-defined]
-                "event_type": event.event_type,  # type: ignore[attr-defined]
+                "event_id": event.event_id,
+                "review_id": event.review_id,
+                "event_type": event.event_type,
                 "phase_key": phase_key,
-                "timestamp": event.timestamp,  # type: ignore[attr-defined]
+                "timestamp": event.timestamp,
                 "payload": json.dumps(payload),
             },
         )
@@ -284,7 +308,7 @@ async def test_metadata_only_mode_reconstruct_and_assert(engine: AsyncEngine) ->
     review_id = uuid4()
     finding = _finding_event(review_id)
     llm_call = _llm_call_event(review_id)
-    for event in (finding, llm_call):
+    for event in _phase_pair(review_id, "analyze", llm_call, finding):
         await _insert_event(engine, event)
 
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
@@ -305,7 +329,7 @@ async def test_mixed_mode_when_llm_content_purged(engine: AsyncEngine) -> None:
     llm_call = _llm_call_event(review_id)
     await _seed_installation(engine)
     await _seed_review(engine, review_id)
-    for event in (finding, llm_call):
+    for event in _phase_pair(review_id, "analyze", llm_call, finding):
         await _insert_event(engine, event)
     await _seed_finding_row(engine, finding)
     # deliberately NO _seed_llm_content — content row purged
@@ -335,7 +359,8 @@ async def test_historical_policy_severity_reconstructs(engine: AsyncEngine) -> N
         severity=FindingSeverity.CRITICAL,  # matches 0.9.0's mapping
         policy_version="0.9.0",
     )
-    await _insert_event(engine, finding)
+    for event in _phase_pair(review_id, "analyze", finding):
+        await _insert_event(engine, event)
 
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     await replayer.assert_replay_equivalent(review_id)  # loads 0.9.0, severity matches
@@ -353,8 +378,29 @@ async def test_historical_policy_severity_mismatch_raises(engine: AsyncEngine) -
         severity=FindingSeverity.LOW,
         policy_version="0.9.0",
     )
-    await _insert_event(engine, finding)
+    for event in _phase_pair(review_id, "analyze", finding):
+        await _insert_event(engine, event)
 
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     with pytest.raises(ReplayEquivalenceError, match="does not match"):
+        await replayer.assert_replay_equivalent(review_id)
+
+
+async def test_orphan_stored_finding_raises(engine: AsyncEngine) -> None:
+    # A findings-table row whose finding_id has no FindingEvent in the audit
+    # stream is an append-only violation — replay must reject it, not ignore it.
+    review_id = uuid4()
+    finding = _finding_event(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id)
+    for event in _phase_pair(review_id, "analyze", finding):
+        await _insert_event(engine, event)
+    await _seed_finding_row(engine, finding)
+    # A second stored finding with NO corresponding FindingEvent (never inserted
+    # into audit_events) — the orphan.
+    orphan = _finding_event(review_id)
+    await _seed_finding_row(engine, orphan)
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    with pytest.raises(ReplayEquivalenceError, match="no FindingEvent in the audit stream"):
         await replayer.assert_replay_equivalent(review_id)

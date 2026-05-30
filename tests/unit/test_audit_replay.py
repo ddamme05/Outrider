@@ -11,11 +11,13 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID, uuid4
 
 import pytest
 
 from outrider.audit.events import (
+    AgentTransitionEvent,
     FindingEvent,
     LLMCallEvent,
     ReviewPhaseEvent,
@@ -90,13 +92,17 @@ def _finding_event(
 
 
 def _phase_event(
-    *, node_id: str, marker: str, phase_id: str | None = None, sequence_number: int | None = None
+    *,
+    node_id: Literal["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"],
+    marker: Literal["start", "end"],
+    phase_id: str | None = None,
+    sequence_number: int | None = None,
 ) -> ReviewPhaseEvent:
     return ReviewPhaseEvent(
         review_id=_REVIEW_ID,
         phase_id=phase_id or f"{node_id}:0",
-        node_id=node_id,  # type: ignore[arg-type]
-        marker=marker,  # type: ignore[arg-type]
+        node_id=node_id,
+        marker=marker,
         phase_key=None,
         sequence_number=sequence_number,
     )
@@ -119,6 +125,16 @@ def _llm_call_event(*, sequence_number: int | None = None) -> LLMCallEvent:
         prompt_template_version="analyze.v1",
         system_prompt_hash=hashlib.sha256(b"sys").hexdigest(),
         degraded_mode=False,
+        sequence_number=sequence_number,
+    )
+
+
+def _transition_event(*, sequence_number: int | None = None) -> AgentTransitionEvent:
+    return AgentTransitionEvent(
+        review_id=_REVIEW_ID,
+        from_node="webhook",
+        to_node="intake",
+        latency_ms=5,
         sequence_number=sequence_number,
     )
 
@@ -318,13 +334,59 @@ def test_verify_phase_wellformed_rejects_duplicate_start() -> None:
         _phase_event(node_id="intake", marker="start", phase_id="intake:0"),
         _phase_event(node_id="intake", marker="start", phase_id="intake:0"),
     )
-    with pytest.raises(ReplayEquivalenceError, match="start markers"):
+    with pytest.raises(ReplayEquivalenceError, match="more than one start marker"):
         _verify_phase_wellformed(events)
 
 
 def test_verify_phase_wellformed_rejects_end_without_start() -> None:
     events = (_phase_event(node_id="intake", marker="end", phase_id="intake:0"),)
-    with pytest.raises(ReplayEquivalenceError, match="end marker with no start"):
+    with pytest.raises(ReplayEquivalenceError, match="end marker with no preceding start"):
+        _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_allows_work_within_phase() -> None:
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _llm_call_event(),
+        _finding_event(),
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:0"),
+    )
+    _verify_phase_wellformed(events)  # no raise — work is bounded
+
+
+def test_verify_phase_wellformed_rejects_work_outside_phase() -> None:
+    # phase-events-bound-work: a finding with no enclosing phase is unbounded.
+    events = (_finding_event(),)
+    with pytest.raises(ReplayEquivalenceError, match="outside any open review phase"):
+        _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_allows_transition_outside_phase() -> None:
+    # AgentTransitionEvent legitimately occurs before/between phases.
+    events = (
+        _transition_event(),
+        _phase_event(node_id="intake", marker="start", phase_id="intake:0"),
+        _phase_event(node_id="intake", marker="end", phase_id="intake:0"),
+    )
+    _verify_phase_wellformed(events)  # no raise
+
+
+def test_verify_phase_wellformed_rejects_end_before_start() -> None:
+    # In sequence order, the end precedes the start → no preceding start.
+    events = (
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:0"),
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="end marker with no preceding start"):
+        _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_rejects_node_id_mismatch() -> None:
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _phase_event(node_id="triage", marker="end", phase_id="analyze:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="node_id"):
         _verify_phase_wellformed(events)
 
 
@@ -409,6 +471,17 @@ def test_verify_full_finding_content_mismatch_raises() -> None:
     event = _finding_event()
     content = _content_for(event).model_copy(update={"severity": FindingSeverity.LOW})
     with pytest.raises(ReplayEquivalenceError, match="disagrees with audit event"):
+        _verify_full_finding(ReconstructedFinding(event=event, content=content))
+
+
+def test_verify_full_finding_proof_artifact_mismatch_raises() -> None:
+    # The content row's proof artifact (query_match_id) disagrees with the
+    # canonical FindingEvent — full mode must catch it.
+    event = _finding_event(
+        evidence_tier=EvidenceTier.OBSERVED, query_match_id="python.function_definition"
+    )
+    content = _content_for(event).model_copy(update={"query_match_id": "python.class_definition"})
+    with pytest.raises(ReplayEquivalenceError, match="query_match_id"):
         _verify_full_finding(ReconstructedFinding(event=event, content=content))
 
 
