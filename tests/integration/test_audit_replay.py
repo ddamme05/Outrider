@@ -547,14 +547,21 @@ async def test_full_mode_through_production_persister(
     engine = persister_setup.engine
     review_id = persister_setup.review_id
 
-    # Drive the production write path for the audit stream.
-    await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="start"))
-    llm_event = llm_call_event_factory(review_id)
+    # Drive the production write path for the audit stream, graph-faithfully:
+    # the LLM call carries node_id="triage" (the conftest factory's default),
+    # so it belongs inside a triage phase — replay's node-containment check
+    # rejects a triage call inside an analyze phase. The finding (no node_id)
+    # is emitted in its own analyze phase, mirroring the real node sequence.
+    await persister.emit_phase(_phase_event(review_id, node_id="triage", marker="start"))
+    llm_event = llm_call_event_factory(review_id)  # node_id="triage"
     await persister.persist(
         llm_event,
         llm_request_factory(review_id),
         llm_response_factory(),
     )
+    await persister.emit_phase(_phase_event(review_id, node_id="triage", marker="end"))
+
+    await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="start"))
     finding = _finding_event(review_id)
     await persister.emit_finding(finding)
     await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="end"))
@@ -581,5 +588,7 @@ async def test_full_mode_through_production_persister(
     # Content came through the real persister (llm_response_factory's default text).
     assert review.llm_exchanges[0].prompt is not None
     assert review.llm_exchanges[0].completion is not None
+    # Graph-faithful phase structure: triage phase (its LLM call) then analyze.
+    assert [p.node_id for p in review.phases] == ["triage", "analyze"]
 
     await replayer.assert_replay_equivalent(review_id)  # no raise
