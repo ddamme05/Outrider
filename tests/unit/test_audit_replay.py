@@ -18,6 +18,7 @@ import pytest
 
 from outrider.audit.events import (
     AgentTransitionEvent,
+    FileExaminationEvent,
     FindingEvent,
     LLMCallEvent,
     ReviewPhaseEvent,
@@ -496,15 +497,91 @@ def test_verify_phase_wellformed_allows_node_matched_work() -> None:
     _verify_phase_wellformed(events)  # no raise
 
 
-def test_verify_phase_wellformed_node_less_work_skips_node_check() -> None:
-    # FindingEvent carries no node_id, so it is bounded but not node-matched —
-    # a finding in any open phase (here triage) is accepted.
+def test_verify_phase_wellformed_intake_file_examination_in_intake_phase() -> None:
+    # FileExaminationEvent carries node_id="intake"; the intake node DOES emit
+    # intake phase markers (intake.py), so an intake file-examination inside an
+    # intake phase is graph-faithful and accepted. Guards the false-positive
+    # where node-containment would wrongly reject the most common real stream
+    # (every production review intake-fetches files).
+    fe = FileExaminationEvent(
+        review_id=_REVIEW_ID,
+        file_path="src/app/models.py",
+        examination_type="intake_fetch",
+        node_id="intake",
+        parse_status="clean",
+    )
     events = (
-        _phase_event(node_id="triage", marker="start", phase_id="triage:0"),
-        _finding_event(),  # no node_id
-        _phase_event(node_id="triage", marker="end", phase_id="triage:0"),
+        _phase_event(node_id="intake", marker="start", phase_id="intake:0"),
+        fe,
+        _phase_event(node_id="intake", marker="end", phase_id="intake:0"),
     )
     _verify_phase_wellformed(events)  # no raise
+
+
+def test_verify_phase_wellformed_rejects_file_examination_in_wrong_phase() -> None:
+    # The same intake file-examination inside a triage phase is not graph-faithful.
+    fe = FileExaminationEvent(
+        review_id=_REVIEW_ID,
+        file_path="src/app/models.py",
+        examination_type="intake_fetch",
+        node_id="intake",
+        parse_status="clean",
+    )
+    events = (
+        _phase_event(node_id="triage", marker="start", phase_id="triage:0"),
+        fe,
+        _phase_event(node_id="triage", marker="end", phase_id="triage:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="owned by node 'intake'"):
+        _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_node_less_owned_work_matches_owner() -> None:
+    # FindingEvent carries no node_id but is analyze-owned: in an analyze phase
+    # it is accepted.
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _finding_event(),  # node-less, owned by analyze
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:0"),
+    )
+    _verify_phase_wellformed(events)  # no raise
+
+
+def test_verify_phase_wellformed_rejects_node_less_owned_work_in_wrong_phase() -> None:
+    # An analyze-owned FindingEvent inside a triage phase is not graph-faithful:
+    # production emits admitted findings from the analyze node (analyze.py).
+    events = (
+        _phase_event(node_id="triage", marker="start", phase_id="triage:0"),
+        _finding_event(),  # node-less, owned by analyze
+        _phase_event(node_id="triage", marker="end", phase_id="triage:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="owned by node 'analyze'"):
+        _verify_phase_wellformed(events)
+
+
+def test_node_less_events_have_owner_or_exemption() -> None:
+    # Completeness guard: every concrete AuditEvent subtype must either carry
+    # its own `node_id`, be in the node-less owner map, or be explicitly
+    # phase-unbounded — so a future node-less event type cannot silently skip
+    # the node-containment check (the loophole this round closes).
+    import typing
+
+    from outrider.audit.events import AuditEvent as _AuditEventUnion
+    from outrider.audit.replay import _NODE_LESS_EVENT_OWNER, _PHASE_UNBOUNDED_EVENTS
+
+    members = typing.get_args(typing.get_args(_AuditEventUnion)[0])
+    assert members, "AuditEvent union should have members"
+    for member in members:
+        has_node_id = "node_id" in member.model_fields
+        classified = (
+            has_node_id or member in _NODE_LESS_EVENT_OWNER or member in _PHASE_UNBOUNDED_EVENTS
+        )
+        assert classified, (
+            f"{member.__name__} carries no node_id and is neither in "
+            f"_NODE_LESS_EVENT_OWNER nor _PHASE_UNBOUNDED_EVENTS; it would silently "
+            f"skip node-containment. Add it to the owner map (or the exempt set "
+            f"with a reason)."
+        )
 
 
 def test_verify_phase_wellformed_rejects_end_before_start() -> None:

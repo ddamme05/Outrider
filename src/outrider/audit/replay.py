@@ -47,7 +47,9 @@ from outrider.audit.events import (
     HITLDecisionEvent,
     HITLRequestEvent,
     LLMCallEvent,
+    PublishAttemptEvent,
     PublishEligibilityEvent,
+    PublishEvent,
     PublishRoutingEvent,
     ReviewPhaseEvent,
     TraceDecisionEvent,
@@ -373,6 +375,58 @@ def _verify_sequence_monotonic(events: tuple[AuditEvent, ...]) -> None:
             )
 
 
+# Graph-faithfulness: which node owns each NODE-LESS event type (the types
+# that do not carry their own `node_id` field). Verified against the production
+# emit sites — each owner emits the event between its own ReviewPhaseEvent
+# start/end markers:
+#   FindingEvent           → analyze  (analyze.py emit_finding, in analyze phase)
+#   TraceDecisionEvent     → trace    (trace.py emit_trace_decision, in trace phase)
+#   HITLRequestEvent       → hitl     (hitl.py emit_hitl_request, in hitl phase)
+#   HITLDecisionEvent      → hitl     (hitl.py emit_hitl_decision on resume re-entry,
+#                                      in hitl phase; the dashboard endpoint does NOT
+#                                      emit the audit row — see api/dashboard/hitl.py)
+#   PublishEvent / PublishRoutingEvent / PublishEligibilityEvent /
+#   PublishAttemptEvent    → publish  (publish.py, phase-start emitted before any work)
+# An event NOT in this map and carrying no `node_id` is phase-unbounded-exempt
+# (see `_PHASE_UNBOUNDED_EVENTS`) or fails the completeness guard
+# (test_node_less_events_have_owner_or_exemption) — a new node-less event type
+# can't silently skip the node-containment check. The guard catches NEW types,
+# not a MOVED emit site (an existing type emitted from a different node would
+# make replay reject a valid stream); that drift is tracked by FUP-112.
+_NODE_LESS_EVENT_OWNER: dict[type[AuditEvent], str] = {
+    FindingEvent: "analyze",
+    TraceDecisionEvent: "trace",
+    HITLRequestEvent: "hitl",
+    HITLDecisionEvent: "hitl",
+    PublishEvent: "publish",
+    PublishRoutingEvent: "publish",
+    PublishEligibilityEvent: "publish",
+    PublishAttemptEvent: "publish",
+}
+
+# Node-less event types that legitimately occur outside any single node's phase
+# and so are exempt from node-containment. `AgentTransitionEvent` records a
+# transition BETWEEN phases (it carries from_node/to_node, not a single node_id).
+# `ReviewPhaseEvent` is the phase marker itself, handled before this check.
+_PHASE_UNBOUNDED_EVENTS: tuple[type[AuditEvent], ...] = (AgentTransitionEvent,)
+
+
+def _required_phase_node(event: AuditEvent) -> str | None:
+    """The node whose phase must enclose `event`, or None if unconstrained.
+
+    Prefers the event's own `node_id` (LLMCallEvent, FileExaminationEvent, the
+    analyze/synthesize aggregates); falls back to the node-less owner map
+    (FindingEvent → analyze, etc.). Returns None for phase-unbounded events
+    (`AgentTransitionEvent`) — they are bounded by nothing.
+    """
+    own = getattr(event, "node_id", None)
+    if own is not None:
+        # `node_id` is a `Literal[...]` (str subtype) on the events that carry
+        # it; `getattr` widens to Any, so narrow back to str for the caller.
+        return str(own)
+    return _NODE_LESS_EVENT_OWNER.get(type(event))
+
+
 def _verify_phase_wellformed(
     events: tuple[AuditEvent, ...], *, require_all_terminated: bool = False
 ) -> None:
@@ -385,14 +439,16 @@ def _verify_phase_wellformed(
     - **Boundedness.** Every work event occurs while a phase is open.
       `AgentTransitionEvent` and the phase markers themselves are exempt —
       transitions legitimately occur before/between phases.
-    - **Node containment.** A work event that carries its own `node_id`
-      (`LLMCallEvent`, `FileExaminationEvent`, the analyze/synthesize
-      aggregates) must occur inside a phase whose `node_id` matches — an
-      `analyze` LLM call belongs in an `analyze` phase, not a `triage` one.
-      This makes the stream graph-faithful, not merely phase-bounded: a graph
-      node emits its work between its own phase markers. Events without a
-      `node_id` (`FindingEvent`, `TraceDecisionEvent`, HITL / publish events)
-      are bounded but not node-matched — they have no node to match against.
+    - **Node containment.** A work event must occur inside a phase for the
+      node that owns it — its own `node_id` when it carries one (`LLMCallEvent`,
+      `FileExaminationEvent`, the analyze/synthesize aggregates), else the
+      node-less owner map (`_NODE_LESS_EVENT_OWNER`: `FindingEvent` → analyze,
+      `TraceDecisionEvent` → trace, HITL → hitl, publish events → publish). An
+      `analyze` LLM call belongs in an `analyze` phase, not a `triage` one; an
+      analyze-owned `FindingEvent` likewise. This makes the stream
+      graph-faithful, not merely phase-bounded. Only `AgentTransitionEvent` is
+      unbounded (it records a transition BETWEEN phases); the completeness
+      guard test asserts every other node-less type has an owner.
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).
@@ -449,20 +505,22 @@ def _verify_phase_wellformed(
                 f"start/end markers (phase-events-bound-work)"
             )
         else:
-            # Node containment: a work event that carries a node_id must sit in
-            # an open phase for that same node (graph-faithfulness). Events with
-            # no node_id (FindingEvent, TraceDecisionEvent, HITL/publish) are
-            # bounded above but have no node to match, so they skip this.
-            event_node_id = getattr(event, "node_id", None)
-            if event_node_id is not None and not any(
-                phase.node_id == event_node_id for phase in open_phases.values()
+            # Node containment (graph-faithfulness): the event must sit in an
+            # open phase for the node that owns it — its own `node_id` if it has
+            # one, else the node-less owner map (`_required_phase_node`). An
+            # analyze-owned FindingEvent in a triage phase is not a stream any
+            # graph node would emit. `AgentTransitionEvent` returns None (it is
+            # already `continue`d above) and so is never constrained here.
+            required_node = _required_phase_node(event)
+            if required_node is not None and not any(
+                phase.node_id == required_node for phase in open_phases.values()
             ):
                 open_node_ids = sorted({phase.node_id for phase in open_phases.values()})
                 raise ReplayEquivalenceError(
-                    f"{type(event).__name__} (sequence {event.sequence_number}) carries "
-                    f"node_id={event_node_id!r} but no open phase matches that node "
-                    f"(open phases: {open_node_ids}); a graph node's work must be bounded "
-                    f"by its own phase markers (phase-events-bound-work)"
+                    f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
+                    f"node {required_node!r} but no open phase matches that node "
+                    f"(open phases: {open_node_ids}); a node's work must be bounded by its "
+                    f"own phase markers (phase-events-bound-work)"
                 )
     if require_all_terminated:
         unterminated = sorted(phase_id for phase_id in started if phase_id not in ended)
