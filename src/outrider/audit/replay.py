@@ -200,6 +200,7 @@ class ReconstructedReviewMetadata(BaseModel):
     review_id: UUID
     installation_id: int
     status: str
+    is_eval: bool
     repo_id: int
     pr_number: int
     head_sha: str
@@ -755,6 +756,19 @@ class AuditReplayer:
             for event in events
             if isinstance(event, LLMCallEvent)
         )
+        # is_eval coherence (eval-isolation, docs/testing.md): the audit stream's
+        # is_eval (events[0], the canonical review-level flag) must agree across
+        # every event AND every joined content-table row (reviews / findings /
+        # llm_call_content). A table-vs-stream drift would mis-bucket the
+        # reconstructed review; checked here in reconstruct() so the timeline-UI
+        # read-model consumer is protected, not only assert_replay_equivalent.
+        _verify_is_eval_consistent(
+            stream_is_eval=events[0].is_eval,
+            events=events,
+            review_row=review_row,
+            finding_rows=tuple(finding_rows.values()),
+            content_rows=tuple(content_rows.values()),
+        )
         mode = _classify_mode(
             review_present=review_row is not None,
             findings=findings,
@@ -802,10 +816,9 @@ class AuditReplayer:
                 f"with no FindingEvent in the audit stream (append-only violation): "
                 f"{[str(fid) for fid in review.orphan_finding_ids]}"
             )
-        if any(e.is_eval != review.is_eval for e in review.events):
-            raise ReplayEquivalenceError(
-                f"review {review_id} has mixed is_eval flags across its audit events"
-            )
+        # is_eval coherence (stream + content tables) is enforced inside
+        # reconstruct() via _verify_is_eval_consistent, so it guards direct
+        # read-model consumers (timeline UI) too — not only this path.
         await self._verify_historical_severity(review)
 
     async def _verify_historical_severity(self, review: ReconstructedReview) -> None:
@@ -883,6 +896,7 @@ def _review_metadata(row: Review | None) -> ReconstructedReviewMetadata | None:
         review_id=row.id,
         installation_id=row.installation_id,
         status=row.status,
+        is_eval=row.is_eval,
         repo_id=row.repo_id,
         pr_number=row.pr_number,
         head_sha=row.head_sha,
@@ -898,3 +912,44 @@ def _review_metadata(row: Review | None) -> ReconstructedReviewMetadata | None:
         completed_at=row.completed_at,
         expires_at=row.expires_at,
     )
+
+
+def _verify_is_eval_consistent(
+    *,
+    stream_is_eval: bool,
+    events: tuple[AuditEvent, ...],
+    review_row: Review | None,
+    finding_rows: tuple[Finding, ...],
+    content_rows: tuple[LLMCallContent, ...],
+) -> None:
+    """Assert the audit stream and every joined content row agree on `is_eval`.
+
+    `stream_is_eval` is the canonical review-level flag (the first audit
+    event's). docs/testing.md's eval-isolation discipline requires
+    `reviews` / `findings` / `llm_call_content` / `audit_events` to share one
+    `is_eval`; a row that drifts would mis-bucket the reconstructed review (the
+    dashboard, sweep, and anomaly queue all filter on it). Raises
+    `ReplayEquivalenceError` on any disagreement. Called from `reconstruct()`
+    so the read model is coherent for every consumer, not just
+    `assert_replay_equivalent`.
+    """
+    if any(e.is_eval != stream_is_eval for e in events):
+        raise ReplayEquivalenceError(
+            f"audit stream has mixed is_eval flags across its events "
+            f"(stream is_eval={stream_is_eval})"
+        )
+    if review_row is not None and review_row.is_eval != stream_is_eval:
+        raise ReplayEquivalenceError(
+            f"reviews row is_eval={review_row.is_eval} disagrees with the audit "
+            f"stream is_eval={stream_is_eval} (eval-isolation drift)"
+        )
+    if any(r.is_eval != stream_is_eval for r in finding_rows):
+        raise ReplayEquivalenceError(
+            f"a findings row's is_eval disagrees with the audit stream "
+            f"is_eval={stream_is_eval} (eval-isolation drift)"
+        )
+    if any(r.is_eval != stream_is_eval for r in content_rows):
+        raise ReplayEquivalenceError(
+            f"an llm_call_content row's is_eval disagrees with the audit stream "
+            f"is_eval={stream_is_eval} (eval-isolation drift)"
+        )
