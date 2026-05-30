@@ -442,6 +442,18 @@ def test_verify_phase_wellformed_rejects_duplicate_start() -> None:
         _verify_phase_wellformed(events)
 
 
+def test_verify_phase_wellformed_rejects_overlapping_phases() -> None:
+    # V1 phases are sequential/non-nested: a second (different) phase that starts
+    # while another is still open is rejected. Distinct from duplicate-start,
+    # which is the same phase_id reused ("more than one start marker").
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _phase_event(node_id="trace", marker="start", phase_id="trace:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="still open"):
+        _verify_phase_wellformed(events)
+
+
 def test_verify_phase_wellformed_rejects_end_without_start() -> None:
     events = (_phase_event(node_id="intake", marker="end", phase_id="intake:0"),)
     with pytest.raises(ReplayEquivalenceError, match="end marker with no preceding start"):

@@ -453,6 +453,11 @@ def _verify_phase_wellformed(
       no prior start raises — this is the end-before-start case in sequence
       order).
     - **Uniqueness.** A phase_id has ≤1 start and ≤1 end.
+    - **Non-nesting (sequential phases).** A phase may not start while another
+      is still open — V1 runs phases one at a time. Distinct from Uniqueness: a
+      *reused* phase_id raises "more than one start marker"; a *different*
+      phase_id opened concurrently raises the non-nesting error. (V1.5
+      parallel-analyze will rekey this around `(node_id, phase_key)`.)
     - **Marker agreement.** An end's `node_id` / `phase_key` match its start.
     - **Termination on success.** When `require_all_terminated` is set, every
       started phase must also have an end. The invariant's "missing phase end
@@ -468,9 +473,22 @@ def _verify_phase_wellformed(
     for event in events:
         if isinstance(event, ReviewPhaseEvent):
             if event.marker == "start":
+                # Uniqueness before non-nesting: a *reused* phase_id is the more
+                # specific diagnosis (it fires for both consecutive start→start
+                # and reopen-after-close), so check it first; the non-nesting
+                # guard then catches a *different* phase_id opened while one is
+                # still open. Together they enforce "≤1 open phase, no reuse".
                 if event.phase_id in started:
                     raise ReplayEquivalenceError(
                         f"phase {event.phase_id!r} has more than one start marker"
+                    )
+                if open_phases:
+                    open_ids = sorted(open_phases)
+                    raise ReplayEquivalenceError(
+                        f"phase {event.phase_id!r} starts while phase(s) {open_ids} "
+                        "are still open; V1 phases must be sequential/non-nested "
+                        "(phase-events-bound-work). V1.5 parallel-analyze will redesign "
+                        "this around (node_id, phase_key)."
                     )
                 started[event.phase_id] = event
                 open_phases[event.phase_id] = event
