@@ -2,14 +2,15 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has fifteen
+`AuditEventBase` is the shared base. The hierarchy has sixteen
 concrete subtypes: twelve V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
 `HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`,
-`PublishEligibilityEvent`, `PublishAttemptEvent`) plus three
+`PublishEligibilityEvent`, `PublishAttemptEvent`), three
 analyze-foundation additions (`AnalyzeCompletedEvent`,
-`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`). Each
+`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), and the
+synthesize-node addition (`SynthesizeCompletedEvent`). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
