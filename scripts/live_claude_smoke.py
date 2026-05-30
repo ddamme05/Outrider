@@ -121,7 +121,11 @@ class _Scenario:
 
 def _scenario_from_file(diff_path: Path) -> _Scenario:
     content = diff_path.read_text()
-    rel = f"demo/{diff_path.name}"
+    # `src/` (not `demo/`): triage is path-aware and tiers `demo/`-prefixed
+    # paths down to SKIM, which makes analyze skip the file entirely (it only
+    # LLM-analyzes DEEP/STANDARD tiers). A production-looking path lets triage
+    # judge the code, not the directory.
+    rel = f"src/{diff_path.name}"
     body_lines = content.splitlines()
     # Synthetic all-added unified-diff patch (status="added"): /dev/null -> file.
     patch = (
@@ -429,12 +433,61 @@ async def _report(
                 {"id": review_id},
             )
         ).scalar_one()
+    # Analyze examined/skipped + per-file examination — surfaces WHY analyze did
+    # or did not call the LLM (a SKIM/SKIP tier means analyze skips the file, so
+    # examined=0 + llm_calls=0). Counters come from AnalyzeCompletedEvent; the
+    # triage tiers themselves live in graph state (not the audit stream), so they
+    # are read from the returned `result`, not queried from audit_events.
+    async with engine.begin() as conn:
+        analyze_completed = (
+            await conn.execute(
+                text(
+                    "SELECT payload->>'n_files_analyzed', payload->>'n_files_skipped', "
+                    "payload->>'n_llm_calls' "
+                    "FROM audit_events WHERE review_id = :id "
+                    "AND event_type = 'analyze_completed' ORDER BY sequence_number LIMIT 1"
+                ),
+                {"id": review_id},
+            )
+        ).all()
+        file_exams = (
+            await conn.execute(
+                text(
+                    "SELECT payload->>'node_id', payload->>'file_path', "
+                    "payload->>'parse_status', payload->>'skip_reason' "
+                    "FROM audit_events WHERE review_id = :id "
+                    "AND event_type = 'file_examination' ORDER BY sequence_number"
+                ),
+                {"id": review_id},
+            )
+        ).all()
+
+    _say("  Triage tiers .........")
+    triage_result = result.get("triage_result")
+    tiers = getattr(triage_result, "file_tiers", None)
+    if tiers:
+        for path, tier in tiers.items():
+            tier_name = getattr(tier, "value", tier)
+            _say(f"    {path}: {tier_name}")
+    else:
+        _say("    (no triage_result in returned state)")
+    if analyze_completed:
+        examined, skipped, n_llm = analyze_completed[0]
+        _say(f"  Analyze .............. examined={examined} skipped={skipped} llm_calls={n_llm}")
+    for node_id, path, status, skip in file_exams:
+        extra = f" skip_reason={skip}" if skip else ""
+        _say(f"    file_examination[{node_id}] {path}: {status}{extra}")
+    _say()
+
     _say("  Real Claude produced:")
     if findings:
         for ft, sev in findings:
             _say(f"    - {ft} ({sev})")
     else:
-        _say("    (no findings on this synthetic diff — valid; Claude's call)")
+        _say(
+            "    (no findings — see triage/analyze trace above for whether "
+            "analyze even ran on the file)"
+        )
     _say()
     _say(f"  Audit events ......... {n_events} rows persisted")
     if interrupted:
@@ -482,6 +535,21 @@ async def _verify(
                 {"id": review_id},
             )
         ).scalar_one()
+        # `n_files_analyzed` summed across analyze passes — the honest signal that
+        # analyze actually examined the file (not just that the node ran). A
+        # SKIM/SKIP-tiered file yields analyze_completed events with
+        # n_files_analyzed=0, which is why counting analyze_completed alone is a
+        # vacuous "analyze ran" claim.
+        files_analyzed = (
+            await conn.execute(
+                text(
+                    "SELECT COALESCE(SUM((payload->>'n_files_analyzed')::int), 0) "
+                    "FROM audit_events WHERE review_id = :id "
+                    "AND event_type = 'analyze_completed'"
+                ),
+                {"id": review_id},
+            )
+        ).scalar_one()
         n_llm = (
             await conn.execute(
                 text(
@@ -492,7 +560,16 @@ async def _verify(
             )
         ).scalar_one()
     checks.append(("graph emitted phase events", n_phase > 0, f"{n_phase} phase events"))
-    checks.append(("analyze ran (real Claude call)", analyze_ran > 0, ""))
+    checks.append(("analyze node ran", analyze_ran > 0, f"{analyze_ran} analyze pass(es)"))
+    # Distinct from the above: did analyze actually examine the file? This is the
+    # check that catches a file silently tiered out of analysis.
+    checks.append(
+        (
+            "analyze examined the file (real Claude analysis)",
+            files_analyzed > 0,
+            f"{files_analyzed} file(s) analyzed",
+        ),
+    )
     checks.append(("real LLMCallEvents persisted", n_llm > 0, f"{n_llm} llm calls"))
 
     # Replay over the real stream — the headline capability.
