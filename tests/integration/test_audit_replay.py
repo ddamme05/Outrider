@@ -51,6 +51,13 @@ from outrider.schemas import ReviewDimension
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from tests.integration.conftest import (
+        LLMCallEventFactory,
+        LLMRequestFactory,
+        LLMResponseFactory,
+        PersisterTestSetup,
+    )
+
 _INSTALLATION_ID = 12345
 
 pytestmark = pytest.mark.asyncio
@@ -512,3 +519,67 @@ async def test_review_row_is_eval_drift_raises(engine: AsyncEngine) -> None:
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     with pytest.raises(ReplayEquivalenceError, match="reviews row is_eval"):
         await replayer.reconstruct(review_id)
+
+
+async def test_full_mode_through_production_persister(
+    persister_setup: PersisterTestSetup,
+    llm_call_event_factory: LLMCallEventFactory,
+    llm_request_factory: LLMRequestFactory,
+    llm_response_factory: LLMResponseFactory,
+) -> None:
+    """FULL-mode proof driven through the real ``AuditPersister`` write path.
+
+    The other integration tests raw-SQL-seed ``audit_events`` to construct the
+    corruption / purge states the writer cannot produce (a writer whose job is
+    preventing corruption can't emit a corrupt row). This test is the
+    production-faithful complement: it drives the happy path through
+    ``AuditPersister.emit_phase`` / ``persist`` / ``emit_finding`` — the same
+    methods the graph nodes call — so replay is proven against real persister
+    output (payload normalization, atomic LLMCallEvent + llm_call_content
+    co-insert, the persister's hash/field cross-checks), not hand-shaped rows.
+
+    The ``findings`` *content* row is still raw-SQL-seeded: no production writer
+    of the ``findings`` table exists yet (the analyze/synthesize node that will
+    write it is a later spec), so FULL-mode finding content cannot be produced
+    through a writer today. Tracked: FUP-111.
+    """
+    persister = persister_setup.persister
+    engine = persister_setup.engine
+    review_id = persister_setup.review_id
+
+    # Drive the production write path for the audit stream.
+    await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="start"))
+    llm_event = llm_call_event_factory(review_id)
+    await persister.persist(
+        llm_event,
+        llm_request_factory(review_id),
+        llm_response_factory(),
+    )
+    finding = _finding_event(review_id)
+    await persister.emit_finding(finding)
+    await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="end"))
+
+    # The seed review is status='running'; a FULL-mode replay asserts the
+    # completed-phase-termination invariant, so flip it to completed. The
+    # findings content row has no production writer yet (FUP-111) — raw-SQL.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE reviews SET status = 'completed' WHERE id = :rid"),
+            {"rid": review_id},
+        )
+    await _seed_finding_row(engine, finding)
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    review = await replayer.reconstruct(review_id)
+
+    assert review.mode == ReplayMode.FULL
+    assert review.review is not None
+    assert review.review.status == "completed"
+    assert len(review.findings) == 1
+    assert review.findings[0].content is not None
+    assert len(review.llm_exchanges) == 1
+    # Content came through the real persister (llm_response_factory's default text).
+    assert review.llm_exchanges[0].prompt is not None
+    assert review.llm_exchanges[0].completion is not None
+
+    await replayer.assert_replay_equivalent(review_id)  # no raise
