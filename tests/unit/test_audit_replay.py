@@ -677,6 +677,30 @@ def test_verify_row_consistent_rejects_phase_key_on_non_phase_event() -> None:
         _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
 
 
+def test_verify_row_consistent_rejects_event_id_drift() -> None:
+    event = _finding_event()
+    kwargs = _row_kwargs(event)
+    kwargs["event_id"] = uuid4()
+    with pytest.raises(ReplayEquivalenceError, match="event_id"):
+        _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
+
+
+def test_verify_row_consistent_rejects_review_id_drift() -> None:
+    event = _finding_event()
+    kwargs = _row_kwargs(event)
+    kwargs["review_id"] = uuid4()
+    with pytest.raises(ReplayEquivalenceError, match="review_id"):
+        _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
+
+
+def test_verify_row_consistent_rejects_timestamp_drift() -> None:
+    event = _finding_event()
+    kwargs = _row_kwargs(event)
+    kwargs["timestamp"] = datetime(2000, 1, 1, tzinfo=UTC)
+    with pytest.raises(ReplayEquivalenceError, match="timestamp"):
+        _verify_row_consistent(event, **kwargs)  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # Proof boundary re-verification (verify-only)
 # ---------------------------------------------------------------------------
