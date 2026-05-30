@@ -44,15 +44,19 @@ the synthetic diff's small size; do not point this at large inputs.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import base64
 import os
 import sys
-import argparse
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Repo root on sys.path so `tests.integration.*` imports resolve when run as a
 # plain script (tests/ is a namespace package; `outrider` is an editable install).
@@ -66,8 +70,24 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncEngine,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool  # noqa: E402
+
+# Reuse the committed e2e-smoke fakes + scenario verbatim (no drift). The default
+# (no --diff-file) path runs the exact proven scenario; --diff-file swaps the
+# analyzed file via the local Scenario stubs below.
+from tests.integration.test_e2e_smoke import (  # noqa: E402
+    _RecordingPublisher,
+    _seed_installation,
+    _seed_review,
+    _seed_state,
+    _stub_github_factory,
+    _StubImportPathResolver,
+)
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
@@ -78,18 +98,6 @@ from outrider.audit.replay import AuditReplayer  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
-
-# Reuse the committed e2e-smoke fakes + scenario verbatim (no drift). The default
-# (no --diff-file) path runs the exact proven scenario; --diff-file swaps the
-# analyzed file via the local Scenario stubs below.
-from tests.integration.test_e2e_smoke import (  # noqa: E402
-    _RecordingPublisher,
-    _StubImportPathResolver,
-    _seed_installation,
-    _seed_review,
-    _seed_state,
-    _stub_github_factory,
-)
 
 _RULE = "=" * 62
 _INSTALLATION_ID = 12345  # matches tests.integration.test_e2e_smoke._INSTALLATION_ID
@@ -181,7 +189,8 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
             self.rest = _Rest()
 
     def _factory(installation_id: int) -> object:
-        assert installation_id == _INSTALLATION_ID, f"unexpected installation_id {installation_id}"
+        if installation_id != _INSTALLATION_ID:
+            raise ValueError(f"unexpected installation_id {installation_id}")
         return _GitHub()
 
     return _factory
