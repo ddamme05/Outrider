@@ -11,6 +11,9 @@ HANDOFF.md
 # --- Local docs (ignored now; track when public) ---
 docs/
 
+# --- Dashboard design mockups (local-only HTML explorations) ---
+dashboard-mockups/
+
 # --- Local operational tracking (stays local even when public) ---
 COMMIT_LOG.md
 ITERATION_LOG.md
