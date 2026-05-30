@@ -40,6 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from outrider.audit.events import (
+    AgentTransitionEvent,
     AuditEvent,
     AuditEventAdapter,
     FindingEvent,
@@ -234,6 +235,10 @@ class ReconstructedReview(BaseModel):
     phases: tuple[ReconstructedPhase, ...]
     findings: tuple[ReconstructedFinding, ...]
     llm_exchanges: tuple[ReconstructedLLMExchange, ...]
+    # Stored `findings`-table rows whose finding_id has no FindingEvent in the
+    # audit stream — an append-only-guarantee violation (a finding exists that
+    # was never audit-logged). Empty in a faithful reconstruction.
+    orphan_finding_ids: tuple[UUID, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -337,30 +342,66 @@ def _verify_sequence_monotonic(events: tuple[AuditEvent, ...]) -> None:
 
 
 def _verify_phase_wellformed(events: tuple[AuditEvent, ...]) -> None:
-    """Assert each phase has ≤1 start and ≤1 end, and every end has a start.
+    """Assert phases are well-formed and bound every node-work event.
+
+    `phase-events-bound-work` (spec §8.4): per-operation work events must fall
+    within a `ReviewPhaseEvent` start/end pair — the causal barriers replay
+    relies on. Walking in sequence order, this enforces:
+
+    - **Boundedness.** Every work event occurs while a phase is open.
+      `AgentTransitionEvent` and the phase markers themselves are exempt —
+      transitions legitimately occur before/between phases.
+    - **Ordering.** An end never precedes its start (an end whose phase_id has
+      no prior start raises — this is the end-before-start case in sequence
+      order).
+    - **Uniqueness.** A phase_id has ≤1 start and ≤1 end.
+    - **Marker agreement.** An end's `node_id` / `phase_key` match its start.
 
     A trailing unterminated phase (start with no end) is tolerated — it is a
     real crash state, not a corruption.
     """
-    starts: dict[str, int] = {}
-    ends: dict[str, int] = {}
+    started: dict[str, ReviewPhaseEvent] = {}
+    ended: set[str] = set()
+    open_phases: dict[str, ReviewPhaseEvent] = {}
     for event in events:
-        if not isinstance(event, ReviewPhaseEvent):
-            continue
-        bucket = starts if event.marker == "start" else ends
-        bucket[event.phase_id] = bucket.get(event.phase_id, 0) + 1
-    for phase_id, count in starts.items():
-        if count > 1:
+        if isinstance(event, ReviewPhaseEvent):
+            if event.marker == "start":
+                if event.phase_id in started:
+                    raise ReplayEquivalenceError(
+                        f"phase {event.phase_id!r} has more than one start marker"
+                    )
+                started[event.phase_id] = event
+                open_phases[event.phase_id] = event
+            else:  # marker == "end"
+                start = started.get(event.phase_id)
+                if start is None:
+                    raise ReplayEquivalenceError(
+                        f"phase {event.phase_id!r} has an end marker with no preceding start"
+                    )
+                if event.phase_id in ended:
+                    raise ReplayEquivalenceError(
+                        f"phase {event.phase_id!r} has more than one end marker"
+                    )
+                if event.node_id != start.node_id:
+                    raise ReplayEquivalenceError(
+                        f"phase {event.phase_id!r} end node_id {event.node_id!r} disagrees "
+                        f"with start node_id {start.node_id!r}"
+                    )
+                if event.phase_key != start.phase_key:
+                    raise ReplayEquivalenceError(
+                        f"phase {event.phase_id!r} end phase_key {event.phase_key!r} disagrees "
+                        f"with start phase_key {start.phase_key!r}"
+                    )
+                ended.add(event.phase_id)
+                del open_phases[event.phase_id]
+        elif isinstance(event, AgentTransitionEvent):
+            continue  # transitions legitimately occur before/between phases
+        elif not open_phases:
             raise ReplayEquivalenceError(
-                f"phase {phase_id!r} has {count} start markers (expected ≤1)"
+                f"{type(event).__name__} (sequence {event.sequence_number}) occurs outside "
+                f"any open review phase; node work must be bounded by ReviewPhaseEvent "
+                f"start/end markers (phase-events-bound-work)"
             )
-    for phase_id, count in ends.items():
-        if count > 1:
-            raise ReplayEquivalenceError(
-                f"phase {phase_id!r} has {count} end markers (expected ≤1)"
-            )
-        if phase_id not in starts:
-            raise ReplayEquivalenceError(f"phase {phase_id!r} has an end marker with no start")
 
 
 def _verify_proof_boundary(events: tuple[AuditEvent, ...]) -> None:
@@ -498,6 +539,10 @@ def _verify_full_finding(finding: ReconstructedFinding) -> None:
             ("line_start", content.line_start, event.line_start),
             ("line_end", content.line_end, event.line_end),
             ("policy_version", content.policy_version, event.policy_version),
+            # Proof artifacts — the content row must agree with the canonical
+            # FindingEvent on the evidence the proof boundary turns on.
+            ("query_match_id", content.query_match_id, event.query_match_id),
+            ("trace_path", content.trace_path, event.trace_path),
         )
         if content_value != event_value
     ]
@@ -586,6 +631,11 @@ class AuditReplayer:
             for event in events
             if isinstance(event, FindingEvent)
         )
+        # Orphans: stored findings the append-only audit stream never recorded.
+        event_finding_ids = {e.finding_id for e in events if isinstance(e, FindingEvent)}
+        orphan_finding_ids = tuple(
+            fid for fid in sorted(finding_rows, key=str) if fid not in event_finding_ids
+        )
         llm_exchanges = tuple(
             ReconstructedLLMExchange(
                 event=event,
@@ -609,19 +659,21 @@ class AuditReplayer:
             phases=_group_phases(events),
             findings=findings,
             llm_exchanges=llm_exchanges,
+            orphan_finding_ids=orphan_finding_ids,
         )
 
     async def assert_replay_equivalent(self, review_id: UUID) -> None:
         """Reconstruct and assert the review replays faithfully (verify-only).
 
         Runs the mode-aware checklist: deserialization (via `reconstruct`),
-        sequence monotonicity, phase well-formedness, proof re-verification
-        (registry membership + hash recompute), cross-event reference
-        resolution, historical-policy severity reconstruction, and the
-        mode-appropriate content checks (full content equality only in FULL
-        mode; metadata-only mode asserts shape/stubs, never content
-        equality). Raises `ReplayEquivalenceError` naming the failing check;
-        returns `None` on success.
+        sequence monotonicity, phase well-formedness (work bounded by phase
+        markers, ordering, marker agreement), proof re-verification (registry
+        membership + hash recompute + proof-artifact agreement in full mode),
+        cross-event reference resolution, no-orphan-stored-findings, historical-
+        policy severity reconstruction, and the mode-appropriate content checks
+        (full content equality only in FULL mode; metadata-only mode asserts
+        shape/stubs, never content equality). Raises `ReplayEquivalenceError`
+        naming the failing check; returns `None` on success.
         """
         review = await self.reconstruct(review_id)
         _verify_sequence_monotonic(review.events)
@@ -629,6 +681,12 @@ class AuditReplayer:
         _verify_proof_boundary(review.events)
         _verify_cross_event_refs(review.events)
         _verify_mode_consistency(review)
+        if review.orphan_finding_ids:
+            raise ReplayEquivalenceError(
+                f"review {review_id} has {len(review.orphan_finding_ids)} stored finding(s) "
+                f"with no FindingEvent in the audit stream (append-only violation): "
+                f"{[str(fid) for fid in review.orphan_finding_ids]}"
+            )
         if any(e.is_eval != review.is_eval for e in review.events):
             raise ReplayEquivalenceError(
                 f"review {review_id} has mixed is_eval flags across its audit events"
