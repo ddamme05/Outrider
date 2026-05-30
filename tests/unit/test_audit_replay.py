@@ -294,6 +294,20 @@ def test_classify_mode_llm_present_no_findings_ok() -> None:
     )
 
 
+def test_classify_mode_half_present_llm_prompt_only_raises() -> None:
+    # prompt + completion are NOT NULL + co-inserted, so they purge together;
+    # a one-sided row is corruption, not a legitimate retention state.
+    exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt="p", completion=None)
+    with pytest.raises(ReplayEquivalenceError, match="half-present"):
+        _classify_mode(review_present=True, findings=(), llm_exchanges=(exchange,))
+
+
+def test_classify_mode_half_present_llm_completion_only_raises() -> None:
+    exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt=None, completion="c")
+    with pytest.raises(ReplayEquivalenceError, match="half-present"):
+        _classify_mode(review_present=True, findings=(), llm_exchanges=(exchange,))
+
+
 # ---------------------------------------------------------------------------
 # is_eval coherence (stream + content tables)
 # ---------------------------------------------------------------------------

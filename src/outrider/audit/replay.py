@@ -29,10 +29,13 @@ single read model consumed by both `assert_replay_equivalent` and the
 future timeline-playback surface (`ROADMAP.md` feature 6).
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from types import MappingProxyType
+from typing import Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -43,6 +46,7 @@ from outrider.audit.events import (
     AgentTransitionEvent,
     AuditEvent,
     AuditEventAdapter,
+    AuditEventBase,
     FindingEvent,
     HITLDecisionEvent,
     HITLRequestEvent,
@@ -320,8 +324,7 @@ def _classify_mode(
       silently hybridized.
     - **METADATA_ONLY** — review row absent ⇒ all content purged before it.
 
-    Raises `ReplayEquivalenceError` on two impossible states under that
-    ordering:
+    Raises `ReplayEquivalenceError` on three impossible states:
 
     - **Review absent + any content survives.** Because content (LLM 90d,
       findings 180d) purges no later than the review (180d), a purged review
@@ -333,9 +336,24 @@ def _classify_mode(
       finding alongside surviving LLM content is an out-of-order purge /
       tampering, the sibling of the case above. The legitimate MIXED window
       is the opposite shape: findings present, the shorter-lived LLM purged.
+    - **Half-present LLM content row.** `prompt` and `completion` are both
+      NOT NULL in `llm_call_content` and co-inserted in one transaction, so
+      they purge together. A row with one side present and the other absent
+      is a torn/corrupt row — rejected here so mode classification can't key
+      off `prompt` alone and silently mis-bucket the review.
     """
+    for exchange in llm_exchanges:
+        if (exchange.prompt is None) != (exchange.completion is None):
+            raise ReplayEquivalenceError(
+                f"llm_call_content for event {exchange.event.event_id} is half-present "
+                f"(prompt={'set' if exchange.prompt is not None else 'None'}, "
+                f"completion={'set' if exchange.completion is not None else 'None'}); "
+                "prompt and completion purge together — a one-sided row is corruption"
+            )
     any_finding_content = any(f.content is not None for f in findings)
     all_finding_content = all(f.content is not None for f in findings)
+    # Post the half-present guard above, `prompt is not None` ⟺
+    # `completion is not None`, so keying on `prompt` covers both sides.
     any_llm_content = any(x.prompt is not None for x in llm_exchanges)
     all_llm_content = all(x.prompt is not None for x in llm_exchanges)
     if not review_present and (any_finding_content or any_llm_content):
@@ -397,22 +415,31 @@ def _verify_sequence_monotonic(events: tuple[AuditEvent, ...]) -> None:
 # can't silently skip the node-containment check. The guard catches NEW types,
 # not a MOVED emit site (an existing type emitted from a different node would
 # make replay reject a valid stream); that drift is tracked by FUP-112.
-_NODE_LESS_EVENT_OWNER: dict[type[AuditEvent], str] = {
-    FindingEvent: "analyze",
-    TraceDecisionEvent: "trace",
-    HITLRequestEvent: "hitl",
-    HITLDecisionEvent: "hitl",
-    PublishEvent: "publish",
-    PublishRoutingEvent: "publish",
-    PublishEligibilityEvent: "publish",
-    PublishAttemptEvent: "publish",
-}
+# Wrapped in MappingProxyType + Final per the repo constant-immutability pattern
+# (`policy.severity.SEVERITY_POLICY`, `llm.pricing.RATE_TABLE`): a bare dict could
+# be mutated at runtime by a buggy caller and silently change node-containment for
+# the rest of the process. Keyed by `type[AuditEventBase]` (the shared base), not
+# the `AuditEvent` discriminated-union alias — `type[...]` wants a class.
+_NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxyType(
+    {
+        FindingEvent: "analyze",
+        TraceDecisionEvent: "trace",
+        HITLRequestEvent: "hitl",
+        HITLDecisionEvent: "hitl",
+        PublishEvent: "publish",
+        PublishRoutingEvent: "publish",
+        PublishEligibilityEvent: "publish",
+        PublishAttemptEvent: "publish",
+    }
+)
 
 # Node-less event types that legitimately occur outside any single node's phase
 # and so are exempt from node-containment. `AgentTransitionEvent` records a
 # transition BETWEEN phases (it carries from_node/to_node, not a single node_id).
 # `ReviewPhaseEvent` is the phase marker itself, handled before this check.
-_PHASE_UNBOUNDED_EVENTS: tuple[type[AuditEvent], ...] = (AgentTransitionEvent,)
+# Keyed by `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]`
+# wants a class).
+_PHASE_UNBOUNDED_EVENTS: Final[tuple[type[AuditEventBase], ...]] = (AgentTransitionEvent,)
 
 
 def _required_phase_node(event: AuditEvent) -> str | None:
