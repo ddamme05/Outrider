@@ -758,7 +758,10 @@ class AuditReplayer:
     (`nodes-receive-deps-via-closure`). Every method opens its own
     read-only `AsyncSession` (no `session.begin()` — single read
     transactions); `AsyncSession` is not concurrent-safe, so a fresh one
-    per call keeps replay safe under concurrent reviews.
+    per call keeps replay safe under concurrent reviews. `reconstruct`
+    additionally pins its transaction to REPEATABLE READ so its four
+    content-table reads observe one consistent snapshot even if a
+    retention purge commits mid-reconstruct.
     """
 
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -787,6 +790,17 @@ class AuditReplayer:
         (stored `findings` rows with no `FindingEvent` in the stream).
         """
         async with self._session_factory() as session:
+            # Pin all four content-table reads (audit_events, reviews, findings,
+            # llm_call_content) to ONE consistent snapshot. The default READ
+            # COMMITTED isolation gives each statement a fresh snapshot, so a
+            # retention purge committing mid-reconstruct (sweep/purge_expired.py
+            # commits per-table independently) could let replay combine pre- and
+            # post-purge rows into a reconstruction that never existed at any DB
+            # instant. REPEATABLE READ takes the snapshot at the first statement
+            # and holds it for the transaction — read-only, so it needs no
+            # write-skew protection (SERIALIZABLE would be overkill). Must be set
+            # before the first statement autobegins the transaction.
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             rows = (
                 await session.execute(
                     select(
