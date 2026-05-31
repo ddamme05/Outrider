@@ -18,6 +18,7 @@ from outrider.audit.persister import (
     AuditPersisterConfigError,
     AuditPersisterEventRequestFieldMismatchError,
     AuditPersisterEventResponseFieldMismatchError,
+    AuditPersisterFindingInstallationIdMismatchError,
     AuditPersisterHITLDecisionIdempotencyLookupError,
     AuditPersisterHITLDecisionNaturalKeyConflict,
     AuditPersisterHITLRequestIdempotencyLookupError,
@@ -560,6 +561,7 @@ def test_metadata_only_exception_types_lists_every_persister_exception() -> None
         AuditPersisterSchemaInvariantError,
         AuditPersisterEventRequestFieldMismatchError,
         AuditPersisterEventResponseFieldMismatchError,
+        AuditPersisterFindingInstallationIdMismatchError,
         AuditPersisterIdempotencyConflict,
         AuditPersisterNaturalKeyConflict,
         AuditPersisterHITLRequestNaturalKeyConflict,
@@ -1027,7 +1029,12 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
                     kwargs[name] = {field_name_sentinel: FieldDigest("a" * 64, "b" * 64, 1, 1)}
                 else:
                     kwargs[name] = {}
-            elif ann is int:
+            elif ann is int or ann == "int":
+                # `ann == "int"` handles modules with `from __future__ import
+                # annotations` (e.g. audit/persister.py), where annotations are
+                # strings at runtime — same string-tolerant shape as the UUID
+                # branch above. An int param is a metadata identifier (e.g.
+                # installation_id), never content.
                 kwargs[name] = 42
             elif param.default is not inspect.Parameter.empty:
                 continue

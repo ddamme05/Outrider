@@ -67,7 +67,6 @@ from tests.integration.test_e2e_smoke import (  # noqa: E402
     _analyze_response,
     _RecordingPublisher,
     _ScriptedLLMProvider,
-    _seed_finding_content_row,
     _seed_installation,
     _seed_review,
     _seed_state,
@@ -269,12 +268,11 @@ async def _drive(engine: AsyncEngine) -> bool:
         _seed_state(review_id), config={"configurable": {"thread_id": str(review_id)}}
     )
 
-    # FUP-111: no production findings-table writer yet, so seed the findings
-    # content row from the emitted FindingEvent (else replay classifies MIXED).
+    # The findings content row is written by the production writer during the
+    # graph's analyze node (`emit_finding` co-inserts it with the FindingEvent
+    # audit row, FUP-111), so the run reconstructs FULL — no raw-SQL seed.
     replayer = AuditReplayer(session_factory=session_factory)
     pre = await replayer.reconstruct(review_id)
-    if pre.findings:
-        await _seed_finding_content_row(engine, pre.findings[0].event)
 
     await _narrate_nodes(engine, review_id, publisher)
     await _narrate_audit_stream(engine, review_id)
