@@ -462,13 +462,22 @@ async def _report(
             )
         ).all()
 
-    _say("  Triage tiers .........")
+    _say("  Triage ...............")
     triage_result = result.get("triage_result")
+    if triage_result is not None:
+        risk = getattr(triage_result, "overall_risk", None)
+        risk_name = getattr(risk, "value", risk)
+        dims = getattr(triage_result, "relevant_dimensions", ()) or ()
+        dim_names = [getattr(d, "value", d) for d in dims]
+        # overall_risk + the dimension scope analyze hunts within: if a planted
+        # issue's dimension is absent here, analyze was never asked to look for
+        # it, which explains a clean result on a file that clearly has a flaw.
+        _say(f"    overall_risk={risk_name}  dimensions={dim_names}")
     tiers = getattr(triage_result, "file_tiers", None)
     if tiers:
         for path, tier in tiers.items():
             tier_name = getattr(tier, "value", tier)
-            _say(f"    {path}: {tier_name}")
+            _say(f"    tier {path}: {tier_name}")
     else:
         _say("    (no triage_result in returned state)")
     if analyze_completed:
