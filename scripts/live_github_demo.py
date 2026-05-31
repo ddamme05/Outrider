@@ -95,12 +95,15 @@ async def _fetch_pr_seed(
     owner: str,
     repo: str,
     pr_number: int,
-) -> PRContext:
-    """Mint a real installation token and GET the PR to seed PRContext.
+) -> tuple[PRContext, int]:
+    """Mint a real installation token and GET the PR; return (PRContext, repo_id).
 
     `changed_files=()` — intake enriches it with the real per-file diff via
     `github/fetch.py`, exactly as the webhook path does (DECISIONS.md#020).
     Only the PR-level metadata (title, shas, author, +/- counts) is read here.
+    `repo_id` is the real GitHub repository numeric id (`pr.base.repo.id`),
+    the same value the webhook reads from `payload.repository.id` — used as the
+    reviews-row natural key, NOT a synthesized hash.
 
     DEMO-ONLY metadata fetch: the direct `gh.rest.pulls.async_get` call lives
     here (not in `github/fetch.py`) because this PR-level metadata read is a
@@ -114,7 +117,7 @@ async def _fetch_pr_seed(
     gh = github_factory(installation_id)
     resp = await gh.rest.pulls.async_get(owner, repo, pr_number)
     pr = resp.parsed_data
-    return PRContext(
+    pr_context = PRContext(
         installation_id=installation_id,
         owner=owner,
         repo=repo,
@@ -128,6 +131,7 @@ async def _fetch_pr_seed(
         total_deletions=pr.deletions,
         changed_files=(),
     )
+    return pr_context, pr.base.repo.id
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -181,7 +185,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     try:
-        pr_context = await _fetch_pr_seed(
+        pr_context, repo_id = await _fetch_pr_seed(
             github_factory,
             installation_id=args.installation_id,
             owner=owner,
@@ -200,7 +204,7 @@ async def _run(args: argparse.Namespace) -> int:
     _say()
 
     # --- seed the reviews row (the webhook normally does this) ---
-    await _seed_review_row(engine, review_id, pr_context, received_at=datetime.now(UTC))
+    await _seed_review_row(engine, review_id, pr_context, repo_id=repo_id)
 
     graph = build_graph(
         db_factory=session_factory,
@@ -236,19 +240,31 @@ async def _run(args: argparse.Namespace) -> int:
     await provider.aclose()
 
     interrupted = "__interrupt__" in result
-    rc = await _report_and_verify(engine, session_factory, review_id, interrupted=interrupted)
+    rc = await _report_and_verify(
+        engine, session_factory, review_id, result=result, interrupted=interrupted
+    )
     await engine.dispose()
     return rc
 
 
 async def _seed_review_row(
-    engine: AsyncEngine, review_id: uuid.UUID, pr_context: PRContext, *, received_at: datetime
+    engine: AsyncEngine, review_id: uuid.UUID, pr_context: PRContext, *, repo_id: int
 ) -> None:
     """Insert the reviews row the graph + findings writer expect.
 
     The webhook handler normally does this in its single transaction; for the
     direct-invoke path we do the minimal equivalent so the FK targets exist
     (findings.review_id, reviews.installation_id) and replay finds a review row.
+
+    Columns mirror `db/models/reviews.py` + the webhook's own INSERT
+    (`api/webhooks/router.py` step 9a): the NOT-NULL-no-default set is
+    `id, installation_id, repo_id, pr_number, head_sha, retention_expires_at`.
+    `status` / `created_at` / `is_eval` use their server defaults; the metrics
+    columns (`files_examined`, `llm_calls_made`, tokens/cost/wall_clock) are
+    nullable and populated by synthesize/publish. There is NO `received_at`
+    column on `reviews` (an earlier version of this seed referenced one and
+    would have failed the INSERT before the graph ran). `repo_id` is the real
+    GitHub repository id, matching the natural key the webhook uses.
     """
     async with engine.begin() as conn:
         await conn.execute(
@@ -263,17 +279,16 @@ async def _seed_review_row(
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, received_at, retention_expires_at) "
-                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', :rec, "
-                ":rec + INTERVAL '90 days') ON CONFLICT (id) DO NOTHING"
+                "status, retention_expires_at) "
+                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', "
+                "NOW() + INTERVAL '90 days') ON CONFLICT (id) DO NOTHING"
             ),
             {
                 "id": review_id,
                 "iid": pr_context.installation_id,
-                "repo_id": abs(hash((pr_context.owner, pr_context.repo))) % (10**9),
+                "repo_id": repo_id,
                 "pr": pr_context.pr_number,
                 "sha": pr_context.head_sha,
-                "rec": received_at,
             },
         )
 
@@ -283,6 +298,7 @@ async def _report_and_verify(
     session_factory: async_sessionmaker[Any],
     review_id: uuid.UUID,
     *,
+    result: dict[str, Any],
     interrupted: bool,
 ) -> int:
     _say()
@@ -306,16 +322,37 @@ async def _report_and_verify(
         _say("    (no findings)")
     _say()
 
+    # --- Outcome: distinguish HITL pause / real post / no-op / failure by
+    # inspecting the publish_result, not by assuming "not interrupted == posted".
+    publish_result = result.get("publish_result")
     if interrupted:
         _say(
             "  Outcome .............. PAUSED at HITL gate (a CRITICAL/HIGH finding "
             "interrupted before publish — the gate working as designed; no comment posted)"
         )
+    elif publish_result is None:
+        _say("  Outcome .............. graph ended before publish (no publish_result in state)")
     else:
-        _say(
-            "  Outcome .............. reached publish — a review was posted to the PR "
-            "(check GitHub)"
-        )
+        outcome = getattr(publish_result, "outcome", None)
+        gh_id = getattr(publish_result, "github_review_id", None)
+        posted = getattr(publish_result, "comments_posted", 0)
+        if outcome == "success":
+            _say(
+                f"  Outcome .............. REVIEW POSTED to GitHub "
+                f"(github_review_id={gh_id}, comments_posted={posted}) — check the PR"
+            )
+        elif outcome == "no_op_empty":
+            _say(
+                "  Outcome .............. reached publish but posted NOTHING "
+                "(no_op_empty — no inline-eligible findings; nothing on the PR)"
+            )
+        elif outcome in ("idempotently_skipped", "idempotently_skipped_external_record"):
+            _say(
+                f"  Outcome .............. publish skipped as duplicate ({outcome}); "
+                "a prior run already posted for this head_sha"
+            )
+        else:
+            _say(f"  Outcome .............. publish outcome={outcome!r} (github_review_id={gh_id})")
     _say()
 
     # --- structural verdict ---
@@ -329,14 +366,34 @@ async def _report_and_verify(
         ).scalar_one()
     checks.append(("audit events persisted", n_events > 0, f"{n_events} rows"))
 
+    # If the run reached publish (not paused) and a publish_result exists, its
+    # outcome must be a non-failure value. `failed` is a hard check failure;
+    # `success` / `no_op_empty` / idempotent-skip are all acceptable end states
+    # (the demo's job is to prove the path runs, not to force a specific count).
+    if not interrupted and publish_result is not None:
+        outcome = getattr(publish_result, "outcome", None)
+        checks.append(("publish did not fail", outcome != "failed", f"outcome={outcome}"))
+        if outcome == "success":
+            checks.append(
+                (
+                    "posted review carries a github_review_id",
+                    getattr(publish_result, "github_review_id", None) is not None,
+                    f"id={getattr(publish_result, 'github_review_id', None)}",
+                )
+            )
+
     replayer = AuditReplayer(session_factory=session_factory)
     try:
         review = await replayer.reconstruct(review_id)
         checks.append(("reconstruct succeeds", True, f"mode={review.mode.value}"))
         await replayer.assert_replay_equivalent(review_id)
         checks.append(("assert_replay_equivalent passes", True, ""))
-        # A completed (non-interrupted) review with a finding should be FULL.
-        if not interrupted and review.findings:
+        # A review WITH findings reconstructs FULL regardless of whether it
+        # reached publish or paused at HITL — analyze co-wrote the finding
+        # content rows + the provider wrote the LLM content before either
+        # terminal node. (Keyed on findings, not publish completion — a
+        # HITL-paused review still has full content.)
+        if review.findings:
             checks.append(
                 (
                     "FULL replay with finding content",
