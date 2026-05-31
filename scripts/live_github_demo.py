@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -136,7 +137,7 @@ async def _fetch_pr_seed(
 
 async def _run(args: argparse.Namespace) -> int:
     # --- setup gates ---
-    for var in ("ANTHROPIC_API_KEY", "OUTRIDER_GITHUB_APP_ID", "DATABASE_URL"):
+    for var in ("ANTHROPIC_API_KEY", "DATABASE_URL"):
         if not os.environ.get(var):
             _say(f"  {var} is not set — this runner needs it. Aborting.")
             return 2
@@ -148,6 +149,28 @@ async def _run(args: argparse.Namespace) -> int:
             f"{sorted(_REPO_ALLOWLIST)}. Pass --allow-any-repo to override "
             "(posts a real review to a real PR)."
         )
+        return 2
+
+    # Construct the env-backed settings BEFORE any live resource (engine,
+    # provider) so missing/invalid GitHub App config (private key, webhook
+    # secret — not just app_id) or a bad retention override fails cleanly with
+    # setup exit 2 instead of raising mid-run after resources are built. This
+    # validates against the production config surface (GitHubAppSettings /
+    # RetentionSettings) rather than re-listing individual OUTRIDER_GITHUB_*
+    # env var names, which would drift from the settings model.
+    try:
+        github_settings = GitHubAppSettings()
+    except ValidationError as exc:
+        _say(
+            "  GitHub App settings invalid or incomplete (needs "
+            "OUTRIDER_GITHUB_APP_ID / _APP_PRIVATE_KEY / _WEBHOOK_SECRET). "
+            f"Aborting.\n{exc}"
+        )
+        return 2
+    try:
+        retention_settings = RetentionSettings()
+    except ValidationError as exc:
+        _say(f"  Retention settings invalid (OUTRIDER_AUDIT_*_RETENTION_TTL). Aborting.\n{exc}")
         return 2
 
     _say(_RULE)
@@ -164,16 +187,14 @@ async def _run(args: argparse.Namespace) -> int:
     model_config = ModelConfig()
     persister = AuditPersister(
         session_factory=session_factory,
-        retention_settings=RetentionSettings(),
+        retention_settings=retention_settings,
     )
-    from pydantic import SecretStr  # noqa: PLC0415
-
     provider = AnthropicProvider(
         api_key=SecretStr(os.environ["ANTHROPIC_API_KEY"]),
         model_config=model_config,
         persister=persister,
     )
-    github_factory = make_installation_client_factory(GitHubAppSettings())
+    github_factory = make_installation_client_factory(github_settings)
 
     _say(
         f"  Models ............... {model_config.analyze_model} (analyze) + "
@@ -204,7 +225,13 @@ async def _run(args: argparse.Namespace) -> int:
     _say()
 
     # --- seed the reviews row (the webhook normally does this) ---
-    await _seed_review_row(engine, review_id, pr_context, repo_id=repo_id)
+    await _seed_review_row(
+        engine,
+        review_id,
+        pr_context,
+        repo_id=repo_id,
+        retention_settings=retention_settings,
+    )
 
     graph = build_graph(
         db_factory=session_factory,
@@ -253,7 +280,12 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 async def _seed_review_row(
-    engine: AsyncEngine, review_id: uuid.UUID, pr_context: PRContext, *, repo_id: int
+    engine: AsyncEngine,
+    review_id: uuid.UUID,
+    pr_context: PRContext,
+    *,
+    repo_id: int,
+    retention_settings: RetentionSettings,
 ) -> None:
     """Insert the reviews row the graph + findings writer expect.
 
@@ -270,9 +302,14 @@ async def _seed_review_row(
     before the graph runs. `status` / `created_at` / `updated_at` / `is_eval`
     have server defaults and are omitted. There is NO `received_at` column on
     `reviews`. `repo_id` is the real GitHub repository id, matching the natural
-    key the webhook uses. synthesize/publish overwrite the zeroed metrics with
-    real counts; replay reads `audit_events`, not these columns, so the seed
-    values don't affect the replay verdict.
+    key the webhook uses. `retention_expires_at` is
+    `now + retention_settings.review_retention_ttl` — the same operator-
+    overridable TTL the webhook reads (NOT a hard-coded 90-day interval), so an
+    `OUTRIDER_AUDIT_REVIEW_RETENTION_TTL` override keeps this row consistent with
+    the app config and with the content rows the persister writes. synthesize/
+    publish overwrite the zeroed metrics with real counts; replay reads
+    `audit_events`, not these columns, so the seed values don't affect the
+    replay verdict.
     """
     async with engine.begin() as conn:
         await conn.execute(
@@ -284,6 +321,7 @@ async def _seed_review_row(
             ),
             {"iid": pr_context.installation_id, "owner": pr_context.owner},
         )
+        retention_expires_at = datetime.now(UTC) + retention_settings.review_retention_ttl
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
@@ -291,7 +329,7 @@ async def _seed_review_row(
                 "total_input_tokens, total_output_tokens, total_cost_usd, "
                 "wall_clock_seconds, retention_expires_at) "
                 "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', 0, 0, 0, 0, 0, 0, 0, "
-                "NOW() + INTERVAL '90 days') ON CONFLICT (id) DO NOTHING"
+                ":retention_expires_at) ON CONFLICT (id) DO NOTHING"
             ),
             {
                 "id": review_id,
@@ -299,6 +337,7 @@ async def _seed_review_row(
                 "repo_id": repo_id,
                 "pr": pr_context.pr_number,
                 "sha": pr_context.head_sha,
+                "retention_expires_at": retention_expires_at,
             },
         )
 
