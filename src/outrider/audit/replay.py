@@ -20,9 +20,11 @@ Two design commitments:
     NOT by a `retention_expires_at` comparison and NOT by a NULL column.
     `DECISIONS.md#016`'s single-transaction insert makes "audit row present,
     content row absent" mean unambiguously "purged per retention," so
-    row-absence is a sound signal. Findings (180d) and LLM content (90d)
-    have different TTLs, so a single review can be legitimately MIXED;
-    replay labels every item rather than silently producing a hybrid.
+    row-absence is a sound signal. Findings and LLM content can carry
+    different TTLs (the ordering `llm_content <= findings <= review` holds;
+    all three default to 90d but an operator may raise findings above llm),
+    so a single review can be legitimately MIXED; replay labels every item
+    rather than silently producing a hybrid.
 
 The canonical ordered reconstruction DTO (`ReconstructedReview`) is the
 single read model consumed by both `assert_replay_equivalent` and the
@@ -105,8 +107,9 @@ class ReplayMode(StrEnum):
         exchanges) — reconstructs with content. METADATA_ONLY: the review
         row is purged, so all content is gone — findings as stubs, LLM as
         metadata + surviving hashes. MIXED: some content present, some
-        purged (the legitimate 90-180d window where llm_call_content's
-        shorter TTL has elapsed but findings remain) — labeled per item,
+        purged (the legitimate window where llm_call_content's shorter-or-equal
+        TTL has elapsed but findings remain — non-empty only when an operator
+        sets findings TTL above the llm-content TTL) — labeled per item,
         never silently hybridized.
     """
 
@@ -310,15 +313,17 @@ def _classify_mode(
 ) -> ReplayMode:
     """Select the reconstruction mode from content-row presence.
 
-    Three legitimate states under the retention ordering (LLM content 90d ≤
-    findings/reviews 180d, per `DECISIONS#014`/`#016`):
+    Three legitimate states under the retention ordering
+    (`llm_content <= findings <= review`, per `DECISIONS#014`/`#016`; all three
+    default to 90d, operator-overridable within that ordering):
 
     - **FULL** — review row present and every finding + LLM call carries content
       (within the shortest TTL). A review with no findings/LLM calls and a
       present row classifies FULL vacuously.
     - **MIXED** — review row present but not every content item is full. The
-      canonical case is the 90–180d window where the shorter-lived LLM content
-      has purged while finding content remains; more generally it is the
+      canonical case is the window where the shorter-or-equal-lived LLM content
+      has purged while finding content remains (non-empty only when findings
+      TTL is set above the llm-content TTL); more generally it is the
       residual partial-presence state that is neither FULL nor one of the two
       impossible shapes below. Every item is labelled individually rather than
       silently hybridized.
@@ -326,16 +331,18 @@ def _classify_mode(
 
     Raises `ReplayEquivalenceError` on three impossible states:
 
-    - **Review absent + any content survives.** Because content (LLM 90d,
-      findings 180d) purges no later than the review (180d), a purged review
-      implies all its content already purged — surviving content with no
-      review row is corruption (partial / out-of-order purge or tampering).
+    - **Review absent + any content survives.** Because content (LLM and
+      findings) purges no later than the review (`llm <= findings <= review`),
+      a purged review implies all its content already purged — surviving
+      content with no review row is corruption (partial / out-of-order purge
+      or tampering).
     - **LLM content survives + any finding content purged.** Because LLM
-      content (90d) purges no later than finding content (180d), surviving
-      LLM content guarantees the findings window is still open — so a purged
-      finding alongside surviving LLM content is an out-of-order purge /
-      tampering, the sibling of the case above. The legitimate MIXED window
-      is the opposite shape: findings present, the shorter-lived LLM purged.
+      content purges no later than finding content (`llm <= findings`),
+      surviving LLM content guarantees the findings window is still open — so
+      a purged finding alongside surviving LLM content is an out-of-order
+      purge / tampering, the sibling of the case above. The legitimate MIXED
+      window is the opposite shape: findings present, the shorter-lived LLM
+      purged.
     - **Half-present LLM content row.** `prompt` and `completion` are both
       NOT NULL in `llm_call_content` and co-inserted in one transaction, so
       they purge together. A row with one side present and the other absent
