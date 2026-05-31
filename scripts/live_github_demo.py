@@ -241,7 +241,12 @@ async def _run(args: argparse.Namespace) -> int:
 
     interrupted = "__interrupt__" in result
     rc = await _report_and_verify(
-        engine, session_factory, review_id, result=result, interrupted=interrupted
+        engine,
+        session_factory,
+        review_id,
+        result=result,
+        interrupted=interrupted,
+        allow_empty_publish=args.allow_empty_publish,
     )
     await engine.dispose()
     return rc
@@ -257,14 +262,17 @@ async def _seed_review_row(
     (findings.review_id, reviews.installation_id) and replay finds a review row.
 
     Columns mirror `db/models/reviews.py` + the webhook's own INSERT
-    (`api/webhooks/router.py` step 9a): the NOT-NULL-no-default set is
-    `id, installation_id, repo_id, pr_number, head_sha, retention_expires_at`.
-    `status` / `created_at` / `is_eval` use their server defaults; the metrics
-    columns (`files_examined`, `llm_calls_made`, tokens/cost/wall_clock) are
-    nullable and populated by synthesize/publish. There is NO `received_at`
-    column on `reviews` (an earlier version of this seed referenced one and
-    would have failed the INSERT before the graph ran). `repo_id` is the real
-    GitHub repository id, matching the natural key the webhook uses.
+    (`api/webhooks/router.py` step 9a). The metric columns
+    (`files_examined`, `files_traced_beyond_diff`, `llm_calls_made`,
+    `total_input_tokens`, `total_output_tokens`, `total_cost_usd`,
+    `wall_clock_seconds`) are `nullable=False` with NO server default, so the
+    webhook seeds them to 0 and we must too — omitting them fails the INSERT
+    before the graph runs. `status` / `created_at` / `updated_at` / `is_eval`
+    have server defaults and are omitted. There is NO `received_at` column on
+    `reviews`. `repo_id` is the real GitHub repository id, matching the natural
+    key the webhook uses. synthesize/publish overwrite the zeroed metrics with
+    real counts; replay reads `audit_events`, not these columns, so the seed
+    values don't affect the replay verdict.
     """
     async with engine.begin() as conn:
         await conn.execute(
@@ -279,8 +287,10 @@ async def _seed_review_row(
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, retention_expires_at) "
-                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', "
+                "status, files_examined, files_traced_beyond_diff, llm_calls_made, "
+                "total_input_tokens, total_output_tokens, total_cost_usd, "
+                "wall_clock_seconds, retention_expires_at) "
+                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', 0, 0, 0, 0, 0, 0, 0, "
                 "NOW() + INTERVAL '90 days') ON CONFLICT (id) DO NOTHING"
             ),
             {
@@ -300,6 +310,7 @@ async def _report_and_verify(
     *,
     result: dict[str, Any],
     interrupted: bool,
+    allow_empty_publish: bool,
 ) -> int:
     _say()
     async with engine.begin() as conn:
@@ -333,6 +344,10 @@ async def _report_and_verify(
     elif publish_result is None:
         _say("  Outcome .............. graph ended before publish (no publish_result in state)")
     else:
+        # PublishResult.outcome ∈ {success, empty, idempotently_skipped,
+        # idempotently_skipped_external_record} (schemas/publish.py). There is
+        # no "failed" / "no_op_empty" outcome — publish raises on API failure,
+        # and "no_op_empty" is the AUDIT marker for the `empty` outcome.
         outcome = getattr(publish_result, "outcome", None)
         gh_id = getattr(publish_result, "github_review_id", None)
         posted = getattr(publish_result, "comments_posted", 0)
@@ -341,15 +356,20 @@ async def _report_and_verify(
                 f"  Outcome .............. REVIEW POSTED to GitHub "
                 f"(github_review_id={gh_id}, comments_posted={posted}) — check the PR"
             )
-        elif outcome == "no_op_empty":
+        elif outcome == "empty":
             _say(
                 "  Outcome .............. reached publish but posted NOTHING "
-                "(no_op_empty — no inline-eligible findings; nothing on the PR)"
+                "(empty — no inline-eligible findings; no GitHub review created)"
             )
-        elif outcome in ("idempotently_skipped", "idempotently_skipped_external_record"):
+        elif outcome == "idempotently_skipped_external_record":
             _say(
-                f"  Outcome .............. publish skipped as duplicate ({outcome}); "
-                "a prior run already posted for this head_sha"
+                f"  Outcome .............. publish skipped as duplicate; a prior run "
+                f"already posted GitHub review {gh_id} for this head_sha"
+            )
+        elif outcome == "idempotently_skipped":
+            _say(
+                "  Outcome .............. publish skipped as duplicate "
+                "(prior run already terminal for this head_sha; no new GitHub write)"
             )
         else:
             _say(f"  Outcome .............. publish outcome={outcome!r} (github_review_id={gh_id})")
@@ -366,21 +386,23 @@ async def _report_and_verify(
         ).scalar_one()
     checks.append(("audit events persisted", n_events > 0, f"{n_events} rows"))
 
-    # If the run reached publish (not paused) and a publish_result exists, its
-    # outcome must be a non-failure value. `failed` is a hard check failure;
-    # `success` / `no_op_empty` / idempotent-skip are all acceptable end states
-    # (the demo's job is to prove the path runs, not to force a specific count).
-    if not interrupted and publish_result is not None:
+    # GitHub-write proof. The happy-path C2 demo exists to prove a REAL review
+    # reaches GitHub, so by default a non-interrupted run must end with a review
+    # row on GitHub. "A GitHub review exists" == `github_review_id is not None`
+    # (PublishResult has no `posted_to_github` property — derive it from the id):
+    # populated for `success` and `idempotently_skipped_external_record`, None
+    # for `empty` and plain `idempotently_skipped`. An `empty` outcome is a
+    # structural pass (the pipeline ran) but NOT a write proof — it fails this
+    # gate unless --allow-empty-publish is set. A HITL-paused run legitimately
+    # never reaches publish, so the gate does not apply there.
+    if not interrupted:
         outcome = getattr(publish_result, "outcome", None)
-        checks.append(("publish did not fail", outcome != "failed", f"outcome={outcome}"))
-        if outcome == "success":
-            checks.append(
-                (
-                    "posted review carries a github_review_id",
-                    getattr(publish_result, "github_review_id", None) is not None,
-                    f"id={getattr(publish_result, 'github_review_id', None)}",
-                )
-            )
+        posted = getattr(publish_result, "github_review_id", None) is not None
+        write_ok = posted or allow_empty_publish
+        detail = f"outcome={outcome}, github_review_id_present={posted}"
+        if not posted and allow_empty_publish:
+            detail += " (no GitHub write; accepted by --allow-empty-publish)"
+        checks.append(("GitHub review posted", write_ok, detail))
 
     replayer = AuditReplayer(session_factory=session_factory)
     try:
@@ -432,6 +454,15 @@ def _parse_args() -> argparse.Namespace:
         "--allow-any-repo",
         action="store_true",
         help="override the sandbox-repo allowlist (posts a real review to the given repo)",
+    )
+    parser.add_argument(
+        "--allow-empty-publish",
+        action="store_true",
+        help=(
+            "accept an 'empty' / non-posting publish outcome as a pass. By default a "
+            "non-interrupted run must post a real GitHub review (the C2 happy-path proof); "
+            "this relaxes that to allow runs where Claude produces no inline-eligible findings"
+        ),
     )
     return parser.parse_args()
 
