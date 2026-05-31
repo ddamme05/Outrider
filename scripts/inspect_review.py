@@ -403,7 +403,23 @@ async def _run(args: argparse.Namespace) -> int:
             return 2
 
         _say()
-        await _section_reviews_row(engine, review_id)
+        # Not-found gate (honors the advertised exit-2 contract): a review is
+        # "not found" when it has neither a reviews row NOR any audit events.
+        # `_section_reviews_row` returns False when the row is absent;
+        # `reconstruct()` raises `ReplayReviewNotFoundError` when the audit
+        # stream is empty. If BOTH say absent, there is nothing to inspect —
+        # return 2 instead of printing empty sections and a misleading exit 0.
+        row_present = await _section_reviews_row(engine, review_id)
+        async with engine.begin() as conn:
+            n_events = (
+                await conn.execute(
+                    text("SELECT COUNT(*) FROM audit_events WHERE review_id = :rid"),
+                    {"rid": review_id},
+                )
+            ).scalar_one()
+        if not row_present and n_events == 0:
+            _say(f"  No reviews row and no audit events for {review_id}. Nothing to inspect.")
+            return 2
         await _section_replay_verdict(session_factory, review_id)
         await _section_timeline(engine, review_id, compact=args.compact, phase_filter=args.phase)
         await _section_llm_exchanges(engine, review_id, show_content=not args.no_content)

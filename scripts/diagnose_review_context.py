@@ -293,7 +293,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read-only dump of what the model saw for a review (tiers + analyze context)."
+        description="Read-only dump of what the model saw for a review (analyze passes + context)."
     )
     parser.add_argument("--review-id", default=None, help="review UUID (omit to list the latest)")
     parser.add_argument("--file", default=None, help="only show context for this file path")

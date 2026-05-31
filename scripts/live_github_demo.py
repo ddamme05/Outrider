@@ -501,10 +501,18 @@ async def _report_and_verify(
     if not interrupted:
         outcome = getattr(publish_result, "outcome", None)
         posted = getattr(publish_result, "github_review_id", None) is not None
-        write_ok = posted or allow_empty_publish
+        # --allow-empty-publish excuses ONLY an explicit `empty` outcome (the
+        # pipeline ran but produced no inline-eligible findings). It must NOT
+        # excuse `publish_result is None` ("graph ended before publish") — that
+        # is a different, genuine failure shape (the graph never reached the
+        # publish node), not a no-findings run, so it always fails this gate.
+        excused_empty = allow_empty_publish and outcome == "empty"
+        write_ok = posted or excused_empty
         detail = f"outcome={outcome}, github_review_id_present={posted}"
-        if not posted and allow_empty_publish:
-            detail += " (no GitHub write; accepted by --allow-empty-publish)"
+        if excused_empty:
+            detail += " (empty publish; accepted by --allow-empty-publish)"
+        elif publish_result is None:
+            detail = "publish_result is None — graph ended before the publish node (not excusable)"
         checks.append(("GitHub review posted", write_ok, detail))
 
     replayer = AuditReplayer(session_factory=session_factory)
