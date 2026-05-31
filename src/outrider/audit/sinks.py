@@ -51,7 +51,6 @@ from outrider.audit.events import (
     AnalyzeCompletedEvent,
     AnalyzeResponseRejectedEvent,
     FileExaminationEvent,
-    FindingEvent,
     FindingProposalRejectedEvent,
     HITLDecisionEvent,
     HITLRequestEvent,
@@ -63,6 +62,7 @@ from outrider.audit.events import (
     SynthesizeCompletedEvent,
     TraceDecisionEvent,
 )
+from outrider.schemas.review_finding import ReviewFinding
 
 
 @runtime_checkable
@@ -211,8 +211,16 @@ class AnalyzeEventSink(Protocol):
     only, not signature shape; mypy strict is the write-time gate.
     """
 
-    async def emit_finding(self, event: FindingEvent) -> None:
-        """Persist a `FindingEvent` for an admitted `ReviewFinding`."""
+    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+        """Persist an admitted finding: BOTH the `FindingEvent` audit row AND
+        the `findings` content row, co-inserted in one transaction.
+
+        The persister lifts the metadata-only `FindingEvent` from the
+        `ReviewFinding` internally (per DECISIONS.md#014) and writes the full
+        content row alongside it, mirroring the DECISIONS.md#016 `LLMCallEvent`
+        + `llm_call_content` co-insert. `is_eval` threads through to both rows.
+        See specs/2026-05-30-findings-content-writer.md.
+        """
         ...
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:

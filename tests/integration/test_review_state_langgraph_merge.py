@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         ReviewPhaseEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
+    from outrider.schemas.review_finding import ReviewFinding
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +283,31 @@ class _RecordingFileExaminationSink:
         self.events.append(event)
 
 
+def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+    """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
+    mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
+    same event the production sink would emit under the new sink signature."""
+    from outrider.audit.events import FindingEvent
+
+    return FindingEvent(
+        review_id=finding.review_id,
+        is_eval=is_eval,
+        finding_id=finding.finding_id,
+        finding_type=finding.finding_type,
+        severity=finding.severity,
+        file_path=finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        dimension=finding.dimension,
+        finding_content_hash=finding.content_hash,
+        evidence_tier=finding.evidence_tier,
+        query_match_id=finding.query_match_id,
+        trace_path=finding.trace_path,
+        policy_version=finding.policy_version,
+        proposal_hash=finding.proposal_hash,
+    )
+
+
 class _RecordingAnalyzeEventSink:
     """No-op sink satisfying AnalyzeEventSink Protocol structurally.
 
@@ -297,8 +323,8 @@ class _RecordingAnalyzeEventSink:
         self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
         self.completed: list[AnalyzeCompletedEvent] = []
 
-    async def emit_finding(self, event: FindingEvent) -> None:
-        self.findings.append(event)
+    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+        self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
         self.proposal_rejections.append(event)

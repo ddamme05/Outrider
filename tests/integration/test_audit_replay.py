@@ -47,6 +47,7 @@ from outrider.policy.severity import (
     FindingType,
 )
 from outrider.schemas import ReviewDimension
+from outrider.schemas.review_finding import ReviewFinding
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -538,10 +539,12 @@ async def test_full_mode_through_production_persister(
     output (payload normalization, atomic LLMCallEvent + llm_call_content
     co-insert, the persister's hash/field cross-checks), not hand-shaped rows.
 
-    The ``findings`` *content* row is still raw-SQL-seeded: no production writer
-    of the ``findings`` table exists yet (the analyze/synthesize node that will
-    write it is a later spec), so FULL-mode finding content cannot be produced
-    through a writer today. Tracked: FUP-111.
+    The ``findings`` *content* row is now driven through the production writer
+    too: ``emit_finding`` co-inserts the ``FindingEvent`` audit row and the
+    ``findings`` content row in one transaction (lifting the event from the
+    ``ReviewFinding`` internally), so FULL-mode finding content is produced
+    end-to-end through the real persister — no raw-SQL ``findings`` seed.
+    Closes FUP-111.
     """
     persister = persister_setup.persister
     engine = persister_setup.engine
@@ -562,19 +565,44 @@ async def test_full_mode_through_production_persister(
     await persister.emit_phase(_phase_event(review_id, node_id="triage", marker="end"))
 
     await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="start"))
-    finding = _finding_event(review_id)
-    await persister.emit_finding(finding)
+    # Drive the findings content writer: emit_finding co-inserts the FindingEvent
+    # audit row AND the findings content row in one transaction (lifting the event
+    # from the ReviewFinding internally). installation_id must match the seeded
+    # reviews row (the writer cross-checks); policy_version "1.0.0" is the
+    # migration-seeded active policy (severity_policies FK).
+    finding = ReviewFinding(
+        review_id=review_id,
+        installation_id=persister_setup.installation_id,
+        policy_version="1.0.0",
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=FindingSeverity.CRITICAL,
+        evidence_tier=EvidenceTier.JUDGED,
+        file_path="src/app/models.py",
+        line_start=10,
+        line_end=20,
+        title="SQL injection in query builder",
+        description="User input flows into a raw SQL string.",
+        evidence="cursor.execute(f'SELECT * FROM t WHERE id={user_id}')",
+        content_hash=compute_finding_content_hash(
+            "src/app/models.py",
+            line_start=10,
+            line_end=20,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+        proposal_hash=hashlib.sha256(b"proposal").hexdigest(),
+    )
+    await persister.emit_finding(finding, is_eval=False)
     await persister.emit_phase(_phase_event(review_id, node_id="analyze", marker="end"))
 
     # The seed review is status='running'; a FULL-mode replay asserts the
     # completed-phase-termination invariant, so flip it to completed. The
-    # findings content row has no production writer yet (FUP-111) — raw-SQL.
+    # findings content row was already written by emit_finding above — no raw-SQL seed.
     async with engine.begin() as conn:
         await conn.execute(
             text("UPDATE reviews SET status = 'completed' WHERE id = :rid"),
             {"rid": review_id},
         )
-    await _seed_finding_row(engine, finding)
 
     replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
     review = await replayer.reconstruct(review_id)

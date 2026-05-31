@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         FindingProposalRejectedEvent,
         ReviewPhaseEvent,
     )
+    from outrider.schemas.review_finding import ReviewFinding
 
 # ---------------------------------------------------------------------------
 # Recorder sinks (inline; commit-7 keeps test infra minimal per user
@@ -91,6 +92,33 @@ class _RecordingPhaseEventSink:
         self.events.append(event)
 
 
+def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+    """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
+    mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
+    same event the production sink would emit (keeps FindingEvent-field assertions
+    such as ``finding_content_hash`` / ``is_eval`` valid under the new sink
+    signature)."""
+    from outrider.audit.events import FindingEvent
+
+    return FindingEvent(
+        review_id=finding.review_id,
+        is_eval=is_eval,
+        finding_id=finding.finding_id,
+        finding_type=finding.finding_type,
+        severity=finding.severity,
+        file_path=finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        dimension=finding.dimension,
+        finding_content_hash=finding.content_hash,
+        evidence_tier=finding.evidence_tier,
+        query_match_id=finding.query_match_id,
+        trace_path=finding.trace_path,
+        policy_version=finding.policy_version,
+        proposal_hash=finding.proposal_hash,
+    )
+
+
 class _RecordingAnalyzeEventSink:
     """Captures every emission of the four analyze-specific event
     types into per-type lists for assertion. The aggregate `events`
@@ -104,7 +132,8 @@ class _RecordingAnalyzeEventSink:
         self.completed: list[AnalyzeCompletedEvent] = []
         self.events: list[Any] = []
 
-    async def emit_finding(self, event: FindingEvent) -> None:
+    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+        event = _lift_finding_event(finding, is_eval=is_eval)
         self.findings.append(event)
         self.events.append(event)
 
