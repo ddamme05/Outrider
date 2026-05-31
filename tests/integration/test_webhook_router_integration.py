@@ -395,8 +395,12 @@ async def test_webhook_retention_uses_settings_field(
     app, engine = webhook_app
     await _seed_installation_and_membership(engine)
     # Override the settings to a non-default value so we can verify the
-    # webhook reads from settings, not a constant.
+    # webhook reads from settings, not a constant. All three TTLs set to 7d
+    # to satisfy the llm_content <= findings <= review ordering validator
+    # while keeping review_retention_ttl observably non-default.
     app.state.retention_settings = RetentionSettings(
+        llm_content_retention_ttl=timedelta(days=7),
+        findings_retention_ttl=timedelta(days=7),
         review_retention_ttl=timedelta(days=7),
     )
 

@@ -23,6 +23,27 @@ def test_default_ttl_is_90_days() -> None:
     assert settings.llm_content_retention_ttl == timedelta(days=90)
 
 
+def test_findings_ttl_default_is_90_days() -> None:
+    """findings_retention_ttl defaults to 90 days (equal to llm + review defaults
+    so the llm <= findings <= review ordering holds at the defaults)."""
+    settings = RetentionSettings()
+    assert settings.findings_retention_ttl == timedelta(days=90)
+
+
+def test_findings_ttl_explicit_override() -> None:
+    """findings_retention_ttl is operator-overridable via explicit kwarg.
+
+    180d findings with a 180d review satisfies the ordering; the value the
+    replay docstrings historically narrated is reachable when the operator
+    also raises the review TTL.
+    """
+    settings = RetentionSettings(
+        findings_retention_ttl=timedelta(days=180),
+        review_retention_ttl=timedelta(days=180),
+    )
+    assert settings.findings_retention_ttl == timedelta(days=180)
+
+
 def test_explicit_kwarg_overrides_default() -> None:
     """Explicit kwarg construction works and overrides the default."""
     settings = RetentionSettings(llm_content_retention_ttl=timedelta(days=7))
@@ -58,6 +79,54 @@ def test_one_second_ttl_is_accepted_by_constraint() -> None:
     """
     settings = RetentionSettings(llm_content_retention_ttl=timedelta(seconds=1))
     assert settings.llm_content_retention_ttl == timedelta(seconds=1)
+
+
+# ---------------------------------------------------------------------------
+# Retention ordering: llm_content <= findings <= review.
+# ---------------------------------------------------------------------------
+
+
+def test_ordering_holds_at_defaults() -> None:
+    """All three default to 90d, so llm <= findings <= review holds."""
+    settings = RetentionSettings()
+    assert (
+        settings.llm_content_retention_ttl
+        <= settings.findings_retention_ttl
+        <= settings.review_retention_ttl
+    )
+
+
+def test_findings_ttl_exceeding_review_raises() -> None:
+    """findings > review violates the ordering: findings.review_id is
+    ON DELETE CASCADE, so a longer findings TTL is unreachable AND would
+    manufacture the review-purged/content-survives corruption state."""
+    with pytest.raises(ValidationError):
+        RetentionSettings(
+            findings_retention_ttl=timedelta(days=120),
+            review_retention_ttl=timedelta(days=90),
+        )
+
+
+def test_llm_content_exceeding_findings_raises() -> None:
+    """llm_content > findings violates the ordering: the most-sensitive
+    content (prompt/completion text) must carry the shortest TTL."""
+    with pytest.raises(ValidationError):
+        RetentionSettings(
+            llm_content_retention_ttl=timedelta(days=120),
+            findings_retention_ttl=timedelta(days=90),
+        )
+
+
+def test_strict_ascending_ordering_is_accepted() -> None:
+    """A genuine llm < findings < review ladder constructs cleanly."""
+    settings = RetentionSettings(
+        llm_content_retention_ttl=timedelta(days=30),
+        findings_retention_ttl=timedelta(days=90),
+        review_retention_ttl=timedelta(days=180),
+    )
+    assert settings.llm_content_retention_ttl == timedelta(days=30)
+    assert settings.findings_retention_ttl == timedelta(days=90)
+    assert settings.review_retention_ttl == timedelta(days=180)
 
 
 # ---------------------------------------------------------------------------
