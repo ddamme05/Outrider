@@ -248,7 +248,9 @@ def test_classify_mode_metadata_only_when_empty_and_review_absent() -> None:
 
 
 def test_classify_mode_mixed_when_llm_content_purged() -> None:
-    # The legitimate 90-180d window: findings (180d) present, LLM content (90d) gone.
+    # The legitimate MIXED window under the retention ordering
+    # (llm_content <= findings <= review): findings present, the shorter-or-equal
+    # LLM content gone.
     finding = ReconstructedFinding(event=_finding_event(), content=None)
     finding = finding.model_copy(update={"content": _content_for(finding.event)})
     exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt=None, completion=None)
@@ -259,8 +261,9 @@ def test_classify_mode_mixed_when_llm_content_purged() -> None:
 
 
 def test_classify_mode_review_absent_with_llm_content_raises() -> None:
-    # Impossible under retention (LLM 90d ≤ review 180d): a purged review with a
-    # surviving LLM content row is corruption, not a legitimate mixed window.
+    # Impossible under the retention ordering (llm_content <= findings <= review):
+    # a purged review with a surviving LLM content row is corruption, not a
+    # legitimate mixed window.
     exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt="p", completion="c")
     with pytest.raises(ReplayEquivalenceError, match="surviving content with no review row"):
         _classify_mode(review_present=False, findings=(), llm_exchanges=(exchange,))
@@ -275,9 +278,10 @@ def test_classify_mode_review_absent_with_finding_content_raises() -> None:
 
 
 def test_classify_mode_llm_present_finding_purged_raises() -> None:
-    # Sibling of the review-absent guard: LLM content (90d) purges no later than
-    # finding content (180d), so surviving LLM content with a purged finding is
-    # an out-of-order purge — corruption, not a legitimate MIXED window.
+    # Sibling of the review-absent guard: under the retention ordering
+    # (llm_content <= findings), LLM content purges no later than finding content,
+    # so surviving LLM content with a purged finding is an out-of-order purge —
+    # corruption, not a legitimate MIXED window.
     stub_finding = ReconstructedFinding(event=_finding_event(), content=None)  # content purged
     exchange = ReconstructedLLMExchange(event=_llm_call_event(), prompt="p", completion="c")
     with pytest.raises(ReplayEquivalenceError, match="LLM content survives while finding content"):

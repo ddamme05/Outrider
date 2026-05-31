@@ -193,12 +193,24 @@ class AnalyzeEventSink(Protocol):
     `LLMProvider.complete()`.
 
     Production / durable implementations MUST:
-      - Be idempotent on `event.event_id`. Retry / checkpoint replay
-        must not duplicate rows.
       - Be safe under concurrent invocations. V1.5's parallel-analyze
         fan-out emits per-file events concurrently.
       - Persist before returning, OR raise. Silent drop is never
         acceptable.
+      - Idempotency keys differ by method:
+        - `emit_finding` mints a fresh `FindingEvent.event_id` per call,
+          so re-emission appends a new audit row (NOT deduped on
+          `event_id`). The `findings` *content* row is keyed on the
+          stable `finding_id` (PK): re-emit writes at most one content
+          row and NEVER resurrects a row the retention sweep purged
+          (`specs/2026-05-30-findings-content-writer.md`). So a single
+          finding may have N append-only `FindingEvent` rows but exactly
+          one (or zero, post-purge) `findings` content row.
+        - The other three methods (`emit_finding_proposal_rejected`,
+          `emit_analyze_response_rejected`, `emit_analyze_completed`) are
+          `event_id`-PK idempotent per `DECISIONS.md#026`: retry / replay
+          minting a fresh `event_id` is acceptable, and consumer-side
+          dedup handles read-time collapse.
 
     Test recorders (e.g., `RecordingAnalyzeEventSink`) record every
     emission into per-type lists for assertion; they are deliberately
