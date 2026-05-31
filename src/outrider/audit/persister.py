@@ -159,6 +159,7 @@ __all__ = [
     "AuditPersisterConfigError",
     "AuditPersisterEventRequestFieldMismatchError",
     "AuditPersisterEventResponseFieldMismatchError",
+    "AuditPersisterFindingInstallationIdMismatchError",
     "AuditPersisterHITLDecisionIdempotencyLookupError",
     "AuditPersisterHITLDecisionNaturalKeyConflict",
     "AuditPersisterHITLRequestIdempotencyLookupError",
@@ -365,6 +366,40 @@ class AuditPersisterReviewIdMismatchError(ValueError):
         )
         self.event_review_id = event_review_id
         self.request_review_id = request_review_id
+
+
+class AuditPersisterFindingInstallationIdMismatchError(ValueError):
+    """`emit_finding()` was called with `finding.installation_id` disagreeing
+    with the `installation_id` resolved from the finding's `reviews` row.
+
+    The reviews row is the FK-scope source of truth: `findings.installation_id`
+    is `ON DELETE RESTRICT` to `installations` and drives purge scoping, so a
+    finding whose own `installation_id` diverges from its review's would write
+    a content row under a fabricated scope. Fail loud rather than persist it.
+
+    Strict-keyword `finding_installation_id: int` + `review_installation_id: int`
+    + `review_id: UUID` constructor; message generated from the three
+    identifiers (metadata-only, no finding content).
+    """
+
+    def __init__(
+        self,
+        *,
+        finding_installation_id: int,
+        review_installation_id: int,
+        review_id: UUID,
+    ) -> None:
+        super().__init__(
+            f"emit_finding() called with mismatched installation scope: "
+            f"finding.installation_id={finding_installation_id} but "
+            f"reviews.installation_id={review_installation_id} for "
+            f"review_id={review_id}. The reviews row is the FK-scope source "
+            "of truth; persister refuses to attribute a finding across "
+            "installation scopes."
+        )
+        self.finding_installation_id = finding_installation_id
+        self.review_installation_id = review_installation_id
+        self.review_id = review_id
 
 
 class AuditPersisterSchemaInvariantError(RuntimeError, metaclass=_FrozenAllowlistMeta):
@@ -982,6 +1017,7 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterSchemaInvariantError,
     AuditPersisterEventRequestFieldMismatchError,
     AuditPersisterEventResponseFieldMismatchError,
+    AuditPersisterFindingInstallationIdMismatchError,
     AuditPersisterIdempotencyConflict,
     AuditPersisterNaturalKeyConflict,
     AuditPersisterHITLRequestNaturalKeyConflict,
@@ -1531,13 +1567,13 @@ def _finding_field_digests(
     expected = _finding_verify_values(finding, is_eval=is_eval, installation_id=installation_id)
     digests: dict[str, FieldDigest] = {}
     for col in mismatched:
-        db_value = _finding_row_db_value(db_row, col)
-        new_value = expected[col]
+        existing_text = repr(_finding_row_db_value(db_row, col))
+        attempted_text = repr(expected[col])
         digests[col] = FieldDigest(
-            existing_sha256=_sha256_text(repr(db_value)),
-            attempted_sha256=_sha256_text(repr(new_value)),
-            existing_length=len(repr(db_value)),
-            attempted_length=len(repr(new_value)),
+            existing_sha256=_sha256_text(existing_text),
+            attempted_sha256=_sha256_text(attempted_text),
+            existing_length=len(existing_text.encode("utf-8")),
+            attempted_length=len(attempted_text.encode("utf-8")),
         )
     return digests
 
@@ -2207,15 +2243,15 @@ class AuditPersister:
             # Cross-check the finding's own installation_id against the
             # reviews-row source of truth. A disagreement means the producer
             # attributed the finding to the wrong installation scope; fail loud
-            # rather than write a content row under a fabricated scope. No
-            # existing persister exception fits an installation_id mismatch
-            # (AuditPersisterReviewIdMismatchError is review-id-scoped), so a
-            # precise ValueError is the right surface here.
+            # rather than write a content row under a fabricated scope. The
+            # typed exception keeps this on the persister's metadata-only
+            # exception taxonomy (METADATA_ONLY_EXCEPTION_TYPES) rather than a
+            # raw ValueError, so the wrapper's str(exc) safety contract holds.
             if finding.installation_id != installation_id:
-                raise ValueError(
-                    f"finding.installation_id={finding.installation_id} disagrees with "
-                    f"reviews.installation_id={installation_id} for review_id="
-                    f"{finding.review_id}; the reviews row is the FK-scope source of truth."
+                raise AuditPersisterFindingInstallationIdMismatchError(
+                    finding_installation_id=finding.installation_id,
+                    review_installation_id=installation_id,
+                    review_id=finding.review_id,
                 )
 
             retention_expires_at = event.timestamp + self._retention_settings.findings_retention_ttl
