@@ -59,7 +59,11 @@ class Finding(Base):
         Index("ix_findings_retention_expires_at", "retention_expires_at"),
         # Installation-scoped purge query.
         Index("ix_findings_installation_id", "installation_id"),
-        # Dedup-on-emit per spec §8.5 — find duplicate findings by hash.
+        # Read-time content grouping per spec §8.5 — find same-content findings
+        # by hash (e.g. dashboard collapse of duplicate findings across rounds).
+        # The writer keys uniqueness on finding_id (PK), NOT content_hash: one
+        # findings row per FindingEvent.finding_id, content_hash is the equality
+        # signal for replay + read-time grouping, not a write-time uniqueness key.
         Index("ix_findings_content_hash", "content_hash"),
     )
 
