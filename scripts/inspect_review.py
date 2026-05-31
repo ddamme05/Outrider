@@ -8,7 +8,9 @@ their results — reconstructed from the append-only audit stream + content tabl
 Where `diagnose_review_context.py` answers one focused question ("what did the
 model see for analyze"), this is the firehose: the complete ordered event
 stream, grouped by graph-node phase, with every event's COMPLETE payload printed
-verbatim from JSONB (no field is curated or hidden), the joined LLM prompt/
+verbatim from JSONB in non-compact mode (no field is curated or hidden —
+including the `review_phase` start/end markers, shown both as a header line AND
+their full payload), the joined LLM prompt/
 completion + finding content, the reviews-row state, and the replay-equivalence
 verdict. It is the "open the hood and watch every part move" view.
 
@@ -214,10 +216,14 @@ async def _section_timeline(
                 continue
             _say()
             _say(f"  ┌─ PHASE start: node={node_id}  phase_key={phase_key}  seq={seq}  {ts}")
+            if not compact:
+                _render_payload(payload, indent="  │   ")
             continue
         if event_type == "review_phase" and marker == "end":
             if not (phase_filter and open_node != phase_filter):
                 _say(f"  └─ PHASE end:   node={node_id}  seq={seq}  {ts}")
+                if not compact:
+                    _render_payload(payload, indent="      ")
             open_node = None
             continue
 
