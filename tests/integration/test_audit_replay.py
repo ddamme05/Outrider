@@ -331,7 +331,9 @@ async def test_metadata_only_mode_reconstruct_and_assert(engine: AsyncEngine) ->
 
 
 async def test_mixed_mode_when_llm_content_purged(engine: AsyncEngine) -> None:
-    # The 90-180d window: review + findings present, llm_call_content purged.
+    # MIXED window: review + findings present, llm_call_content purged. Under the
+    # retention ordering (llm_content <= findings <= review), the shorter-or-equal
+    # LLM content can purge while finding content remains.
     review_id = uuid4()
     finding = _finding_event(review_id)
     llm_call = _llm_call_event(review_id)
@@ -459,8 +461,8 @@ async def test_row_base_field_drift_raises(engine: AsyncEngine) -> None:
 
 
 async def test_review_absent_with_surviving_content_raises(engine: AsyncEngine) -> None:
-    # Impossible under the retention ordering (LLM 90d ≤ reviews 180d): a purged
-    # review row with a surviving llm_call_content row is corruption, not a
+    # Impossible under the retention ordering (llm_content <= findings <= review):
+    # a purged review row with a surviving llm_call_content row is corruption, not a
     # legitimate mixed window. No reviews row is seeded; the audit LLMCallEvent
     # + its content row are. reconstruct() classifies the mode and must reject.
     review_id = uuid4()
@@ -478,7 +480,7 @@ async def test_review_absent_with_surviving_content_raises(engine: AsyncEngine) 
 async def test_review_present_llm_survives_finding_purged_raises(engine: AsyncEngine) -> None:
     # Sibling of the review-absent corruption case: review present, LLM content
     # surviving, but the finding's content row purged. Impossible under the
-    # retention ordering (LLM 90d <= findings 180d) -- LLM content cannot outlive
+    # retention ordering (llm_content <= findings) -- LLM content cannot outlive
     # finding content -- so reconstruct() must reject it, not classify MIXED.
     review_id = uuid4()
     finding = _finding_event(review_id)
