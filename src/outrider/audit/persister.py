@@ -111,6 +111,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from outrider.db.models.audit_events import AuditEvent as AuditEventRow
+from outrider.db.models.findings import Finding
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
 from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
@@ -128,7 +129,6 @@ if TYPE_CHECKING:
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
         FileExaminationEvent,
-        FindingEvent,
         FindingProposalRejectedEvent,
         LLMCallEvent,
         PublishAttemptEvent,
@@ -138,6 +138,7 @@ if TYPE_CHECKING:
         SynthesizeCompletedEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
+    from outrider.schemas.review_finding import ReviewFinding
 
 # PublishEvent is consumed at RUNTIME by `query_prior_publish_event`'s
 # `PublishEvent.model_validate(payload)` call — must be imported at
@@ -146,6 +147,7 @@ if TYPE_CHECKING:
 # `TraceDecisionEvent.model_validate(existing_payload)` to reconstruct
 # the canonical persisted event for the M7 (b) return contract.
 from outrider.audit.events import (
+    FindingEvent,  # noqa: E402  (constructed at runtime by _lift_finding_event)
     HITLDecisionEvent,  # noqa: E402  (model_validate at runtime)
     HITLRequestEvent,  # noqa: E402  (model_validate at runtime)
     PublishEvent,  # noqa: E402  (intentional post-TYPE_CHECKING runtime import)
@@ -1407,6 +1409,140 @@ def _serialize_event_payload(
 
 
 # ---------------------------------------------------------------------------
+# Findings content-writer helpers (specs/2026-05-30-findings-content-writer.md).
+# ---------------------------------------------------------------------------
+
+
+def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+    """Lift an admitted `ReviewFinding` to its metadata-only `FindingEvent`.
+
+    The audit row stays metadata-only per DECISIONS.md#014; the human-
+    readable content (title/description/evidence) goes to the `findings`
+    content row, never to the audit payload. Absorbed from the former
+    `analyze._lift_admitted_finding` so the persister is the single write
+    authority for both rows.
+    """
+    return FindingEvent(
+        review_id=finding.review_id,
+        is_eval=is_eval,
+        finding_id=finding.finding_id,
+        finding_type=finding.finding_type,
+        severity=finding.severity,
+        file_path=finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        dimension=finding.dimension,
+        finding_content_hash=finding.content_hash,
+        evidence_tier=finding.evidence_tier,
+        query_match_id=finding.query_match_id,
+        trace_path=finding.trace_path,
+        policy_version=finding.policy_version,
+        proposal_hash=finding.proposal_hash,
+    )
+
+
+def _normalize_trace_path(value: Any) -> list[Any] | None:
+    """Coerce a `trace_path` (tuple from the finding, list from the DB) to a
+    comparable list; None stays None."""
+    if value is None:
+        return None
+    return list(value)
+
+
+# The analyze-time-immutable verify set: every `findings` column written at
+# analyze time and never mutated after. `_finding_verify_values` builds the
+# {column -> incoming-value} mapping that the re-emit/conflict paths compare
+# against the stored row. EXCLUDES `publish_destination` + the override quartet
+# (`original_severity`/`override_reason`/`overrider_id`) — those are set by
+# later nodes (publish/HITL), so a re-emit carrying NULL must not false-raise
+# against a row a later node populated.
+def _finding_verify_values(
+    finding: ReviewFinding,
+    *,
+    is_eval: bool,
+    installation_id: int,
+) -> dict[str, Any]:
+    """The incoming {column -> value} mapping for the verify set.
+
+    Enum-bearing columns render as their `.value`; `trace_path` normalizes
+    tuple↔list; `installation_id` is the value resolved from the reviews row
+    (not the mutable `ReviewFinding` field).
+    """
+    return {
+        "content_hash": finding.content_hash,
+        "is_eval": is_eval,
+        "installation_id": installation_id,
+        "finding_type": finding.finding_type.value,
+        "dimension": finding.dimension.value,
+        "severity": finding.severity.value,
+        "evidence_tier": finding.evidence_tier.value,
+        "file_path": finding.file_path,
+        "line_start": finding.line_start,
+        "line_end": finding.line_end,
+        "title": finding.title,
+        "description": finding.description,
+        "evidence": finding.evidence,
+        "suggested_fix": finding.suggested_fix,
+        "query_match_id": finding.query_match_id,
+        "policy_version": finding.policy_version,
+        "trace_path": _normalize_trace_path(finding.trace_path),
+    }
+
+
+def _finding_row_db_value(db_row: Any, column: str) -> Any:
+    """Read `column` from the stored `findings` row, normalizing `trace_path`
+    tuple↔list so the comparison matches the incoming side."""
+    if column == "trace_path":
+        return _normalize_trace_path(db_row.trace_path)
+    return getattr(db_row, column)
+
+
+def _finding_row_mismatches(
+    db_row: Any,
+    finding: ReviewFinding,
+    *,
+    is_eval: bool,
+    installation_id: int,
+) -> tuple[str, ...]:
+    """Names of analyze-time-immutable `findings` columns whose stored value
+    disagrees with the incoming finding. Empty tuple = match."""
+    expected = _finding_verify_values(finding, is_eval=is_eval, installation_id=installation_id)
+    return tuple(
+        col
+        for col, new_value in expected.items()
+        if _finding_row_db_value(db_row, col) != new_value
+    )
+
+
+def _finding_field_digests(
+    db_row: Any,
+    finding: ReviewFinding,
+    mismatched: tuple[str, ...],
+    *,
+    is_eval: bool,
+    installation_id: int,
+) -> Mapping[str, FieldDigest]:
+    """`FieldDigest` (SHA-256 + byte-length of each side) per mismatched column.
+
+    Digests only — content (title/description/evidence) never reaches logs.
+    Mirrors `_compute_field_digests`; keys are a subset of `mismatched`, which
+    satisfies the `AuditPersisterIdempotencyConflict` subset invariant.
+    """
+    expected = _finding_verify_values(finding, is_eval=is_eval, installation_id=installation_id)
+    digests: dict[str, FieldDigest] = {}
+    for col in mismatched:
+        db_value = _finding_row_db_value(db_row, col)
+        new_value = expected[col]
+        digests[col] = FieldDigest(
+            existing_sha256=_sha256_text(repr(db_value)),
+            attempted_sha256=_sha256_text(repr(new_value)),
+            existing_length=len(repr(db_value)),
+            attempted_length=len(repr(new_value)),
+        )
+    return digests
+
+
+# ---------------------------------------------------------------------------
 # AuditPersister.
 # ---------------------------------------------------------------------------
 
@@ -2040,9 +2176,232 @@ class AuditPersister:
                         field_digests=_compute_field_digests(existing_payload, payload),
                     )
 
-    async def emit_finding(self, event: FindingEvent) -> None:
-        """Persist a `FindingEvent` row to audit_events (analyze admitted finding)."""
-        await self._persist_non_phase_event(event)
+    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+        """Co-insert the `FindingEvent` audit row + the `findings` content row.
+
+        One transaction, mirroring the DECISIONS.md#016 `LLMCallEvent` +
+        `llm_call_content` co-insert. The audit row stays metadata-only per
+        DECISIONS.md#014; the `findings` row carries the human-readable
+        content (title/description/evidence) on the content tier.
+
+        The content-write decision keys on `finding_id`, NOT `event_id`: a
+        mid-node analyze retry can append a second `FindingEvent` (fresh
+        `event_id`) for the same `finding_id`, and the `findings` row must not
+        be re-inserted (no-resurrection guard) once the content has purged.
+        `installation_id` is resolved from the reviews row (the trustworthy
+        FK-scope source), then cross-checked against the finding's own value.
+        See specs/2026-05-30-findings-content-writer.md.
+        """
+        event = _lift_finding_event(finding, is_eval=is_eval)
+        payload = _serialize_event_payload(event)
+
+        async with self._session_factory() as session, session.begin():
+            # Step 0: resolve installation_id from the reviews row. Absence is
+            # a producer-side bug — the reviews row exists before graph dispatch.
+            installation_id = await session.scalar(
+                select(Review.installation_id).where(Review.id == finding.review_id)
+            )
+            if installation_id is None:
+                raise AuditPersisterReviewNotFoundError(review_id=finding.review_id)
+
+            # Cross-check the finding's own installation_id against the
+            # reviews-row source of truth. A disagreement means the producer
+            # attributed the finding to the wrong installation scope; fail loud
+            # rather than write a content row under a fabricated scope. No
+            # existing persister exception fits an installation_id mismatch
+            # (AuditPersisterReviewIdMismatchError is review-id-scoped), so a
+            # precise ValueError is the right surface here.
+            if finding.installation_id != installation_id:
+                raise ValueError(
+                    f"finding.installation_id={finding.installation_id} disagrees with "
+                    f"reviews.installation_id={installation_id} for review_id="
+                    f"{finding.review_id}; the reviews row is the FK-scope source of truth."
+                )
+
+            retention_expires_at = event.timestamp + self._retention_settings.findings_retention_ttl
+
+            # Step 1: INSERT the audit row, ON CONFLICT no-op on event_id.
+            audit_stmt = (
+                postgresql_insert(AuditEventRow)
+                .values(
+                    event_id=event.event_id,
+                    review_id=event.review_id,
+                    event_type=event.event_type,
+                    phase_key=_NO_PHASE_KEY,  # FindingEvent has no phase_key
+                    timestamp=event.timestamp,
+                    is_eval=event.is_eval,
+                    payload=payload,
+                )
+                .on_conflict_do_nothing(index_elements=["event_id"])
+                .returning(AuditEventRow.event_id)
+            )
+            inserted_audit = await session.scalar(audit_stmt)
+            audit_row_already_existed = inserted_audit is None
+
+            # Step 3 (Case A/B): determine re-emit vs first-emit, keyed on
+            # finding_id. The content-write decision below uses this flag.
+            if audit_row_already_existed:
+                # Case A — same-event_id retry. Unconditionally a re-emit.
+                # First verify the stored audit payload matches (drift = bug).
+                existing_payload = await session.scalar(
+                    select(AuditEventRow.payload).where(AuditEventRow.event_id == event.event_id)
+                )
+                if existing_payload is None:
+                    raise AuditPersisterSchemaInvariantError(
+                        event_id=event.event_id,
+                        invariant="audit_events.payload NOT NULL",
+                    )
+                if existing_payload != payload:
+                    raise AuditPersisterIdempotencyConflict(
+                        event_id=event.event_id,
+                        mismatched_fields=_diff_field_names(existing_payload, payload),
+                        field_digests=_compute_field_digests(existing_payload, payload),
+                    )
+                is_reemit = True
+            else:
+                # Case B — audit row freshly inserted. A re-emit only if some
+                # OTHER FindingEvent already carries this finding_id (a prior
+                # fresh-event_id emit reached the persister). Reads a JSONB
+                # payload field (not indexed today — flag a partial index on
+                # (payload->>'finding_id') for FindingEvent rows if hot).
+                count = await session.scalar(
+                    select(sa_func.count())
+                    .select_from(AuditEventRow)
+                    .where(
+                        AuditEventRow.event_type == "finding",
+                        AuditEventRow.payload["finding_id"].astext == str(finding.finding_id),
+                        AuditEventRow.event_id != event.event_id,
+                    )
+                )
+                is_reemit = (count or 0) > 0
+
+            if is_reemit:
+                # Re-emit branch: SELECT the findings row by finding_id over the
+                # analyze-time-immutable verify set. None → no-op (the
+                # no-resurrection guard: never re-INSERT purged content, firing
+                # for both Case A and Case B). Exists → verify or raise.
+                row = (
+                    await session.execute(
+                        select(
+                            Finding.content_hash,
+                            Finding.is_eval,
+                            Finding.installation_id,
+                            Finding.finding_type,
+                            Finding.dimension,
+                            Finding.severity,
+                            Finding.evidence_tier,
+                            Finding.file_path,
+                            Finding.line_start,
+                            Finding.line_end,
+                            Finding.title,
+                            Finding.description,
+                            Finding.evidence,
+                            Finding.suggested_fix,
+                            Finding.query_match_id,
+                            Finding.trace_path,
+                            Finding.policy_version,
+                        ).where(Finding.finding_id == finding.finding_id)
+                    )
+                ).one_or_none()
+                if row is None:
+                    return  # purged content — respect retention, no resurrection
+                mismatched = _finding_row_mismatches(
+                    row, finding, is_eval=is_eval, installation_id=installation_id
+                )
+                if mismatched:
+                    raise AuditPersisterIdempotencyConflict(
+                        event_id=event.event_id,
+                        mismatched_fields=mismatched,
+                        field_digests=_finding_field_digests(
+                            row,
+                            finding,
+                            mismatched,
+                            is_eval=is_eval,
+                            installation_id=installation_id,
+                        ),
+                    )
+                return
+
+            # First-emit branch: INSERT the findings row, with
+            # on_conflict_do_nothing(["finding_id"]) as the concurrent-writer
+            # net, then SELECT-verify-or-noop on the no-row-returned path.
+            content_stmt = (
+                postgresql_insert(Finding)
+                .values(
+                    finding_id=finding.finding_id,
+                    review_id=finding.review_id,
+                    installation_id=installation_id,
+                    policy_version=finding.policy_version,
+                    finding_type=finding.finding_type.value,
+                    dimension=finding.dimension.value,
+                    severity=finding.severity.value,
+                    evidence_tier=finding.evidence_tier.value,
+                    file_path=finding.file_path,
+                    line_start=finding.line_start,
+                    line_end=finding.line_end,
+                    title=finding.title,
+                    description=finding.description,
+                    evidence=finding.evidence,
+                    suggested_fix=finding.suggested_fix,
+                    query_match_id=finding.query_match_id,
+                    trace_path=(
+                        list(finding.trace_path) if finding.trace_path is not None else None
+                    ),
+                    content_hash=finding.content_hash,
+                    is_eval=is_eval,
+                    retention_expires_at=retention_expires_at,
+                )
+                .on_conflict_do_nothing(index_elements=["finding_id"])
+                .returning(Finding.finding_id)
+            )
+            inserted = await session.scalar(content_stmt)
+            if inserted is not None:
+                return
+
+            # Conflict: a concurrent writer landed the findings row between our
+            # audit INSERT and this content INSERT. Verify-or-noop, identical
+            # shape to the re-emit branch (purge between INSERT and SELECT wins
+            # over conflict detection via one_or_none()).
+            row = (
+                await session.execute(
+                    select(
+                        Finding.content_hash,
+                        Finding.is_eval,
+                        Finding.installation_id,
+                        Finding.finding_type,
+                        Finding.dimension,
+                        Finding.severity,
+                        Finding.evidence_tier,
+                        Finding.file_path,
+                        Finding.line_start,
+                        Finding.line_end,
+                        Finding.title,
+                        Finding.description,
+                        Finding.evidence,
+                        Finding.suggested_fix,
+                        Finding.query_match_id,
+                        Finding.trace_path,
+                        Finding.policy_version,
+                    ).where(Finding.finding_id == finding.finding_id)
+                )
+            ).one_or_none()
+            if row is None:
+                return  # purged between INSERT and SELECT; respect retention
+            mismatched = _finding_row_mismatches(
+                row, finding, is_eval=is_eval, installation_id=installation_id
+            )
+            if mismatched:
+                raise AuditPersisterIdempotencyConflict(
+                    event_id=event.event_id,
+                    mismatched_fields=mismatched,
+                    field_digests=_finding_field_digests(
+                        row,
+                        finding,
+                        mismatched,
+                        is_eval=is_eval,
+                        installation_id=installation_id,
+                    ),
+                )
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
         """Persist a `FindingProposalRejectedEvent` row (parser rejection)."""

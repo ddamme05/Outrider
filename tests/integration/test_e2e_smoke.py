@@ -29,17 +29,17 @@ drives the persister's methods directly; this one drives them THROUGH the graph,
 so it proves the node->sink wiring and the graph-driven audit stream, not just
 the persister in isolation.
 
-Two deliberate seams:
+One deliberate seam:
   - The scripted provider does NOT emit `LLMCallEvent` rows -- LLM-call
     persistence lives inside `AnthropicProvider.complete()` (covered
     separately), not in a graph sink. So the audit stream carries zero LLM
     exchanges here and `llm_exchanges` is vacuously empty; FULL mode does not
     require LLM content.
-  - The `findings` CONTENT row is raw-SQL-seeded after the run from the emitted
-    `FindingEvent`: no production writer of the `findings` table exists yet
-    (FUP-111), so without the seed replay would classify MIXED (finding audit
-    row present, finding content purged). This mirrors
-    `test_full_mode_through_production_persister`'s `_seed_finding_row`.
+
+The `findings` CONTENT row is written by the production writer during the
+graph's analyze node (`emit_finding` co-inserts the FindingEvent audit row and
+the findings content row in one transaction, FUP-111), so the run reconstructs
+FULL with finding content -- no raw-SQL content seed.
 """
 
 from __future__ import annotations
@@ -79,7 +79,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
 
-    from outrider.audit.events import FindingEvent
     from outrider.github.publisher import InlineComment, InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
 
@@ -357,34 +356,6 @@ async def _seed_review(engine: AsyncEngine, review_id: UUID) -> None:
         )
 
 
-async def _seed_finding_content_row(engine: AsyncEngine, event: FindingEvent) -> None:
-    """FUP-111: seed the `findings` content row from the emitted FindingEvent."""
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO findings (finding_id, review_id, installation_id, policy_version, "
-                "finding_type, dimension, severity, evidence_tier, file_path, line_start, "
-                "line_end, title, description, evidence, content_hash, retention_expires_at) "
-                "VALUES (:fid, :rid, :iid, :pv, :ft, :dim, :sev, :tier, :fp, :ls, :le, "
-                "'t', 'd', 'e', :hash, NOW() + INTERVAL '180 days')"
-            ),
-            {
-                "fid": event.finding_id,
-                "rid": event.review_id,
-                "iid": _INSTALLATION_ID,
-                "pv": event.policy_version,
-                "ft": event.finding_type.value,
-                "dim": event.dimension.value,
-                "sev": event.severity.value,
-                "tier": event.evidence_tier.value,
-                "fp": event.file_path,
-                "ls": event.line_start,
-                "le": event.line_end,
-                "hash": event.finding_content_hash,
-            },
-        )
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -507,13 +478,18 @@ async def test_full_review_reaches_publish_and_replays_equivalent(engine: AsyncE
         ).scalar_one()
     assert status == "completed"
 
-    # Reconstruct: the finding audit row landed; seed its content row (FUP-111).
+    # Reconstruct: the finding audit row AND its content row both landed via the
+    # production writer (emit_finding co-inserts them in one transaction inside the
+    # graph's analyze node) — no raw-SQL content seed needed (FUP-111 closed).
     replayer = AuditReplayer(session_factory=session_factory)
     pre = await replayer.reconstruct(review_id)
     assert len(pre.findings) == 1, (
         f"expected one FindingEvent in the stream, got {len(pre.findings)}"
     )
-    await _seed_finding_content_row(engine, pre.findings[0].event)
+    assert pre.findings[0].content is not None, (
+        "the production findings-content writer should have co-inserted the content "
+        "row during the graph's analyze node, so it reconstructs FULL with content"
+    )
 
     # Phase pairs for the nodes that ran (publish ran -- no HITL interrupt).
     started = {p.node_id for p in pre.phases}

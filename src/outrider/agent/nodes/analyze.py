@@ -102,7 +102,6 @@ from outrider.audit.events import (
     AnalyzeResponseRejectedEvent,
     ContextManifestEntry,
     FileExaminationEvent,
-    FindingEvent,
     FindingProposalRejectedEvent,
     ReviewPhaseEvent,
 )
@@ -1113,9 +1112,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             )
         )
 
-    # Emit one FindingEvent per admitted finding.
+    # Persist one finding (audit row + content row) per admitted finding.
     for finding in parser_result.admitted_findings:
-        await analyze_event_sink.emit_finding(_lift_admitted_finding(finding, is_eval=is_eval))
+        await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
 
     return _FileOutcome(
         parse_status=parse_status_for_event,
@@ -1406,7 +1405,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         )
 
     for finding in parser_result.admitted_findings:
-        await analyze_event_sink.emit_finding(_lift_admitted_finding(finding, is_eval=is_eval))
+        await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
 
     return _FileOutcome(
         parse_status="clean",
@@ -1461,33 +1460,6 @@ def _lift_response_rejection(
         response_hash=rej.response_hash,
         rejection_reason=rej.rejection_reason,
         rejection_detail=rej.rejection_detail,
-    )
-
-
-def _lift_admitted_finding(
-    finding: ReviewFinding,
-    *,
-    is_eval: bool,
-) -> FindingEvent:
-    """Lift an admitted `ReviewFinding` to a `FindingEvent` for audit.
-    The finding carries every load-bearing field; the event mirrors
-    them plus the audit-context default factories."""
-    return FindingEvent(
-        review_id=finding.review_id,
-        is_eval=is_eval,
-        finding_id=finding.finding_id,
-        finding_type=finding.finding_type,
-        severity=finding.severity,
-        file_path=finding.file_path,
-        line_start=finding.line_start,
-        line_end=finding.line_end,
-        dimension=finding.dimension,
-        finding_content_hash=finding.content_hash,
-        evidence_tier=finding.evidence_tier,
-        query_match_id=finding.query_match_id,
-        trace_path=finding.trace_path,
-        policy_version=finding.policy_version,
-        proposal_hash=finding.proposal_hash,
     )
 
 

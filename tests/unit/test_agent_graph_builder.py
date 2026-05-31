@@ -43,7 +43,6 @@ if TYPE_CHECKING:
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
         FileExaminationEvent,
-        FindingEvent,
         FindingProposalRejectedEvent,
         PublishAttemptEvent,
         PublishEligibilityEvent,
@@ -55,6 +54,7 @@ if TYPE_CHECKING:
     from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
     from outrider.schemas import GitHubReviewCreated, InlineComment
+    from outrider.schemas.review_finding import ReviewFinding
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ class _StubFileExaminationSink:
 class _StubAnalyzeEventSink:
     """Satisfies AnalyzeEventSink Protocol structurally (has all 4 emit_* members)."""
 
-    async def emit_finding(self, event: FindingEvent) -> None:
+    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:  # noqa: ARG002
         return None
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
