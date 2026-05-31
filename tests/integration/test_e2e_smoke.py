@@ -70,8 +70,8 @@ from outrider.audit.events import PublishEvent
 from outrider.audit.persister import AuditPersister
 from outrider.audit.replay import AuditReplayer, ReplayMode
 from outrider.db.review_status_persister import ReviewStatusPersister
-from outrider.github.publisher import GitHubReviewCreated
 from outrider.llm.config import ModelConfig
+from outrider.schemas import GitHubReviewCreated
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
 
@@ -79,8 +79,9 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
 
-    from outrider.github.publisher import InlineComment, InstallationGitHubClient
+    from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
+    from outrider.schemas import InlineComment
 
 pytestmark = pytest.mark.asyncio
 
