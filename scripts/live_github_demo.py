@@ -34,7 +34,8 @@ Env required (read by GitHubAppSettings + AnthropicProvider + DB):
   OUTRIDER_GITHUB_WEBHOOK_SECRET, ANTHROPIC_API_KEY, DATABASE_URL.
 
 Exit codes: 0 = all structural checks passed; 1 = a check failed; 2 = setup/
-config error (missing env, DB unreachable, PR not found).
+config error (missing env, DB unreachable, PR not found, or a review already
+exists for this head_sha — push a new commit or clear the existing row).
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # --- ensure src/ on path (mirror conftest's pythonpath=["src"]) ---
@@ -83,6 +85,20 @@ _RULE = "=" * 62
 # Posting a real review to anything else requires the explicit
 # --allow-any-repo override, which is visible in the command + this code.
 _REPO_ALLOWLIST: frozenset[tuple[str, str]] = frozenset({("ddamme05", "outrider-smoke-test")})
+
+
+class _ReviewAlreadyExistsError(Exception):
+    """A reviews row already exists for the natural key (repo_id, pr_number,
+    head_sha). C2 seeds a fresh review per run, so a same-head_sha re-run or a
+    webhook-created row trips `uq_review_natural_key` — the same idempotency
+    shape the webhook handles. Carries the existing row's id + status so the
+    runner can point the operator at it.
+    """
+
+    def __init__(self, *, existing_review_id: str, status: str) -> None:
+        super().__init__(f"review {existing_review_id} already exists (status={status})")
+        self.existing_review_id = existing_review_id
+        self.status = status
 
 
 def _say(msg: str = "") -> None:
@@ -225,13 +241,36 @@ async def _run(args: argparse.Namespace) -> int:
     _say()
 
     # --- seed the reviews row (the webhook normally does this) ---
-    await _seed_review_row(
-        engine,
-        review_id,
-        pr_context,
-        repo_id=repo_id,
-        retention_settings=retention_settings,
-    )
+    try:
+        await _seed_review_row(
+            engine,
+            review_id,
+            pr_context,
+            repo_id=repo_id,
+            retention_settings=retention_settings,
+        )
+    except _ReviewAlreadyExistsError as exc:
+        _say(
+            f"  A review already exists for {owner}/{repo} PR #{args.pr} @ "
+            f"{pr_context.head_sha[:8]} (review_id={exc.existing_review_id}, "
+            f"status={exc.status}). `reviews` is UNIQUE(repo_id, pr_number, head_sha), "
+            "so C2 can't seed a second row for the same head. To re-run: push a new "
+            "commit to the PR (new head_sha), or delete the existing review row."
+        )
+        await provider.aclose()
+        await engine.dispose()
+        return 2
+    except IntegrityError:
+        # Seed-time race backstop: a concurrent run inserted the natural key
+        # between our SELECT and INSERT. Same operator guidance as above.
+        _say(
+            "  Lost a race seeding the review row (uq_review_natural_key); a review for "
+            "this head_sha already exists. Re-run after pushing a new commit or clearing "
+            "the row."
+        )
+        await provider.aclose()
+        await engine.dispose()
+        return 2
 
     graph = build_graph(
         db_factory=session_factory,
@@ -310,6 +349,10 @@ async def _seed_review_row(
     publish overwrite the zeroed metrics with real counts; replay reads
     `audit_events`, not these columns, so the seed values don't affect the
     replay verdict.
+
+    Raises `_ReviewAlreadyExistsError` if a row already exists for the natural
+    key (repo_id, pr_number, head_sha) — the caller turns that into a clean
+    exit-2 with operator guidance, mirroring the webhook's idempotency path.
     """
     async with engine.begin() as conn:
         await conn.execute(
@@ -321,6 +364,27 @@ async def _seed_review_row(
             ),
             {"iid": pr_context.installation_id, "owner": pr_context.owner},
         )
+        # Natural-key idempotency: `reviews` is UNIQUE(repo_id, pr_number,
+        # head_sha) (uq_review_natural_key), NOT just the PK. A fresh review_id
+        # per run means an ON CONFLICT (id) guard would never fire; the real
+        # collision is a same-head_sha re-run or a webhook-created row. Mirror
+        # the webhook's application-level fast path — SELECT first and fail
+        # cleanly with guidance rather than raising an opaque IntegrityError.
+        # (The IntegrityError backstop at the call site covers the seed-time
+        # race between this SELECT and the INSERT.)
+        existing = (
+            await conn.execute(
+                text(
+                    "SELECT id, status FROM reviews "
+                    "WHERE repo_id = :repo_id AND pr_number = :pr AND head_sha = :sha"
+                ),
+                {"repo_id": repo_id, "pr": pr_context.pr_number, "sha": pr_context.head_sha},
+            )
+        ).first()
+        if existing is not None:
+            raise _ReviewAlreadyExistsError(
+                existing_review_id=str(existing[0]), status=str(existing[1])
+            )
         retention_expires_at = datetime.now(UTC) + retention_settings.review_retention_ttl
         await conn.execute(
             text(
@@ -329,7 +393,7 @@ async def _seed_review_row(
                 "total_input_tokens, total_output_tokens, total_cost_usd, "
                 "wall_clock_seconds, retention_expires_at) "
                 "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', 0, 0, 0, 0, 0, 0, 0, "
-                ":retention_expires_at) ON CONFLICT (id) DO NOTHING"
+                ":retention_expires_at)"
             ),
             {
                 "id": review_id,
