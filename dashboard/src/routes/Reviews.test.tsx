@@ -96,3 +96,22 @@ test("renders reviews grouped by status, with pills + cost", async () => {
   expect(screen.getAllByText("running").some(isPill)).toBe(true);
   expect(screen.getAllByText("completed").some(isPill)).toBe(true);
 });
+
+test("tells the truth when the queue is larger than the loaded page", async () => {
+  // One review loaded, but `total` says there are 80 — the UI must not imply
+  // the page is the whole queue.
+  server.use(
+    http.get("http://localhost/api/reviews", () =>
+      HttpResponse.json({
+        reviews: [review({ id: "r1", repo_id: 100, status: "running" })],
+        total: 80,
+        limit: 200,
+        offset: 0,
+      }),
+    ),
+  );
+
+  renderWithProviders(<Reviews />);
+
+  expect(await screen.findByText(/Showing 1 of 80 reviews/)).toBeInTheDocument();
+});

@@ -26,10 +26,16 @@ export function Reviews() {
   const search = useFilters((s) => s.search);
   const setStatus = useFilters((s) => s.setStatus);
 
+  // Request the backend max in one call (limit≤200). The mockup is a single
+  // scrolling list with no pager, and there is no server-side text search — so
+  // client search must run over the loaded set. Past 200 we don't silently
+  // truncate; we surface an honest notice (below) and lean on the status filter
+  // to narrow. True offset/limit pagination is a follow-up if a deployment
+  // outgrows this.
   const { data, error, isLoading } = $api.useQuery(
     "get",
     "/api/reviews",
-    { params: { query: { include_eval: includeEval, status: status ?? undefined } } },
+    { params: { query: { include_eval: includeEval, status: status ?? undefined, limit: 200 } } },
     { refetchInterval: 2000 },
   );
 
@@ -40,8 +46,13 @@ export function Reviews() {
     return <p className="error">Failed to load reviews.</p>;
   }
 
+  const loaded = data?.reviews ?? [];
+  // The queue holds more reviews than this page loaded — search/grouping below
+  // only see `loaded`, so we say so rather than implying the page is the whole.
+  const truncated = (data?.total ?? 0) > loaded.length;
+
   const term = search.trim().toLowerCase();
-  const rows = (data?.reviews ?? []).filter((review) => {
+  const rows = loaded.filter((review) => {
     if (term === "") {
       return true;
     }
@@ -81,8 +92,20 @@ export function Reviews() {
         <span className="spacer" />
       </div>
 
+      {truncated ? (
+        <p className="queue-notice">
+          Showing {loaded.length} of {data?.total} reviews. Search and grouping
+          cover only the loaded set — narrow with the status filter to reach the
+          rest.
+        </p>
+      ) : null}
+
       {rows.length === 0 ? (
-        <p style={{ color: "var(--text-2)" }}>No reviews.</p>
+        <p style={{ color: "var(--text-2)" }}>
+          {term !== "" && truncated
+            ? "No matches in the loaded reviews — narrow by status to search the rest."
+            : "No reviews."}
+        </p>
       ) : (
         GROUP_ORDER.filter((group) => groups.has(group)).map((group) => {
           const bucket = groups.get(group) ?? [];

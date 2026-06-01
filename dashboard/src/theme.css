@@ -377,6 +377,15 @@ h1 {
 .filter-select:focus {
   border-color: var(--accent-line);
 }
+.queue-notice {
+  margin: 4px 0 0;
+  padding: 8px 11px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 12px;
+}
 .group-label {
   display: flex;
   align-items: baseline;
