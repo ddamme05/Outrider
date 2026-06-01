@@ -20,12 +20,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from outrider.ast_facts.models import (
+    Span,  # noqa: TC001 — constructed at runtime by line_range_to_span
+)
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
     from unidiff import PatchedFile
 
-    from outrider.ast_facts.models import ScopeUnit, Span
+    from outrider.ast_facts.models import ScopeUnit
 
 
 def span_within_scope_unit(span: Span, scope_unit: ScopeUnit) -> bool:
@@ -36,12 +39,13 @@ def span_within_scope_unit(span: Span, scope_unit: ScopeUnit) -> bool:
     `u_s <= s` AND `e <= u_e`. An empty span `Span(a, a)` is contained
     in any scope unit whose range straddles `a`.
 
-    Consumed by the sister analyze-implementation spec's parser to admit
-    OBSERVED-tier and INFERRED-tier findings only when their spans land
-    inside the scope unit they reference. Without this, the model could
-    propose a finding whose span points outside any scope (e.g., the
-    file header) and bypass the proof-boundary's structural-evidence
-    requirement.
+    Byte-space scope containment. The analyze parser's clean-path admission
+    gate now works in LINE space (`line_range_within_scope_unit`) since
+    line-based proposals landed (FUP-126), so this byte-space variant has no
+    current parser caller; it is retained pending the FUP-139 retire-vs-keep
+    decision. The structural-evidence rationale it encodes is unchanged and now
+    enforced by the line-space gate: a finding whose location points outside any
+    scope (e.g., the file header) must not bypass the proof boundary.
     """
     return scope_unit.byte_start <= span.byte_start and span.byte_end <= scope_unit.byte_end
 
@@ -152,6 +156,74 @@ def span_to_line_range(span: Span, source: str) -> tuple[int, int]:
     # The last byte of the span is at byte_end - 1 (half-open).
     line_end = line_for_byte(span.byte_end - 1)
     return (line_start, line_end)
+
+
+def line_range_within_scope_unit(line_start: int, line_end: int, scope_unit: ScopeUnit) -> bool:
+    """True iff the 1-indexed inclusive line range is contained in `scope_unit`.
+
+    Contained iff `scope_unit.line_start <= line_start AND line_end <=
+    scope_unit.line_end` (inclusive both ends).
+
+    Line-space analogue of `span_within_scope_unit`, used by the analyze parser
+    to admit findings the model anchors by source LINE number. Line space — not
+    byte space — is the correct containment frame: the model is shown each scope
+    unit's line range (and the diff `@@` line numbers), and `ScopeUnit` carries
+    `line_start`/`line_end`. A whole-line byte span starts at column 0, BEFORE a
+    nested/indented scope unit's token-based `byte_start`, so byte containment
+    spuriously rejects valid in-scope findings — the silent findings-loss bug.
+    See `specs/2026-06-01-analyze-span-frame-mismatch.md`.
+    """
+    return scope_unit.line_start <= line_start and line_end <= scope_unit.line_end
+
+
+def line_range_to_span(line_start: int, line_end: int, source: str) -> Span:
+    """Convert a 1-indexed inclusive line range to a whole-line byte `Span`.
+
+    `byte_start` is the first byte of `line_start`; `byte_end` (exclusive) is the
+    first byte of the line after `line_end`, or end-of-source when `line_end` is
+    the last line — so the span covers `line_start` through `line_end` inclusive
+    (including `line_end`'s trailing newline when present).
+
+    Left-inverse of `span_to_line_range` for every range EXCEPT one whose
+    `line_end` is the source's trailing empty line (the phantom line a trailing
+    `\\n` creates): that line shares the end-of-source `byte_end` of the line
+    before it, so the round trip recovers the prior `line_end`. When the range is
+    that trailing empty line alone (`line_start == line_end == total_lines`) the
+    result is a zero-width `Span` (`byte_start == byte_end == len(source)`); this
+    function does NOT reject zero-width — callers that forbid it (the analyze
+    degraded path) gate with `span_is_nonempty`.
+
+    `source` is the full file text; offsets are UTF-8 bytes (`Span` is
+    byte-based). Raises `CoordinateError` if `line_start < 1`, `line_end <
+    line_start`, or `line_end` exceeds the source's line count — fail-loud per
+    project convention; a model-proposed range past EOF must not silently
+    clamp (the analyze parser maps that raise to a `span_outside_file`
+    rejection). Lives in `coordinates/` per `coordinates-module-is-sole-translator`.
+    See `DECISIONS.md#022` (span-key amendment 2026-06-01 — the proposal hash + the
+    degraded file-bounds check fold the raw line range through this helper).
+    """
+    if line_start < 1 or line_end < line_start:
+        raise CoordinateError(
+            f"line_range_to_span: invalid line range ({line_start}, {line_end})",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
+        )
+    source_bytes = source.encode("utf-8")
+    # line_starts[k-1] = byte offset where 1-indexed line k begins. Line 1 at
+    # byte 0; line K begins just after the (K-1)th '\n'. A trailing '\n' yields
+    # a final (empty) line whose start == len(source_bytes).
+    line_starts = [0]
+    for i, byte in enumerate(source_bytes):
+        if byte == 0x0A:  # '\n'
+            line_starts.append(i + 1)
+    total_lines = len(line_starts)
+    if line_end > total_lines:
+        raise CoordinateError(
+            f"line_range_to_span: line_end={line_end} exceeds source line count {total_lines}",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+        )
+    byte_start = line_starts[line_start - 1]
+    byte_end = line_starts[line_end] if line_end < total_lines else len(source_bytes)
+    return Span(byte_start=byte_start, byte_end=byte_end)
 
 
 def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile) -> bool:

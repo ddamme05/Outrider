@@ -18,6 +18,8 @@ from outrider.coordinates import (
     CoordinateError,
     bound_diff_hunks_text,
     extract_scope_unit_body,
+    line_range_to_span,
+    line_range_within_scope_unit,
     patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
@@ -653,3 +655,101 @@ def test_bound_diff_hunks_text_handles_max_chars_smaller_than_sentinel() -> None
     patched = PatchSet.from_string("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,0 +1,1 @@\n+x\n")[0]
     text = bound_diff_hunks_text(patched, max_lines=1, max_chars=10)  # type: ignore[arg-type]
     assert len(text) <= 10
+
+
+# ---------------------------------------------------------------------------
+# line_range_within_scope_unit (line-space containment, FUP-126)
+# ---------------------------------------------------------------------------
+
+
+def test_line_range_within_scope_unit_inside() -> None:
+    su = _scope_unit(line_start=10, line_end=20)
+    assert line_range_within_scope_unit(12, 15, su) is True
+
+
+def test_line_range_within_scope_unit_boundaries_inclusive() -> None:
+    su = _scope_unit(line_start=10, line_end=20)
+    # Whole-scope, and single line at each edge — the scope's FIRST line is the
+    # case byte containment got wrong (a whole-line byte span starts before the
+    # indented token's byte_start); line space admits it.
+    assert line_range_within_scope_unit(10, 20, su) is True
+    assert line_range_within_scope_unit(10, 10, su) is True
+    assert line_range_within_scope_unit(20, 20, su) is True
+
+
+def test_line_range_within_scope_unit_starts_before_rejected() -> None:
+    su = _scope_unit(line_start=10, line_end=20)
+    assert line_range_within_scope_unit(9, 12, su) is False
+
+
+def test_line_range_within_scope_unit_extends_past_end_rejected() -> None:
+    su = _scope_unit(line_start=10, line_end=20)
+    assert line_range_within_scope_unit(18, 21, su) is False
+
+
+# ---------------------------------------------------------------------------
+# line_range_to_span (1-indexed line range → whole-line byte Span, FUP-126)
+# ---------------------------------------------------------------------------
+
+_SRC = "def f():\n    x = 1\n    y = 2"  # 3 lines, no trailing newline
+
+
+def test_line_range_to_span_middle_line() -> None:
+    # Line 2 "    x = 1" begins at byte 9; line 3 begins at byte 19.
+    assert line_range_to_span(2, 2, _SRC) == Span(byte_start=9, byte_end=19)
+
+
+def test_line_range_to_span_last_line_runs_to_eof() -> None:
+    assert line_range_to_span(3, 3, _SRC) == Span(byte_start=19, byte_end=len(_SRC.encode()))
+
+
+def test_line_range_to_span_multi_line() -> None:
+    assert line_range_to_span(1, 3, _SRC) == Span(byte_start=0, byte_end=len(_SRC.encode()))
+
+
+def test_line_range_to_span_round_trips_with_span_to_line_range() -> None:
+    span = line_range_to_span(2, 3, _SRC)
+    assert span_to_line_range(span, _SRC) == (2, 3)
+
+
+def test_line_range_to_span_multibyte_safe() -> None:
+    # α and β are 2-byte UTF-8; line 2 "β = 2" begins at byte 7 (after "α = 1\n").
+    src = "α = 1\nβ = 2"
+    span = line_range_to_span(2, 2, src)
+    assert span == Span(byte_start=7, byte_end=len(src.encode()))
+    assert src.encode()[span.byte_start : span.byte_end].decode() == "β = 2"
+
+
+def test_line_range_to_span_past_eof_raises() -> None:
+    with pytest.raises(CoordinateError):
+        line_range_to_span(2, 4, _SRC)  # only 3 lines
+
+
+def test_line_range_to_span_invalid_range_raises() -> None:
+    with pytest.raises(CoordinateError):
+        line_range_to_span(0, 1, _SRC)  # line_start < 1
+    with pytest.raises(CoordinateError):
+        line_range_to_span(3, 2, _SRC)  # line_end < line_start
+
+
+def test_line_range_to_span_trailing_empty_line_is_left_inverse_boundary() -> None:
+    """A trailing `\\n` creates a phantom final empty line. A range ending on it
+    is admissible but is the one case where `span_to_line_range` does NOT round-
+    trip (it shares the prior line's end-of-source `byte_end`). Pins the narrowed
+    left-inverse contract documented on `line_range_to_span`.
+    """
+    src = "a\nb\nc\n"  # 4 lines: "a", "b", "c", and the trailing empty line 4
+    full = line_range_to_span(1, 4, src)
+    assert full == Span(byte_start=0, byte_end=len(src.encode()))
+    # Round trip recovers line 3, not 4 — the documented boundary.
+    assert span_to_line_range(full, src) == (1, 3)
+
+
+def test_line_range_to_span_trailing_empty_line_alone_is_zero_width() -> None:
+    """The trailing empty line by itself maps to a zero-width span; the helper
+    does not reject it (callers that forbid zero-width gate with
+    `span_is_nonempty`).
+    """
+    src = "a\nb\nc\n"
+    span = line_range_to_span(4, 4, src)
+    assert span == Span(byte_start=len(src.encode()), byte_end=len(src.encode()))
