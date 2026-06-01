@@ -149,6 +149,49 @@ test("shows the failure reason when not replay-equivalent", async () => {
   expect(screen.getByText("finding_count mismatch: 5 vs 4")).toBeInTheDocument();
 });
 
+test("labels a mixed-mode replay distinctly (not as full reconstruction)", async () => {
+  mount({ replay: replay({ mode: "mixed" }) });
+  expect(await screen.findByText("replay-equivalent")).toBeInTheDocument();
+  expect(screen.getByText(/Mixed reconstruction/)).toBeInTheDocument();
+  expect(screen.queryByText(/Full reconstruction/)).not.toBeInTheDocument();
+});
+
+test("handles a null-mode non-equivalent verdict (reconstruct failed)", async () => {
+  mount({
+    replay: replay({
+      replay_equivalent: false,
+      mode: null,
+      event_count: null,
+      finding_count: null,
+      orphan_finding_count: null,
+      reason: "corrupt audit payload at event 12",
+    }),
+  });
+  expect(await screen.findByText("not replay-equivalent")).toBeInTheDocument();
+  expect(screen.getByText("corrupt audit payload at event 12")).toBeInTheDocument();
+  expect(screen.getByText(/Reconstruction did not complete/)).toBeInTheDocument();
+  expect(screen.queryByText(/Full reconstruction/)).not.toBeInTheDocument();
+});
+
+test("shows an explicit state when the replay endpoint fails (not silent omission)", async () => {
+  server.use(
+    http.get(BASE, () => HttpResponse.json(detail())),
+    http.get(`${BASE}/findings`, () => HttpResponse.json({ review_id: "r1", findings: [finding()] })),
+    http.get(`${BASE}/replay`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={["/reviews/r1"]}>
+        <Routes>
+          <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByText(/Replay verdict unavailable/)).toBeInTheDocument();
+});
+
 test("renders an honest error when the review can't be loaded", async () => {
   mount({ detailStatus: 404 });
   expect(await screen.findByText(/Couldn't load this review/)).toBeInTheDocument();

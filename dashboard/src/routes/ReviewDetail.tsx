@@ -134,7 +134,13 @@ export function ReviewDetail() {
         </div>
       </div>
 
-      {replay.data ? <ReplayPanel verdict={replay.data} /> : null}
+      {replay.isLoading ? (
+        <p className="replay-status">Checking replay equivalence…</p>
+      ) : replay.error ? (
+        <p className="replay-status error">Replay verdict unavailable — couldn't load it.</p>
+      ) : replay.data ? (
+        <ReplayPanel verdict={replay.data} />
+      ) : null}
 
       <div className="tabs" role="tablist">
         <button className="tab active" role="tab" aria-selected="true">
