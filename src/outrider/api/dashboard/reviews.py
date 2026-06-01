@@ -45,6 +45,7 @@ from sqlalchemy import Integer, Numeric, cast, func, select
 
 from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.db.models.audit_events import AuditEvent
+from outrider.db.models.findings import Finding
 from outrider.db.models.reviews import Review
 
 if TYPE_CHECKING:
@@ -122,6 +123,43 @@ class ReviewDetail(BaseModel):
     completed_at: AwareDatetime | None
     expires_at: AwareDatetime | None
     metrics: ReviewMetricsView
+
+
+class FindingView(BaseModel):
+    """One finding: analyze-time content (from the `findings` table) plus the
+    `publish_destination` lifecycle field (joined from `PublishRoutingEvent`).
+
+    `publish_destination` is `None` until the finding is routed (publish has
+    not run, or it is a pre-publish review). HITL override-provenance
+    (`original_severity` / override outcome / reason) is NOT surfaced here yet
+    — those `findings` columns are null in V1 and the decision lives in
+    `HITLDecisionEvent.decisions`; surfacing it is a tight follow-up.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_id: UUID
+    finding_type: str
+    dimension: str
+    severity: str
+    evidence_tier: str
+    file_path: str
+    line_start: int
+    line_end: int
+    title: str
+    description: str
+    evidence: str
+    suggested_fix: str | None
+    query_match_id: str | None
+    trace_path: list[str] | None
+    publish_destination: str | None
+
+
+class FindingsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: UUID
+    findings: list[FindingView]
 
 
 router = APIRouter(
@@ -287,3 +325,80 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
             expires_at=review.expires_at,
             metrics=metrics,
         )
+
+
+@router.get("/{review_id}/findings", response_model=FindingsResponse)
+async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
+    """A review's findings: analyze-time content from the `findings` table,
+    each with its `publish_destination` joined from `PublishRoutingEvent`.
+
+    404 if the review doesn't exist. The per-finding `publish_destination` is
+    read from `PublishRoutingEvent` (keyed by `finding_id`), NOT the
+    `findings.publish_destination` column (null in V1 — publish mutates the
+    in-memory finding + emits the event, never writing back to the row).
+    Duplicate routing rows can exist (re-route lands a new row); the latest by
+    `sequence_number` wins. `None` until the finding is routed.
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        review_exists = (
+            await session.execute(select(Review.id).where(Review.id == review_id))
+        ).scalar_one_or_none()
+        if review_exists is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
+
+        finding_rows = (
+            (
+                await session.execute(
+                    select(Finding)
+                    .where(Finding.review_id == review_id)
+                    .order_by(Finding.created_at.asc(), Finding.finding_id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        # publish_destination per finding — joined from PublishRoutingEvent by
+        # finding_id. Iterate sequence_number ASC so the dict keeps the LATEST
+        # routing decision per finding (re-route lands a new row).
+        routing_rows = (
+            await session.execute(
+                select(
+                    AuditEvent.payload["finding_id"].astext,
+                    AuditEvent.payload["destination"].astext,
+                )
+                .where(
+                    AuditEvent.review_id == review_id,
+                    AuditEvent.event_type == "publish_routing",
+                )
+                .order_by(AuditEvent.sequence_number.asc())
+            )
+        ).all()
+        dest_by_finding: dict[str, str] = {
+            finding_id: destination
+            for finding_id, destination in routing_rows
+            if finding_id is not None
+        }
+
+        findings = [
+            FindingView(
+                finding_id=f.finding_id,
+                finding_type=f.finding_type,
+                dimension=f.dimension,
+                severity=f.severity,
+                evidence_tier=f.evidence_tier,
+                file_path=f.file_path,
+                line_start=f.line_start,
+                line_end=f.line_end,
+                title=f.title,
+                description=f.description,
+                evidence=f.evidence,
+                suggested_fix=f.suggested_fix,
+                query_match_id=f.query_match_id,
+                trace_path=f.trace_path,
+                publish_destination=dest_by_finding.get(str(f.finding_id)),
+            )
+            for f in finding_rows
+        ]
+        return FindingsResponse(review_id=review_id, findings=findings)
