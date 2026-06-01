@@ -71,8 +71,6 @@ export function Reviews() {
 
   return (
     <section>
-      <h1>Reviews</h1>
-
       <div className="filterbar">
         <select
           className="filter-select"
@@ -101,7 +99,7 @@ export function Reviews() {
       ) : null}
 
       {rows.length === 0 ? (
-        <p style={{ color: "var(--text-2)" }}>
+        <p style={{ color: "var(--muted)" }}>
           {term !== "" && truncated
             ? "No matches in the loaded reviews — narrow by status to search the rest."
             : "No reviews."}
