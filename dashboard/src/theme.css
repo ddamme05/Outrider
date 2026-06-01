@@ -1219,3 +1219,66 @@ table.details-grid .num {
   font-size: 11px;
   text-align: right;
 }
+
+/* ============================================================
+ * Policy table popover (FUP-132).
+ * ============================================================ */
+.chip.policy {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.policy-pop {
+  margin: 12px 0;
+  overflow: hidden;
+}
+.policy-pop .pc-head {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-softer);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.policy-pop .pc-head .muted {
+  font-size: 12px;
+  color: var(--text-3);
+}
+table.policy {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.policy th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  font-weight: 600;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border-softer);
+}
+table.policy td {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-softer);
+  font-size: 12px;
+}
+table.policy tr:last-child td {
+  border-bottom: none;
+}
+table.policy .ft {
+  color: var(--text-1);
+}
+table.policy .muted {
+  color: var(--text-3);
+}
+table.policy tbody tr:hover {
+  background: var(--surface-2);
+}
+.policy-status {
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--text-2);
+}

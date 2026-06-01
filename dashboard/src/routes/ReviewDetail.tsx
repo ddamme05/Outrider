@@ -7,6 +7,7 @@ import { AuditFeed } from "../components/AuditFeed";
 import { DetailsGrid } from "../components/DetailsGrid";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
+import { PolicyTable } from "../components/PolicyTable";
 import { ReplayPanel } from "../components/ReplayPanel";
 import { StatusPill } from "../components/StatusPill";
 import { expiresLabel } from "../lib/format";
@@ -53,6 +54,7 @@ export function ReviewDetail() {
   // Hooks must run unconditionally, before the early returns below.
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<"findings" | "audit">("findings");
+  const [showPolicy, setShowPolicy] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [submitted, setSubmitted] = useState(false);
   const decide = $api.useMutation("post", "/reviews/{review_id}/decide");
@@ -175,7 +177,13 @@ export function ReviewDetail() {
               <span className="sep" aria-hidden="true">
                 ·
               </span>
-              <span className="mono">policy {d.policy_version}</span>
+              <button
+                className="chip policy mono"
+                aria-expanded={showPolicy}
+                onClick={() => setShowPolicy((v) => !v)}
+              >
+                policy {d.policy_version} ▸
+              </button>
             </>
           ) : null}
           <span className="right">
@@ -190,6 +198,8 @@ export function ReviewDetail() {
           </span>
         </div>
       </div>
+
+      {showPolicy && d.policy_version ? <PolicyTable version={d.policy_version} /> : null}
 
       <PipelineStrip status={d.status} />
 

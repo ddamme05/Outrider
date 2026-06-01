@@ -83,9 +83,13 @@ function mount(
     replay?: unknown;
     detailStatus?: number;
     events?: unknown[];
+    policyEntries?: unknown[];
   } = {},
 ) {
   server.use(
+    http.get("http://localhost/api/policy/:version", ({ params }) =>
+      HttpResponse.json({ version: params.version, entries: responses.policyEntries ?? [] }),
+    ),
     http.get(BASE, () =>
       responses.detailStatus
         ? HttpResponse.json({ detail: "not found" }, { status: responses.detailStatus })
@@ -244,6 +248,20 @@ test("audit-feed tab renders the event stream from the events endpoint", async (
   // The feed renders the event by type + node.
   expect(await screen.findByText("llm_call")).toBeInTheDocument();
   expect(screen.getByText(/claude-sonnet-4-5 · \$0.27/)).toBeInTheDocument();
+});
+
+test("policy chip opens the versioned policy table from the endpoint", async () => {
+  const user = userEvent.setup();
+  mount({
+    policyEntries: [{ finding_type: "hardcoded_secret", dimension: "security", severity: "high" }],
+  });
+  await screen.findByText(/repo 100/);
+  // Chip is closed by default — no table yet.
+  expect(screen.queryByText(/Deterministic, versioned/)).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /policy v3/ }));
+  // The versioned table renders (header phrase is unique to PolicyTable).
+  expect(await screen.findByText(/Deterministic, versioned/)).toBeInTheDocument();
+  expect(screen.getByText("hardcoded_secret")).toBeInTheDocument();
 });
 
 test("per-node details grid derives per-node cost from llm_call events", async () => {
