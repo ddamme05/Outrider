@@ -209,12 +209,14 @@ test("offers a manual refresh while awaiting resume", async () => {
   expect(await screen.findByRole("button", { name: "Refresh status" })).toBeInTheDocument();
 });
 
-test("re-enables submit if the resume hasn't completed within the window", async () => {
+test("a stuck resume re-enables submit but keeps controls read-only and resends the same payload", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  mount(); // status stays awaiting_approval — resume never advances
+  const bodies: unknown[] = [];
+  mount({ capture: (b) => bodies.push(b) }); // status stays awaiting — resume never advances
   const submit = await screen.findByRole("button", { name: /Submit decision/ });
-  await user.click(screen.getByRole("button", { name: "approve" }));
+  await user.click(screen.getByRole("button", { name: "reject" }));
+  await user.type(screen.getByLabelText(/Reason/), "real risk");
   await user.click(submit);
   await screen.findByText(/resuming the review/);
 
@@ -223,7 +225,14 @@ test("re-enables submit if the resume hasn't completed within the window", async
   });
 
   expect(await screen.findByText(/Resume hasn't completed/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Re-submit/ })).toBeEnabled();
+  const resubmit = screen.getByRole("button", { name: /Re-submit/ });
+  expect(resubmit).toBeEnabled();
+  // Controls stay read-only — a divergent payload would wedge the audit row.
+  expect(screen.getByRole("button", { name: "approve" })).toBeDisabled();
+
+  await user.click(resubmit);
+  await waitFor(() => expect(bodies.length).toBe(2));
+  expect(bodies[1]).toEqual(bodies[0]); // byte-identical re-submit
 });
 
 afterEach(() => vi.useRealTimers());
