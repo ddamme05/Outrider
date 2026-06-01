@@ -48,15 +48,25 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
 - `file_in_patch(...)` — see "Three supporting surfaces" above.
 - `lookup_patched_file(...)` — locate a `PatchedFile` by path inside a
   raw unified-diff string; returns None on absence (analyze §7 step 3a).
-- `span_within_scope_unit(...)` / `span_within_file(...)` /
-  `span_within_degraded_context(...)` — three span-containment checks
-  the parser composes for the clean / degraded / file-bound admission
-  paths (§4).
-- `span_is_nonempty(...)` — predicate enforcing the prompt's stricter
-  `byte_start < byte_end` rule (§4; the `Span` carrier admits
-  zero-width by design for non-finding consumers).
+- `span_within_file(...)` — byte file-bounds check the analyze parser's
+  degraded path composes (§4).
+- `span_within_scope_unit(...)` / `span_within_degraded_context(...)` —
+  byte-space containment checks with no current parser caller: the clean
+  gate is now line-space (`line_range_within_scope_unit`, FUP-126) and the
+  degraded-context check is unwired (FUP-138); both retained pending the
+  FUP-138 / FUP-139 decisions (§4).
+- `span_is_nonempty(...)` — degraded-path non-empty floor (`byte_start <
+  byte_end`) applied to the byte `Span` from `line_range_to_span` before the
+  `span_within_file` check; the `Span` carrier admits zero-width by design for
+  non-finding consumers (§4).
 - `span_to_line_range(...)` — byte Span → 1-indexed `(line_start,
   line_end)` over source text (§4).
+- `line_range_within_scope_unit(...)` — line-space containment of a
+  1-indexed range in a ScopeUnit; the analyze parser's admission gate for
+  line-based proposals (see `specs/2026-06-01-analyze-span-frame-mismatch.md`).
+- `line_range_to_span(...)` — 1-indexed line range → whole-line byte Span
+  (left-inverse of `span_to_line_range` except for a range on the trailing
+  empty line); raises past EOF.
 - `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to
   hunks inside a ScopeUnit (§4).
 - `scope_unit_has_added_lines(...)` / `patched_file_has_added_lines(...)`
@@ -92,6 +102,8 @@ from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     bound_diff_hunks_text,
     extract_scope_unit_body,
+    line_range_to_span,
+    line_range_within_scope_unit,
     patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
@@ -116,6 +128,8 @@ __all__ = [
     "extract_scope_unit_body",
     "file_in_patch",
     "is_valid_import_string",
+    "line_range_to_span",
+    "line_range_within_scope_unit",
     "lookup_patched_file",
     "patched_file_has_added_lines",
     "resolve_candidate_paths",
