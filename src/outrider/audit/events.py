@@ -78,6 +78,7 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -109,6 +110,29 @@ from outrider.schemas import (
 # can consume without circular import; module-local alias preserved for
 # the existing references below.
 _SHA256_HEX_PATTERN: Final = SHA256_HEX_PATTERN
+
+# Reserved replay sentinel — see DECISIONS.md#032. The all-zero SHA-256 is
+# RESERVED to mark a `proposal_hash` that was absent on a persisted pre-#025
+# historical event and defaulted by the read-side replay normalizer
+# (`audit/replay.py::_normalize_historical_payload`). It is pattern-valid hex,
+# NOT impossible — so write-time validators on every real `proposal_hash` field
+# reject it, making it unambiguous by construction (no real event can carry it).
+# Single-sourced here so the reserve (these validators) and the inject (replay)
+# reference the same constant and cannot drift.
+RESERVED_HISTORICAL_PROPOSAL_HASH: Final = "0" * 64
+
+# Validation-context key the replay normalizer sets so the reserved-sentinel
+# guards PERMIT the sentinel during historical reconstruction while still
+# REJECTING it at every normal write (no context). Single-sourced so replay and
+# the guards agree on the flag name. See DECISIONS.md#032.
+REPLAY_HISTORICAL_CONTEXT_KEY: Final = "replay_historical"
+
+
+def _sentinel_permitted(info: ValidationInfo) -> bool:
+    """True only when validating under the replay normalizer's context."""
+    context = info.context
+    return bool(context and context.get(REPLAY_HISTORICAL_CONTEXT_KEY))
+
 
 # `BARE_SEMVER_PATTERN` (re-exported via `outrider.policy.severity`)
 # gates the bare-semver shape on every `policy_version` field below.
@@ -564,6 +588,24 @@ class FindingEvent(AuditEventBase):
         append-only log unvalidated.
         """
         return validate_diff_path(path)
+
+    @field_validator("proposal_hash")
+    @classmethod
+    def _reject_reserved_proposal_hash(cls, value: str, info: ValidationInfo) -> str:
+        """Reserve the all-zero sentinel for the replay normalizer (see
+        DECISIONS.md#032). A real event must never carry
+        `RESERVED_HISTORICAL_PROPOSAL_HASH`, so its appearance on a
+        reconstructed event unambiguously means "pre-#025 historical event,
+        provenance defaulted" rather than a genuine hash. The replay
+        normalizer injects it under `REPLAY_HISTORICAL_CONTEXT_KEY`, the only
+        place the sentinel is permitted.
+        """
+        if value == RESERVED_HISTORICAL_PROPOSAL_HASH and not _sentinel_permitted(info):
+            raise ValueError(
+                "proposal_hash must not be the reserved all-zero sentinel "
+                "(reserved for replay of pre-#025 historical events; see DECISIONS.md#032)"
+            )
+        return value
 
     @model_validator(mode="after")
     def _enforce_proof_boundary(self) -> Self:
@@ -2121,6 +2163,19 @@ class FindingProposalRejectedEvent(AuditEventBase):
         with no in-memory ReviewFinding to gate it.
         """
         return validate_diff_path(path)
+
+    @field_validator("proposal_hash")
+    @classmethod
+    def _reject_reserved_proposal_hash(cls, value: str, info: ValidationInfo) -> str:
+        """Reserve the all-zero sentinel for the replay normalizer (see
+        DECISIONS.md#032) — same guard as `FindingEvent.proposal_hash`.
+        """
+        if value == RESERVED_HISTORICAL_PROPOSAL_HASH and not _sentinel_permitted(info):
+            raise ValueError(
+                "proposal_hash must not be the reserved all-zero sentinel "
+                "(reserved for replay of pre-#025 historical events; see DECISIONS.md#032)"
+            )
+        return value
 
     @model_validator(mode="after")
     def _enforce_claimed_evidence_tier_coupling(self) -> Self:

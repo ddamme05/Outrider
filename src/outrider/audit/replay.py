@@ -37,7 +37,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -45,6 +45,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from outrider.audit.events import (
+    REPLAY_HISTORICAL_CONTEXT_KEY,
+    RESERVED_HISTORICAL_PROPOSAL_HASH,
     AgentTransitionEvent,
     AuditEvent,
     AuditEventAdapter,
@@ -93,6 +95,39 @@ class ReplayReviewNotFoundError(ReplayError):
 
 class ReplayEquivalenceError(ReplayError):
     """A replay-equivalence assertion failed; the message names the check."""
+
+
+# ---------------------------------------------------------------------------
+# Historical event-schema tolerance — see DECISIONS.md#032
+# ---------------------------------------------------------------------------
+
+# `(event_type, field) → reserved sentinel` for provenance-only fields that
+# became required after audit rows were already persisted. Replay defaults the
+# field ON READ so a pre-field row reconstructs instead of 500-ing; write-time
+# stays strict. ONLY provenance-only fields belong here — never a proof-boundary
+# field (evidence_tier / query_match_id / trace_path) or a content/equivalence
+# field (anything in `finding_content_hash`). The registry-allowlist test pins
+# this. V1: only the finding's `proposal_hash` (#025), excluded from the content
+# hash (#025 point 3), so defaulting it never changes the equivalence verdict.
+_HISTORICAL_FIELD_DEFAULTS: Final[dict[str, dict[str, str]]] = {
+    "finding": {"proposal_hash": RESERVED_HISTORICAL_PROPOSAL_HASH},
+}
+
+
+def _normalize_historical_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Inject reserved sentinels for registered provenance fields ABSENT on a
+    persisted historical row, returning a shallow copy. Read-side only — never
+    mutates `audit_events`. A field already present (a real value) is left
+    untouched; only a genuinely-missing field is defaulted.
+    """
+    event_type = payload.get("event_type")
+    defaults = _HISTORICAL_FIELD_DEFAULTS.get(event_type) if isinstance(event_type, str) else None
+    if not defaults:
+        return payload
+    missing = {field: sentinel for field, sentinel in defaults.items() if field not in payload}
+    if not missing:
+        return payload
+    return {**payload, **missing}
 
 
 # ---------------------------------------------------------------------------
@@ -855,8 +890,14 @@ class AuditReplayer:
                 raise ReplayReviewNotFoundError(f"no audit_events rows for review_id {review_id}")
             reconstructed: list[AuditEvent] = []
             for row in rows:
+                # Default provenance-only fields absent on persisted historical
+                # rows, and validate under the replay context so the reserved
+                # sentinel is permitted here (and only here). See DECISIONS.md#032.
                 event = AuditEventAdapter.validate_python(
-                    {**row.payload, "sequence_number": row.sequence_number}
+                    _normalize_historical_payload(
+                        {**row.payload, "sequence_number": row.sequence_number}
+                    ),
+                    context={REPLAY_HISTORICAL_CONTEXT_KEY: True},
                 )
                 _verify_row_consistent(
                     event,
