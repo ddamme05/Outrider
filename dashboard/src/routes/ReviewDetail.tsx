@@ -4,10 +4,9 @@ import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
 import { AuditFeed } from "../components/AuditFeed";
-import { DetailsGrid } from "../components/DetailsGrid";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
-import { PolicyTable } from "../components/PolicyTable";
+import { PolicyModal } from "../components/PolicyModal";
 import { ReplayPanel } from "../components/ReplayPanel";
 import { StatusPill } from "../components/StatusPill";
 import { expiresLabel } from "../lib/format";
@@ -21,10 +20,12 @@ import {
   toPayload,
 } from "../lib/hitl";
 
-function metric(value: number | null, suffix = ""): string {
-  // The metrics contract: file/wall-clock fields are null until the review emits
-  // a SynthesizeCompletedEvent — render "pending", never a misleading zero.
-  return value === null ? "pending" : `${value}${suffix}`;
+// Duration for the metrics strip. wall_clock_seconds is null until the review
+// emits a SynthesizeCompletedEvent — render "pending", never a misleading zero.
+function fmtDuration(seconds: number | null): string {
+  if (seconds === null) return "pending";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
 }
 
 export function ReviewDetail() {
@@ -44,8 +45,8 @@ export function ReviewDetail() {
     enabled,
   });
   const replay = $api.useQuery("get", "/api/reviews/{review_id}/replay", pathParams, { enabled });
-  // The audit-event stream powers both the Audit-feed tab and the per-node Details
-  // grid (FUP-133). Polled with the detail so a running review's feed fills in.
+  // The audit-event stream powers the pipeline node cards AND the Audit-feed tab
+  // (FUP-133). Polled with the detail so a running review's feed fills in.
   const events = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
     enabled,
     refetchInterval: 2000,
@@ -118,6 +119,8 @@ export function ReviewDetail() {
   }
 
   const expires = d.status.startsWith("awaiting_approval") ? expiresLabel(d.expires_at) : null;
+  const eventCount = events.data?.total ?? 0;
+  const m = d.metrics;
 
   const getDraft = (id: string): DecisionDraft => drafts[id] ?? EMPTY_DRAFT;
   const setDraft = (id: string, next: DecisionDraft) =>
@@ -160,87 +163,103 @@ export function ReviewDetail() {
         </p>
       ) : null}
 
-      <div className="hero-head">
-        <h1>
-          repo {d.repo_id} <span className="prnum">#{d.pr_number}</span>
-        </h1>
-        <div className="hero-strip">
-          <span className="sha">{d.head_sha.slice(0, 9)}</span>
-          <span className="sep" aria-hidden="true">
-            ·
-          </span>
-          <span>
-            cost <span className="b mono">${d.metrics.total_cost_usd.toFixed(2)}</span>
-          </span>
-          {d.policy_version ? (
-            <>
-              <span className="sep" aria-hidden="true">
-                ·
-              </span>
-              <button
-                className="chip policy mono"
-                aria-expanded={showPolicy}
-                onClick={() => setShowPolicy((v) => !v)}
-              >
-                policy {d.policy_version} ▸
-              </button>
-            </>
-          ) : null}
-          <span className="right">
-            <StatusPill status={d.status} />
-            {expires ? (
-              <span className="pill status-expired" style={{ fontSize: 11 }}>
-                <span className="dot" aria-hidden="true" />
-                {expires}
-              </span>
-            ) : null}
-            {d.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
-          </span>
+      {/* hero panel — subject identity + replay verdict (no author/repo-slug: not
+          exposed by the API; no "reconstruct" button: that screen isn't built) */}
+      <div className="panel">
+        <div className="panel-b">
+          <div className="rd-head">
+            <div className="rd-title-block">
+              <h1 className="rd-title">
+                repo {d.repo_id} <span className="prnum">#{d.pr_number}</span>
+              </h1>
+              <div className="rd-meta">
+                <span>
+                  head <span className="mono">{d.head_sha.slice(0, 9)}</span>
+                </span>
+                {d.policy_version ? (
+                  <button
+                    type="button"
+                    className="chip policy mono"
+                    aria-haspopup="dialog"
+                    aria-expanded={showPolicy}
+                    onClick={() => setShowPolicy(true)}
+                  >
+                    policy {d.policy_version}
+                  </button>
+                ) : null}
+                <StatusPill status={d.status} />
+                {expires ? (
+                  <span className="pill status-expired">
+                    <span className="dot" aria-hidden="true" />
+                    {expires}
+                  </span>
+                ) : null}
+                {d.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
+              </div>
+            </div>
+            <div className="rd-actions">
+              {replay.data ? (
+                <span className="pill" aria-label="replay verdict">
+                  {replay.data.replay_equivalent ? (
+                    <>
+                      replay-equivalent <b style={{ color: "var(--pos)" }}>✓</b>
+                    </>
+                  ) : (
+                    <>
+                      not replay-equivalent <b style={{ color: "var(--neg)" }}>✗</b>
+                    </>
+                  )}
+                </span>
+              ) : null}
+            </div>
+          </div>
         </div>
       </div>
 
-      {showPolicy && d.policy_version ? <PolicyTable version={d.policy_version} /> : null}
-
-      <PipelineStrip status={d.status} />
-
-      <div className="detail-meta-grid">
-        <div className="dmg-item">
-          <div className="k">Cost</div>
-          <div className="v">
-            <b>${d.metrics.total_cost_usd.toFixed(2)}</b>
-          </div>
-        </div>
-        <div className="dmg-item">
-          <div className="k">LLM calls</div>
-          <div className="v mono">{d.metrics.llm_calls_made}</div>
-        </div>
-        <div className="dmg-item">
-          <div className="k">Tokens</div>
-          <div className="v mono">
-            {d.metrics.total_input_tokens} in · {d.metrics.total_output_tokens} out
-          </div>
-        </div>
-        <div className="dmg-item">
-          <div className="k">Files examined</div>
-          <div className="v mono">{metric(d.metrics.files_examined)}</div>
-        </div>
-        <div className="dmg-item">
-          <div className="k">Traced beyond diff</div>
-          <div className="v mono">{metric(d.metrics.files_traced_beyond_diff)}</div>
-        </div>
-        <div className="dmg-item">
-          <div className="k">Wall clock</div>
-          <div className="v mono">{metric(d.metrics.wall_clock_seconds, "s")}</div>
-        </div>
-      </div>
-
-      {events.data && events.data.events.length > 0 ? (
-        <details className="details-disc">
-          <summary>▸ Per-node details</summary>
-          <DetailsGrid events={events.data.events} />
-        </details>
+      {showPolicy && d.policy_version ? (
+        <PolicyModal version={d.policy_version} onClose={() => setShowPolicy(false)} />
       ) : null}
 
+      {/* this-review metrics strip — 3 cards, all server-backed */}
+      <div className="metrics-strip">
+        <div className="ms-card">
+          <div className="lab">Total cost</div>
+          <div className="ms-val">${m.total_cost_usd.toFixed(2)}</div>
+          <div className="ms-sub">
+            {d.policy_version ? `policy ${d.policy_version} · ` : ""}
+            {allFindings.length} findings
+          </div>
+        </div>
+        <div className="ms-card">
+          <div className="lab">Tokens</div>
+          <div className="ms-val">
+            {m.total_input_tokens.toLocaleString()}
+            <span style={{ color: "var(--faint)", fontSize: 12 }}> in</span>
+          </div>
+          <div className="ms-sub">
+            <span className="mono">{m.total_output_tokens.toLocaleString()}</span> out ·{" "}
+            {m.llm_calls_made} LLM calls
+          </div>
+        </div>
+        <div className="ms-card">
+          <div className="lab">Duration · Events</div>
+          <div className="ms-val">{fmtDuration(m.wall_clock_seconds)}</div>
+          <div className="ms-sub">
+            <span className="mono">{eventCount}</span> audit events
+          </div>
+        </div>
+      </div>
+
+      {/* pipeline — per-node cards from the audit stream */}
+      <PipelineStrip
+        status={d.status}
+        events={events.data?.events ?? []}
+        gatedCount={gated.length}
+        policyVersion={d.policy_version}
+      />
+
+      {/* replay verdict detail (the live reconstruction screen isn't built; this
+          is the honest verdict surface for the replay equivalence check) */}
       {replay.isLoading ? (
         <p className="replay-status">Checking replay equivalence…</p>
       ) : replay.error ? (
@@ -249,6 +268,7 @@ export function ReviewDetail() {
         <ReplayPanel verdict={replay.data} />
       ) : null}
 
+      {/* findings / audit feed */}
       <div className="tabs" role="tablist">
         <button
           className={`tab ${tab === "findings" ? "active" : ""}`}
@@ -264,47 +284,60 @@ export function ReviewDetail() {
           aria-selected={tab === "audit"}
           onClick={() => setTab("audit")}
         >
-          Audit feed <span className="muted">({events.data?.total ?? 0})</span>
+          Audit feed <span className="muted">({eventCount})</span>
         </button>
       </div>
 
-      {tab === "findings" ? (
-        findings.isLoading ? (
-          <p>Loading findings…</p>
-        ) : findings.error ? (
-          <p className="error">Failed to load findings.</p>
-        ) : allFindings.length === 0 ? (
-          <p style={{ color: "var(--muted)" }}>No findings recorded for this review.</p>
-        ) : (
-          allFindings.map((f) => {
-            const wasGated = gatedSet.has(f.finding_id);
-            const decidable = actionable && wasGated;
-            return (
-              <FindingCard
-                key={f.finding_id}
-                finding={f}
-                wasGated={wasGated}
-                decision={decidable ? getDraft(f.finding_id) : undefined}
-                // Lock controls while submitting and once submitted — including the
-                // stuck state: a re-submit must resend the SAME payload (divergent
-                // content wedges the audit row), so editing stays closed until the
-                // page reloads with fresh state.
-                disabled={decide.isPending || submitted}
-                onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
-              />
-            );
-          })
-        )
-      ) : events.isLoading ? (
-        <p>Loading audit feed…</p>
-      ) : events.error ? (
-        <p className="error">Failed to load the audit feed.</p>
-      ) : (
-        <AuditFeed events={events.data?.events ?? []} />
-      )}
+      <div className="panel">
+        <div className="panel-h">
+          <h2>{tab === "findings" ? "Findings" : "Audit feed"}</h2>
+          <div className="sub">
+            {tab === "findings"
+              ? `${allFindings.length} findings · ${gated.length} gated`
+              : `${eventCount} events`}
+          </div>
+        </div>
+        <div className="panel-b">
+          {tab === "findings" ? (
+            findings.isLoading ? (
+              <p>Loading findings…</p>
+            ) : findings.error ? (
+              <p className="error">Failed to load findings.</p>
+            ) : allFindings.length === 0 ? (
+              <p style={{ color: "var(--muted)" }}>No findings recorded for this review.</p>
+            ) : (
+              allFindings.map((f) => {
+                const wasGated = gatedSet.has(f.finding_id);
+                const decidable = actionable && wasGated;
+                return (
+                  <FindingCard
+                    key={f.finding_id}
+                    finding={f}
+                    wasGated={wasGated}
+                    decision={decidable ? getDraft(f.finding_id) : undefined}
+                    // Lock controls while submitting and once submitted — including
+                    // the stuck state: a re-submit must resend the SAME payload
+                    // (divergent content wedges the audit row), so editing stays
+                    // closed until the page reloads with fresh state.
+                    disabled={decide.isPending || submitted}
+                    onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
+                  />
+                );
+              })
+            )
+          ) : events.isLoading ? (
+            <p>Loading audit feed…</p>
+          ) : events.error ? (
+            <p className="error">Failed to load the audit feed.</p>
+          ) : (
+            <AuditFeed events={events.data?.events ?? []} />
+          )}
+        </div>
+      </div>
 
       {submitted || (actionable && gated.length > 0) ? (
         <div className="submit-bar">
+          <span className="hs-tick" aria-hidden="true" />
           <span className="status-text">
             {resumed ? (
               <b>Decision submitted — review is now {d.status}.</b>
@@ -321,6 +354,16 @@ export function ReviewDetail() {
               </>
             )}
           </span>
+          {gated.length > 0 && !submitted ? (
+            <span className="hs-pips" aria-hidden="true">
+              {gated.map((f) => (
+                <span
+                  key={f.finding_id}
+                  className={`hs-pip ${isDraftValid(getDraft(f.finding_id), f) ? "done" : ""}`}
+                />
+              ))}
+            </span>
+          ) : null}
           {decide.error ? (
             <span className="error" role="alert">
               {decideErrorMessage(decide.error)}
