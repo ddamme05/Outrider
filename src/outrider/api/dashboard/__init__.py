@@ -1,4 +1,4 @@
-"""Dashboard router — FastAPI surface for HITL approvals.
+"""Dashboard routers — FastAPI surface for HITL approvals + the read-API.
 
 Sub-modules:
   - `config` — pydantic-settings `DashboardSettings` (`OUTRIDER_ADMIN_API_KEY`).
@@ -6,11 +6,15 @@ Sub-modules:
     compare against the lifespan-bound admin key; raises HTTP 401 on
     mismatch. Same `compare_digest` idiom as
     `api/webhooks/signature.py` per the input-boundary invariant.
-  - `hitl` — `POST /reviews/{review_id}/decide` endpoint. M12 step-order
-    is load-bearing: auth -> state -> mismatch. Enqueues
-    `graph.ainvoke(Command(resume=...))` via FastAPI BackgroundTasks
-    behind the failure wrapper that catches divergent-content concurrent
-    decide races without flipping `reviews.status`.
+  - `hitl` — `POST /reviews/{review_id}/decide` endpoint (the one write
+    path). M12 step-order is load-bearing: auth -> state -> mismatch.
+    Enqueues `graph.ainvoke(Command(resume=...))` via FastAPI
+    BackgroundTasks behind the failure wrapper that catches
+    divergent-content concurrent decide races without flipping
+    `reviews.status`.
+  - `reviews` — the read-only dashboard read-API under `/api/reviews`
+    (queue + detail; metrics computed read-through from the audit stream,
+    never the zeroed `reviews.*` columns). Pure consumer — no mutation.
 
 This module does NOT import vendor SDKs — auth uses `hmac.compare_digest`
 from stdlib; resume dispatch reads `app.state.compiled_graph` from the
@@ -19,5 +23,6 @@ is wired at `api/lifespan.py:Step 7b`).
 """
 
 from outrider.api.dashboard.hitl import router as hitl_router
+from outrider.api.dashboard.reviews import router as reviews_router
 
-__all__ = ["hitl_router"]
+__all__ = ["hitl_router", "reviews_router"]
