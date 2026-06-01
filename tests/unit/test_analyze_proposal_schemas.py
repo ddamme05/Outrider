@@ -8,7 +8,8 @@ Pins:
   finding_type + evidence_tier).
 - Materially distinct field names between raw and admitted layers
   for TraceCandidate proposals (post-split S4 pit-of-success).
-- Byte-for-byte span invariant: admitted == raw (post-split S6).
+- Line-preservation invariant: admitted line range == raw, byte-for-byte
+  (FUP-126 / DECISIONS.md#022 span-key amendment — proposals are line-based).
 - Length caps on all bounded strings.
 - Max-50 findings per response.
 - Max-20 trace candidates per proposal.
@@ -21,7 +22,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from outrider.ast_facts.models import Span
 from outrider.policy import EvidenceTier, FindingType
 from outrider.schemas.llm import (
     AnalyzeFindingProposal,
@@ -43,7 +43,8 @@ def _raw_kwargs(**overrides: Any) -> dict[str, Any]:
         "title": "SQL injection",
         "description": "Concatenated user input.",
         "evidence": "src/foo.py:11 — raw SQL concat",
-        "span": Span(byte_start=100, byte_end=120),
+        "line_start": 11,
+        "line_end": 11,
     }
     base.update(overrides)
     return base
@@ -134,7 +135,8 @@ def _admitted_kwargs(**overrides: Any) -> dict[str, Any]:
         "title": "SQL injection",
         "description": "Concatenated user input.",
         "evidence": "src/foo.py:11 — raw SQL concat",
-        "span": Span(byte_start=100, byte_end=120),
+        "line_start": 11,
+        "line_end": 11,
     }
     base.update(overrides)
     return base
@@ -169,34 +171,33 @@ def test_admitted_extra_forbid() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Span byte-for-byte invariant (post-split S6).
+# Line-preservation invariant (FUP-126 / DECISIONS.md#022 span-key amendment).
 # ---------------------------------------------------------------------------
 
 
-def test_admitted_span_must_equal_raw_span_byte_for_byte() -> None:
-    """Round-trip a raw proposal through admission; admitted.span equals
-    raw.span exactly (no normalization/clipping).
+def test_admitted_line_range_must_equal_raw_line_range() -> None:
+    """Round-trip a raw proposal through admission; the admitted line range
+    equals the raw line range byte-for-byte (no normalization between layers).
 
-    The parser MAY reject on span containment failure; it MUST NOT
-    normalize the span between layers. proposal_hash on the rejection
-    event canonicalizes raw.span values — if admitted normalized them,
-    downstream consumers of the admitted finding would describe
-    different bytes from the same hash, breaking replay.
+    The parser MAY reject on scope containment failure; it MUST NOT normalize
+    the line range between layers. `proposal_hash` canonicalizes the RAW line
+    values — if admitted normalized them, downstream consumers would describe
+    different lines from the same hash, breaking replay. Byte spans are a
+    parser-internal coordinate translation, NOT a proposal-schema field.
     """
-    raw_span = Span(byte_start=100, byte_end=120)
-    raw = AnalyzeFindingProposalRaw(**_raw_kwargs(span=raw_span))
-    # Simulate parser admission: same span, enum-coerced enum fields.
+    raw = AnalyzeFindingProposalRaw(**_raw_kwargs(line_start=11, line_end=13))
+    # Simulate parser admission: same line range, enum-coerced enum fields.
     admitted = AnalyzeFindingProposal(
         finding_type=FindingType(raw.finding_type),
         evidence_tier=EvidenceTier(raw.evidence_tier.lower()),
         title=raw.title,
         description=raw.description,
         evidence=raw.evidence,
-        span=raw.span,  # Byte-for-byte: same instance, same values.
+        line_start=raw.line_start,
+        line_end=raw.line_end,
     )
-    assert admitted.span == raw.span
-    assert admitted.span.byte_start == raw_span.byte_start
-    assert admitted.span.byte_end == raw_span.byte_end
+    assert admitted.line_start == raw.line_start == 11
+    assert admitted.line_end == raw.line_end == 13
 
 
 # ---------------------------------------------------------------------------

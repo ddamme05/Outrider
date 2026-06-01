@@ -291,10 +291,11 @@ def _build_finding_proposal_json(
     *,
     finding_type: str = "sql_injection",
     evidence_tier: str = "judged",
-    span_byte_start: int = 0,
-    span_byte_end: int = 20,
+    line_start: int = 1,
+    line_end: int = 2,
 ) -> str:
-    """Build a JSON `AnalyzeResponseRaw` payload with one proposal."""
+    """Build a JSON `AnalyzeResponseRaw` payload with one proposal. Default line
+    range 1-2 lands in `my_function` (the changed scope unit in `_SIMPLE_PY`)."""
     return json.dumps(
         {
             "findings": [
@@ -306,10 +307,8 @@ def _build_finding_proposal_json(
                     "title": "Test finding",
                     "description": "A test finding for the analyze node body unit tests.",
                     "evidence": "def my_function():\n    return 42",
-                    "span": {
-                        "byte_start": span_byte_start,
-                        "byte_end": span_byte_end,
-                    },
+                    "line_start": line_start,
+                    "line_end": line_end,
                     "trace_candidates": [],
                 }
             ]
@@ -518,7 +517,8 @@ async def test_completed_event_counters_match_local_bookkeeping(deps: dict[str, 
                     "title": "Admitted finding",
                     "description": "An admitted finding.",
                     "evidence": "def my_function():\n    return 42",
-                    "span": {"byte_start": 0, "byte_end": 20},
+                    "line_start": 1,
+                    "line_end": 2,
                     "trace_candidates": [],
                 },
                 {
@@ -529,7 +529,8 @@ async def test_completed_event_counters_match_local_bookkeeping(deps: dict[str, 
                     "title": "Rejected finding",
                     "description": "A rejected finding.",
                     "evidence": "irrelevant",
-                    "span": {"byte_start": 30, "byte_end": 50},
+                    "line_start": 1,
+                    "line_end": 2,
                     "trace_candidates": [],
                 },
             ]
@@ -923,7 +924,8 @@ async def test_observed_proposal_with_registered_query_id_admits(
                     "title": "Admitted OBSERVED finding",
                     "description": "Tied to a real registry match.",
                     "evidence": "def my_function():\n    return 42",
-                    "span": {"byte_start": 0, "byte_end": 18},
+                    "line_start": 1,
+                    "line_end": 2,
                     "trace_candidates": [],
                 }
             ]
@@ -960,7 +962,8 @@ async def test_observed_proposal_with_unregistered_query_id_rejects(
                     "title": "Fabricated OBSERVED claim",
                     "description": "Cites an id that isn't in the registry.",
                     "evidence": "irrelevant",
-                    "span": {"byte_start": 0, "byte_end": 20},
+                    "line_start": 1,
+                    "line_end": 2,
                     "trace_candidates": [],
                 }
             ]

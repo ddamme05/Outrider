@@ -151,8 +151,8 @@ def test_compute_proposal_hash_deterministic_on_same_inputs() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=100,
-        byte_end=120,
+        line_start=10,
+        line_end=12,
     )
     h2 = compute_proposal_hash(
         source_file_path="src/foo.py",
@@ -163,8 +163,8 @@ def test_compute_proposal_hash_deterministic_on_same_inputs() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=100,
-        byte_end=120,
+        line_start=10,
+        line_end=12,
     )
     assert h1 == h2
     assert len(h1) == 64  # SHA-256 hex
@@ -181,8 +181,8 @@ def test_compute_proposal_hash_field_sensitive() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=100,
-        byte_end=120,
+        line_start=10,
+        line_end=12,
     )
     h_b = compute_proposal_hash(
         source_file_path="src/foo.py",
@@ -193,10 +193,54 @@ def test_compute_proposal_hash_field_sensitive() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=100,
-        byte_end=120,
+        line_start=10,
+        line_end=12,
     )
     assert h_a != h_b
+
+
+def test_compute_proposal_hash_sensitive_to_line_range() -> None:
+    """The location is part of proposal identity (FUP-126 / DECISIONS.md#022
+    span-key amendment): changing ONLY `line_start` or ONLY `line_end` changes
+    the digest. Guards against a future recipe edit silently dropping the
+    `line_range` key — which would pass every other hash test.
+    """
+    common: dict[str, object] = {
+        "source_file_path": "src/foo.py",
+        "finding_type": "sql_injection",
+        "evidence_tier": "JUDGED",
+        "query_match_id": None,
+        "trace_path": None,
+        "title": "t",
+        "description": "d",
+        "evidence": "e",
+    }
+    base = compute_proposal_hash(line_start=10, line_end=12, **common)  # type: ignore[arg-type]
+    diff_start = compute_proposal_hash(line_start=11, line_end=12, **common)  # type: ignore[arg-type]
+    diff_end = compute_proposal_hash(line_start=10, line_end=13, **common)  # type: ignore[arg-type]
+    assert base != diff_start
+    assert base != diff_end
+    assert diff_start != diff_end
+
+
+def test_compute_proposal_hash_rejects_transposed_line_range() -> None:
+    """`line_end < line_start` fails loud rather than minting a
+    different-but-valid hash. The schema layer enforces this upstream, but the
+    recipe is a public surface other producers reuse, so it guards too.
+    """
+    with pytest.raises(ValueError, match="line_end"):
+        compute_proposal_hash(
+            source_file_path="src/foo.py",
+            finding_type="sql_injection",
+            evidence_tier="JUDGED",
+            query_match_id=None,
+            trace_path=None,
+            title="t",
+            description="d",
+            evidence="e",
+            line_start=12,
+            line_end=10,  # transposed
+        )
 
 
 def test_compute_proposal_hash_distinct_across_source_files() -> None:
@@ -213,8 +257,8 @@ def test_compute_proposal_hash_distinct_across_source_files() -> None:
         "title": "Identical title",
         "description": "Identical description",
         "evidence": "Identical evidence snippet",
-        "byte_start": 100,
-        "byte_end": 120,
+        "line_start": 10,
+        "line_end": 12,
     }
     h_file_a = compute_proposal_hash(
         source_file_path="src/foo.py",
@@ -250,8 +294,8 @@ def test_compute_proposal_hash_canonicalizes_aliased_paths() -> None:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        "byte_start": 100,
-        "byte_end": 120,
+        "line_start": 10,
+        "line_end": 12,
     }
     h_canonical = compute_proposal_hash(
         source_file_path="src/foo.py",
@@ -291,8 +335,8 @@ def test_compute_proposal_hash_rejects_traversal_in_source_file_path() -> None:
             title="t",
             description="d",
             evidence="e",
-            byte_start=100,
-            byte_end=120,
+            line_start=10,
+            line_end=12,
         )
 
 
@@ -358,8 +402,8 @@ def test_compute_proposal_hash_normalizes_none_and_empty_trace_path() -> None:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        "byte_start": 100,
-        "byte_end": 120,
+        "line_start": 10,
+        "line_end": 12,
     }
     h_none = compute_proposal_hash(trace_path=None, **base_kwargs)  # type: ignore[arg-type]
     h_empty = compute_proposal_hash(trace_path=(), **base_kwargs)  # type: ignore[arg-type]

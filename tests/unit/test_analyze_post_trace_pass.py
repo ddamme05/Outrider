@@ -337,7 +337,8 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
                     "title": "Auth check skipped in helper",
                     "description": "The helper bypasses the validation in the parent",
                     "evidence": "def authenticate(token: str) -> bool:\n    return True\n",
-                    "span": {"byte_start": 0, "byte_end": 40},
+                    "line_start": 1,
+                    "line_end": 2,
                     "trace_candidates": [],
                 }
             ]

@@ -13,33 +13,37 @@ enum would fail Pydantic at `AnalyzeResponseRaw.model_validate(...)`
 BEFORE the parser could emit the rejection event — losing the audit
 signal that the model produced an invalid type.
 
-**Span byte-for-byte invariant.**
-`AnalyzeFindingProposal.span` (admitted) MUST equal
-`AnalyzeFindingProposalRaw.span` (raw) byte-for-byte. The parser MAY
-reject a proposal whose span fails containment, but MUST NOT normalize/
-clip/snap the span between raw and admitted layers. `proposal_hash`
-(on `FindingProposalRejectedEvent`) is canonicalized from the RAW span
-values; if the admitted span were normalized, downstream consumers of
-the admitted `ReviewFinding` would describe different bytes from the
-same hash, breaking replay reconstruction. Tests pin this invariant.
+**Line-preservation invariant** (per `DECISIONS.md#022`, span-key amended
+2026-06-01 / FUP-126). Both layers are LINE-based: `line_start`/`line_end`
+are 1-indexed file lines — the frame the model is actually shown
+(scope-unit header + diff `@@` markers). The admitted layer's
+`line_start`/`line_end` MUST equal the raw layer's byte-for-byte (no
+normalization between layers), the same identity-preservation the byte
+`span` field carried before this amendment: `proposal_hash` is
+canonicalized from the RAW line values, so a normalized admitted line
+range would describe different lines from the same hash. Byte `Span` is
+NOT a proposal-schema field anymore — `ReviewFinding` is line-based, and
+the only byte translation (`coordinates.line_range_to_span`) is a
+parser-internal, un-clipped step for the degraded file-bounds check.
+`proposal_hash` is also excluded from `finding_content_hash` per
+`DECISIONS.md#025` point 3, so the recipe change is replay-safe. Tests
+pin the line-preservation invariant.
 
-The byte-for-byte rule does NOT apply to `import_string` — that field
-IS deliberately normalized between layers (raw has `import_string_raw`,
-admitted has `import_string` post-`coordinates.is_valid_import_string`).
-`span` is identity-preserved because rejection-event hashes depend on
-it; `import_string` is normalized because downstream consumers
-(trace node resolving the import) need the validated canonical form.
-Per `DECISIONS.md#024` trace candidates are dotted Python import
-strings; the prior `candidate_path` framing was renamed in lockstep.
+`import_string` is the other cross-layer field and it IS deliberately
+normalized (raw `import_string_raw` → admitted `import_string` post-
+`coordinates.is_valid_import_string`): line numbers are identity-preserved
+because the hash folds them; `import_string` is normalized because
+downstream consumers (trace node resolving the import) need the validated
+canonical form. Per `DECISIONS.md#024` trace candidates are dotted Python
+import strings; the prior `candidate_path` framing was renamed in lockstep.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from outrider.ast_facts.models import Span  # noqa: TC001 — Pydantic field type, runtime import
 from outrider.coordinates import is_valid_import_string
 from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
@@ -99,8 +103,23 @@ class AnalyzeFindingProposalRaw(BaseModel):
     title: Annotated[str, Field(max_length=120)]
     description: Annotated[str, Field(max_length=1000)]
     evidence: Annotated[str, Field(max_length=2000)]
-    span: Span
+    # 1-indexed, inclusive source line range — the frame the model is shown
+    # (scope-unit header + diff `@@` markers). This IS the proposal's location:
+    # the admitted layer is line-based too, with no byte `Span` field. The only
+    # byte translation (`coordinates.line_range_to_span`) is parser-internal and
+    # used solely for the degraded file-bounds check (FUP-126, `DECISIONS.md#022`
+    # span-key amendment). Strictness matches the byte `Span` this replaced: a
+    # malformed range fails here → `raw_response_unparseable`.
+    line_start: Annotated[int, Field(ge=1)]
+    line_end: Annotated[int, Field(ge=1)]
     trace_candidates: tuple[TraceCandidateProposalRaw, ...] = Field(default=(), max_length=20)
+
+    @model_validator(mode="after")
+    def _line_end_not_before_start(self) -> AnalyzeFindingProposalRaw:
+        if self.line_end < self.line_start:
+            msg = f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            raise ValueError(msg)
+        return self
 
 
 class AnalyzeResponseRaw(BaseModel):
@@ -182,5 +201,16 @@ class AnalyzeFindingProposal(BaseModel):
     title: Annotated[str, Field(max_length=120)]
     description: Annotated[str, Field(max_length=1000)]
     evidence: Annotated[str, Field(max_length=2000)]
-    span: Span
+    # Line-based, identity-preserved from the raw layer (no normalization) — see
+    # the module-docstring line-preservation invariant. The byte span is a
+    # parser-internal coordinate translation, not a proposal-schema field.
+    line_start: Annotated[int, Field(ge=1)]
+    line_end: Annotated[int, Field(ge=1)]
     trace_candidates: tuple[TraceCandidateProposal, ...] = Field(default=(), max_length=20)
+
+    @model_validator(mode="after")
+    def _line_end_not_before_start(self) -> AnalyzeFindingProposal:
+        if self.line_end < self.line_start:
+            msg = f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            raise ValueError(msg)
+        return self
