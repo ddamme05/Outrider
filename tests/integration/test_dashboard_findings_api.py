@@ -89,6 +89,69 @@ async def _insert_publish_routing(
     )
 
 
+async def _insert_finding_event(
+    conn: object,
+    *,
+    review_id: UUID,
+    finding_id: UUID,
+    severity: str,
+    evidence_tier: str,
+    file_path: str = "app/legacy.py",
+) -> None:
+    """Insert a FindingEvent (event_type='finding') with NO findings row — the
+    dangling / retention-purged case (DECISIONS.md#014 point 3).
+    """
+    await conn.execute(  # type: ignore[attr-defined]
+        text(
+            "INSERT INTO audit_events "
+            "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+            "VALUES (:eid, :rid, 'finding', NOW(), false, CAST(:payload AS jsonb))"
+        ),
+        {
+            "eid": uuid4(),
+            "rid": review_id,
+            "payload": json.dumps(
+                {
+                    "finding_id": str(finding_id),
+                    "finding_type": "sql_injection",
+                    "dimension": "security",
+                    "severity": severity,
+                    "evidence_tier": evidence_tier,
+                    "file_path": file_path,
+                    "line_start": 5,
+                    "line_end": 7,
+                    "query_match_id": None,
+                    "trace_path": None,
+                }
+            ),
+        },
+    )
+
+
+async def _insert_publish_eligibility(
+    conn: object,
+    *,
+    review_id: UUID,
+    finding_id: UUID,
+    eligibility: str,
+    reason: str | None,
+) -> None:
+    await conn.execute(  # type: ignore[attr-defined]
+        text(
+            "INSERT INTO audit_events "
+            "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+            "VALUES (:eid, :rid, 'publish_eligibility', NOW(), false, CAST(:payload AS jsonb))"
+        ),
+        {
+            "eid": uuid4(),
+            "rid": review_id,
+            "payload": json.dumps(
+                {"finding_id": str(finding_id), "eligibility": eligibility, "reason": reason}
+            ),
+        },
+    )
+
+
 @pytest_asyncio.fixture
 async def findings_client(
     migrated_db: str,
@@ -184,6 +247,10 @@ async def test_findings_content_and_proof(
     assert f1["trace_path"] is None
     assert f1["file_path"] == "app/db.py"
     assert f1["line_start"] == 10
+    # Surviving content -> full finding, not redacted; no eligibility seeded.
+    assert f1["content_redacted"] is False
+    assert f1["title"] == "finding-high"
+    assert f1["eligibility"] is None
 
     f2 = findings[str(ids["f2"])]
     assert f2["evidence_tier"] == "inferred"
@@ -233,3 +300,60 @@ async def test_findings_unknown_review_404(
 ) -> None:
     client, _, _ = findings_client
     assert client.get(f"/api/reviews/{uuid4()}/findings", headers=_AUTH).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_dangling_finding_event_renders_redacted(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A FindingEvent whose findings row was purged renders as a redacted stub
+    (content None, metadata from the event) — DECISIONS.md#014 point 3.
+    """
+    client, ids, engine = findings_client
+    f3 = uuid4()
+    async with engine.begin() as conn:
+        await _insert_finding_event(
+            conn,
+            review_id=ids["review"],
+            finding_id=f3,
+            severity="critical",
+            evidence_tier="judged",
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    findings = {f["finding_id"]: f for f in resp.json()["findings"]}
+    assert str(f3) in findings
+    stub = findings[str(f3)]
+    assert stub["content_redacted"] is True
+    assert stub["title"] is None
+    assert stub["description"] is None
+    assert stub["evidence"] is None
+    # Metadata survives in the audit stream.
+    assert stub["severity"] == "critical"
+    assert stub["evidence_tier"] == "judged"
+    assert stub["file_path"] == "app/legacy.py"
+    # The surviving findings still render full (not redacted).
+    assert findings[str(ids["f1"])]["content_redacted"] is False
+
+
+@pytest.mark.asyncio
+async def test_routed_but_withheld_finding_shows_eligibility(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """Routing != eligibility (DECISIONS.md#023): a finding routed inline can
+    still be withheld; the endpoint surfaces both, not just the destination.
+    """
+    client, ids, engine = findings_client
+    async with engine.begin() as conn:
+        await _insert_publish_eligibility(
+            conn,
+            review_id=ids["review"],
+            finding_id=ids["f1"],
+            eligibility="withheld",
+            reason="hitl_required_node_absent",
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    f1 = {f["finding_id"]: f for f in resp.json()["findings"]}[str(ids["f1"])]
+    # Routed inline (fixture) AND withheld — both visible, not conflated.
+    assert f1["publish_destination"] == "inline_comment"
+    assert f1["eligibility"] == "withheld"
+    assert f1["eligibility_reason"] == "hitl_required_node_absent"

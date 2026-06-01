@@ -36,7 +36,7 @@ findings join.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID  # noqa: TC003  (runtime: Pydantic/route field type)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -126,14 +126,25 @@ class ReviewDetail(BaseModel):
 
 
 class FindingView(BaseModel):
-    """One finding: analyze-time content (from the `findings` table) plus the
-    `publish_destination` lifecycle field (joined from `PublishRoutingEvent`).
+    """One finding, assembled from the permanent audit record + content.
 
-    `publish_destination` is `None` until the finding is routed (publish has
-    not run, or it is a pre-publish review). HITL override-provenance
-    (`original_severity` / override outcome / reason) is NOT surfaced here yet
-    — those `findings` columns are null in V1 and the decision lives in
-    `HITLDecisionEvent.decisions`; surfacing it is a tight follow-up.
+    Metadata (type/severity/file/line/dimension/tier/proof) comes from the
+    `FindingEvent` audit row (permanent). Content (`title`/`description`/
+    `evidence`/`suggested_fix`) comes from the `findings` table — present
+    within the retention window, `None` with `content_redacted=True` once the
+    row is purged but the `FindingEvent` survives (DECISIONS.md#014 point 3:
+    "render a dangling finding_id as content redacted per retention policy").
+
+    Lifecycle fields joined from the audit stream (per DECISIONS.md#023's
+    routing≠eligibility split): `publish_destination` from `PublishRoutingEvent`
+    (where coordinates classified it); `eligibility` / `eligibility_reason`
+    from `PublishEligibilityEvent` (whether it actually materialized). A
+    high/critical finding pre-HITL shows `inline_comment` + `withheld` +
+    `hitl_required_node_absent` — routed but not posted. All three are `None`
+    until publish runs.
+
+    HITL override-provenance (original→override severity / outcome / reason)
+    is a separate follow-up — FUP-128.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -146,13 +157,18 @@ class FindingView(BaseModel):
     file_path: str
     line_start: int
     line_end: int
-    title: str
-    description: str
-    evidence: str
+    # Content — None on a retention-redacted stub (findings row purged).
+    content_redacted: bool
+    title: str | None
+    description: str | None
+    evidence: str | None
     suggested_fix: str | None
     query_match_id: str | None
     trace_path: list[str] | None
+    # Publish lifecycle (routing ≠ eligibility, DECISIONS.md#023).
     publish_destination: str | None
+    eligibility: str | None
+    eligibility_reason: str | None
 
 
 class FindingsResponse(BaseModel):
@@ -327,17 +343,63 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
         )
 
 
+async def _latest_publish_routing(session: AsyncSession, review_id: UUID) -> dict[str, str | None]:
+    """`{finding_id: destination}` from `PublishRoutingEvent`, latest per
+    finding (sequence_number ASC -> last write wins; re-route lands a new row).
+    """
+    rows = (
+        await session.execute(
+            select(
+                AuditEvent.payload["finding_id"].astext,
+                AuditEvent.payload["destination"].astext,
+            )
+            .where(
+                AuditEvent.review_id == review_id,
+                AuditEvent.event_type == "publish_routing",
+            )
+            .order_by(AuditEvent.sequence_number.asc())
+        )
+    ).all()
+    return {fid: destination for fid, destination in rows if fid is not None}
+
+
+async def _latest_publish_eligibility(
+    session: AsyncSession, review_id: UUID
+) -> dict[str, tuple[str | None, str | None]]:
+    """`{finding_id: (eligibility, reason)}` from `PublishEligibilityEvent`,
+    latest per finding. Separate from routing per DECISIONS.md#023: a routed
+    finding can still be withheld (e.g. `withheld`/`hitl_required_node_absent`).
+    """
+    rows = (
+        await session.execute(
+            select(
+                AuditEvent.payload["finding_id"].astext,
+                AuditEvent.payload["eligibility"].astext,
+                AuditEvent.payload["reason"].astext,
+            )
+            .where(
+                AuditEvent.review_id == review_id,
+                AuditEvent.event_type == "publish_eligibility",
+            )
+            .order_by(AuditEvent.sequence_number.asc())
+        )
+    ).all()
+    return {fid: (eligibility, reason) for fid, eligibility, reason in rows if fid is not None}
+
+
 @router.get("/{review_id}/findings", response_model=FindingsResponse)
 async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
-    """A review's findings: analyze-time content from the `findings` table,
-    each with its `publish_destination` joined from `PublishRoutingEvent`.
+    """A review's findings, assembled from the permanent audit record.
 
-    404 if the review doesn't exist. The per-finding `publish_destination` is
-    read from `PublishRoutingEvent` (keyed by `finding_id`), NOT the
-    `findings.publish_destination` column (null in V1 — publish mutates the
-    in-memory finding + emits the event, never writing back to the row).
-    Duplicate routing rows can exist (re-route lands a new row); the latest by
-    `sequence_number` wins. `None` until the finding is routed.
+    404 if the review doesn't exist. Surviving `findings`-table rows render as
+    full findings; a `FindingEvent` whose `findings` row was purged under
+    retention renders as a `content_redacted=True` stub from `FindingEvent`
+    metadata (DECISIONS.md#014 point 3 — the audit trail outlives the content).
+    Each finding's publish lifecycle is joined from the audit stream:
+    `publish_destination` (`PublishRoutingEvent`) and `eligibility` /
+    `eligibility_reason` (`PublishEligibilityEvent`) — separate per
+    DECISIONS.md#023, so a routed finding can still show `withheld`. None of
+    these are read from the (V1-null) `findings.publish_destination` column.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -347,41 +409,25 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
         if review_exists is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
 
-        finding_rows = (
-            (
-                await session.execute(
-                    select(Finding)
-                    .where(Finding.review_id == review_id)
-                    .order_by(Finding.created_at.asc(), Finding.finding_id.asc())
-                )
-            )
+        dest_by_fid = await _latest_publish_routing(session, review_id)
+        elig_by_fid = await _latest_publish_eligibility(session, review_id)
+
+        def _lifecycle(fid: str) -> dict[str, str | None]:
+            eligibility, reason = elig_by_fid.get(fid, (None, None))
+            return {
+                "publish_destination": dest_by_fid.get(fid),
+                "eligibility": eligibility,
+                "eligibility_reason": reason,
+            }
+
+        # Surviving content rows -> full findings.
+        content_rows = (
+            (await session.execute(select(Finding).where(Finding.review_id == review_id)))
             .scalars()
             .all()
         )
-
-        # publish_destination per finding — joined from PublishRoutingEvent by
-        # finding_id. Iterate sequence_number ASC so the dict keeps the LATEST
-        # routing decision per finding (re-route lands a new row).
-        routing_rows = (
-            await session.execute(
-                select(
-                    AuditEvent.payload["finding_id"].astext,
-                    AuditEvent.payload["destination"].astext,
-                )
-                .where(
-                    AuditEvent.review_id == review_id,
-                    AuditEvent.event_type == "publish_routing",
-                )
-                .order_by(AuditEvent.sequence_number.asc())
-            )
-        ).all()
-        dest_by_finding: dict[str, str] = {
-            finding_id: destination
-            for finding_id, destination in routing_rows
-            if finding_id is not None
-        }
-
-        findings = [
+        content_fids = {str(f.finding_id) for f in content_rows}
+        views = [
             FindingView(
                 finding_id=f.finding_id,
                 finding_type=f.finding_type,
@@ -391,14 +437,60 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
                 file_path=f.file_path,
                 line_start=f.line_start,
                 line_end=f.line_end,
+                content_redacted=False,
                 title=f.title,
                 description=f.description,
                 evidence=f.evidence,
                 suggested_fix=f.suggested_fix,
                 query_match_id=f.query_match_id,
                 trace_path=f.trace_path,
-                publish_destination=dest_by_finding.get(str(f.finding_id)),
+                **_lifecycle(str(f.finding_id)),
             )
-            for f in finding_rows
+            for f in content_rows
         ]
-        return FindingsResponse(review_id=review_id, findings=findings)
+
+        # Dangling FindingEvents (content row purged, event survives) ->
+        # retention-redacted stubs. Dedup by finding_id, keep latest.
+        event_payloads = (
+            (
+                await session.execute(
+                    select(AuditEvent.payload)
+                    .where(
+                        AuditEvent.review_id == review_id,
+                        AuditEvent.event_type == "finding",
+                    )
+                    .order_by(AuditEvent.sequence_number.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        redacted_by_fid: dict[str, dict[str, Any]] = {
+            payload["finding_id"]: payload
+            for payload in event_payloads
+            if payload["finding_id"] not in content_fids
+        }
+        views.extend(
+            FindingView(
+                finding_id=UUID(fid),
+                finding_type=meta["finding_type"],
+                dimension=meta["dimension"],
+                severity=meta["severity"],
+                evidence_tier=meta["evidence_tier"],
+                file_path=meta["file_path"],
+                line_start=meta["line_start"],
+                line_end=meta["line_end"],
+                content_redacted=True,
+                title=None,
+                description=None,
+                evidence=None,
+                suggested_fix=None,
+                query_match_id=meta.get("query_match_id"),
+                trace_path=meta.get("trace_path"),
+                **_lifecycle(fid),
+            )
+            for fid, meta in redacted_by_fid.items()
+        )
+
+        views.sort(key=lambda v: (v.file_path, v.line_start, str(v.finding_id)))
+        return FindingsResponse(review_id=review_id, findings=views)
