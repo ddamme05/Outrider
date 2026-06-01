@@ -1573,6 +1573,25 @@ table.details-grid .num {
 .audit-feed {
   border-top: 1px solid var(--line);
 }
+/* column-label header — same grid + left edge as .afrow so cells line up */
+.afhead {
+  display: grid;
+  grid-template-columns: 48px 168px 84px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 6px 8px 10px;
+  border-bottom: 1px solid var(--line2);
+  border-left: 3px solid transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+}
+.afhead span:first-child,
+.afhead span:last-child {
+  text-align: right;
+}
 .afrow {
   display: grid;
   grid-template-columns: 48px 168px 84px 1fr auto;

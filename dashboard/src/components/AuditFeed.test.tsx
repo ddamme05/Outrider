@@ -57,3 +57,21 @@ test("each row carries its --ev-* family class; unknown event types fall back to
     "ev-c-framing", // unmapped → neutral fallback, never uncolored
   ]);
 });
+
+test("rows number 1-based for the review, not the raw global sequence_number", () => {
+  // A review whose events start at global sequence 108 (as they do in practice).
+  // The displayed # must be 1, 2, 3… — the Nth event in THIS review — not 108/109.
+  const { container } = render(
+    <AuditFeed
+      events={[
+        ev("review_phase", 108, { marker: "start" }),
+        ev("review_phase", 109, { marker: "end" }),
+        ev("publish", 110),
+      ]}
+    />,
+  );
+  const seqs = [...container.querySelectorAll(".af-seq")].map((s) => s.textContent);
+  expect(seqs).toEqual(["1", "2", "3"]);
+  // The raw audit sequence is preserved on hover for traceability.
+  expect(container.querySelector(".af-seq")?.getAttribute("title")).toBe("audit sequence 108");
+});
