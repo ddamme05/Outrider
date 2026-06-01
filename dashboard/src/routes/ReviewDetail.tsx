@@ -1,3 +1,5 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
@@ -5,20 +7,21 @@ import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { ReplayPanel } from "../components/ReplayPanel";
 import { StatusPill } from "../components/StatusPill";
+import { expiresLabel } from "../lib/format";
+import {
+  type DecisionDraft,
+  EMPTY_DRAFT,
+  decideErrorMessage,
+  isActionable,
+  isDraftValid,
+  isGated,
+  toPayload,
+} from "../lib/hitl";
 
 function metric(value: number | null, suffix = ""): string {
   // The metrics contract: file/wall-clock fields are null until the review emits
   // a SynthesizeCompletedEvent — render "pending", never a misleading zero.
   return value === null ? "pending" : `${value}${suffix}`;
-}
-
-function expiresLabel(expiresAt: string | null): string | null {
-  if (!expiresAt) return null;
-  const ms = new Date(expiresAt).getTime() - Date.now();
-  if (Number.isNaN(ms)) return null;
-  if (ms <= 0) return "expired";
-  const mins = Math.round(ms / 60000);
-  return mins < 60 ? `expires in ${mins}m` : `expires in ${Math.round(mins / 60)}h`;
 }
 
 export function ReviewDetail() {
@@ -38,6 +41,19 @@ export function ReviewDetail() {
     enabled,
   });
   const replay = $api.useQuery("get", "/api/reviews/{review_id}/replay", pathParams, { enabled });
+
+  // Hooks must run unconditionally, before the early returns below.
+  const queryClient = useQueryClient();
+  const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
+  const [submitted, setSubmitted] = useState(false);
+  const decide = $api.useMutation("post", "/reviews/{review_id}/decide");
+
+  const allFindings = useMemo(() => findings.data?.findings ?? [], [findings.data]);
+  const actionable = isActionable(detail.data?.status ?? "");
+  const gated = useMemo(
+    () => (actionable ? allFindings.filter((f) => isGated(f.severity)) : []),
+    [actionable, allFindings],
+  );
 
   if (!enabled) {
     return <p className="error">No review id in the URL.</p>;
@@ -60,7 +76,28 @@ export function ReviewDetail() {
   }
 
   const expires = d.status.startsWith("awaiting_approval") ? expiresLabel(d.expires_at) : null;
-  const findingList = findings.data?.findings ?? [];
+
+  const getDraft = (id: string): DecisionDraft => drafts[id] ?? EMPTY_DRAFT;
+  const setDraft = (id: string, next: DecisionDraft) =>
+    setDrafts((prev) => ({ ...prev, [id]: next }));
+  const decidedCount = gated.filter((f) => isDraftValid(getDraft(f.finding_id), f)).length;
+  const allGatedValid = gated.length > 0 && decidedCount === gated.length;
+  const canSubmit = actionable && allGatedValid && !decide.isPending && !submitted;
+
+  const onSubmit = () => {
+    const decisions = gated.map((f) => toPayload(getDraft(f.finding_id), f));
+    decide.mutate(
+      { params: { path: { review_id: reviewId } }, body: { decisions } },
+      {
+        onSuccess: () => {
+          setSubmitted(true);
+          // Decide returns 202 and resumes the graph in the background; let the
+          // 2s polls surface the awaiting → running → completed transition.
+          void queryClient.invalidateQueries();
+        },
+      },
+    );
+  };
 
   return (
     <section>
@@ -144,7 +181,7 @@ export function ReviewDetail() {
 
       <div className="tabs" role="tablist">
         <button className="tab active" role="tab" aria-selected="true">
-          Findings <span className="muted">({findingList.length})</span>
+          Findings <span className="muted">({allFindings.length})</span>
         </button>
       </div>
 
@@ -152,11 +189,50 @@ export function ReviewDetail() {
         <p>Loading findings…</p>
       ) : findings.error ? (
         <p className="error">Failed to load findings.</p>
-      ) : findingList.length === 0 ? (
+      ) : allFindings.length === 0 ? (
         <p style={{ color: "var(--text-2)" }}>No findings recorded for this review.</p>
       ) : (
-        findingList.map((f) => <FindingCard key={f.finding_id} finding={f} />)
+        allFindings.map((f) => {
+          const decidable = actionable && isGated(f.severity);
+          return (
+            <FindingCard
+              key={f.finding_id}
+              finding={f}
+              decision={decidable ? getDraft(f.finding_id) : undefined}
+              disabled={decide.isPending || submitted}
+              onDecisionChange={
+                decidable ? (next) => setDraft(f.finding_id, next) : undefined
+              }
+            />
+          );
+        })
       )}
+
+      {actionable && gated.length > 0 ? (
+        <div className="submit-bar">
+          <span className="status-text">
+            {submitted ? (
+              <b>Decision submitted — resuming the review.</b>
+            ) : (
+              <>
+                <b>
+                  {decidedCount} / {gated.length}
+                </b>{" "}
+                gated findings decided
+              </>
+            )}
+          </span>
+          {decide.error ? (
+            <span className="error" role="alert">
+              {decideErrorMessage(decide.error)}
+            </span>
+          ) : null}
+          <span style={{ flex: 1 }} />
+          <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
+            {decide.isPending ? "Submitting…" : "Submit decision"}
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
