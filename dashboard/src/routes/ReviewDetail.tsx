@@ -51,6 +51,14 @@ export function ReviewDetail() {
 
   const [submitSeq, setSubmitSeq] = useState(0);
   const [stuck, setStuck] = useState(false);
+  // The exact payload accepted by the first 202. A stuck re-submit MUST resend
+  // this verbatim: a divergent payload hits the backend's HITLDecisionEvent
+  // natural-key conflict (different decisions_content_hash) and wedges the review
+  // pending sweep. Identical content is idempotent and safe. Editing only re-opens
+  // after the page reloads (fresh state) — see FUP-135.
+  const [submittedPayload, setSubmittedPayload] = useState<ReturnType<typeof toPayload>[] | null>(
+    null,
+  );
 
   // After a submit, arm a window: if the status hasn't advanced off the gate by
   // then, mark the resume "stuck" so the UI re-enables submit instead of showing
@@ -105,12 +113,15 @@ export function ReviewDetail() {
   const canSubmit = actionable && allGatedValid && !decide.isPending && (!submitted || stuck);
 
   const onSubmit = () => {
-    const decisions = gated.map((f) => toPayload(getDraft(f.finding_id), f));
+    // First submit builds from the drafts; a stuck re-submit resends the exact
+    // accepted payload (snapshotted on the first 202) — never a divergent one.
+    const decisions = submittedPayload ?? gated.map((f) => toPayload(getDraft(f.finding_id), f));
     decide.mutate(
       { params: { path: { review_id: reviewId } }, body: { decisions } },
       {
         onSuccess: () => {
           setSubmitted(true);
+          setSubmittedPayload(decisions); // snapshot the accepted payload
           setSubmitSeq((n) => n + 1); // (re-)arm the stuck-detection window
           // Decide returns 202 and resumes the graph in the background; let the
           // 2s polls surface the awaiting → running → completed transition.
@@ -226,9 +237,11 @@ export function ReviewDetail() {
               key={f.finding_id}
               finding={f}
               decision={decidable ? getDraft(f.finding_id) : undefined}
-              // Lock controls while submitting and after submit — but re-open
-              // them if the resume looks stuck so the operator can adjust + retry.
-              disabled={decide.isPending || (submitted && !stuck)}
+              // Lock controls while submitting and once submitted — including the
+              // stuck state: a re-submit must resend the SAME payload (divergent
+              // content wedges the audit row), so editing stays closed until the
+              // page reloads with fresh state.
+              disabled={decide.isPending || submitted}
               onDecisionChange={
                 decidable ? (next) => setDraft(f.finding_id, next) : undefined
               }
