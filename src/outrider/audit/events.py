@@ -127,11 +127,24 @@ RESERVED_HISTORICAL_PROPOSAL_HASH: Final = "0" * 64
 # the guards agree on the flag name. See DECISIONS.md#032.
 REPLAY_HISTORICAL_CONTEXT_KEY: Final = "replay_historical"
 
+# The (event_type, field) pairs whose reserved sentinel the replay normalizer
+# may inject — and which the write-time guards therefore PERMIT under replay
+# context. The permission is pair-scoped, NOT context-wide (DECISIONS.md#032):
+# a sentinel on an UNREGISTERED pair (e.g. finding_proposal_rejected) stays a
+# loud failure even at replay, because the normalizer never injects it there, so
+# its presence would be corruption. Must equal the key set of replay's
+# `_HISTORICAL_FIELD_DEFAULTS` — pinned by the registry-allowlist test.
+REPLAY_TOLERABLE_SENTINEL_FIELDS: Final = frozenset({("finding", "proposal_hash")})
 
-def _sentinel_permitted(info: ValidationInfo) -> bool:
-    """True only when validating under the replay normalizer's context."""
+
+def _sentinel_permitted(info: ValidationInfo, event_type: str, field: str) -> bool:
+    """True only under the replay context AND for a registered tolerable pair.
+    Unregistered pairs are rejected even under replay context (DECISIONS.md#032).
+    """
     context = info.context
-    return bool(context and context.get(REPLAY_HISTORICAL_CONTEXT_KEY))
+    if not (context and context.get(REPLAY_HISTORICAL_CONTEXT_KEY)):
+        return False
+    return (event_type, field) in REPLAY_TOLERABLE_SENTINEL_FIELDS
 
 
 # `BARE_SEMVER_PATTERN` (re-exported via `outrider.policy.severity`)
@@ -598,9 +611,11 @@ class FindingEvent(AuditEventBase):
         reconstructed event unambiguously means "pre-#025 historical event,
         provenance defaulted" rather than a genuine hash. The replay
         normalizer injects it under `REPLAY_HISTORICAL_CONTEXT_KEY`, the only
-        place the sentinel is permitted.
+        place the sentinel is permitted — and only for this registered pair.
         """
-        if value == RESERVED_HISTORICAL_PROPOSAL_HASH and not _sentinel_permitted(info):
+        if value == RESERVED_HISTORICAL_PROPOSAL_HASH and not _sentinel_permitted(
+            info, "finding", "proposal_hash"
+        ):
             raise ValueError(
                 "proposal_hash must not be the reserved all-zero sentinel "
                 "(reserved for replay of pre-#025 historical events; see DECISIONS.md#032)"
@@ -2167,10 +2182,15 @@ class FindingProposalRejectedEvent(AuditEventBase):
     @field_validator("proposal_hash")
     @classmethod
     def _reject_reserved_proposal_hash(cls, value: str, info: ValidationInfo) -> str:
-        """Reserve the all-zero sentinel for the replay normalizer (see
-        DECISIONS.md#032) — same guard as `FindingEvent.proposal_hash`.
+        """Reserve the all-zero sentinel (see DECISIONS.md#032). This pair is NOT
+        in `REPLAY_TOLERABLE_SENTINEL_FIELDS`, so `_sentinel_permitted` is False
+        even under replay context — the sentinel is rejected always here. The
+        normalizer never injects it for `finding_proposal_rejected`, so its
+        presence would be corruption, which must stay loud.
         """
-        if value == RESERVED_HISTORICAL_PROPOSAL_HASH and not _sentinel_permitted(info):
+        if value == RESERVED_HISTORICAL_PROPOSAL_HASH and not _sentinel_permitted(
+            info, "finding_proposal_rejected", "proposal_hash"
+        ):
             raise ValueError(
                 "proposal_hash must not be the reserved all-zero sentinel "
                 "(reserved for replay of pre-#025 historical events; see DECISIONS.md#032)"
