@@ -380,6 +380,50 @@
         }
       }
     },
+    "/api/reviews/{review_id}/events": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Review Events",
+        "description": "The review's full audit-event stream, ordered by `sequence_number` (FUP-133).\n\nRead-only over `audit_events`, which is metadata-only by `DECISIONS.md#014`\n(hashes/ids/costs \u2014 never raw prompt or finding content), so there are no\ncontent-table joins and no redaction. Each row is rebuilt through the shared\n`reconstruct_event_from_row` (the replay read-path), so historical rows tolerate\npost-#025 field additions (DECISIONS.md#032) AND every row's mirrored base\ncolumns are verified against its payload. 404 when the review has no audit rows\n(parity with detail/replay). Like the detail endpoint, a by-id fetch is NOT\n`is_eval`-filtered \u2014 holding the id is sufficient to view it. A single review's\nstream is bounded by its graph run, so it is returned whole (no pagination).",
+        "operationId": "get_review_events_api_reviews__review_id__events_get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewEventsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -406,6 +450,719 @@
   },
   "components": {
     "schemas": {
+      "AgentTransitionEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "agent_transition",
+            "title": "Event Type",
+            "default": "agent_transition"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "from_node": {
+            "type": "string",
+            "enum": [
+              "webhook",
+              "intake",
+              "triage",
+              "analyze",
+              "trace",
+              "synthesize",
+              "hitl",
+              "publish"
+            ],
+            "title": "From Node"
+          },
+          "to_node": {
+            "type": "string",
+            "enum": [
+              "intake",
+              "triage",
+              "analyze",
+              "trace",
+              "synthesize",
+              "hitl",
+              "publish"
+            ],
+            "title": "To Node"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Latency Ms"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "from_node",
+          "to_node",
+          "latency_ms"
+        ],
+        "title": "AgentTransitionEvent",
+        "description": "Node-to-node transition in the LangGraph state machine.\n\n`from_node` and `to_node` are constrained Literals over the seven\ngraph nodes plus `\"webhook\"` \u2014 the latter is the seed source for\nthe FIRST transition in a review (webhook \u2192 intake), emitted by\n`api/webhooks/router.py` when the review row is created. Every\nsubsequent transition is between two graph nodes.\n\nSharing the Literal with `ReviewPhaseEvent.node_id` (graph nodes\nonly \u2014 webhook doesn't have a phase) plus the seed exception stops\na typo (`\"analyse\"`, `\"sythesize\"`) from landing in the append-only\naudit log without admitting arbitrary strings."
+      },
+      "AnalyzeCompletedEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "analyze_completed",
+            "title": "Event Type",
+            "default": "analyze_completed"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "pass_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Pass Index"
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "n_files_analyzed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Files Analyzed"
+          },
+          "n_files_skipped": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Files Skipped"
+          },
+          "n_llm_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Llm Calls"
+          },
+          "n_proposals_seen": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Proposals Seen"
+          },
+          "n_findings_emitted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Findings Emitted"
+          },
+          "n_proposals_rejected": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Proposals Rejected"
+          },
+          "n_responses_rejected": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Responses Rejected"
+          },
+          "n_trace_candidates_emitted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Trace Candidates Emitted"
+          },
+          "n_trace_candidates_dropped_malformed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Trace Candidates Dropped Malformed",
+            "default": 0
+          },
+          "total_input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Input Tokens"
+          },
+          "total_cache_read_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Cache Read Tokens"
+          },
+          "total_cache_write_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Cache Write Tokens"
+          },
+          "total_output_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Output Tokens"
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Total Cost Usd"
+          },
+          "pricing_version": {
+            "type": "string",
+            "pattern": "^v[1-9][0-9]*$",
+            "title": "Pricing Version"
+          },
+          "policy_version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version"
+          },
+          "analyze_model": {
+            "type": "string",
+            "title": "Analyze Model"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "pass_index",
+          "n_files_analyzed",
+          "n_files_skipped",
+          "n_llm_calls",
+          "n_proposals_seen",
+          "n_findings_emitted",
+          "n_proposals_rejected",
+          "n_responses_rejected",
+          "n_trace_candidates_emitted",
+          "total_input_tokens",
+          "total_cache_read_tokens",
+          "total_cache_write_tokens",
+          "total_output_tokens",
+          "total_cost_usd",
+          "pricing_version",
+          "policy_version",
+          "analyze_model"
+        ],
+        "title": "AnalyzeCompletedEvent",
+        "description": "Per-pass aggregate emitted at the end of each analyze \u21c4 trace iteration.\n\nCounter fields are cross-validated by two model validators so a counter\nthat lies (`n_findings_emitted=5` with only 3 findings actually fired)\nfails Pydantic construction, not just reads weird. See \u00a75 of\n`specs/2026-05-19-analyze-foundation.md`."
+      },
+      "AnalyzeResponseRejectedEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "analyze_response_rejected",
+            "title": "Event Type",
+            "default": "analyze_response_rejected"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "response_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Response Hash"
+          },
+          "rejection_reason": {
+            "type": "string",
+            "const": "raw_response_unparseable",
+            "title": "Rejection Reason"
+          },
+          "rejection_detail": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Rejection Detail"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "response_hash",
+          "rejection_reason",
+          "rejection_detail"
+        ],
+        "title": "AnalyzeResponseRejectedEvent",
+        "description": "Response-level rejection \u2014 the LLM response failed to parse as `AnalyzeResponseRaw`.\n\nDistinct event from `FindingProposalRejectedEvent` because that event\npresupposes a proposal; no proposal exists when the raw response\nitself fails to parse. `response_hash` is the SHA-256 of the FULL\nraw response text encoded as UTF-8 bytes (no truncation prefix).\nHash-only \u2014 no content leak per `DECISIONS.md#014`."
+      },
+      "ContextManifestEntry": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "scope_unit_name": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "Scope Unit Name"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "inclusion_reason": {
+            "type": "string",
+            "enum": [
+              "changed_scope",
+              "same_file_context",
+              "trace_expansion"
+            ],
+            "title": "Inclusion Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "file_path",
+          "scope_unit_name",
+          "line_start",
+          "line_end",
+          "inclusion_reason"
+        ],
+        "title": "ContextManifestEntry",
+        "description": "One scope-unit entry inside `LLMCallEvent.context_summary`.\n\nFrozen + extra=forbid because the outer event's `frozen=True` does\nnot propagate to nested Pydantic models. Without this, an entry\ncould be mutated post-construction (`entry.file_path = \"...\"`) even\nwhen the containing event is frozen and the tuple is immutable."
+      },
+      "EvidenceTier": {
+        "type": "string",
+        "enum": [
+          "observed",
+          "inferred",
+          "judged"
+        ],
+        "title": "EvidenceTier",
+        "description": "How a finding's claim is justified.\n\nOBSERVED: structural \u2014 a tree-sitter query in the registry matched\n          the location, and the match id is recorded.\nINFERRED: structural-by-reference \u2014 the agent walked the ast_facts\n          trace from a known scope to the claim site, and the\n          traversal path is recorded.\nJUDGED:   model interpretation only. No structural evidence is\n          claimed. Lower confidence by construction.\n\nValues are lowercase per docs/spec.md \u00a77.3, matching the convention\nof FindingType and FindingSeverity. The Python member names are\nuppercase (PEP 8); only the serialized string values are lowercase."
+      },
+      "FileExaminationEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "file_examination",
+            "title": "Event Type",
+            "default": "file_examination"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "examination_type": {
+            "type": "string",
+            "enum": [
+              "intake_fetch",
+              "analyze"
+            ],
+            "title": "Examination Type"
+          },
+          "node_id": {
+            "type": "string",
+            "enum": [
+              "intake",
+              "analyze"
+            ],
+            "title": "Node Id"
+          },
+          "parse_status": {
+            "type": "string",
+            "enum": [
+              "clean",
+              "degraded",
+              "failed",
+              "skipped"
+            ],
+            "title": "Parse Status"
+          },
+          "skip_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkipReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "examination_type",
+          "node_id",
+          "parse_status"
+        ],
+        "title": "FileExaminationEvent",
+        "description": "Records that a file was examined (parse status + node).\n\n`skip_reason` per `DECISIONS.md#018`: non-None iff\n`parse_status == \"skipped\"`. The cross-field validator below\nenforces the bidirectional rule. Same shape as\n`TraceDecisionEvent`'s `(target_file, resolution_status)` validator\nper #017 \u2014 one event, one related-but-nullable field, one\ncross-rule, deterministic on replay."
+      },
+      "FindingEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "finding",
+            "title": "Event Type",
+            "default": "finding"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "finding_type": {
+            "$ref": "#/components/schemas/FindingType"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FindingSeverity"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "dimension": {
+            "$ref": "#/components/schemas/ReviewDimension"
+          },
+          "finding_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Finding Content Hash"
+          },
+          "evidence_tier": {
+            "$ref": "#/components/schemas/EvidenceTier"
+          },
+          "query_match_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Match Id"
+          },
+          "trace_path": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 256,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Path"
+          },
+          "policy_version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version"
+          },
+          "proposal_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "finding_id",
+          "finding_type",
+          "severity",
+          "file_path",
+          "line_start",
+          "line_end",
+          "dimension",
+          "finding_content_hash",
+          "evidence_tier",
+          "policy_version",
+          "proposal_hash"
+        ],
+        "title": "FindingEvent",
+        "description": "Metadata for one finding. Proof artifacts are validated here.\n\n`enforce_proof_boundary` runs as a model_validator so the boundary\nholds at the audit-event layer too, not just at `ReviewFinding`.\nBacks `evidence-tier-schema-enforced`."
+      },
+      "FindingProposalRejectedEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "finding_proposal_rejected",
+            "title": "Event Type",
+            "default": "finding_proposal_rejected"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "proposal_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash"
+          },
+          "claimed_evidence_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claimed_finding_type_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{16}$",
+            "title": "Claimed Finding Type Hash"
+          },
+          "claimed_finding_type_len": {
+            "type": "integer",
+            "maximum": 128.0,
+            "minimum": 0.0,
+            "title": "Claimed Finding Type Len"
+          },
+          "rejection_reason": {
+            "type": "string",
+            "enum": [
+              "query_match_id_not_in_registry",
+              "trace_path_not_admissible",
+              "finding_type_not_in_enum",
+              "evidence_tier_not_in_enum",
+              "span_outside_scope_unit",
+              "span_outside_file",
+              "schema_construction_failed"
+            ],
+            "title": "Rejection Reason"
+          },
+          "rejection_detail": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Rejection Detail"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "proposal_hash",
+          "claimed_finding_type_hash",
+          "claimed_finding_type_len",
+          "rejection_reason",
+          "rejection_detail"
+        ],
+        "title": "FindingProposalRejectedEvent",
+        "description": "Proposal-level rejection \u2014 one per model proposal that failed admission.\n\nStores `claimed_finding_type_hash` (SHA-256 short prefix) + length\nrather than the raw model string per `DECISIONS.md#014` point 1:\nevery model-originated value is hostile until validated, so audit\nrows must not carry user code or prompt/completion content.\nCross-field validator pairs `claimed_evidence_tier` with the\n`evidence_tier_not_in_enum` reason bidirectionally.\n\n`proposal_hash` carries the PR/file-scoped `compute_proposal_hash`\ndigest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT\nsource files that emit logically-identical proposals produce\nDISTINCT `proposal_hash` values \u2014 preserving per-source-file\naudit provenance on the join with `TraceCandidate.source_proposal_hash`."
+      },
       "FindingSeverity": {
         "type": "string",
         "enum": [
@@ -417,6 +1174,25 @@
         ],
         "title": "FindingSeverity",
         "description": "Severity tier assigned by SEVERITY_POLICY, never by the model."
+      },
+      "FindingType": {
+        "type": "string",
+        "enum": [
+          "sql_injection",
+          "xss",
+          "hardcoded_secret",
+          "auth_bypass",
+          "path_traversal",
+          "missing_input_validation",
+          "n_plus_one_query",
+          "blocking_call_in_async",
+          "unused_import",
+          "missing_error_handling",
+          "missing_test",
+          "deprecated_api"
+        ],
+        "title": "FindingType",
+        "description": "The constrained enum the LLM classifies findings under.\n\nThe retry/normalize/anomaly path that turns a model-produced string\ninto a FindingType enum value (or anomalies if no safe match) is the\nanalyze node's responsibility per `finding-type-enum-constrained`.\nThis enum is the type system; the analyze node is what bridges from\nuntrusted model output to it."
       },
       "FindingView": {
         "properties": {
@@ -621,6 +1397,98 @@
         ],
         "title": "FindingsResponse"
       },
+      "HITLDecisionEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "hitl_decision",
+            "title": "Event Type",
+            "default": "hitl_decision"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "reviewer_id": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Reviewer Id"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/PerFindingDecision"
+            },
+            "type": "array",
+            "title": "Decisions"
+          },
+          "annotation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annotation"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Decided At"
+          },
+          "decision_latency_seconds": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Decision Latency Seconds"
+          },
+          "decisions_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Decisions Content Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "reviewer_id",
+          "decisions",
+          "decided_at",
+          "decision_latency_seconds",
+          "decisions_content_hash"
+        ],
+        "title": "HITLDecisionEvent",
+        "description": "Records the reviewer's HITL submission.\n\nField name `decisions` (not `per_finding_decisions`) matches the\ncross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`\nAmended 2026-04-29.\n\nCarries the full `HITLDecision` field set so audit-only replay\nreconstructs the state-layer object: `reviewer_id`, `decisions`,\n`annotation`, `decided_at`. `decision_latency_seconds` is a derived\nmetric distinct from `decided_at` (the canonical time field for state\nreconstruction). `decisions_content_hash` is the audit-shadow of\n`compute_hitl_decision_content_hash(decisions, annotation)`; the\npersister's natural-key idempotency on `(review_id)` reads this hash\nvia the `_IDENTITY_SUBSETS[\"hitl_decision\"]` registry \u2014 divergent\nsubmissions for the same review fail loudly at the persister."
+      },
       "HITLDecisionPayload": {
         "properties": {
           "decisions": {
@@ -653,6 +1521,84 @@
         "title": "HITLDecisionPayload",
         "description": "Body shape for `POST /reviews/{review_id}/decide`.\n\n`decisions` is a non-empty tuple bounded at 256 entries (matches\n`HITLRequest.findings_requiring_approval` producer-side cap);\n`annotation` is optional forensic prose, capped at 2000 chars\nmatching `HITLDecisionEvent.annotation`."
       },
+      "HITLRequestEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "hitl_request",
+            "title": "Event Type",
+            "default": "hitl_request"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "findings_requiring_approval": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Findings Requiring Approval"
+          },
+          "auto_post_findings": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Auto Post Findings"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "findings_requiring_approval",
+          "auto_post_findings",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "HITLRequestEvent",
+        "description": "Records the HITL gate envelope at interrupt time.\n\nAudit-shadow mirror of `HITLRequest`: set-semantic partition of\nfindings across the two tuples + the deterministic timestamp pair\n(`created_at`, `expires_at`) derived from `state.received_at`. The\nnatural-key idempotency on `(review_id)` requires the producer-side\nderivation to be stable across body re-runs; both timestamps appear\nin `_IDENTITY_SUBSETS[\"hitl_request\"]` so drift in either derivation\nsurfaces as a persister conflict."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -665,6 +1611,202 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "LLMCallEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "llm_call",
+            "title": "Event Type",
+            "default": "llm_call"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "node_id": {
+            "type": "string",
+            "enum": [
+              "triage",
+              "analyze",
+              "synthesize",
+              "trace"
+            ],
+            "title": "Node Id"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Output Tokens"
+          },
+          "cached_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Cached Tokens"
+          },
+          "cost_usd": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Cost Usd"
+          },
+          "pricing_version": {
+            "type": "string",
+            "pattern": "^v[1-9][0-9]*$",
+            "title": "Pricing Version"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Latency Ms"
+          },
+          "prompt_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Prompt Hash"
+          },
+          "cache_hit": {
+            "type": "boolean",
+            "title": "Cache Hit"
+          },
+          "context_summary": {
+            "items": {
+              "$ref": "#/components/schemas/ContextManifestEntry"
+            },
+            "type": "array",
+            "title": "Context Summary"
+          },
+          "prompt_template_version": {
+            "type": "string",
+            "title": "Prompt Template Version"
+          },
+          "system_prompt_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "System Prompt Hash"
+          },
+          "degraded_mode": {
+            "type": "boolean",
+            "title": "Degraded Mode"
+          },
+          "degradation_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "parse_failed",
+                  "tree_has_error_in_changed_regions"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degradation Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "model",
+          "node_id",
+          "input_tokens",
+          "output_tokens",
+          "cached_tokens",
+          "cost_usd",
+          "pricing_version",
+          "latency_ms",
+          "prompt_hash",
+          "cache_hit",
+          "context_summary",
+          "prompt_template_version",
+          "system_prompt_hash",
+          "degraded_mode"
+        ],
+        "title": "LLMCallEvent",
+        "description": "Metadata for one LLM call. Content lives in `llm_call_content` per #016.\n\nToken / cost / latency fields carry `ge=0` constraints so the cost-budget\nanomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't\nbe poisoned by a malformed negative-cost event understating review cost.\n\n`pricing_version` records the `llm.pricing.PRICING_VERSION` value the\nwrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended\n2026-05-05. Replay reads this field directly so reconstruction never\ndepends on an external version-effective-range map."
+      },
+      "PerFindingDecision": {
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/PerFindingOutcome"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Reason"
+          },
+          "override_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "original_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finding_id",
+          "outcome",
+          "reason"
+        ],
+        "title": "PerFindingDecision",
+        "description": "One reviewer's decision on one finding.\n\nFrozen: a per-finding decision is final at construction. Reviewer-state\nrevisions produce a new decision, not a mutation."
       },
       "PerFindingDecisionPayload": {
         "properties": {
@@ -712,6 +1854,474 @@
         ],
         "title": "PerFindingOutcome",
         "description": "Per-finding HITL decision outcomes per spec \u00a77.4."
+      },
+      "PublishAttemptEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "publish_attempt",
+            "title": "Event Type",
+            "default": "publish_attempt"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "attempt_index": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Attempt Index"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/PublishAttemptOutcome"
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code"
+          },
+          "failure_class": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Class"
+          },
+          "comments_attempted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Comments Attempted"
+          },
+          "sorted_finding_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Sorted Finding Ids",
+            "default": []
+          },
+          "attempt_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Attempt Content Hash"
+          },
+          "recovered_github_review_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovered Github Review Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "attempt_index",
+          "outcome",
+          "comments_attempted",
+          "attempt_content_hash"
+        ],
+        "title": "PublishAttemptEvent",
+        "description": "Records the terminal outcome of one publish-attempt to GitHub.\n\nPer Q2: single emission per attempt, AFTER the GitHub call resolves.\nNo in_flight pre-call emission (would conflict with append-only\naudit semantics \u2014 same-event_id-different-payload raises rather than\nupdates). Carries `attempt_content_hash` (which includes `outcome`)\nso consumer-side dedup distinguishes attempts with the same finding\nset but different outcomes (e.g., success-then-failed-replay)."
+      },
+      "PublishAttemptOutcome": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failed",
+          "idempotently_skipped",
+          "idempotently_skipped_external_record",
+          "no_op_empty"
+        ],
+        "title": "PublishAttemptOutcome",
+        "description": "Terminal outcome of one `publisher.create_review` attempt.\n\nSingle emission per attempt, AFTER the GitHub call resolves. No\n`in_flight` outcome \u2014 an in-flight pre-call emission would be\nincompatible with `audit-events-append-only` because\nsame-event_id-different-payload raises\n`AuditPersisterIdempotencyConflict` rather than acting as an update.\nCrash-after-success defense via `find_existing_review_on_head_sha`."
+      },
+      "PublishDestination": {
+        "type": "string",
+        "enum": [
+          "inline_comment",
+          "review_body",
+          "dashboard_only"
+        ],
+        "title": "PublishDestination",
+        "description": "Where a finding lands when published, per spec \u00a74.1.7.\n\nSet by `coordinates.tree_sitter_to_github` after computing the\nGitHub-comment-location translation; the analyze node leaves the\nfield None at construction time. Backs `publish-routes-through-coordinates`."
+      },
+      "PublishEligibility": {
+        "type": "string",
+        "enum": [
+          "eligible",
+          "withheld"
+        ],
+        "title": "PublishEligibility",
+        "description": "Per-finding materialization decision, separate from routing.\n\nPer specs/2026-05-21-publish-node.md Q3: routing is coordinate-derived;\neligibility is policy-derived; they're audited independently so a\nCRITICAL finding routed cleanly to INLINE_COMMENT carries\ndestination=INLINE_COMMENT AND eligibility=withheld."
+      },
+      "PublishEligibilityEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "publish_eligibility",
+            "title": "Event Type",
+            "default": "publish_eligibility"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "finding_type": {
+            "$ref": "#/components/schemas/FindingType"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FindingSeverity"
+          },
+          "original_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finding_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Finding Content Hash"
+          },
+          "decision_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Decision Content Hash"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/PublishEligibility"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublishEligibilityReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "finding_id",
+          "file_path",
+          "line_start",
+          "line_end",
+          "finding_type",
+          "severity",
+          "finding_content_hash",
+          "decision_content_hash",
+          "eligibility",
+          "policy_version"
+        ],
+        "title": "PublishEligibilityEvent",
+        "description": "Records the per-finding materialization decision, separate from routing.\n\n`policy_version` mirrors `finding.policy_version` (the snapshot under\nwhich the finding's severity was classified) per\nDECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.\nStamping the live process-current `ACTIVE_POLICY_VERSION` would break\n`severity-policy-versioned-for-replay` across HITL-pause-then-deploy\nboundaries.\n\nPer Q3: eligibility is policy-derived (gates on severity + HITL absence).\nFires AFTER `PublishRoutingEvent` for each finding under the interleaved\nper-finding routing+eligibility loop. Carries identity fields so\n`_verify_content_hash_binding` can recompute `finding_content_hash` via\nthe canonical helper; carries `severity` + `finding_type` + `policy_version`\nfor severity-versioned replay (`severity-policy-versioned-for-replay`)."
+      },
+      "PublishEligibilityReason": {
+        "type": "string",
+        "enum": [
+          "hitl_required_node_absent",
+          "unexpected_override_fields_present",
+          "routing_emission_failed",
+          "hitl_decision_missing",
+          "hitl_rejected",
+          "hitl_suppressed"
+        ],
+        "title": "PublishEligibilityReason",
+        "description": "Why a finding was withheld at the eligibility gate.\n\nThe HITL node landed per `specs/2026-05-26-hitl-node.md`; the gate now\nconsults `hitl_decision` for CRITICAL/HIGH severities. Pre-HITL\nreasons (`hitl_required_node_absent`, `unexpected_override_fields_present`,\n`routing_emission_failed`) remain in the enum: the first as a\ndefense-in-depth signal for the bypass case where publish runs\nwithout HITL having gated (graph wiring bug); the second as a\nfabricated-override defense; the third as the routing-emission\nrecovery path. New HITL-driven reasons cover REJECT / SUPPRESS /\nno-matching-decision outcomes."
+      },
+      "PublishEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "publish",
+            "title": "Event Type",
+            "default": "publish"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "github_review_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Github Review Id"
+          },
+          "comments_posted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Comments Posted"
+          },
+          "review_status": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REQUEST_CHANGES",
+              "COMMENT"
+            ],
+            "title": "Review Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "github_review_id",
+          "comments_posted",
+          "review_status"
+        ],
+        "title": "PublishEvent",
+        "description": "Records the GitHub publish operation outcome."
+      },
+      "PublishRoutingEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "publish_routing",
+            "title": "Event Type",
+            "default": "publish_routing"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/PublishDestination"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/PublishRoutingReason"
+          },
+          "coordinate_error_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coordinate Error Kind"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "finding_type": {
+            "$ref": "#/components/schemas/FindingType"
+          },
+          "finding_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Finding Content Hash"
+          },
+          "decision_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Decision Content Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "finding_id",
+          "destination",
+          "reason",
+          "file_path",
+          "line_start",
+          "line_end",
+          "finding_type",
+          "finding_content_hash",
+          "decision_content_hash"
+        ],
+        "title": "PublishRoutingEvent",
+        "description": "Records the per-finding routing decision; backs publish-routes-through-coordinates.\n\nQ1-extended per specs/2026-05-21-publish-node.md:\n\n- `reason` is a `PublishRoutingReason` StrEnum (not a raw `Literal[...]`).\n- `coordinate_error_kind` carries the structurally distinct CoordinateError\n  variants so they're queryable in the audit stream rather than collapsed\n  into one opaque reason. Payload contains ONLY the enum value, NEVER the\n  `CoordinateError.message` text \u2014 the `PATH_VALIDATION_FAILED` umbrella\n  would otherwise leak the validate_diff_path rule set as an enumeration\n  oracle to anyone with audit-log read access.\n- Identity fields `file_path`, `line_start`, `line_end`, `finding_content_hash`\n  support post-retention metadata replay AND the `PublishEligibilityEvent`\n  content-hash binding validator.\n- `decision_content_hash` is the consumer-side dedup identity so re-emission\n  with the same decision collapses, but re-emission with a different\n  decision surfaces as a second logical row rather than hiding behind\n  `finding_content_hash`."
+      },
+      "PublishRoutingReason": {
+        "type": "string",
+        "enum": [
+          "reviewable_diff_line",
+          "unchanged_region",
+          "non_diffed_file",
+          "coordinate_error"
+        ],
+        "title": "PublishRoutingReason",
+        "description": "Why the publisher routed a finding to its `PublishDestination`.\n\nStrEnum (not `Literal[...]`) so the routing reason mirrors the shape of\n`PublishEligibilityReason` and `PublishAttemptOutcome` below. Consumers\nbranching on the value get `match`-statement exhaustiveness; the\naudit-stream queries can filter by enum members rather than raw strings."
       },
       "ReplayVerdict": {
         "properties": {
@@ -908,6 +2518,117 @@
         ],
         "title": "ReviewDetail"
       },
+      "ReviewDimension": {
+        "type": "string",
+        "enum": [
+          "code_quality",
+          "security",
+          "performance",
+          "test_coverage",
+          "best_practices"
+        ],
+        "title": "ReviewDimension",
+        "description": "The five review-dimension axes per spec \u00a77.3."
+      },
+      "ReviewEventsResponse": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "events": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AgentTransitionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReviewPhaseEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/LLMCallEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FileExaminationEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/TraceDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLRequestEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishRoutingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEligibilityEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishAttemptEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingProposalRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeResponseRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SynthesizeCompletedEvent"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "event_type",
+                "mapping": {
+                  "agent_transition": "#/components/schemas/AgentTransitionEvent",
+                  "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
+                  "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "file_examination": "#/components/schemas/FileExaminationEvent",
+                  "finding": "#/components/schemas/FindingEvent",
+                  "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
+                  "hitl_decision": "#/components/schemas/HITLDecisionEvent",
+                  "hitl_request": "#/components/schemas/HITLRequestEvent",
+                  "llm_call": "#/components/schemas/LLMCallEvent",
+                  "publish": "#/components/schemas/PublishEvent",
+                  "publish_attempt": "#/components/schemas/PublishAttemptEvent",
+                  "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
+                  "publish_routing": "#/components/schemas/PublishRoutingEvent",
+                  "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
+                  "trace_decision": "#/components/schemas/TraceDecisionEvent"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "events",
+          "total"
+        ],
+        "title": "ReviewEventsResponse",
+        "description": "A review's full audit-event stream \u2014 the typed `AuditEvent` union per\nDECISIONS-stable schema, ordered by `sequence_number` (FUP-133).\n\n`events` exposes the metadata-only audit record as-is (no content joins, no\nredaction \u2014 `audit_events` is metadata-only by `DECISIONS.md#014`). Each event\nis reconstructed through `reconstruct_event_from_row` \u2014 the shared replay path \u2014\nso historical rows tolerate post-#025 field additions and every row's mirrored\nbase columns are verified against its payload. `total == len(events)` (a single\nreview's stream is bounded; no pagination \u2014 see the spec non-goals)."
+      },
       "ReviewListItem": {
         "properties": {
           "id": {
@@ -1079,6 +2800,393 @@
         ],
         "title": "ReviewMetricsView",
         "description": "Audit-stream-computed metrics for one review (see module docstring).\n\nFile/wall-clock fields are `None` when the review has no\n`SynthesizeCompletedEvent` yet \u2014 render pending, never zero."
+      },
+      "ReviewPhaseEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "review_phase",
+            "title": "Event Type",
+            "default": "review_phase"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "phase_id": {
+            "type": "string",
+            "title": "Phase Id"
+          },
+          "node_id": {
+            "type": "string",
+            "enum": [
+              "intake",
+              "triage",
+              "analyze",
+              "trace",
+              "synthesize",
+              "hitl",
+              "publish"
+            ],
+            "title": "Node Id"
+          },
+          "marker": {
+            "type": "string",
+            "enum": [
+              "start",
+              "end"
+            ],
+            "title": "Marker"
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "phase_id",
+          "node_id",
+          "marker"
+        ],
+        "title": "ReviewPhaseEvent",
+        "description": "Phase boundary marker; start/end pairs scope per-node work.\n\nPer `phase-events-bound-work`, replay groups events between matching\nstart/end markers as belonging to one phase. `phase_key` is V1.5\nforward-compat: parallel-analyze workers in V1.5 emit per-file\nphase pairs keyed by file path."
+      },
+      "RiskLevel": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "title": "RiskLevel",
+        "description": "PR-level risk classification produced by the triage node, per spec \u00a77.2.\n\nSame ladder shape as FindingSeverity minus INFO (no operational meaning\nat PR-level). Distinct from FindingSeverity in scope: RiskLevel measures\nthe PR as a whole; FindingSeverity measures one finding within it.\n\nAdded 2026-05-08 to close the canonical-shape gap. See spec.md \u00a77.2\namendment + specs/2026-05-08-schema-foundation.md for rationale."
+      },
+      "SkipReason": {
+        "type": "string",
+        "enum": [
+          "OVERSIZED",
+          "VENDORED",
+          "GENERATED_FILENAME",
+          "MINIFIED",
+          "GENERATED_BANNER",
+          "BINARY",
+          "COST_BUDGET_EXHAUSTED",
+          "NO_REVIEWABLE_CONTEXT",
+          "NO_CHANGED_SCOPE_UNITS",
+          "UNSUPPORTED_LANGUAGE"
+        ],
+        "title": "SkipReason",
+        "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze\n  adapter only handles Python; the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
+      },
+      "SynthesizeCompletedEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "synthesize_completed",
+            "title": "Event Type",
+            "default": "synthesize_completed"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "synthesize",
+            "title": "Node Id",
+            "default": "synthesize"
+          },
+          "summary_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Summary Content Hash"
+          },
+          "overall_risk": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "n_findings": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Findings"
+          },
+          "files_examined": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Files Examined"
+          },
+          "files_traced_beyond_diff": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Files Traced Beyond Diff"
+          },
+          "llm_calls_made": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Calls Made"
+          },
+          "total_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Input Tokens"
+          },
+          "total_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Output Tokens"
+          },
+          "total_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Cost Usd"
+          },
+          "wall_clock_seconds": {
+            "type": "number",
+            "maximum": 86400.0,
+            "minimum": 0.0,
+            "title": "Wall Clock Seconds"
+          },
+          "pricing_version": {
+            "type": "string",
+            "pattern": "^v[1-9][0-9]*$",
+            "title": "Pricing Version"
+          },
+          "policy_version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version"
+          },
+          "synthesize_model": {
+            "type": "string",
+            "title": "Synthesize Model"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "summary_content_hash",
+          "overall_risk",
+          "n_findings",
+          "files_examined",
+          "files_traced_beyond_diff",
+          "wall_clock_seconds",
+          "pricing_version",
+          "policy_version",
+          "synthesize_model"
+        ],
+        "title": "SynthesizeCompletedEvent",
+        "description": "Per-review aggregate emitted at the end of the synthesize node.\n\n`policy_version` mirrors the triage-captured snapshot per\nDECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.\nSee also DECISIONS.md#029 for the V2 durable-retry idempotency\n+ content-binding via `llm_call_event_id` (out of scope for V1).\n\nOne per review (not per-pass like `AnalyzeCompletedEvent`). Carries\nthe canonical `ReviewMetrics` fields (mirror of\n`outrider.schemas.review_report.ReviewMetrics`), plus the binding\nmetadata (`summary_content_hash`, `overall_risk`, `n_findings`)\nthat lets replay reconstruct what summary text + what report shape\nthis synthesize-node invocation produced. Replay joins the\npaired `LLMCallEvent` by `review_id` + `node_id=\"synthesize\"` \u2014\n`LLMCallEvent` carries its own `event_id` AND scans `llm_call_content`\nby that key per `DECISIONS.md#016`; no explicit `llm_call_event_id`\nFK is needed on this event because the synthesize node emits\nexactly one LLM call per review (joinable unambiguously) and the\n`summary_content_hash` here cross-validates the content match.\n\nMetadata-only per `DECISIONS.md#016`: the summary prose lives in\n`llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint\npayload (operational-side; see spec gate #6 option (c) retention\nmodel). `summary_content_hash` is the sha256 of the RAW LLM\n`response.text` (matches the canon `llm_call_content.completion`\npersister stores \u2014 see synthesize.py `_compute_summary_content_hash`\ndocstring for the display-vs-canon split rationale). Within the\nLLM-content TTL window, replay can reconstruct prose by joining on\nthis hash; outside the window, metadata-only replay is the\ncanonical claim.\n\nIdempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-\nkey was rejected at pre-spec gate #1 because the natural-key\npersister cannot return enough payload to reconstruct\n`ReviewReport` (the summary text lives in `llm_call_content`, not\nin the audit-row payload) \u2014 state-lockstep gate iii fails. The\nevent_id-PK contract catches CONCURRENT re-emit of the same logical\nevent (e.g., dispatcher fires twice for one checkpoint state) but\ndoes NOT catch crash-recovery re-emit (Synthesize body crashes\nAFTER this event lands but BEFORE node return \u2192 resume mints a\nfresh UUID \u2192 second row lands). V1's in-process BackgroundTasks\ndispatcher does not durably retry; V2 Celery + Redis adds durable\nretry semantics and will need a natural-key add-on before durable\nretry lands (sibling of `emit_phase` which already keys natural).\nPer-review-aggregate dashboard queries should DISTINCT ON\n`(review_id, event_type)` or use MAX(timestamp) to be robust.\n\nNo content-hash binding on findings here (unlike `FindingEvent`):\nevery finding in the deduplicated `ReviewReport.findings` is already\nrecorded as its own `FindingEvent` upstream. `n_findings` is the\naggregate; replay can join to per-finding events via `review_id`."
+      },
+      "TraceDecisionEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "trace_decision",
+            "title": "Event Type",
+            "default": "trace_decision"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "source_finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Finding Id"
+          },
+          "target_file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target File"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Reason"
+          },
+          "resolution_status": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "unresolved",
+              "ambiguous"
+            ],
+            "title": "Resolution Status"
+          },
+          "proposed_import_strings": {
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Proposed Import Strings"
+          },
+          "resolved_candidate_paths": {
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Resolved Candidate Paths"
+          },
+          "trace_path": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "source_finding_id",
+          "target_file",
+          "reason",
+          "resolution_status",
+          "proposed_import_strings",
+          "resolved_candidate_paths"
+        ],
+        "title": "TraceDecisionEvent",
+        "description": "One aggregate trace decision per source_finding_id (per DECISIONS.md#017,\namended by DECISIONS.md#024 \u2014 Accepted 2026-05-24).\n\nCross-field validator rules per #017 \u00d7 #024:\n(a) resolved \u2192 len(resolved_candidate_paths) == 1 AND\n    target_file == resolved_candidate_paths[0]\n(b) unresolved \u2192 len(resolved_candidate_paths) == 0 AND target_file is None\n(c) ambiguous \u2192 len(resolved_candidate_paths) > 1 AND target_file is None\n\nTwo parallel tuples:\n- `proposed_import_strings`: the LLM-proposed dotted Python import strings\n  (any cardinality). Per DECISIONS.md#024 trace candidates are import\n  strings, not file paths.\n- `resolved_candidate_paths`: the resolution outputs \u2014 file paths\n  the import strings resolved to (any cardinality, including zero /\n  one / multiple). V1 source per M8: GitHub fetch-probes (paths\n  whose `fetch_file_content_at` returned content). V1.5+ source:\n  filesystem-aware `coordinates.resolve_candidate_paths` (per\n  `DECISIONS.md#024` point 4 Amended 2026-05-24). Each element is\n  post-`validate_diff_path` per the audit-shadow rule (defense in\n  depth at the append-only log against a hypothetical future\n  direct emitter bypassing the resolution mechanism).\n\n`resolution_status` describes how many resolved (zero / exactly one /\nmultiple). `target_file`, when non-None, ALSO passes through\n`validate_diff_path` at the audit-event boundary. All tuples\nrequired (no default) per #017 \u2014 defaults would silently absorb\nemitter bugs and undermine \u00a78.7 replay equivalence; callers pass\n`()` explicitly for the zero-candidate case."
       },
       "ValidationError": {
         "properties": {

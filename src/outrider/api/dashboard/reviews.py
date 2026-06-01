@@ -44,10 +44,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from sqlalchemy import Integer, Numeric, cast, func, select
 
 from outrider.api.dashboard.auth import require_admin_api_key
+from outrider.audit.events import (  # noqa: TC001 (runtime: Pydantic response-model field type)
+    AuditEvent as AuditEventUnion,
+)
 from outrider.audit.replay import (
     AuditReplayer,
     ReplayEquivalenceError,
     ReplayReviewNotFoundError,
+    reconstruct_event_from_row,
 )
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
@@ -236,6 +240,25 @@ class ReplayVerdict(BaseModel):
     finding_count: int | None
     orphan_finding_count: int | None
     reason: str | None
+
+
+class ReviewEventsResponse(BaseModel):
+    """A review's full audit-event stream — the typed `AuditEvent` union per
+    DECISIONS-stable schema, ordered by `sequence_number` (FUP-133).
+
+    `events` exposes the metadata-only audit record as-is (no content joins, no
+    redaction — `audit_events` is metadata-only by `DECISIONS.md#014`). Each event
+    is reconstructed through `reconstruct_event_from_row` — the shared replay path —
+    so historical rows tolerate post-#025 field additions and every row's mirrored
+    base columns are verified against its payload. `total == len(events)` (a single
+    review's stream is bounded; no pagination — see the spec non-goals).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: UUID
+    events: list[AuditEventUnion]
+    total: int
 
 
 router = APIRouter(
@@ -665,3 +688,65 @@ async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict
         orphan_finding_count=len(reconstructed.orphan_finding_ids),
         reason=reason,
     )
+
+
+@router.get("/{review_id}/events", response_model=ReviewEventsResponse)
+async def get_review_events(request: Request, review_id: UUID) -> ReviewEventsResponse:
+    """The review's full audit-event stream, ordered by `sequence_number` (FUP-133).
+
+    Read-only over `audit_events`, which is metadata-only by `DECISIONS.md#014`
+    (hashes/ids/costs — never raw prompt or finding content), so there are no
+    content-table joins and no redaction. Each row is rebuilt through the shared
+    `reconstruct_event_from_row` (the replay read-path), so historical rows tolerate
+    post-#025 field additions (DECISIONS.md#032) AND every row's mirrored base
+    columns are verified against its payload. 404 when the review has no audit rows
+    (parity with detail/replay). Like the detail endpoint, a by-id fetch is NOT
+    `is_eval`-filtered — holding the id is sufficient to view it. A single review's
+    stream is bounded by its graph run, so it is returned whole (no pagination).
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(
+                    AuditEvent.event_id,
+                    AuditEvent.review_id,
+                    AuditEvent.event_type,
+                    AuditEvent.timestamp,
+                    AuditEvent.is_eval,
+                    AuditEvent.phase_key,
+                    AuditEvent.payload,
+                    AuditEvent.sequence_number,
+                )
+                .where(AuditEvent.review_id == review_id)
+                .order_by(AuditEvent.sequence_number.asc())
+            )
+        ).all()
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
+
+    # Reconstruct off the materialized rows (sync, no DB). A row whose mirrored
+    # base columns disagree with its payload raises ReplayEquivalenceError — that
+    # is genuine corruption, surfaced loudly as a structured 500, never a silent
+    # mismatched event.
+    try:
+        events = [
+            reconstruct_event_from_row(
+                payload=row.payload,
+                sequence_number=row.sequence_number,
+                event_id=row.event_id,
+                review_id=row.review_id,
+                event_type=row.event_type,
+                timestamp=row.timestamp,
+                is_eval=row.is_eval,
+                phase_key=row.phase_key,
+            )
+            for row in rows
+        ]
+    except ReplayEquivalenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "audit_row_inconsistent", "note": str(exc)},
+        ) from exc
+
+    return ReviewEventsResponse(review_id=review_id, events=events, total=len(events))
