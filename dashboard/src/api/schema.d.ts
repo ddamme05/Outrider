@@ -396,6 +396,8 @@ export interface components {
             metrics: components["schemas"]["ReviewMetricsView"];
             /** Policy Version */
             policy_version: string | null;
+            /** Findings Requiring Approval */
+            findings_requiring_approval: string[] | null;
         };
         /** ReviewListItem */
         ReviewListItem: {

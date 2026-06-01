@@ -199,6 +199,57 @@ async def test_metric_contract_from_audit_stream_not_reviews_columns(
 
 
 @pytest.mark.asyncio
+async def test_findings_requiring_approval_gated_set(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """`findings_requiring_approval` mirrors `reviews.hitl_request` exactly:
+    None when no snapshot, [] when the snapshot gates nothing, else the ids.
+    """
+    client, ids, engine = dashboard_client
+
+    # No HITL request snapshot (review A) -> None, not [].
+    assert (
+        client.get(f"/api/reviews/{ids['a']}", headers=_AUTH).json()["findings_requiring_approval"]
+        is None
+    )
+
+    fid_1, fid_2 = str(uuid4()), str(uuid4())
+    async with engine.begin() as conn:
+        gated = await _seed_review(
+            conn, status="awaiting_approval", is_eval=False, repo_id=400, llm_events=[], synth=None
+        )
+        empty = await _seed_review(
+            conn, status="awaiting_approval", is_eval=False, repo_id=401, llm_events=[], synth=None
+        )
+        for rid, faa in ((gated, [fid_1, fid_2]), (empty, [])):
+            await conn.execute(
+                text("UPDATE reviews SET hitl_request = CAST(:hr AS jsonb) WHERE id = :id"),
+                {
+                    "hr": json.dumps(
+                        {
+                            "findings_requiring_approval": faa,
+                            "auto_post_findings": [],
+                            "created_at": "2026-06-01T00:00:00Z",
+                            "expires_at": "2026-06-01T01:00:00Z",
+                        }
+                    ),
+                    "id": str(rid),
+                },
+            )
+
+    # Non-empty snapshot -> the exact authoritative id set the decide call must cover.
+    gated_resp = client.get(f"/api/reviews/{gated}", headers=_AUTH)
+    assert gated_resp.status_code == 200
+    assert gated_resp.json()["findings_requiring_approval"] == [fid_1, fid_2]
+
+    # Snapshot present but nothing gated -> [], distinct from None.
+    assert (
+        client.get(f"/api/reviews/{empty}", headers=_AUTH).json()["findings_requiring_approval"]
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_running_review_file_metrics_null_not_zero(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
