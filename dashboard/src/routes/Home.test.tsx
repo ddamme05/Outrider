@@ -33,11 +33,15 @@ function review(overrides: Record<string, unknown>) {
   };
 }
 
-function renderHome(reviews: unknown[]) {
+function renderHome(reviews: Array<ReturnType<typeof review>>) {
+  // Home now filters server-side (one query per awaiting status), so the handler
+  // must honor the `status` query param the way the backend does.
   server.use(
-    http.get("http://localhost/api/reviews", () =>
-      HttpResponse.json({ reviews, total: reviews.length, limit: 200, offset: 0 }),
-    ),
+    http.get("http://localhost/api/reviews", ({ request }) => {
+      const status = new URL(request.url).searchParams.get("status");
+      const matched = status ? reviews.filter((r) => r.status === status) : reviews;
+      return HttpResponse.json({ reviews: matched, total: matched.length, limit: 200, offset: 0 });
+    }),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -65,4 +69,31 @@ test("lists only reviews awaiting a decision", async () => {
 test("shows an empty state when nothing is awaiting", async () => {
   renderHome([review({ id: "c", status: "completed" })]);
   expect(await screen.findByText("Nothing is awaiting your decision.")).toBeInTheDocument();
+});
+
+test("surfaces an honest notice when the awaiting set exceeds the page", async () => {
+  // total (from the status-filtered query) exceeds the loaded rows.
+  server.use(
+    http.get("http://localhost/api/reviews", ({ request }) => {
+      const status = new URL(request.url).searchParams.get("status");
+      if (status === "awaiting_approval") {
+        return HttpResponse.json({
+          reviews: [review({ id: "a", repo_id: 100, status: "awaiting_approval" })],
+          total: 250,
+          limit: 200,
+          offset: 0,
+        });
+      }
+      return HttpResponse.json({ reviews: [], total: 0, limit: 200, offset: 0 });
+    }),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <Home />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByText(/Showing 1 of 250 reviews awaiting a decision/)).toBeInTheDocument();
 });
