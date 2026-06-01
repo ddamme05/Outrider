@@ -95,3 +95,39 @@ test("rail empty state when nothing awaits", async () => {
   mount({ totals: { awaiting_approval: 0, awaiting_approval_expired: 0 }, awaiting: [] });
   expect(await screen.findByText("Nothing is awaiting your decision.")).toBeInTheDocument();
 });
+
+test("rail fails CLOSED when an approval-queue query errors — no false 'all clear'", async () => {
+  // The `all` query succeeds (screen renders), but the awaiting_approval query 500s
+  // before it ever resolves. The rail must NOT collapse to the empty state — that
+  // would tell the operator nothing awaits when we simply couldn't check, hiding a
+  // review potentially blocked at the high/critical gate. Regression guard for the
+  // fail-open bug introduced folding the old Home rail (which gated on either error).
+  server.use(
+    http.get("http://localhost/api/reviews", ({ request }) => {
+      const status = new URL(request.url).searchParams.get("status") ?? "";
+      if (status === "awaiting_approval") {
+        return new HttpResponse(null, { status: 500 });
+      }
+      const totals: Record<string, number> = {
+        "": 5,
+        awaiting_approval_expired: 0,
+        completed: 3,
+        failed: 0,
+      };
+      return HttpResponse.json({ reviews: [], total: totals[status] ?? 0, limit: 200, offset: 0 });
+    }),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <Overview />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  // Wait for the top-level `all` query so the screen has rendered.
+  expect(await screen.findByText("5")).toBeInTheDocument(); // Reviews total
+  // Fail-closed: explicit error, never the all-clear empty state.
+  expect(await screen.findByText(/couldn.t load the approval queue/i)).toBeInTheDocument();
+  expect(screen.queryByText("Nothing is awaiting your decision.")).toBeNull();
+});

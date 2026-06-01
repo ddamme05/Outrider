@@ -64,9 +64,20 @@ export function Overview() {
 
   const count = (query: { data?: { total: number } | undefined }): string =>
     query.data ? String(query.data.total) : "…";
-  const awaitingTotal =
-    awaiting.data || expired.data
-      ? String((awaiting.data?.total ?? 0) + (expired.data?.total ?? 0))
+
+  // HITL visibility fails CLOSED. The two approval-queue queries gate the rail
+  // (and the "Awaiting decision" card) independently of `all`: if either errors
+  // before it ever resolved, never render a confident count or an "all clear"
+  // empty rail. The backend gate still holds the review at AWAITING_APPROVAL —
+  // this guards the operator's window into it, so "couldn't check" never reads as
+  // "nothing awaiting." Once resolved, react-query keeps last-good data across a
+  // failed background refetch, so a stale-but-real count/list still shows.
+  const awaitingResolved = awaiting.data !== undefined && expired.data !== undefined;
+  const awaitingError = Boolean(awaiting.error || expired.error);
+  const awaitingTotal = awaitingResolved
+    ? String((awaiting.data?.total ?? 0) + (expired.data?.total ?? 0))
+    : awaitingError
+      ? "—"
       : "…";
   const loadedCost = (all.data?.reviews ?? []).reduce(
     (sum, r) => sum + r.metrics.total_cost_usd,
@@ -91,35 +102,43 @@ export function Overview() {
       </div>
 
       <div className="section-label">Needs your decision</div>
-      {railTotal > railLoaded ? (
-        <p className="queue-notice">
-          Showing {railLoaded} of {railTotal} reviews awaiting a decision — the oldest may be
-          beyond this page.
+      {awaitingError && !awaitingResolved ? (
+        <p className="error">
+          Couldn&rsquo;t load the approval queue — retrying. Reviews may be awaiting a decision.
         </p>
-      ) : null}
-      {railRows.length === 0 ? (
+      ) : !awaitingResolved ? (
+        <p style={{ color: "var(--muted)" }}>Loading…</p>
+      ) : railRows.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>Nothing is awaiting your decision.</p>
       ) : (
-        <div className="rlist">
-          {railRows.map((r) => (
-            <div className="rrow" key={r.id}>
-              <div className="r-status">
-                <StatusPill status={r.status} />
-              </div>
-              <div className="r-main">
-                <div className="r-title">
-                  <Link to={`/reviews/${r.id}`}>repo {r.repo_id}</Link>
-                  <span className="prnum">#{r.pr_number}</span>
-                  {r.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
+        <>
+          {railTotal > railLoaded ? (
+            <p className="queue-notice">
+              Showing {railLoaded} of {railTotal} reviews awaiting a decision — the oldest may be
+              beyond this page.
+            </p>
+          ) : null}
+          <div className="rlist">
+            {railRows.map((r) => (
+              <div className="rrow" key={r.id}>
+                <div className="r-status">
+                  <StatusPill status={r.status} />
                 </div>
-                <div className="r-sub">
-                  <span className="mono">{r.head_sha.slice(0, 9)}</span>
+                <div className="r-main">
+                  <div className="r-title">
+                    <Link to={`/reviews/${r.id}`}>repo {r.repo_id}</Link>
+                    <span className="prnum">#{r.pr_number}</span>
+                    {r.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
+                  </div>
+                  <div className="r-sub">
+                    <span className="mono">{r.head_sha.slice(0, 9)}</span>
+                  </div>
                 </div>
+                <div className="r-cost">${r.metrics.total_cost_usd.toFixed(2)}</div>
               </div>
-              <div className="r-cost">${r.metrics.total_cost_usd.toFixed(2)}</div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
     </section>
   );
