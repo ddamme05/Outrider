@@ -600,13 +600,15 @@ async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict
     """Replay-equivalence verdict — wraps `audit/replay.py::AuditReplayer`.
 
     404 if the review has no audit-event rows (`ReplayReviewNotFoundError`).
-    `reconstruct` + `assert_replay_equivalent` run read-only over the audit
-    stream + content tables (no mutation). A `ReplayEquivalenceError` from
-    either step yields a `replay_equivalent=False` verdict carrying the failing
-    check's message, NOT a 500 — the verdict IS the product. (A corrupt payload
-    that won't even deserialize surfaces as the underlying `ValidationError` →
-    500, the genuine-corruption case.) `phases` is intentionally not exposed
-    (FUP-125).
+    Single-snapshot: `reconstruct` (one REPEATABLE READ snapshot) gives mode +
+    counts, then `assert_equivalent` verifies THAT SAME reconstruction — so the
+    verdict can't mix counts from one snapshot with pass/fail from another (the
+    bug if we re-ran `assert_replay_equivalent`, which reconstructs again). Both
+    read-only (no mutation). A `ReplayEquivalenceError` from either step yields
+    `replay_equivalent=False` carrying the failing check's message, NOT a 500 —
+    the verdict IS the product. (A corrupt payload that won't even deserialize
+    surfaces as the underlying `ValidationError` → 500, the genuine-corruption
+    case.) `phases` is intentionally not exposed (FUP-125).
     """
     replayer = AuditReplayer(session_factory=request.app.state.session_factory)
     try:
@@ -631,7 +633,8 @@ async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict
     equivalent = True
     reason: str | None = None
     try:
-        await replayer.assert_replay_equivalent(review_id)
+        # Verify the SAME reconstruction (single snapshot), not a re-reconstruct.
+        await replayer.assert_equivalent(reconstructed)
     except ReplayEquivalenceError as exc:
         equivalent = False
         reason = str(exc)
