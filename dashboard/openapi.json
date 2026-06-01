@@ -424,6 +424,49 @@
         }
       }
     },
+    "/api/policy/{version}": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Policy",
+        "description": "The versioned `FindingType` \u2192 severity table for `version`.\n\nReads the STORED policy via `load_policy_for_version` (replay-safe \u2014 not the\nactive in-code policy). 404 when the version row is absent\n(`UnknownPolicyVersionError`); structured 500 when the stored row is corrupt \u2014\ne.g. an undecodable finding_type key (`PolicyVersionShapeError`), loud rather\nthan a partial table. Entries sorted by `finding_type` for a stable render.",
+        "operationId": "get_policy_api_policy__version__get",
+        "parameters": [
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -1854,6 +1897,53 @@
         ],
         "title": "PerFindingOutcome",
         "description": "Per-finding HITL decision outcomes per spec \u00a77.4."
+      },
+      "PolicyEntry": {
+        "properties": {
+          "finding_type": {
+            "type": "string",
+            "title": "Finding Type"
+          },
+          "dimension": {
+            "type": "string",
+            "title": "Dimension"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finding_type",
+          "dimension",
+          "severity"
+        ],
+        "title": "PolicyEntry",
+        "description": "One `FindingType` \u2192 severity row for a policy version. `dimension` always\nresolves (lockstep, #021); `severity` is the STORED value for the version."
+      },
+      "PolicyResponse": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "version",
+          "entries"
+        ],
+        "title": "PolicyResponse"
       },
       "PublishAttemptEvent": {
         "properties": {

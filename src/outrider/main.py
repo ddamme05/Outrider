@@ -41,7 +41,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from outrider.api import lifespan
-from outrider.api.dashboard import hitl_router, reviews_router
+from outrider.api.dashboard import hitl_router, policy_router, reviews_router
 from outrider.api.webhooks.router import router as webhook_router
 
 app = FastAPI(
@@ -54,6 +54,7 @@ app = FastAPI(
 app.include_router(webhook_router)
 app.include_router(hitl_router)
 app.include_router(reviews_router)
+app.include_router(policy_router)
 
 
 @app.get("/health")
