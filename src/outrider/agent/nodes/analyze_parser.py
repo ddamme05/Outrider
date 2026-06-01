@@ -41,10 +41,10 @@ from outrider.audit.events import compute_finding_content_hash
 from outrider.coordinates import is_valid_import_string
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
+    line_range_to_span,
+    line_range_within_scope_unit,
     span_is_nonempty,
-    span_to_line_range,
     span_within_file,
-    span_within_scope_unit,
 )
 from outrider.llm.parsing import strip_outer_json_fence
 from outrider.policy.canonical import (
@@ -202,19 +202,20 @@ def parse_analyze_response(
     - `installation_id` — for `ReviewFinding.installation_id`.
     - `file_path` — repo-relative path; goes into every emitted
       payload, already canonicalized at intake.
-    - `file_content` — full file source as `str`. Needed for
-      `coordinates.span_to_line_range(...)` translation.
+    - `file_content` — full file source as `str`. Needed for the degraded
+      path's `coordinates.line_range_to_span(...)` file-bounds translation.
     - `file_byte_length` — `len(file_content.encode("utf-8"))`
       computed ONCE in the node body and passed here; the parser does
       NOT recompute per proposal.
     - `included_scope_units` — the scope units this call's prompt
-      included (their byte ranges define the `span_within_scope_unit`
-      check for clean outcomes).
+      included (their 1-indexed line ranges define the
+      `line_range_within_scope_unit` check for clean outcomes).
     - `query_match_id_set` — the pre-fired registry IDs the prompt
       supplied; OBSERVED admission rejects any claimed id not in this
       set. Empty for degraded outcomes.
-    - `degraded_mode` — branches parser step 5: clean uses
-      `span_within_scope_unit`, degraded uses `span_within_file`.
+    - `degraded_mode` — branches parser step 5: clean uses line-space
+      `line_range_within_scope_unit`, degraded translates to bytes
+      (`line_range_to_span`) and uses `span_within_file`.
     - `active_policy_version` — closure-captured per
       `nodes-receive-deps-via-closure`; goes into
       `ReviewFinding.policy_version` on admitted proposals.
@@ -299,7 +300,8 @@ def parse_analyze_response(
         # feeds the rejection payload (if any) AND the trace-candidate
         # collection's `source_proposal_hash` — the audit-trail join
         # between rejection events and trace candidates depends on
-        # both using the identical hash value.
+        # both using the identical hash value. Folds the raw LINE range
+        # per `DECISIONS.md#022` (span-key amended 2026-06-01 / FUP-126).
         proposal_hash = compute_proposal_hash(
             source_file_path=file_path,
             finding_type=raw_proposal.finding_type,
@@ -309,8 +311,8 @@ def parse_analyze_response(
             title=raw_proposal.title,
             description=raw_proposal.description,
             evidence=raw_proposal.evidence,
-            byte_start=raw_proposal.span.byte_start,
-            byte_end=raw_proposal.span.byte_end,
+            line_start=raw_proposal.line_start,
+            line_end=raw_proposal.line_end,
         )
 
         # Trace candidates are collected from BOTH admitted and
@@ -463,26 +465,41 @@ def parse_analyze_response(
             # runs again at ReviewFinding construction.
         # JUDGED falls through to step 5 (span admission).
 
-        # Step 5: span admission (per-outcome branch). The
-        # `byte_start < byte_end` predicate is part of admission on both
-        # paths — `Span` itself admits zero-width (`byte_end >= byte_start`)
-        # so the parser carries the prompt's stricter rule. A zero-width
-        # finding anchors to no bytes; the rejection_detail prefix
-        # `zero_width:` distinguishes it from EOF-overflow on the same
-        # rejection reason.
-        is_nonempty_span = span_is_nonempty(raw_proposal.span)
+        # Step 5: line-range admission (per-outcome branch). The model returns a
+        # 1-indexed source LINE range (FUP-126); `ReviewFinding` is line-based, so
+        # the range IS the finding's location — no byte span is needed on the
+        # clean path. The raw schema guarantees `line_end >= line_start >= 1`.
+        # Containment is checked in LINE space — indentation-robust, unlike a
+        # whole-line byte span against an indented scope unit's token `byte_start`.
+        line_start, line_end = raw_proposal.line_start, raw_proposal.line_end
         if degraded_mode:
-            # Degraded outcomes have no scope-unit context (the file
-            # didn't parse, or had has_error nodes in changed regions).
-            # The deterministic guard is "within file" — model can't
-            # fabricate a span pointing past EOF or before BOF.
-            if not is_nonempty_span or not span_within_file(
-                raw_proposal.span, file_byte_length=file_byte_length
+            # No scope-unit context (file didn't parse / had has_error nodes). The
+            # deterministic guard is "within file": translate to a byte span —
+            # `line_range_to_span` raises past EOF (→ span_outside_file) — then run
+            # the existing within-file + non-empty floor on it (a trailing empty
+            # line translates to a zero-width span the gate must reject).
+            try:
+                span = line_range_to_span(line_start, line_end, file_content)
+            except CoordinateError:
+                proposal_rejections.append(
+                    _build_proposal_rejection(
+                        raw_proposal,
+                        proposal_hash=proposal_hash,
+                        file_path=file_path,
+                        rejection_reason="span_outside_file",
+                        rejection_detail=f"({line_start},{line_end})",
+                        claimed_evidence_tier=evidence_tier,
+                    )
+                )
+                trace_candidates.extend(proposal_trace_candidates)
+                continue
+            if not span_is_nonempty(span) or not span_within_file(
+                span, file_byte_length=file_byte_length
             ):
                 detail = (
-                    f"zero_width:({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
-                    if not is_nonempty_span
-                    else f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
+                    f"zero_width:({span.byte_start},{span.byte_end})"
+                    if not span_is_nonempty(span)
+                    else f"({span.byte_start},{span.byte_end})"
                 )
                 proposal_rejections.append(
                     _build_proposal_rejection(
@@ -496,56 +513,29 @@ def parse_analyze_response(
                 )
                 trace_candidates.extend(proposal_trace_candidates)
                 continue
-        else:
-            # Clean outcome — span must land inside one of the file's
-            # included scope units. `any(...)` over the included set;
-            # rejection if none match.
-            if not is_nonempty_span or not any(
-                span_within_scope_unit(raw_proposal.span, su) for su in included_scope_units
-            ):
-                detail = (
-                    f"zero_width:({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
-                    if not is_nonempty_span
-                    else f"({raw_proposal.span.byte_start},{raw_proposal.span.byte_end})"
-                )
-                proposal_rejections.append(
-                    _build_proposal_rejection(
-                        raw_proposal,
-                        proposal_hash=proposal_hash,
-                        file_path=file_path,
-                        rejection_reason="span_outside_scope_unit",
-                        rejection_detail=detail,
-                        claimed_evidence_tier=evidence_tier,
-                    )
-                )
-                trace_candidates.extend(proposal_trace_candidates)
-                continue
-
-        # Steps 6-9: admission succeeded; construct `ReviewFinding`.
-        # `line_start`/`line_end` translate via `coordinates.span_to_line_range`
-        # (coordinate translation lives in `coordinates/` per
-        # `coordinates-module-is-sole-translator`). The byte→line
-        # conversion can raise `CoordinateError` — defense-in-depth,
-        # since step-5 admission already gated EOF-overflow spans.
-        # Narrow to `CoordinateError` so a `MemoryError` /
-        # `RecursionError` / etc. propagates loud (root-cause
-        # forensics depends on not folding unexpected exceptions into
-        # `schema_construction_failed`).
-        try:
-            line_start, line_end = span_to_line_range(raw_proposal.span, source=file_content)
-        except CoordinateError as exc:
+        elif not any(
+            line_range_within_scope_unit(line_start, line_end, su) for su in included_scope_units
+        ):
+            # Clean outcome — the line range must land inside an included scope
+            # unit. No match → span_outside_scope_unit (which subsumes a past-EOF
+            # range — it is in no scope — preserving today's single-reason
+            # clean-path taxonomy; per the spec's status-quo decision).
             proposal_rejections.append(
                 _build_proposal_rejection(
                     raw_proposal,
                     proposal_hash=proposal_hash,
                     file_path=file_path,
-                    rejection_reason="schema_construction_failed",
-                    rejection_detail=f"{type(exc).__name__} x1",
+                    rejection_reason="span_outside_scope_unit",
+                    rejection_detail=f"({line_start},{line_end})",
                     claimed_evidence_tier=evidence_tier,
                 )
             )
             trace_candidates.extend(proposal_trace_candidates)
             continue
+
+        # Steps 6-9: admission succeeded; construct `ReviewFinding` (line-based).
+        # `line_start`/`line_end` are the model's raw lines (identity-preserved
+        # per the proposal schemas' line-preservation invariant).
 
         # Severity from `SEVERITY_POLICY[finding_type]` per
         # `severity-set-by-policy`. Dimension from

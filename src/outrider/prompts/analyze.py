@@ -157,7 +157,7 @@ are illustrative and must be replaced with real values.
       "title": "<short summary, ≤120 chars>",
       "description": "<explanation, ≤1000 chars>",
       "evidence": "<verbatim quote from the code, ≤2000 chars>",
-      "span": {"byte_start": 0, "byte_end": 1},
+      "line_start": 12, "line_end": 12,
       "trace_candidates": [
         {"import_string_raw": "<dotted Python import string, e.g. foo.bar>",
          "reason": "<text>"}
@@ -171,8 +171,10 @@ Field semantics:
   `evidence_tier="observed"`; `null` otherwise.
 - `trace_path`: always `null` in V1 (the `inferred` tier that consumes
   it lands with the trace-node spec).
-- `span.byte_start` / `span.byte_end`: integer UTF-8 byte offsets into
-  the file. `byte_start` must be less than `byte_end`.
+- `line_start` / `line_end`: 1-indexed, inclusive SOURCE LINE NUMBERS for
+  the finding, as shown in each scope-unit header (`(lines A-B)`) and the
+  diff `@@` markers. Both must be ≥ 1 and `line_start` ≤ `line_end`. Return
+  line numbers, NOT byte offsets.
 - `trace_candidates`: an array (possibly empty) of `{import_string_raw,
   reason}` objects. The field name is `import_string_raw` — supply a
   dotted Python import string (e.g. `foo.bar.baz`), NOT a file path.
@@ -199,7 +201,7 @@ File: {file_path}
 
 The file's changed scope units (functions, classes, methods) and their
 same-file context (callers/callees, imports, decorators) are listed
-below. Findings should land within the byte ranges of these units.
+below. Findings should land within the line ranges of these units.
 
 {scope_unit_context}
 
@@ -330,7 +332,7 @@ that's not valid JSON.
       "title": "<short summary, ≤120 chars>",
       "description": "<explanation, ≤1000 chars>",
       "evidence": "<verbatim quote from the code, ≤2000 chars>",
-      "span": {"byte_start": 0, "byte_end": 1},
+      "line_start": 12, "line_end": 12,
       "trace_candidates": []
     }
   ]
@@ -384,7 +386,7 @@ This file was fetched by the trace node (NOT part of the PR diff —
 no "changed" notion applies here). The whole file's scope units
 (functions, classes, methods) and their callers/callees, imports,
 and decorators are listed below. Findings should land within the
-byte ranges of these units; `trace_path` elements (when emitting
+line ranges of these units; `trace_path` elements (when emitting
 `evidence_tier="inferred"`) must cite scope-unit names drawn from
 this listing.
 

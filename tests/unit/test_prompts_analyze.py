@@ -111,19 +111,16 @@ def test_system_prompt_invariants_has_no_placeholders() -> None:
     refactor OR an intentional change that needs to wire to render().
     Either way, the test surfaces it for review."""
     found = re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", SYSTEM_PROMPT_INVARIANTS)
-    # The system prompt embeds the AnalyzeResponseRaw shape as an example;
-    # `{byte_start}` and `{byte_end}` appear inside that shape example as
-    # literal type markers, NOT as str.format placeholders. The render()
-    # function never calls .format() on SYSTEM_PROMPT_INVARIANTS, so these
-    # literals are safe — but we surface them so a future refactor that
-    # tries to .format() the system prompt fails-loud.
-    allowed_literals = {"byte_start", "byte_end"}
-    unexpected = set(found) - allowed_literals
-    assert unexpected == set(), (
-        f"SYSTEM_PROMPT_INVARIANTS contains unexpected placeholders: {unexpected}. "
-        f"Allowed literal markers (inside the JSON example): {allowed_literals}. "
-        f"If a real placeholder needs adding, route it through render()'s kwargs "
-        f"rather than mutating the cacheable static head."
+    # SYSTEM_PROMPT_INVARIANTS is fully static — zero `{placeholder}` markers.
+    # (Pre-FUP-126 the JSON example surfaced `{byte_start}` / `{byte_end}`
+    # literal markers that had to be whitelisted; the line-based example uses
+    # literal integer values, so no brace-marker appears and the whitelist is
+    # gone. Any brace-marker now fails-loud — a refactor that tries to .format()
+    # the cacheable static head, or a stray placeholder, is surfaced.)
+    assert found == [], (
+        f"SYSTEM_PROMPT_INVARIANTS contains unexpected placeholders: {found}. "
+        f"It must stay fully static (cacheable). Route any real placeholder "
+        f"through render()'s kwargs rather than mutating the static head."
     )
 
 
@@ -383,12 +380,12 @@ def test_system_prompt_output_example_is_strict_json() -> None:
     # json.loads must succeed; if it raises, the example is not JSON.
     parsed = json.loads(json_block)
     assert "findings" in parsed
-    # Pin span ordering: the prompt's own rule says byte_start < byte_end,
-    # so the example must not contradict it (a zero-width span teaches
-    # the model an invalid shape).
+    # Pin line-range ordering: the prompt's own rule says both ≥ 1 and
+    # line_start ≤ line_end (FUP-126 — proposals are line-based), so the
+    # example must not contradict it.
     for finding in parsed["findings"]:
-        span = finding["span"]
-        assert span["byte_start"] < span["byte_end"]
+        assert finding["line_start"] >= 1
+        assert finding["line_start"] <= finding["line_end"]
 
 
 def test_system_prompt_field_char_bounds_match_raw_schema() -> None:

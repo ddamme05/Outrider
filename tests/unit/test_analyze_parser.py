@@ -520,7 +520,6 @@ def test_malformed_fence_still_routes_to_response_rejection() -> None:
 
 def _build_raw_proposal(**overrides: object):  # type: ignore[no-untyped-def]
     """Build a minimal valid AnalyzeFindingProposalRaw for helper tests."""
-    from outrider.ast_facts.models import Span
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
     defaults: dict[str, object] = {
@@ -531,7 +530,8 @@ def _build_raw_proposal(**overrides: object):  # type: ignore[no-untyped-def]
         "title": "t",
         "description": "d",
         "evidence": "e",
-        "span": Span(byte_start=0, byte_end=10),
+        "line_start": 1,
+        "line_end": 1,
     }
     defaults.update(overrides)
     return AnalyzeFindingProposalRaw(**defaults)  # type: ignore[arg-type]
@@ -625,15 +625,20 @@ def _minimal_proposal(**overrides: object) -> dict[str, object]:
         "title": "t",
         "description": "d",
         "evidence": "e",
-        "span": {"byte_start": 0, "byte_end": 1},
+        "line_start": 1,
+        "line_end": 1,
     }
     base.update(overrides)
     return base
 
 
-def _build_scope_unit(*, byte_start: int = 0, byte_end: int = 100):  # type: ignore[no-untyped-def]
-    """Minimal valid `ScopeUnit` for parser tests; byte range chosen
-    to contain the `_minimal_proposal` default span `(0, 1)`."""
+def _build_scope_unit(
+    *, line_start: int = 1, line_end: int = 10, byte_start: int = 0, byte_end: int = 100
+):  # type: ignore[no-untyped-def]
+    """Minimal valid `ScopeUnit` for parser tests. Line range (default 1-10)
+    drives the line-space admission gate (`line_range_within_scope_unit`); the
+    default contains the `_minimal_proposal` default line range `(1, 1)`. Byte
+    range is carried for completeness but no longer gates admission (FUP-126)."""
     from outrider.ast_facts.models import ScopeUnit, compute_unit_id
 
     return ScopeUnit(
@@ -642,8 +647,8 @@ def _build_scope_unit(*, byte_start: int = 0, byte_end: int = 100):  # type: ign
         name="some_function",
         qualified_name="some_function",
         file_path="src/x.py",
-        line_start=1,
-        line_end=10,
+        line_start=line_start,
+        line_end=line_end,
         byte_start=byte_start,
         byte_end=byte_end,
     )
@@ -725,7 +730,7 @@ def test_step4_observed_passes_when_query_match_id_in_registry() -> None:
         response,
         query_match_id_set=frozenset({"real_id"}),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,  # provides line context for span_to_line_range
+        file_content="x" * 200,  # unused on the clean path (line-space gate); kept harmless
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
@@ -894,8 +899,8 @@ def test_proposal_rejection_uses_canonical_proposal_hash() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=0,
-        byte_end=1,
+        line_start=1,
+        line_end=1,
     )
     assert rej.proposal_hash == expected
 
@@ -905,52 +910,58 @@ def test_proposal_rejection_uses_canonical_proposal_hash() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_step5_clean_span_inside_scope_unit_passes_admission() -> None:
-    """Clean-outcome happy path: the proposal's span lies inside one of
-    the file's included scope units → span admission passes → the
-    proposal is admitted with `line_start`/`line_end` derived from
-    `coordinates.span_to_line_range`."""
-    response = _build_response_json(_minimal_proposal(span={"byte_start": 10, "byte_end": 30}))
-    scope = _build_scope_unit(byte_start=0, byte_end=100)  # contains (10, 30)
-    result = _call_parser(
-        response,
-        included_scope_units=(scope,),
-        file_content="x" * 200,
-    )
+def test_step5_clean_line_range_inside_scope_unit_passes_admission() -> None:
+    """Clean-outcome happy path: the proposal's line range lies inside one
+    of the file's included scope units (line-space) → admission passes →
+    the proposal is admitted (`line_start`/`line_end` from the model)."""
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
+    scope = _build_scope_unit(line_start=1, line_end=10)  # contains lines 2-3
+    result = _call_parser(response, included_scope_units=(scope,))
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
 
 
-def test_step5_clean_span_outside_all_scope_units_rejects() -> None:
-    """Clean outcome: span doesn't land in any included scope unit →
+def test_step5_clean_line_range_inside_indented_scope_admits() -> None:
+    """FUP-126 reproduction: a finding on the FIRST line of a non-file-head,
+    indented scope unit (a method whose token `byte_start` is past column 0)
+    is admitted under line-space containment. The pre-fix byte gate rejected
+    this (`su.byte_start > whole-line span byte_start`) — the silent
+    findings-loss bug."""
+    # Scope unit at lines 5-20, byte_start=26 (indented — four lines precede
+    # it). A finding on line 6 anchored by the model at the clip head used to
+    # come in as byte 0, failing `26 <= 0`; now it's line 6 in [5, 20].
+    response = _build_response_json(_minimal_proposal(line_start=6, line_end=6))
+    scope = _build_scope_unit(line_start=5, line_end=20, byte_start=26, byte_end=400)
+    result = _call_parser(response, included_scope_units=(scope,))
+    assert result.proposal_rejections == ()
+    assert len(result.admitted_findings) == 1
+    assert result.admitted_findings[0].line_start == 6
+
+
+def test_step5_clean_line_range_outside_all_scope_units_rejects() -> None:
+    """Clean outcome: line range doesn't land in any included scope unit →
     `span_outside_scope_unit` rejection with `claimed_evidence_tier`
-    carrying the parsed enum value."""
+    carrying the parsed enum value. (A past-EOF range is subsumed here — it
+    is in no scope — preserving today's single-reason clean-path taxonomy.)"""
     response = _build_response_json(
-        _minimal_proposal(
-            evidence_tier="judged",
-            span={"byte_start": 200, "byte_end": 220},
-        )
+        _minimal_proposal(evidence_tier="judged", line_start=50, line_end=51)
     )
-    scope = _build_scope_unit(byte_start=0, byte_end=100)  # excludes (200, 220)
+    scope = _build_scope_unit(line_start=1, line_end=10)  # excludes lines 50-51
     result = _call_parser(response, included_scope_units=(scope,))
     assert len(result.proposal_rejections) == 1
     rej = result.proposal_rejections[0]
     assert rej.rejection_reason == "span_outside_scope_unit"
     assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
-    assert rej.rejection_detail == "(200,220)"
+    assert rej.rejection_detail == "(50,51)"
 
 
 def test_step5_clean_multiple_scope_units_admits_if_any_contains() -> None:
-    """Clean outcome: span landing in the second scope unit of a tuple
-    still admits — the `any(...)` covers every included unit."""
-    response = _build_response_json(_minimal_proposal(span={"byte_start": 150, "byte_end": 160}))
-    scope_a = _build_scope_unit(byte_start=0, byte_end=100)  # excludes
-    scope_b = _build_scope_unit(byte_start=120, byte_end=200)  # contains
-    result = _call_parser(
-        response,
-        included_scope_units=(scope_a, scope_b),
-        file_content="x" * 300,
-    )
+    """Clean outcome: a line range landing in the second scope unit of a
+    tuple still admits — the `any(...)` covers every included unit."""
+    response = _build_response_json(_minimal_proposal(line_start=15, line_end=16))
+    scope_a = _build_scope_unit(line_start=1, line_end=10)  # excludes
+    scope_b = _build_scope_unit(line_start=12, line_end=20)  # contains 15-16
+    result = _call_parser(response, included_scope_units=(scope_a, scope_b))
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
 
@@ -967,92 +978,73 @@ def test_step5_clean_empty_scope_units_rejects_every_proposal() -> None:
     assert result.proposal_rejections[0].rejection_reason == "span_outside_scope_unit"
 
 
-def test_step5_degraded_span_within_file_passes_admission() -> None:
-    """Degraded-outcome happy path: span lies within file bounds → span
-    admission passes → finding admitted. No scope units consulted in
-    degraded mode."""
-    response = _build_response_json(_minimal_proposal(span={"byte_start": 50, "byte_end": 80}))
+_DEGRADED_SRC = "a\nb\nc\nd"  # 4 lines; len 7 bytes
+
+
+def test_step5_degraded_line_range_within_file_passes_admission() -> None:
+    """Degraded-outcome happy path: the line range translates to a byte span
+    within file bounds → admission passes → finding admitted. No scope units
+    consulted in degraded mode."""
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
     result = _call_parser(
         response,
         degraded_mode=True,
-        file_byte_length=100,
-        file_content="x" * 100,
+        file_content=_DEGRADED_SRC,
+        file_byte_length=len(_DEGRADED_SRC.encode()),
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
 
 
-def test_step5_degraded_span_past_eof_rejects() -> None:
-    """Degraded outcome: `span.byte_end > file_byte_length` →
-    `span_outside_file` rejection with `claimed_evidence_tier`
-    carrying the parsed enum."""
-    response = _build_response_json(_minimal_proposal(span={"byte_start": 90, "byte_end": 150}))
-    result = _call_parser(response, degraded_mode=True, file_byte_length=100)
+def test_step5_degraded_line_range_past_eof_rejects() -> None:
+    """Degraded outcome: a line range past EOF (`line_range_to_span` raises)
+    → `span_outside_file` rejection with `claimed_evidence_tier` carrying
+    the parsed enum; detail shows the offending line range."""
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=50))
+    result = _call_parser(
+        response,
+        degraded_mode=True,
+        file_content="a\nb\nc",  # only 3 lines
+        file_byte_length=5,
+    )
     assert len(result.proposal_rejections) == 1
     rej = result.proposal_rejections[0]
     assert rej.rejection_reason == "span_outside_file"
     assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
-    assert rej.rejection_detail == "(90,150)"
+    assert rej.rejection_detail == "(2,50)"
 
 
 def test_step5_degraded_does_not_consult_scope_units() -> None:
     """Degraded outcome ignores `included_scope_units` — the deterministic
-    bound is `span_within_file`, not `span_within_scope_unit`. Even an
-    empty scope-unit tuple still admits when the span is within file
-    bounds."""
-    response = _build_response_json(_minimal_proposal(span={"byte_start": 50, "byte_end": 80}))
+    bound is `span_within_file`, not line-space scope containment. Even an
+    empty scope-unit tuple still admits when the line range is in file."""
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
     result = _call_parser(
         response,
         degraded_mode=True,
-        file_byte_length=100,
-        file_content="x" * 100,
+        file_content=_DEGRADED_SRC,
+        file_byte_length=len(_DEGRADED_SRC.encode()),
         included_scope_units=(),  # ignored in degraded mode
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
 
 
-def test_step5_clean_rejects_zero_width_span() -> None:
-    """Clean outcome: a zero-width span (`byte_start == byte_end`) anchors
-    to no bytes, so it cannot serve as proof for any finding tier. Parser
-    rejects with `span_outside_scope_unit` and `rejection_detail` carries
-    the `zero_width:` prefix so the audit row distinguishes it from an
-    EOF-overflow rejection on the same reason. `Span` itself admits
-    zero-width (`byte_end >= byte_start`); the parser enforces the
-    prompt's stricter `byte_start < byte_end` rule.
-    """
+def test_step5_degraded_trailing_empty_line_rejects_zero_width() -> None:
+    """Degraded outcome: a schema-valid line range that translates to a
+    ZERO-WIDTH span — the empty final line after a trailing newline — is
+    rejected `span_outside_file` with the `zero_width:` detail prefix. (Line
+    proposals are never zero-width in line space; this is the one byte-level
+    edge the derived-span non-empty floor still guards.)"""
     response = _build_response_json(
-        _minimal_proposal(
-            evidence_tier="judged",
-            span={"byte_start": 100, "byte_end": 100},
-        )
+        _minimal_proposal(evidence_tier="judged", line_start=2, line_end=2)
     )
-    # Scope unit covers the zero-width span's byte position; admission
-    # rejects on the zero-width predicate alone, not on containment.
-    scope = _build_scope_unit(byte_start=0, byte_end=200)
-    result = _call_parser(response, included_scope_units=(scope,))
-    assert len(result.proposal_rejections) == 1
-    rej = result.proposal_rejections[0]
-    assert rej.rejection_reason == "span_outside_scope_unit"
-    assert rej.rejection_detail.startswith("zero_width:")
-
-
-def test_step5_degraded_rejects_zero_width_span() -> None:
-    """Degraded outcome: same zero-width rejection on the `span_outside_file`
-    rejection reason with the same `zero_width:` detail prefix. Span is
-    well within file bounds; rejection fires on the zero-width predicate
-    alone.
-    """
-    response = _build_response_json(
-        _minimal_proposal(
-            evidence_tier="judged",
-            span={"byte_start": 50, "byte_end": 50},
-        )
-    )
+    # "a\n" → line 1 = "a", line 2 = the empty trailing line (starts at EOF).
     result = _call_parser(
         response,
         degraded_mode=True,
-        file_byte_length=100,
+        file_content="a\n",
+        file_byte_length=2,
     )
     assert len(result.proposal_rejections) == 1
     rej = result.proposal_rejections[0]
@@ -1070,12 +1062,13 @@ def test_step5_degraded_rejects_independent_of_query_match_id() -> None:
         _minimal_proposal(
             evidence_tier="observed",
             query_match_id="some_id",
-            span={"byte_start": 50, "byte_end": 80},
+            line_start=2,
+            line_end=3,
         )
     )
     # Empty query_match_id_set (typical for degraded mode) → producer
-    # admission rejects with query_match_id_not_in_registry, not
-    # span_outside_file.
+    # admission rejects with query_match_id_not_in_registry, before the
+    # line-range step ever runs.
     result = _call_parser(
         response,
         degraded_mode=True,
@@ -1173,13 +1166,13 @@ def test_step8_admitted_finding_content_hash_matches_recipe() -> None:
         _minimal_proposal(
             finding_type="sql_injection",
             evidence_tier="judged",
-            span={"byte_start": 0, "byte_end": 5},
+            line_start=1,
+            line_end=1,
         )
     )
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="line1\nline2\nline3\n",
         file_path="src/x.py",
     )
     finding = result.admitted_findings[0]
@@ -1192,34 +1185,18 @@ def test_step8_admitted_finding_content_hash_matches_recipe() -> None:
     assert finding.content_hash == expected
 
 
-def test_step8_line_range_derived_from_span() -> None:
-    """`line_start`/`line_end` come from `coordinates.span_to_line_range`,
-    not from the raw proposal. The model proposes a byte span; the
-    parser deterministically translates to 1-indexed lines via the
-    coordinate-translator boundary. Pins the exact mapping so a shift
-    in `span_to_line_range` fails here, not silently downstream.
-
-    `file_content = "line1\\nline2\\nline3\\n"` byte layout:
-      bytes 0-4 "line1", byte 5 "\\n", bytes 6-10 "line2", byte 11 "\\n",
-      bytes 12-16 "line3", byte 17 "\\n".
-    Span byte_start=6, byte_end=10 is half-open; the covered bytes are
-    6,7,8,9 ("line") — all on 1-indexed line 2.
-    """
+def test_step8_line_range_from_proposal() -> None:
+    """`line_start`/`line_end` on the admitted finding ARE the model's raw
+    proposal lines (identity-preserved), not derived from a byte span — the
+    proposal is line-based now (FUP-126). Pins that the parser carries the
+    proposed line range straight onto the finding."""
     response = _build_response_json(
-        _minimal_proposal(
-            evidence_tier="judged",
-            span={"byte_start": 6, "byte_end": 10},
-        )
+        _minimal_proposal(evidence_tier="judged", line_start=2, line_end=4)
     )
-    result = _call_parser(
-        response,
-        included_scope_units=(_build_scope_unit(),),
-        file_content="line1\nline2\nline3\n",
-    )
+    result = _call_parser(response, included_scope_units=(_build_scope_unit(),))
     finding = result.admitted_findings[0]
-    # Exact mapping: bytes 6..9 are entirely on line 2.
     assert finding.line_start == 2
-    assert finding.line_end == 2
+    assert finding.line_end == 4
 
 
 def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
@@ -1258,8 +1235,8 @@ def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=0,
-        byte_end=1,
+        line_start=1,
+        line_end=1,
     )
     assert cand.source_proposal_hash == expected_parent_hash
     _ = parent_hash  # admitted_findings doesn't expose proposal_hash; verified via recipe
@@ -1405,8 +1382,8 @@ def test_admitted_finding_carries_proposal_hash_from_compute_recipe() -> None:
         title="t",
         description="d",
         evidence="e",
-        byte_start=0,
-        byte_end=1,
+        line_start=1,
+        line_end=1,
     )
     assert admitted.proposal_hash == expected_hash
 
@@ -1445,10 +1422,11 @@ def test_admitted_finding_survives_hostile_sibling_candidate() -> None:
     proposal[1] has a hostile candidate. Pre-fix, the proposal[1]
     crash dropped proposal[0]'s admission too."""
     response = _build_response_json(
-        _minimal_proposal(evidence_tier="judged", span={"byte_start": 5, "byte_end": 10}),
+        _minimal_proposal(evidence_tier="judged", line_start=2, line_end=3),
         _minimal_proposal(
             evidence_tier="judged",
-            span={"byte_start": 15, "byte_end": 20},
+            line_start=4,
+            line_end=5,
             trace_candidates=[
                 # Python keyword part — rejected by is_valid_import_string
                 {"import_string_raw": "foo.class", "reason": "hostile"},
@@ -1457,8 +1435,7 @@ def test_admitted_finding_survives_hostile_sibling_candidate() -> None:
     )
     result = _call_parser(
         response,
-        included_scope_units=(_build_scope_unit(byte_start=0, byte_end=100),),
-        file_content="x" * 200,
+        included_scope_units=(_build_scope_unit(),),  # default line range 1-10
     )
     assert len(result.admitted_findings) == 2  # both parents survive
     assert len(result.trace_candidates) == 0  # only the hostile one was filtered

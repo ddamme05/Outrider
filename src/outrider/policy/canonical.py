@@ -263,17 +263,19 @@ def compute_proposal_hash(
     title: str,
     description: str,
     evidence: str,
-    byte_start: int,
-    byte_end: int,
+    line_start: int,
+    line_end: int,
 ) -> str:
     """SHA-256 hex of an `AnalyzeFindingProposalRaw`'s file-scoped identity.
 
-    Per `DECISIONS.md#022` (Accepted 2026-05-20): proposal identity is
-    PR/file-scoped, not raw-proposal-shape-global. The recipe folds 9
-    keys: `source_file_path` (the file the proposal came from), plus
-    the 8 raw-proposal keys (finding_type, evidence_tier, query_match_id,
-    trace_path, title, description, evidence, span as
-    `{byte_start, byte_end}`). `trace_candidates` is deliberately
+    Per `DECISIONS.md#022` (Accepted 2026-05-20; span-key amended
+    2026-06-01 / FUP-126): proposal identity is PR/file-scoped, not
+    raw-proposal-shape-global. The recipe folds 9 keys: `source_file_path`
+    (the file the proposal came from), plus the 8 raw-proposal keys
+    (finding_type, evidence_tier, query_match_id, trace_path, title,
+    description, evidence, and the location as a `line_range` of
+    `{line_start, line_end}` — amended from byte `{byte_start, byte_end}`
+    when proposals became line-based). `trace_candidates` is deliberately
     excluded (model child-output, not parent identity).
 
     All keyword-only — finding_type/evidence_tier are both raw `str`
@@ -309,6 +311,14 @@ def compute_proposal_hash(
     The filesystem-aware `coordinates.resolve_candidate_paths` is the
     V1.5+ future shape.
     """
+    if line_end < line_start:
+        # Fail loud on a transposed range. The sole V1 caller passes a
+        # raw proposal already validated by `_line_end_not_before_start`,
+        # but this is a public recipe other producers reuse; a silent
+        # transposition would mint a different-but-valid hash and break
+        # the `TraceCandidate.source_proposal_hash` join with no error.
+        msg = f"compute_proposal_hash: line_end ({line_end}) must be >= line_start ({line_start})"
+        raise ValueError(msg)
     from outrider.coordinates import validate_diff_path  # noqa: PLC0415
 
     canonical_source_file_path = validate_diff_path(source_file_path)
@@ -329,7 +339,7 @@ def compute_proposal_hash(
             "title": title,
             "description": description,
             "evidence": evidence,
-            "span": {"byte_start": byte_start, "byte_end": byte_end},
+            "line_range": {"line_start": line_start, "line_end": line_end},
         }
     )
 
