@@ -13,8 +13,13 @@ Sub-modules:
     divergent-content concurrent decide races without flipping
     `reviews.status`.
   - `reviews` — the read-only dashboard read-API under `/api/reviews`
-    (queue + detail; metrics computed read-through from the audit stream,
-    never the zeroed `reviews.*` columns). Pure consumer — no mutation.
+    (queue + detail + findings + replay + events; metrics computed
+    read-through from the audit stream, never the zeroed `reviews.*`
+    columns). Pure consumer — no mutation.
+  - `policy` — `GET /api/policy/{version}` exposing the versioned
+    `FindingType` → severity table via `load_policy_for_version` (the
+    STORED versioned policy, never the active in-code `SEVERITY_POLICY`).
+    Read-only.
 
 This module does NOT import vendor SDKs — auth uses `hmac.compare_digest`
 from stdlib; resume dispatch reads `app.state.compiled_graph` from the
