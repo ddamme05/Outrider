@@ -961,7 +961,27 @@ class AuditReplayer:
         `ReplayEquivalenceError` naming the failing check; returns `None` on
         success.
         """
-        review = await self.reconstruct(review_id)
+        await self.assert_equivalent(await self.reconstruct(review_id))
+
+    async def assert_equivalent(self, review: ReconstructedReview) -> None:
+        """Verify an ALREADY-reconstructed review replays faithfully (verify-only).
+
+        Same mode-aware checklist as `assert_replay_equivalent`, but over a
+        `ReconstructedReview` the caller already produced — so a caller that
+        needs the reconstruction's mode/counts AND the verdict gets both from
+        ONE `reconstruct` snapshot, instead of `assert_replay_equivalent`'s
+        internal second `reconstruct` on a *different* REPEATABLE READ snapshot
+        (mixing snapshots could combine counts from one with pass/fail from
+        another — see the dashboard `/api/reviews/{id}/replay` endpoint). The
+        only DB touch here is `_verify_historical_severity`, which reads the
+        immutable `severity_policies` table (snapshot-safe). Raises
+        `ReplayEquivalenceError` naming the failing check; returns `None` on
+        success.
+
+        `is_eval` coherence + row-vs-payload consistency are enforced inside
+        `reconstruct()` (so direct read-model consumers get them too), i.e. the
+        `review` passed here has already cleared those checks.
+        """
         _verify_sequence_monotonic(review.events)
         # A completed review must have terminated every phase ("missing phase
         # end events on success are violations"). A review whose row is purged
@@ -974,13 +994,10 @@ class AuditReplayer:
         _verify_mode_consistency(review)
         if review.orphan_finding_ids:
             raise ReplayEquivalenceError(
-                f"review {review_id} has {len(review.orphan_finding_ids)} stored finding(s) "
+                f"review {review.review_id} has {len(review.orphan_finding_ids)} stored finding(s) "
                 f"with no FindingEvent in the audit stream (append-only violation): "
                 f"{[str(fid) for fid in review.orphan_finding_ids]}"
             )
-        # is_eval coherence (stream + content tables) is enforced inside
-        # reconstruct() via _verify_is_eval_consistent, so it guards direct
-        # read-model consumers (timeline UI) too — not only this path.
         await self._verify_historical_severity(review)
 
     async def _verify_historical_severity(self, review: ReconstructedReview) -> None:
