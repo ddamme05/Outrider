@@ -101,45 +101,59 @@ export function Overview() {
         <StatCard label="Cost" value={`$${loadedCost.toFixed(2)}`} cap="across loaded reviews" />
       </div>
 
-      <div className="section-label">Needs your decision</div>
-      {awaitingError && !awaitingResolved ? (
-        <p className="error">
-          Couldn&rsquo;t load the approval queue — retrying. Reviews may be awaiting a decision.
-        </p>
-      ) : !awaitingResolved ? (
-        <p style={{ color: "var(--muted)" }}>Loading…</p>
-      ) : railRows.length === 0 ? (
-        <p style={{ color: "var(--muted)" }}>Nothing is awaiting your decision.</p>
-      ) : (
-        <>
-          {railTotal > railLoaded ? (
-            <p className="queue-notice">
-              Showing {railLoaded} of {railTotal} reviews awaiting a decision — the oldest may be
-              beyond this page.
-            </p>
-          ) : null}
-          <div className="rlist">
-            {railRows.map((r) => (
-              <div className="rrow" key={r.id}>
-                <div className="r-status">
-                  <StatusPill status={r.status} />
-                </div>
-                <div className="r-main">
-                  <div className="r-title">
-                    <Link to={`/reviews/${r.id}`}>repo {r.repo_id}</Link>
-                    <span className="prnum">#{r.pr_number}</span>
-                    {r.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
-                  </div>
-                  <div className="r-sub">
-                    <span className="mono">{r.head_sha.slice(0, 9)}</span>
-                  </div>
-                </div>
-                <div className="r-cost">${r.metrics.total_cost_usd.toFixed(2)}</div>
-              </div>
-            ))}
+      <div className="panel">
+        <div className="panel-h">
+          <h2>Needs decision</h2>
+          <div className="sub">{awaitingResolved ? `${railTotal} awaiting` : "…"}</div>
+          <div className="right">
+            <span className="pill">HITL gate · policy-set severity</span>
           </div>
-        </>
-      )}
+        </div>
+        {awaitingError && !awaitingResolved ? (
+          <div className="panel-b">
+            <p className="error">
+              Couldn&rsquo;t load the approval queue — retrying. Reviews may be awaiting a decision.
+            </p>
+          </div>
+        ) : !awaitingResolved ? (
+          <div className="panel-b">
+            <p style={{ color: "var(--muted)" }}>Loading…</p>
+          </div>
+        ) : railRows.length === 0 ? (
+          <div className="panel-b">
+            <p style={{ color: "var(--muted)" }}>Nothing is awaiting your decision.</p>
+          </div>
+        ) : (
+          <>
+            {railTotal > railLoaded ? (
+              <div className="panel-b" style={{ paddingBottom: 0 }}>
+                <p className="queue-notice">
+                  Showing {railLoaded} of {railTotal} reviews awaiting a decision — the oldest may be
+                  beyond this page.
+                </p>
+              </div>
+            ) : null}
+            <div role="list">
+              {railRows.map((r) => (
+                <Link to={`/reviews/${r.id}`} className="nd-item" role="listitem" key={r.id}>
+                  <span className="nd-id">#{r.pr_number}</span>
+                  <span className="nd-meta">
+                    <span className="nd-title">repo {r.repo_id}</span>
+                    <span className="nd-sub">
+                      <span className="mono">{r.head_sha.slice(0, 9)}</span>
+                      {r.is_eval ? " · is_eval" : ""}
+                    </span>
+                  </span>
+                  <span className="nd-tally">
+                    <StatusPill status={r.status} />
+                    <span className="nd-cost">${r.metrics.total_cost_usd.toFixed(2)}</span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </section>
   );
 }

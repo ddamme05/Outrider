@@ -87,7 +87,7 @@ test("renders NO fabricated analytics — no delta, sparkline, chart, or range s
 
 test("the needs-your-decision rail lists awaiting reviews", async () => {
   mount({ awaiting: [review({ id: "a", repo_id: 100, pr_number: 7 })] });
-  expect(await screen.findByText("Needs your decision")).toBeInTheDocument();
+  expect(await screen.findByText("Needs decision")).toBeInTheDocument();
   expect(screen.getByText("repo 100")).toBeInTheDocument();
 });
 

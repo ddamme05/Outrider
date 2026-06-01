@@ -1834,22 +1834,60 @@ table.policy tbody tr:hover {
   color: var(--faint);
   margin-top: 7px;
 }
-.section-label {
+/* needs-decision list — mockup .nd-item rows (clickable links, full-width dividers) */
+.nd-item {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.13em;
-  color: var(--muted);
-  font-weight: 700;
-  margin: 4px 0 12px;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  color: var(--text);
+  text-decoration: none;
 }
-.section-label::before {
-  content: "";
-  width: 7px;
-  height: 2px;
-  background: var(--accent);
-  opacity: 0.7;
+.nd-item:last-child {
+  border-bottom: 0;
+}
+.nd-item:hover {
+  background: var(--panel2);
+  text-decoration: none;
+}
+.nd-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.nd-id {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.nd-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.nd-title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nd-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+.nd-tally {
+  margin-left: auto;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+.nd-cost {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--muted);
 }
