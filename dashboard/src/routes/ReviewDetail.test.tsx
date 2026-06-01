@@ -277,3 +277,34 @@ test("pipeline node cards derive per-node model and cost from llm_call events", 
   // model prettified from claude-sonnet-4-5 → Sonnet (analyze + triage nodes).
   expect(screen.getAllByText("Sonnet").length).toBe(2);
 });
+
+test("completed review fails CLOSED when /events is unavailable — no fabricated audit facts", async () => {
+  // A completed review whose /events stream 500s. Node states are status-backed
+  // (completed → done) but per-node stats + the event count must NOT be asserted
+  // from thin air: never "0 audit events", never hitl "passed" / publish "posted"
+  // without the stream loaded. Regression for the events fail-open bug.
+  server.use(
+    http.get("http://localhost/api/policy/:version", ({ params }) =>
+      HttpResponse.json({ version: params.version, entries: [] }),
+    ),
+    http.get(BASE, () => HttpResponse.json(detail({ status: "completed" }))),
+    http.get(`${BASE}/findings`, () => HttpResponse.json({ review_id: "r1", findings: [finding()] })),
+    http.get(`${BASE}/replay`, () => HttpResponse.json(replay())),
+    http.get(`${BASE}/events`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={["/reviews/r1"]}>
+        <Routes>
+          <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  // Wait for the events-unavailable fallback note (proves eventsLoaded=false rendered).
+  await screen.findByText(/load from the audit stream/);
+  expect(screen.queryByText(/0 audit events/)).toBeNull();
+  expect(screen.queryByText("passed")).toBeNull();
+  expect(screen.queryByText("posted")).toBeNull();
+});
