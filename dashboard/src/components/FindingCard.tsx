@@ -1,4 +1,6 @@
 import type { components } from "../api/schema";
+import { DecisionControls } from "./DecisionControls";
+import { type DecisionDraft, isGated } from "../lib/hitl";
 
 type FindingView = components["schemas"]["FindingView"];
 
@@ -8,11 +10,21 @@ function loc(f: FindingView): string {
     : `${f.file_path}:${f.line_start}-${f.line_end}`;
 }
 
-// One finding card. Read-only in step 3 — the HITL decision controls (approve /
-// reject / suppress / severity_override) are deferred to step 4 with the decide
-// flow. severity/tier values are lowercase per the policy enums, so they map
-// straight to the sev-*/tier-* classes.
-export function FindingCard({ finding }: { finding: FindingView }) {
+// One finding card. When `decision`/`onChange` are passed (review is at the HITL
+// gate AND this finding is gated), the decision controls render at the bottom;
+// otherwise the card is read-only. severity/tier values are lowercase per the
+// policy enums, so they map straight to the sev-*/tier-* classes.
+export function FindingCard({
+  finding,
+  decision,
+  disabled,
+  onDecisionChange,
+}: {
+  finding: FindingView;
+  decision?: DecisionDraft;
+  disabled?: boolean;
+  onDecisionChange?: (next: DecisionDraft) => void;
+}) {
   const sev = finding.severity.toLowerCase();
   const tier = finding.evidence_tier.toLowerCase();
 
@@ -96,6 +108,23 @@ export function FindingCard({ finding }: { finding: FindingView }) {
             </div>
           ) : null}
         </details>
+      ) : null}
+
+      {decision && onDecisionChange ? (
+        <DecisionControls
+          finding={finding}
+          draft={decision}
+          disabled={disabled ?? false}
+          onChange={onDecisionChange}
+        />
+      ) : isGated(finding.severity) ? (
+        // Gated finding on a non-actionable review (e.g. an old completed one) —
+        // show why there are no controls rather than rendering inert buttons.
+        <div className="not-gated">
+          <span className="ng">
+            {finding.severity.toLowerCase()} severity · gated the PR at review time
+          </span>
+        </div>
       ) : null}
     </div>
   );

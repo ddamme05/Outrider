@@ -922,3 +922,205 @@ h1 {
   font-size: 12px;
   color: var(--text-2);
 }
+
+/* ============================================================
+ * HITL decision controls (step 4). Inline on gated finding cards when the
+ * review is at the gate; sticky submit bar. Lifted from the mockup.
+ * ============================================================ */
+.hitl {
+  margin: 0 16px 14px;
+  padding: 13px;
+  border-radius: var(--radius-md);
+  background: var(--bg-1);
+  border: 1px solid var(--border-soft);
+}
+.hitl .h-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  font-weight: 600;
+  margin-bottom: 9px;
+}
+.hitl .h-label .req {
+  color: var(--sev-medium);
+}
+.outcome-row {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.outcome-btn {
+  flex: 1;
+  min-width: 92px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.outcome-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-0);
+}
+.outcome-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.outcome-btn.sel-approve {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.outcome-btn.sel-reject {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.34);
+  color: #f98b8b;
+}
+.outcome-btn.sel-suppress {
+  background: rgba(156, 163, 175, 0.12);
+  border-color: var(--border-strong);
+  color: var(--text-0);
+}
+.outcome-btn.sel-override {
+  background: rgba(234, 179, 8, 0.12);
+  border-color: rgba(234, 179, 8, 0.34);
+  color: #f0cb52;
+}
+.reason-wrap {
+  margin-top: 11px;
+  display: none;
+}
+.reason-wrap.show {
+  display: block;
+}
+.reason-wrap label {
+  font-size: 11.5px;
+  color: var(--text-2);
+  display: block;
+  margin-bottom: 6px;
+}
+.reason-wrap textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 52px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  padding: 9px 11px;
+  font-family: var(--sans);
+  font-size: 13px;
+  outline: none;
+}
+.reason-wrap textarea:focus {
+  border-color: var(--accent-line);
+}
+.reason-wrap .counter {
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: right;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.reason-wrap .counter.warn {
+  color: var(--sev-high);
+}
+.override-wrap {
+  margin-top: 11px;
+  display: none;
+  gap: 12px;
+  align-items: flex-end;
+}
+.override-wrap.show {
+  display: flex;
+}
+.override-wrap .field {
+  flex: 1;
+}
+.override-wrap .field label {
+  font-size: 11.5px;
+  color: var(--text-2);
+  display: block;
+  margin-bottom: 6px;
+}
+.override-wrap .ro {
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px dashed var(--border-soft);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.override-wrap select {
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text-0);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+.override-wrap select:focus {
+  border-color: var(--accent-line);
+}
+.not-gated {
+  padding: 0 16px 14px;
+}
+.not-gated .ng {
+  font-size: 11.5px;
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-softer);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+}
+.submit-bar {
+  position: sticky;
+  bottom: 16px;
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
+}
+.submit-bar .status-text {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.submit-bar .status-text b {
+  color: var(--text-0);
+}
+.btn {
+  padding: 8px 15px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-3);
+  color: var(--text-0);
+}
+.btn.primary {
+  background: var(--accent);
+  color: #0d0e10;
+  border-color: var(--accent);
+}
+.btn.primary:disabled {
+  background: var(--surface-3);
+  color: var(--text-3);
+  border-color: var(--border-soft);
+  cursor: not-allowed;
+}
