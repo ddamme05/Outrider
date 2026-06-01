@@ -1,0 +1,1129 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Outrider",
+    "description": "Agentic PR review (intake \u2192 triage \u2192 analyze \u21c4 trace \u2192 synthesize \u2192 hitl \u2192 publish).",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/webhooks/github": {
+      "post": {
+        "summary": "Receive Pull Request Webhook",
+        "description": "Receive a GitHub pull_request webhook, seed a review, dispatch the graph.",
+        "operationId": "receive_pull_request_webhook_webhooks_github_post",
+        "parameters": [
+          {
+            "name": "x-hub-signature-256",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Hub-Signature-256"
+            }
+          },
+          {
+            "name": "x-github-event",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Github-Event"
+            }
+          },
+          {
+            "name": "x-github-delivery",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Github-Delivery"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Receive Pull Request Webhook Webhooks Github Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{review_id}/decide": {
+      "post": {
+        "tags": [
+          "hitl"
+        ],
+        "summary": "Decide",
+        "description": "Accept a HITL approval submission for `review_id`.\n\nFlow (M12 step-order is load-bearing):\n  1. Auth (via `require_admin_api_key` Depends). 401 on failure.\n  2. State preflight via `ReviewStatusReader.fetch_for_decide`.\n     409 if: hitl_request is None / status not in the HITL set /\n     hitl_decision already landed.\n  3. Mismatch check: payload `finding_id` set must equal the\n     gated set on `hitl_request.findings_requiring_approval`.\n     422 with `{\"missing\": [...], \"extras\": [...]}` on mismatch.\n  4. Construct typed `HITLDecision` server-side (server-set\n     `reviewer_id`, server-derived `original_severity` from the\n     preflight map for SEVERITY_OVERRIDE outcomes, server-set\n     `decided_at=datetime.now(UTC)`).\n  5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI\n     `BackgroundTasks`; return 202 immediately.",
+        "operationId": "decide_reviews__review_id__decide_post",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HITLDecisionPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_DecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reviews": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "List Reviews",
+        "description": "The review queue. Excludes `is_eval=True` rows unless\n`include_eval=true` (eval-isolation default per `docs/testing.md`).",
+        "operationId": "list_reviews_api_reviews_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "running",
+                    "awaiting_approval",
+                    "awaiting_approval_expired",
+                    "completed",
+                    "failed",
+                    "skipped"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "repo_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repo Id"
+            }
+          },
+          {
+            "name": "include_eval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Eval"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reviews/{review_id}": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Review",
+        "description": "One review's detail + audit-stream-computed metrics. 404 if absent.\n\nA direct fetch by id is not `is_eval`-filtered \u2014 the list endpoint is the\neval-isolation surface; holding the id is sufficient to view it.",
+        "operationId": "get_review_api_reviews__review_id__get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reviews/{review_id}/findings": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "List Findings",
+        "description": "A review's findings, assembled from the permanent audit record.\n\n404 if the review doesn't exist. Surviving `findings`-table rows render as\nfull findings; a `FindingEvent` whose `findings` row was purged under\nretention renders as a `content_redacted=True` stub from `FindingEvent`\nmetadata (DECISIONS.md#014 point 3 \u2014 the audit trail outlives the content).\nEach finding's publish lifecycle is joined from the audit stream:\n`publish_destination` (`PublishRoutingEvent`) and `eligibility` /\n`eligibility_reason` (`PublishEligibilityEvent`) \u2014 separate per\nDECISIONS.md#023, so a routed finding can still show `withheld`. None of\nthese are read from the (V1-null) `findings.publish_destination` column.",
+        "operationId": "list_findings_api_reviews__review_id__findings_get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reviews/{review_id}/replay": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Replay Verdict",
+        "description": "Replay-equivalence verdict \u2014 wraps `audit/replay.py::AuditReplayer`.\n\n404 if the review has no audit-event rows (`ReplayReviewNotFoundError`).\nSingle-snapshot: `reconstruct` (one REPEATABLE READ snapshot) gives mode +\ncounts, then `assert_equivalent` verifies THAT SAME reconstruction \u2014 so the\nverdict can't mix counts from one snapshot with pass/fail from another (the\nbug if we re-ran `assert_replay_equivalent`, which reconstructs again). Both\nread-only (no mutation). A `ReplayEquivalenceError` from either step yields\n`replay_equivalent=False` carrying the failing check's message, NOT a 500 \u2014\nthe verdict IS the product. (A corrupt payload that won't even deserialize\nsurfaces as the underlying `ValidationError` \u2192 500, the genuine-corruption\ncase.) `phases` is intentionally not exposed (FUP-125).",
+        "operationId": "get_replay_verdict_api_reviews__review_id__replay_get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayVerdict"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "**Liveness only**, not readiness.\n\nReturns 200 once the lifespan reaches its `yield` (i.e., the\nprocess booted and dependency CONSTRUCTORS ran without raising).\nIt does NOT probe DB connectivity, Anthropic reachability, or\nGitHub-API health \u2014 the lifespan's construction may have built an\nengine pointed at an unreachable Postgres host and this endpoint\nwould still return 200.\n\nUseful as a \"did uvicorn boot\" smoke test behind smee.io /\ncloudflared / nginx. NOT a substitute for an actual readiness\nprobe; layer that on top if you need it.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "FindingSeverity": {
+        "type": "string",
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low",
+          "info"
+        ],
+        "title": "FindingSeverity",
+        "description": "Severity tier assigned by SEVERITY_POLICY, never by the model."
+      },
+      "FindingView": {
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "finding_type": {
+            "type": "string",
+            "title": "Finding Type"
+          },
+          "dimension": {
+            "type": "string",
+            "title": "Dimension"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "evidence_tier": {
+            "type": "string",
+            "title": "Evidence Tier"
+          },
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "line_start": {
+            "type": "integer",
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "title": "Line End"
+          },
+          "content_redacted": {
+            "type": "boolean",
+            "title": "Content Redacted"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "suggested_fix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Fix"
+          },
+          "query_match_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Match Id"
+          },
+          "trace_path": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Path"
+          },
+          "publish_destination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publish Destination"
+          },
+          "eligibility": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligibility"
+          },
+          "eligibility_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligibility Reason"
+          },
+          "redaction_sweep_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Sweep At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finding_id",
+          "finding_type",
+          "dimension",
+          "severity",
+          "evidence_tier",
+          "file_path",
+          "line_start",
+          "line_end",
+          "content_redacted",
+          "title",
+          "description",
+          "evidence",
+          "suggested_fix",
+          "query_match_id",
+          "trace_path",
+          "publish_destination",
+          "eligibility",
+          "eligibility_reason",
+          "redaction_sweep_at"
+        ],
+        "title": "FindingView",
+        "description": "One finding, assembled from the permanent audit record + content.\n\nMetadata (type/severity/file/line/dimension/tier/proof) comes from the\n`FindingEvent` audit row (permanent). Content (`title`/`description`/\n`evidence`/`suggested_fix`) comes from the `findings` table \u2014 present\nwithin the retention window, `None` with `content_redacted=True` once the\nrow is purged but the `FindingEvent` survives (DECISIONS.md#014 point 3:\n\"render a dangling finding_id as content redacted per retention policy\").\n\nLifecycle fields joined from the audit stream (per DECISIONS.md#023's\nrouting\u2260eligibility split): `publish_destination` from `PublishRoutingEvent`\n(where coordinates classified it); `eligibility` / `eligibility_reason`\nfrom `PublishEligibilityEvent` (whether it actually materialized). A\nhigh/critical finding pre-HITL shows `inline_comment` + `withheld` +\n`hitl_required_node_absent` \u2014 routed but not posted. All three are `None`\nuntil publish runs.\n\nHITL override-provenance (original\u2192override severity / outcome / reason)\nis a separate follow-up \u2014 FUP-128."
+      },
+      "FindingsResponse": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingView"
+            },
+            "type": "array",
+            "title": "Findings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "findings"
+        ],
+        "title": "FindingsResponse"
+      },
+      "HITLDecisionPayload": {
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/PerFindingDecisionPayload"
+            },
+            "type": "array",
+            "maxItems": 256,
+            "minItems": 1,
+            "title": "Decisions"
+          },
+          "annotation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annotation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decisions"
+        ],
+        "title": "HITLDecisionPayload",
+        "description": "Body shape for `POST /reviews/{review_id}/decide`.\n\n`decisions` is a non-empty tuple bounded at 256 entries (matches\n`HITLRequest.findings_requiring_approval` producer-side cap);\n`annotation` is optional forensic prose, capped at 2000 chars\nmatching `HITLDecisionEvent.annotation`."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PerFindingDecisionPayload": {
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/PerFindingOutcome"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Reason"
+          },
+          "override_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finding_id",
+          "outcome",
+          "reason"
+        ],
+        "title": "PerFindingDecisionPayload",
+        "description": "Reviewer-submitted decision shape.\n\nDistinct from `PerFindingDecision`: `original_severity` is NOT\naccepted here (the endpoint derives it server-side from the\npersisted `FindingEvent.severity` via `ReviewDecidePreflight`)\nAND `reviewer_id` is NOT in this payload (set server-side from\nauth context to the literal `admin` under V1 ADMIN_API_KEY\nscope)."
+      },
+      "PerFindingOutcome": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "reject",
+          "suppress",
+          "severity_override"
+        ],
+        "title": "PerFindingOutcome",
+        "description": "Per-finding HITL decision outcomes per spec \u00a77.4."
+      },
+      "ReplayVerdict": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "replay_equivalent": {
+            "type": "boolean",
+            "title": "Replay Equivalent"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "event_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Count"
+          },
+          "finding_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Count"
+          },
+          "orphan_finding_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphan Finding Count"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "replay_equivalent",
+          "mode",
+          "event_count",
+          "finding_count",
+          "orphan_finding_count",
+          "reason"
+        ],
+        "title": "ReplayVerdict",
+        "description": "Replay-equivalence verdict for one review \u2014 a thin wrapper over\n`audit/replay.py::AuditReplayer`.\n\nDeliberately does NOT expose `reconstruct()`'s `phases` grouping (FUP-125:\ntrustworthy only after `assert_replay_equivalent`) \u2014 only the mode, the\ncounts, and the pass/fail verdict. `mode`/`event_count`/`finding_count`/\n`orphan_finding_count` are `None` only when `reconstruct` itself raised\n(corrupt row/payload/is_eval drift). `reason` carries the failing-check\nmessage when not equivalent \u2014 metadata only (ids / hashes / counts /\nenum values), never finding content (per the replay verifier's design)."
+      },
+      "ReviewDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "installation_id": {
+            "type": "integer",
+            "title": "Installation Id"
+          },
+          "repo_id": {
+            "type": "integer",
+            "title": "Repo Id"
+          },
+          "pr_number": {
+            "type": "integer",
+            "title": "Pr Number"
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/ReviewMetricsView"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "installation_id",
+          "repo_id",
+          "pr_number",
+          "head_sha",
+          "status",
+          "is_eval",
+          "created_at",
+          "updated_at",
+          "completed_at",
+          "expires_at",
+          "metrics",
+          "policy_version"
+        ],
+        "title": "ReviewDetail"
+      },
+      "ReviewListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "installation_id": {
+            "type": "integer",
+            "title": "Installation Id"
+          },
+          "repo_id": {
+            "type": "integer",
+            "title": "Repo Id"
+          },
+          "pr_number": {
+            "type": "integer",
+            "title": "Pr Number"
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/ReviewMetricsView"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "installation_id",
+          "repo_id",
+          "pr_number",
+          "head_sha",
+          "status",
+          "is_eval",
+          "created_at",
+          "updated_at",
+          "completed_at",
+          "metrics"
+        ],
+        "title": "ReviewListItem"
+      },
+      "ReviewListResponse": {
+        "properties": {
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewListItem"
+            },
+            "type": "array",
+            "title": "Reviews"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reviews",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "ReviewListResponse"
+      },
+      "ReviewMetricsView": {
+        "properties": {
+          "llm_calls_made": {
+            "type": "integer",
+            "title": "Llm Calls Made"
+          },
+          "total_input_tokens": {
+            "type": "integer",
+            "title": "Total Input Tokens"
+          },
+          "total_output_tokens": {
+            "type": "integer",
+            "title": "Total Output Tokens"
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "title": "Total Cost Usd"
+          },
+          "files_examined": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files Examined"
+          },
+          "files_traced_beyond_diff": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files Traced Beyond Diff"
+          },
+          "wall_clock_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Clock Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "llm_calls_made",
+          "total_input_tokens",
+          "total_output_tokens",
+          "total_cost_usd",
+          "files_examined",
+          "files_traced_beyond_diff",
+          "wall_clock_seconds"
+        ],
+        "title": "ReviewMetricsView",
+        "description": "Audit-stream-computed metrics for one review (see module docstring).\n\nFile/wall-clock fields are `None` when the review has no\n`SynthesizeCompletedEvent` yet \u2014 render pending, never zero."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "_DecideResponse": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "status"
+        ],
+        "title": "_DecideResponse",
+        "description": "202 Accepted body."
+      }
+    }
+  }
+}
