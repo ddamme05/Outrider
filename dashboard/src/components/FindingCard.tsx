@@ -1,6 +1,6 @@
 import type { components } from "../api/schema";
 import { DecisionControls } from "./DecisionControls";
-import { type DecisionDraft, isGated } from "../lib/hitl";
+import type { DecisionDraft } from "../lib/hitl";
 
 type FindingView = components["schemas"]["FindingView"];
 
@@ -16,11 +16,14 @@ function loc(f: FindingView): string {
 // policy enums, so they map straight to the sev-*/tier-* classes.
 export function FindingCard({
   finding,
+  wasGated,
   decision,
   disabled,
   onDecisionChange,
 }: {
   finding: FindingView;
+  // True iff this finding is in the review's authoritative HITL gated set.
+  wasGated?: boolean;
   decision?: DecisionDraft;
   disabled?: boolean;
   onDecisionChange?: (next: DecisionDraft) => void;
@@ -117,13 +120,11 @@ export function FindingCard({
           disabled={disabled ?? false}
           onChange={onDecisionChange}
         />
-      ) : isGated(finding.severity) ? (
+      ) : wasGated ? (
         // Gated finding on a non-actionable review (e.g. an old completed one) —
         // show why there are no controls rather than rendering inert buttons.
         <div className="not-gated">
-          <span className="ng">
-            {finding.severity.toLowerCase()} severity · gated the PR at review time
-          </span>
+          <span className="ng">gated the PR · decided at review time</span>
         </div>
       ) : null}
     </div>

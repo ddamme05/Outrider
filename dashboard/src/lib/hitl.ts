@@ -14,21 +14,15 @@ export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const
 export const RESUME_WINDOW_MS = 12000;
 
 // A review only accepts decisions while it sits at the HITL gate. The detail
-// view can also show old completed/running/failed reviews that happen to carry
-// critical/high findings — those must be READ-ONLY, not controls that 409.
+// view can also show old completed/running/failed reviews that carried gated
+// findings — those must be READ-ONLY, not controls that 409.
 export function isActionable(status: string): boolean {
   return status === "awaiting_approval" || status === "awaiting_approval_expired";
 }
 
-// The HITL gate fires on CRITICAL/HIGH findings (architecture: hitl interrupts
-// when any finding is critical or high). We DERIVE the gated set from severity
-// because no read endpoint exposes hitl_request.findings_requiring_approval —
-// this is UI selection only; the decide endpoint's exact-set 422 is authoritative
-// (see FUP-134).
-export function isGated(severity: string): boolean {
-  const s = severity.toLowerCase();
-  return s === "critical" || s === "high";
-}
+// The gated set is the AUTHORITATIVE `ReviewDetail.findings_requiring_approval`
+// from the server (FUP-134) — membership by finding_id, not inferred from
+// severity. The decide endpoint enforces the exact same set.
 
 // In-progress reviewer state for one finding. Final shape is built at submit.
 export interface DecisionDraft {

@@ -15,7 +15,6 @@ import {
   decideErrorMessage,
   isActionable,
   isDraftValid,
-  isGated,
   toPayload,
 } from "../lib/hitl";
 
@@ -72,9 +71,16 @@ export function ReviewDetail() {
 
   const allFindings = useMemo(() => findings.data?.findings ?? [], [findings.data]);
   const actionable = isActionable(detail.data?.status ?? "");
+  // Authoritative gated set from the server (ReviewDetail.findings_requiring_approval),
+  // by finding_id — never inferred from severity. The decide endpoint enforces
+  // the identical set.
+  const gatedSet = useMemo(
+    () => new Set(detail.data?.findings_requiring_approval ?? []),
+    [detail.data],
+  );
   const gated = useMemo(
-    () => (actionable ? allFindings.filter((f) => isGated(f.severity)) : []),
-    [actionable, allFindings],
+    () => (actionable ? allFindings.filter((f) => gatedSet.has(f.finding_id)) : []),
+    [actionable, allFindings, gatedSet],
   );
 
   if (!enabled) {
@@ -231,11 +237,13 @@ export function ReviewDetail() {
         <p style={{ color: "var(--text-2)" }}>No findings recorded for this review.</p>
       ) : (
         allFindings.map((f) => {
-          const decidable = actionable && isGated(f.severity);
+          const wasGated = gatedSet.has(f.finding_id);
+          const decidable = actionable && wasGated;
           return (
             <FindingCard
               key={f.finding_id}
               finding={f}
+              wasGated={wasGated}
               decision={decidable ? getDraft(f.finding_id) : undefined}
               // Lock controls while submitting and once submitted — including the
               // stuck state: a re-submit must resend the SAME payload (divergent
