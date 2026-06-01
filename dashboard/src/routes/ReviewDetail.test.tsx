@@ -308,3 +308,46 @@ test("completed review fails CLOSED when /events is unavailable — no fabricate
   expect(screen.queryByText("passed")).toBeNull();
   expect(screen.queryByText("posted")).toBeNull();
 });
+
+test("completed review shows the authoritative gated count, not 0, in the findings header", async () => {
+  // 2 findings gated the PR (decided at review time). Non-actionable now, so the
+  // live `gated` set is empty — but the header must still show the server snapshot
+  // count, not "0 gated" (the proof/HITL-side analogue of the /events fail-open).
+  mount({
+    detail: detail({ status: "completed", findings_requiring_approval: ["f1", "f2"] }),
+    findings: [
+      finding({ finding_id: "f1" }),
+      finding({ finding_id: "f2", finding_type: "xss" }),
+    ],
+  });
+  await screen.findByText(/sql_injection/);
+  expect(screen.getByText(/2 findings · 2 gated/)).toBeInTheDocument();
+});
+
+test("findings header fails CLOSED when /findings is unavailable — no fabricated 0 findings", async () => {
+  server.use(
+    http.get("http://localhost/api/policy/:version", ({ params }) =>
+      HttpResponse.json({ version: params.version, entries: [] }),
+    ),
+    http.get(BASE, () => HttpResponse.json(detail())),
+    http.get(`${BASE}/findings`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    http.get(`${BASE}/replay`, () => HttpResponse.json(replay())),
+    http.get(`${BASE}/events`, () => HttpResponse.json({ review_id: "r1", events: [], total: 0 })),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={["/reviews/r1"]}>
+        <Routes>
+          <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  // The findings tab surfaces the load error explicitly…
+  expect(await screen.findByText("Failed to load findings.")).toBeInTheDocument();
+  // …and the findings count fails closed to "—", never a fabricated "0 findings"
+  // (asserted on the metrics card, which is unique — the pipeline's "paused · N
+  // findings" is a separate gate count from the detail snapshot).
+  expect(screen.getByText(/policy v3 · — findings/)).toBeInTheDocument();
+});

@@ -124,6 +124,21 @@ export function ReviewDetail() {
   // would be a fabricated audit fact when we simply haven't fetched the stream.
   const eventsLoaded = events.data !== undefined;
   const eventCountLabel = eventsLoaded ? String(events.data.total) : events.error ? "—" : "…";
+  // Findings count fails CLOSED the same way: "…"/"—" until /findings loads, never
+  // a fabricated "0 findings". The displayed GATED count is the server-authoritative
+  // snapshot (findings_requiring_approval, from detail) — independent of the
+  // /findings load AND of actionability, so a completed review still shows how many
+  // findings gated the PR. null = gate not yet determined → "—". (`gated` below stays
+  // the currently-decidable set, used only for the live decision controls.)
+  const findingsLoaded = findings.data !== undefined;
+  const findingCountLabel = findingsLoaded
+    ? String(allFindings.length)
+    : findings.error
+      ? "—"
+      : "…";
+  const reqApproval = d.findings_requiring_approval;
+  const gatedCount = reqApproval?.length ?? 0;
+  const gatedCountLabel = reqApproval == null ? "—" : String(reqApproval.length);
   const m = d.metrics;
 
   const getDraft = (id: string): DecisionDraft => drafts[id] ?? EMPTY_DRAFT;
@@ -231,7 +246,7 @@ export function ReviewDetail() {
           <div className="ms-val">${m.total_cost_usd.toFixed(2)}</div>
           <div className="ms-sub">
             {d.policy_version ? `policy ${d.policy_version} · ` : ""}
-            {allFindings.length} findings
+            {findingCountLabel} findings
           </div>
         </div>
         <div className="ms-card">
@@ -259,7 +274,7 @@ export function ReviewDetail() {
         status={d.status}
         events={events.data?.events ?? []}
         eventsLoaded={eventsLoaded}
-        gatedCount={gated.length}
+        gatedCount={gatedCount}
         policyVersion={d.policy_version}
       />
 
@@ -281,7 +296,7 @@ export function ReviewDetail() {
           aria-selected={tab === "findings"}
           onClick={() => setTab("findings")}
         >
-          Findings <span className="muted">({allFindings.length})</span>
+          Findings <span className="muted">({findingCountLabel})</span>
         </button>
         <button
           className={`tab ${tab === "audit" ? "active" : ""}`}
@@ -298,7 +313,7 @@ export function ReviewDetail() {
           <h2>{tab === "findings" ? "Findings" : "Audit feed"}</h2>
           <div className="sub">
             {tab === "findings"
-              ? `${allFindings.length} findings · ${gated.length} gated`
+              ? `${findingCountLabel} findings · ${gatedCountLabel} gated`
               : `${eventCountLabel} events`}
           </div>
         </div>
