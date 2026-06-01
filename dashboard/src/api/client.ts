@@ -26,7 +26,15 @@ const authMiddleware: Middleware = {
   },
 };
 
-const fetchClient = createFetchClient<paths>({ baseUrl });
+// Resolve `fetch` lazily at call time rather than letting openapi-fetch capture
+// globalThis.fetch at construction. The client is built at module import; a
+// captured reference would bind whatever fetch existed then — which breaks test
+// interceptors (MSW) that patch globalThis.fetch after import, and any future
+// runtime fetch swap. Calling through globalThis on each request is free.
+const fetchClient = createFetchClient<paths>({
+  baseUrl,
+  fetch: (...args) => globalThis.fetch(...args),
+});
 fetchClient.use(authMiddleware);
 
 /** Typed TanStack-Query hooks bound to the OpenAPI schema. */
