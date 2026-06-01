@@ -119,6 +119,7 @@ async def dashboard_client(
                 "files_examined": 5,
                 "files_traced_beyond_diff": 2,
                 "wall_clock_seconds": 42.5,
+                "policy_version": "1.0.0",
             },
         )
         review_b = await _seed_review(
@@ -192,6 +193,9 @@ async def test_metric_contract_from_audit_stream_not_reviews_columns(
     assert m["files_examined"] == 5
     assert m["files_traced_beyond_diff"] == 2
     assert m["wall_clock_seconds"] == pytest.approx(42.5)
+    # policy_version read from the per-review snapshot on the audit stream
+    # (synthesize_completed payload here), not the reviews row.
+    assert resp.json()["policy_version"] == "1.0.0"
 
 
 @pytest.mark.asyncio
@@ -209,6 +213,8 @@ async def test_running_review_file_metrics_null_not_zero(
     # LLM sum still works for a review with >=1 call.
     assert m["llm_calls_made"] == 1
     assert m["total_input_tokens"] == 10
+    # No policy-version-bearing event yet (only an llm_call) -> None.
+    assert resp.json()["policy_version"] is None
 
 
 @pytest.mark.asyncio

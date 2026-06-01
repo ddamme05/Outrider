@@ -94,5 +94,6 @@ def test_detail_forbids_extra_fields() -> None:
             completed_at=aware,
             expires_at=None,
             metrics=_metrics(),
+            policy_version="1.0.0",
             bogus=1,  # type: ignore[call-arg]
         )
