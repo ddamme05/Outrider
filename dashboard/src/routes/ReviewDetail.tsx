@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
+import { AuditFeed } from "../components/AuditFeed";
+import { DetailsGrid } from "../components/DetailsGrid";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { ReplayPanel } from "../components/ReplayPanel";
@@ -41,9 +43,16 @@ export function ReviewDetail() {
     enabled,
   });
   const replay = $api.useQuery("get", "/api/reviews/{review_id}/replay", pathParams, { enabled });
+  // The audit-event stream powers both the Audit-feed tab and the per-node Details
+  // grid (FUP-133). Polled with the detail so a running review's feed fills in.
+  const events = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
+    enabled,
+    refetchInterval: 2000,
+  });
 
   // Hooks must run unconditionally, before the early returns below.
   const queryClient = useQueryClient();
+  const [tab, setTab] = useState<"findings" | "audit">("findings");
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [submitted, setSubmitted] = useState(false);
   const decide = $api.useMutation("post", "/reviews/{review_id}/decide");
@@ -215,6 +224,13 @@ export function ReviewDetail() {
         </div>
       </div>
 
+      {events.data && events.data.events.length > 0 ? (
+        <details className="details-disc">
+          <summary>▸ Per-node details</summary>
+          <DetailsGrid events={events.data.events} />
+        </details>
+      ) : null}
+
       {replay.isLoading ? (
         <p className="replay-status">Checking replay equivalence…</p>
       ) : replay.error ? (
@@ -224,38 +240,57 @@ export function ReviewDetail() {
       ) : null}
 
       <div className="tabs" role="tablist">
-        <button className="tab active" role="tab" aria-selected="true">
+        <button
+          className={`tab ${tab === "findings" ? "active" : ""}`}
+          role="tab"
+          aria-selected={tab === "findings"}
+          onClick={() => setTab("findings")}
+        >
           Findings <span className="muted">({allFindings.length})</span>
+        </button>
+        <button
+          className={`tab ${tab === "audit" ? "active" : ""}`}
+          role="tab"
+          aria-selected={tab === "audit"}
+          onClick={() => setTab("audit")}
+        >
+          Audit feed <span className="muted">({events.data?.total ?? 0})</span>
         </button>
       </div>
 
-      {findings.isLoading ? (
-        <p>Loading findings…</p>
-      ) : findings.error ? (
-        <p className="error">Failed to load findings.</p>
-      ) : allFindings.length === 0 ? (
-        <p style={{ color: "var(--text-2)" }}>No findings recorded for this review.</p>
+      {tab === "findings" ? (
+        findings.isLoading ? (
+          <p>Loading findings…</p>
+        ) : findings.error ? (
+          <p className="error">Failed to load findings.</p>
+        ) : allFindings.length === 0 ? (
+          <p style={{ color: "var(--text-2)" }}>No findings recorded for this review.</p>
+        ) : (
+          allFindings.map((f) => {
+            const wasGated = gatedSet.has(f.finding_id);
+            const decidable = actionable && wasGated;
+            return (
+              <FindingCard
+                key={f.finding_id}
+                finding={f}
+                wasGated={wasGated}
+                decision={decidable ? getDraft(f.finding_id) : undefined}
+                // Lock controls while submitting and once submitted — including the
+                // stuck state: a re-submit must resend the SAME payload (divergent
+                // content wedges the audit row), so editing stays closed until the
+                // page reloads with fresh state.
+                disabled={decide.isPending || submitted}
+                onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
+              />
+            );
+          })
+        )
+      ) : events.isLoading ? (
+        <p>Loading audit feed…</p>
+      ) : events.error ? (
+        <p className="error">Failed to load the audit feed.</p>
       ) : (
-        allFindings.map((f) => {
-          const wasGated = gatedSet.has(f.finding_id);
-          const decidable = actionable && wasGated;
-          return (
-            <FindingCard
-              key={f.finding_id}
-              finding={f}
-              wasGated={wasGated}
-              decision={decidable ? getDraft(f.finding_id) : undefined}
-              // Lock controls while submitting and once submitted — including the
-              // stuck state: a re-submit must resend the SAME payload (divergent
-              // content wedges the audit row), so editing stays closed until the
-              // page reloads with fresh state.
-              disabled={decide.isPending || submitted}
-              onDecisionChange={
-                decidable ? (next) => setDraft(f.finding_id, next) : undefined
-              }
-            />
-          );
-        })
+        <AuditFeed events={events.data?.events ?? []} />
       )}
 
       {submitted || (actionable && gated.length > 0) ? (

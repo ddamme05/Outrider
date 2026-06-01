@@ -93,6 +93,9 @@ function mount(opts: {
         reason: null,
       }),
     ),
+    http.get(`${BASE}/events`, () =>
+      HttpResponse.json({ review_id: "r1", events: [], total: 0 }),
+    ),
     http.post(DECIDE, async ({ request }) => {
       if (opts.capture) opts.capture(await request.json());
       if (opts.decideStatus === 422) {

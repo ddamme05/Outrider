@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, expect, test } from "vitest";
@@ -76,7 +77,13 @@ function replay(overrides: Record<string, unknown> = {}) {
 }
 
 function mount(
-  responses: { detail?: unknown; findings?: unknown[]; replay?: unknown; detailStatus?: number } = {},
+  responses: {
+    detail?: unknown;
+    findings?: unknown[];
+    replay?: unknown;
+    detailStatus?: number;
+    events?: unknown[];
+  } = {},
 ) {
   server.use(
     http.get(BASE, () =>
@@ -88,6 +95,10 @@ function mount(
       HttpResponse.json({ review_id: "r1", findings: responses.findings ?? [finding()] }),
     ),
     http.get(`${BASE}/replay`, () => HttpResponse.json(responses.replay ?? replay())),
+    http.get(`${BASE}/events`, () => {
+      const events = responses.events ?? [];
+      return HttpResponse.json({ review_id: "r1", events, total: events.length });
+    }),
   );
 
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -195,4 +206,56 @@ test("shows an explicit state when the replay endpoint fails (not silent omissio
 test("renders an honest error when the review can't be loaded", async () => {
   mount({ detailStatus: 404 });
   expect(await screen.findByText(/Couldn't load this review/)).toBeInTheDocument();
+});
+
+// --- FUP-133: audit feed + per-node details ---
+
+function llmEvent(node: string, cost: number): Record<string, unknown> {
+  return {
+    event_id: `e-${node}`,
+    review_id: "r1",
+    event_type: "llm_call",
+    timestamp: "2026-06-01T00:00:00Z",
+    sequence_number: 1,
+    is_eval: false,
+    model: "claude-sonnet-4-5",
+    node_id: node,
+    input_tokens: 100,
+    output_tokens: 40,
+    cached_tokens: 0,
+    cost_usd: cost,
+    pricing_version: "v1",
+    latency_ms: 1200,
+    prompt_hash: "a".repeat(64),
+    cache_hit: false,
+    context_summary: [],
+    prompt_template_version: "analyze.v1",
+    system_prompt_hash: "b".repeat(64),
+    degraded_mode: false,
+  };
+}
+
+test("audit-feed tab renders the event stream from the events endpoint", async () => {
+  const user = userEvent.setup();
+  mount({ events: [llmEvent("analyze", 0.27)] });
+  await screen.findByText("sql_injection"); // findings tab is default
+  // Tab shows the count from the events endpoint.
+  await user.click(screen.getByRole("tab", { name: /Audit feed/ }));
+  // The feed renders the event by type + node.
+  expect(await screen.findByText("llm_call")).toBeInTheDocument();
+  expect(screen.getByText(/claude-sonnet-4-5 · \$0.27/)).toBeInTheDocument();
+});
+
+test("per-node details grid derives per-node cost from llm_call events", async () => {
+  const user = userEvent.setup();
+  mount({ events: [llmEvent("analyze", 0.27), llmEvent("triage", 0.01)] });
+  await screen.findByText("sql_injection");
+  await user.click(screen.getByText("▸ Per-node details"));
+  // Per-node costs derived from the events (unique to the grid — node names
+  // themselves also appear in the pipeline strip, so assert on the costs).
+  expect(await screen.findByText("$0.27")).toBeInTheDocument();
+  expect(screen.getByText("$0.01")).toBeInTheDocument();
+  expect(screen.getAllByText("claude-sonnet-4-5").length).toBe(2); // one row per node
+  // Triage-tier omission is surfaced honestly, not faked.
+  expect(screen.getByText(/Triage per-file tiers aren't carried/)).toBeInTheDocument();
 });

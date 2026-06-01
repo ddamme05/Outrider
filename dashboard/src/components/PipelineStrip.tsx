@@ -1,9 +1,9 @@
 // The 7-node graph as a slim line. State is COARSE — derived from the review's
-// `status` only, because the detail contract carries no per-node telemetry and
-// the audit-feed/events endpoint is deferred. We mark a node "done"/"paused"
-// only where `status` guarantees it; everything else stays neutral. No trace
-// round-count badge (the contract doesn't carry it — see the mockup's "⇄ ×1",
-// which is fabricated and deliberately omitted here).
+// `status` only; per-node event-level detail lives in the Audit feed tab + the
+// Per-node details grid (both event-backed, FUP-133). We mark a node
+// "done"/"paused" only where `status` guarantees it; everything else stays
+// neutral. No trace round-count badge (the detail contract doesn't carry it —
+// see the mockup's "⇄ ×1", which is fabricated and deliberately omitted here).
 const NODES = ["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"] as const;
 
 type NodeState = "done" | "paused" | "pending" | "";
@@ -50,8 +50,8 @@ export function PipelineStrip({ status }: { status: string }) {
         ))}
       </div>
       <p className="pipeline-caption">
-        Reflects review status, not live per-node telemetry — per-node timing lands
-        with the audit-feed endpoint.
+        Reflects review status, not live per-node state — see the Audit feed tab and
+        Per-node details for the event-level breakdown.
       </p>
     </>
   );
