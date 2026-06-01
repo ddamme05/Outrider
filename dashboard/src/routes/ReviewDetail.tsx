@@ -274,7 +274,7 @@ export function ReviewDetail() {
         ) : findings.error ? (
           <p className="error">Failed to load findings.</p>
         ) : allFindings.length === 0 ? (
-          <p style={{ color: "var(--text-2)" }}>No findings recorded for this review.</p>
+          <p style={{ color: "var(--muted)" }}>No findings recorded for this review.</p>
         ) : (
           allFindings.map((f) => {
             const wasGated = gatedSet.has(f.finding_id);

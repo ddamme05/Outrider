@@ -60,7 +60,10 @@ export function FindingCard({
           <span className="dot" aria-hidden="true" />
           {tier}
         </span>
-        <span className="chip quiet">{finding.dimension}</span>
+        <span className={`dim-word dim-w-${finding.dimension}`}>
+          <span className={`dim-dot dim-${finding.dimension}`} aria-hidden="true" />
+          {finding.dimension}
+        </span>
         {finding.publish_destination ? (
           <span className="dest">→ {finding.publish_destination}</span>
         ) : null}
