@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { RESUME_WINDOW_MS } from "../lib/hitl";
 import { useTokenStore } from "../auth/token";
 import { server } from "../test/server";
 import { ReviewDetail } from "./ReviewDetail";
@@ -63,9 +64,18 @@ function finding(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mount(opts: { status?: string; findings?: unknown[]; decideStatus?: number; capture?: (b: unknown) => void } = {}) {
+function mount(opts: {
+  status?: string;
+  findings?: unknown[];
+  decideStatus?: number;
+  capture?: (b: unknown) => void;
+  resumeTo?: string; // status the detail GET returns AFTER a successful decide
+} = {}) {
+  let decided = false;
   server.use(
-    http.get(BASE, () => HttpResponse.json(detail(opts.status))),
+    http.get(BASE, () =>
+      HttpResponse.json(detail(decided && opts.resumeTo ? opts.resumeTo : opts.status)),
+    ),
     http.get(`${BASE}/findings`, () =>
       HttpResponse.json({ review_id: "r1", findings: opts.findings ?? [finding()] }),
     ),
@@ -85,6 +95,7 @@ function mount(opts: { status?: string; findings?: unknown[]; decideStatus?: num
       if (opts.decideStatus === 422) {
         return HttpResponse.json({ detail: { missing: [], extras: ["f-high"] } }, { status: 422 });
       }
+      decided = true;
       return HttpResponse.json({ review_id: "r1", status: "running" }, { status: 202 });
     }),
   );
@@ -176,3 +187,43 @@ test("a 422 set-mismatch surfaces an explicit refresh message", async () => {
     expect(screen.getByText(/no longer matches the review's gated findings/)).toBeInTheDocument(),
   );
 });
+
+// --- FUP-135: submitted-state recovery ---
+
+test("surfaces the status advancing off the gate after submit (resume took)", async () => {
+  const user = userEvent.setup();
+  mount({ resumeTo: "completed" });
+  const submit = await screen.findByRole("button", { name: /Submit decision/ });
+  await user.click(screen.getByRole("button", { name: "approve" }));
+  await user.click(submit);
+  // onSuccess invalidates → detail refetches → returns completed → "now completed".
+  expect(await screen.findByText(/review is now completed/)).toBeInTheDocument();
+});
+
+test("offers a manual refresh while awaiting resume", async () => {
+  const user = userEvent.setup();
+  mount();
+  const submit = await screen.findByRole("button", { name: /Submit decision/ });
+  await user.click(screen.getByRole("button", { name: "approve" }));
+  await user.click(submit);
+  expect(await screen.findByRole("button", { name: "Refresh status" })).toBeInTheDocument();
+});
+
+test("re-enables submit if the resume hasn't completed within the window", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  mount(); // status stays awaiting_approval — resume never advances
+  const submit = await screen.findByRole("button", { name: /Submit decision/ });
+  await user.click(screen.getByRole("button", { name: "approve" }));
+  await user.click(submit);
+  await screen.findByText(/resuming the review/);
+
+  await act(async () => {
+    vi.advanceTimersByTime(RESUME_WINDOW_MS + 100);
+  });
+
+  expect(await screen.findByText(/Resume hasn't completed/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Re-submit/ })).toBeEnabled();
+});
+
+afterEach(() => vi.useRealTimers());

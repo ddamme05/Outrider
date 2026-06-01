@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
@@ -11,6 +11,7 @@ import { expiresLabel } from "../lib/format";
 import {
   type DecisionDraft,
   EMPTY_DRAFT,
+  RESUME_WINDOW_MS,
   decideErrorMessage,
   isActionable,
   isDraftValid,
@@ -48,6 +49,19 @@ export function ReviewDetail() {
   const [submitted, setSubmitted] = useState(false);
   const decide = $api.useMutation("post", "/reviews/{review_id}/decide");
 
+  const [submitSeq, setSubmitSeq] = useState(0);
+  const [stuck, setStuck] = useState(false);
+
+  // After a submit, arm a window: if the status hasn't advanced off the gate by
+  // then, mark the resume "stuck" so the UI re-enables submit instead of showing
+  // a permanent "submitted" (FUP-135). Re-armed on each submit via submitSeq.
+  useEffect(() => {
+    if (submitSeq === 0) return;
+    setStuck(false);
+    const t = setTimeout(() => setStuck(true), RESUME_WINDOW_MS);
+    return () => clearTimeout(t);
+  }, [submitSeq]);
+
   const allFindings = useMemo(() => findings.data?.findings ?? [], [findings.data]);
   const actionable = isActionable(detail.data?.status ?? "");
   const gated = useMemo(
@@ -58,10 +72,13 @@ export function ReviewDetail() {
   if (!enabled) {
     return <p className="error">No review id in the URL.</p>;
   }
+  // Only hard-fail to the error screen on the INITIAL load (no data yet). A
+  // failed background refetch (e.g. a poll after submit) keeps the last-known
+  // data — don't blow the page away; a small banner surfaces it instead.
   if (detail.isLoading) {
     return <p>Loading…</p>;
   }
-  if (detail.error) {
+  if (detail.error && !detail.data) {
     // openapi-react-query throws only the parsed error body, not the Response,
     // so we can't read the status here to distinguish 404 from 5xx — keep the
     // message honest rather than claiming a cause we can't confirm.
@@ -82,7 +99,10 @@ export function ReviewDetail() {
     setDrafts((prev) => ({ ...prev, [id]: next }));
   const decidedCount = gated.filter((f) => isDraftValid(getDraft(f.finding_id), f)).length;
   const allGatedValid = gated.length > 0 && decidedCount === gated.length;
-  const canSubmit = actionable && allGatedValid && !decide.isPending && !submitted;
+  // The review advanced off the gate after our submit — the resume took.
+  const resumed = submitted && !actionable;
+  // Submit is re-enabled if never submitted, OR the resume looks stuck.
+  const canSubmit = actionable && allGatedValid && !decide.isPending && (!submitted || stuck);
 
   const onSubmit = () => {
     const decisions = gated.map((f) => toPayload(getDraft(f.finding_id), f));
@@ -91,6 +111,7 @@ export function ReviewDetail() {
       {
         onSuccess: () => {
           setSubmitted(true);
+          setSubmitSeq((n) => n + 1); // (re-)arm the stuck-detection window
           // Decide returns 202 and resumes the graph in the background; let the
           // 2s polls surface the awaiting → running → completed transition.
           void queryClient.invalidateQueries();
@@ -104,6 +125,12 @@ export function ReviewDetail() {
       <Link to="/reviews" className="backlink">
         ← Reviews
       </Link>
+
+      {detail.error && detail.data ? (
+        <p className="queue-notice" role="alert">
+          Couldn't refresh — showing the last loaded state. It may be out of date.
+        </p>
+      ) : null}
 
       <div className="hero-head">
         <h1>
@@ -199,7 +226,9 @@ export function ReviewDetail() {
               key={f.finding_id}
               finding={f}
               decision={decidable ? getDraft(f.finding_id) : undefined}
-              disabled={decide.isPending || submitted}
+              // Lock controls while submitting and after submit — but re-open
+              // them if the resume looks stuck so the operator can adjust + retry.
+              disabled={decide.isPending || (submitted && !stuck)}
               onDecisionChange={
                 decidable ? (next) => setDraft(f.finding_id, next) : undefined
               }
@@ -208,11 +237,15 @@ export function ReviewDetail() {
         })
       )}
 
-      {actionable && gated.length > 0 ? (
+      {submitted || (actionable && gated.length > 0) ? (
         <div className="submit-bar">
           <span className="status-text">
-            {submitted ? (
-              <b>Decision submitted — resuming the review.</b>
+            {resumed ? (
+              <b>Decision submitted — review is now {d.status}.</b>
+            ) : submitted && stuck ? (
+              <b>Resume hasn't completed yet — refresh to check, or re-submit.</b>
+            ) : submitted ? (
+              <b>Decision submitted — resuming the review…</b>
             ) : (
               <>
                 <b>
@@ -228,9 +261,16 @@ export function ReviewDetail() {
             </span>
           ) : null}
           <span style={{ flex: 1 }} />
-          <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
-            {decide.isPending ? "Submitting…" : "Submit decision"}
-          </button>
+          {submitted && !resumed ? (
+            <button className="btn" onClick={() => void detail.refetch()}>
+              Refresh status
+            </button>
+          ) : null}
+          {!resumed ? (
+            <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
+              {decide.isPending ? "Submitting…" : submitted && stuck ? "Re-submit" : "Submit decision"}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </section>
