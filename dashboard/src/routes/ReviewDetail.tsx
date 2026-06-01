@@ -137,7 +137,10 @@ export function ReviewDetail() {
       ? "—"
       : "…";
   const reqApproval = d.findings_requiring_approval;
-  const gatedCount = reqApproval?.length ?? 0;
+  // null (no HITL-request snapshot) is distinct from [] (snapshot, nothing gated):
+  // keep it null through to the display so neither the header nor the pipeline
+  // renders a fabricated "0" when the gate set is simply unknown.
+  const gatedCount = reqApproval == null ? null : reqApproval.length;
   const gatedCountLabel = reqApproval == null ? "—" : String(reqApproval.length);
   const m = d.metrics;
 

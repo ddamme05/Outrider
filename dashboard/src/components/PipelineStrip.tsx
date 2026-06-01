@@ -49,7 +49,9 @@ export function PipelineStrip({
   // per-node stats fail closed to "—" — node states still derive from review
   // status (a backed coarse inference), but no timing/cost/passed/posted is claimed.
   eventsLoaded: boolean;
-  gatedCount: number;
+  // Authoritative gated count from the review's findings_requiring_approval snapshot.
+  // null = no snapshot (gate set unknown) — distinct from 0; never rendered as "0".
+  gatedCount: number | null;
   policyVersion?: string | null;
 }) {
   const llm = events.filter((e): e is LLMCall => e.event_type === "llm_call");
@@ -107,8 +109,11 @@ export function PipelineStrip({
   };
 
   const statOf = (node: NodeName, state: NodeState): string => {
-    // The gate count is backed by the review's gated set, not the event stream.
-    if (node === "hitl" && state === "paused") return `paused · ${gatedCount} findings`;
+    // The gate count is backed by the review's gated set, not the event stream;
+    // null snapshot → just "paused", never a fabricated "0 findings".
+    if (node === "hitl" && state === "paused") {
+      return gatedCount === null ? "paused" : `paused · ${gatedCount} findings`;
+    }
     if (state === "skipped") return "skipped";
     if (state === "pending") return "pending";
     // Per-node timing/cost/files/resolved require the audit stream. Without it
@@ -164,10 +169,14 @@ export function PipelineStrip({
         </div>
         <div className="pipe-note">
           {awaiting ? (
-            <>
-              HITL gate engaged: {gatedCount} critical/high finding
-              {gatedCount === 1 ? "" : "s"} require human approval before publish.{" "}
-            </>
+            gatedCount === null ? (
+              <>HITL gate engaged — human approval required before publish. </>
+            ) : (
+              <>
+                HITL gate engaged: {gatedCount} critical/high finding
+                {gatedCount === 1 ? "" : "s"} require human approval before publish.{" "}
+              </>
+            )
           ) : eventsLoaded ? (
             <>Per-node model, cost and timing are from the audit stream. </>
           ) : (
