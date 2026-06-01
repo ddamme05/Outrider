@@ -53,6 +53,14 @@ if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
     from sqlalchemy.ext.asyncio import AsyncSession
 
+# The sentinel `purge_audit.installation_id` the time-based retention sweep
+# writes (`sweep/purge_expired.py::_GLOBAL_SWEEP_INSTALLATION_ID` = 0; the sweep
+# isn't scoped to one install). The reachable "review survives, findings purged"
+# case IS the TTL sweep, so a redacted finding's sweep row carries this sentinel,
+# NOT the review's installation_id (the installation-purge path uses the real id
+# but also deletes the review, so this endpoint 404s). The lookup matches both.
+_GLOBAL_SWEEP_INSTALLATION_ID = 0
+
 # The `reviews.status` PG ENUM values (`db/models/_base.py::review_status_enum`).
 # A `Literal` so FastAPI returns 422 on an unknown `?status=` rather than
 # silently matching nothing.
@@ -124,6 +132,12 @@ class ReviewDetail(BaseModel):
     completed_at: AwareDatetime | None
     expires_at: AwareDatetime | None
     metrics: ReviewMetricsView
+    # The per-review policy-version snapshot (DECISIONS.md#028), read from the
+    # audit stream — `reviews` has no policy_version column; it rides on the
+    # review's events (FindingEvent / SynthesizeCompletedEvent /
+    # PublishEligibilityEvent, all the same snapshot). `None` for a review too
+    # early to have emitted any policy-version-bearing event.
+    policy_version: str | None
 
 
 class FindingView(BaseModel):
@@ -171,11 +185,12 @@ class FindingView(BaseModel):
     eligibility: str | None
     eligibility_reason: str | None
     # Retention: for a `content_redacted` stub, the findings-retention-SWEEP
-    # date (the review's installation's latest `target_table='findings'`
-    # `purge_audit` row); `None` otherwise. This is the sweep timestamp, NOT a
-    # proven per-finding delete time — `purge_audit` is per-table-per-sweep, so
-    # exact per-finding provenance is out of reach (FUP-129). Frontend renders
-    # e.g. "content redacted in the findings retention sweep on <date>".
+    # date (latest `target_table='findings'` `purge_audit` row for the global
+    # TTL-sweep sentinel or this review's installation); `None` otherwise. The
+    # sweep timestamp, NOT a proven per-finding delete time — `purge_audit` is
+    # per-table-per-sweep, so exact per-finding provenance is out of reach
+    # (FUP-129). Frontend renders "content redacted in the findings retention
+    # sweep on <date>".
     redaction_sweep_at: AwareDatetime | None
 
 
@@ -335,6 +350,20 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
         if review is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
         metrics = await _aggregate_metrics(session, review.id)
+        # The per-review policy-version snapshot lives on the review's audit
+        # events, not the `reviews` row. Take the earliest event carrying one
+        # (they share the snapshot per DECISIONS.md#028); None pre-analyze.
+        policy_version = (
+            await session.execute(
+                select(AuditEvent.payload["policy_version"].astext)
+                .where(
+                    AuditEvent.review_id == review.id,
+                    AuditEvent.payload["policy_version"].astext.isnot(None),
+                )
+                .order_by(AuditEvent.sequence_number.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         return ReviewDetail(
             id=review.id,
             installation_id=review.installation_id,
@@ -348,6 +377,7 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
             completed_at=review.completed_at,
             expires_at=review.expires_at,
             metrics=metrics,
+            policy_version=policy_version,
         )
 
 
@@ -479,17 +509,21 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
             for payload in event_payloads
             if payload["finding_id"] not in content_fids
         }
-        # Findings-retention-SWEEP date for this review's installation — the
-        # best purge_audit can offer (per-table-per-sweep, not per-finding;
-        # FUP-129). Shared by every redacted stub here (same installation).
-        # None if no findings-purge sweep is recorded.
+        # Findings-retention-SWEEP date — the latest `target_table='findings'`
+        # purge_audit row matching EITHER the global TTL-sweep sentinel (the
+        # reachable "review survives" case) OR this review's installation (the
+        # rarer installation-purge case). Best purge_audit can offer
+        # (per-table-per-sweep, not per-finding; FUP-129); shared by every
+        # redacted stub here. None if no findings-purge sweep is recorded.
         redaction_sweep_at = None
         if redacted_by_fid:
             redaction_sweep_at = (
                 await session.execute(
                     select(PurgeAudit.timestamp)
                     .where(
-                        PurgeAudit.installation_id == installation_id,
+                        PurgeAudit.installation_id.in_(
+                            (installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
+                        ),
                         PurgeAudit.target_table == "findings",
                     )
                     .order_by(PurgeAudit.timestamp.desc())

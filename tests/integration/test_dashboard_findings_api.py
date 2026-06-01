@@ -333,11 +333,13 @@ async def test_dangling_finding_event_renders_redacted(
             severity="critical",
             evidence_tier="judged",
         )
-        # A findings-retention sweep for this installation -> the stub's
-        # redaction_sweep_at is sourced from this purge_audit row.
+        # The TTL retention sweep (the reachable case) writes purge_audit with
+        # the GLOBAL sentinel installation_id 0, NOT the review's install
+        # (sweep/purge_expired.py::_GLOBAL_SWEEP_INSTALLATION_ID). The stub's
+        # redaction_sweep_at must still resolve from this row.
         await _insert_purge_audit(
             conn,
-            installation_id=_INSTALLATION_ID,
+            installation_id=0,
             target_table="findings",
             timestamp_iso="2026-05-31T12:00:00+00:00",
         )
