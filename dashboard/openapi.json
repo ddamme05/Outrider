@@ -872,6 +872,20 @@
               }
             ],
             "title": "Policy Version"
+          },
+          "findings_requiring_approval": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Findings Requiring Approval"
           }
         },
         "additionalProperties": false,
@@ -889,7 +903,8 @@
           "completed_at",
           "expires_at",
           "metrics",
-          "policy_version"
+          "policy_version",
+          "findings_requiring_approval"
         ],
         "title": "ReviewDetail"
       },

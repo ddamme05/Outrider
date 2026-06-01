@@ -143,6 +143,14 @@ class ReviewDetail(BaseModel):
     # PublishEligibilityEvent, all the same snapshot). `None` for a review too
     # early to have emitted any policy-version-bearing event.
     policy_version: str | None
+    # The authoritative HITL gated set, read from `reviews.hitl_request`
+    # (FUP-134). `None` when no HITL request snapshot exists (the gate hasn't
+    # fired); `[]` when a snapshot exists but nothing requires approval;
+    # otherwise the exact finding ids a `/decide` payload must cover (== the
+    # set the decide endpoint enforces). The dashboard uses this instead of
+    # inferring the gate from finding severity. The UI still gates the controls
+    # on `status` ∈ awaiting_approval[_expired]; this field only defines the set.
+    findings_requiring_approval: list[str] | None
 
 
 class FindingView(BaseModel):
@@ -402,6 +410,14 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        # Authoritative gated set from the persisted HITL request snapshot
+        # (FUP-134). None when no snapshot; the stored ids are JSON strings.
+        hitl_request = review.hitl_request
+        findings_requiring_approval = (
+            [str(fid) for fid in (hitl_request.get("findings_requiring_approval") or [])]
+            if hitl_request is not None
+            else None
+        )
         return ReviewDetail(
             id=review.id,
             installation_id=review.installation_id,
@@ -416,6 +432,7 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
             expires_at=review.expires_at,
             metrics=metrics,
             policy_version=policy_version,
+            findings_requiring_approval=findings_requiring_approval,
         )
 
 
