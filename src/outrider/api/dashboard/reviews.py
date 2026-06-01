@@ -44,6 +44,11 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from sqlalchemy import Integer, Numeric, cast, func, select
 
 from outrider.api.dashboard.auth import require_admin_api_key
+from outrider.audit.replay import (
+    AuditReplayer,
+    ReplayEquivalenceError,
+    ReplayReviewNotFoundError,
+)
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
 from outrider.db.models.purge_audit import PurgeAudit
@@ -199,6 +204,30 @@ class FindingsResponse(BaseModel):
 
     review_id: UUID
     findings: list[FindingView]
+
+
+class ReplayVerdict(BaseModel):
+    """Replay-equivalence verdict for one review — a thin wrapper over
+    `audit/replay.py::AuditReplayer`.
+
+    Deliberately does NOT expose `reconstruct()`'s `phases` grouping (FUP-125:
+    trustworthy only after `assert_replay_equivalent`) — only the mode, the
+    counts, and the pass/fail verdict. `mode`/`event_count`/`finding_count`/
+    `orphan_finding_count` are `None` only when `reconstruct` itself raised
+    (corrupt row/payload/is_eval drift). `reason` carries the failing-check
+    message when not equivalent — metadata only (ids / hashes / counts /
+    enum values), never finding content (per the replay verifier's design).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: UUID
+    replay_equivalent: bool
+    mode: str | None
+    event_count: int | None
+    finding_count: int | None
+    orphan_finding_count: int | None
+    reason: str | None
 
 
 router = APIRouter(
@@ -564,3 +593,55 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
 
         views.sort(key=lambda v: (v.file_path, v.line_start, str(v.finding_id)))
         return FindingsResponse(review_id=review_id, findings=views)
+
+
+@router.get("/{review_id}/replay", response_model=ReplayVerdict)
+async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict:
+    """Replay-equivalence verdict — wraps `audit/replay.py::AuditReplayer`.
+
+    404 if the review has no audit-event rows (`ReplayReviewNotFoundError`).
+    `reconstruct` + `assert_replay_equivalent` run read-only over the audit
+    stream + content tables (no mutation). A `ReplayEquivalenceError` from
+    either step yields a `replay_equivalent=False` verdict carrying the failing
+    check's message, NOT a 500 — the verdict IS the product. (A corrupt payload
+    that won't even deserialize surfaces as the underlying `ValidationError` →
+    500, the genuine-corruption case.) `phases` is intentionally not exposed
+    (FUP-125).
+    """
+    replayer = AuditReplayer(session_factory=request.app.state.session_factory)
+    try:
+        reconstructed = await replayer.reconstruct(review_id)
+    except ReplayReviewNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="review not found"
+        ) from exc
+    except ReplayEquivalenceError as exc:
+        # Reconstruction itself is non-equivalent (row-vs-payload / is_eval
+        # drift) — report the verdict; mode/counts are unavailable.
+        return ReplayVerdict(
+            review_id=review_id,
+            replay_equivalent=False,
+            mode=None,
+            event_count=None,
+            finding_count=None,
+            orphan_finding_count=None,
+            reason=str(exc),
+        )
+
+    equivalent = True
+    reason: str | None = None
+    try:
+        await replayer.assert_replay_equivalent(review_id)
+    except ReplayEquivalenceError as exc:
+        equivalent = False
+        reason = str(exc)
+
+    return ReplayVerdict(
+        review_id=review_id,
+        replay_equivalent=equivalent,
+        mode=reconstructed.mode.value,
+        event_count=len(reconstructed.events),
+        finding_count=len(reconstructed.findings),
+        orphan_finding_count=len(reconstructed.orphan_finding_ids),
+        reason=reason,
+    )
