@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from outrider.audit.events import (
+    RESERVED_HISTORICAL_PROPOSAL_HASH,
     AuditEventBase,
     FindingEvent,
     LLMCallEvent,
@@ -222,6 +223,36 @@ async def _insert_event(engine: AsyncEngine, event: AuditEventBase) -> None:
         )
 
 
+async def _insert_event_dropping(
+    engine: AsyncEngine, event: AuditEventBase, *, drop: set[str]
+) -> None:
+    """Insert an event row with `drop` fields removed from the stored payload —
+    simulates a persisted historical row written before those fields were
+    required (DECISIONS.md#032 / FUP-136). Raw insert because the model itself
+    can't be constructed without the now-required field.
+    """
+    payload = event.model_dump(mode="json", exclude={"sequence_number"})
+    for field in drop:
+        payload.pop(field, None)
+    phase_key = event.phase_key if isinstance(event, ReviewPhaseEvent) else None
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events (event_id, review_id, event_type, phase_key, "
+                "timestamp, payload) VALUES (:event_id, :review_id, :event_type, :phase_key, "
+                ":timestamp, CAST(:payload AS jsonb))"
+            ),
+            {
+                "event_id": event.event_id,
+                "review_id": event.review_id,
+                "event_type": event.event_type,
+                "phase_key": phase_key,
+                "timestamp": event.timestamp,
+                "payload": json.dumps(payload),
+            },
+        )
+
+
 async def _seed_finding_row(engine: AsyncEngine, event: FindingEvent) -> None:
     async with engine.begin() as conn:
         await conn.execute(
@@ -328,6 +359,29 @@ async def test_metadata_only_mode_reconstruct_and_assert(engine: AsyncEngine) ->
     assert review.llm_exchanges[0].prompt is None
 
     await replayer.assert_replay_equivalent(review_id)  # no raise — no content-equality claim
+
+
+async def test_historical_finding_missing_proposal_hash_reconstructs(engine: AsyncEngine) -> None:
+    """Regression for FUP-136: a persisted finding row written before
+    `proposal_hash` was required no longer 500s `reconstruct()`. The read-side
+    normalizer defaults it to the reserved sentinel (DECISIONS.md#032); the
+    whole verify path tolerates it.
+    """
+    review_id = uuid4()
+    finding = _finding_event(review_id)
+    await _insert_event(engine, _phase_event(review_id, node_id="analyze", marker="start"))
+    await _insert_event_dropping(engine, finding, drop={"proposal_hash"})  # historical row
+    await _insert_event(engine, _phase_event(review_id, node_id="analyze", marker="end"))
+
+    replayer = AuditReplayer(session_factory=async_sessionmaker(engine, expire_on_commit=False))
+    review = await replayer.reconstruct(review_id)  # must NOT raise
+
+    assert len(review.findings) == 1
+    rebuilt = next(
+        e for phase in review.phases for e in phase.events if isinstance(e, FindingEvent)
+    )
+    assert rebuilt.proposal_hash == RESERVED_HISTORICAL_PROPOSAL_HASH
+    await replayer.assert_replay_equivalent(review_id)  # verify path tolerates the historical row
 
 
 async def test_mixed_mode_when_llm_content_purged(engine: AsyncEngine) -> None:
