@@ -814,6 +814,46 @@ def _verify_row_consistent(
         )
 
 
+def reconstruct_event_from_row(
+    *,
+    payload: Mapping[str, Any],
+    sequence_number: int,
+    event_id: UUID,
+    review_id: UUID,
+    event_type: str,
+    timestamp: datetime,
+    is_eval: bool,
+    phase_key: str | None,
+) -> AuditEvent:
+    """Deserialize one `audit_events` row into a typed, row-consistent `AuditEvent`.
+
+    The single read-path for an audit row, shared by `reconstruct()` and the
+    dashboard events endpoint so neither historical tolerance nor row-consistency
+    can drift between them. Three steps, in order:
+
+    1. Default provenance-only fields absent on persisted historical rows
+       (`_normalize_historical_payload`, DECISIONS.md#032).
+    2. Validate against the typed union under the replay context, so the reserved
+       sentinel is permitted here (and only here).
+    3. `_verify_row_consistent` — the row's mirrored base columns must agree with
+       the payload, or the row is corrupt (raises `ReplayEquivalenceError`).
+    """
+    event = AuditEventAdapter.validate_python(
+        _normalize_historical_payload({**payload, "sequence_number": sequence_number}),
+        context={REPLAY_HISTORICAL_CONTEXT_KEY: True},
+    )
+    _verify_row_consistent(
+        event,
+        event_id=event_id,
+        review_id=review_id,
+        event_type=event_type,
+        timestamp=timestamp,
+        is_eval=is_eval,
+        phase_key=phase_key,
+    )
+    return event
+
+
 # ---------------------------------------------------------------------------
 # The reconstructor
 # ---------------------------------------------------------------------------
@@ -888,19 +928,10 @@ class AuditReplayer:
             ).all()
             if not rows:
                 raise ReplayReviewNotFoundError(f"no audit_events rows for review_id {review_id}")
-            reconstructed: list[AuditEvent] = []
-            for row in rows:
-                # Default provenance-only fields absent on persisted historical
-                # rows, and validate under the replay context so the reserved
-                # sentinel is permitted here (and only here). See DECISIONS.md#032.
-                event = AuditEventAdapter.validate_python(
-                    _normalize_historical_payload(
-                        {**row.payload, "sequence_number": row.sequence_number}
-                    ),
-                    context={REPLAY_HISTORICAL_CONTEXT_KEY: True},
-                )
-                _verify_row_consistent(
-                    event,
+            reconstructed: list[AuditEvent] = [
+                reconstruct_event_from_row(
+                    payload=row.payload,
+                    sequence_number=row.sequence_number,
                     event_id=row.event_id,
                     review_id=row.review_id,
                     event_type=row.event_type,
@@ -908,7 +939,8 @@ class AuditReplayer:
                     is_eval=row.is_eval,
                     phase_key=row.phase_key,
                 )
-                reconstructed.append(event)
+                for row in rows
+            ]
             events: tuple[AuditEvent, ...] = tuple(reconstructed)
 
             review_row = (

@@ -164,6 +164,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reviews/{review_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Review Events
+         * @description The review's full audit-event stream, ordered by `sequence_number` (FUP-133).
+         *
+         *     Read-only over `audit_events`, which is metadata-only by `DECISIONS.md#014`
+         *     (hashes/ids/costs — never raw prompt or finding content), so there are no
+         *     content-table joins and no redaction. Each row is rebuilt through the shared
+         *     `reconstruct_event_from_row` (the replay read-path), so historical rows tolerate
+         *     post-#025 field additions (DECISIONS.md#032) AND every row's mirrored base
+         *     columns are verified against its payload. 404 when the review has no audit rows
+         *     (parity with detail/replay). Like the detail endpoint, a by-id fetch is NOT
+         *     `is_eval`-filtered — holding the id is sufficient to view it. A single review's
+         *     stream is bounded by its graph run, so it is returned whole (no pagination).
+         */
+        get: operations["get_review_events_api_reviews__review_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -200,11 +230,448 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AgentTransitionEvent
+         * @description Node-to-node transition in the LangGraph state machine.
+         *
+         *     `from_node` and `to_node` are constrained Literals over the seven
+         *     graph nodes plus `"webhook"` — the latter is the seed source for
+         *     the FIRST transition in a review (webhook → intake), emitted by
+         *     `api/webhooks/router.py` when the review row is created. Every
+         *     subsequent transition is between two graph nodes.
+         *
+         *     Sharing the Literal with `ReviewPhaseEvent.node_id` (graph nodes
+         *     only — webhook doesn't have a phase) plus the seed exception stops
+         *     a typo (`"analyse"`, `"sythesize"`) from landing in the append-only
+         *     audit log without admitting arbitrary strings.
+         */
+        AgentTransitionEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "agent_transition";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * From Node
+             * @enum {string}
+             */
+            from_node: "webhook" | "intake" | "triage" | "analyze" | "trace" | "synthesize" | "hitl" | "publish";
+            /**
+             * To Node
+             * @enum {string}
+             */
+            to_node: "intake" | "triage" | "analyze" | "trace" | "synthesize" | "hitl" | "publish";
+            /** Latency Ms */
+            latency_ms: number;
+        };
+        /**
+         * AnalyzeCompletedEvent
+         * @description Per-pass aggregate emitted at the end of each analyze ⇄ trace iteration.
+         *
+         *     Counter fields are cross-validated by two model validators so a counter
+         *     that lies (`n_findings_emitted=5` with only 3 findings actually fired)
+         *     fails Pydantic construction, not just reads weird. See §5 of
+         *     `specs/2026-05-19-analyze-foundation.md`.
+         */
+        AnalyzeCompletedEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "analyze_completed";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Pass Index */
+            pass_index: number;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** N Files Analyzed */
+            n_files_analyzed: number;
+            /** N Files Skipped */
+            n_files_skipped: number;
+            /** N Llm Calls */
+            n_llm_calls: number;
+            /** N Proposals Seen */
+            n_proposals_seen: number;
+            /** N Findings Emitted */
+            n_findings_emitted: number;
+            /** N Proposals Rejected */
+            n_proposals_rejected: number;
+            /** N Responses Rejected */
+            n_responses_rejected: number;
+            /** N Trace Candidates Emitted */
+            n_trace_candidates_emitted: number;
+            /**
+             * N Trace Candidates Dropped Malformed
+             * @default 0
+             */
+            n_trace_candidates_dropped_malformed: number;
+            /** Total Input Tokens */
+            total_input_tokens: number;
+            /** Total Cache Read Tokens */
+            total_cache_read_tokens: number;
+            /** Total Cache Write Tokens */
+            total_cache_write_tokens: number;
+            /** Total Output Tokens */
+            total_output_tokens: number;
+            /** Total Cost Usd */
+            total_cost_usd: number;
+            /** Pricing Version */
+            pricing_version: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Analyze Model */
+            analyze_model: string;
+        };
+        /**
+         * AnalyzeResponseRejectedEvent
+         * @description Response-level rejection — the LLM response failed to parse as `AnalyzeResponseRaw`.
+         *
+         *     Distinct event from `FindingProposalRejectedEvent` because that event
+         *     presupposes a proposal; no proposal exists when the raw response
+         *     itself fails to parse. `response_hash` is the SHA-256 of the FULL
+         *     raw response text encoded as UTF-8 bytes (no truncation prefix).
+         *     Hash-only — no content leak per `DECISIONS.md#014`.
+         */
+        AnalyzeResponseRejectedEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "analyze_response_rejected";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** File Path */
+            file_path: string;
+            /** Response Hash */
+            response_hash: string;
+            /**
+             * Rejection Reason
+             * @constant
+             */
+            rejection_reason: "raw_response_unparseable";
+            /** Rejection Detail */
+            rejection_detail: string;
+        };
+        /**
+         * ContextManifestEntry
+         * @description One scope-unit entry inside `LLMCallEvent.context_summary`.
+         *
+         *     Frozen + extra=forbid because the outer event's `frozen=True` does
+         *     not propagate to nested Pydantic models. Without this, an entry
+         *     could be mutated post-construction (`entry.file_path = "..."`) even
+         *     when the containing event is frozen and the tuple is immutable.
+         */
+        ContextManifestEntry: {
+            /** File Path */
+            file_path: string;
+            /** Scope Unit Name */
+            scope_unit_name: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            /**
+             * Inclusion Reason
+             * @enum {string}
+             */
+            inclusion_reason: "changed_scope" | "same_file_context" | "trace_expansion";
+        };
+        /**
+         * EvidenceTier
+         * @description How a finding's claim is justified.
+         *
+         *     OBSERVED: structural — a tree-sitter query in the registry matched
+         *               the location, and the match id is recorded.
+         *     INFERRED: structural-by-reference — the agent walked the ast_facts
+         *               trace from a known scope to the claim site, and the
+         *               traversal path is recorded.
+         *     JUDGED:   model interpretation only. No structural evidence is
+         *               claimed. Lower confidence by construction.
+         *
+         *     Values are lowercase per docs/spec.md §7.3, matching the convention
+         *     of FindingType and FindingSeverity. The Python member names are
+         *     uppercase (PEP 8); only the serialized string values are lowercase.
+         * @enum {string}
+         */
+        EvidenceTier: "observed" | "inferred" | "judged";
+        /**
+         * FileExaminationEvent
+         * @description Records that a file was examined (parse status + node).
+         *
+         *     `skip_reason` per `DECISIONS.md#018`: non-None iff
+         *     `parse_status == "skipped"`. The cross-field validator below
+         *     enforces the bidirectional rule. Same shape as
+         *     `TraceDecisionEvent`'s `(target_file, resolution_status)` validator
+         *     per #017 — one event, one related-but-nullable field, one
+         *     cross-rule, deterministic on replay.
+         */
+        FileExaminationEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "file_examination";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** File Path */
+            file_path: string;
+            /**
+             * Examination Type
+             * @enum {string}
+             */
+            examination_type: "intake_fetch" | "analyze";
+            /**
+             * Node Id
+             * @enum {string}
+             */
+            node_id: "intake" | "analyze";
+            /**
+             * Parse Status
+             * @enum {string}
+             */
+            parse_status: "clean" | "degraded" | "failed" | "skipped";
+            skip_reason?: components["schemas"]["SkipReason"] | null;
+        };
+        /**
+         * FindingEvent
+         * @description Metadata for one finding. Proof artifacts are validated here.
+         *
+         *     `enforce_proof_boundary` runs as a model_validator so the boundary
+         *     holds at the audit-event layer too, not just at `ReviewFinding`.
+         *     Backs `evidence-tier-schema-enforced`.
+         */
+        FindingEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "finding";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            finding_type: components["schemas"]["FindingType"];
+            severity: components["schemas"]["FindingSeverity"];
+            /** File Path */
+            file_path: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            dimension: components["schemas"]["ReviewDimension"];
+            /** Finding Content Hash */
+            finding_content_hash: string;
+            evidence_tier: components["schemas"]["EvidenceTier"];
+            /** Query Match Id */
+            query_match_id?: string | null;
+            /** Trace Path */
+            trace_path?: string[] | null;
+            /** Policy Version */
+            policy_version: string;
+            /** Proposal Hash */
+            proposal_hash: string;
+        };
+        /**
+         * FindingProposalRejectedEvent
+         * @description Proposal-level rejection — one per model proposal that failed admission.
+         *
+         *     Stores `claimed_finding_type_hash` (SHA-256 short prefix) + length
+         *     rather than the raw model string per `DECISIONS.md#014` point 1:
+         *     every model-originated value is hostile until validated, so audit
+         *     rows must not carry user code or prompt/completion content.
+         *     Cross-field validator pairs `claimed_evidence_tier` with the
+         *     `evidence_tier_not_in_enum` reason bidirectionally.
+         *
+         *     `proposal_hash` carries the PR/file-scoped `compute_proposal_hash`
+         *     digest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT
+         *     source files that emit logically-identical proposals produce
+         *     DISTINCT `proposal_hash` values — preserving per-source-file
+         *     audit provenance on the join with `TraceCandidate.source_proposal_hash`.
+         */
+        FindingProposalRejectedEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "finding_proposal_rejected";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** File Path */
+            file_path: string;
+            /** Proposal Hash */
+            proposal_hash: string;
+            claimed_evidence_tier?: components["schemas"]["EvidenceTier"] | null;
+            /** Claimed Finding Type Hash */
+            claimed_finding_type_hash: string;
+            /** Claimed Finding Type Len */
+            claimed_finding_type_len: number;
+            /**
+             * Rejection Reason
+             * @enum {string}
+             */
+            rejection_reason: "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "schema_construction_failed";
+            /** Rejection Detail */
+            rejection_detail: string;
+        };
+        /**
          * FindingSeverity
          * @description Severity tier assigned by SEVERITY_POLICY, never by the model.
          * @enum {string}
          */
         FindingSeverity: "critical" | "high" | "medium" | "low" | "info";
+        /**
+         * FindingType
+         * @description The constrained enum the LLM classifies findings under.
+         *
+         *     The retry/normalize/anomaly path that turns a model-produced string
+         *     into a FindingType enum value (or anomalies if no safe match) is the
+         *     analyze node's responsibility per `finding-type-enum-constrained`.
+         *     This enum is the type system; the analyze node is what bridges from
+         *     untrusted model output to it.
+         * @enum {string}
+         */
+        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api";
         /**
          * FindingView
          * @description One finding, assembled from the permanent audit record + content.
@@ -281,6 +748,68 @@ export interface components {
             findings: components["schemas"]["FindingView"][];
         };
         /**
+         * HITLDecisionEvent
+         * @description Records the reviewer's HITL submission.
+         *
+         *     Field name `decisions` (not `per_finding_decisions`) matches the
+         *     cross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`
+         *     Amended 2026-04-29.
+         *
+         *     Carries the full `HITLDecision` field set so audit-only replay
+         *     reconstructs the state-layer object: `reviewer_id`, `decisions`,
+         *     `annotation`, `decided_at`. `decision_latency_seconds` is a derived
+         *     metric distinct from `decided_at` (the canonical time field for state
+         *     reconstruction). `decisions_content_hash` is the audit-shadow of
+         *     `compute_hitl_decision_content_hash(decisions, annotation)`; the
+         *     persister's natural-key idempotency on `(review_id)` reads this hash
+         *     via the `_IDENTITY_SUBSETS["hitl_decision"]` registry — divergent
+         *     submissions for the same review fail loudly at the persister.
+         */
+        HITLDecisionEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "hitl_decision";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Reviewer Id */
+            reviewer_id: string;
+            /** Decisions */
+            decisions: components["schemas"]["PerFindingDecision"][];
+            /** Annotation */
+            annotation?: string | null;
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decision Latency Seconds */
+            decision_latency_seconds: number;
+            /** Decisions Content Hash */
+            decisions_content_hash: string;
+        };
+        /**
          * HITLDecisionPayload
          * @description Body shape for `POST /reviews/{review_id}/decide`.
          *
@@ -295,10 +824,159 @@ export interface components {
             /** Annotation */
             annotation?: string | null;
         };
+        /**
+         * HITLRequestEvent
+         * @description Records the HITL gate envelope at interrupt time.
+         *
+         *     Audit-shadow mirror of `HITLRequest`: set-semantic partition of
+         *     findings across the two tuples + the deterministic timestamp pair
+         *     (`created_at`, `expires_at`) derived from `state.received_at`. The
+         *     natural-key idempotency on `(review_id)` requires the producer-side
+         *     derivation to be stable across body re-runs; both timestamps appear
+         *     in `_IDENTITY_SUBSETS["hitl_request"]` so drift in either derivation
+         *     surfaces as a persister conflict.
+         */
+        HITLRequestEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "hitl_request";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Findings Requiring Approval */
+            findings_requiring_approval: string[];
+            /** Auto Post Findings */
+            auto_post_findings: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * LLMCallEvent
+         * @description Metadata for one LLM call. Content lives in `llm_call_content` per #016.
+         *
+         *     Token / cost / latency fields carry `ge=0` constraints so the cost-budget
+         *     anomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't
+         *     be poisoned by a malformed negative-cost event understating review cost.
+         *
+         *     `pricing_version` records the `llm.pricing.PRICING_VERSION` value the
+         *     wrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended
+         *     2026-05-05. Replay reads this field directly so reconstruction never
+         *     depends on an external version-effective-range map.
+         */
+        LLMCallEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "llm_call";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Model */
+            model: string;
+            /**
+             * Node Id
+             * @enum {string}
+             */
+            node_id: "triage" | "analyze" | "synthesize" | "trace";
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Cached Tokens */
+            cached_tokens: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Pricing Version */
+            pricing_version: string;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Prompt Hash */
+            prompt_hash: string;
+            /** Cache Hit */
+            cache_hit: boolean;
+            /** Context Summary */
+            context_summary: components["schemas"]["ContextManifestEntry"][];
+            /** Prompt Template Version */
+            prompt_template_version: string;
+            /** System Prompt Hash */
+            system_prompt_hash: string;
+            /** Degraded Mode */
+            degraded_mode: boolean;
+            /** Degradation Reason */
+            degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions") | null;
+        };
+        /**
+         * PerFindingDecision
+         * @description One reviewer's decision on one finding.
+         *
+         *     Frozen: a per-finding decision is final at construction. Reviewer-state
+         *     revisions produce a new decision, not a mutation.
+         */
+        PerFindingDecision: {
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            outcome: components["schemas"]["PerFindingOutcome"];
+            /** Reason */
+            reason: string;
+            override_severity?: components["schemas"]["FindingSeverity"] | null;
+            original_severity?: components["schemas"]["FindingSeverity"] | null;
         };
         /**
          * PerFindingDecisionPayload
@@ -328,6 +1006,306 @@ export interface components {
          * @enum {string}
          */
         PerFindingOutcome: "approve" | "reject" | "suppress" | "severity_override";
+        /**
+         * PublishAttemptEvent
+         * @description Records the terminal outcome of one publish-attempt to GitHub.
+         *
+         *     Per Q2: single emission per attempt, AFTER the GitHub call resolves.
+         *     No in_flight pre-call emission (would conflict with append-only
+         *     audit semantics — same-event_id-different-payload raises rather than
+         *     updates). Carries `attempt_content_hash` (which includes `outcome`)
+         *     so consumer-side dedup distinguishes attempts with the same finding
+         *     set but different outcomes (e.g., success-then-failed-replay).
+         */
+        PublishAttemptEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "publish_attempt";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Attempt Index */
+            attempt_index: number;
+            outcome: components["schemas"]["PublishAttemptOutcome"];
+            /** Status Code */
+            status_code?: number | null;
+            /** Failure Class */
+            failure_class?: string | null;
+            /** Comments Attempted */
+            comments_attempted: number;
+            /**
+             * Sorted Finding Ids
+             * @default []
+             */
+            sorted_finding_ids: string[];
+            /** Attempt Content Hash */
+            attempt_content_hash: string;
+            /** Recovered Github Review Id */
+            recovered_github_review_id?: number | null;
+        };
+        /**
+         * PublishAttemptOutcome
+         * @description Terminal outcome of one `publisher.create_review` attempt.
+         *
+         *     Single emission per attempt, AFTER the GitHub call resolves. No
+         *     `in_flight` outcome — an in-flight pre-call emission would be
+         *     incompatible with `audit-events-append-only` because
+         *     same-event_id-different-payload raises
+         *     `AuditPersisterIdempotencyConflict` rather than acting as an update.
+         *     Crash-after-success defense via `find_existing_review_on_head_sha`.
+         * @enum {string}
+         */
+        PublishAttemptOutcome: "success" | "failed" | "idempotently_skipped" | "idempotently_skipped_external_record" | "no_op_empty";
+        /**
+         * PublishDestination
+         * @description Where a finding lands when published, per spec §4.1.7.
+         *
+         *     Set by `coordinates.tree_sitter_to_github` after computing the
+         *     GitHub-comment-location translation; the analyze node leaves the
+         *     field None at construction time. Backs `publish-routes-through-coordinates`.
+         * @enum {string}
+         */
+        PublishDestination: "inline_comment" | "review_body" | "dashboard_only";
+        /**
+         * PublishEligibility
+         * @description Per-finding materialization decision, separate from routing.
+         *
+         *     Per specs/2026-05-21-publish-node.md Q3: routing is coordinate-derived;
+         *     eligibility is policy-derived; they're audited independently so a
+         *     CRITICAL finding routed cleanly to INLINE_COMMENT carries
+         *     destination=INLINE_COMMENT AND eligibility=withheld.
+         * @enum {string}
+         */
+        PublishEligibility: "eligible" | "withheld";
+        /**
+         * PublishEligibilityEvent
+         * @description Records the per-finding materialization decision, separate from routing.
+         *
+         *     `policy_version` mirrors `finding.policy_version` (the snapshot under
+         *     which the finding's severity was classified) per
+         *     DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
+         *     Stamping the live process-current `ACTIVE_POLICY_VERSION` would break
+         *     `severity-policy-versioned-for-replay` across HITL-pause-then-deploy
+         *     boundaries.
+         *
+         *     Per Q3: eligibility is policy-derived (gates on severity + HITL absence).
+         *     Fires AFTER `PublishRoutingEvent` for each finding under the interleaved
+         *     per-finding routing+eligibility loop. Carries identity fields so
+         *     `_verify_content_hash_binding` can recompute `finding_content_hash` via
+         *     the canonical helper; carries `severity` + `finding_type` + `policy_version`
+         *     for severity-versioned replay (`severity-policy-versioned-for-replay`).
+         */
+        PublishEligibilityEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "publish_eligibility";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** File Path */
+            file_path: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            finding_type: components["schemas"]["FindingType"];
+            severity: components["schemas"]["FindingSeverity"];
+            original_severity?: components["schemas"]["FindingSeverity"] | null;
+            /** Finding Content Hash */
+            finding_content_hash: string;
+            /** Decision Content Hash */
+            decision_content_hash: string;
+            eligibility: components["schemas"]["PublishEligibility"];
+            reason?: components["schemas"]["PublishEligibilityReason"] | null;
+            /** Policy Version */
+            policy_version: string;
+        };
+        /**
+         * PublishEligibilityReason
+         * @description Why a finding was withheld at the eligibility gate.
+         *
+         *     The HITL node landed per `specs/2026-05-26-hitl-node.md`; the gate now
+         *     consults `hitl_decision` for CRITICAL/HIGH severities. Pre-HITL
+         *     reasons (`hitl_required_node_absent`, `unexpected_override_fields_present`,
+         *     `routing_emission_failed`) remain in the enum: the first as a
+         *     defense-in-depth signal for the bypass case where publish runs
+         *     without HITL having gated (graph wiring bug); the second as a
+         *     fabricated-override defense; the third as the routing-emission
+         *     recovery path. New HITL-driven reasons cover REJECT / SUPPRESS /
+         *     no-matching-decision outcomes.
+         * @enum {string}
+         */
+        PublishEligibilityReason: "hitl_required_node_absent" | "unexpected_override_fields_present" | "routing_emission_failed" | "hitl_decision_missing" | "hitl_rejected" | "hitl_suppressed";
+        /**
+         * PublishEvent
+         * @description Records the GitHub publish operation outcome.
+         */
+        PublishEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "publish";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Github Review Id */
+            github_review_id: number;
+            /** Comments Posted */
+            comments_posted: number;
+            /**
+             * Review Status
+             * @enum {string}
+             */
+            review_status: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+        };
+        /**
+         * PublishRoutingEvent
+         * @description Records the per-finding routing decision; backs publish-routes-through-coordinates.
+         *
+         *     Q1-extended per specs/2026-05-21-publish-node.md:
+         *
+         *     - `reason` is a `PublishRoutingReason` StrEnum (not a raw `Literal[...]`).
+         *     - `coordinate_error_kind` carries the structurally distinct CoordinateError
+         *       variants so they're queryable in the audit stream rather than collapsed
+         *       into one opaque reason. Payload contains ONLY the enum value, NEVER the
+         *       `CoordinateError.message` text — the `PATH_VALIDATION_FAILED` umbrella
+         *       would otherwise leak the validate_diff_path rule set as an enumeration
+         *       oracle to anyone with audit-log read access.
+         *     - Identity fields `file_path`, `line_start`, `line_end`, `finding_content_hash`
+         *       support post-retention metadata replay AND the `PublishEligibilityEvent`
+         *       content-hash binding validator.
+         *     - `decision_content_hash` is the consumer-side dedup identity so re-emission
+         *       with the same decision collapses, but re-emission with a different
+         *       decision surfaces as a second logical row rather than hiding behind
+         *       `finding_content_hash`.
+         */
+        PublishRoutingEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "publish_routing";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            destination: components["schemas"]["PublishDestination"];
+            reason: components["schemas"]["PublishRoutingReason"];
+            /** Coordinate Error Kind */
+            coordinate_error_kind?: string | null;
+            /** File Path */
+            file_path: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            finding_type: components["schemas"]["FindingType"];
+            /** Finding Content Hash */
+            finding_content_hash: string;
+            /** Decision Content Hash */
+            decision_content_hash: string;
+        };
+        /**
+         * PublishRoutingReason
+         * @description Why the publisher routed a finding to its `PublishDestination`.
+         *
+         *     StrEnum (not `Literal[...]`) so the routing reason mirrors the shape of
+         *     `PublishEligibilityReason` and `PublishAttemptOutcome` below. Consumers
+         *     branching on the value get `match`-statement exhaustiveness; the
+         *     audit-stream queries can filter by enum members rather than raw strings.
+         * @enum {string}
+         */
+        PublishRoutingReason: "reviewable_diff_line" | "unchanged_region" | "non_diffed_file" | "coordinate_error";
         /**
          * ReplayVerdict
          * @description Replay-equivalence verdict for one review — a thin wrapper over
@@ -399,6 +1377,35 @@ export interface components {
             /** Findings Requiring Approval */
             findings_requiring_approval: string[] | null;
         };
+        /**
+         * ReviewDimension
+         * @description The five review-dimension axes per spec §7.3.
+         * @enum {string}
+         */
+        ReviewDimension: "code_quality" | "security" | "performance" | "test_coverage" | "best_practices";
+        /**
+         * ReviewEventsResponse
+         * @description A review's full audit-event stream — the typed `AuditEvent` union per
+         *     DECISIONS-stable schema, ordered by `sequence_number` (FUP-133).
+         *
+         *     `events` exposes the metadata-only audit record as-is (no content joins, no
+         *     redaction — `audit_events` is metadata-only by `DECISIONS.md#014`). Each event
+         *     is reconstructed through `reconstruct_event_from_row` — the shared replay path —
+         *     so historical rows tolerate post-#025 field additions and every row's mirrored
+         *     base columns are verified against its payload. `total == len(events)` (a single
+         *     review's stream is bounded; no pagination — see the spec non-goals).
+         */
+        ReviewEventsResponse: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /** Events */
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"])[];
+            /** Total */
+            total: number;
+        };
         /** ReviewListItem */
         ReviewListItem: {
             /**
@@ -465,6 +1472,291 @@ export interface components {
             files_traced_beyond_diff: number | null;
             /** Wall Clock Seconds */
             wall_clock_seconds: number | null;
+        };
+        /**
+         * ReviewPhaseEvent
+         * @description Phase boundary marker; start/end pairs scope per-node work.
+         *
+         *     Per `phase-events-bound-work`, replay groups events between matching
+         *     start/end markers as belonging to one phase. `phase_key` is V1.5
+         *     forward-compat: parallel-analyze workers in V1.5 emit per-file
+         *     phase pairs keyed by file path.
+         */
+        ReviewPhaseEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "review_phase";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Phase Id */
+            phase_id: string;
+            /**
+             * Node Id
+             * @enum {string}
+             */
+            node_id: "intake" | "triage" | "analyze" | "trace" | "synthesize" | "hitl" | "publish";
+            /**
+             * Marker
+             * @enum {string}
+             */
+            marker: "start" | "end";
+            /** Phase Key */
+            phase_key?: string | null;
+        };
+        /**
+         * RiskLevel
+         * @description PR-level risk classification produced by the triage node, per spec §7.2.
+         *
+         *     Same ladder shape as FindingSeverity minus INFO (no operational meaning
+         *     at PR-level). Distinct from FindingSeverity in scope: RiskLevel measures
+         *     the PR as a whole; FindingSeverity measures one finding within it.
+         *
+         *     Added 2026-05-08 to close the canonical-shape gap. See spec.md §7.2
+         *     amendment + specs/2026-05-08-schema-foundation.md for rationale.
+         * @enum {string}
+         */
+        RiskLevel: "low" | "medium" | "high" | "critical";
+        /**
+         * SkipReason
+         * @description Skip-reason taxonomy across parser AND analyze-node decisions.
+         *
+         *     Two naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:
+         *     - Parser-stage (rule rooted in file content OR intake decode gate):
+         *       `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,
+         *       `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`
+         *       for the actual rule tuple (multiple rules may share a reason).
+         *       `BINARY` is set by intake's `_classify_or_reserve_decode` for
+         *       NUL-byte / UTF-8-decode-failure content; the other five are set
+         *       by `should_skip` over file content + path.
+         *     - Analyze-stage (rule rooted in analyze's decision rationale):
+         *       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
+         *       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the
+         *       analyze node body when it skips a file mid-pass.
+         *       `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze
+         *       adapter only handles Python; the value names "today's analyze
+         *       implementation cannot review this," not "Outrider forever
+         *       cannot."
+         *
+         *     Imported by `outrider/audit/events.py` per `DECISIONS.md#018`.
+         * @enum {string}
+         */
+        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE";
+        /**
+         * SynthesizeCompletedEvent
+         * @description Per-review aggregate emitted at the end of the synthesize node.
+         *
+         *     `policy_version` mirrors the triage-captured snapshot per
+         *     DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
+         *     See also DECISIONS.md#029 for the V2 durable-retry idempotency
+         *     + content-binding via `llm_call_event_id` (out of scope for V1).
+         *
+         *     One per review (not per-pass like `AnalyzeCompletedEvent`). Carries
+         *     the canonical `ReviewMetrics` fields (mirror of
+         *     `outrider.schemas.review_report.ReviewMetrics`), plus the binding
+         *     metadata (`summary_content_hash`, `overall_risk`, `n_findings`)
+         *     that lets replay reconstruct what summary text + what report shape
+         *     this synthesize-node invocation produced. Replay joins the
+         *     paired `LLMCallEvent` by `review_id` + `node_id="synthesize"` —
+         *     `LLMCallEvent` carries its own `event_id` AND scans `llm_call_content`
+         *     by that key per `DECISIONS.md#016`; no explicit `llm_call_event_id`
+         *     FK is needed on this event because the synthesize node emits
+         *     exactly one LLM call per review (joinable unambiguously) and the
+         *     `summary_content_hash` here cross-validates the content match.
+         *
+         *     Metadata-only per `DECISIONS.md#016`: the summary prose lives in
+         *     `llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint
+         *     payload (operational-side; see spec gate #6 option (c) retention
+         *     model). `summary_content_hash` is the sha256 of the RAW LLM
+         *     `response.text` (matches the canon `llm_call_content.completion`
+         *     persister stores — see synthesize.py `_compute_summary_content_hash`
+         *     docstring for the display-vs-canon split rationale). Within the
+         *     LLM-content TTL window, replay can reconstruct prose by joining on
+         *     this hash; outside the window, metadata-only replay is the
+         *     canonical claim.
+         *
+         *     Idempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-
+         *     key was rejected at pre-spec gate #1 because the natural-key
+         *     persister cannot return enough payload to reconstruct
+         *     `ReviewReport` (the summary text lives in `llm_call_content`, not
+         *     in the audit-row payload) — state-lockstep gate iii fails. The
+         *     event_id-PK contract catches CONCURRENT re-emit of the same logical
+         *     event (e.g., dispatcher fires twice for one checkpoint state) but
+         *     does NOT catch crash-recovery re-emit (Synthesize body crashes
+         *     AFTER this event lands but BEFORE node return → resume mints a
+         *     fresh UUID → second row lands). V1's in-process BackgroundTasks
+         *     dispatcher does not durably retry; V2 Celery + Redis adds durable
+         *     retry semantics and will need a natural-key add-on before durable
+         *     retry lands (sibling of `emit_phase` which already keys natural).
+         *     Per-review-aggregate dashboard queries should DISTINCT ON
+         *     `(review_id, event_type)` or use MAX(timestamp) to be robust.
+         *
+         *     No content-hash binding on findings here (unlike `FindingEvent`):
+         *     every finding in the deduplicated `ReviewReport.findings` is already
+         *     recorded as its own `FindingEvent` upstream. `n_findings` is the
+         *     aggregate; replay can join to per-finding events via `review_id`.
+         */
+        SynthesizeCompletedEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "synthesize_completed";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default synthesize
+             * @constant
+             */
+            node_id: "synthesize";
+            /** Summary Content Hash */
+            summary_content_hash: string;
+            overall_risk: components["schemas"]["RiskLevel"];
+            /** N Findings */
+            n_findings: number;
+            /** Files Examined */
+            files_examined: number;
+            /** Files Traced Beyond Diff */
+            files_traced_beyond_diff: number;
+            /** Llm Calls Made */
+            llm_calls_made?: number | null;
+            /** Total Input Tokens */
+            total_input_tokens?: number | null;
+            /** Total Output Tokens */
+            total_output_tokens?: number | null;
+            /** Total Cost Usd */
+            total_cost_usd?: number | null;
+            /** Wall Clock Seconds */
+            wall_clock_seconds: number;
+            /** Pricing Version */
+            pricing_version: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Synthesize Model */
+            synthesize_model: string;
+        };
+        /**
+         * TraceDecisionEvent
+         * @description One aggregate trace decision per source_finding_id (per DECISIONS.md#017,
+         *     amended by DECISIONS.md#024 — Accepted 2026-05-24).
+         *
+         *     Cross-field validator rules per #017 × #024:
+         *     (a) resolved → len(resolved_candidate_paths) == 1 AND
+         *         target_file == resolved_candidate_paths[0]
+         *     (b) unresolved → len(resolved_candidate_paths) == 0 AND target_file is None
+         *     (c) ambiguous → len(resolved_candidate_paths) > 1 AND target_file is None
+         *
+         *     Two parallel tuples:
+         *     - `proposed_import_strings`: the LLM-proposed dotted Python import strings
+         *       (any cardinality). Per DECISIONS.md#024 trace candidates are import
+         *       strings, not file paths.
+         *     - `resolved_candidate_paths`: the resolution outputs — file paths
+         *       the import strings resolved to (any cardinality, including zero /
+         *       one / multiple). V1 source per M8: GitHub fetch-probes (paths
+         *       whose `fetch_file_content_at` returned content). V1.5+ source:
+         *       filesystem-aware `coordinates.resolve_candidate_paths` (per
+         *       `DECISIONS.md#024` point 4 Amended 2026-05-24). Each element is
+         *       post-`validate_diff_path` per the audit-shadow rule (defense in
+         *       depth at the append-only log against a hypothetical future
+         *       direct emitter bypassing the resolution mechanism).
+         *
+         *     `resolution_status` describes how many resolved (zero / exactly one /
+         *     multiple). `target_file`, when non-None, ALSO passes through
+         *     `validate_diff_path` at the audit-event boundary. All tuples
+         *     required (no default) per #017 — defaults would silently absorb
+         *     emitter bugs and undermine §8.7 replay equivalence; callers pass
+         *     `()` explicitly for the zero-candidate case.
+         */
+        TraceDecisionEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "trace_decision";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Source Finding Id
+             * Format: uuid
+             */
+            source_finding_id: string;
+            /** Target File */
+            target_file: string | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Resolution Status
+             * @enum {string}
+             */
+            resolution_status: "resolved" | "unresolved" | "ambiguous";
+            /** Proposed Import Strings */
+            proposed_import_strings: string[];
+            /** Resolved Candidate Paths */
+            resolved_candidate_paths: string[];
+            /** Trace Path */
+            trace_path?: string[] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -683,6 +1975,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReplayVerdict"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_review_events_api_reviews__review_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewEventsResponse"];
                 };
             };
             /** @description Validation Error */
