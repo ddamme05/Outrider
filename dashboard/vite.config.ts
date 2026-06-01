@@ -23,5 +23,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // Absolute base so the openapi-fetch client issues absolute URLs that
+    // node's fetch + MSW can resolve/intercept (relative URLs fail in node).
+    env: { VITE_API_BASE_URL: "http://localhost" },
   },
 });

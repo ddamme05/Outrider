@@ -1,7 +1,9 @@
 import { NavLink, Outlet } from "react-router";
 
-// Sidebar shell. V1 nav: Home + Reviews. Audit-log + Anomalies are deferred
-// (spec non-goals), so they're intentionally absent.
+import { Topbar } from "./components/Topbar";
+
+// Sidebar + topbar shell. V1 nav: Home + Reviews. Audit-log + Anomalies are
+// deferred (spec non-goals), so they're intentionally absent.
 export function App() {
   return (
     <div className="app">
@@ -14,9 +16,12 @@ export function App() {
           Reviews
         </NavLink>
       </nav>
-      <main className="content">
-        <Outlet />
-      </main>
+      <div className="main-col">
+        <Topbar />
+        <main className="content">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }
