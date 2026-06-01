@@ -194,6 +194,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/policy/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Policy
+         * @description The versioned `FindingType` → severity table for `version`.
+         *
+         *     Reads the STORED policy via `load_policy_for_version` (replay-safe — not the
+         *     active in-code policy). 404 when the version row is absent
+         *     (`UnknownPolicyVersionError`); structured 500 when the stored row is corrupt —
+         *     e.g. an undecodable finding_type key (`PolicyVersionShapeError`), loud rather
+         *     than a partial table. Entries sorted by `finding_type` for a stable render.
+         */
+        get: operations["get_policy_api_policy__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1006,6 +1032,26 @@ export interface components {
          * @enum {string}
          */
         PerFindingOutcome: "approve" | "reject" | "suppress" | "severity_override";
+        /**
+         * PolicyEntry
+         * @description One `FindingType` → severity row for a policy version. `dimension` always
+         *     resolves (lockstep, #021); `severity` is the STORED value for the version.
+         */
+        PolicyEntry: {
+            /** Finding Type */
+            finding_type: string;
+            /** Dimension */
+            dimension: string;
+            /** Severity */
+            severity: string;
+        };
+        /** PolicyResponse */
+        PolicyResponse: {
+            /** Version */
+            version: string;
+            /** Entries */
+            entries: components["schemas"]["PolicyEntry"][];
+        };
         /**
          * PublishAttemptEvent
          * @description Records the terminal outcome of one publish-attempt to GitHub.
@@ -2006,6 +2052,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewEventsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_policy_api_policy__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyResponse"];
                 };
             };
             /** @description Validation Error */
