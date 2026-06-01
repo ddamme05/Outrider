@@ -119,7 +119,11 @@ export function ReviewDetail() {
   }
 
   const expires = d.status.startsWith("awaiting_approval") ? expiresLabel(d.expires_at) : null;
-  const eventCount = events.data?.total ?? 0;
+  // The audit stream backs the event count, the pipeline node stats, and the feed.
+  // It fails CLOSED: until it loads we never assert a count or per-node stat — "0"
+  // would be a fabricated audit fact when we simply haven't fetched the stream.
+  const eventsLoaded = events.data !== undefined;
+  const eventCountLabel = eventsLoaded ? String(events.data.total) : events.error ? "—" : "…";
   const m = d.metrics;
 
   const getDraft = (id: string): DecisionDraft => drafts[id] ?? EMPTY_DRAFT;
@@ -245,7 +249,7 @@ export function ReviewDetail() {
           <div className="lab">Duration · Events</div>
           <div className="ms-val">{fmtDuration(m.wall_clock_seconds)}</div>
           <div className="ms-sub">
-            <span className="mono">{eventCount}</span> audit events
+            <span className="mono">{eventCountLabel}</span> audit events
           </div>
         </div>
       </div>
@@ -254,6 +258,7 @@ export function ReviewDetail() {
       <PipelineStrip
         status={d.status}
         events={events.data?.events ?? []}
+        eventsLoaded={eventsLoaded}
         gatedCount={gated.length}
         policyVersion={d.policy_version}
       />
@@ -284,7 +289,7 @@ export function ReviewDetail() {
           aria-selected={tab === "audit"}
           onClick={() => setTab("audit")}
         >
-          Audit feed <span className="muted">({eventCount})</span>
+          Audit feed <span className="muted">({eventCountLabel})</span>
         </button>
       </div>
 
@@ -294,7 +299,7 @@ export function ReviewDetail() {
           <div className="sub">
             {tab === "findings"
               ? `${allFindings.length} findings · ${gated.length} gated`
-              : `${eventCount} events`}
+              : `${eventCountLabel} events`}
           </div>
         </div>
         <div className="panel-b">

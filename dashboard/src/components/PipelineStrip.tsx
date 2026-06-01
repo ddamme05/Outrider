@@ -39,11 +39,16 @@ function fmtDur(ms: number): string {
 export function PipelineStrip({
   status,
   events,
+  eventsLoaded,
   gatedCount,
   policyVersion,
 }: {
   status: string;
   events: AuditEvent[];
+  // Whether the /events stream actually loaded. When false (loading or errored),
+  // per-node stats fail closed to "—" — node states still derive from review
+  // status (a backed coarse inference), but no timing/cost/passed/posted is claimed.
+  eventsLoaded: boolean;
   gatedCount: number;
   policyVersion?: string | null;
 }) {
@@ -76,10 +81,9 @@ export function PipelineStrip({
   };
 
   const stateOf = (node: NodeName): NodeState => {
-    const done = ended(node) || status === "completed";
     if (node === "hitl") {
       if (awaiting) return "paused";
-      if (done) return "done";
+      if (ended(node) || status === "completed") return "done";
       if (status === "failed") return "skipped";
       return "pending";
     }
@@ -88,30 +92,31 @@ export function PipelineStrip({
       if (status === "failed") return "skipped";
       return "pending";
     }
-    return done ? "done" : "";
+    // pre-hitl nodes: done if observed-ended, or status implies it (completed; or
+    // awaiting → the graph already passed these to reach the gate). Status-backed.
+    if (ended(node) || status === "completed" || awaiting) return "done";
+    return "";
   };
 
   const modelOf = (node: NodeName, state: NodeState): string => {
     if (node in STATIC_MODEL) return STATIC_MODEL[node]!;
-    const m = llmFor(node)?.model;
+    // LLM model needs the audit stream; without it loaded we don't claim one.
+    const m = eventsLoaded ? llmFor(node)?.model : undefined;
     if (m) return m;
     return state === "done" ? "—" : "";
   };
 
   const statOf = (node: NodeName, state: NodeState): string => {
+    // The gate count is backed by the review's gated set, not the event stream.
+    if (node === "hitl" && state === "paused") return `paused · ${gatedCount} findings`;
+    if (state === "skipped") return "skipped";
+    if (state === "pending") return "pending";
+    // Per-node timing/cost/files/resolved require the audit stream. Without it
+    // loaded we show "—" — never an unbacked "passed"/"posted"/timing/cost.
+    if (!eventsLoaded) return "—";
     const dur = durationMs(node);
     const durStr = dur === null ? null : fmtDur(dur);
-    if (node === "hitl") {
-      if (state === "paused") return `paused · ${gatedCount} findings`;
-      if (state === "done") return durStr ?? "passed";
-      if (state === "skipped") return "skipped";
-      return "pending";
-    }
-    if (node === "publish") {
-      if (state === "done") return durStr ?? "posted";
-      if (state === "skipped") return "skipped";
-      return "pending";
-    }
+    if (node === "hitl" || node === "publish") return durStr ?? "—";
     if (state !== "done") return "—";
     const parts: string[] = [];
     if (durStr) parts.push(durStr);
@@ -163,8 +168,13 @@ export function PipelineStrip({
               HITL gate engaged: {gatedCount} critical/high finding
               {gatedCount === 1 ? "" : "s"} require human approval before publish.{" "}
             </>
+          ) : eventsLoaded ? (
+            <>Per-node model, cost and timing are from the audit stream. </>
           ) : (
-            <>Per-node model, cost and timing are reconstructed from the audit stream. </>
+            <>
+              Node states reflect review status; per-node model, cost and timing load from the
+              audit stream.{" "}
+            </>
           )}
           <b>Severity is set by policy{policyVersion ? ` ${policyVersion}` : ""}, not the model.</b>
         </div>
