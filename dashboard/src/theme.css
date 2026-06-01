@@ -1522,3 +1522,67 @@ table.policy tbody tr:hover {
   font-size: 12px;
   color: var(--text-2);
 }
+
+/* ============================================================
+ * Overview — stat cards + section rail (Signal, layer 3).
+ * ============================================================ */
+/* hair-thin accent tick at the card's top-left — Signal signature */
+.card {
+  position: relative;
+  overflow: hidden;
+}
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.5;
+}
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.stat-card .lab {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-family: var(--mono);
+}
+.stat-card .stat-num {
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  margin-top: 8px;
+  line-height: 1;
+}
+.stat-card .cap {
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 7px;
+}
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--muted);
+  font-weight: 700;
+  margin: 4px 0 12px;
+}
+.section-label::before {
+  content: "";
+  width: 7px;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.7;
+}
