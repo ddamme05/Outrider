@@ -1,40 +1,43 @@
+import { useLocation } from "react-router";
+
 import { useFilters } from "../state/filters";
 
-// Quiet chrome. The cmdbar is a client-side row filter (no backend search in
-// V1). The Eval toggle drives the `is_eval` query param. The mockup's
-// appearance/accent switcher is intentionally NOT replicated — one theme.
+// Signal topbar: a mono kicker + tick, the screen title (derived from the route),
+// and a client-side search field (no backend search in V1). The eval toggle moved
+// to the sidebar footer; no avatar, no theme switcher.
+function screenTitle(pathname: string): string {
+  if (pathname === "/") return "Overview";
+  if (pathname === "/reviews") return "Reviews";
+  if (pathname.startsWith("/reviews/")) return "Review";
+  return "Outrider";
+}
+
 export function Topbar() {
+  const { pathname } = useLocation();
   const search = useFilters((s) => s.search);
   const setSearch = useFilters((s) => s.setSearch);
-  const includeEval = useFilters((s) => s.includeEval);
-  const setIncludeEval = useFilters((s) => s.setIncludeEval);
 
   return (
     <header className="topbar">
-      <div className="cmdbar" role="search">
-        <span className="prompt" aria-hidden="true">
-          ›
+      <div className="tb-title">
+        <span className="tb-kicker">
+          <span className="tb-tick" aria-hidden="true" />
+          OUTRIDER
         </span>
-        <input
-          type="text"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          aria-label="Filter reviews"
-          placeholder="filter reviews…"
-        />
+        <h1>{screenTitle(pathname)}</h1>
       </div>
       <div className="topbar-right">
-        <button
-          type="button"
-          className="toggle"
-          aria-pressed={includeEval}
-          onClick={() => setIncludeEval(!includeEval)}
-        >
-          <span className="switch" aria-hidden="true" />
-          <span>Eval</span>
-        </button>
-        <div className="avatar" title="operator">
-          op
+        <div className="cmdbar" role="search">
+          <span className="prompt" aria-hidden="true">
+            ›
+          </span>
+          <input
+            type="text"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="Filter reviews"
+            placeholder="filter reviews…"
+          />
         </div>
       </div>
     </header>
