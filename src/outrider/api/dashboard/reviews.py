@@ -161,12 +161,18 @@ async def _aggregate_metrics(session: AsyncSession, review_id: UUID) -> ReviewMe
     # File / wall-clock — read from the persisted SynthesizeCompletedEvent
     # (NOT recomputed from raw FileExaminationEvent/TraceDecisionEvent rows).
     # Absent => synthesize never emitted => None (pending, not zero).
+    # Duplicate completion rows CAN exist: SynthesizeCompletedEvent is
+    # event_id-PK (no V1 natural-key dedup), so a crash-recovery re-emit mints
+    # a fresh UUID and lands a second row (per its docstring). Order by
+    # `sequence_number` (monotonic on insert) and take the latest — the
+    # resumed/successful completion wins, never an arbitrary stale row.
     synth_stmt = (
         select(AuditEvent.payload)
         .where(
             AuditEvent.review_id == review_id,
             AuditEvent.event_type == "synthesize_completed",
         )
+        .order_by(AuditEvent.sequence_number.desc())
         .limit(1)
     )
     synth_payload = (await session.execute(synth_stmt)).scalars().first()

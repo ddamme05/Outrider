@@ -292,3 +292,43 @@ async def test_read_is_non_mutating(
 
     assert after_updated == before_updated
     assert after_events == before_events
+
+
+@pytest.mark.asyncio
+async def test_duplicate_synthesize_completed_latest_wins(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """Crash-recovery can land >1 synthesize_completed per review (no V1
+    natural-key dedup — event_id-PK only). The latest row (highest
+    sequence_number) must win, never an arbitrary stale completion.
+    """
+    client, ids, engine = dashboard_client
+    # Review A already has a synthesize_completed (files_examined=5). Land a
+    # LATER one (higher sequence_number) with different metrics — it wins.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+                "VALUES (:eid, :rid, 'synthesize_completed', NOW(), false, "
+                "CAST(:payload AS jsonb))"
+            ),
+            {
+                "eid": uuid4(),
+                "rid": ids["a"],
+                "payload": json.dumps(
+                    {
+                        "files_examined": 99,
+                        "files_traced_beyond_diff": 88,
+                        "wall_clock_seconds": 77.7,
+                    }
+                ),
+            },
+        )
+
+    resp = client.get(f"/api/reviews/{ids['a']}", headers=_AUTH)
+    assert resp.status_code == 200
+    m = resp.json()["metrics"]
+    assert m["files_examined"] == 99
+    assert m["files_traced_beyond_diff"] == 88
+    assert m["wall_clock_seconds"] == pytest.approx(77.7)
