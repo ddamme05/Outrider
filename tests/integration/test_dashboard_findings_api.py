@@ -152,6 +152,19 @@ async def _insert_publish_eligibility(
     )
 
 
+async def _insert_purge_audit(
+    conn: object, *, installation_id: int, target_table: str, timestamp_iso: str
+) -> None:
+    await conn.execute(  # type: ignore[attr-defined]
+        text(
+            "INSERT INTO purge_audit "
+            "(installation_id, target_table, rows_affected, purge_role, timestamp) "
+            "VALUES (:iid, :tt, 1, 'sweep', :ts)"
+        ),
+        {"iid": installation_id, "tt": target_table, "ts": timestamp_iso},
+    )
+
+
 @pytest_asyncio.fixture
 async def findings_client(
     migrated_db: str,
@@ -247,10 +260,11 @@ async def test_findings_content_and_proof(
     assert f1["trace_path"] is None
     assert f1["file_path"] == "app/db.py"
     assert f1["line_start"] == 10
-    # Surviving content -> full finding, not redacted; no eligibility seeded.
+    # Surviving content -> full finding, not redacted; no eligibility/sweep.
     assert f1["content_redacted"] is False
     assert f1["title"] == "finding-high"
     assert f1["eligibility"] is None
+    assert f1["redaction_sweep_at"] is None
 
     f2 = findings[str(ids["f2"])]
     assert f2["evidence_tier"] == "inferred"
@@ -319,6 +333,14 @@ async def test_dangling_finding_event_renders_redacted(
             severity="critical",
             evidence_tier="judged",
         )
+        # A findings-retention sweep for this installation -> the stub's
+        # redaction_sweep_at is sourced from this purge_audit row.
+        await _insert_purge_audit(
+            conn,
+            installation_id=_INSTALLATION_ID,
+            target_table="findings",
+            timestamp_iso="2026-05-31T12:00:00+00:00",
+        )
     resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
     findings = {f["finding_id"]: f for f in resp.json()["findings"]}
     assert str(f3) in findings
@@ -331,8 +353,13 @@ async def test_dangling_finding_event_renders_redacted(
     assert stub["severity"] == "critical"
     assert stub["evidence_tier"] == "judged"
     assert stub["file_path"] == "app/legacy.py"
-    # The surviving findings still render full (not redacted).
+    # The sweep date comes from purge_audit (findings target), not a per-finding
+    # delete time. Date-level assertion (tz formatting is incidental).
+    assert stub["redaction_sweep_at"] is not None
+    assert stub["redaction_sweep_at"].startswith("2026-05-31")
+    # The surviving findings still render full (not redacted, no sweep date).
     assert findings[str(ids["f1"])]["content_redacted"] is False
+    assert findings[str(ids["f1"])]["redaction_sweep_at"] is None
 
 
 @pytest.mark.asyncio

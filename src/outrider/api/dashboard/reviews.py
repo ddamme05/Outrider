@@ -46,6 +46,7 @@ from sqlalchemy import Integer, Numeric, cast, func, select
 from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
+from outrider.db.models.purge_audit import PurgeAudit
 from outrider.db.models.reviews import Review
 
 if TYPE_CHECKING:
@@ -169,6 +170,13 @@ class FindingView(BaseModel):
     publish_destination: str | None
     eligibility: str | None
     eligibility_reason: str | None
+    # Retention: for a `content_redacted` stub, the findings-retention-SWEEP
+    # date (the review's installation's latest `target_table='findings'`
+    # `purge_audit` row); `None` otherwise. This is the sweep timestamp, NOT a
+    # proven per-finding delete time — `purge_audit` is per-table-per-sweep, so
+    # exact per-finding provenance is out of reach (FUP-129). Frontend renders
+    # e.g. "content redacted in the findings retention sweep on <date>".
+    redaction_sweep_at: AwareDatetime | None
 
 
 class FindingsResponse(BaseModel):
@@ -403,10 +411,10 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        review_exists = (
-            await session.execute(select(Review.id).where(Review.id == review_id))
+        installation_id = (
+            await session.execute(select(Review.installation_id).where(Review.id == review_id))
         ).scalar_one_or_none()
-        if review_exists is None:
+        if installation_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
 
         dest_by_fid = await _latest_publish_routing(session, review_id)
@@ -444,6 +452,7 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
                 suggested_fix=f.suggested_fix,
                 query_match_id=f.query_match_id,
                 trace_path=f.trace_path,
+                redaction_sweep_at=None,
                 **_lifecycle(str(f.finding_id)),
             )
             for f in content_rows
@@ -470,6 +479,23 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
             for payload in event_payloads
             if payload["finding_id"] not in content_fids
         }
+        # Findings-retention-SWEEP date for this review's installation — the
+        # best purge_audit can offer (per-table-per-sweep, not per-finding;
+        # FUP-129). Shared by every redacted stub here (same installation).
+        # None if no findings-purge sweep is recorded.
+        redaction_sweep_at = None
+        if redacted_by_fid:
+            redaction_sweep_at = (
+                await session.execute(
+                    select(PurgeAudit.timestamp)
+                    .where(
+                        PurgeAudit.installation_id == installation_id,
+                        PurgeAudit.target_table == "findings",
+                    )
+                    .order_by(PurgeAudit.timestamp.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
         views.extend(
             FindingView(
                 finding_id=UUID(fid),
@@ -487,6 +513,7 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
                 suggested_fix=None,
                 query_match_id=meta.get("query_match_id"),
                 trace_path=meta.get("trace_path"),
+                redaction_sweep_at=redaction_sweep_at,
                 **_lifecycle(fid),
             )
             for fid, meta in redacted_by_fid.items()
