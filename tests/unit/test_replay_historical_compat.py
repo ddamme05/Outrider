@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from outrider.audit.events import (
     REPLAY_HISTORICAL_CONTEXT_KEY,
+    REPLAY_TOLERABLE_SENTINEL_FIELDS,
     RESERVED_HISTORICAL_PROPOSAL_HASH,
     AuditEventAdapter,
     FindingEvent,
@@ -95,6 +96,19 @@ def test_registry_never_defaults_a_proof_or_content_field() -> None:
         assert not overlap, f"{event_type}: registry must never default {overlap}"
 
 
+def test_registry_keys_match_the_guard_tolerable_pairs() -> None:
+    """The replay registry (what the normalizer injects) and the write-time
+    guards' tolerable-pair set must be identical — otherwise the guard could
+    permit a sentinel the normalizer never injects, or vice versa.
+    """
+    registry_pairs = {
+        (event_type, field)
+        for event_type, fields in _HISTORICAL_FIELD_DEFAULTS.items()
+        for field in fields
+    }
+    assert registry_pairs == set(REPLAY_TOLERABLE_SENTINEL_FIELDS)
+
+
 # --- Write-time reserve guard (sentinel rejected at construction) ---
 
 
@@ -167,6 +181,22 @@ def test_sentinel_rejected_without_replay_context() -> None:
     payload["proposal_hash"] = RESERVED_HISTORICAL_PROPOSAL_HASH
     with pytest.raises(ValidationError, match="reserved all-zero sentinel"):
         AuditEventAdapter.validate_python(payload)
+
+
+def test_unregistered_pair_rejects_sentinel_even_under_replay_context() -> None:
+    """The replay permission is PAIR-scoped, not context-wide (DECISIONS.md#032).
+    `finding_proposal_rejected`/`proposal_hash` is NOT a registered tolerable
+    pair, so a persisted row carrying the reserved sentinel must still fail —
+    even under the replay context — because the normalizer never injects it
+    there and its presence would be corruption.
+    """
+    payload = FindingProposalRejectedEvent(**_rejected_kwargs()).model_dump(mode="json")
+    payload["proposal_hash"] = RESERVED_HISTORICAL_PROPOSAL_HASH
+    with pytest.raises(ValidationError, match="reserved all-zero sentinel"):
+        AuditEventAdapter.validate_python(
+            _normalize_historical_payload(payload),
+            context={REPLAY_HISTORICAL_CONTEXT_KEY: True},
+        )
 
 
 def test_proof_field_absence_still_raises_under_replay_context() -> None:
