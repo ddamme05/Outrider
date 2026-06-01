@@ -1,44 +1,105 @@
-/* Quiet Console — the single V1 theme. Tokens lifted verbatim from
- * dashboard-mockups/19-quiet-console-minimal.html. Warm-dark, one green accent,
- * sans chrome + mono data. No theme/accent switcher (scope decision). */
+/* Signal — the single V1 theme. Tokens from
+ * dashboard-mockups/22-signal-analytics.html (graphite default). The mockup's other
+ * [data-theme] variants AND its theme switcher are intentionally NOT carried — one
+ * theme, no switcher (standing scope decision). Graphite surfaces, indigo accent,
+ * mono tabular numerics, four semantic palettes (severity / evidence-tier / dimension
+ * / event-type). */
 :root {
-  --bg-0: #0d0e10;
-  --bg-1: #121214;
-  --surface-1: #16171a;
-  --surface-2: #1b1c1f;
-  --surface-3: #212226;
-  --border-soft: #26282d;
-  --border-softer: #1f2024;
-  --border-strong: #34373d;
+  /* surfaces (darkest → lightest) */
+  --sidebar: #0a0c10;
+  --header: #111419;
+  --bg: #0d0f12;
+  --panel: #15181e;
+  --panel2: #1c212a;
+  --bg2: color-mix(in srgb, var(--bg) 78%, #000);
 
-  --text-0: #e8e8ea;
-  --text-1: #b9bac0;
-  --text-2: #9b9ca3;
-  --text-3: #6e6f76;
+  /* text */
+  --text: #e7e9ee;
+  --muted: #8b919c;
+  --faint: #646b76;
 
-  --accent: #56c98a;
-  --accent-soft: rgba(86, 201, 138, 0.14);
-  --accent-line: rgba(86, 201, 138, 0.34);
+  /* lines */
+  --line: #222730;
+  --line2: #2e343f;
+  --hair: #3a414d;
 
-  --sev-critical: #ef4444;
-  --sev-high: #fb923c;
-  --sev-medium: #eab308;
-  --sev-low: #9ca3af;
-  --sev-info: #60a5fa;
+  /* neutral overlays (derive from text so washes read across the theme) */
+  --ov-weak: color-mix(in srgb, var(--text) 4%, transparent);
+  --ov-soft: color-mix(in srgb, var(--text) 8%, transparent);
+  --ov-mid: color-mix(in srgb, var(--text) 12%, transparent);
+  --ov-strong: color-mix(in srgb, var(--text) 16%, transparent);
+  --on-bright: color-mix(in srgb, var(--bg) 88%, #000);
 
-  --tier-observed: #5fcf96;
-  --tier-inferred: #f0b357;
-  --tier-judged: #a78bfa;
+  /* delta polarity (Overview stat-card framing; NOT trend data) */
+  --pos: #4ec98a;
+  --neg: #f0616d;
 
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* semantic: severity (policy-set; never model-set) */
+  --sev-critical: #f0616d;
+  --sev-high: #f2a154;
+  --sev-medium: #e6c84b;
+  --sev-low: #9aa1ad;
+  --sev-info: #5aa9e6;
 
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.22);
-  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.45);
+  /* semantic: evidence tier */
+  --tier-observed: #4ec98a;
+  --tier-inferred: #e6c84b;
+  --tier-judged: #c084fc;
 
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  --sans: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+  /* semantic: dimension */
+  --dim-security: #22d3ee;
+  --dim-code_quality: #818cf8;
+  --dim-performance: #f472b6;
+  --dim-test_coverage: #34d399;
+  --dim-best_practices: #94a3b8;
+
+  /* semantic: event type (audit feed rows) */
+  --ev-model: #c084fc;
+  --ev-finding: #f0616d;
+  --ev-rejected: #b4565e;
+  --ev-file: #5aa9e6;
+  --ev-trace: #22d3ee;
+  --ev-human: #f2a154;
+  --ev-output: #4ec98a;
+  --ev-framing: #9aa1ad;
+  --ev-complete: #34d399;
+
+  --focus: #5aa9e6;
+
+  /* accent (indigo) */
+  --accent: #6d8bff;
+  --accent-ink: #0a0c10;
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 24%, transparent);
+  --accent-on: color-mix(in srgb, var(--accent) 78%, var(--text));
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* sharp, architectural radii */
+  --radius: 5px;
+  --radius-sm: 4px;
+
+  /* ---- compatibility aliases: old Quiet-Console token names → graphite ----
+   * Temporary scaffolding. The component CSS below still references these names;
+   * as each surface is restyled to Signal (refactor layers 2-4) its usages migrate
+   * to the canonical names and the matching alias is removed. */
+  --bg-0: var(--bg);
+  --bg-1: var(--sidebar);
+  --surface-1: var(--panel);
+  --surface-2: var(--panel2);
+  --surface-3: var(--panel2);
+  --border-soft: var(--line2);
+  --border-softer: var(--line);
+  --border-strong: var(--hair);
+  --text-0: var(--text);
+  --text-1: var(--text);
+  --text-2: var(--muted);
+  --text-3: var(--faint);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
 }
 
 * {
