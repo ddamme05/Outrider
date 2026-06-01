@@ -351,3 +351,14 @@ test("findings header fails CLOSED when /findings is unavailable — no fabricat
   // findings" is a separate gate count from the detail snapshot).
   expect(screen.getByText(/policy v3 · — findings/)).toBeInTheDocument();
 });
+
+test("awaiting review with no gate snapshot shows 'paused' without a fabricated 0 count", async () => {
+  // findings_requiring_approval is null (no HITL-request snapshot) — distinct from
+  // [] (snapshot, nothing gated). The pipeline must not claim "paused · 0 findings"
+  // or "0 critical/high"; it shows just "paused" and a count-free gate note.
+  mount(); // default detail() is awaiting_approval with no findings_requiring_approval
+  await screen.findByText(/repo 100/);
+  expect(screen.queryByText(/paused · 0 findings/)).toBeNull();
+  expect(screen.queryByText(/0 critical\/high/)).toBeNull();
+  expect(screen.getByText("paused")).toBeInTheDocument();
+});
