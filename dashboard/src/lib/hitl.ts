@@ -7,6 +7,12 @@ export type Outcome = "approve" | "reject" | "suppress" | "severity_override";
 
 export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 
+// After a 202 the graph resumes in the background and the status flips
+// awaiting → running. If it hasn't advanced within this window, the resume may
+// have failed (e.g. the natural-key-conflict stuck case) — the UI stops showing
+// a bare "submitted" and offers refresh + re-submit. See FUP-135.
+export const RESUME_WINDOW_MS = 12000;
+
 // A review only accepts decisions while it sits at the HITL gate. The detail
 // view can also show old completed/running/failed reviews that happen to carry
 // critical/high findings — those must be READ-ONLY, not controls that 409.
