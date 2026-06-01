@@ -13,8 +13,9 @@ import { ReviewDetail } from "./ReviewDetail";
 const BASE = "http://localhost/api/reviews/r1";
 const DECIDE = "http://localhost/reviews/r1/decide";
 
-function detail(status = "awaiting_approval") {
+function detail(status = "awaiting_approval", gatedIds: string[] | null = ["f-high"]) {
   return {
+    findings_requiring_approval: gatedIds,
     id: "r1",
     installation_id: 1,
     repo_id: 100,
@@ -70,11 +71,13 @@ function mount(opts: {
   decideStatus?: number;
   capture?: (b: unknown) => void;
   resumeTo?: string; // status the detail GET returns AFTER a successful decide
+  gatedIds?: string[] | null; // authoritative findings_requiring_approval
 } = {}) {
   let decided = false;
+  const gatedIds = opts.gatedIds === undefined ? ["f-high"] : opts.gatedIds;
   server.use(
     http.get(BASE, () =>
-      HttpResponse.json(detail(decided && opts.resumeTo ? opts.resumeTo : opts.status)),
+      HttpResponse.json(detail(decided && opts.resumeTo ? opts.resumeTo : opts.status, gatedIds)),
     ),
     http.get(`${BASE}/findings`, () =>
       HttpResponse.json({ review_id: "r1", findings: opts.findings ?? [finding()] }),
@@ -171,10 +174,19 @@ test("non-gated findings on an actionable review show no decision controls", asy
 });
 
 test("a gated finding on a non-actionable review is read-only", async () => {
-  mount({ status: "completed" });
+  mount({ status: "completed" }); // gatedIds defaults to ["f-high"] — still in the snapshot
   await screen.findByText("sql_injection");
   expect(screen.queryByRole("button", { name: "approve" })).not.toBeInTheDocument();
-  expect(screen.getByText(/gated the PR at review time/)).toBeInTheDocument();
+  expect(screen.getByText(/gated the PR/)).toBeInTheDocument();
+});
+
+test("gating follows the authoritative set, not severity — a high finding not in the set is read-only", async () => {
+  // Severity is "high" (the old inference would have gated it) but the server's
+  // findings_requiring_approval does NOT include it → no controls, no submit bar.
+  mount({ gatedIds: [] });
+  await screen.findByText("sql_injection");
+  expect(screen.queryByRole("button", { name: "approve" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Submit decision/ })).not.toBeInTheDocument();
 });
 
 test("a 422 set-mismatch surfaces an explicit refresh message", async () => {
