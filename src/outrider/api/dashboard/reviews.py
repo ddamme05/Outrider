@@ -211,13 +211,22 @@ router = APIRouter(
 async def _aggregate_metrics(session: AsyncSession, review_id: UUID) -> ReviewMetricsView:
     """Compute one review's metrics read-through from the audit stream.
 
-    Filtering by `review_id` alone is the correct `is_eval` scope: every
-    audit event a review emits carries that review's `is_eval` value (set
-    once per review, propagated to all its events), so there is no
-    cross-`is_eval` contamination within a single review's stream.
+    Filtering by `review_id` alone is the correct `is_eval` scope under V1
+    wiring: a review's `is_eval` is a single value (`ReviewState.is_eval`) that
+    every emit-site copies onto its events, so a review's stream is
+    is_eval-homogeneous. This is PRODUCER DISCIPLINE, not a persister-enforced
+    guarantee — the persister copies `event.is_eval` verbatim without
+    cross-checking it against `reviews.is_eval` (unlike `installation_id`, which
+    it does cross-check). See FUP-130 for adding that guard.
     """
-    # LLM aggregates — summed from llm_call payloads (never the None
-    # SynthesizeCompletedEvent fields, per FUP-093).
+    # LLM aggregates — COUNT/SUM over llm_call payloads (never the None
+    # SynthesizeCompletedEvent LLM fields, per FUP-093). The SUM assumes one
+    # llm_call row per logical call — true in V1 (the non-durable BackgroundTasks
+    # dispatcher never replays a node body, so no crash-recovery re-emit lands a
+    # duplicate row; HITL-resume re-enters at hitl, after the LLM-calling nodes).
+    # Durable retry (V2 Celery + Redis) WOULD land duplicate rows with fresh
+    # event_ids → the SUM would double-count; dedup then needs the V2 `llm_call_event_id`
+    # binding (DECISIONS.md#029) — folded into FUP-093.
     llm_stmt = select(
         func.count().label("calls"),
         func.coalesce(func.sum(cast(AuditEvent.payload["input_tokens"].astext, Integer)), 0).label(
