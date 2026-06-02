@@ -7,11 +7,10 @@ injection seam), so it must self-construct its dependencies and run its own
 ephemeral-database lifecycle. Because `pythonpath = ["src"]` only — `tests/`
 is NOT importable from `src/` (see `docs/conventions.md`) — that lifecycle
 code cannot live under `tests/`. It lives here instead so that `run_review`
-can call it. It is also the consolidation target for the duplicated
-create/migrate/drop/guard copies in `tests/integration/conftest.py`,
-`tests/eval/conftest.py`, and `scripts/smoke_e2e.py`: those import it *from*
-`src` (tests may import `src`, not vice-versa). `run_review` uses it today;
-the conftests + smoke runner migrate onto it next, replacing their copies.
+can call it, and it is the single shared implementation of the
+create/migrate/drop/guard lifecycle: `run_review`, `tests/integration/conftest.py`,
+`tests/eval/conftest.py`, and `scripts/smoke_e2e.py` all import it *from* `src`
+(tests may import `src`, not vice-versa) rather than each keeping a copy.
 
 **This is eval/test infrastructure, walled off from the real subsystems.**
 It is not an `agent/` concern and not normal production database behavior —

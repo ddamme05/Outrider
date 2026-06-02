@@ -1,12 +1,11 @@
-# Ephemeral postgres-test lifecycle for run_review; consolidation target for the test conftests.
+# Ephemeral postgres-test lifecycle shared by run_review + the test conftests + smoke runner.
 # See specs/2026-06-01-eval-graph-driver.md (resolution A) for why this is `src`-resident.
 """Ephemeral database lifecycle + fail-closed isolation guards.
 
-The create / migrate / drop / guard logic that `run_review` (the eval graph
-driver) needs, and the consolidation target for the duplicated copies in
-`scripts/smoke_e2e.py`, `tests/integration/conftest.py`, and
-`tests/eval/conftest.py`. `run_review` imports it today; those three migrate
-onto it next (replacing their copies) — until then their copies still stand.
+The single shared create / migrate / drop / guard implementation. `run_review`
+(the eval graph driver), `scripts/smoke_e2e.py`, `tests/integration/conftest.py`,
+and `tests/eval/conftest.py` all import it from here rather than each keeping a
+copy.
 
 **Fail-closed by construction.** Two guards gate every destructive path:
 
@@ -236,10 +235,9 @@ async def ephemeral_database(
     path after the `CREATE`, including a migration or run-time failure), so
     the create→drop pairing holds even when the body raises.
 
-    Does NOT call `require_eval_mode()` — it is meant to serve the integration
-    conftest's non-eval (`fresh_db`) path too once that migrates onto it.
-    Eval-only entry points (`run_review`) call `require_eval_mode()` themselves
-    before entering.
+    Does NOT call `require_eval_mode()` — the integration conftest's non-eval
+    `fresh_db` path uses this CM too. Eval-only entry points (`run_review`)
+    call `require_eval_mode()` themselves before entering.
     """
     assert_test_url_is_isolated(base_url)
     db_name = f"{name_prefix}{uuid4().hex[:8]}"
