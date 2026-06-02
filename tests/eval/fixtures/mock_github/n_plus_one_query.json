@@ -1,0 +1,36 @@
+{
+  "installation_id": 6201,
+  "owner": "acme",
+  "repo": "orders-service",
+  "pr_number": 21,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "Add enrich_orders helper",
+  "pr_body": "Adds enrich_orders() to attach each order's user row.",
+  "author": "contributor",
+  "total_additions": 8,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "orders/enrich.py",
+      "status": "modified",
+      "additions": 8,
+      "deletions": 0,
+      "patch": "@@ -1 +1,9 @@\n from django.db import connection\n+\n+\n+def enrich_orders(orders):\n+    results = []\n+    for order in orders:\n+        row = connection.execute(\"SELECT * FROM users WHERE id = %s\", [order.user_id]).fetchone()\n+        results.append(row)\n+    return results\n",
+      "previous_path": null,
+      "content_base": "from django.db import connection\n",
+      "content_head": "from django.db import connection\n\n\ndef enrich_orders(orders):\n    results = []\n    for order in orders:\n        row = connection.execute(\"SELECT * FROM users WHERE id = %s\", [order.user_id]).fetchone()\n        results.append(row)\n    return results\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"orders/enrich.py\": \"deep\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"performance\"], \"reasoning\": \"Deep-review the new enrich_orders helper that loops over orders issuing a DB query per item.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"n_plus_one_query\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"N+1 query: per-order DB lookup inside enrich_orders loop\", \"description\": \"enrich_orders() issues one connection.execute() per order in the loop, producing N database round-trips for N orders. Batch the lookup with a single WHERE id IN (...) query (or a join) instead of querying per iteration.\", \"evidence\": \"        row = connection.execute(\\\"SELECT * FROM users WHERE id = %s\\\", [order.user_id]).fetchone()\", \"line_start\": 7, \"line_end\": 7, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "Quality finding: one MEDIUM N+1-query finding -- enrich_orders() runs a DB query per order inside its loop instead of batching."
+    ]
+  }
+}

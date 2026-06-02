@@ -5,18 +5,13 @@ renames a variable inside a function) without introducing any security
 issue; expected: zero security findings. Asserts the agent doesn't
 hallucinate findings on cosmetic changes.
 
-V1: scaffolded; assertions wire up when the eval graph driver lands
-(analyze node shipped) per §15.3.
+Driven by the eval graph driver (`run_review`) against
+`tests/eval/fixtures/mock_github/safe_refactor.json`. The scripted analyze
+response is deliberately empty; see `test_eval_in_test_fixture` for the
+no-findings-vs-dimension-filter note.
 """
 
-import pytest
-
 from outrider.schemas import ReviewDimension
-
-pytestmark = pytest.mark.skip(
-    reason="requires eval graph driver: mock LLM provider + run_review shim + "
-    "mock_github fixtures (not yet shipped)"
-)
 
 EXPECTED_SECURITY_FINDING_COUNT = 0
 

@@ -1,0 +1,36 @@
+{
+  "installation_id": 5201,
+  "owner": "acme",
+  "repo": "calc-lib",
+  "pr_number": 14,
+  "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "pr_title": "Add table-driven test for expression evaluator",
+  "pr_body": "Adds a parametrized test that uses eval() to parse the expected literal in test setup.",
+  "author": "contributor",
+  "total_additions": 7,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "tests/test_evaluator.py",
+      "status": "modified",
+      "additions": 7,
+      "deletions": 0,
+      "patch": "@@ -1,3 +1,9 @@\n import pytest\n \n from calc.evaluator import evaluate\n+\n+\n+@pytest.mark.parametrize(\"expr,expected_literal\", [(\"1 + 2\", \"3\"), (\"4 * 5\", \"20\")])\n+def test_evaluate_matches_literal(expr, expected_literal):\n+    expected = eval(expected_literal)\n+    assert evaluate(expr) == expected\n",
+      "previous_path": null,
+      "content_base": "import pytest\n\nfrom calc.evaluator import evaluate\n",
+      "content_head": "import pytest\n\nfrom calc.evaluator import evaluate\n\n\n@pytest.mark.parametrize(\"expr,expected_literal\", [(\"1 + 2\", \"3\"), (\"4 * 5\", \"20\")])\ndef test_evaluate_matches_literal(expr, expected_literal):\n    expected = eval(expected_literal)\n    assert evaluate(expr) == expected\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"tests/test_evaluator.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\", \"test_coverage\"], \"reasoning\": \"False-positive scenario: the changed file is a test that uses eval() on a hardcoded literal in test setup -- deep-review it to confirm no production security finding applies.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "False-positive scenario: no findings. The eval() call lives in test fixture setup over a hardcoded literal, not a production code path, so it is not a security finding."
+    ]
+  }
+}

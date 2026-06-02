@@ -4,17 +4,11 @@ Per spec §11.2: PR adds a network call without try/except or `.raise_for_status
 expected: `FindingType.MISSING_ERROR_HANDLING` (canonical enum) + severity from
 `SEVERITY_POLICY[MISSING_ERROR_HANDLING]`.
 
-V1: scaffolded; assertions wire up when the eval graph driver lands (analyze node shipped).
+Driven by the eval graph driver (`run_review`) against
+`tests/eval/fixtures/mock_github/missing_error_handling.json`.
 """
 
-import pytest
-
 from outrider.policy import FindingType, lookup_severity
-
-pytestmark = pytest.mark.skip(
-    reason="requires eval graph driver: mock LLM provider + run_review shim + "
-    "mock_github fixtures (not yet shipped)"
-)
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.MISSING_ERROR_HANDLING,
@@ -32,3 +26,4 @@ def test_missing_error_handling_on_network_call_detected() -> None:
     findings = run_review("tests/eval/fixtures/mock_github/missing_error_handling.json")
     matches = [f for f in findings if f.finding_type == FindingType.MISSING_ERROR_HANDLING]
     assert len(matches) >= 1
+    assert matches[0].severity == EXPECTED_FINDING["severity"]

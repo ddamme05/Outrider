@@ -1,0 +1,36 @@
+{
+  "installation_id": 6202,
+  "owner": "acme",
+  "repo": "profile-service",
+  "pr_number": 22,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "Add fetch_profile helper",
+  "pr_body": "Adds fetch_profile() to pull a user's profile from the upstream API.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "profile/client.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import requests\n+\n+\n+def fetch_profile(user_id):\n+    resp = requests.get(f\"https://api.example.com/users/{user_id}\")\n+    return resp.json()\n",
+      "previous_path": null,
+      "content_base": "import requests\n",
+      "content_head": "import requests\n\n\ndef fetch_profile(user_id):\n    resp = requests.get(f\"https://api.example.com/users/{user_id}\")\n    return resp.json()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"profile/client.py\": \"deep\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"code_quality\"], \"reasoning\": \"Deep-review the new fetch_profile helper making an unguarded outbound HTTP call.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"missing_error_handling\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unhandled network call in fetch_profile\", \"description\": \"fetch_profile() calls requests.get() with no try/except and no .raise_for_status(), so a connection error, timeout, or non-2xx response propagates as an unhandled exception (and resp.json() then fails on an error body). Wrap the call, check the status, and handle request failures.\", \"evidence\": \"    resp = requests.get(f\\\"https://api.example.com/users/{user_id}\\\")\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "Quality finding: one LOW missing-error-handling finding -- fetch_profile() makes an outbound HTTP call with no exception handling or status check."
+    ]
+  }
+}

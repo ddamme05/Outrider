@@ -1,0 +1,36 @@
+{
+  "installation_id": 5202,
+  "owner": "acme",
+  "repo": "billing",
+  "pr_number": 21,
+  "base_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+  "pr_title": "Refactor: rename local and reorder kwargs in total_with_tax",
+  "pr_body": "Pure refactor of total_with_tax: renames the local accumulator and reorders keyword-only parameters. No behavior change.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 4,
+  "files": [
+    {
+      "path": "billing/totals.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 4,
+      "patch": "@@ -1,4 +1,4 @@\n-def total_with_tax(items, *, tax_rate, discount):\n-    subtotal = sum(item.price for item in items)\n-    taxed = subtotal * (1 + tax_rate)\n+def total_with_tax(items, *, discount, tax_rate):\n+    running_total = sum(item.price for item in items)\n+    taxed = running_total * (1 + tax_rate)\n     return taxed * (1 - discount)\n",
+      "previous_path": null,
+      "content_base": "def total_with_tax(items, *, tax_rate, discount):\n    subtotal = sum(item.price for item in items)\n    taxed = subtotal * (1 + tax_rate)\n    return taxed * (1 - discount)\n",
+      "content_head": "def total_with_tax(items, *, discount, tax_rate):\n    running_total = sum(item.price for item in items)\n    taxed = running_total * (1 + tax_rate)\n    return taxed * (1 - discount)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"billing/totals.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\", \"code_quality\"], \"reasoning\": \"False-positive scenario: a pure refactor (renamed local, reordered keyword-only params) with no behavior change -- deep-review to confirm no security finding is hallucinated.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "False-positive scenario: no findings. total_with_tax was refactored cosmetically (renamed accumulator, reordered keyword-only parameters) with identical behavior; no security issue was introduced."
+    ]
+  }
+}
