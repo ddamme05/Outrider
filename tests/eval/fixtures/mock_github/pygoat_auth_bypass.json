@@ -1,0 +1,36 @@
+{
+  "installation_id": 5102,
+  "owner": "acme",
+  "repo": "pygoat",
+  "pr_number": 12,
+  "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "pr_title": "Add login view",
+  "pr_body": "Adds a login view with an admin shortcut.",
+  "author": "contributor",
+  "total_additions": 8,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "pygoat/introduction/auth_views.py",
+      "status": "modified",
+      "additions": 8,
+      "deletions": 0,
+      "patch": "@@ -1 +1,9 @@\n from django.http import HttpResponse\n+\n+\n+def login(request):\n+    username = request.POST.get(\"username\")\n+    password = request.POST.get(\"password\")\n+    if username == \"admin\":\n+        return HttpResponse(\"Welcome admin\")\n+    return authenticate(username, password)\n",
+      "previous_path": null,
+      "content_base": "from django.http import HttpResponse\n",
+      "content_head": "from django.http import HttpResponse\n\n\ndef login(request):\n    username = request.POST.get(\"username\")\n    password = request.POST.get(\"password\")\n    if username == \"admin\":\n        return HttpResponse(\"Welcome admin\")\n    return authenticate(username, password)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"pygoat/introduction/auth_views.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"PyGoat: deep-review the login view that branches on username.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"auth_bypass\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Authentication bypass: admin login skips credential check\", \"description\": \"login() returns an authenticated 'Welcome admin' response whenever the username equals 'admin', without ever verifying the password. Any request with username=admin bypasses authentication entirely.\", \"evidence\": \"    if username == \\\"admin\\\":\\n        return HttpResponse(\\\"Welcome admin\\\")\", \"line_start\": 7, \"line_end\": 8, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "PyGoat true-positive: one CRITICAL auth-bypass finding -- login() grants admin access on a username match without checking the password."
+    ]
+  }
+}

@@ -3,18 +3,14 @@
 Per spec §11.2: PR introduces auth bypass in login flow; agent produces
 `FindingType.AUTH_BYPASS` with the correct tier + severity per policy.
 
-V1: scaffolded; assertions wire up when the eval graph driver lands
-(analyze node shipped) per §15.3.
+Driver-backed: drives the real graph via `run_review` against
+`mock_github/pygoat_auth_bypass.json`. The fixture's finding is JUDGED;
+severity (CRITICAL) is asserted via `lookup_severity` (set by policy, not
+the model). AUTH_BYPASS is CRITICAL, so the run gates at HITL — the
+scenario reads only `.findings` (populated by synthesize before the gate).
 """
 
-import pytest
-
 from outrider.policy import FindingType, lookup_severity
-
-pytestmark = pytest.mark.skip(
-    reason="requires eval graph driver: mock LLM provider + run_review shim + "
-    "mock_github fixtures (not yet shipped)"
-)
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.AUTH_BYPASS,
