@@ -54,6 +54,26 @@ from outrider.llm import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TEMPORARY band-aid (FUP-140): scrub ambient LangSmith env so these unit
+    tests don't inherit a developer's `LANGSMITH_TRACING` / `LANGSMITH_API_KEY`.
+
+    `AnthropicProvider.__init__` currently reads those vars from `os.environ`
+    and wraps its client with `wrap_anthropic` when both are truthy, so a shell
+    with `.env` sourced makes every provider test attempt real LangSmith I/O
+    (403 on an unresolved `op://` key) and fail. This fixture makes the tests
+    hermetic regardless of ambient env. It is NOT the real fix: FUP-140 moves
+    tracing out of core into a provider-agnostic `TracingLLMProvider` decorator
+    applied at the composition root, after which the provider stops reading env
+    and this fixture should be deleted. The two wrap-behavior tests set their
+    own env explicitly (and patch `wrap_anthropic`), so this autouse scrub runs
+    first and they override it — they stay valid.
+    """
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+
+
 def _entry() -> ContextManifestEntry:
     return ContextManifestEntry(
         file_path="src/foo.py",
