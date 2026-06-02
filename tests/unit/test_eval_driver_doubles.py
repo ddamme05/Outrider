@@ -21,6 +21,7 @@ from outrider.agent.eval_driver import (
     EvalFixture,
     EvalRunResult,
     _CapturingPublisher,
+    _FixtureContentNotFoundError,
     _FixtureScriptedProvider,
     _github_factory_for,
 )
@@ -170,10 +171,13 @@ async def test_github_double_serves_base_vs_head_by_ref() -> None:
     assert base64.b64decode(head.parsed_data.content.replace("\n", "")).decode() == _HEAD_CONTENT
 
 
-async def test_github_double_raises_on_missing_content() -> None:
+async def test_github_double_mimics_404_on_missing_content() -> None:
+    # An absent path mimics GitHub's 404 (not a hard error) so trace's candidate
+    # probe can read `.response.status_code == 404` to resolve which path exists.
     repos = _github_factory_for(_fixture())(_INSTALLATION_ID).rest.repos
-    with pytest.raises(EvalDriverError, match="no content for path"):
+    with pytest.raises(_FixtureContentNotFoundError) as exc_info:
         await repos.async_get_content("acme", "widget", "app/views.py", ref="c" * 40)
+    assert exc_info.value.response.status_code == 404
 
 
 async def test_github_double_renamed_file_keys_base_content_at_previous_path() -> None:
@@ -239,6 +243,65 @@ async def test_capturing_publisher_records_create_review_and_reports_no_prior() 
 def test_eval_fixture_forbids_unknown_keys() -> None:
     with pytest.raises(ValidationError):
         _fixture(language="python")  # not a fixture field — intake derives it
+
+
+def test_eval_fixture_rejects_repo_content_overlapping_a_changed_file() -> None:
+    # repository_contents_head must be BEYOND the diff; overlapping a changed file
+    # path would silently override intake's content map. "app/views.py" is the
+    # changed file in `_fixture`.
+    with pytest.raises(ValidationError, match="beyond the diff"):
+        _fixture(repository_contents_head={"app/views.py": "class X: ..."})
+
+
+def test_eval_fixture_rejects_repo_content_overlapping_a_rename_source() -> None:
+    with pytest.raises(ValidationError, match="beyond the diff"):
+        _fixture(
+            files=[
+                {
+                    "path": "app/new_name.py",
+                    "status": "renamed",
+                    "additions": 1,
+                    "deletions": 1,
+                    "previous_path": "app/old_name.py",
+                    "content_base": _BASE_CONTENT,
+                    "content_head": _HEAD_CONTENT,
+                }
+            ],
+            repository_contents_head={"app/old_name.py": "class X: ..."},  # rename source
+        )
+
+
+def test_eval_fixture_overlap_guard_normalizes_non_canonical_paths() -> None:
+    # A non-canonical spelling must NOT bypass the overlap guard: "./app/views.py"
+    # and "app/views.py" both canonicalize (validate_diff_path) to "app/views.py",
+    # which is what intake/trace actually fetch.
+    with pytest.raises(ValidationError, match="beyond the diff"):
+        _fixture(
+            files=[
+                {
+                    "path": "./app/views.py",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 0,
+                    "patch": "@@ -1 +1 @@\n-a\n+b\n",
+                    "content_base": _BASE_CONTENT,
+                    "content_head": _HEAD_CONTENT,
+                }
+            ],
+            repository_contents_head={"app/views.py": "class X: ..."},
+        )
+
+
+def test_eval_fixture_rejects_invalid_repo_content_key() -> None:
+    with pytest.raises(ValidationError, match="invalid fixture path"):
+        _fixture(repository_contents_head={"../../etc/passwd": "x"})
+
+
+def test_eval_fixture_rejects_canonically_duplicate_repo_content_keys() -> None:
+    # Two raw keys canonicalizing to the same path would collapse to one
+    # (path, head_sha) map entry -> silent last-wins; reject the ambiguity.
+    with pytest.raises(ValidationError, match="canonicalize to the same path"):
+        _fixture(repository_contents_head={"./app/models.py": "a", "app/models.py": "b"})
 
 
 def test_eval_run_result_iterates_and_lens_over_findings_and_exposes_state() -> None:

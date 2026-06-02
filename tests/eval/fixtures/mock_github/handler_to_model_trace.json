@@ -1,0 +1,38 @@
+{
+  "installation_id": 5301,
+  "owner": "acme",
+  "repo": "demo",
+  "pr_number": 51,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "Add search handler",
+  "author": "someone",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/handlers.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import sqlite3\n+from app.models import QueryBuilder\n+\n+def search(q):\n+    builder = QueryBuilder()\n+    return builder.execute(q)\n",
+      "content_base": "import sqlite3\n",
+      "content_head": "import sqlite3\nfrom app.models import QueryBuilder\n\ndef search(q):\n    builder = QueryBuilder()\n    return builder.execute(q)\n"
+    }
+  ],
+  "repository_contents_head": {
+    "app/models.py": "class QueryBuilder:\n    def execute(self, q):\n        return f\"SELECT * FROM {q}\"\n"
+  },
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/handlers.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the new search handler delegating to an imported builder.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"missing_input_validation\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unvalidated query input passed to builder\", \"description\": \"search() forwards q to QueryBuilder.execute without validation; examine the builder imported from app.models.\", \"evidence\": \"    return builder.execute(q)\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": [{\"import_string_raw\": \"app.models\", \"reason\": \"QueryBuilder is imported from app.models; examine execute() for unsafe query construction.\"}]}]}",
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "One input-validation finding traced into the imported query builder."
+    ]
+  }
+}

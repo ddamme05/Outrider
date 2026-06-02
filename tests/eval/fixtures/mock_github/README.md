@@ -31,8 +31,20 @@ GitHub at the two network boundaries), and returns an `EvalRunResult`.
       "content_base": "…",                      // by status: removed/modified/renamed
       "content_head": "…"                       // by status: added/modified/renamed
       // NOTE: no `language` — intake derives it; supplying it fails validation.
+      // If a run 404s during intake, the file is missing the content_base/
+      // content_head its status requires (intake fetches it → absent → 404).
     }
   ],
+
+  // OPTIONAL. Repository content OUTSIDE the PR diff, served by the fake GitHub
+  // client's async_get_content at head_sha (the ref the trace node probes).
+  // Keyed by repo-relative path -> file content. Used by trace scenarios: a
+  // changed handler in `files` imports a model that lives ONLY here (beyond the
+  // diff), so trace's two-phase probe fetches + resolves it. Goes through the
+  // SAME content path as `files`, so the base64 wire-shape is exercised
+  // identically. An absent path mimics GitHub's 404 (so trace learns which of a
+  // dotted import's candidate paths exists). Omit for non-trace fixtures.
+  "repository_contents_head": { "app/models.py": "class QueryBuilder: ..." },
 
   // Scripted LLM responses, keyed by node_id -> ordered list of raw response
   // strings (index 0 = that node's first call). The string is the EXACT text
@@ -82,3 +94,20 @@ A CRITICAL/HIGH finding trips the HITL gate: the graph `interrupt()`s and
 populated (synthesize ran first) but `.published_comments == ()` and
 `.hitl_gated is True`. Use a sub-HIGH (MEDIUM/LOW) finding when a scenario needs
 publish to run.
+
+## Trace scenarios (beyond-diff import resolution)
+
+See `handler_to_model_trace.json` for a worked example. To drive the trace node
+to a resolved `TraceDecision`:
+
+- Give a round-1 finding a non-empty `trace_candidates` entry —
+  `{"import_string_raw": "app.models", "reason": "…"}` (the raw shape; the parser
+  canonicalizes it). A dotted import maps to TWO candidate paths
+  (`app/models.py` AND `app/models/__init__.py`); serve **only one** in
+  `repository_contents_head` so resolution is unambiguous (`resolved`, not
+  `ambiguous`).
+- A **single** candidate skips the Haiku ranking call, so no `trace` LLM
+  response is needed.
+- Trace fetching a beyond-diff file loops back to **analyze round 2**, so script
+  a **second** `analyze` response (e.g. `{"findings": []}`) — the first call
+  reviews the PR file, the second reviews the fetched model.
