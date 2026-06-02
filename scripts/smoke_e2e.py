@@ -49,11 +49,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from alembic import command  # noqa: E402
-from alembic.config import Config  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from sqlalchemy import text  # noqa: E402
-from sqlalchemy.engine import make_url  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402
     AsyncEngine,
     async_sessionmaker,
@@ -83,6 +80,14 @@ from outrider.audit.events import PublishEvent  # noqa: E402
 from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer, ReplayMode  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
+from outrider.eval_support import (  # noqa: E402
+    EvalDBIsolationError,
+    assert_test_url_is_isolated,
+    create_database,
+    drop_database,
+    replace_db_name,
+    run_alembic_upgrade_head,
+)
 from outrider.llm.config import ModelConfig  # noqa: E402
 
 _RULE = "=" * 62
@@ -94,14 +99,6 @@ _EXPECTED_NODES = frozenset({"intake", "triage", "analyze", "synthesize", "hitl"
 
 def _say(msg: str = "") -> None:
     print(msg, flush=True)
-
-
-def _redact(url: str) -> str:
-    """Render a DB URL with the password masked (never log raw credentials)."""
-    try:
-        return make_url(url).render_as_string(hide_password=True)
-    except Exception:  # noqa: BLE001 — an unparseable URL must still not leak
-        return "<unparseable-url>"
 
 
 # ---------------------------------------------------------------------------
@@ -154,64 +151,15 @@ def _load_test_db_url() -> str:
 
 
 def _assert_isolated(url: str) -> None:
-    # Same guard as the integration conftest, but URL-parsed (not substring):
-    # refuse anything that isn't the ephemeral test container (port 5433, "test"
-    # in the db name). Error messages redact the password so a misconfigured
-    # dev/prod URL can't leak credentials into the terminal/logs.
-    parsed = make_url(url)
-    if parsed.port != 5433:
-        raise SystemExit(
-            f"refusing: TEST_DATABASE_URL must target port 5433 (the postgres-test "
-            f"container); got {_redact(url)}"
-        )
-    if "test" not in (parsed.database or "").lower():
-        raise SystemExit(
-            f"refusing: TEST_DATABASE_URL database name must contain 'test'; got {_redact(url)}"
-        )
-
-
-def _swap_db(url: str, new_db: str) -> str:
-    return make_url(url).set(database=new_db).render_as_string(hide_password=False)
-
-
-async def _create_db(admin_url: str, db_name: str) -> None:
-    eng = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+    # Delegate the structural isolation guard (port 5433 + "test" in db name,
+    # parsed via make_url, password-redacted errors) to the shared eval_support
+    # helper. It raises EvalDBIsolationError; this script's contract is "refuse
+    # with a clear message and a non-zero exit", so re-raise as SystemExit to
+    # preserve the exit-code behavior the runbook documents.
     try:
-        async with eng.connect() as conn:
-            await conn.execute(text(f'CREATE DATABASE "{db_name}"'))
-    finally:
-        await eng.dispose()
-
-
-async def _drop_db(admin_url: str, db_name: str) -> None:
-    eng = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        async with eng.connect() as conn:
-            await conn.execute(
-                text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :n AND pid <> pg_backend_pid()"
-                ),
-                {"n": db_name},
-            )
-            await conn.execute(text(f'DROP DATABASE IF EXISTS "{db_name}"'))
-    finally:
-        await eng.dispose()
-
-
-def _migrate(db_url: str) -> None:
-    # env.py reads DATABASE_URL from os.environ and runs its own asyncio.run,
-    # so this must be called OUTSIDE our event loop (it is — see main()).
-    prior = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = db_url
-    try:
-        cfg = Config(str(_REPO_ROOT / "alembic.ini"), toml_file=str(_REPO_ROOT / "pyproject.toml"))
-        command.upgrade(cfg, "head")
-    finally:
-        if prior is None:
-            os.environ.pop("DATABASE_URL", None)
-        else:
-            os.environ["DATABASE_URL"] = prior
+        assert_test_url_is_isolated(url)
+    except EvalDBIsolationError as exc:
+        raise SystemExit(f"refusing: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -421,17 +369,22 @@ def main() -> int:
     admin_url = _load_test_db_url()
     _assert_isolated(admin_url)
     db_name = f"outrider_test_smoke_{uuid4().hex[:8]}"
-    db_url = _swap_db(admin_url, db_name)
+    db_url = replace_db_name(admin_url, db_name)
 
-    asyncio.run(_create_db(admin_url, db_name))
+    asyncio.run(create_database(admin_url, db_name))
     _say(f"  Ephemeral DB ......... {db_name} (created)")
     try:
-        _migrate(db_url)
+        # run_alembic_upgrade_head is async (it wraps alembic's sync command in
+        # asyncio.to_thread); env.py still reads DATABASE_URL and runs its own
+        # asyncio.run, so this must stay OUTSIDE _run_smoke's event loop — hence
+        # its own asyncio.run here, preserving the create -> migrate -> run ->
+        # drop control flow.
+        asyncio.run(run_alembic_upgrade_head(db_url))
         _say("  Migrated ............. alembic upgrade head")
         _say()
         ok = asyncio.run(_run_smoke(db_url))
     finally:
-        asyncio.run(_drop_db(admin_url, db_name))
+        asyncio.run(drop_database(admin_url, db_name))
         _say(f"  Ephemeral DB ......... {db_name} (dropped)")
         _say()
 
