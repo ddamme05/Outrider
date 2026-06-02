@@ -112,9 +112,9 @@ _PATCH = (
     "+    return user_input\n"
 )
 
-# Byte span of "    return user_input" within _HEAD_CONTENT -- the finding target.
-_FINDING_BYTE_START = _HEAD_CONTENT.index("    return user_input")
-_FINDING_BYTE_END = _FINDING_BYTE_START + len("    return user_input")
+# 1-indexed line of "    return user_input" within _HEAD_CONTENT -- the finding
+# target (FUP-126: analyze proposals are line-based, not byte spans).
+_FINDING_LINE = _HEAD_CONTENT[: _HEAD_CONTENT.index("    return user_input")].count("\n") + 1
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +317,8 @@ def _analyze_response() -> str:
                     "title": "Unvalidated user input returned directly",
                     "description": "vulnerable() returns user_input without validation.",
                     "evidence": "    return user_input",
-                    "span": {"byte_start": _FINDING_BYTE_START, "byte_end": _FINDING_BYTE_END},
+                    "line_start": _FINDING_LINE,
+                    "line_end": _FINDING_LINE,
                     "trace_candidates": [],
                 }
             ]

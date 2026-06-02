@@ -326,7 +326,8 @@ def _analyze_response_one_finding() -> str:
                     "title": "Test finding",
                     "description": "Wired analyze-graph finding.",
                     "evidence": "def my_function():\n    return 42",
-                    "span": {"byte_start": 0, "byte_end": 18},
+                    "line_start": 1,
+                    "line_end": 2,
                     "trace_candidates": [],
                 }
             ]

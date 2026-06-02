@@ -65,7 +65,7 @@ def _rejected_proposal_kwargs(**overrides: Any) -> dict[str, Any]:
         "claimed_finding_type_hash": "abcdef0123456789",
         "claimed_finding_type_len": 12,
         "rejection_reason": "span_outside_scope_unit",
-        "rejection_detail": "span=100-200|scope_unit=abc",
+        "rejection_detail": "(100,200)",
     }
     base.update(overrides)
     return base

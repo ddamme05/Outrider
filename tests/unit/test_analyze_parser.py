@@ -408,7 +408,7 @@ def test_step0_rejection_detail_is_within_field_max_length() -> None:
     # Construct a response with many findings, each missing many fields.
     bogus_finding = (
         '{"finding_type": null, "evidence_tier": null, "title": null, '
-        '"description": null, "evidence": null, "span": null}'
+        '"description": null, "evidence": null, "line_start": null, "line_end": null}'
     )
     response = '{"findings": [' + ",".join([bogus_finding] * 50) + "]}"
     result = _call_parser(response)
@@ -1372,7 +1372,7 @@ def test_admitted_finding_carries_proposal_hash_from_compute_recipe() -> None:
     # admitted proposal's payload (same recipe the rejected branch uses).
     # Reading _minimal_proposal defaults: source_file_path=src/x.py,
     # finding_type=sql_injection, evidence_tier=judged, no query_match_id /
-    # trace_path, title/description/evidence are "t"/"d"/"e", span 0-1.
+    # trace_path, title/description/evidence are "t"/"d"/"e", lines 1-1.
     expected_hash = compute_proposal_hash(
         source_file_path="src/x.py",
         finding_type="sql_injection",
