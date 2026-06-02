@@ -65,6 +65,11 @@ EXPECTED_TEST_DB_NAME_FRAGMENT = "test"
 
 _EVAL_MODE_ENV_VAR = "OUTRIDER_IS_EVAL"
 _PASSWORD_REDACTION = re.compile(r"(://[^:/@\s]+:)([^@]+)(@)")
+# Ephemeral DB names are generated as `<prefix>_<uuid4-hex>` (lowercase letters,
+# digits, underscore). create/drop interpolate the name into a quoted SQL
+# identifier; this pattern guards the exported primitives against a
+# quote-breaking name from a future caller.
+_VALID_DB_NAME = re.compile(r"[a-z0-9_]+")
 
 
 class EvalDBIsolationError(RuntimeError):
@@ -141,6 +146,21 @@ def replace_db_name(url: str, new_db: str) -> str:
     return make_url(url).set(database=new_db).render_as_string(hide_password=False)
 
 
+def _validate_db_name(db_name: str) -> None:
+    """Reject a db_name that isn't a generated `[a-z0-9_]+` identifier.
+
+    `create_database` / `drop_database` interpolate `db_name` into a quoted SQL
+    identifier (`"<name>"`). These are exported primitives, so guard against a
+    future caller passing a quote-breaking name. All current callers generate
+    `<prefix>_<uuid4-hex>`, which matches.
+    """
+    if not _VALID_DB_NAME.fullmatch(db_name):
+        raise ValueError(
+            f"db_name must match [a-z0-9_]+ (ephemeral test DB names are "
+            f"generated as <prefix>_<uuid4-hex>); got {db_name!r}"
+        )
+
+
 async def create_database(admin_url: str, db_name: str) -> None:
     """`CREATE DATABASE "<db_name>"` via an AUTOCOMMIT admin connection.
 
@@ -149,6 +169,7 @@ async def create_database(admin_url: str, db_name: str) -> None:
     arbitrary-URL caller must not be able to CREATE against a non-test DB.
     """
     assert_test_url_is_isolated(admin_url)
+    _validate_db_name(db_name)
     engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
@@ -168,6 +189,7 @@ async def drop_database(admin_url: str, db_name: str) -> None:
     fail-closed reasoning as `create_database`: no DROP against a non-test DB.
     """
     assert_test_url_is_isolated(admin_url)
+    _validate_db_name(db_name)
     engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
