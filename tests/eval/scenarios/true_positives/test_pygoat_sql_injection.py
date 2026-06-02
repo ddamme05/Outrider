@@ -4,22 +4,14 @@ Per spec §11.2: PR introduces SQL injection in a search view; the agent
 should produce `FindingType.SQL_INJECTION` + `EvidenceTier.OBSERVED` +
 `query_match_id` matching a real entry in the queries registry.
 
-V1: scaffolded; assertions wire up when the eval graph driver lands
-(analyze node + queries registry shipped) per §15.3. The expected-output
-fixture pins the canonical FindingType +
-severity + tier; the specific `query_match_id` string is intentionally
-left as "matches a real registry entry" since the queries spec is
-canonical for that naming convention.
+Driver-backed: drives the real graph via `run_review` against
+`mock_github/pygoat_sql_injection.json`. The fixture's analyze response
+carries `evidence_tier="observed"` with a `query_match_id` that is in the
+set `_build_query_match_id_set` fires on the file (proof boundary);
+severity is asserted via `lookup_severity` (set by policy, not the model).
 """
 
-import pytest
-
 from outrider.policy import EvidenceTier, FindingType, lookup_severity
-
-pytestmark = pytest.mark.skip(
-    reason="requires eval graph driver (mock LLM provider + run_review shim + "
-    "mock_github fixtures); analyze node + queries registry already shipped"
-)
 
 EXPECTED_FINDING = {
     "finding_type": FindingType.SQL_INJECTION,
@@ -28,8 +20,8 @@ EXPECTED_FINDING = {
     # Hard-coding the constant would drift if the policy table changes;
     # the canonical mapping is the single source of truth.
     "severity": lookup_severity(FindingType.SQL_INJECTION),
-    # query_match_id: matches a real entry in queries/python/*.scm; specific
-    # string pinned when the queries spec lands.
+    # query_match_id: the fixture cites a real id from the file's fired
+    # structural-query set; asserted non-None (the exact id is fixture-local).
 }
 
 

@@ -1,0 +1,36 @@
+{
+  "installation_id": 4242,
+  "owner": "acme",
+  "repo": "async-worker",
+  "pr_number": 5,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "Add async poll() to Worker",
+  "pr_body": "Adds a poll() coroutine that drains the queue.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "src/worker.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -8,3 +8,7 @@\n \n     def __init__(self, queue):\n         self._queue = queue\n+\n+    async def poll(self):\n+        time.sleep(1.0)\n+        return self._queue.get()\n",
+      "previous_path": null,
+      "content_base": "\"\"\"Async queue worker.\"\"\"\n\nimport time\n\n\nclass Worker:\n    \"\"\"Pulls items off an async queue and processes them.\"\"\"\n\n    def __init__(self, queue):\n        self._queue = queue\n",
+      "content_head": "\"\"\"Async queue worker.\"\"\"\n\nimport time\n\n\nclass Worker:\n    \"\"\"Pulls items off an async queue and processes them.\"\"\"\n\n    def __init__(self, queue):\n        self._queue = queue\n\n    async def poll(self):\n        time.sleep(1.0)\n        return self._queue.get()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"src/worker.py\": \"deep\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"performance\"], \"reasoning\": \"FUP-137: deep-review the changed async worker for event-loop hazards.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"blocking_call_in_async\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Blocking time.sleep() inside async def poll()\", \"description\": \"poll() is a coroutine but calls the synchronous time.sleep(), which stalls the event loop for every concurrent task. Use asyncio.sleep() instead.\", \"evidence\": \"        time.sleep(1.0)\", \"line_start\": 13, \"line_end\": 13, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "FUP-137: one MEDIUM performance finding -- a blocking time.sleep() inside the new async poll() method on Worker."
+    ]
+  }
+}
