@@ -47,12 +47,11 @@ local Postgres is fast).
 
 import asyncio
 import os
-import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -63,6 +62,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
+from outrider.eval_support import (
+    assert_test_url_is_isolated,
+    ephemeral_database,
+    run_alembic_upgrade_head,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -128,66 +132,6 @@ def in_memory_checkpointer_factory() -> Callable[[], Any]:
 # find script_location.
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
-# Defense-in-depth URL pattern guard. The integration suite must connect
-# to the dedicated postgres-test container (port 5433, db name containing
-# "test"), never to the dev DB. If TEST_DATABASE_URL is missing or
-# misconfigured (e.g., copy-pasted from DATABASE_URL), the fixture refuses
-# to run rather than silently issuing CREATE/DROP DATABASE against the
-# dev container. Same posture as docker-compose.yml's `:?` requirement on
-# TEST_POSTGRES_*: fail loud at the entrypoint, not somewhere downstream.
-_EXPECTED_TEST_PORT = "5433"
-_EXPECTED_TEST_DB_NAME_FRAGMENT = "test"
-
-# Mask the password segment of a postgres URL before surfacing it in error
-# messages. A misconfigured TEST_DATABASE_URL pointing at the dev or prod
-# DB would otherwise spill its password into CI logs and exception traces.
-_PASSWORD_REDACTION = re.compile(r"(://[^:/@\s]+:)([^@]+)(@)")
-
-
-def _redact_url_password(url: str) -> str:
-    return _PASSWORD_REDACTION.sub(r"\1***\3", url)
-
-
-def _assert_test_url_is_isolated(url: str) -> None:
-    """Refuse to run if TEST_DATABASE_URL doesn't point at the test container.
-
-    Two checks: the host:port segment must end in :5433, and the database
-    name must contain the literal "test". Both are properties of the
-    postgres-test container's intended configuration. A URL that fails
-    either check is almost certainly a misconfigured .env that points
-    the test fixture at the dev DB.
-
-    The error message redacts any password component so a copy-pasted
-    dev/prod URL doesn't leak credentials into CI logs.
-    """
-    safe_url = _redact_url_password(url)
-    if f":{_EXPECTED_TEST_PORT}" not in url:
-        raise RuntimeError(
-            f"TEST_DATABASE_URL must target port {_EXPECTED_TEST_PORT} "
-            f"(the postgres-test container); got: {safe_url!r}. "
-            "Refusing to run integration tests against an unexpected URL — "
-            "see docs/testing.md 'Two-container model' for the rationale."
-        )
-    db_segment = url.rsplit("/", 1)[-1]
-    if _EXPECTED_TEST_DB_NAME_FRAGMENT not in db_segment.lower():
-        raise RuntimeError(
-            f"TEST_DATABASE_URL database name must contain '"
-            f"{_EXPECTED_TEST_DB_NAME_FRAGMENT}' (canonical: outrider_test); "
-            f"got database segment: {db_segment!r}. "
-            "Refusing to run integration tests against an unexpected DB."
-        )
-
-
-def _replace_db(url: str, new_db: str) -> str:
-    """Swap the database name in a postgresql+psycopg:// URL.
-
-    Naive but adequate for the dev URL shape we control. Would need
-    revisiting if the URL ever included query parameters after the db
-    segment.
-    """
-    base, _ = url.rsplit("/", 1)
-    return f"{base}/{new_db}"
-
 
 async def _run_alembic_action(action: str, target: str, db_url: str) -> None:
     """Run an alembic command (upgrade/downgrade) with DATABASE_URL overridden.
@@ -197,7 +141,17 @@ async def _run_alembic_action(action: str, target: str, db_url: str) -> None:
     seam. ``asyncio.to_thread`` runs the sync call in a fresh thread so
     env.py's internal ``asyncio.run(run_async_migrations())`` doesn't try
     to nest event loops.
+
+    The upgrade-to-head case delegates to the shared
+    `run_alembic_upgrade_head`; the DOWNGRADE branch (and upgrade to a
+    non-head target) stays local because the shared helper is upgrade-only
+    by design — `alembic_runner` / the genesis-migration round-trip drive
+    downgrade and must keep that capability here.
     """
+    if action == "upgrade" and target == "head":
+        await run_alembic_upgrade_head(db_url)
+        return
+
     original_url = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = db_url
     try:
@@ -234,41 +188,14 @@ async def fresh_db() -> AsyncGenerator[str]:
             "container, not the dev postgres container."
         ) from exc
 
-    _assert_test_url_is_isolated(main_url)
-
-    test_db_name = f"outrider_test_{uuid4().hex[:8]}"
-    test_url = _replace_db(main_url, test_db_name)
-
-    # CREATE DATABASE / DROP DATABASE cannot run inside a transaction
-    # block, so the admin engine uses AUTOCOMMIT isolation.
-    admin_engine = create_async_engine(main_url, isolation_level="AUTOCOMMIT")
-    try:
-        async with admin_engine.connect() as conn:
-            await conn.execute(text(f'CREATE DATABASE "{test_db_name}"'))
-    finally:
-        await admin_engine.dispose()
-
-    try:
+    # The isolation guard, CREATE/DROP DATABASE (AUTOCOMMIT admin engine), and
+    # the pg_terminate_backend teardown sweep all live in the shared
+    # `ephemeral_database` CM (see outrider.eval_support). The explicit guard
+    # here is belt-and-suspenders: `ephemeral_database` runs it too, but
+    # calling it first keeps the fail-loud message at the fixture entrypoint.
+    assert_test_url_is_isolated(main_url)
+    async with ephemeral_database(base_url=main_url, name_prefix="outrider_test_") as test_url:
         yield test_url
-    finally:
-        # Force-disconnect any leftover backends, then drop the DB. This
-        # makes teardown robust against tests that leave engines open;
-        # without the pg_terminate_backend call, DROP DATABASE fails with
-        # "database is being accessed by other users."
-        admin_engine = create_async_engine(main_url, isolation_level="AUTOCOMMIT")
-        try:
-            async with admin_engine.connect() as conn:
-                await conn.execute(
-                    text(
-                        "SELECT pg_terminate_backend(pid) "
-                        "FROM pg_stat_activity "
-                        "WHERE datname = :name AND pid <> pg_backend_pid()"
-                    ),
-                    {"name": test_db_name},
-                )
-                await conn.execute(text(f'DROP DATABASE IF EXISTS "{test_db_name}"'))
-        finally:
-            await admin_engine.dispose()
 
 
 AlembicRunner = Callable[[str, str, str], Awaitable[None]]
