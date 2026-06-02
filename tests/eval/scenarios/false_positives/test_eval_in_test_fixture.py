@@ -5,17 +5,14 @@ parse a literal in test setup) is NOT a security finding — the call
 lives in test code, not production code paths. Expected: zero security
 findings.
 
-V1: scaffolded; assertions wire up when the eval graph driver lands (analyze node shipped).
+Driven by the eval graph driver (`run_review`) against
+`tests/eval/fixtures/mock_github/eval_in_test_fixture.json`. The scripted
+analyze response is deliberately empty (`{"findings": []}`), so this asserts
+the no-findings pipeline path; the SECURITY-dimension discriminator itself is
+exercised by the finding-producing scenarios (quality / true-positives).
 """
 
-import pytest
-
 from outrider.schemas import ReviewDimension
-
-pytestmark = pytest.mark.skip(
-    reason="requires eval graph driver: mock LLM provider + run_review shim + "
-    "mock_github fixtures (not yet shipped)"
-)
 
 EXPECTED_SECURITY_FINDING_COUNT = 0
 
