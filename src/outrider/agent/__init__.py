@@ -17,4 +17,32 @@ Module structure follows docs/conventions.md "File organization":
   audit-side sink Protocols + one anomaly sink, GitHub publisher,
   import-path resolver, etc.).
 - `agent/nodes/<node>.py` — the per-node body.
+- `agent/eval_driver.py` — `run_review(fixture_path)`, the eval graph driver
+  the non-structural eval scenarios import (`from outrider.agent import
+  run_review`). See `specs/2026-06-01-eval-graph-driver.md`.
 """
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from outrider.agent.eval_driver import EvalRunResult, run_review
+
+__all__ = [
+    "EvalRunResult",
+    "run_review",
+]
+
+
+# Lazy (PEP 562). `eval_driver` transitively imports `agent.graph`, which imports
+# nodes that import `agent.reducers` — re-entering this package while it is still
+# initializing. Importing eval_driver eagerly here would deadlock that chain, so
+# we defer it until `outrider.agent.run_review` / `.EvalRunResult` is actually
+# accessed (i.e. after this package finishes initializing — the deadlock risk is
+# only re-entrancy during init, not external imports). Keeps the
+# `from outrider.agent import run_review` contract.
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        from outrider.agent import eval_driver
+
+        return getattr(eval_driver, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
