@@ -200,6 +200,21 @@ def test_admitted_line_range_must_equal_raw_line_range() -> None:
     assert admitted.line_end == raw.line_end == 13
 
 
+def test_raw_rejects_transposed_line_range() -> None:
+    """`line_end < line_start` fails the `_line_end_not_before_start` model
+    validator at the raw layer (FUP-126 / DECISIONS.md#022 span-key amendment).
+    The recipe-level guard in `compute_proposal_hash` is separate; this pins the
+    schema validator directly."""
+    with pytest.raises(ValidationError):
+        AnalyzeFindingProposalRaw(**_raw_kwargs(line_start=12, line_end=10))
+
+
+def test_admitted_rejects_transposed_line_range() -> None:
+    """Same `line_end >= line_start` guard on the admitted layer."""
+    with pytest.raises(ValidationError):
+        AnalyzeFindingProposal(**_admitted_kwargs(line_start=12, line_end=10))
+
+
 # ---------------------------------------------------------------------------
 # TraceCandidate proposals: raw vs admitted layer structural distinction.
 # ---------------------------------------------------------------------------
