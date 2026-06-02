@@ -15,21 +15,21 @@ lives on:
 - `TraceDecisionEvent.trace_path` (audit event) — same data, on the
   audit-log side.
 
-V1: scaffolded; assertions wire up when the eval graph driver lands
-(trace node + import resolver shipped) per §15.3.
+Driven by the eval graph driver (`run_review`) against
+`tests/eval/fixtures/mock_github/handler_to_model_trace.json`. The changed
+handler (`app/handlers.py`) imports `app.models`; the model file
+(`app/models.py`) lives ONLY in the fixture's `repository_contents_head`
+(beyond the diff — NOT in `files`), so trace's two-phase probe fetches it at
+`head_sha` and resolves. That beyond-diff fetch is the whole point of this
+scenario. A single trace candidate skips the Haiku ranking call, so no
+`trace` LLM response is scripted.
 """
-
-import pytest
-
-pytestmark = pytest.mark.skip(
-    reason="requires eval graph driver (mock LLM provider + run_review shim + "
-    "mock_github fixtures); trace node + import resolver already shipped"
-)
 
 EXPECTED_DECISION = {
     "resolution_status": "resolved",
-    # target_file: pinned at flip time; the test fixture defines the
-    # canonical handler→model relationship.
+    # The model file imported by the handler, served beyond-diff in
+    # repository_contents_head; trace resolves the `app.models` import to it.
+    "target_file": "app/models.py",
 }
 
 
@@ -48,7 +48,7 @@ def test_handler_to_model_trace_resolves_via_direct_import() -> None:
     assert len(trace_decisions) >= 1
     decision = trace_decisions[0]
     assert decision.resolution_status == EXPECTED_DECISION["resolution_status"]
-    assert decision.target_file is not None
+    assert decision.target_file == EXPECTED_DECISION["target_file"]
     # Per DECISIONS.md#017 × #024: a resolved target_file must equal the
     # single resolved_candidate_paths entry. The schema-level validator
     # enforces it on construction; this assertion documents the contract

@@ -40,11 +40,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Literal, Self
 from uuid import UUID, uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -58,6 +59,8 @@ from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.anomaly.persister import AnomalyPersister
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
+from outrider.coordinates import validate_diff_path
+from outrider.coordinates.errors import CoordinateError
 from outrider.db.review_status_persister import ReviewStatusPersister
 from outrider.eval_support import (
     assert_no_is_eval_violations,
@@ -95,6 +98,24 @@ class EvalDriverError(RuntimeError):
     TEST_DATABASE_URL, malformed fixture), surfaced loudly so a scenario fails
     with a clear cause rather than a confusing downstream error.
     """
+
+
+class _FixtureContentNotFoundError(Exception):
+    """Mimics githubkit's 404 `RequestFailed` for a path the fixture's repo
+    does not contain.
+
+    Carries `.response.status_code == 404` so consumers that special-case 404
+    treat an absent path as a real GitHub "file not found" — matching production
+    wire behavior. This is required for the trace node's two-phase probe, which
+    fetches BOTH candidate paths for a dotted import (e.g. `app/models.py` AND
+    `app/models/__init__.py`) and relies on a 404 to learn which one exists
+    (see `trace.py` — it reads `exc.response.status_code`). No `githubkit`
+    import — only the `.response.status_code` shape those consumers read.
+    """
+
+    def __init__(self, path: str, ref: str) -> None:
+        self.response = SimpleNamespace(status_code=404)
+        super().__init__(f"fixture repo has no file at path={path!r} ref={ref!r} (GitHub 404)")
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +164,59 @@ class EvalFixture(BaseModel):
     total_additions: int
     total_deletions: int
     files: tuple[EvalFixtureFile, ...]
+    # Repository content OUTSIDE the PR diff, served by the fake GitHub client's
+    # `async_get_content` at `head_sha` (the ref trace probes — see trace.py).
+    # Keyed by repo-relative path → file content. Empty for non-trace fixtures.
+    # The trace node fetches beyond-diff files (e.g. a model imported by a changed
+    # handler) through this; it goes through the SAME content path as PR files, so
+    # the base64 wire-shape normalization is exercised identically.
+    repository_contents_head: dict[str, str] = Field(default_factory=dict)
     llm_responses: dict[str, list[str]]
+
+    @model_validator(mode="after")
+    def _repo_content_is_beyond_the_diff(self) -> Self:
+        """`repository_contents_head` must NOT overlap any path in the diff.
+
+        It is written into the same `(path, head_sha)` content map as the PR
+        files' `content_head` (see `_github_factory_for`), so an overlapping key
+        would silently override what intake reads — and a trace scenario would
+        stop proving the beyond-diff fetch path without failing. Paths are
+        compared AFTER `validate_diff_path` canonicalization — the SAME normalizer
+        intake + trace apply before fetch — so a non-canonical spelling
+        (`./app/x.py` vs `app/x.py`) can't bypass the check. Invalid paths
+        (traversal, absolute, …) are rejected here too.
+        """
+
+        def _canon(p: str) -> str:
+            try:
+                return validate_diff_path(p)
+            except CoordinateError as exc:
+                raise ValueError(f"invalid fixture path {p!r}: {exc}") from exc
+
+        diff_paths = {_canon(f.path) for f in self.files}
+        diff_paths |= {_canon(f.previous_path) for f in self.files if f.previous_path}
+
+        # Detect repository_contents_head keys that canonicalize to the SAME path:
+        # two raw spellings collapse to one `(path, head_sha)` map entry in
+        # `_github_factory_for`, so one would silently overwrite the other.
+        repo_canon_to_raw: dict[str, list[str]] = {}
+        for k in self.repository_contents_head:
+            repo_canon_to_raw.setdefault(_canon(k), []).append(k)
+        collisions = {c: sorted(raws) for c, raws in repo_canon_to_raw.items() if len(raws) > 1}
+        if collisions:
+            raise ValueError(
+                f"repository_contents_head has keys that canonicalize to the same path "
+                f"(one would silently overwrite the other): {collisions}"
+            )
+
+        overlap = diff_paths & set(repo_canon_to_raw)
+        if overlap:
+            raise ValueError(
+                f"repository_contents_head must be beyond the diff, but {sorted(overlap)} "
+                f"also appear(s) in `files` (changed-file path or rename source, after path "
+                f"canonicalization); a changed file's content comes from `files`."
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +351,12 @@ class _FixtureReposAPI:
         try:
             raw = self._content[(path, ref)]
         except KeyError as exc:
-            raise EvalDriverError(
-                f"fixture has no content for path={path!r} at ref={ref!r}; "
-                f"check the file's status/content_base/content_head."
-            ) from exc
+            # Absent path → mimic GitHub's 404 (real wire behavior), NOT a hard
+            # error: trace's candidate probe fetches paths that legitimately
+            # don't exist and reads the 404 to resolve. Intake only requests
+            # paths the fixture supplied, so a 404 there would itself be a
+            # genuine fetch failure (surfaced loudly upstream).
+            raise _FixtureContentNotFoundError(path, ref) from exc
         wrapped_b64 = base64.encodebytes(raw.encode()).decode("ascii")
         return _FixtureResponse(
             parsed_data=_FixtureContentFile(encoding="base64", content=wrapped_b64)
@@ -387,13 +462,23 @@ def _github_factory_for(fixture: EvalFixture) -> Any:
     ]
     content: dict[tuple[str, str], str] = {}
     for f in fixture.files:
+        # Key by the CANONICAL path intake/trace fetch (`validate_diff_path`), so a
+        # non-canonical fixture spelling still resolves. Paths are already
+        # validated at `EvalFixture` construction, so this won't raise.
         # `previous_path` is the base-side path for renames; base content is read
         # there, head content at the new path (per intake's rename handling).
-        base_path = f.previous_path if (f.status == "renamed" and f.previous_path) else f.path
+        head_path = validate_diff_path(f.path)
+        base_path = validate_diff_path(
+            f.previous_path if (f.status == "renamed" and f.previous_path) else f.path
+        )
         if f.content_base is not None:
             content[(base_path, fixture.base_sha)] = f.content_base
         if f.content_head is not None:
-            content[(f.path, fixture.head_sha)] = f.content_head
+            content[(head_path, fixture.head_sha)] = f.content_head
+    # Beyond-diff repository content (trace's two-phase probe), served at head_sha
+    # through the same content map as PR files, keyed by the canonical path.
+    for path, repo_content in fixture.repository_contents_head.items():
+        content[(validate_diff_path(path), fixture.head_sha)] = repo_content
     client = _FixtureGitHubClient(
         _FixtureRestAPI(_FixtureReposAPI(content), _FixturePullsAPI(metas))
     )
