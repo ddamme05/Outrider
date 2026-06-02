@@ -1,4 +1,4 @@
-# is_eval integrity gate for run_review; consolidation target for the eval_db conftest gate.
+# is_eval integrity gate shared by run_review + the eval_db conftest fixture.
 # See specs/2026-06-01-eval-graph-driver.md (resolution A) + docs/testing.md "Eval isolation".
 """Loud-failure integrity gate for eval-database isolation.
 
@@ -13,9 +13,9 @@ alike (robust against a future nullable `is_eval` column). It does NOT
 auto-coerce — auto-coercion would mask exactly the bug class the gate exists
 to catch.
 
-`run_review` (the eval graph driver) uses it today; `tests/eval/conftest.py`'s
-`eval_db` fixture migrates onto it next, so both run the identical query.
-Adding a new `is_eval`-bearing table requires extending the UNION here.
+Shared so `run_review` (the eval graph driver) and `tests/eval/conftest.py`'s
+`eval_db` fixture run the identical query. Adding a new `is_eval`-bearing table
+requires extending the UNION here.
 """
 
 from __future__ import annotations
