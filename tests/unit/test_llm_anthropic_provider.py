@@ -66,9 +66,9 @@ def _hermetic_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     hermetic regardless of ambient env. It is NOT the real fix: FUP-140 moves
     tracing out of core into a provider-agnostic `TracingLLMProvider` decorator
     applied at the composition root, after which the provider stops reading env
-    and this fixture should be deleted. The two wrap-behavior tests set their
-    own env explicitly (and patch `wrap_anthropic`), so this autouse scrub runs
-    first and they override it — they stay valid.
+    and this fixture should be deleted. The LangSmith wrap-behavior tests set
+    their own env explicitly (and patch `wrap_anthropic`), so this autouse scrub
+    runs first and they override it — they stay valid.
     """
     monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
