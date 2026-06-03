@@ -88,13 +88,18 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final
 
 from outrider.agent.nodes.analyze_parser import (
     ParserResult,
     ProposalRejection,
     ResponseRejection,
     parse_analyze_response,
+)
+from outrider.agent.nodes.degradation import (
+    _DegradationReason,
+    _ParseStatus,
+    decide_degradation,
 )
 from outrider.ast_facts.models import SkipReason
 from outrider.ast_facts.python_adapter import parse_python
@@ -110,9 +115,6 @@ from outrider.coordinates import (
     bound_diff_hunks_text,
     extract_scope_unit_body,
     lookup_patched_file,
-    patched_file_has_added_lines,
-    scope_unit_diff_hunks,
-    scope_unit_has_added_lines,
 )
 from outrider.llm.base import LLMRequest
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
@@ -126,8 +128,6 @@ from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
     from uuid import UUID
-
-    from unidiff import PatchedFile
 
     from outrider.ast_facts.base import ImportPathResolver
     from outrider.ast_facts.models import ParseResult, ScopeUnit
@@ -672,49 +672,6 @@ class _FileOutcome:
     estimated_tokens: int
 
 
-# Bidirectionally coupled with `LLMRequest.degraded_mode` per
-# `_enforce_degradation_provenance` (llm/base.py). `"parse_failed"` is
-# V1-unreachable per the module docstring; kept as a structural slot
-# for the raw-bytes intake path (FUP-053).
-_DegradationReason = Literal["parse_failed", "tree_has_error_in_changed_regions"]
-
-# `FileExaminationEvent.parse_status` values for the analyze node.
-# `"failed"` is V1-unreachable for the same reason as `"parse_failed"` above.
-_ParseStatus = Literal["clean", "failed", "degraded", "skipped"]
-
-
-def _intersect_changed_scope_units(
-    scope_units: tuple[ScopeUnit, ...],
-    patched_file: PatchedFile,
-) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[str, ...], ...]]:
-    """Return `(included_units, clipped_hunks_per_unit)` for the intersection.
-
-    A scope unit is "included" iff
-    `coordinates.scope_unit_has_added_lines` returns True AND
-    `coordinates.scope_unit_diff_hunks` returns non-empty. The two
-    tuples share indices: `included_units[i]` has clipped hunks
-    `clipped_hunks_per_unit[i]`. Empty inputs / no intersection
-    returns `((), ())`.
-
-    Composition of two coordinates surfaces — the orchestration lives
-    here (analyze decides which units feed which prompt), the
-    coordinate math lives there. Backs the spec's
-    `outcome="skipped+NO_CHANGED_SCOPE_UNITS"` discriminator and the
-    `clean+full_llm` prompt's `diff_hunks` block.
-    """
-    included: list[ScopeUnit] = []
-    hunks: list[tuple[str, ...]] = []
-    for su in scope_units:
-        if not scope_unit_has_added_lines(su, patched_file):
-            continue
-        clipped = scope_unit_diff_hunks(su, patched_file)
-        if not clipped:
-            continue
-        included.append(su)
-        hunks.append(clipped)
-    return tuple(included), tuple(hunks)
-
-
 def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
     """Fire every registered query against `file_content_bytes`; return
     the set of ids that produced at least one match.
@@ -918,9 +875,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         resolver=import_path_resolver,
     )
 
-    # Parser-stage skip (VENDORED, OVERSIZED, GENERATED_FILENAME,
-    # MINIFIED, GENERATED_BANNER). Pass through the parser's skip_reason
-    # — routing preserves audit visibility vs crashing.
+    # Parser-stage skip (VENDORED, OVERSIZED, GENERATED_FILENAME, MINIFIED,
+    # GENERATED_BANNER): pass the parser's skip_reason through. Handled BEFORE
+    # `lookup_patched_file` because a skipped file may carry a malformed/duplicate
+    # patch, and `lookup_patched_file` RAISES `CoordinateError` on those (it returns
+    # None only for the absent cases). Skipping first keeps the clean-skip for those
+    # files — `lookup_patched_file` is only safe to call for a review candidate.
     if parse_result.parser_outcome == "skipped":
         # ParseResult validator guarantees skip_reason non-None when
         # parser_outcome="skipped"; rebind narrows for mypy.
@@ -938,62 +898,35 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             skip_reason=parser_skip_reason,
         )
 
-    # `None` covers three cases: no patch (binary / oversized response),
-    # file absent from a well-formed patch, or path-validation failure.
-    # The `coordinates` helper returns None rather than raising per its
-    # boolean-helper policy.
+    # `None` covers three cases: no patch (binary / oversized response), file
+    # absent from a well-formed patch, or path-validation failure (the helper
+    # returns None for those). Computed after the parser-skip return because the
+    # degraded prompt below also needs `patched_file`.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
-    # Outcome branch: parser_outcome == "failed".
-    # V1 UNREACHABLE per the module docstring — intake gates invalid
-    # UTF-8 with SkipReason.OVERSIZED, and the str → utf-8 round-trip
-    # here cannot produce invalid UTF-8 for `parse_python`'s decode
-    # gate. Branch is retained for the raw-bytes intake path (FUP-053);
-    # mocking `parser_outcome="failed"` in tests exercises the audit /
-    # prompt wiring even though production never enters this branch.
-    if parse_result.parser_outcome == "failed":
-        if patched_file is None or not patched_file_has_added_lines(patched_file):
-            return await _emit_skip(
-                file_examination_sink=file_examination_sink,
-                review_id=review_id,
-                is_eval=is_eval,
-                file_path=changed_file.path,
-                skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
-            )
-        # failed+degraded_llm
-        degradation_reason: _DegradationReason | None = "parse_failed"
-        parse_status_for_event: _ParseStatus = "failed"
-        included_scope_units: tuple[ScopeUnit, ...] = ()
-        included_clipped_hunks: tuple[tuple[str, ...], ...] = ()
-    else:
-        # parser_outcome == "clean".
-        if patched_file is None:
-            return await _emit_skip(
-                file_examination_sink=file_examination_sink,
-                review_id=review_id,
-                is_eval=is_eval,
-                file_path=changed_file.path,
-                skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS,
-            )
-        included_scope_units, included_clipped_hunks = _intersect_changed_scope_units(
-            tuple(parse_result.scope_units), patched_file
+    # Outcome determination (skip / degraded / clean) for a PARSED file lives in the
+    # pure `decide_degradation` (degradation.py) — extracted so structural eval
+    # scenarios can exercise it LLM-free. This node is the only place that turns the
+    # decision into behavior. The `"failed"` degraded branch is V1-unreachable
+    # (intake gates invalid UTF-8 with SkipReason.OVERSIZED); retained for the
+    # raw-bytes intake path (FUP-053) + audit/prompt-wiring tests.
+    decision = decide_degradation(parse_result, patched_file)
+    if decision.mode == "skip":
+        skip_reason = decision.skip_reason
+        if skip_reason is None:  # DegradationDecision guard makes this impossible; narrows mypy.
+            raise RuntimeError("DegradationDecision mode='skip' with skip_reason None")
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=changed_file.path,
+            skip_reason=skip_reason,
         )
-        if not included_scope_units:
-            return await _emit_skip(
-                file_examination_sink=file_examination_sink,
-                review_id=review_id,
-                is_eval=is_eval,
-                file_path=changed_file.path,
-                skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS,
-            )
-        if any(parse_result.has_error.get(su.unit_id, False) for su in included_scope_units):
-            degradation_reason = "tree_has_error_in_changed_regions"
-            parse_status_for_event = "degraded"
-        else:
-            degradation_reason = None
-            parse_status_for_event = "clean"
-
-    degraded_mode = degradation_reason is not None
+    degradation_reason: _DegradationReason | None = decision.degradation_reason
+    parse_status_for_event: _ParseStatus = decision.parse_status
+    included_scope_units: tuple[ScopeUnit, ...] = decision.included_scope_units
+    included_clipped_hunks: tuple[tuple[str, ...], ...] = decision.included_clipped_hunks
+    degraded_mode = decision.mode == "degraded"
 
     # Step 3b: registry-query firing (skip for degraded mode).
     query_match_id_set: frozenset[str] = (
