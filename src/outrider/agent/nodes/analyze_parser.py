@@ -44,6 +44,7 @@ from outrider.coordinates.spans import (
     line_range_to_span,
     line_range_within_scope_unit,
     span_is_nonempty,
+    span_within_degraded_context,
     span_within_file,
 )
 from outrider.llm.parsing import strip_outer_json_fence
@@ -78,6 +79,7 @@ _ProposalRejectionReason = Literal[
     "evidence_tier_not_in_enum",
     "span_outside_scope_unit",
     "span_outside_file",
+    "span_outside_degraded_context",
     "schema_construction_failed",
 ]
 
@@ -186,6 +188,7 @@ def parse_analyze_response(
     query_match_id_set: frozenset[str],
     degraded_mode: bool,
     active_policy_version: str,
+    degraded_context_byte_ranges: tuple[tuple[int, int], ...] = (),
     pass_index: int = 0,
     valid_trace_path_elements: frozenset[str] = frozenset(),
 ) -> ParserResult:
@@ -215,7 +218,13 @@ def parse_analyze_response(
       set. Empty for degraded outcomes.
     - `degraded_mode` — branches parser step 5: clean uses line-space
       `line_range_within_scope_unit`, degraded translates to bytes
-      (`line_range_to_span`) and uses `span_within_file`.
+      (`line_range_to_span`) and gates on `span_within_file` AND
+      `span_within_degraded_context` (FUP-138).
+    - `degraded_context_byte_ranges` — the deterministic addable-diff byte
+      ranges (`coordinates.added_line_byte_ranges`, supplied by the node from the
+      patch) a degraded JUDGED span must intersect. Empty `()` for clean outcomes
+      (unused) and is the correct value when there is no degraded context — every
+      degraded proposal then rejects with `span_outside_degraded_context`.
     - `active_policy_version` — closure-captured per
       `nodes-receive-deps-via-closure`; goes into
       `ReviewFinding.policy_version` on admitted proposals.
@@ -508,6 +517,25 @@ def parse_analyze_response(
                         file_path=file_path,
                         rejection_reason="span_outside_file",
                         rejection_detail=detail,
+                        claimed_evidence_tier=evidence_tier,
+                    )
+                )
+                trace_candidates.extend(proposal_trace_candidates)
+                continue
+            # FUP-138: a degraded JUDGED finding must anchor inside the deterministic
+            # addable-diff context — content the patch actually added/modified — not
+            # arbitrary in-file bytes the model fabricated from prompt context. The
+            # ranges are supplied by analyze (from the patch via
+            # `coordinates.added_line_byte_ranges`), never recomputed from prompt text
+            # or trusted from a model-provided span.
+            if not span_within_degraded_context(span, degraded_context_byte_ranges):
+                proposal_rejections.append(
+                    _build_proposal_rejection(
+                        raw_proposal,
+                        proposal_hash=proposal_hash,
+                        file_path=file_path,
+                        rejection_reason="span_outside_degraded_context",
+                        rejection_detail=f"({span.byte_start},{span.byte_end})",
                         claimed_evidence_tier=evidence_tier,
                     )
                 )

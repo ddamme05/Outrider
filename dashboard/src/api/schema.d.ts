@@ -676,7 +676,7 @@ export interface components {
              * Rejection Reason
              * @enum {string}
              */
-            rejection_reason: "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "schema_construction_failed";
+            rejection_reason: "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "schema_construction_failed";
             /** Rejection Detail */
             rejection_detail: string;
         };

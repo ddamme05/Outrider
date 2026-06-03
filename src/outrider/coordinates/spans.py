@@ -280,6 +280,48 @@ def patched_file_has_added_lines(patched_file: PatchedFile) -> bool:
     return any(line.is_added for hunk in patched_file for line in hunk)
 
 
+def added_line_byte_ranges(patched_file: PatchedFile, source: str) -> tuple[tuple[int, int], ...]:
+    """Half-open `(byte_start, byte_end)` ranges in HEAD `source` covering every line
+    the patch ADDS (target side).
+
+    This is the producer for the `addable_diff_byte_ranges` that
+    `span_within_degraded_context` consumes — the deterministic degraded context the
+    degraded JUDGED admission gates against, so a degraded finding's span must overlap
+    content the patch actually added/modified, not arbitrary in-file bytes the model
+    fabricates from prompt context. Reads `unidiff.Line` (`is_added` /
+    `target_line_no`), the boundary owner's job per
+    `coordinates-module-is-sole-translator`.
+
+    Contiguous added target lines are merged into runs; each run maps to a whole-line
+    byte span via `line_range_to_span`, so a span overlapping any added line intersects
+    the returned ranges. Pure additions only — a pure deletion carries no
+    `target_line_no` (the same V1 limitation as `scope_unit_has_added_lines`, FUP-050).
+    `line_range_to_span` raises `CoordinateError` if a target line exceeds `source`;
+    that is a patch/source-misalignment bug (the patch's target side IS `source`), left
+    to fail loud per project convention.
+    """
+    added = sorted(
+        line.target_line_no
+        for hunk in patched_file
+        for line in hunk
+        if line.is_added and line.target_line_no is not None
+    )
+    if not added:
+        return ()
+    ranges: list[tuple[int, int]] = []
+    run_start = run_end = added[0]
+    for line_no in added[1:]:
+        if line_no == run_end + 1:
+            run_end = line_no
+            continue
+        span = line_range_to_span(run_start, run_end, source)
+        ranges.append((span.byte_start, span.byte_end))
+        run_start = run_end = line_no
+    span = line_range_to_span(run_start, run_end, source)
+    ranges.append((span.byte_start, span.byte_end))
+    return tuple(ranges)
+
+
 def extract_scope_unit_body(scope_unit: ScopeUnit, source_bytes: bytes) -> str:
     """Decode the UTF-8 bytes of `scope_unit`'s byte range from `source_bytes`.
 

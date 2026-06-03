@@ -276,6 +276,11 @@ def test_parse_analyze_response_signature() -> None:
         "query_match_id_set",
         "degraded_mode",
         "active_policy_version",
+        # `degraded_context_byte_ranges` added for FUP-138: the deterministic
+        # addable-diff byte ranges a degraded JUDGED span must intersect
+        # (`span_within_degraded_context`). Defaults to `()`; the node supplies it
+        # from the patch via `coordinates.added_line_byte_ranges`.
+        "degraded_context_byte_ranges",
         # `pass_index` added 2026-05-24 for trace-node arc's post-trace
         # INFERRED admission: pass 0 rejects every INFERRED (no trace
         # context yet); pass 1+ admits INFERRED with valid trace_path.
@@ -981,19 +986,45 @@ def test_step5_clean_empty_scope_units_rejects_every_proposal() -> None:
 _DEGRADED_SRC = "a\nb\nc\nd"  # 4 lines; len 7 bytes
 
 
+# Lines 2-3 of `_DEGRADED_SRC` ("a\nb\nc\nd") cover bytes [2,6) — the addable
+# degraded context for a finding the patch added on those lines.
+_DEGRADED_CTX_LINES_2_3 = ((2, 6),)
+
+
 def test_step5_degraded_line_range_within_file_passes_admission() -> None:
     """Degraded-outcome happy path: the line range translates to a byte span
-    within file bounds → admission passes → finding admitted. No scope units
-    consulted in degraded mode."""
+    within file bounds AND inside the addable degraded context → admission passes
+    → finding admitted. No scope units consulted in degraded mode."""
     response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
     result = _call_parser(
         response,
         degraded_mode=True,
         file_content=_DEGRADED_SRC,
         file_byte_length=len(_DEGRADED_SRC.encode()),
+        degraded_context_byte_ranges=_DEGRADED_CTX_LINES_2_3,
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
+
+
+def test_step5_degraded_span_outside_addable_context_rejects() -> None:
+    """FUP-138: a degraded JUDGED finding whose span is WITHIN FILE but OUTSIDE the
+    addable diff context is rejected `span_outside_degraded_context` — it cannot
+    anchor to in-file bytes the patch didn't add. Finding on lines 2-3 (span [2,6));
+    context is line 4 only ((6,7)), which the span does not intersect."""
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
+    result = _call_parser(
+        response,
+        degraded_mode=True,
+        file_content=_DEGRADED_SRC,
+        file_byte_length=len(_DEGRADED_SRC.encode()),
+        degraded_context_byte_ranges=((6, 7),),  # line 4 only — finding is on lines 2-3
+    )
+    assert len(result.proposal_rejections) == 1
+    rej = result.proposal_rejections[0]
+    assert rej.rejection_reason == "span_outside_degraded_context"
+    assert rej.claimed_evidence_tier == EvidenceTier.JUDGED
+    assert result.admitted_findings == ()
 
 
 def test_step5_degraded_line_range_past_eof_rejects() -> None:
@@ -1015,9 +1046,10 @@ def test_step5_degraded_line_range_past_eof_rejects() -> None:
 
 
 def test_step5_degraded_does_not_consult_scope_units() -> None:
-    """Degraded outcome ignores `included_scope_units` — the deterministic
-    bound is `span_within_file`, not line-space scope containment. Even an
-    empty scope-unit tuple still admits when the line range is in file."""
+    """Degraded outcome ignores `included_scope_units` — the deterministic bound is
+    `span_within_file` + `span_within_degraded_context`, not line-space scope
+    containment. Even an empty scope-unit tuple still admits when the line range is
+    in file and inside the addable degraded context."""
     response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
     result = _call_parser(
         response,
@@ -1025,6 +1057,7 @@ def test_step5_degraded_does_not_consult_scope_units() -> None:
         file_content=_DEGRADED_SRC,
         file_byte_length=len(_DEGRADED_SRC.encode()),
         included_scope_units=(),  # ignored in degraded mode
+        degraded_context_byte_ranges=_DEGRADED_CTX_LINES_2_3,
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
