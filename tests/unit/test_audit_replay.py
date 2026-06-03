@@ -1001,6 +1001,46 @@ def test_override_reason_mismatch_raises() -> None:
         _verify_finding_override_projection(event.finding_id, content, overrides)
 
 
+def test_override_partial_projection_severity_only_raises() -> None:
+    # original_severity populated but override_reason NULL — a partial envelope.
+    # Rejected even though a matching decision exists (the partial check fires
+    # BEFORE corroboration): a faithful projection populates both.
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.CRITICAL,
+        override_reason=None,
+    )
+    overrides = {
+        event.finding_id: _override_decision(
+            event.finding_id,
+            original=FindingSeverity.CRITICAL,
+            override=FindingSeverity.LOW,
+        )
+    }
+    with pytest.raises(ReplayEquivalenceError, match="partial override projection"):
+        _verify_finding_override_projection(event.finding_id, content, overrides)
+
+
+def test_override_partial_projection_reason_only_raises() -> None:
+    # override_reason populated but original_severity NULL — the mirror partial.
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=None,
+        override_reason="downgraded after manual review",
+    )
+    overrides = {
+        event.finding_id: _override_decision(
+            event.finding_id,
+            original=FindingSeverity.CRITICAL,
+            override=FindingSeverity.LOW,
+        )
+    }
+    with pytest.raises(ReplayEquivalenceError, match="partial override projection"):
+        _verify_finding_override_projection(event.finding_id, content, overrides)
+
+
 def test_verify_mode_consistency_forged_override_projection_raises() -> None:
     # End-to-end through _verify_mode_consistency: a FULL review whose finding
     # content forges an override, but the event stream carries NO HITLDecision.
