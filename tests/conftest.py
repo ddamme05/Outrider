@@ -238,6 +238,9 @@ class StubLLMProvider:
     """
 
     def __init__(self) -> None:
+        # Instance-level AsyncMock so tests can assert `.assert_awaited_once()`
+        # AND it satisfies the runtime-checkable `LLMProvider.aclose` member
+        # (DECISIONS.md#035 formalized `aclose` on the Protocol).
         self.aclose = AsyncMock(return_value=None)
 
     async def complete(self, request: object) -> object:  # noqa: ARG002

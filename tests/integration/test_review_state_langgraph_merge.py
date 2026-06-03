@@ -92,6 +92,9 @@ class _MockLLMProvider:
         )
         self.analyze_response = json.dumps({"findings": []})
 
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.llm.base import LLMResponse
 

@@ -87,6 +87,9 @@ class _RoutingMockLLMProvider:
         self.analyze_response = analyze_response
         self.calls: list[LLMRequest] = []
 
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.llm.base import LLMResponse
 

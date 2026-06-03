@@ -149,6 +149,9 @@ class MockLLMProvider:
         self.plan = plan
         self.received_requests: list[LLMRequest] = []
 
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.received_requests.append(request)
         if self.plan.raise_exc is not None:

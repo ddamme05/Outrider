@@ -83,8 +83,10 @@ from outrider.github.auth import make_installation_client_factory
 from outrider.github.config import GitHubAppSettings
 from outrider.github.publisher import GitHubKitPublisher
 from outrider.llm.anthropic_provider import AnthropicProvider
+from outrider.llm.base import LLMProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.logging import register_filter_on_all_handlers
+from outrider.llm.tracing import wrap_provider_if_tracing
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.policy.versions import (
     UnknownPolicyVersionError,
@@ -190,7 +192,7 @@ CheckpointerFactory = Callable[[], "AbstractAsyncContextManager[Any]"]
 # read once at the lifespan boundary must stay single-instance through
 # the whole graph; constructing the same Settings class twice defeats
 # the "lifespan-validated once" guarantee.
-ProviderFactory = Callable[[AuditPersister, ModelConfig], AnthropicProvider]
+ProviderFactory = Callable[[AuditPersister, ModelConfig], LLMProvider]
 # `SeverityPolicyFingerprintCheck` is the injectable seam for §0c's
 # fingerprint check. Production runs `_verify_severity_policy_fingerprint`
 # (real DB query against severity_policies); lifespan tests that inject a
@@ -302,9 +304,10 @@ def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
 def _default_provider_factory(
     persister: AuditPersister,
     model_config: ModelConfig,
-) -> AnthropicProvider:
+) -> LLMProvider:
     """Production provider factory: reads ANTHROPIC_API_KEY env, constructs
-    AnthropicProvider with the supplied (lifespan-built) `ModelConfig`.
+    AnthropicProvider with the supplied (lifespan-built) `ModelConfig`, and
+    applies LangSmith tracing at this composition-root boundary.
 
     Privacy startup notice fires inside the provider's `__init__` (per
     DECISIONS#015 point 4), once per lifespan startup. The `persister`
@@ -314,6 +317,13 @@ def _default_provider_factory(
     shape constructed an independent `ModelConfig()` here AND a separate
     one in the lifespan body for `build_graph(...)`, defeating the
     single-source guarantee.
+
+    Tracing is applied HERE, not inside the provider (DECISIONS.md#035):
+    `wrap_provider_if_tracing` returns the provider wrapped in a
+    `TracingLLMProvider` when tracing is enabled, else the provider unchanged.
+    The "is tracing on?" decision lives once, at this construction site — the
+    concrete provider stays tracing-agnostic. Returns `LLMProvider` because the
+    return is the (possibly wrapped) Protocol, not the concrete provider.
     """
     try:
         api_key_raw = os.environ["ANTHROPIC_API_KEY"]
@@ -321,11 +331,12 @@ def _default_provider_factory(
         raise RuntimeError(
             "ANTHROPIC_API_KEY env var is required for the FastAPI lifespan."
         ) from exc
-    return AnthropicProvider(
+    provider = AnthropicProvider(
         api_key=SecretStr(api_key_raw),
         model_config=model_config,
         persister=persister,
     )
+    return wrap_provider_if_tracing(provider)
 
 
 # ---------------------------------------------------------------------------

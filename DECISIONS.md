@@ -1217,3 +1217,15 @@ V1 ships the nullable shape. When FUP-093 lands (audit-query helper wired into `
 3. A future denormalized writer that mutates the row post-HITL (V1.5+) is out of scope; if added, it populates the projection columns *from* the stream and the FUP-122 cross-check already guards their agreement. Changing `findings.severity` on override is a separate decision (it interacts with the `content.severity == event.severity` replay check).
 
 **Referenced from.** `src/outrider/audit/replay.py` (`_verify_full_finding`), `src/outrider/api/dashboard/reviews.py` (`list_findings` / `FindingView`), `src/outrider/schemas/hitl.py` (`PerFindingDecision`), `src/outrider/audit/events.py` (`HITLDecisionEvent`).
+
+## 035. LLM tracing is a composition-root decorator, not a provider concern
+
+**Status:** Accepted, 2026-06-03.
+
+**Context.** `AnthropicProvider.__init__` read `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` from `os.environ` and, when both were truthy, wrapped its SDK client with `langsmith.wrappers.wrap_anthropic`. This placed optional observability policy inside core transport logic, with two costs: provider behavior depended on ambient env — every provider unit test inherited the developer's shell env, so a sourced `.env` made the tests attempt real LangSmith I/O and fail (papered over by an autouse `_hermetic_langsmith_env` fixture) — and the langsmith decision would be duplicated in each concrete provider as V1.5 adds `OpenAIProvider`.
+
+**Decision.** Concrete `LLMProvider` implementations are tracing-agnostic — no langsmith import, no `os.environ` read. LangSmith tracing is applied at the composition root via a provider-agnostic `TracingLLMProvider` decorator (`llm/tracing.py`) that wraps any `LLMProvider` and traces at the `.complete()` boundary, forwarding `aclose()` to the wrapped provider. The "is tracing enabled?" decision lives once, at the construction site (`api/lifespan.py`, via `wrap_provider_if_tracing`), not in N providers. `aclose()` is formalized on the `LLMProvider` Protocol so the decorator is a clean drop-in for whatever the provider factory returns.
+
+**Consequences.** One tracing seam for all current and future providers (V1.5's `OpenAIProvider` gets tracing for free). Core providers become hermetic — ambient env cannot change their behavior, eliminating the unit-test footgun (the `_hermetic_langsmith_env` band-aid fixture is removed). Trade-off: traces capture the domain `LLMRequest`/`LLMResponse` at the Protocol boundary rather than `wrap_anthropic`'s native Anthropic SDK spans; native fields (token usage, model params) are re-addable as span metadata if LangSmith UI fidelity later requires it. `vendor-sdks-only-in-wrappers` is preserved — `import langsmith` lives only in `llm/tracing.py` (lazily, so the no-trace path never imports it).
+
+**Referenced from.** `src/outrider/llm/tracing.py`, `src/outrider/llm/anthropic_provider.py`, `src/outrider/api/lifespan.py`, `src/outrider/llm/base.py` (`LLMProvider.aclose`).

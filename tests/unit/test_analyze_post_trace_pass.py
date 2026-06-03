@@ -72,6 +72,9 @@ class _MockLLMProvider:
         self.response_text = response_text
         self.calls: list[LLMRequest] = []
 
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls.append(request)
         return LLMResponse(
