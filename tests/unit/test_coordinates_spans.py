@@ -16,6 +16,7 @@ from unidiff import PatchSet
 from outrider.ast_facts.models import ScopeUnit, Span
 from outrider.coordinates import (
     CoordinateError,
+    added_line_byte_ranges,
     bound_diff_hunks_text,
     extract_scope_unit_body,
     line_range_to_span,
@@ -753,3 +754,54 @@ def test_line_range_to_span_trailing_empty_line_alone_is_zero_width() -> None:
     src = "a\nb\nc\n"
     span = line_range_to_span(4, 4, src)
     assert span == Span(byte_start=len(src.encode()), byte_end=len(src.encode()))
+
+
+# ---------------------------------------------------------------------------
+# added_line_byte_ranges — producer for span_within_degraded_context (FUP-138)
+# ---------------------------------------------------------------------------
+
+
+def _patched_from(patch_text: str) -> object:
+    return PatchSet.from_string(patch_text)[0]
+
+
+def test_added_line_byte_ranges_single_added_line() -> None:
+    # HEAD source "a\nADDED\nc\n"; the patch adds target line 2 ("ADDED").
+    # Line 2 whole-line byte span is [2,8) ("ADDED\n").
+    src = "a\nADDED\nc\n"
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,3 @@\n a\n+ADDED\n c\n"
+    ranges = added_line_byte_ranges(_patched_from(patch), src)  # type: ignore[arg-type]
+    assert ranges == ((2, 8),)
+    # The range a finding on line 2 would intersect.
+    assert span_within_degraded_context(line_range_to_span(2, 2, src), ranges)
+
+
+def _byte_range(line_start: int, line_end: int, src: str) -> tuple[int, int]:
+    span = line_range_to_span(line_start, line_end, src)
+    return (span.byte_start, span.byte_end)
+
+
+def test_added_line_byte_ranges_contiguous_lines_merge() -> None:
+    # Two adjacent added lines (2 and 3) merge into ONE run → one byte span.
+    src = "a\nX\nY\nd\n"  # lines: a(0-1) X(2-3) Y(4-5) d(6-7)
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,4 @@\n a\n+X\n+Y\n d\n"
+    ranges = added_line_byte_ranges(_patched_from(patch), src)  # type: ignore[arg-type]
+    assert ranges == (_byte_range(2, 3, src),)
+
+
+def test_added_line_byte_ranges_non_contiguous_lines_split() -> None:
+    # Added lines 2 and 4 (line 3 unchanged) → TWO separate ranges.
+    src = "a\nX\nc\nY\ne\n"
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,5 @@\n a\n+X\n c\n+Y\n e\n"
+    ranges = added_line_byte_ranges(_patched_from(patch), src)  # type: ignore[arg-type]
+    assert len(ranges) == 2
+    assert ranges[0] == _byte_range(2, 2, src)
+    assert ranges[1] == _byte_range(4, 4, src)
+
+
+def test_added_line_byte_ranges_pure_deletion_is_empty() -> None:
+    # A pure deletion carries no target_line_no → no addable ranges.
+    src = "a\nc\n"
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,2 @@\n a\n-b\n c\n"
+    ranges = added_line_byte_ranges(_patched_from(patch), src)  # type: ignore[arg-type]
+    assert ranges == ()

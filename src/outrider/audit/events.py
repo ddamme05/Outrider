@@ -2165,6 +2165,7 @@ class FindingProposalRejectedEvent(AuditEventBase):
         "evidence_tier_not_in_enum",
         "span_outside_scope_unit",
         "span_outside_file",
+        "span_outside_degraded_context",
         "schema_construction_failed",
     ]
     rejection_detail: Annotated[str, Field(max_length=500)]

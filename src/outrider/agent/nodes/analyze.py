@@ -112,6 +112,7 @@ from outrider.audit.events import (
     ReviewPhaseEvent,
 )
 from outrider.coordinates import (
+    added_line_byte_ranges,
     bound_diff_hunks_text,
     extract_scope_unit_body,
     lookup_patched_file,
@@ -1040,6 +1041,16 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         output_tokens=response.output_tokens,
     )
 
+    # FUP-138: deterministic degraded context (the addable-diff byte ranges a
+    # degraded JUDGED span must intersect), computed from the patch in coordinates/
+    # — never recomputed from prompt text or trusted from a model span. patched_file
+    # is non-None on the degraded path by construction; `()` on the clean path is
+    # unused (the parser's degraded gate doesn't run).
+    degraded_context_byte_ranges = (
+        added_line_byte_ranges(patched_file, content)
+        if degraded_mode and patched_file is not None
+        else ()
+    )
     parser_result = parse_analyze_response(
         response.text,
         review_id=review_id,
@@ -1051,6 +1062,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         query_match_id_set=query_match_id_set,
         degraded_mode=degraded_mode,
         active_policy_version=active_policy_version,
+        degraded_context_byte_ranges=degraded_context_byte_ranges,
         pass_index=pass_index,
     )
 
