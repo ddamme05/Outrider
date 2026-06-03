@@ -55,6 +55,10 @@ class PerFindingDecision(BaseModel):
 
     Frozen: a per-finding decision is final at construction. Reviewer-state
     revisions produce a new decision, not a mutation.
+
+    Canonical source of HITL override provenance: the `findings`-table override
+    columns are read-model projections of this (carried on `HITLDecisionEvent`),
+    never the other way around. See DECISIONS.md#034.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
