@@ -313,10 +313,15 @@ async def _aggregate_metrics(session: AsyncSession, review_id: UUID) -> ReviewMe
     Filtering by `review_id` alone is the correct `is_eval` scope under V1
     wiring: a review's `is_eval` is a single value (`ReviewState.is_eval`) that
     every emit-site copies onto its events, so a review's stream is
-    is_eval-homogeneous. This is PRODUCER DISCIPLINE, not a persister-enforced
-    guarantee — the persister copies `event.is_eval` verbatim without
-    cross-checking it against `reviews.is_eval` (unlike `installation_id`, which
-    it does cross-check). See FUP-130 for adding that guard.
+    is_eval-homogeneous. FUP-130 made this a PERSISTER-ENFORCED guarantee at the
+    two content-bearing sites that resolve the reviews row — `persist()` (the
+    `llm_call` rows this aggregate SUMs) and `emit_finding()` (the findings list)
+    — which raise `AuditPersisterIsEvalMismatchError` when `event.is_eval`
+    diverges from `reviews.is_eval`, the same shape as the `installation_id`
+    cross-check. The `SynthesizeCompletedEvent` fields read below go through a
+    non-resolving emit path, so those stay producer-discipline (out of FUP-130
+    scope — that event feeds no is_eval-divergence risk the LLM-aggregate or
+    findings surfaces don't already gate).
     """
     # LLM aggregates — COUNT/SUM over llm_call payloads (never the None
     # SynthesizeCompletedEvent LLM fields, per FUP-093). The SUM assumes one

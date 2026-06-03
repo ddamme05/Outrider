@@ -160,6 +160,7 @@ __all__ = [
     "AuditPersisterEventRequestFieldMismatchError",
     "AuditPersisterEventResponseFieldMismatchError",
     "AuditPersisterFindingInstallationIdMismatchError",
+    "AuditPersisterIsEvalMismatchError",
     "AuditPersisterHITLDecisionIdempotencyLookupError",
     "AuditPersisterHITLDecisionNaturalKeyConflict",
     "AuditPersisterHITLRequestIdempotencyLookupError",
@@ -399,6 +400,49 @@ class AuditPersisterFindingInstallationIdMismatchError(ValueError):
         )
         self.finding_installation_id = finding_installation_id
         self.review_installation_id = review_installation_id
+        self.review_id = review_id
+
+
+class AuditPersisterIsEvalMismatchError(ValueError):
+    """An event was persisted with `event.is_eval` disagreeing with the
+    `is_eval` resolved from its `reviews` row.
+
+    Eval isolation depends on every row a review touches carrying that review's
+    single `is_eval` value (`docs/testing.md` "Eval isolation"): the dashboard
+    read-API scopes its metric / findings / policy_version queries by
+    `review_id` ALONE, trusting that every event a review emits matches the
+    review's `is_eval`. A divergent event would silently leak eval data into a
+    production review's view (or hide production data) with no runtime backstop.
+    The persister already performs the sibling cross-check for `installation_id`
+    (`AuditPersisterFindingInstallationIdMismatchError`); this is the `is_eval`
+    twin. Fail loud rather than persist the divergence.
+
+    Scope: enforced at the two content-bearing sites that already resolve the
+    reviews row — `persist()` (`LLMCallEvent`) and `emit_finding()`
+    (`FindingEvent`) — which are exactly the dashboard's `is_eval`-sensitive read
+    surfaces (LLM-aggregate metrics + findings). Non-resolving emit paths
+    (`emit_phase`, etc.) are out of scope (they would each cost an extra SELECT).
+
+    Strict-keyword `event_is_eval: bool` + `review_is_eval: bool` + `review_id:
+    UUID` constructor; message is metadata-only (two booleans + a UUID).
+    """
+
+    def __init__(
+        self,
+        *,
+        event_is_eval: bool,
+        review_is_eval: bool,
+        review_id: UUID,
+    ) -> None:
+        super().__init__(
+            f"event persisted with mismatched eval scope: "
+            f"event.is_eval={event_is_eval} but reviews.is_eval={review_is_eval} "
+            f"for review_id={review_id}. Every row a review touches must carry "
+            "the review's is_eval; persister refuses to cross eval/production "
+            "isolation."
+        )
+        self.event_is_eval = event_is_eval
+        self.review_is_eval = review_is_eval
         self.review_id = review_id
 
 
@@ -1018,6 +1062,7 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterEventRequestFieldMismatchError,
     AuditPersisterEventResponseFieldMismatchError,
     AuditPersisterFindingInstallationIdMismatchError,
+    AuditPersisterIsEvalMismatchError,
     AuditPersisterIdempotencyConflict,
     AuditPersisterNaturalKeyConflict,
     AuditPersisterHITLRequestNaturalKeyConflict,
@@ -1727,14 +1772,30 @@ class AuditPersister:
         )
 
         async with self._session_factory() as session, session.begin():
-            # Step 1: resolve installation_id from the reviews row. This row
-            # is created upstream (webhook handler) before graph dispatch;
-            # its absence is a producer-side bug.
-            installation_id = await session.scalar(
-                select(Review.installation_id).where(Review.id == event.review_id)
-            )
-            if installation_id is None:
+            # Step 1: resolve installation_id + is_eval from the reviews row.
+            # This row is created upstream (webhook handler) before graph
+            # dispatch; its absence is a producer-side bug.
+            review_row = (
+                await session.execute(
+                    select(Review.installation_id, Review.is_eval).where(
+                        Review.id == event.review_id
+                    )
+                )
+            ).one_or_none()
+            if review_row is None:
                 raise AuditPersisterReviewNotFoundError(review_id=event.review_id)
+            installation_id, review_is_eval = review_row
+            # FUP-130: the reviews row's is_eval is the source of truth. An event
+            # whose is_eval diverges would leak across the eval/production
+            # isolation the dashboard's review_id-scoped metric queries depend on
+            # (it reads no is_eval predicate, trusting per-event propagation).
+            # Sibling of emit_finding's installation_id cross-check.
+            if event.is_eval != review_is_eval:
+                raise AuditPersisterIsEvalMismatchError(
+                    event_is_eval=event.is_eval,
+                    review_is_eval=review_is_eval,
+                    review_id=event.review_id,
+                )
 
             # Step 2: INSERT audit_events with ON CONFLICT verification.
             audit_stmt = (
@@ -2235,13 +2296,19 @@ class AuditPersister:
         payload = _serialize_event_payload(event)
 
         async with self._session_factory() as session, session.begin():
-            # Step 0: resolve installation_id from the reviews row. Absence is
-            # a producer-side bug — the reviews row exists before graph dispatch.
-            installation_id = await session.scalar(
-                select(Review.installation_id).where(Review.id == finding.review_id)
-            )
-            if installation_id is None:
+            # Step 0: resolve installation_id + is_eval from the reviews row.
+            # Absence is a producer-side bug — the reviews row exists before
+            # graph dispatch.
+            review_row = (
+                await session.execute(
+                    select(Review.installation_id, Review.is_eval).where(
+                        Review.id == finding.review_id
+                    )
+                )
+            ).one_or_none()
+            if review_row is None:
                 raise AuditPersisterReviewNotFoundError(review_id=finding.review_id)
+            installation_id, review_is_eval = review_row
 
             # Cross-check the finding's own installation_id against the
             # reviews-row source of truth. A disagreement means the producer
@@ -2254,6 +2321,16 @@ class AuditPersister:
                 raise AuditPersisterFindingInstallationIdMismatchError(
                     finding_installation_id=finding.installation_id,
                     review_installation_id=installation_id,
+                    review_id=finding.review_id,
+                )
+            # FUP-130: the is_eval twin of the installation_id cross-check above.
+            # The reviews row's is_eval is the source of truth; a divergent
+            # event would leak a finding across eval/production isolation in the
+            # dashboard's review_id-scoped findings query.
+            if event.is_eval != review_is_eval:
+                raise AuditPersisterIsEvalMismatchError(
+                    event_is_eval=event.is_eval,
+                    review_is_eval=review_is_eval,
                     review_id=finding.review_id,
                 )
 
