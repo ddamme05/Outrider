@@ -298,7 +298,7 @@
           "dashboard"
         ],
         "summary": "List Findings",
-        "description": "A review's findings, assembled from the permanent audit record.\n\n404 if the review doesn't exist. Surviving `findings`-table rows render as\nfull findings; a `FindingEvent` whose `findings` row was purged under\nretention renders as a `content_redacted=True` stub from `FindingEvent`\nmetadata (DECISIONS.md#014 point 3 \u2014 the audit trail outlives the content).\nEach finding's publish lifecycle is joined from the audit stream:\n`publish_destination` (`PublishRoutingEvent`) and `eligibility` /\n`eligibility_reason` (`PublishEligibilityEvent`) \u2014 separate per\nDECISIONS.md#023, so a routed finding can still show `withheld`. None of\nthese are read from the (V1-null) `findings.publish_destination` column.",
+        "description": "A review's findings, assembled from the permanent audit record.\n\n404 if the review doesn't exist. Surviving `findings`-table rows render as\nfull findings; a `FindingEvent` whose `findings` row was purged under\nretention renders as a `content_redacted=True` stub from `FindingEvent`\nmetadata (DECISIONS.md#014 point 3 \u2014 the audit trail outlives the content).\nEach finding's publish lifecycle is joined from the audit stream:\n`publish_destination` (`PublishRoutingEvent`) and `eligibility` /\n`eligibility_reason` (`PublishEligibilityEvent`) \u2014 separate per\nDECISIONS.md#023, so a routed finding can still show `withheld`. None of\nthese are read from the (V1-null) `findings.publish_destination` column.\nHITL override-provenance (`hitl_decision`) is joined the same way from the\nreview's single `HITLDecisionEvent` (DECISIONS.md#034) \u2014 never the\n(V1-null) `findings` override columns. Both lifecycle and override\nprovenance survive content redaction (stream-sourced), so a\n`content_redacted` stub still carries them.",
         "operationId": "list_findings_api_reviews__review_id__findings_get",
         "parameters": [
           {
@@ -1379,6 +1379,16 @@
             ],
             "title": "Eligibility Reason"
           },
+          "hitl_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HITLDecisionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "redaction_sweep_at": {
             "anyOf": [
               {
@@ -1413,10 +1423,11 @@
           "publish_destination",
           "eligibility",
           "eligibility_reason",
+          "hitl_decision",
           "redaction_sweep_at"
         ],
         "title": "FindingView",
-        "description": "One finding, assembled from the permanent audit record + content.\n\nMetadata (type/severity/file/line/dimension/tier/proof) comes from the\n`FindingEvent` audit row (permanent). Content (`title`/`description`/\n`evidence`/`suggested_fix`) comes from the `findings` table \u2014 present\nwithin the retention window, `None` with `content_redacted=True` once the\nrow is purged but the `FindingEvent` survives (DECISIONS.md#014 point 3:\n\"render a dangling finding_id as content redacted per retention policy\").\n\nLifecycle fields joined from the audit stream (per DECISIONS.md#023's\nrouting\u2260eligibility split): `publish_destination` from `PublishRoutingEvent`\n(where coordinates classified it); `eligibility` / `eligibility_reason`\nfrom `PublishEligibilityEvent` (whether it actually materialized). A\nhigh/critical finding pre-HITL shows `inline_comment` + `withheld` +\n`hitl_required_node_absent` \u2014 routed but not posted. All three are `None`\nuntil publish runs.\n\nHITL override-provenance (original\u2192override severity / outcome / reason)\nis a separate follow-up \u2014 FUP-128."
+        "description": "One finding, assembled from the permanent audit record + content.\n\nMetadata (type/severity/file/line/dimension/tier/proof) comes from the\n`FindingEvent` audit row (permanent). Content (`title`/`description`/\n`evidence`/`suggested_fix`) comes from the `findings` table \u2014 present\nwithin the retention window, `None` with `content_redacted=True` once the\nrow is purged but the `FindingEvent` survives (DECISIONS.md#014 point 3:\n\"render a dangling finding_id as content redacted per retention policy\").\n\nLifecycle fields joined from the audit stream (per DECISIONS.md#023's\nrouting\u2260eligibility split): `publish_destination` from `PublishRoutingEvent`\n(where coordinates classified it); `eligibility` / `eligibility_reason`\nfrom `PublishEligibilityEvent` (whether it actually materialized). A\nhigh/critical finding pre-HITL shows `inline_comment` + `withheld` +\n`hitl_required_node_absent` \u2014 routed but not posted. All three are `None`\nuntil publish runs.\n\nHITL override-provenance (`hitl_decision`) is joined from the same audit\nstream per DECISIONS.md#034 \u2014 the per-review `HITLDecisionEvent` indexed by\n`finding_id`. `None` when the reviewer rendered no decision on this finding\n(not crit/high, or HITL not yet reached). It survives content redaction the\nsame way the publish lifecycle does: the provenance lives in the append-only\nstream, not the retention-purged `findings` row. See `HITLDecisionView`."
       },
       "FindingsResponse": {
         "properties": {
@@ -1531,7 +1542,7 @@
           "decisions_content_hash"
         ],
         "title": "HITLDecisionEvent",
-        "description": "Records the reviewer's HITL submission.\n\nField name `decisions` (not `per_finding_decisions`) matches the\ncross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`\nAmended 2026-04-29.\n\nCarries the full `HITLDecision` field set so audit-only replay\nreconstructs the state-layer object: `reviewer_id`, `decisions`,\n`annotation`, `decided_at`. `decision_latency_seconds` is a derived\nmetric distinct from `decided_at` (the canonical time field for state\nreconstruction). `decisions_content_hash` is the audit-shadow of\n`compute_hitl_decision_content_hash(decisions, annotation)`; the\npersister's natural-key idempotency on `(review_id)` reads this hash\nvia the `_IDENTITY_SUBSETS[\"hitl_decision\"]` registry \u2014 divergent\nsubmissions for the same review fail loudly at the persister."
+        "description": "Records the reviewer's HITL submission.\n\nCanonical stream record of HITL override provenance (`decisions[*]` by\n`finding_id` + `reviewer_id`); the `findings`-table override columns are\nread-model projections of it. See DECISIONS.md#034.\n\nField name `decisions` (not `per_finding_decisions`) matches the\ncross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`\nAmended 2026-04-29.\n\nCarries the full `HITLDecision` field set so audit-only replay\nreconstructs the state-layer object: `reviewer_id`, `decisions`,\n`annotation`, `decided_at`. `decision_latency_seconds` is a derived\nmetric distinct from `decided_at` (the canonical time field for state\nreconstruction). `decisions_content_hash` is the audit-shadow of\n`compute_hitl_decision_content_hash(decisions, annotation)`; the\npersister's natural-key idempotency on `(review_id)` reads this hash\nvia the `_IDENTITY_SUBSETS[\"hitl_decision\"]` registry \u2014 divergent\nsubmissions for the same review fail loudly at the persister."
       },
       "HITLDecisionPayload": {
         "properties": {
@@ -1564,6 +1575,55 @@
         ],
         "title": "HITLDecisionPayload",
         "description": "Body shape for `POST /reviews/{review_id}/decide`.\n\n`decisions` is a non-empty tuple bounded at 256 entries (matches\n`HITLRequest.findings_requiring_approval` producer-side cap);\n`annotation` is optional forensic prose, capped at 2000 chars\nmatching `HITLDecisionEvent.annotation`."
+      },
+      "HITLDecisionView": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "reviewer_id": {
+            "type": "string",
+            "title": "Reviewer Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "original_severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Severity"
+          },
+          "override_severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Severity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "reviewer_id",
+          "reason",
+          "original_severity",
+          "override_severity"
+        ],
+        "title": "HITLDecisionView",
+        "description": "One finding's HITL decision, projected from the canonical audit stream.\n\nPer DECISIONS.md#034 the per-review `HITLDecisionEvent` is the single\ncanonical record of a reviewer's override; the `findings`-table override\ncolumns (`original_severity` / `override_reason` / `overrider_id`) are\nread-model projections, NULL in V1 (no post-HITL findings writer). This\nview reads the stream by `finding_id`, never the table \u2014 the same\nstream-canonical sourcing `publish_destination` already uses for\n`PublishRoutingEvent`.\n\nPresent-or-absent as a unit: a finding the reviewer never decided on (not\ncrit/high, so never HITL-gated; or HITL not yet reached) has\n`hitl_decision=None` on its `FindingView`, not a half-populated object.\n`original_severity` / `override_severity` are non-null ONLY when\n`outcome == \"severity_override\"` (the schema-enforced override contract,\n`schemas/hitl.py::PerFindingDecision.enforce_override_fields`); the other\nthree outcomes (`approve` / `reject` / `suppress`) carry neither.\n`reviewer_id` is the event-level reviewer (a string, `\"admin\"` in V1 per\nDECISIONS.md#011) surfaced per-finding for the dashboard's convenience."
       },
       "HITLRequestEvent": {
         "properties": {
@@ -1851,7 +1911,7 @@
           "reason"
         ],
         "title": "PerFindingDecision",
-        "description": "One reviewer's decision on one finding.\n\nFrozen: a per-finding decision is final at construction. Reviewer-state\nrevisions produce a new decision, not a mutation."
+        "description": "One reviewer's decision on one finding.\n\nFrozen: a per-finding decision is final at construction. Reviewer-state\nrevisions produce a new decision, not a mutation.\n\nCanonical source of HITL override provenance: the `findings`-table override\ncolumns are read-model projections of this (carried on `HITLDecisionEvent`),\nnever the other way around. See DECISIONS.md#034."
       },
       "PerFindingDecisionPayload": {
         "properties": {

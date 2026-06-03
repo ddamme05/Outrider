@@ -123,6 +123,11 @@ export interface paths {
          *     `eligibility_reason` (`PublishEligibilityEvent`) — separate per
          *     DECISIONS.md#023, so a routed finding can still show `withheld`. None of
          *     these are read from the (V1-null) `findings.publish_destination` column.
+         *     HITL override-provenance (`hitl_decision`) is joined the same way from the
+         *     review's single `HITLDecisionEvent` (DECISIONS.md#034) — never the
+         *     (V1-null) `findings` override columns. Both lifecycle and override
+         *     provenance survive content redaction (stream-sourced), so a
+         *     `content_redacted` stub still carries them.
          */
         get: operations["list_findings_api_reviews__review_id__findings_get"];
         put?: never;
@@ -717,8 +722,12 @@ export interface components {
          *     `hitl_required_node_absent` — routed but not posted. All three are `None`
          *     until publish runs.
          *
-         *     HITL override-provenance (original→override severity / outcome / reason)
-         *     is a separate follow-up — FUP-128.
+         *     HITL override-provenance (`hitl_decision`) is joined from the same audit
+         *     stream per DECISIONS.md#034 — the per-review `HITLDecisionEvent` indexed by
+         *     `finding_id`. `None` when the reviewer rendered no decision on this finding
+         *     (not crit/high, or HITL not yet reached). It survives content redaction the
+         *     same way the publish lifecycle does: the provenance lives in the append-only
+         *     stream, not the retention-purged `findings` row. See `HITLDecisionView`.
          */
         FindingView: {
             /**
@@ -760,6 +769,7 @@ export interface components {
             eligibility: string | null;
             /** Eligibility Reason */
             eligibility_reason: string | null;
+            hitl_decision: components["schemas"]["HITLDecisionView"] | null;
             /** Redaction Sweep At */
             redaction_sweep_at: string | null;
         };
@@ -776,6 +786,10 @@ export interface components {
         /**
          * HITLDecisionEvent
          * @description Records the reviewer's HITL submission.
+         *
+         *     Canonical stream record of HITL override provenance (`decisions[*]` by
+         *     `finding_id` + `reviewer_id`); the `findings`-table override columns are
+         *     read-model projections of it. See DECISIONS.md#034.
          *
          *     Field name `decisions` (not `per_finding_decisions`) matches the
          *     cross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`
@@ -849,6 +863,40 @@ export interface components {
             decisions: components["schemas"]["PerFindingDecisionPayload"][];
             /** Annotation */
             annotation?: string | null;
+        };
+        /**
+         * HITLDecisionView
+         * @description One finding's HITL decision, projected from the canonical audit stream.
+         *
+         *     Per DECISIONS.md#034 the per-review `HITLDecisionEvent` is the single
+         *     canonical record of a reviewer's override; the `findings`-table override
+         *     columns (`original_severity` / `override_reason` / `overrider_id`) are
+         *     read-model projections, NULL in V1 (no post-HITL findings writer). This
+         *     view reads the stream by `finding_id`, never the table — the same
+         *     stream-canonical sourcing `publish_destination` already uses for
+         *     `PublishRoutingEvent`.
+         *
+         *     Present-or-absent as a unit: a finding the reviewer never decided on (not
+         *     crit/high, so never HITL-gated; or HITL not yet reached) has
+         *     `hitl_decision=None` on its `FindingView`, not a half-populated object.
+         *     `original_severity` / `override_severity` are non-null ONLY when
+         *     `outcome == "severity_override"` (the schema-enforced override contract,
+         *     `schemas/hitl.py::PerFindingDecision.enforce_override_fields`); the other
+         *     three outcomes (`approve` / `reject` / `suppress`) carry neither.
+         *     `reviewer_id` is the event-level reviewer (a string, `"admin"` in V1 per
+         *     DECISIONS.md#011) surfaced per-finding for the dashboard's convenience.
+         */
+        HITLDecisionView: {
+            /** Outcome */
+            outcome: string;
+            /** Reviewer Id */
+            reviewer_id: string;
+            /** Reason */
+            reason: string;
+            /** Original Severity */
+            original_severity: string | null;
+            /** Override Severity */
+            override_severity: string | null;
         };
         /**
          * HITLRequestEvent
@@ -991,6 +1039,10 @@ export interface components {
          *
          *     Frozen: a per-finding decision is final at construction. Reviewer-state
          *     revisions produce a new decision, not a mutation.
+         *
+         *     Canonical source of HITL override provenance: the `findings`-table override
+         *     columns are read-model projections of this (carried on `HITLDecisionEvent`),
+         *     never the other way around. See DECISIONS.md#034.
          */
         PerFindingDecision: {
             /**

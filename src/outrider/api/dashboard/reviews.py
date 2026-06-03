@@ -157,6 +157,37 @@ class ReviewDetail(BaseModel):
     findings_requiring_approval: list[str] | None
 
 
+class HITLDecisionView(BaseModel):
+    """One finding's HITL decision, projected from the canonical audit stream.
+
+    Per DECISIONS.md#034 the per-review `HITLDecisionEvent` is the single
+    canonical record of a reviewer's override; the `findings`-table override
+    columns (`original_severity` / `override_reason` / `overrider_id`) are
+    read-model projections, NULL in V1 (no post-HITL findings writer). This
+    view reads the stream by `finding_id`, never the table — the same
+    stream-canonical sourcing `publish_destination` already uses for
+    `PublishRoutingEvent`.
+
+    Present-or-absent as a unit: a finding the reviewer never decided on (not
+    crit/high, so never HITL-gated; or HITL not yet reached) has
+    `hitl_decision=None` on its `FindingView`, not a half-populated object.
+    `original_severity` / `override_severity` are non-null ONLY when
+    `outcome == "severity_override"` (the schema-enforced override contract,
+    `schemas/hitl.py::PerFindingDecision.enforce_override_fields`); the other
+    three outcomes (`approve` / `reject` / `suppress`) carry neither.
+    `reviewer_id` is the event-level reviewer (a string, `"admin"` in V1 per
+    DECISIONS.md#011) surfaced per-finding for the dashboard's convenience.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: str
+    reviewer_id: str
+    reason: str
+    original_severity: str | None
+    override_severity: str | None
+
+
 class FindingView(BaseModel):
     """One finding, assembled from the permanent audit record + content.
 
@@ -175,8 +206,12 @@ class FindingView(BaseModel):
     `hitl_required_node_absent` — routed but not posted. All three are `None`
     until publish runs.
 
-    HITL override-provenance (original→override severity / outcome / reason)
-    is a separate follow-up — FUP-128.
+    HITL override-provenance (`hitl_decision`) is joined from the same audit
+    stream per DECISIONS.md#034 — the per-review `HITLDecisionEvent` indexed by
+    `finding_id`. `None` when the reviewer rendered no decision on this finding
+    (not crit/high, or HITL not yet reached). It survives content redaction the
+    same way the publish lifecycle does: the provenance lives in the append-only
+    stream, not the retention-purged `findings` row. See `HITLDecisionView`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -201,6 +236,10 @@ class FindingView(BaseModel):
     publish_destination: str | None
     eligibility: str | None
     eligibility_reason: str | None
+    # HITL override-provenance, projected from the canonical HITLDecisionEvent
+    # stream (DECISIONS.md#034). None when the reviewer never decided this
+    # finding.
+    hitl_decision: HITLDecisionView | None
     # Retention: for a `content_redacted` stub, the findings-retention-SWEEP
     # date (latest `target_table='findings'` `purge_audit` row for the global
     # TTL-sweep sentinel or this review's installation); `None` otherwise. The
@@ -503,6 +542,47 @@ async def _latest_publish_eligibility(
     return {fid: (eligibility, reason) for fid, eligibility, reason in rows if fid is not None}
 
 
+async def _hitl_decisions(session: AsyncSession, review_id: UUID) -> dict[str, HITLDecisionView]:
+    """`{finding_id: HITLDecisionView}` projected from the review's single
+    `HITLDecisionEvent`.
+
+    Canonical source of override provenance per DECISIONS.md#034: the audit
+    stream, never the (V1-null) `findings` override columns. At most one
+    `HITLDecisionEvent` exists per review — DB-guaranteed by
+    `uq_audit_events_hitl_decision_natural_key` — so unlike the publish helpers
+    there is no per-finding last-write-wins; `desc()` + `LIMIT 1` is defensive
+    determinism, not a real multiplicity. Empty dict if the review never gated
+    (no crit/high finding) or hasn't reached HITL yet. The per-finding
+    `reviewer_id` is the event-level reviewer (a string, `"admin"` in V1)
+    denormalized onto each decision for the view.
+    """
+    payload = (
+        await session.execute(
+            select(AuditEvent.payload)
+            .where(
+                AuditEvent.review_id == review_id,
+                AuditEvent.event_type == "hitl_decision",
+            )
+            .order_by(AuditEvent.sequence_number.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if payload is None:
+        return {}
+    reviewer_id = payload["reviewer_id"]
+    decisions: dict[str, HITLDecisionView] = {}
+    for decision in payload["decisions"]:
+        fid = decision["finding_id"]
+        decisions[fid] = HITLDecisionView(
+            outcome=decision["outcome"],
+            reviewer_id=reviewer_id,
+            reason=decision["reason"],
+            original_severity=decision.get("original_severity"),
+            override_severity=decision.get("override_severity"),
+        )
+    return decisions
+
+
 @router.get("/{review_id}/findings", response_model=FindingsResponse)
 async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
     """A review's findings, assembled from the permanent audit record.
@@ -516,6 +596,11 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
     `eligibility_reason` (`PublishEligibilityEvent`) — separate per
     DECISIONS.md#023, so a routed finding can still show `withheld`. None of
     these are read from the (V1-null) `findings.publish_destination` column.
+    HITL override-provenance (`hitl_decision`) is joined the same way from the
+    review's single `HITLDecisionEvent` (DECISIONS.md#034) — never the
+    (V1-null) `findings` override columns. Both lifecycle and override
+    provenance survive content redaction (stream-sourced), so a
+    `content_redacted` stub still carries them.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -527,13 +612,15 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
 
         dest_by_fid = await _latest_publish_routing(session, review_id)
         elig_by_fid = await _latest_publish_eligibility(session, review_id)
+        hitl_by_fid = await _hitl_decisions(session, review_id)
 
-        def _lifecycle(fid: str) -> dict[str, str | None]:
+        def _lifecycle(fid: str) -> dict[str, Any]:
             eligibility, reason = elig_by_fid.get(fid, (None, None))
             return {
                 "publish_destination": dest_by_fid.get(fid),
                 "eligibility": eligibility,
                 "eligibility_reason": reason,
+                "hitl_decision": hitl_by_fid.get(fid),
             }
 
         # Surviving content rows -> full findings.
