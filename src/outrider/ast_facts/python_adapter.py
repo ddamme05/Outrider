@@ -540,6 +540,28 @@ class PythonAdapter:
         return "clean", has_error
 
     @staticmethod
+    def _compute_error_lines_from_tree(tree: Tree) -> frozenset[int]:
+        """1-indexed source lines covered by tree-sitter ERROR or MISSING nodes.
+
+        Scope-INDEPENDENT, unlike per-scope `has_error`: a syntax error that breaks a
+        scope's header yields no scope node, so it is invisible to `has_error` but IS
+        an ERROR node here. A multi-line ERROR node contributes every line in its row
+        span; a MISSING / zero-width node (`start_point == end_point`) contributes its
+        single line. Stays inside `ast_facts` — raw `tree_sitter.Node` is walked here,
+        only `frozenset[int]` leaves (AST firewall). See DECISIONS.md#033.
+        """
+        lines: set[int] = set()
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "ERROR" or node.is_missing:
+                # tree-sitter rows are 0-indexed; source lines are 1-indexed.
+                for row in range(node.start_point[0], node.end_point[0] + 1):
+                    lines.add(row + 1)
+            stack.extend(node.children)
+        return frozenset(lines)
+
+    @staticmethod
     def _inner_span(scope: ScopeUnit) -> tuple[int, int]:
         """Return the `ScopeUnit` byte range as the conservative match bound
         for `_find_node_by_span`'s containment lookup.
@@ -748,4 +770,5 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
         call_sites=call_sites,
         assignment_sites=assignment_sites,
         has_error=has_error,
+        error_lines=adapter._compute_error_lines_from_tree(tree),
     )

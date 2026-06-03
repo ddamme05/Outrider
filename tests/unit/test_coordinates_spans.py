@@ -17,6 +17,7 @@ from outrider.ast_facts.models import ScopeUnit, Span
 from outrider.coordinates import (
     CoordinateError,
     added_line_byte_ranges,
+    added_line_numbers,
     bound_diff_hunks_text,
     extract_scope_unit_body,
     line_range_to_span,
@@ -805,3 +806,14 @@ def test_added_line_byte_ranges_pure_deletion_is_empty() -> None:
     patch = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,2 @@\n a\n-b\n c\n"
     ranges = added_line_byte_ranges(_patched_from(patch), src)  # type: ignore[arg-type]
     assert ranges == ()
+
+
+def test_added_line_numbers_returns_added_target_lines() -> None:
+    # Adds target lines 2 and 4 (line 3 unchanged).
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,5 @@\n a\n+X\n c\n+Y\n e\n"
+    assert added_line_numbers(_patched_from(patch)) == frozenset({2, 4})  # type: ignore[arg-type]
+
+
+def test_added_line_numbers_pure_deletion_is_empty() -> None:
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,2 @@\n a\n-b\n c\n"
+    assert added_line_numbers(_patched_from(patch)) == frozenset()  # type: ignore[arg-type]

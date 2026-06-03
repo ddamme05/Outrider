@@ -425,6 +425,12 @@ class ParseResult(BaseModel):
     call_sites: tuple[CallSite, ...] = ()
     assignment_sites: tuple[AssignmentSite, ...] = ()
     has_error: dict[str, bool] = Field(default_factory=dict)
+    # 1-indexed source lines covered by tree-sitter ERROR/MISSING nodes,
+    # scope-INDEPENDENT (unlike `has_error`, keyed by recovered scope unit_id). A
+    # syntax error that breaks a scope's header yields no scope node, so it is
+    # invisible to `has_error` but present here — the signal degrade-don't-skip uses
+    # for the no-scope case. See DECISIONS.md#033.
+    error_lines: frozenset[int] = frozenset()
 
     @model_validator(mode="after")
     def _enforce_skip_reason_outcome(self) -> Self:
@@ -468,11 +474,13 @@ class ParseResult(BaseModel):
             non_empty.append(f"assignment_sites (len={len(self.assignment_sites)})")
         if self.has_error:
             non_empty.append(f"has_error (keys={sorted(self.has_error)})")
+        if self.error_lines:
+            non_empty.append(f"error_lines ({sorted(self.error_lines)})")
         if non_empty:
             raise ValueError(
                 f"ParseResult: parser_outcome={self.parser_outcome!r} requires empty "
                 f"collections (no scope_units / imports / call_sites / assignment_sites "
-                f"/ has_error keys); got non-empty: {', '.join(non_empty)}"
+                f"/ has_error keys / error_lines); got non-empty: {', '.join(non_empty)}"
             )
         return self
 

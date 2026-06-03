@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Literal
 
 from outrider.ast_facts.models import SkipReason
 from outrider.coordinates import (
+    added_line_numbers,
     patched_file_has_added_lines,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
@@ -31,10 +32,18 @@ if TYPE_CHECKING:
     from outrider.ast_facts.models import ParseResult, ScopeUnit
 
 # Bidirectionally coupled with `LLMRequest.degraded_mode` per
-# `_enforce_degradation_provenance` (llm/base.py). `"parse_failed"` is
-# V1-unreachable per the analyze module docstring; kept as a structural slot
-# for the raw-bytes intake path (FUP-053).
-_DegradationReason = Literal["parse_failed", "tree_has_error_in_changed_regions"]
+# `_enforce_degradation_provenance` (llm/base.py). A new value here must be added in
+# LOCKSTEP to `LLMRequest.degradation_reason` (llm/base.py) and
+# `LLMCallEvent.degradation_reason` (audit/events.py) — three independent literals.
+# `"parse_failed"` is V1-unreachable (raw-bytes intake path, FUP-053).
+# `"tree_has_error_no_scope"` is the no-scope syntax-error case per DECISIONS.md#033:
+# a changed addable line intersects a tree error but no scope recovered there
+# (distinct from `"tree_has_error_in_changed_regions"`, which needs a recovered scope).
+_DegradationReason = Literal[
+    "parse_failed",
+    "tree_has_error_in_changed_regions",
+    "tree_has_error_no_scope",
+]
 
 # `FileExaminationEvent.parse_status` values for the analyze node.
 # `"failed"` is V1-unreachable for the same reason as `"parse_failed"` above.
@@ -153,6 +162,21 @@ def decide_degradation(
         tuple(parse_result.scope_units), patched_file
     )
     if not included_scope_units:
+        # No changed scope unit. Before skipping, the no-scope degraded case
+        # (DECISIONS.md#033): a tree error breaking a scope's header yields no scope,
+        # so `has_error` can't see it. If an ADDABLE changed line intersects an
+        # `error_lines` line, degrade (JUDGED-only review of the bounded hunks)
+        # instead of silently skipping — honoring `parse-errors-degrade-to-judged`.
+        # Addable-lines-only: a pure deletion over an error line carries no target
+        # line, so it stays a skip (FUP-050 limitation, an explicit non-goal).
+        if parse_result.error_lines & added_line_numbers(patched_file):
+            return DegradationDecision(
+                mode="degraded",
+                parse_status="degraded",
+                degradation_reason="tree_has_error_no_scope",
+                # No scope recovered → no scope context; the degraded prompt uses the
+                # bounded diff hunks, so included_scope_units/hunks stay ().
+            )
         return DegradationDecision(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS
         )

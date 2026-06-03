@@ -28,10 +28,13 @@ backstops drift; producer-side correctness is the contract.
 
 - `clean+full_llm` — clean parse, scope units intersect changed
   regions, no `has_error` in those units, cost gate passes.
-- `degraded+degraded_llm` — clean parse but tree-sitter `has_error`
-  nodes intersect a changed scope unit. `degradation_reason=
-  "tree_has_error_in_changed_regions"`; parser admits JUDGED only
-  via `span_within_file`.
+- `degraded+degraded_llm` — clean parse but either tree-sitter `has_error`
+  nodes intersect a changed scope unit (`degradation_reason=
+  "tree_has_error_in_changed_regions"`) OR a changed addable line
+  intersects a tree error with no recovered scope
+  (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033). Parser
+  admits JUDGED only, gated on `span_within_file` AND
+  `span_within_degraded_context` (FUP-138).
 - `skipped+NO_REVIEWABLE_CONTEXT` — both `content_head` and
   `content_base` are None (V1-unreachable: `ChangedFile.enforce_status_invariants`
   guarantees every valid status has ≥1 content side) OR parse failure
@@ -822,8 +825,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       parse failure with addable text; degraded LLM call
       (`degradation_reason="parse_failed"`).
     - `degraded+degraded_llm` — clean parse but `has_error` ERROR
-      nodes intersect a changed scope unit; degraded LLM call
-      (`degradation_reason="tree_has_error_in_changed_regions"`).
+      nodes intersect a changed scope unit
+      (`degradation_reason="tree_has_error_in_changed_regions"`), OR a
+      changed addable line intersects a tree error with no recovered scope
+      (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033);
+      degraded LLM call.
     - `clean+full_llm` — clean parse, scope units intersect changed
       regions, no `has_error` in those units.
     - Parser-stage skip — `parse_python` returned `parser_outcome=
@@ -1129,8 +1135,8 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
       - `skipped+COST_BUDGET_EXHAUSTED` — cost gate failed.
       - `clean+full_llm` — clean parse, LLM call admitted, parser ran.
 
-    Degraded outcomes (parse_failed / tree_has_error_in_changed_regions)
-    don't apply here: no changed regions, and parse failures on a
+    Degraded outcomes (parse_failed / tree_has_error_in_changed_regions /
+    tree_has_error_no_scope) don't apply here: no changed regions, and parse failures on a
     head-SHA-fetched file are routed through the parser-stage skip path
     rather than the V1-unreachable degraded branch.
 

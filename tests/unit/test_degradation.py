@@ -102,3 +102,44 @@ def test_decide_degradation_failed_with_added_lines_degrades_parse_failed() -> N
     assert decision.parse_status == "failed"
     assert decision.included_scope_units == ()
     assert decision.included_clipped_hunks == ()
+
+
+# ---------------------------------------------------------------------------
+# decide_degradation — no-scope syntax-error degrade-don't-skip (DECISIONS#033)
+# ---------------------------------------------------------------------------
+
+
+def test_decide_degradation_no_scope_error_line_degrades() -> None:
+    # clean parse, NO changed scope unit, but an ADDED line (2) intersects a tree
+    # error line (error_lines={2}) → degrade with tree_has_error_no_scope, not skip.
+    parse_result = ParseResult(parser_outcome="clean", error_lines=frozenset({2}))
+    patched_file = lookup_patched_file("@@ -1 +1,2 @@\n a\n+b\n", "x.py")  # adds line 2
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file)
+    assert decision.mode == "degraded"
+    assert decision.degradation_reason == "tree_has_error_no_scope"
+    assert decision.parse_status == "degraded"
+    # No scope recovered → no scope context; the degraded prompt uses bounded hunks.
+    assert decision.included_scope_units == ()
+
+
+def test_decide_degradation_no_scope_deletion_only_stays_skip() -> None:
+    # An error line exists but the change is a pure DELETION (no added target line)
+    # → no addable line intersects error_lines → still NO_CHANGED_SCOPE_UNITS skip
+    # (the addable-lines-only non-goal: we do not solve deletion-only changes).
+    parse_result = ParseResult(parser_outcome="clean", error_lines=frozenset({2}))
+    patched_file = lookup_patched_file("@@ -1,2 +1,1 @@\n a\n-b\n", "x.py")  # deletes line 2
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file)
+    assert decision.mode == "skip"
+    assert decision.skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
+
+
+def test_decide_degradation_no_scope_added_line_not_an_error_line_stays_skip() -> None:
+    # The added line (2) does NOT intersect error_lines (error on line 5) → skip.
+    parse_result = ParseResult(parser_outcome="clean", error_lines=frozenset({5}))
+    patched_file = lookup_patched_file("@@ -1 +1,2 @@\n a\n+b\n", "x.py")  # adds line 2 only
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file)
+    assert decision.mode == "skip"
+    assert decision.skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS

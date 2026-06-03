@@ -101,6 +101,7 @@ from outrider.coordinates.diff_parser import (
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     added_line_byte_ranges,
+    added_line_numbers,
     bound_diff_hunks_text,
     extract_scope_unit_body,
     line_range_to_span,
@@ -125,6 +126,7 @@ __all__ = [
     "CoordinateError",
     "GitHubCommentLocation",
     "added_line_byte_ranges",
+    "added_line_numbers",
     "bound_diff_hunks_text",
     "diff_line_to_scope",
     "extract_scope_unit_body",

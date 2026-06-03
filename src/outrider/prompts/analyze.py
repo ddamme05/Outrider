@@ -508,8 +508,9 @@ def render_degraded(
 ) -> AnalyzePromptParts:
     """Build the (system, user) prompt pair for a degraded-outcome call.
 
-    `degradation_reason` is the typed `LLMRequest` field value
-    (`parse_failed` or `tree_has_error_in_changed_regions`); it appears
+    `degradation_reason` is the typed `LLMRequest.degradation_reason` value
+    (one of the `_DegradationReason` literals: `parse_failed`,
+    `tree_has_error_in_changed_regions`, `tree_has_error_no_scope`); it appears
     in the prompt so the model knows structural-tier claims will reject.
 
     `bounded_hunks` MUST already satisfy the per-file degraded budget
