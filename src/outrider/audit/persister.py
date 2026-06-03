@@ -1489,9 +1489,12 @@ def _normalize_trace_path(value: Any) -> list[Any] | None:
 # analyze time and never mutated after. `_finding_verify_values` builds the
 # {column -> incoming-value} mapping that the re-emit/conflict paths compare
 # against the stored row. EXCLUDES `publish_destination` + the override quartet
-# (`original_severity`/`override_reason`/`overrider_id`) — those are set by
-# later nodes (publish/HITL), so a re-emit carrying NULL must not false-raise
-# against a row a later node populated.
+# (`original_severity`/`override_reason`/`overrider_id`) — read-model projection
+# columns that are NULL in V1 (no post-HITL findings writer exists: publish/HITL
+# mutate the in-memory `ReviewFinding` + emit audit events, never UPDATE the
+# row; the audit stream is canonical per DECISIONS.md#034). They are excluded so
+# that IF a future denormalized writer populates them, a re-emit carrying NULL
+# does not false-raise against the populated row.
 def _finding_verify_values(
     finding: ReviewFinding,
     *,

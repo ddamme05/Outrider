@@ -79,6 +79,7 @@ from outrider.policy.versions import (
     UnknownPolicyVersionError,
     load_policy_for_version,
 )
+from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
 
 # ---------------------------------------------------------------------------
 # Typed errors (functions-raise-typed-exceptions)
@@ -721,9 +722,10 @@ def _verify_mode_consistency(review: ReconstructedReview) -> None:
         raise ReplayEquivalenceError(
             f"mode {review.mode} disagrees with content presence (recomputed {recomputed})"
         )
+    hitl_overrides = _hitl_override_decisions(review.events)
     if review.mode == ReplayMode.FULL:
         for finding in review.findings:
-            _verify_full_finding(finding)
+            _verify_full_finding(finding, hitl_overrides)
         for exchange in review.llm_exchanges:
             if exchange.prompt is None or exchange.completion is None:
                 raise ReplayEquivalenceError(
@@ -735,10 +737,33 @@ def _verify_mode_consistency(review: ReconstructedReview) -> None:
     else:  # MIXED — per-item: full items get the full check, stubs are left as stubs.
         for finding in review.findings:
             if finding.content is not None:
-                _verify_full_finding(finding)
+                _verify_full_finding(finding, hitl_overrides)
 
 
-def _verify_full_finding(finding: ReconstructedFinding) -> None:
+def _hitl_override_decisions(
+    events: tuple[AuditEvent, ...],
+) -> Mapping[UUID, PerFindingDecision]:
+    """`{finding_id: SEVERITY_OVERRIDE decision}` from the review's HITL stream.
+
+    The canonical record of a reviewer override (DECISIONS.md#034). At most one
+    `HITLDecisionEvent` per review (DB-unique), but iterate defensively (last
+    wins). Only `SEVERITY_OVERRIDE` decisions are indexed — they are the only
+    outcome that carries an `original_severity` for a `findings`-row override
+    projection to be cross-checked against.
+    """
+    overrides: dict[UUID, PerFindingDecision] = {}
+    for event in events:
+        if isinstance(event, HITLDecisionEvent):
+            for decision in event.decisions:
+                if decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE:
+                    overrides[decision.finding_id] = decision
+    return overrides
+
+
+def _verify_full_finding(
+    finding: ReconstructedFinding,
+    hitl_overrides: Mapping[UUID, PerFindingDecision],
+) -> None:
     """Assert a full-mode finding's content row agrees with its audit event."""
     content = finding.content
     if content is None:
@@ -768,6 +793,71 @@ def _verify_full_finding(finding: ReconstructedFinding) -> None:
         raise ReplayEquivalenceError(
             f"finding {event.finding_id} content row disagrees with audit event "
             f"on: {', '.join(mismatches)}"
+        )
+    _verify_finding_override_projection(event.finding_id, content, hitl_overrides)
+
+
+def _verify_finding_override_projection(
+    finding_id: UUID,
+    content: FindingContent,
+    hitl_overrides: Mapping[UUID, PerFindingDecision],
+) -> None:
+    """Cross-check a non-NULL override projection on the `findings` row against
+    the canonical HITL stream (FUP-122 / DECISIONS.md#034).
+
+    The `findings` override columns are read-model projections of the
+    `HITLDecisionEvent`, never canonical. The check is ONE-DIRECTIONAL: a NULL
+    `original_severity` / `override_reason` makes no override claim and is always
+    valid (in V1 the columns are NULL — no post-HITL findings writer — so this is
+    vacuous on real data; it guards a future denormalized writer that populates
+    them). A NON-NULL field means the row asserts a reviewer override happened,
+    which the append-only HITL stream must corroborate: a SEVERITY_OVERRIDE
+    decision for this finding whose `original_severity` / `reason` match the
+    respective non-NULL field. This is the replay mirror of the runtime
+    fabricated-override gate in `policy/publish_eligibility.py`.
+
+    Deliberately NOT cross-checked: (a) `overrider_id` — a UUID, while the
+    stream's `reviewer_id` is a str (`"admin"` in V1); the two are not
+    comparable (DECISIONS.md#034). (b) the row's `severity` against the
+    decision's `override_severity` — `findings.severity` is the pre-override
+    analyze-time SNAPSHOT (`findings.severity == FindingEvent.severity` per #034,
+    already pinned by the metadata check above), NOT the applied override; the
+    `override_severity`↔applied-severity comparison is the runtime publish gate's
+    job, where `.severity` carries the applied value. (c) `publish_destination` —
+    its canonical source is `PublishRoutingEvent` (#023), not the HITL stream.
+    """
+    if content.original_severity is None and content.override_reason is None:
+        return  # No override projection claimed — always valid (one-directional).
+    decision = hitl_overrides.get(finding_id)
+    if decision is None:
+        # Metadata-only message (field NAMES, never the reviewer's free-text
+        # `override_reason` value) — consistent with every other replay error +
+        # the API-surfaced `ReplayVerdict.reason` "metadata only" contract.
+        claimed_fields = [
+            name
+            for name, value in (
+                ("original_severity", content.original_severity),
+                ("override_reason", content.override_reason),
+            )
+            if value is not None
+        ]
+        raise ReplayEquivalenceError(
+            f"finding {finding_id} content row claims a HITL override "
+            f"({', '.join(claimed_fields)} non-NULL) but the audit stream "
+            f"carries no SEVERITY_OVERRIDE decision for it"
+        )
+    mismatches = [
+        field_name
+        for field_name, claimed, canonical in (
+            ("original_severity", content.original_severity, decision.original_severity),
+            ("override_reason", content.override_reason, decision.reason),
+        )
+        if claimed is not None and claimed != canonical
+    ]
+    if mismatches:
+        raise ReplayEquivalenceError(
+            f"finding {finding_id} override projection disagrees with its "
+            f"canonical SEVERITY_OVERRIDE decision on: {', '.join(mismatches)}"
         )
 
 

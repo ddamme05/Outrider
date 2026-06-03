@@ -18,8 +18,10 @@ import pytest
 
 from outrider.audit.events import (
     AgentTransitionEvent,
+    AuditEvent,
     FileExaminationEvent,
     FindingEvent,
+    HITLDecisionEvent,
     LLMCallEvent,
     ReviewPhaseEvent,
     TraceDecisionEvent,
@@ -37,7 +39,9 @@ from outrider.audit.replay import (
     ReplayMode,
     _classify_mode,
     _group_phases,
+    _hitl_override_decisions,
     _verify_cross_event_refs,
+    _verify_finding_override_projection,
     _verify_full_finding,
     _verify_is_eval_consistent,
     _verify_mode_consistency,
@@ -49,9 +53,11 @@ from outrider.audit.replay import (
 from outrider.db.models.findings import Finding
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
+from outrider.policy.canonical import compute_hitl_decision_content_hash
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
+from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
 
 _REVIEW_ID = UUID("11111111-1111-1111-1111-111111111111")
 
@@ -199,16 +205,69 @@ def _review(
     review: ReconstructedReviewMetadata | None,
     findings: tuple[ReconstructedFinding, ...] = (),
     llm_exchanges: tuple[ReconstructedLLMExchange, ...] = (),
+    events: tuple[AuditEvent, ...] = (),
 ) -> ReconstructedReview:
     return ReconstructedReview(
         review_id=_REVIEW_ID,
         mode=mode,
         is_eval=False,
         review=review,
-        events=(),
+        events=events,
         phases=(),
         findings=findings,
         llm_exchanges=llm_exchanges,
+    )
+
+
+def _override_decision(
+    finding_id: UUID,
+    *,
+    original: FindingSeverity,
+    override: FindingSeverity,
+    reason: str = "downgraded after manual review",
+) -> PerFindingDecision:
+    return PerFindingDecision(
+        finding_id=finding_id,
+        outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+        reason=reason,
+        original_severity=original,
+        override_severity=override,
+    )
+
+
+def _hitl_decision_event(
+    decisions: tuple[PerFindingDecision, ...],
+    *,
+    sequence_number: int | None = None,
+) -> HITLDecisionEvent:
+    return HITLDecisionEvent(
+        review_id=_REVIEW_ID,
+        reviewer_id="admin",
+        decisions=decisions,
+        annotation=None,
+        decided_at=datetime(2026, 5, 1, 12, 30, 0, tzinfo=UTC),
+        decision_latency_seconds=12.5,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=decisions, annotation=None
+        ),
+        sequence_number=sequence_number,
+    )
+
+
+def _forge_override(
+    content: FindingContent,
+    *,
+    original_severity: FindingSeverity | None,
+    override_reason: str | None,
+) -> FindingContent:
+    """Hand-populate the (V1-NULL) override projection columns on a content row.
+
+    Real V1 `findings` rows leave these NULL (no post-HITL writer), so the
+    cross-check is vacuous on production data — forging them is the only way to
+    exercise the guard (FUP-122).
+    """
+    return content.model_copy(
+        update={"original_severity": original_severity, "override_reason": override_reason}
     )
 
 
@@ -788,19 +847,21 @@ def test_verify_cross_event_refs_rejects_dangling_reference() -> None:
 
 def test_verify_full_finding_ok() -> None:
     event = _finding_event()
-    _verify_full_finding(ReconstructedFinding(event=event, content=_content_for(event)))  # no raise
+    # No override projection on the content row -> the HITL cross-check is
+    # vacuous, so an empty override map is correct.
+    _verify_full_finding(ReconstructedFinding(event=event, content=_content_for(event)), {})
 
 
 def test_verify_full_finding_stub_raises() -> None:
     with pytest.raises(ReplayEquivalenceError, match="expected full content but is a stub"):
-        _verify_full_finding(ReconstructedFinding(event=_finding_event(), content=None))
+        _verify_full_finding(ReconstructedFinding(event=_finding_event(), content=None), {})
 
 
 def test_verify_full_finding_content_mismatch_raises() -> None:
     event = _finding_event()
     content = _content_for(event).model_copy(update={"severity": FindingSeverity.LOW})
     with pytest.raises(ReplayEquivalenceError, match="disagrees with audit event"):
-        _verify_full_finding(ReconstructedFinding(event=event, content=content))
+        _verify_full_finding(ReconstructedFinding(event=event, content=content), {})
 
 
 def test_verify_full_finding_proof_artifact_mismatch_raises() -> None:
@@ -811,7 +872,7 @@ def test_verify_full_finding_proof_artifact_mismatch_raises() -> None:
     )
     content = _content_for(event).model_copy(update={"query_match_id": "python.class_definition"})
     with pytest.raises(ReplayEquivalenceError, match="query_match_id"):
-        _verify_full_finding(ReconstructedFinding(event=event, content=content))
+        _verify_full_finding(ReconstructedFinding(event=event, content=content), {})
 
 
 def test_verify_mode_consistency_full_ok() -> None:
@@ -832,6 +893,167 @@ def test_verify_mode_consistency_label_disagrees_raises() -> None:
     review = _review(mode=ReplayMode.METADATA_ONLY, review=_review_metadata())
     with pytest.raises(ReplayEquivalenceError, match="disagrees with content presence"):
         _verify_mode_consistency(review)
+
+
+# ---------------------------------------------------------------------------
+# FUP-122 — override-projection cross-check against the HITL stream (#034)
+# ---------------------------------------------------------------------------
+
+
+def test_hitl_override_decisions_indexes_only_severity_override() -> None:
+    # A HITLDecisionEvent with one SEVERITY_OVERRIDE + one REJECT decision: only
+    # the override is indexed (REJECT carries no override projection to check).
+    overridden, rejected = uuid4(), uuid4()
+    event = _hitl_decision_event(
+        (
+            _override_decision(
+                overridden, original=FindingSeverity.CRITICAL, override=FindingSeverity.LOW
+            ),
+            PerFindingDecision(
+                finding_id=rejected,
+                outcome=PerFindingOutcome.REJECT,
+                reason="false positive",
+            ),
+        )
+    )
+    overrides = _hitl_override_decisions((event,))
+    assert set(overrides) == {overridden}
+    assert overrides[overridden].override_severity == FindingSeverity.LOW
+
+
+def test_hitl_override_decisions_empty_without_hitl_event() -> None:
+    assert _hitl_override_decisions((_finding_event(), _llm_call_event())) == {}
+
+
+def test_null_override_projection_is_vacuous() -> None:
+    # original_severity AND override_reason both NULL -> no claim -> always valid,
+    # even with an empty override map (the V1 production shape; one-directional).
+    event = _finding_event()
+    content = _content_for(event)  # override fields are None
+    _verify_finding_override_projection(event.finding_id, content, {})  # no raise
+
+
+def test_override_projection_matches_stream_ok() -> None:
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.CRITICAL,
+        override_reason="downgraded after manual review",
+    )
+    overrides = {
+        event.finding_id: _override_decision(
+            event.finding_id,
+            original=FindingSeverity.CRITICAL,
+            override=FindingSeverity.LOW,
+            reason="downgraded after manual review",
+        )
+    }
+    _verify_finding_override_projection(event.finding_id, content, overrides)  # no raise
+
+
+def test_override_claim_without_decision_raises() -> None:
+    # The row claims an override but the HITL stream carries none — a forged row.
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.CRITICAL,
+        override_reason="forged",
+    )
+    with pytest.raises(ReplayEquivalenceError, match="no SEVERITY_OVERRIDE decision"):
+        _verify_finding_override_projection(event.finding_id, content, {})
+
+
+def test_override_original_severity_mismatch_raises() -> None:
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.HIGH,  # row claims HIGH baseline
+        override_reason="downgraded after manual review",
+    )
+    overrides = {
+        event.finding_id: _override_decision(
+            event.finding_id,
+            original=FindingSeverity.CRITICAL,  # stream says CRITICAL baseline
+            override=FindingSeverity.LOW,
+            reason="downgraded after manual review",
+        )
+    }
+    with pytest.raises(ReplayEquivalenceError, match="original_severity"):
+        _verify_finding_override_projection(event.finding_id, content, overrides)
+
+
+def test_override_reason_mismatch_raises() -> None:
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.CRITICAL,
+        override_reason="reviewer wrote X",
+    )
+    overrides = {
+        event.finding_id: _override_decision(
+            event.finding_id,
+            original=FindingSeverity.CRITICAL,
+            override=FindingSeverity.LOW,
+            reason="but the stream says Y",
+        )
+    }
+    with pytest.raises(ReplayEquivalenceError, match="override_reason"):
+        _verify_finding_override_projection(event.finding_id, content, overrides)
+
+
+def test_verify_mode_consistency_forged_override_projection_raises() -> None:
+    # End-to-end through _verify_mode_consistency: a FULL review whose finding
+    # content forges an override, but the event stream carries NO HITLDecision.
+    # Proves the override map is built from review.events and threaded through.
+    event = _finding_event()
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.CRITICAL,
+        override_reason="forged downgrade",
+    )
+    finding = ReconstructedFinding(event=event, content=content)
+    review = _review(
+        mode=ReplayMode.FULL,
+        review=_review_metadata(),
+        findings=(finding,),
+        events=(event,),  # FindingEvent only — no HITLDecisionEvent
+    )
+    with pytest.raises(ReplayEquivalenceError, match="no SEVERITY_OVERRIDE decision"):
+        _verify_mode_consistency(review)
+
+
+def test_verify_mode_consistency_corroborated_override_projection_ok() -> None:
+    # Same forged override, but now the stream carries the matching
+    # SEVERITY_OVERRIDE decision — the row is a legitimate projection. Note the
+    # content's `severity` stays the CRITICAL analyze-time snapshot (== event
+    # severity); the LOW override_severity is NOT compared to it (#034).
+    event = _finding_event()  # severity CRITICAL
+    content = _forge_override(
+        _content_for(event),
+        original_severity=FindingSeverity.CRITICAL,
+        override_reason="downgraded after manual review",
+    )
+    finding = ReconstructedFinding(event=event, content=content)
+    decision_event = _hitl_decision_event(
+        (
+            _override_decision(
+                event.finding_id,
+                original=FindingSeverity.CRITICAL,
+                override=FindingSeverity.LOW,
+                reason="downgraded after manual review",
+            ),
+        )
+    )
+    review = _review(
+        mode=ReplayMode.FULL,
+        review=_review_metadata(),
+        findings=(finding,),
+        events=(event, decision_event),
+    )
+    _verify_mode_consistency(review)  # no raise
+    # The snapshot is preserved: the row still shows CRITICAL, not the override.
+    assert finding.content is not None
+    assert finding.content.severity == FindingSeverity.CRITICAL
 
 
 # ---------------------------------------------------------------------------
