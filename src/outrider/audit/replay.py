@@ -806,53 +806,76 @@ def _verify_finding_override_projection(
     the canonical HITL stream (FUP-122 / DECISIONS.md#034).
 
     The `findings` override columns are read-model projections of the
-    `HITLDecisionEvent`, never canonical. The check is ONE-DIRECTIONAL: a NULL
-    `original_severity` / `override_reason` makes no override claim and is always
-    valid (in V1 the columns are NULL — no post-HITL findings writer — so this is
-    vacuous on real data; it guards a future denormalized writer that populates
-    them). A NON-NULL field means the row asserts a reviewer override happened,
-    which the append-only HITL stream must corroborate: a SEVERITY_OVERRIDE
-    decision for this finding whose `original_severity` / `reason` match the
-    respective non-NULL field. This is the replay mirror of the runtime
-    fabricated-override gate in `policy/publish_eligibility.py`.
+    `HITLDecisionEvent`, never canonical. The cross-checked projection — the
+    (`original_severity`, `override_reason`) pair — is verified as an ALL-OR-NONE
+    UNIT, mirroring `ReviewFinding._enforce_override_triplet_coherence`
+    (`schemas/review_finding.py`): a real `SEVERITY_OVERRIDE` decision always
+    carries both an `original_severity` and a (non-blank) `reason`, so a faithful
+    projection populates both or neither. Three states:
 
-    Deliberately NOT cross-checked: (a) `overrider_id` — a UUID, while the
-    stream's `reviewer_id` is a str (`"admin"` in V1); the two are not
-    comparable (DECISIONS.md#034). (b) the row's `severity` against the
-    decision's `override_severity` — `findings.severity` is the pre-override
-    analyze-time SNAPSHOT (`findings.severity == FindingEvent.severity` per #034,
-    already pinned by the metadata check above), NOT the applied override; the
-    `override_severity`↔applied-severity comparison is the runtime publish gate's
-    job, where `.severity` carries the applied value. (c) `publish_destination` —
-    its canonical source is `PublishRoutingEvent` (#023), not the HITL stream.
+    - **Both NULL** — no override claimed; always valid. In V1 the columns are
+      NULL (no post-HITL findings writer), so this is the real-data path: the
+      check is vacuous on production rows and exists to guard a future
+      denormalized writer.
+    - **Both populated** — the row asserts an override; the append-only stream
+      must corroborate it: a `SEVERITY_OVERRIDE` decision for this finding whose
+      `original_severity` / `reason` MATCH. This is the replay mirror of the
+      runtime fabricated-override gate in `policy/publish_eligibility.py`.
+    - **Exactly one populated (PARTIAL)** — an incoherent envelope; rejected as a
+      forged/buggy row before any corroboration check. Without this, a row with
+      `original_severity` set + `override_reason` NULL passed whenever the stream
+      held a matching decision, because per-field NULL-skipping ignored the
+      missing half (the FUP-122 follow-up gap Codex flagged).
+
+    Deliberately NOT part of the checked envelope: `overrider_id`. The canonical
+    `ReviewFinding` triplet includes it, but #034 leaves the ROW's `overrider_id`
+    NULL even during a real override (a UUID column with no value to project from
+    the str `reviewer_id`), so a faithful row carries the pair set + `overrider_id`
+    NULL — folding it into the coherence unit would wrongly reject that row. Its
+    value is uncheckable anyway (UUID vs str).
+
+    Also NOT cross-checked: the row's `severity` against the decision's
+    `override_severity` — `findings.severity` is the pre-override analyze-time
+    SNAPSHOT (`findings.severity == FindingEvent.severity` per #034, already
+    pinned by the metadata check above), NOT the applied override; that
+    comparison is the runtime publish gate's job, where `.severity` carries the
+    applied value. And `publish_destination` — canonical source
+    `PublishRoutingEvent` (#023), not the HITL stream.
     """
-    if content.original_severity is None and content.override_reason is None:
-        return  # No override projection claimed — always valid (one-directional).
+    has_severity = content.original_severity is not None
+    has_reason = content.override_reason is not None
+    if not has_severity and not has_reason:
+        return  # No override projection claimed — always valid.
+    if has_severity != has_reason:
+        # Partial envelope: exactly one of the pair is populated. Reject before
+        # the corroboration check — a faithful SEVERITY_OVERRIDE projection has
+        # both. Metadata-only message (field NAMES, never the reviewer's
+        # free-text value) per the API-surfaced ReplayVerdict.reason contract.
+        present, missing = (
+            ("original_severity", "override_reason")
+            if has_severity
+            else ("override_reason", "original_severity")
+        )
+        raise ReplayEquivalenceError(
+            f"finding {finding_id} content row has a partial override projection "
+            f"({present} non-NULL, {missing} NULL); a faithful SEVERITY_OVERRIDE "
+            f"projection populates both or neither"
+        )
     decision = hitl_overrides.get(finding_id)
     if decision is None:
-        # Metadata-only message (field NAMES, never the reviewer's free-text
-        # `override_reason` value) — consistent with every other replay error +
-        # the API-surfaced `ReplayVerdict.reason` "metadata only" contract.
-        claimed_fields = [
-            name
-            for name, value in (
-                ("original_severity", content.original_severity),
-                ("override_reason", content.override_reason),
-            )
-            if value is not None
-        ]
         raise ReplayEquivalenceError(
             f"finding {finding_id} content row claims a HITL override "
-            f"({', '.join(claimed_fields)} non-NULL) but the audit stream "
+            f"(original_severity + override_reason non-NULL) but the audit stream "
             f"carries no SEVERITY_OVERRIDE decision for it"
         )
+    # Both fields are non-NULL past the coherence gate, so compare directly.
     mismatches = [
         field_name
         for field_name, claimed, canonical in (
             ("original_severity", content.original_severity, decision.original_severity),
             ("override_reason", content.override_reason, decision.reason),
         )
-        if claimed is not None and claimed != canonical
+        if claimed != canonical
     ]
     if mismatches:
         raise ReplayEquivalenceError(
