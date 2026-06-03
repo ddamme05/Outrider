@@ -26,6 +26,7 @@ package exists.
 """
 
 from outrider.eval_support.db_lifecycle import (
+    EVAL_DB_NAME_PREFIX,
     EXPECTED_TEST_DB_NAME_FRAGMENT,
     EXPECTED_TEST_PORT,
     EvalDBIsolationError,
@@ -45,6 +46,7 @@ from outrider.eval_support.isolation import (
 )
 
 __all__ = [
+    "EVAL_DB_NAME_PREFIX",
     "EXPECTED_TEST_DB_NAME_FRAGMENT",
     "EXPECTED_TEST_PORT",
     "EvalDBIsolationError",

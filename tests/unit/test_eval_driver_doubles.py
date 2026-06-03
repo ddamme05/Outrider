@@ -11,6 +11,7 @@ covered by `tests/eval/test_run_review_driver.py`.
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -20,12 +21,15 @@ from outrider.agent.eval_driver import (
     EvalDriverError,
     EvalFixture,
     EvalRunResult,
+    _build_approve_all_decision,
     _CapturingPublisher,
     _FixtureContentNotFoundError,
     _FixtureScriptedProvider,
     _github_factory_for,
+    _validate_resume_db_url,
 )
 from outrider.llm.base import LLMRequest
+from outrider.schemas.hitl import HITLRequest, PerFindingOutcome
 
 # asyncio_mode = "auto" (pyproject) auto-detects async tests; no marker needed.
 
@@ -316,3 +320,78 @@ def test_eval_run_result_iterates_and_lens_over_findings_and_exposes_state() -> 
     assert len(r) == 0
     assert r.hitl_gated is True
     assert r.hitl_request is None
+
+
+# ---------------------------------------------------------------------------
+# _build_approve_all_decision (resume driver's scripted reviewer input)
+# ---------------------------------------------------------------------------
+
+
+def test_build_approve_all_decision_covers_exactly_the_gated_set() -> None:
+    # The resume driver's stand-in for human input: one APPROVE per gated finding,
+    # covering exactly the request's `findings_requiring_approval` (the HITL node
+    # re-validates the decision set against the request, so a miss would raise).
+    fid1, fid2 = uuid4(), uuid4()
+    request = HITLRequest(
+        findings_requiring_approval=(fid1, fid2),
+        auto_post_findings=(),
+        created_at=datetime(2026, 6, 2, tzinfo=UTC),
+        expires_at=datetime(2026, 6, 3, tzinfo=UTC),
+    )
+    decision = _build_approve_all_decision(request)
+
+    assert decision.reviewer_id == "eval"
+    # Exactly the gated set, one decision each (compare as sets — the request
+    # canonicalizes/sorts the finding tuple).
+    assert {d.finding_id for d in decision.decisions} == {fid1, fid2}
+    assert all(d.outcome == PerFindingOutcome.APPROVE for d in decision.decisions)
+    # APPROVE carries no override fields and an empty reason is valid for it.
+    assert all(d.reason == "" for d in decision.decisions)
+    assert all(
+        d.override_severity is None and d.original_severity is None for d in decision.decisions
+    )
+
+
+def test_build_approve_all_decision_empty_gate_yields_no_decisions() -> None:
+    # Defensive: an empty gated set yields an empty decisions tuple (the driver
+    # only calls this when an interrupt fired, but the builder must not invent
+    # decisions for a finding that wasn't gated).
+    request = HITLRequest(
+        findings_requiring_approval=(),
+        auto_post_findings=(uuid4(),),
+        created_at=datetime(2026, 6, 2, tzinfo=UTC),
+        expires_at=datetime(2026, 6, 3, tzinfo=UTC),
+    )
+    decision = _build_approve_all_decision(request)
+    assert decision.decisions == ()
+
+
+# ---------------------------------------------------------------------------
+# _validate_resume_db_url (resume driver's fail-closed DB-isolation guard)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_resume_db_url_accepts_per_test_eval_db() -> None:
+    # A per-test ephemeral eval DB (port 5433, outrider_eval_* name) passes.
+    _validate_resume_db_url("postgresql+psycopg://u:p@localhost:5433/outrider_eval_abc12345")
+
+
+def test_validate_resume_db_url_rejects_shared_base_db() -> None:
+    # The base `outrider_test` is ALSO on 5433 but is NOT a per-test DB — the
+    # resume driver would create checkpoint tables + seed rows into the shared
+    # base. The prefix check (not port alone) is what catches this.
+    with pytest.raises(EvalDriverError, match="per-test eval database"):
+        _validate_resume_db_url("postgresql+psycopg://u:p@localhost:5433/outrider_test")
+
+
+def test_validate_resume_db_url_rejects_non_test_port() -> None:
+    # Port 5432 is the dev/prod container — refuse it even with the eval name.
+    with pytest.raises(EvalDriverError, match="per-test eval database"):
+        _validate_resume_db_url("postgresql+psycopg://u:p@localhost:5432/outrider_eval_abc12345")
+
+
+def test_validate_resume_db_url_rejects_unparseable_url() -> None:
+    # A non-numeric port makes make_url raise — surfaced as a typed EvalDriverError,
+    # not a raw SQLAlchemy error (the file's fail-loud-with-clear-cause discipline).
+    with pytest.raises(EvalDriverError, match="not a parseable database URL"):
+        _validate_resume_db_url("postgresql+psycopg://u:p@localhost:NOTAPORT/outrider_eval_x")

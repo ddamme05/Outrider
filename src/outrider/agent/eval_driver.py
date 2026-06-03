@@ -45,10 +45,14 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from uuid import UUID, uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
+    AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
@@ -63,13 +67,21 @@ from outrider.coordinates import validate_diff_path
 from outrider.coordinates.errors import CoordinateError
 from outrider.db.review_status_persister import ReviewStatusPersister
 from outrider.eval_support import (
+    EVAL_DB_NAME_PREFIX,
+    EXPECTED_TEST_PORT,
     assert_no_is_eval_violations,
     ephemeral_database,
+    redact_url_password,
     require_eval_mode,
     run_alembic_upgrade_head,
 )
 from outrider.llm.config import ModelConfig
-from outrider.schemas.hitl import HITLRequest
+from outrider.schemas.hitl import (
+    HITLDecision,
+    HITLRequest,
+    PerFindingDecision,
+    PerFindingOutcome,
+)
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.publish import GitHubReviewCreated
 from outrider.schemas.review_state import ReviewState
@@ -79,6 +91,7 @@ if TYPE_CHECKING:
 
     from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMRequest, LLMResponse
+    from outrider.schemas.analysis_round import AnalysisRound
     from outrider.schemas.publish import InlineComment
     from outrider.schemas.review_finding import ReviewFinding
     from outrider.schemas.trace_decision import TraceDecision
@@ -239,8 +252,9 @@ class EvalRunResult:
     is a single-pass driver: when a CRITICAL/HIGH finding trips the HITL gate,
     the graph `interrupt()`s and this driver STOPS there — it does NOT
     auto-approve (that would auto-publish a gated finding, defeating trust
-    boundary #6; resume semantics are the separate, deferred
-    `run_review_with_resume` shim's job). On a gated run:
+    boundary #6; resume semantics are the separate `run_review_with_resume`
+    driver's job, which approves explicitly and returns a `ResumedRunResult`).
+    On a gated run:
       - `.findings` is still populated (synthesize ran before hitl);
       - `.published_comments` is `()` (publish never ran — the gate held);
       - `.hitl_gated` is `True` and `.hitl_request` carries the gate payload.
@@ -260,6 +274,32 @@ class EvalRunResult:
 
     def __len__(self) -> int:
         return len(self.findings)
+
+
+@dataclass(frozen=True)
+class ResumedRunResult:
+    """The terminal product of a RESUMED review — distinct from `EvalRunResult`.
+
+    `EvalRunResult` means "single pass, may stop at the HITL gate."
+    `ResumedRunResult` means "the gate was approved and the resume ran to publish."
+    Keeping the two contracts separate keeps `.published_comments` /
+    `.analysis_rounds` crisp: here `.published_comments` is non-empty (publish ran
+    AFTER the explicit decision) and `.review_status` is `"completed"`.
+
+    `run_review_with_resume` reconstructs a FRESH graph + checkpointer on the same
+    Postgres DB (same `thread_id`) before resuming, so a populated
+    `.analysis_rounds` of the expected count is proof the resume continued the
+    ORIGINAL interrupted run (idempotent under the dedup-keyed reducer) rather than
+    starting a new one. `.hitl_decision` is the scripted approve-all decision that
+    was fed through `Command(resume=...)`, the eval stand-in for human input.
+    """
+
+    review_id: UUID
+    analysis_rounds: tuple[AnalysisRound, ...]
+    published_comments: tuple[InlineComment, ...]
+    hitl_gated: bool
+    hitl_decision: HITLDecision | None
+    review_status: str
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +603,43 @@ async def _run_is_eval_gate(engine: AsyncEngine) -> None:
         await assert_no_is_eval_violations(conn)
 
 
+def _build_eval_graph(
+    *,
+    fixture: EvalFixture,
+    session_factory: async_sessionmaker[AsyncSession],
+    persister: AuditPersister,
+    provider: _FixtureScriptedProvider,
+    publisher: _CapturingPublisher,
+    checkpointer: Any,
+) -> Any:
+    """Build the seven-node graph wired with the eval doubles.
+
+    The single build-graph-deps bundle shared by the single-pass `_drive` and the
+    resume driver, so they cannot drift on which sinks/deps are injected. Only the
+    `checkpointer` differs across callers (`InMemorySaver` for single-pass;
+    `AsyncPostgresSaver` for resume — durability is what makes resume possible).
+    """
+    return build_graph(
+        db_factory=session_factory,
+        github_factory=_github_factory_for(fixture),
+        provider=provider,
+        model_config=ModelConfig(),
+        phase_event_sink=persister,
+        file_examination_sink=persister,
+        analyze_event_sink=persister,
+        publish_event_sink=persister,
+        trace_sink=persister,
+        hitl_event_sink=persister,
+        synthesize_event_sink=persister,
+        review_status_sink=ReviewStatusPersister(session_factory=session_factory),
+        anomaly_sink=AnomalyPersister(session_factory=session_factory),
+        hitl_config=HITLConfig(),
+        checkpointer=checkpointer,
+        publisher=publisher,
+        import_path_resolver=_NoOpImportPathResolver(),
+    )
+
+
 async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -582,24 +659,13 @@ async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
         )
         publisher = _CapturingPublisher()
         provider = _FixtureScriptedProvider(fixture.llm_responses)
-        graph = build_graph(
-            db_factory=session_factory,
-            github_factory=_github_factory_for(fixture),
+        graph = _build_eval_graph(
+            fixture=fixture,
+            session_factory=session_factory,
+            persister=persister,
             provider=provider,
-            model_config=ModelConfig(),
-            phase_event_sink=persister,
-            file_examination_sink=persister,
-            analyze_event_sink=persister,
-            publish_event_sink=persister,
-            trace_sink=persister,
-            hitl_event_sink=persister,
-            synthesize_event_sink=persister,
-            review_status_sink=ReviewStatusPersister(session_factory=session_factory),
-            anomaly_sink=AnomalyPersister(session_factory=session_factory),
-            hitl_config=HITLConfig(),
-            checkpointer=InMemorySaver(),
             publisher=publisher,
-            import_path_resolver=_NoOpImportPathResolver(),
+            checkpointer=InMemorySaver(),
         )
 
         result = await graph.ainvoke(
@@ -670,3 +736,208 @@ def run_review(fixture_path: str | os.PathLike[str]) -> EvalRunResult:
         fixture = EvalFixture.model_validate(json.load(fh))
 
     return asyncio.run(_arun_review(fixture, base_url))
+
+
+# ---------------------------------------------------------------------------
+# Resume driver — interrupt + checkpoint + process-restart + resume + publish
+# ---------------------------------------------------------------------------
+
+
+def _build_approve_all_decision(hitl_request: HITLRequest) -> HITLDecision:
+    """Scripted approve-everything decision: one `APPROVE` per gated finding.
+
+    The eval stand-in for a human reviewer's input through the production
+    `Command(resume=...)` path — an EXPLICIT approval, never a model-set field or a
+    default. `APPROVE` carries no override fields and allows an empty reason (per
+    `PerFindingDecision.enforce_override_fields`). The HITL node re-validates this
+    decision's finding-set against the gate request as defense-in-depth.
+    """
+    return HITLDecision(
+        reviewer_id="eval",
+        decisions=tuple(
+            PerFindingDecision(
+                finding_id=finding_id,
+                outcome=PerFindingOutcome.APPROVE,
+                reason="",
+            )
+            for finding_id in hitl_request.findings_requiring_approval
+        ),
+        annotation=None,
+        decided_at=datetime.now(UTC),
+    )
+
+
+async def _assert_checkpoint_persisted(engine: AsyncEngine, review_id: UUID) -> None:
+    """Guard the resume-identity invariant: the interrupt MUST have written a
+    checkpoint row for this thread, else a fresh saver resumes nothing (it would
+    start a new run instead of continuing the gated one)."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT 1 FROM checkpoints WHERE thread_id = :tid LIMIT 1"),
+                {"tid": str(review_id)},
+            )
+        ).first()
+    if row is None:
+        raise EvalDriverError(
+            f"no checkpoint persisted for thread_id={review_id} after the HITL "
+            "interrupt; cannot resume (the gated run never reached Postgres, so a "
+            "fresh checkpointer would resume nothing)."
+        )
+
+
+async def _read_review_status(engine: AsyncEngine, review_id: UUID) -> str:
+    async with engine.connect() as conn:
+        status = (
+            await conn.execute(
+                text("SELECT status FROM reviews WHERE id = :id"),
+                {"id": review_id},
+            )
+        ).scalar_one()
+    return str(status)
+
+
+def _validate_resume_db_url(db_url: str) -> None:
+    """Fail-closed guard on a caller-supplied resume DB URL.
+
+    Refuses anything but a per-test ephemeral eval DB: it must be on the
+    postgres-test container (port 5433, never prod's 5432) AND carry the
+    `EVAL_DB_NAME_PREFIX` name that `ephemeral_database` / the eval_db fixture mint.
+    The port alone would accept the shared base `outrider_test` (also 5433); the
+    prefix is what proves "a fixture-owned per-test DB" — the resume driver creates
+    checkpoint tables + seeds rows and must never touch the shared base.
+    """
+    try:
+        parsed = make_url(db_url)
+    except (ArgumentError, ValueError) as exc:
+        raise EvalDriverError(
+            f"db_url is not a parseable database URL: {redact_url_password(db_url)!r}."
+        ) from exc
+    db_name = parsed.database or ""
+    if parsed.port != EXPECTED_TEST_PORT or not db_name.startswith(EVAL_DB_NAME_PREFIX):
+        raise EvalDriverError(
+            f"db_url must be a per-test eval database (port {EXPECTED_TEST_PORT}, name "
+            f"{EVAL_DB_NAME_PREFIX!r}*); got {redact_url_password(db_url)!r}. The resume "
+            "driver runs against a fixture-owned ephemeral DB, not the shared base."
+        )
+
+
+async def run_review_with_resume(
+    fixture_path: str | os.PathLike[str], *, db_url: str
+) -> ResumedRunResult:
+    """Drive the graph through the HITL interrupt, restart, resume, and publish.
+
+    Unlike the sync, self-contained `run_review`, this is **async** (the resume
+    scenario's replay assertion is async, so its test is `async def` — and
+    `asyncio.run` cannot run inside a live event loop) and it does **not** own the
+    DB lifecycle: it runs against the caller-supplied, already-migrated `db_url`
+    (the `eval_db` fixture owns create/migrate/drop + the is_eval gate), because the
+    audit stream must persist for the scenario's `AuditReplayer` to read AFTER this
+    returns.
+
+    Two sequential `AsyncPostgresSaver`s on the SAME DB make the restart faithful:
+    saver A drives to the interrupt and is closed; a FRESH saver B resumes from the
+    Postgres checkpoint — proving the suspended state lives in Postgres, not a
+    Python object. `review_id` is generated ONCE and used as the `thread_id` in both
+    `ainvoke` configs, so saver B resumes the ORIGINAL interrupted run (the
+    resume-identity invariant). The base `run_review` never approves; here the
+    approval is supplied explicitly through `Command(resume=...)`, and publish runs
+    only after it (boundary #6 preserved).
+
+    Fail-closed: `require_eval_mode()` + `_validate_resume_db_url` (a per-test eval
+    DB, not the shared base) run before any DB or checkpointer work.
+    """
+    require_eval_mode()
+    _validate_resume_db_url(db_url)
+
+    with open(fixture_path, encoding="utf-8") as fh:
+        fixture = EvalFixture.model_validate(json.load(fh))
+
+    # psycopg wants a bare URL; strip SQLAlchemy's driver suffix (mirrors lifespan).
+    checkpoint_url = db_url.replace("postgresql+psycopg://", "postgresql://", 1)
+
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: PLC0415
+
+    engine = create_async_engine(db_url, poolclass=NullPool)
+    try:
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        # ONE id: seeds the review AND is the thread_id for BOTH legs. A mismatch
+        # would make saver B resume a fresh run, not the gated one.
+        review_id = uuid4()
+        thread_config = {"configurable": {"thread_id": str(review_id)}}
+        await _seed_installation(engine, fixture)
+        await _seed_review(engine, review_id, fixture)
+
+        persister = AuditPersister(
+            session_factory=session_factory, retention_settings=RetentionSettings()
+        )
+        publisher = _CapturingPublisher()
+        provider = _FixtureScriptedProvider(fixture.llm_responses)
+
+        # Phase A (process 1): drive to the interrupt on saver A, then CLOSE it.
+        async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_a:
+            await saver_a.setup()
+            graph_a = _build_eval_graph(
+                fixture=fixture,
+                session_factory=session_factory,
+                persister=persister,
+                provider=provider,
+                publisher=publisher,
+                checkpointer=saver_a,
+            )
+            result_a = await graph_a.ainvoke(_seed_state(fixture, review_id), config=thread_config)
+
+        interrupts = result_a.get("__interrupt__")
+        if not interrupts:
+            raise EvalDriverError(
+                "run_review_with_resume fixture did not trip the HITL gate; the "
+                "resume scenario needs a CRITICAL/HIGH finding (no interrupt means "
+                "there is nothing to resume)."
+            )
+        hitl_request = HITLRequest.model_validate(interrupts[0].value)
+        await _assert_checkpoint_persisted(engine, review_id)
+        decision = _build_approve_all_decision(hitl_request)
+
+        # Phase B (process 2): a FRESH saver on the SAME DB + SAME thread_id resumes
+        # the suspended run from Postgres (nothing in-memory carries over) and runs
+        # hitl -> publish -> end.
+        async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_b:
+            graph_b = _build_eval_graph(
+                fixture=fixture,
+                session_factory=session_factory,
+                persister=persister,
+                provider=provider,
+                publisher=publisher,
+                checkpointer=saver_b,
+            )
+            result_b = await graph_b.ainvoke(
+                Command(resume=decision.model_dump(mode="json")), config=thread_config
+            )
+
+        # LangGraph's serde rehydrates state-channel Pydantic models as instances
+        # (not dicts) on the Postgres round-trip, so these are AnalysisRound objects.
+        analysis_rounds: tuple[AnalysisRound, ...] = tuple(result_b.get("analysis_rounds", ()))
+        published: tuple[InlineComment, ...] = tuple(
+            c for call in publisher.create_review_calls for c in call["comments"]
+        )
+        review_status = await _read_review_status(engine, review_id)
+        resumed = ResumedRunResult(
+            review_id=review_id,
+            analysis_rounds=analysis_rounds,
+            published_comments=published,
+            hitl_gated=True,
+            hitl_decision=decision,
+            review_status=review_status,
+        )
+        await _run_is_eval_gate(engine)
+        return resumed
+    except Exception:
+        # Failure path: still verify is_eval discipline before the engine closes,
+        # best-effort so a gate violation never masks the root-cause exception.
+        # Mirrors `_drive` — the resume driver doesn't assume its caller gates
+        # (it may run under `ephemeral_database`, not only the eval_db fixture).
+        with contextlib.suppress(Exception):
+            await _run_is_eval_gate(engine)
+        raise
+    finally:
+        await engine.dispose()

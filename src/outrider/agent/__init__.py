@@ -25,11 +25,18 @@ Module structure follows docs/conventions.md "File organization":
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from outrider.agent.eval_driver import EvalRunResult, run_review
+    from outrider.agent.eval_driver import (
+        EvalRunResult,
+        ResumedRunResult,
+        run_review,
+        run_review_with_resume,
+    )
 
 __all__ = [
     "EvalRunResult",
+    "ResumedRunResult",
     "run_review",
+    "run_review_with_resume",
 ]
 
 

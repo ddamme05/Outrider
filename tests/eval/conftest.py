@@ -58,6 +58,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from outrider.eval_support import (
+    EVAL_DB_NAME_PREFIX,
     assert_no_is_eval_violations,
     assert_test_url_is_isolated,
     create_database,
@@ -141,7 +142,7 @@ async def eval_db() -> AsyncGenerator[str]:
 
     assert_test_url_is_isolated(main_url)
 
-    test_db_name = f"outrider_eval_{uuid4().hex[:8]}"
+    test_db_name = f"{EVAL_DB_NAME_PREFIX}{uuid4().hex[:8]}"
     test_url = replace_db_name(main_url, test_db_name)
 
     await create_database(main_url, test_db_name)

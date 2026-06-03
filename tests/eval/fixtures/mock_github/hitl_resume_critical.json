@@ -1,0 +1,36 @@
+{
+  "installation_id": 7700,
+  "owner": "acme",
+  "repo": "webapp",
+  "pr_number": 42,
+  "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "pr_title": "Add user search endpoint",
+  "pr_body": "Adds search_users; trips the HITL gate (CRITICAL) so the resume scenario can drive interrupt -> checkpoint -> resume -> publish.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/search.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n import sqlite3\n+\n+\n+def search_users(request):\n+    query = \"SELECT * FROM users WHERE name = '%s'\" % request.GET[\"q\"]\n+    conn = sqlite3.connect(\"app.db\")\n+    return conn.execute(query).fetchall()\n",
+      "previous_path": null,
+      "content_base": "import sqlite3\n",
+      "content_head": "import sqlite3\n\n\ndef search_users(request):\n    query = \"SELECT * FROM users WHERE name = '%s'\" % request.GET[\"q\"]\n    conn = sqlite3.connect(\"app.db\")\n    return conn.execute(query).fetchall()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/search.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the search endpoint introducing a raw SQL query.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"observed\", \"query_match_id\": \"python.function_definition\", \"trace_path\": null, \"title\": \"SQL injection via string-formatted query in search_users\", \"description\": \"search_users() builds a SQL query by %-formatting the untrusted request.GET['q'] value straight into the WHERE clause, then executes it. An attacker controls the query. Use a parameterized query instead.\", \"evidence\": \"    query = \\\"SELECT * FROM users WHERE name = '%s'\\\" % request.GET[\\\"q\\\"]\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "One CRITICAL SQL-injection finding -- search_users() formats untrusted request input directly into a SQL query. Gated for human approval before publish."
+    ]
+  }
+}

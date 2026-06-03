@@ -1,77 +1,105 @@
 """HITL-resume eval scenario: graph interrupt + checkpoint + resume + replay-equivalence.
 
 Per spec §11.2 (the not-optional scenario): process a PR with a guaranteed
-critical finding → assert graph interrupts at `hitl` → assert state writes
-to `checkpoints` table → simulate process restart (new graph instance,
-same checkpointer) → resume via `Command(resume=decision)` → assert
-`len(final_state.analysis_rounds)` matches expected count → run
-replay-equivalence on the full audit log.
+CRITICAL finding → the graph interrupts at `hitl` and checkpoints to Postgres →
+a fresh graph instance + a fresh checkpointer on the SAME DB resume via
+`Command(resume=decision)` → assert `len(analysis_rounds) == 1` (reducer
+idempotence) + published comments + `completed` status → run replay-equivalence
+over the full audit log.
 
-The seven-step flow is the load-bearing test for the LangGraph reducer's
-checkpoint-resume idempotence claim. A concatenation reducer would
-silently double-accumulate `analysis_rounds` on resume; the
-`append_with_dedup_by` reducer makes resume idempotent regardless of
-LangGraph's internal rehydration behavior.
+`len(analysis_rounds) == 1` proves the resume continued the ORIGINAL interrupted
+run and its single analysis round survived rehydration — a fresh run (e.g. a
+thread_id mismatch) would re-enter analyze, re-hit the gate, and never reach
+publish. It pins single-round structure across resume; it does NOT by itself
+exercise dedup-vs-concat, because resume re-enters the `hitl` node and analyze does
+not re-execute — the reducer's idempotence-under-replay is covered by
+`append_with_dedup_by`'s own tests, not inferred from this count.
 
-V1: scaffolded; the scenario definition + fixtures land here.
-`agent/nodes/hitl.py` (the HITL node + `interrupt()` mechanics) shipped
-2026-05-26, and `audit/replay.py` (the replay reconstructor +
-`AuditReplayer.assert_replay_equivalent`) shipped 2026-05-29. Remaining
-blockers before this scenario becomes executable:
-  - the `run_review_with_resume` resume shim (FUP-105)
-  - a mock LLM provider (FUP-106)
-  - the `mock_github/hitl_resume_critical.json` fixture (FUP-108)
+The boundary invariant it guards (trust boundary #6): the base `run_review` never
+approves — it stops at the gate (asserted by the negative-half test below). Here
+`run_review_with_resume` approves EXPLICITLY, through the same `Command(resume=...)`
+path production uses, and publish runs only after that decision — so the gated
+finding's comment is non-empty only post-resume.
 
-The skip marker lifts when the remaining blockers ship.
+Driven by `run_review_with_resume` against
+`tests/eval/fixtures/mock_github/hitl_resume_critical.json` (a SQL-injection PR
+whose finding policy-maps to CRITICAL). Two sequential `AsyncPostgresSaver`s prove
+the suspended state lives in Postgres, not a Python object.
 """
 
-import pytest
+from __future__ import annotations
 
-pytestmark = pytest.mark.skip(
-    reason="requires the run_review_with_resume resume shim (FUP-105) + a mock LLM "
-    "provider (FUP-106) + the mock_github/hitl_resume_critical.json fixture (FUP-108); "
-    "hitl node + audit/replay.py already shipped"
-)
+from typing import TYPE_CHECKING
+
+from sqlalchemy import text
+
+from outrider.agent import run_review, run_review_with_resume
+from outrider.audit.replay import AuditReplayer
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+_FIXTURE = "tests/eval/fixtures/mock_github/hitl_resume_critical.json"
 
 EXPECTED_FINAL_STATE = {
-    "analysis_rounds_count": 1,  # one analysis pass, then HITL gate, then publish
-    "hitl_interrupted": True,
-    "replay_equivalent": True,
+    "analysis_rounds_count": 1,  # one analysis pass, then HITL gate, then resume + publish
+    "review_status": "completed",
 }
 
 
-async def test_hitl_resume_idempotent_under_checkpoint_replay(eval_db_session_factory) -> None:  # type: ignore[no-untyped-def]
-    """Seven-step HITL-resume flow ends idempotent + replay-equivalent."""
-    from outrider.agent import run_review_with_resume  # type: ignore[import-not-found]
-    from outrider.audit.replay import AuditReplayer
+async def test_hitl_resume_idempotent_under_checkpoint_replay(
+    eval_db: str,
+    eval_db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Seven-step HITL-resume flow ends idempotent + replay-equivalent.
 
-    # 1. Process PR with guaranteed critical finding
-    # 2. Assert graph interrupts at hitl
-    # 3. Assert state writes to checkpoints table
-    # 4. Simulate process restart (new graph instance, same checkpointer)
-    # 5. Resume via Command(resume=decision)
-    # 6. Assert len(analysis_rounds) matches
-    # 7. Run replay-equivalence on the audit log
-    final_state = run_review_with_resume(
-        "tests/eval/fixtures/mock_github/hitl_resume_critical.json"
+    `eval_db` is the migrated per-test DB URL the driver runs against; the SAME DB
+    backs `eval_db_session_factory`, so the replayer reconstructs from exactly the
+    stream the run recorded. `run_review_with_resume` is awaited (it is async — the
+    replay assertion forces an async test, and a sync `asyncio.run`-based driver
+    can't run inside a live event loop).
+    """
+    # 1-5. Process PR → interrupt at hitl → checkpoint to Postgres → fresh
+    #      graph+saver on the same DB → resume via Command(resume=approve-all).
+    final = await run_review_with_resume(_FIXTURE, db_url=eval_db)
+
+    # The interrupt fired (the CRITICAL finding gated), and resume drove to publish.
+    assert final.hitl_gated is True
+    # 6. Proof of resume-of-original: a fresh run would re-enter analyze, re-hit
+    #    the gate, and never reach publish. Exactly 1 = the single phase-A round
+    #    survived rehydration (analyze does not re-run on resume — it re-enters hitl).
+    assert len(final.analysis_rounds) == EXPECTED_FINAL_STATE["analysis_rounds_count"]
+    # Boundary #6 positive test: the gated finding reached GitHub ONLY after the
+    # explicit decision was supplied through Command(resume=...).
+    assert len(final.published_comments) >= 1
+    assert final.review_status == EXPECTED_FINAL_STATE["review_status"]
+
+    # 3 (explicit). The interrupt persisted to the Postgres `checkpoints` table for
+    # this thread — the durability the two-saver restart depends on.
+    async with eval_db_session_factory() as session:
+        checkpoint_rows = await session.scalar(
+            text("SELECT count(*) FROM checkpoints WHERE thread_id = :tid"),
+            {"tid": str(final.review_id)},
+        )
+    assert checkpoint_rows is not None and checkpoint_rows >= 1
+
+    # 7. Replay-equivalence over the full audit log (reconstruct from the SAME DB).
+    #    `assert_replay_equivalent` raises on mismatch, returns None on success.
+    await AuditReplayer(session_factory=eval_db_session_factory).assert_replay_equivalent(
+        final.review_id
     )
 
-    assert len(final_state.analysis_rounds) == EXPECTED_FINAL_STATE["analysis_rounds_count"]
-    # `AuditReplayer.assert_replay_equivalent` is assertion-style: raises on
-    # mismatch, returns None on success (per the shipped audit/replay API).
-    # The previous shape `assert ... is expected` (where `expected = True`)
-    # would always evaluate to `None is True == False`, masking real failures
-    # behind a permanently-failing test. Pin the constant as a contract: this
-    # test is wired exclusively for the replay-equivalent expectation.
-    # Repurposing it for a non-equivalent scenario requires a rename, not a
-    # constant flip.
-    assert EXPECTED_FINAL_STATE["replay_equivalent"] is True, (
-        "this test is wired for the replay-equivalent expectation only; "
-        "flipping the constant would silently skip the equivalence check"
-    )
-    # `assert_replay_equivalent` is a method on `AuditReplayer` (session_factory
-    # injected from the eval harness DB). The async + session_factory wiring
-    # finalizes with the run_review_with_resume harness (FUP-105); the call
-    # shape below is correct against the shipped replay API.
-    replayer = AuditReplayer(session_factory=eval_db_session_factory)
-    await replayer.assert_replay_equivalent(final_state.review_id)
+
+def test_critical_fixture_holds_gate_without_resume() -> None:
+    """Boundary #6 negative half: the base `run_review` NEVER approves.
+
+    On the SAME CRITICAL fixture, the single-pass driver gates and nothing reaches
+    GitHub — no resume, no decision, no publish. Paired with the resume test above
+    (which publishes ONLY after the explicit `Command(resume=...)` decision), this
+    is the complete "withheld until approved, then published" proof. `run_review`
+    is sync + self-contained (it carves its own ephemeral DB), so no `eval_db`.
+    """
+    result = run_review(_FIXTURE)
+    assert result.hitl_gated is True
+    assert result.published_comments == ()  # gate held — nothing posted to GitHub
+    assert len(result.findings) >= 1  # synthesize ran before the gate

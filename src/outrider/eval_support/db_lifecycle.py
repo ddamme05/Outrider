@@ -61,6 +61,10 @@ _PYPROJECT_TOML = _REPO_ROOT / "pyproject.toml"
 
 EXPECTED_TEST_PORT = 5433
 EXPECTED_TEST_DB_NAME_FRAGMENT = "test"
+# Name prefix for per-test ephemeral eval DBs (minted by `ephemeral_database` and
+# the eval_db fixture). The single source of truth so a guard that refuses
+# anything-but-a-per-test-DB can't drift from what actually creates them.
+EVAL_DB_NAME_PREFIX = "outrider_eval_"
 
 _EVAL_MODE_ENV_VAR = "OUTRIDER_IS_EVAL"
 _PASSWORD_REDACTION = re.compile(r"(://[^:/@\s]+:)([^@]+)(@)")
@@ -225,7 +229,7 @@ async def run_alembic_upgrade_head(db_url: str) -> None:
 
 @asynccontextmanager
 async def ephemeral_database(
-    *, base_url: str, name_prefix: str = "outrider_eval_"
+    *, base_url: str, name_prefix: str = EVAL_DB_NAME_PREFIX
 ) -> AsyncIterator[str]:
     """Create a uniquely-named ephemeral DB on the test container; drop on exit.
 
