@@ -52,7 +52,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import uuid4
 
@@ -348,6 +347,8 @@ async def receive_pull_request_webhook(
 
     try:
         async with session_factory() as session, session.begin():
+            # No aggregate-metric seed: those `reviews` columns were dropped per
+            # DECISIONS.md#037 — review metrics live in the audit stream.
             session.add(
                 Review(
                     id=review_id,
@@ -356,13 +357,6 @@ async def receive_pull_request_webhook(
                     pr_number=payload.pull_request.number,
                     head_sha=head_sha,
                     status="running",
-                    files_examined=0,
-                    files_traced_beyond_diff=0,
-                    llm_calls_made=0,
-                    total_input_tokens=0,
-                    total_output_tokens=0,
-                    total_cost_usd=Decimal("0"),
-                    wall_clock_seconds=Decimal("0"),
                     retention_expires_at=(
                         received_at + request.app.state.retention_settings.review_retention_ttl
                     ),

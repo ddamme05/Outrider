@@ -51,11 +51,9 @@ async def _seed_full_installation_state(engine: AsyncEngine) -> None:
             text(
                 "INSERT INTO reviews ("
                 "  installation_id, repo_id, pr_number, head_sha, status, "
-                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "  total_input_tokens, total_output_tokens, total_cost_usd, "
-                "  wall_clock_seconds, retention_expires_at"
+                "  retention_expires_at"
                 ") VALUES ("
-                "  :id, 100, 1, 'sha1', 'completed', 0, 0, 0, 0, 0, 0, 0, "
+                "  :id, 100, 1, 'sha1', 'completed', "
                 "  NOW() + INTERVAL '180 days'"
                 ") RETURNING id"
             ),

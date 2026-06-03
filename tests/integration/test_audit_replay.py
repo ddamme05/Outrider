@@ -193,10 +193,8 @@ async def _seed_review(engine: AsyncEngine, review_id: UUID) -> None:
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "total_input_tokens, total_output_tokens, total_cost_usd, wall_clock_seconds, "
-                "retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', 'completed', "
-                "1, 0, 1, 100, 50, 0.01, 1.5, NOW() + INTERVAL '180 days')"
+                "status, retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', "
+                "'completed', NOW() + INTERVAL '180 days')"
             ),
             {"id": review_id, "iid": _INSTALLATION_ID},
         )
@@ -562,10 +560,8 @@ async def test_review_row_is_eval_drift_raises(engine: AsyncEngine) -> None:
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, is_eval, files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "total_input_tokens, total_output_tokens, total_cost_usd, wall_clock_seconds, "
-                "retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', 'completed', "
-                "TRUE, 1, 0, 1, 100, 50, 0.01, 1.5, NOW() + INTERVAL '180 days')"
+                "status, is_eval, retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', "
+                "'completed', TRUE, NOW() + INTERVAL '180 days')"
             ),
             {"id": review_id, "iid": _INSTALLATION_ID},
         )

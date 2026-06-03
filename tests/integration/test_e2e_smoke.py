@@ -352,10 +352,8 @@ async def _seed_review(engine: AsyncEngine, review_id: UUID) -> None:
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "total_input_tokens, total_output_tokens, total_cost_usd, wall_clock_seconds, "
-                "retention_expires_at) VALUES (:id, :iid, 100, :pr, :sha, 'running', "
-                "0, 0, 0, 0, 0, 0, 0, NOW() + INTERVAL '180 days')"
+                "status, retention_expires_at) VALUES (:id, :iid, 100, :pr, :sha, 'running', "
+                "NOW() + INTERVAL '180 days')"
             ),
             {"id": review_id, "iid": _INSTALLATION_ID, "pr": _PULL_NUMBER, "sha": _HEAD_SHA},
         )

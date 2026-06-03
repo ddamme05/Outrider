@@ -333,13 +333,11 @@ async def _seed_review_row(
     (findings.review_id, reviews.installation_id) and replay finds a review row.
 
     Columns mirror `db/models/reviews.py` + the webhook's own INSERT
-    (`api/webhooks/router.py` step 9a). The metric columns
-    (`files_examined`, `files_traced_beyond_diff`, `llm_calls_made`,
-    `total_input_tokens`, `total_output_tokens`, `total_cost_usd`,
-    `wall_clock_seconds`) are `nullable=False` with NO server default, so the
-    webhook seeds them to 0 and we must too — omitting them fails the INSERT
-    before the graph runs. `status` / `created_at` / `updated_at` / `is_eval`
-    have server defaults and are omitted. There is NO `received_at` column on
+    (`api/webhooks/router.py` step 9a). The aggregate-metric columns were
+    dropped per DECISIONS.md#037 (review metrics live in the audit stream), so
+    this INSERT seeds only the natural-key + status + retention columns.
+    `status` / `created_at` / `updated_at` / `is_eval` have server defaults and
+    are omitted. There is NO `received_at` column on
     `reviews`. `repo_id` is the real GitHub repository id, matching the natural
     key the webhook uses. `retention_expires_at` is
     `now + retention_settings.review_retention_ttl` — the same operator-
@@ -389,11 +387,8 @@ async def _seed_review_row(
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "total_input_tokens, total_output_tokens, total_cost_usd, "
-                "wall_clock_seconds, retention_expires_at) "
-                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', 0, 0, 0, 0, 0, 0, 0, "
-                ":retention_expires_at)"
+                "status, retention_expires_at) "
+                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', :retention_expires_at)"
             ),
             {
                 "id": review_id,

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -185,13 +184,6 @@ def _review_metadata() -> ReconstructedReviewMetadata:
         repo_id=100,
         pr_number=1,
         head_sha="sha1",
-        files_examined=1,
-        files_traced_beyond_diff=0,
-        llm_calls_made=1,
-        total_input_tokens=100,
-        total_output_tokens=50,
-        total_cost_usd=Decimal("0.01"),
-        wall_clock_seconds=Decimal("1.5"),
         created_at=ts,
         updated_at=ts,
         completed_at=ts,

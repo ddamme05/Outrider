@@ -46,11 +46,9 @@ async def _seed_expired_review_for_tombstoned_install(engine: AsyncEngine) -> No
             text(
                 "INSERT INTO reviews ("
                 "  installation_id, repo_id, pr_number, head_sha, status, "
-                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "  total_input_tokens, total_output_tokens, total_cost_usd, "
-                "  wall_clock_seconds, retention_expires_at"
+                "  retention_expires_at"
                 ") VALUES ("
-                "  :id, 100, 1, 'sha1', 'completed', 0, 0, 0, 0, 0, 0, 0, "
+                "  :id, 100, 1, 'sha1', 'completed', "
                 "  NOW() - INTERVAL '1 day'"
                 ")"
             ),
