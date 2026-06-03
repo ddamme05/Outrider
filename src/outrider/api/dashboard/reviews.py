@@ -307,21 +307,21 @@ router = APIRouter(
 )
 
 
-async def _aggregate_metrics(session: AsyncSession, review_id: UUID) -> ReviewMetricsView:
+async def _aggregate_metrics(
+    session: AsyncSession, review_id: UUID, review_is_eval: bool
+) -> ReviewMetricsView:
     """Compute one review's metrics read-through from the audit stream.
 
-    Filtering by `review_id` alone is the correct `is_eval` scope under V1
-    wiring: a review's `is_eval` is a single value (`ReviewState.is_eval`) that
-    every emit-site copies onto its events, so a review's stream is
-    is_eval-homogeneous. FUP-130 made this a PERSISTER-ENFORCED guarantee at the
-    two content-bearing sites that resolve the reviews row — `persist()` (the
-    `llm_call` rows this aggregate SUMs) and `emit_finding()` (the findings list)
-    — which raise `AuditPersisterIsEvalMismatchError` when `event.is_eval`
-    diverges from `reviews.is_eval`, the same shape as the `installation_id`
-    cross-check. The `SynthesizeCompletedEvent` fields read below go through a
-    non-resolving emit path, so those stay producer-discipline (out of FUP-130
-    scope — that event feeds no is_eval-divergence risk the LLM-aggregate or
-    findings surfaces don't already gate).
+    Every event read is scoped by BOTH `review_id` AND `is_eval == review_is_eval`
+    (FUP-130 read-side defense). A review's `is_eval` is a single value
+    (`ReviewState.is_eval`) every emit-site copies onto its events, so the stream
+    is is_eval-homogeneous under producer discipline — but the persister only
+    enforces that at the two content-bearing sites it resolves the reviews row
+    for (`persist()` / `emit_finding()`), and `SynthesizeCompletedEvent` reaches
+    the row through a non-resolving emit path. So the `is_eval` predicate here is
+    what actually prevents a divergent eval `synthesize_completed` (or `llm_call`)
+    event from surfacing on a production review's metrics, mirroring replay's
+    read-time `_verify_is_eval_consistent`. Caller passes `reviews.is_eval`.
     """
     # LLM aggregates — COUNT/SUM over llm_call payloads (never the None
     # SynthesizeCompletedEvent LLM fields, per FUP-093). The SUM assumes one
@@ -344,6 +344,7 @@ async def _aggregate_metrics(session: AsyncSession, review_id: UUID) -> ReviewMe
         ),
     ).where(
         AuditEvent.review_id == review_id,
+        AuditEvent.is_eval == review_is_eval,
         AuditEvent.event_type == "llm_call",
     )
     llm_row = (await session.execute(llm_stmt)).one()
@@ -360,6 +361,7 @@ async def _aggregate_metrics(session: AsyncSession, review_id: UUID) -> ReviewMe
         select(AuditEvent.payload)
         .where(
             AuditEvent.review_id == review_id,
+            AuditEvent.is_eval == review_is_eval,
             AuditEvent.event_type == "synthesize_completed",
         )
         .order_by(AuditEvent.sequence_number.desc())
@@ -440,7 +442,7 @@ async def list_reviews(
                 created_at=r.created_at,
                 updated_at=r.updated_at,
                 completed_at=r.completed_at,
-                metrics=await _aggregate_metrics(session, r.id),
+                metrics=await _aggregate_metrics(session, r.id, r.is_eval),
             )
             for r in rows
         ]
@@ -462,15 +464,20 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
         ).scalar_one_or_none()
         if review is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
-        metrics = await _aggregate_metrics(session, review.id)
+        metrics = await _aggregate_metrics(session, review.id, review.is_eval)
         # The per-review policy-version snapshot lives on the review's audit
         # events, not the `reviews` row. Take the earliest event carrying one
         # (they share the snapshot per DECISIONS.md#028); None pre-analyze.
+        # Scoped by `is_eval` (FUP-130 read-side defense) — several
+        # policy_version-bearing event types reach the row through unguarded
+        # emit paths, so without this a divergent eval event could set a
+        # production review's displayed policy_version.
         policy_version = (
             await session.execute(
                 select(AuditEvent.payload["policy_version"].astext)
                 .where(
                     AuditEvent.review_id == review.id,
+                    AuditEvent.is_eval == review.is_eval,
                     AuditEvent.payload["policy_version"].astext.isnot(None),
                 )
                 .order_by(AuditEvent.sequence_number.asc())
@@ -503,9 +510,14 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
         )
 
 
-async def _latest_publish_routing(session: AsyncSession, review_id: UUID) -> dict[str, str | None]:
+async def _latest_publish_routing(
+    session: AsyncSession, review_id: UUID, review_is_eval: bool
+) -> dict[str, str | None]:
     """`{finding_id: destination}` from `PublishRoutingEvent`, latest per
     finding (sequence_number ASC -> last write wins; re-route lands a new row).
+    Scoped by `is_eval` (FUP-130 read-side defense): publish events reach the
+    row through an unguarded emit path, so the predicate is what isolates a
+    production review's lifecycle from a divergent eval event.
     """
     rows = (
         await session.execute(
@@ -515,6 +527,7 @@ async def _latest_publish_routing(session: AsyncSession, review_id: UUID) -> dic
             )
             .where(
                 AuditEvent.review_id == review_id,
+                AuditEvent.is_eval == review_is_eval,
                 AuditEvent.event_type == "publish_routing",
             )
             .order_by(AuditEvent.sequence_number.asc())
@@ -524,11 +537,12 @@ async def _latest_publish_routing(session: AsyncSession, review_id: UUID) -> dic
 
 
 async def _latest_publish_eligibility(
-    session: AsyncSession, review_id: UUID
+    session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> dict[str, tuple[str | None, str | None]]:
     """`{finding_id: (eligibility, reason)}` from `PublishEligibilityEvent`,
     latest per finding. Separate from routing per DECISIONS.md#023: a routed
     finding can still be withheld (e.g. `withheld`/`hitl_required_node_absent`).
+    Scoped by `is_eval` (FUP-130 read-side defense, same rationale as routing).
     """
     rows = (
         await session.execute(
@@ -539,6 +553,7 @@ async def _latest_publish_eligibility(
             )
             .where(
                 AuditEvent.review_id == review_id,
+                AuditEvent.is_eval == review_is_eval,
                 AuditEvent.event_type == "publish_eligibility",
             )
             .order_by(AuditEvent.sequence_number.asc())
@@ -547,7 +562,9 @@ async def _latest_publish_eligibility(
     return {fid: (eligibility, reason) for fid, eligibility, reason in rows if fid is not None}
 
 
-async def _hitl_decisions(session: AsyncSession, review_id: UUID) -> dict[str, HITLDecisionView]:
+async def _hitl_decisions(
+    session: AsyncSession, review_id: UUID, review_is_eval: bool
+) -> dict[str, HITLDecisionView]:
     """`{finding_id: HITLDecisionView}` projected from the review's single
     `HITLDecisionEvent`.
 
@@ -559,13 +576,15 @@ async def _hitl_decisions(session: AsyncSession, review_id: UUID) -> dict[str, H
     determinism, not a real multiplicity. Empty dict if the review never gated
     (no crit/high finding) or hasn't reached HITL yet. The per-finding
     `reviewer_id` is the event-level reviewer (a string, `"admin"` in V1)
-    denormalized onto each decision for the view.
+    denormalized onto each decision for the view. Scoped by `is_eval` (FUP-130
+    read-side defense, same rationale as the publish helpers).
     """
     payload = (
         await session.execute(
             select(AuditEvent.payload)
             .where(
                 AuditEvent.review_id == review_id,
+                AuditEvent.is_eval == review_is_eval,
                 AuditEvent.event_type == "hitl_decision",
             )
             .order_by(AuditEvent.sequence_number.desc())
@@ -609,15 +628,18 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        installation_id = (
-            await session.execute(select(Review.installation_id).where(Review.id == review_id))
-        ).scalar_one_or_none()
-        if installation_id is None:
+        review_row = (
+            await session.execute(
+                select(Review.installation_id, Review.is_eval).where(Review.id == review_id)
+            )
+        ).one_or_none()
+        if review_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
+        installation_id, review_is_eval = review_row
 
-        dest_by_fid = await _latest_publish_routing(session, review_id)
-        elig_by_fid = await _latest_publish_eligibility(session, review_id)
-        hitl_by_fid = await _hitl_decisions(session, review_id)
+        dest_by_fid = await _latest_publish_routing(session, review_id, review_is_eval)
+        elig_by_fid = await _latest_publish_eligibility(session, review_id, review_is_eval)
+        hitl_by_fid = await _hitl_decisions(session, review_id, review_is_eval)
 
         def _lifecycle(fid: str) -> dict[str, Any]:
             eligibility, reason = elig_by_fid.get(fid, (None, None))
@@ -628,9 +650,19 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
                 "hitl_decision": hitl_by_fid.get(fid),
             }
 
-        # Surviving content rows -> full findings.
+        # Surviving content rows -> full findings. Scoped by `is_eval` too
+        # (FUP-130 read-side defense): leaking a finding's CONTENT across
+        # eval/production isolation is the worst case, so the read filters even
+        # though `emit_finding` now also enforces the match write-side.
         content_rows = (
-            (await session.execute(select(Finding).where(Finding.review_id == review_id)))
+            (
+                await session.execute(
+                    select(Finding).where(
+                        Finding.review_id == review_id,
+                        Finding.is_eval == review_is_eval,
+                    )
+                )
+            )
             .scalars()
             .all()
         )
@@ -666,6 +698,7 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
                     select(AuditEvent.payload)
                     .where(
                         AuditEvent.review_id == review_id,
+                        AuditEvent.is_eval == review_is_eval,
                         AuditEvent.event_type == "finding",
                     )
                     .order_by(AuditEvent.sequence_number.asc())
@@ -791,13 +824,21 @@ async def get_review_events(request: Request, review_id: UUID) -> ReviewEventsRe
     content-table joins and no redaction. Each row is rebuilt through the shared
     `reconstruct_event_from_row` (the replay read-path), so historical rows tolerate
     post-#025 field additions (DECISIONS.md#032) AND every row's mirrored base
-    columns are verified against its payload. 404 when the review has no audit rows
-    (parity with detail/replay). Like the detail endpoint, a by-id fetch is NOT
-    `is_eval`-filtered — holding the id is sufficient to view it. A single review's
-    stream is bounded by its graph run, so it is returned whole (no pagination).
+    columns are verified against its payload. 404 when the review doesn't exist.
+    Like the detail endpoint, a by-id fetch is NOT gated on the caller's eval
+    preference — holding the id is sufficient to view it — but the stream is
+    scoped to the review's OWN `is_eval` (FUP-130 read-side defense): a divergent
+    eval event can't surface on a production review's explorer (the firehose was
+    the broadest unguarded leak). A single review's stream is bounded by its graph
+    run, so it is returned whole (no pagination).
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
+        review_is_eval = (
+            await session.execute(select(Review.is_eval).where(Review.id == review_id))
+        ).scalar_one_or_none()
+        if review_is_eval is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
         rows = (
             await session.execute(
                 select(
@@ -810,12 +851,13 @@ async def get_review_events(request: Request, review_id: UUID) -> ReviewEventsRe
                     AuditEvent.payload,
                     AuditEvent.sequence_number,
                 )
-                .where(AuditEvent.review_id == review_id)
+                .where(
+                    AuditEvent.review_id == review_id,
+                    AuditEvent.is_eval == review_is_eval,
+                )
                 .order_by(AuditEvent.sequence_number.asc())
             )
         ).all()
-    if not rows:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
 
     # Reconstruct off the materialized rows (sync, no DB). A row whose mirrored
     # base columns disagree with its payload raises ReplayEquivalenceError — that

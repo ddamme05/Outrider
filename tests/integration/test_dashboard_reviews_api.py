@@ -199,6 +199,53 @@ async def test_metric_contract_from_audit_stream_not_reviews_columns(
 
 
 @pytest.mark.asyncio
+async def test_metrics_exclude_divergent_is_eval_synthesize_event(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A divergent `is_eval=True` synthesize_completed on a production
+    (is_eval=False) review must NOT surface its file/wall-clock metrics — FUP-130
+    read-side `is_eval` predicate. SynthesizeCompletedEvent reaches the row
+    through an unguarded emit path (`_persist_non_phase_event`), so the read
+    predicate is the actual gate; the persister guard only covers
+    persist()/emit_finding(). Without the predicate, this was a real leak."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        review_id = await _seed_review(
+            conn, status="completed", is_eval=False, repo_id=500, llm_events=[], synth=None
+        )
+        # A divergent eval synthesize_completed sneaks onto the production review.
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+                "VALUES (:eid, :rid, 'synthesize_completed', NOW(), true, CAST(:payload AS jsonb))"
+            ),
+            {
+                "eid": uuid4(),
+                "rid": review_id,
+                "payload": json.dumps(
+                    {
+                        "files_examined": 999,
+                        "files_traced_beyond_diff": 999,
+                        "wall_clock_seconds": 999.0,
+                        "policy_version": "9.9.9",
+                    }
+                ),
+            },
+        )
+    resp = client.get(f"/api/reviews/{review_id}", headers=_AUTH)
+    assert resp.status_code == 200
+    m = resp.json()["metrics"]
+    # The eval synth is filtered by the review's is_eval=False scope -> file
+    # metrics stay None (pending), NOT the divergent eval 999s.
+    assert m["files_examined"] is None
+    assert m["files_traced_beyond_diff"] is None
+    assert m["wall_clock_seconds"] is None
+    # policy_version likewise ignores the divergent eval event.
+    assert resp.json()["policy_version"] is None
+
+
+@pytest.mark.asyncio
 async def test_findings_requiring_approval_gated_set(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:

@@ -179,6 +179,30 @@ async def test_events_404_when_absent(client: tuple[TestClient, AsyncEngine]) ->
 
 
 @pytest.mark.asyncio
+async def test_events_excludes_divergent_is_eval_event(
+    client: tuple[TestClient, AsyncEngine],
+) -> None:
+    """A divergent `is_eval=True` event on a production (is_eval=False) review is
+    excluded from the explorer — FUP-130 read-side `is_eval` predicate. The
+    events firehose was the broadest unguarded leak (every event type, no
+    is_eval filter); the predicate scopes the stream to the review's own
+    is_eval, so a divergent eval event can't surface on a production review."""
+    api, engine = client
+    review_id = uuid4()
+    await _seed_review(engine, review_id, is_eval=False)
+    await _insert_event(engine, _phase_event(review_id, "start", is_eval=False))
+    # A divergent eval finding event sneaks onto the production review's stream.
+    await _insert_event(engine, _finding_event(review_id, is_eval=True))
+
+    resp = api.get(f"/api/reviews/{review_id}/events", headers=_AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    # Only the is_eval=False phase event; the divergent eval finding is filtered.
+    assert body["total"] == 1
+    assert [e["event_type"] for e in body["events"]] == ["review_phase"]
+
+
+@pytest.mark.asyncio
 async def test_events_auth_required(client: tuple[TestClient, AsyncEngine]) -> None:
     api, _ = client
     assert api.get(f"/api/reviews/{uuid4()}/events").status_code == 401
