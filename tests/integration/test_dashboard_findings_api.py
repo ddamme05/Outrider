@@ -152,6 +152,33 @@ async def _insert_publish_eligibility(
     )
 
 
+async def _insert_hitl_decision(
+    conn: object,
+    *,
+    review_id: UUID,
+    decisions: list[dict[str, object]],
+    reviewer_id: str = "admin",
+) -> None:
+    """Insert the review's single `HITLDecisionEvent` (event_type=
+    'hitl_decision'). The dashboard's `_hitl_decisions` reads `reviewer_id` +
+    `decisions[*]` (`finding_id` / `outcome` / `reason` / `original_severity` /
+    `override_severity`) — the `decisions_content_hash` validator is bypassed
+    because this is a raw-row insert (the read path never recomputes it).
+    """
+    await conn.execute(  # type: ignore[attr-defined]
+        text(
+            "INSERT INTO audit_events "
+            "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+            "VALUES (:eid, :rid, 'hitl_decision', NOW(), false, CAST(:payload AS jsonb))"
+        ),
+        {
+            "eid": uuid4(),
+            "rid": review_id,
+            "payload": json.dumps({"reviewer_id": reviewer_id, "decisions": decisions}),
+        },
+    )
+
+
 async def _insert_purge_audit(
     conn: object, *, installation_id: int, target_table: str, timestamp_iso: str
 ) -> None:
@@ -386,3 +413,117 @@ async def test_routed_but_withheld_finding_shows_eligibility(
     assert f1["publish_destination"] == "inline_comment"
     assert f1["eligibility"] == "withheld"
     assert f1["eligibility_reason"] == "hitl_required_node_absent"
+
+
+@pytest.mark.asyncio
+async def test_hitl_override_joined_from_event_not_column(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """Override provenance is read from the `HITLDecisionEvent` stream by
+    `finding_id`, NOT the (V1-null) `findings` override columns (FUP-128 /
+    DECISIONS.md#034). F1 is overridden high→medium; F2 has no decision.
+    """
+    client, ids, engine = findings_client
+    async with engine.begin() as conn:
+        await _insert_hitl_decision(
+            conn,
+            review_id=ids["review"],
+            decisions=[
+                {
+                    "finding_id": str(ids["f1"]),
+                    "outcome": "severity_override",
+                    "reason": "policy too strict for this internal tool",
+                    "original_severity": "high",
+                    "override_severity": "medium",
+                }
+            ],
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    findings = {f["finding_id"]: f for f in resp.json()["findings"]}
+
+    f1 = findings[str(ids["f1"])]["hitl_decision"]
+    assert f1 is not None
+    assert f1["outcome"] == "severity_override"
+    assert f1["reviewer_id"] == "admin"
+    assert f1["reason"] == "policy too strict for this internal tool"
+    assert f1["original_severity"] == "high"
+    assert f1["override_severity"] == "medium"
+    # The findings.severity column stays the pre-override analyze-time snapshot
+    # (DECISIONS.md#034): the stream carries the override, the row does not.
+    assert findings[str(ids["f1"])]["severity"] == "high"
+    # F2 was never decided -> no projection, not a half-populated object.
+    assert findings[str(ids["f2"])]["hitl_decision"] is None
+
+
+@pytest.mark.asyncio
+async def test_hitl_non_override_outcome_carries_no_severities(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A non-override outcome (approve/reject/suppress) surfaces with both
+    severity fields null — mirrors `PerFindingDecision.enforce_override_fields`.
+    """
+    client, ids, engine = findings_client
+    async with engine.begin() as conn:
+        await _insert_hitl_decision(
+            conn,
+            review_id=ids["review"],
+            decisions=[
+                {
+                    "finding_id": str(ids["f1"]),
+                    "outcome": "reject",
+                    "reason": "false positive — the sink is parameterized",
+                    "original_severity": None,
+                    "override_severity": None,
+                }
+            ],
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    f1 = {f["finding_id"]: f for f in resp.json()["findings"]}[str(ids["f1"])]["hitl_decision"]
+    assert f1 is not None
+    assert f1["outcome"] == "reject"
+    assert f1["reason"] == "false positive — the sink is parameterized"
+    assert f1["original_severity"] is None
+    assert f1["override_severity"] is None
+
+
+@pytest.mark.asyncio
+async def test_hitl_override_survives_content_redaction(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """Override provenance is stream-sourced, so it survives content redaction:
+    a `content_redacted` stub (findings row purged, FindingEvent + HITLDecision
+    survive) still carries its `hitl_decision` (DECISIONS.md#034).
+    """
+    client, ids, engine = findings_client
+    f3 = uuid4()
+    async with engine.begin() as conn:
+        await _insert_finding_event(
+            conn,
+            review_id=ids["review"],
+            finding_id=f3,
+            severity="critical",
+            evidence_tier="judged",
+        )
+        await _insert_hitl_decision(
+            conn,
+            review_id=ids["review"],
+            decisions=[
+                {
+                    "finding_id": str(f3),
+                    "outcome": "severity_override",
+                    "reason": "downgraded after manual review",
+                    "original_severity": "critical",
+                    "override_severity": "low",
+                }
+            ],
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    stub = {f["finding_id"]: f for f in resp.json()["findings"]}[str(f3)]
+    # Content gone, but the override provenance (audit stream) survives.
+    assert stub["content_redacted"] is True
+    assert stub["title"] is None
+    decision = stub["hitl_decision"]
+    assert decision is not None
+    assert decision["outcome"] == "severity_override"
+    assert decision["original_severity"] == "critical"
+    assert decision["override_severity"] == "low"
