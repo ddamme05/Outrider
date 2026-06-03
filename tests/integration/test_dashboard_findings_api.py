@@ -43,6 +43,7 @@ async def _insert_finding(
     evidence_tier: str,
     query_match_id: str | None,
     trace_path: list[str] | None,
+    is_eval: bool = False,
 ) -> None:
     await conn.execute(  # type: ignore[attr-defined]
         text(
@@ -50,11 +51,11 @@ async def _insert_finding(
             "  finding_id, review_id, installation_id, policy_version, finding_type, "
             "  dimension, severity, evidence_tier, file_path, line_start, line_end, "
             "  title, description, evidence, suggested_fix, query_match_id, trace_path, "
-            "  content_hash, retention_expires_at"
+            "  content_hash, is_eval, retention_expires_at"
             ") VALUES ("
             "  :fid, :rid, :iid, :pv, 'sql_injection', 'security', :sev, :tier, "
             "  'app/db.py', 10, 12, :title, 'desc', 'evidence-snippet', 'fix it', "
-            "  :qmid, CAST(:tp AS jsonb), :ch, NOW() + INTERVAL '90 days'"
+            "  :qmid, CAST(:tp AS jsonb), :ch, :ie, NOW() + INTERVAL '90 days'"
             ")"
         ),
         {
@@ -68,6 +69,7 @@ async def _insert_finding(
             "qmid": query_match_id,
             "tp": None if trace_path is None else json.dumps(trace_path),
             "ch": _DUMMY_HASH,
+            "ie": is_eval,
         },
     )
 
@@ -414,6 +416,41 @@ async def test_routed_but_withheld_finding_shows_eligibility(
     assert f1["publish_destination"] == "inline_comment"
     assert f1["eligibility"] == "withheld"
     assert f1["eligibility_reason"] == "hitl_required_node_absent"
+
+
+@pytest.mark.asyncio
+async def test_findings_content_row_excludes_divergent_is_eval(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A divergent `is_eval=True` Finding CONTENT row on a production
+    (is_eval=False) review must NOT appear in the findings list — FUP-130
+    read-side `Finding.is_eval` predicate. This is the highest-sensitivity read
+    (finding title/description/evidence), so the read filters even though
+    `emit_finding` now also enforces the match write-side."""
+    client, ids, engine = findings_client
+    f_eval = uuid4()
+    async with engine.begin() as conn:
+        policy_version = (
+            await conn.execute(text("SELECT version FROM severity_policies LIMIT 1"))
+        ).scalar_one()
+        # The fixture review is is_eval=False; inject an is_eval=True content row.
+        await _insert_finding(
+            conn,
+            review_id=ids["review"],
+            policy_version=policy_version,
+            finding_id=f_eval,
+            severity="high",
+            evidence_tier="observed",
+            query_match_id="q-eval",
+            trace_path=None,
+            is_eval=True,
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    fids = {f["finding_id"] for f in resp.json()["findings"]}
+    # The divergent eval finding is filtered by the review's is_eval=False scope;
+    # only the two production findings remain.
+    assert str(f_eval) not in fids
+    assert fids == {str(ids["f1"]), str(ids["f2"])}
 
 
 @pytest.mark.asyncio
