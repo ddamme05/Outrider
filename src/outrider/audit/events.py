@@ -369,16 +369,25 @@ class LLMCallEvent(AuditEventBase):
     system_prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     degraded_mode: bool
     # `degraded_mode: bool` alone loses provenance on metadata-only
-    # replay (post-retention or partial-content). The two reasons
-    # (`parse_failed` vs `tree_has_error_in_changed_regions`)
-    # imply structurally different prompt content; collapsing them into
+    # replay (post-retention or partial-content). The distinct reasons
+    # (the `_DegradationReason` literals) imply structurally different
+    # prompt content; collapsing them into
     # the bool means audit-stream queries like "how many parse_failed
     # analyze calls did we make this month" become unanswerable. Same
     # bidirectional coupling as `LLMRequest.degradation_reason` enforced
     # by `_enforce_degradation_reason_consistency` below. Modeled as an
     # enum rather than a bool because dropping the reason would corrupt
     # replay reconstruction.
-    degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
+    # `"tree_has_error_no_scope"` added per DECISIONS.md#033, in lockstep with
+    # `LLMRequest.degradation_reason` and `_DegradationReason` (degradation.py).
+    degradation_reason: (
+        Literal[
+            "parse_failed",
+            "tree_has_error_in_changed_regions",
+            "tree_has_error_no_scope",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _enforce_degradation_reason_consistency(self) -> Self:

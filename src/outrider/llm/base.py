@@ -435,7 +435,16 @@ class LLMRequest(BaseModel):
     # lockstep at `outrider.audit.events`; (3) add a parser branch
     # mapping the new ast_facts outcome to this reason; (4) extend
     # `tests/unit/test_llm_request_schema.py`'s truth-table tests.
-    degradation_reason: Literal["parse_failed", "tree_has_error_in_changed_regions"] | None = None
+    # `"tree_has_error_no_scope"` added per DECISIONS.md#033 (no-scope syntax error:
+    # changed addable line intersects a tree error with no recovered scope).
+    degradation_reason: (
+        Literal[
+            "parse_failed",
+            "tree_has_error_in_changed_regions",
+            "tree_has_error_no_scope",
+        ]
+        | None
+    ) = None
 
     @field_serializer("system_prompt")
     def _redact_system_prompt(self, value: str, info: SerializationInfo) -> str:

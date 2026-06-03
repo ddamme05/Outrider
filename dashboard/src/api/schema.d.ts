@@ -983,7 +983,7 @@ export interface components {
             /** Degraded Mode */
             degraded_mode: boolean;
             /** Degradation Reason */
-            degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions") | null;
+            degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope") | null;
         };
         /**
          * PerFindingDecision

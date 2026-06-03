@@ -1072,3 +1072,46 @@ def test_parse_result_failed_rejects_has_error_keys() -> None:
     parses don't have unit-id keys to flag errors for."""
     with pytest.raises(ValidationError, match="empty collections"):
         ParseResult(parser_outcome="failed", has_error={"unit-id-1": True})
+
+
+# ---------------------------------------------------------------------------
+# ParseResult.error_lines — scope-independent tree-error line signal (DECISIONS#033)
+# ---------------------------------------------------------------------------
+
+
+def _error_lines(src: str) -> frozenset[int]:
+    return parse_python(
+        source=src.encode("utf-8"), file_path="t.py", resolver=MagicMock()
+    ).error_lines
+
+
+def test_error_lines_empty_for_clean_source() -> None:
+    assert _error_lines("def f():\n    return 1\n") == frozenset()
+
+
+def test_error_lines_multiline_error_covers_every_line() -> None:
+    # An unclosed bracket spans lines 1-3; the ERROR node covers all of them.
+    # Pins the multi-line line-semantics (1-indexed, inclusive).
+    assert _error_lines("x = [\n  1,\n  2\n") == frozenset({1, 2, 3})
+
+
+def test_error_lines_no_scope_error_is_visible_when_has_error_cannot_see_it() -> None:
+    """The load-bearing property: a syntax error breaking a scope's header yields no
+    scope node — so `has_error` (keyed by scope unit_id) has no entry for it — but
+    the broken line IS in `error_lines`. 1-indexed (the broken header is line 5)."""
+    src = "def healthy_function():\n    return 1\n\n\ndef broken_function(\n    return None\n"
+    result = parse_python(source=src.encode("utf-8"), file_path="t.py", resolver=MagicMock())
+    scope_names = tuple(s.name for s in result.scope_units)
+    assert "healthy_function" in scope_names
+    assert "broken_function" not in scope_names  # no scope recovered for the broken region
+    assert 5 in result.error_lines  # ...but its line IS flagged, 1-indexed
+    # has_error has no entry for the broken region (it never became a scope unit).
+    assert all(name != "broken_function" for name in scope_names)
+
+
+def test_parse_result_failed_rejects_error_lines() -> None:
+    """`error_lines` is a clean-path-only signal — a failed/skipped ParseResult
+    carrying it is the parsed-yet-failed contradiction the validator rules out
+    (sibling of the has_error empty-collections pin)."""
+    with pytest.raises(ValueError, match="empty collections"):
+        ParseResult(parser_outcome="failed", error_lines=frozenset({1, 2}))

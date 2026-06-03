@@ -322,6 +322,24 @@ def added_line_byte_ranges(patched_file: PatchedFile, source: str) -> tuple[tupl
     return tuple(ranges)
 
 
+def added_line_numbers(patched_file: PatchedFile) -> frozenset[int]:
+    """The 1-indexed target (HEAD) line numbers the patch ADDS.
+
+    Line-space sibling of `added_line_byte_ranges`, for callers that intersect added
+    lines against another line set rather than a byte span — e.g. the degraded
+    no-scope decision intersects these with `ParseResult.error_lines` (per
+    DECISIONS.md#033). Reads `unidiff.Line` (`is_added` / `target_line_no`), the
+    boundary owner's job per `coordinates-module-is-sole-translator`. Pure additions
+    only — a pure deletion carries no `target_line_no` (FUP-050 limitation).
+    """
+    return frozenset(
+        line.target_line_no
+        for hunk in patched_file
+        for line in hunk
+        if line.is_added and line.target_line_no is not None
+    )
+
+
 def extract_scope_unit_body(scope_unit: ScopeUnit, source_bytes: bytes) -> str:
     """Decode the UTF-8 bytes of `scope_unit`'s byte range from `source_bytes`.
 
