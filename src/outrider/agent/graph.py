@@ -277,10 +277,15 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
     if not isinstance(provider, LLMProvider):
+        # Compute the actually-missing member(s) rather than naming one — the
+        # Protocol surface is {complete, aclose} (aclose added DECISIONS.md#035),
+        # so a hardcoded "missing complete" misdiagnoses an aclose-only gap.
+        missing = [m for m in ("complete", "aclose") if not hasattr(provider, m)]
         raise BuildGraphError(
             f"provider does not satisfy LLMProvider Protocol "
             f"(passed type: {type(provider).__name__}; "
-            f"missing `complete` member; see PEP 544 runtime-checkable semantics)"
+            f"missing member(s): {', '.join(missing) or '<signature mismatch>'}; "
+            f"see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(phase_event_sink, PhaseEventSink):
         raise BuildGraphError(
