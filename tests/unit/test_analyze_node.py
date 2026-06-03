@@ -871,6 +871,46 @@ async def test_no_patch_clean_parse_skips_as_no_changed_scope_units(
 
 
 @pytest.mark.asyncio
+async def test_parser_skipped_file_skips_before_patch_lookup(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parser-skipped file (VENDORED `vendor/*` path) is skipped BEFORE
+    `lookup_patched_file` runs.
+
+    Regression for the degradation-decision extraction: `lookup_patched_file`
+    RAISES `CoordinateError` on a malformed/duplicate patch (it returns None only
+    for the absent cases), and a skipped file may carry such a patch (the skip is
+    path/size-keyed, independent of patch validity). Calling it for a skipped file
+    would crash the whole pass (no try/except per the module's provider-failure
+    policy). Here `lookup_patched_file` is stubbed to raise unconditionally; the
+    test passes only because the parser-skip return fires first — `analyze` must
+    not raise, and the file skips cleanly with `VENDORED`."""
+    import outrider.agent.nodes.analyze as analyze_mod
+    from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
+
+    def _raise_malformed(*_args: object, **_kwargs: object) -> object:
+        raise CoordinateError("stub: malformed patch", kind=CoordinateErrorKind.MALFORMED_PATCH)
+
+    monkeypatch.setattr(analyze_mod, "lookup_patched_file", _raise_malformed)
+
+    vendored = _build_changed_file(path="vendor/lib.py")
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(vendored,)),
+        triage_result=_build_triage_result(file_tiers={"vendor/lib.py": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)  # must NOT raise
+
+    round_ = result["analysis_rounds"][0]
+    assert round_.files_skipped == ("vendor/lib.py",)
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "skipped"
+    assert fe_events[0].skip_reason == SkipReason.VENDORED
+    assert len(deps["provider"].calls) == 0
+
+
+@pytest.mark.asyncio
 async def test_changed_region_intersection_includes_only_intersecting_unit(
     deps: dict[str, Any],
 ) -> None:
