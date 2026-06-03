@@ -1,61 +1,28 @@
-"""Structural eval scenario: parse-degraded fallback on syntax error inside diff.
+"""Structural eval scenario: degrade-don't-skip on syntax error inside diff.
 
-Per docs/spec.md §11.2 + the `parse-errors-degrade-to-judged` invariant:
-a file with a syntax error INSIDE the changed region should eventually
-trigger a parse-degraded fallback. Findings produced under degraded mode
-get downgraded to JUDGED tier per the invariant.
+Per docs/spec.md §11.2 + the `parse-errors-degrade-to-judged` invariant: a file
+with a syntax error INSIDE the changed region — where the error breaks a scope's
+header so tree-sitter recovers NO scope for it — must DEGRADE to JUDGED-only review,
+not be silently skipped. This is the no-scope case of DECISIONS.md#033.
 
-V1 ast_facts contract (verified empirically):
-- `parser_outcome="clean"` even when source has syntax errors. The
-  "failed" outcome is reserved for UTF-8 decode failures and the
-  defensive `compute_parser_outcome → "failed"` branch (unreachable in
-  V1 practice — see `python_adapter.compute_parser_outcome` policy).
-- `scope_units` contains whatever scopes tree-sitter could extract.
-  An unrecoverable region (broken function header where the parser
-  can't form a `function_definition` node at all) yields NO ScopeUnit
-  for that region — the error is invisible to scope-level reasoning.
-- Per-scope `has_error` flags indicate error nodes WITHIN recovered
-  scopes, but contain no entry for regions that didn't yield a scope.
-
-Coordinates contract: `diff_line_to_scope(diff_line, scope_units)`
-returns None for any line outside the extracted scope set — including
-lines in unparseable code where no scope was extracted at all. The
-None return is INDISTINGUISHABLE from "diff line is at module level"
-in a clean file. Distinguishing the two is the analyze-node's job.
-
-Still skipped post-coordinates because the degraded-marker derivation
-isn't a coordinates concern. The eventual analyze-node logic must
-combine: (1) `diff_line_to_scope == None` AND (2) a separate
-"tree-level error overlaps the diff line" signal — the latter is NOT
-in coordinates and NOT in ast_facts' current public surface, and would
-need a new ast_facts method (e.g., `tree_has_error_at_line`) before
-the degraded derivation can be implemented. This scenario flips when
-both that ast_facts extension AND an LLM-free importable degraded-
-derivation helper land (the analyze node shipped, but its degraded
-logic is inline + LLM-coupled).
+LLM-free, exercising the real surfaces:
+- `parse_python` ships `ParseResult.error_lines` — the 1-indexed tree ERROR/MISSING
+  lines, scope-INDEPENDENT, so the broken header's line IS flagged even though no
+  `ScopeUnit` (and thus no `has_error` entry) was recovered for it.
+- `coordinates.diff_line_to_scope` returns None for the diff line (no scope contains
+  it) — indistinguishable, at the coordinates layer, from a module-level line.
+- `agent/nodes/degradation.decide_degradation` combines them: clean parse, no changed
+  scope unit, but an addable changed line intersects `error_lines` → `mode="degraded"`
+  with `degradation_reason="tree_has_error_no_scope"`. That is the derivation that was
+  inline + LLM-coupled before Phase 2; now pure + importable.
 """
 
 from __future__ import annotations
 
-import pytest
+# Heavy imports (`parse_python` lazy-loads tree_sitter) live in the test body.
 
-# `parse_python` and `diff_line_to_scope` imports moved into the test body
-# below — `outrider.ast_facts.__getattr__` lazy-loads tree_sitter on first
-# attribute access, and a top-level import here triggers that load during
-# pytest collection even though the module is skipped. Keeping heavy
-# imports behind the skipmark preserves the import-light contract for
-# skipped scenarios.
-
-pytestmark = pytest.mark.skip(
-    reason="requires (1) the analyze-node degraded derivation as an LLM-free "
-    "importable helper AND (2) a public ast_facts tree-level error surface (e.g. "
-    "tree_has_error_at_line) for no-scope syntax errors — per-scope has_error "
-    "doesn't cover regions that yield no scope"
-)
-
-# Syntax error is inside the changed region; the diff line itself lies
-# in unparseable code (broken_function's header is missing the closing
-# paren on line 5; tree-sitter can't extract it as a function_definition).
+# Syntax error INSIDE the changed region: `broken_function`'s header is missing the
+# closing paren on line 5, so tree-sitter forms no `function_definition` node there.
 SOURCE = """\
 def healthy_function():
     return 1
@@ -65,29 +32,29 @@ def broken_function(  # diff hunk lives here, line 5 — parser fails on this re
     return None
 """
 
+# Hunks-only patch (GitHub wire shape — coordinates synthesizes the headers) that
+# ADDS line 5 (the broken header). Context lines 3-4 (blank) + 6 ("    return None").
+PATCH = (
+    "@@ -3,3 +3,4 @@\n"
+    " \n"
+    " \n"
+    "+def broken_function(  # diff hunk lives here, line 5 — parser fails on this region\n"
+    "     return None\n"
+)
+
 DIFF_LINE = 5
 
-EXPECTED_DEGRADED_MARKER = True
+EXPECTED_DECISION_MODE = "degraded"
+EXPECTED_DEGRADATION_REASON = "tree_has_error_no_scope"
 
 
 def test_syntax_error_inside_diff_triggers_parse_degraded_fallback() -> None:
-    """V1 ast_facts + coordinates behavior on a partial-parse file with the
-    diff line inside the unparseable region.
-
-    Verifies the actual current contract (live assertions):
-    - parse_python returns parser_outcome="clean" (V1 policy)
-    - scope_units contains the recoverable healthy_function only
-    - diff_line_to_scope returns None for the diff line (which lies in
-      unparseable code, outside every extracted scope)
-
-    Pending (commented): the analyze-node-derived degraded=True marker.
-    Deriving it requires a tree-level error-overlap signal not yet in
-    ast_facts' public surface — see module docstring.
-    """
+    """No-scope syntax error on a changed line → degrade (not skip), JUDGED-only."""
     from unittest.mock import MagicMock
 
+    from outrider.agent.nodes.degradation import decide_degradation
     from outrider.ast_facts import parse_python
-    from outrider.coordinates import diff_line_to_scope
+    from outrider.coordinates import diff_line_to_scope, lookup_patched_file
 
     parse_result = parse_python(
         source=SOURCE.encode("utf-8"),
@@ -95,31 +62,32 @@ def test_syntax_error_inside_diff_triggers_parse_degraded_fallback() -> None:
         resolver=MagicMock(),
     )
 
-    # ast_facts V1 contract: parser_outcome stays "clean" for syntax errors.
-    # "failed" is reserved for UTF-8 decode failures.
+    # ast_facts V1 contract: parser_outcome stays "clean" for syntax errors; the
+    # broken function yields NO scope, so `has_error` (keyed by scope) can't see it.
     assert parse_result.parser_outcome == "clean"
-
-    # Tree-sitter recovers the parseable scope; the broken function header
-    # can't be formed as a function_definition node, so no scope is
-    # extracted for it. Scope-level reasoning loses the broken region.
     scope_names = tuple(s.name for s in parse_result.scope_units)
     assert "healthy_function" in scope_names
     assert "broken_function" not in scope_names
 
-    # coordinates contract: line 5 is outside every extracted scope (the
-    # broken function isn't there to contain it), so diff_line_to_scope
-    # returns None. This is the SAME return as "module-level diff line in
-    # a clean file" — coordinates can't distinguish the two cases, and
-    # shouldn't try to. The distinction is the analyze-node's responsibility.
-    scope = diff_line_to_scope(
-        file_path="test.py",
-        diff_line=DIFF_LINE,
-        scope_units=list(parse_result.scope_units),
-    )
-    assert scope is None
+    # ...but `error_lines` (scope-independent) DOES flag the broken header line.
+    assert DIFF_LINE in parse_result.error_lines
 
-    # Pending analyze-node + ast_facts tree-level error signal: the
-    # degraded=True marker requires combining the None return above with a
-    # "tree-error overlaps diff line" signal that doesn't exist in V1
-    # ast_facts. Lands when both extensions ship.
-    # assert analyze_node_derive_degraded(parse_result, DIFF_LINE) is EXPECTED_DEGRADED_MARKER
+    # coordinates: line 5 is outside every extracted scope → None (the same return as
+    # a module-level line; distinguishing the two is the degradation decision's job).
+    assert (
+        diff_line_to_scope(
+            file_path="test.py", diff_line=DIFF_LINE, scope_units=list(parse_result.scope_units)
+        )
+        is None
+    )
+
+    # The real degradation decision (LLM-free): the changed line adds the broken
+    # header, which intersects `error_lines` with no recovered scope → degrade, with
+    # the no-scope reason — NOT a silent NO_CHANGED_SCOPE_UNITS skip.
+    patched_file = lookup_patched_file(PATCH, "test.py")
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file)
+    assert decision.mode == EXPECTED_DECISION_MODE
+    assert decision.degradation_reason == EXPECTED_DEGRADATION_REASON
+    # No scope recovered → no scope context; the degraded prompt uses bounded hunks.
+    assert decision.included_scope_units == ()
