@@ -123,10 +123,8 @@ async def _seed_review(engine: AsyncEngine, review_id: UUID, *, is_eval: bool = 
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, is_eval, files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "total_input_tokens, total_output_tokens, total_cost_usd, wall_clock_seconds, "
-                "retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', 'completed', :ie, "
-                "1, 0, 1, 100, 50, 0.01, 1.5, NOW() + INTERVAL '180 days')"
+                "status, is_eval, retention_expires_at) VALUES (:id, :iid, 100, 1, 'sha1', "
+                "'completed', :ie, NOW() + INTERVAL '180 days')"
             ),
             {"id": review_id, "iid": _INSTALLATION_ID, "ie": is_eval},
         )

@@ -34,7 +34,6 @@ future timeline-playback surface (`ROADMAP.md` feature 6).
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Final
@@ -234,10 +233,14 @@ class ReconstructedPhase(BaseModel):
 
 
 class ReconstructedReviewMetadata(BaseModel):
-    """The `reviews` content-table row, reconstructed in full/mixed mode.
+    """The `reviews` content-table row, reconstructed under full/mixed replay mode.
 
     `None` on a `ReconstructedReview` when the review row is purged (the
     metadata-only signal — the audit stream survives the review).
+
+    The aggregate-metric columns were dropped from `reviews` per
+    DECISIONS.md#037; this DTO no longer mirrors them (metrics live in the
+    audit stream).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -249,13 +252,6 @@ class ReconstructedReviewMetadata(BaseModel):
     repo_id: int
     pr_number: int
     head_sha: str
-    files_examined: int
-    files_traced_beyond_diff: int
-    llm_calls_made: int
-    total_input_tokens: int
-    total_output_tokens: int
-    total_cost_usd: Decimal
-    wall_clock_seconds: Decimal
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
@@ -1270,13 +1266,6 @@ def _review_metadata(row: Review | None) -> ReconstructedReviewMetadata | None:
         repo_id=row.repo_id,
         pr_number=row.pr_number,
         head_sha=row.head_sha,
-        files_examined=row.files_examined,
-        files_traced_beyond_diff=row.files_traced_beyond_diff,
-        llm_calls_made=row.llm_calls_made,
-        total_input_tokens=row.total_input_tokens,
-        total_output_tokens=row.total_output_tokens,
-        total_cost_usd=row.total_cost_usd,
-        wall_clock_seconds=row.wall_clock_seconds,
         created_at=row.created_at,
         updated_at=row.updated_at,
         completed_at=row.completed_at,

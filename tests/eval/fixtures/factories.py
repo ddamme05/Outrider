@@ -38,7 +38,6 @@ eval-harness spec's Input boundary held item.
 """
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -98,13 +97,6 @@ class ReviewFactory:
             "status": "completed",
             "hitl_request": None,
             "hitl_decision": None,
-            "files_examined": 0,
-            "files_traced_beyond_diff": 0,
-            "llm_calls_made": 0,
-            "total_input_tokens": 0,
-            "total_output_tokens": 0,
-            "total_cost_usd": Decimal("0"),
-            "wall_clock_seconds": Decimal("0"),
             "is_eval": True,
             "retention_expires_at": now + timedelta(days=180),
         }

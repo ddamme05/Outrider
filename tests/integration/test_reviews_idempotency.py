@@ -31,12 +31,10 @@ async def _seed_installation(engine: AsyncEngine, installation_id: int) -> None:
 _INSERT_REVIEW = text(
     "INSERT INTO reviews ("
     "  installation_id, repo_id, pr_number, head_sha, status, "
-    "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-    "  total_input_tokens, total_output_tokens, total_cost_usd, "
-    "  wall_clock_seconds, retention_expires_at"
+    "  retention_expires_at"
     ") VALUES ("
     "  :installation_id, :repo_id, :pr_number, :head_sha, 'running', "
-    "  0, 0, 0, 0, 0, 0, 0, NOW() + INTERVAL '180 days'"
+    "  NOW() + INTERVAL '180 days'"
     ")"
 )
 

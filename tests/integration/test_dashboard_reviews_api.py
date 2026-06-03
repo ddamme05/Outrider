@@ -41,19 +41,19 @@ async def _seed_review(
     llm_events: list[dict[str, Any]],
     synth: dict[str, Any] | None,
 ) -> UUID:
-    """Insert one review + its audit events. The `reviews.*` metric columns
-    are seeded to 999 (garbage) to prove the API never reads them.
+    """Insert one review + its audit events. The `reviews.*` aggregate-metric
+    columns no longer exist (dropped per DECISIONS.md#037); the API computes
+    every metric read-through from the audit stream, so there is nothing on the
+    row to read.
     """
     result = await conn.execute(
         text(
             "INSERT INTO reviews ("
             "  installation_id, repo_id, pr_number, head_sha, status, is_eval, "
-            "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-            "  total_input_tokens, total_output_tokens, total_cost_usd, "
-            "  wall_clock_seconds, retention_expires_at"
+            "  retention_expires_at"
             ") VALUES ("
             "  :iid, :repo, 1, 'sha1', :status, :is_eval, "
-            "  999, 999, 999, 999, 999, 999, 999, NOW() + INTERVAL '90 days'"
+            "  NOW() + INTERVAL '90 days'"
             ") RETURNING id"
         ),
         {"iid": _INSTALLATION_ID, "repo": repo_id, "status": status, "is_eval": is_eval},

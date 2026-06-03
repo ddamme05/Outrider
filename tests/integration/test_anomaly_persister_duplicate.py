@@ -54,11 +54,9 @@ async def anomaly_persister(
                 text(
                     "INSERT INTO reviews ("
                     "  installation_id, repo_id, pr_number, head_sha, status, "
-                    "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-                    "  total_input_tokens, total_output_tokens, total_cost_usd, "
-                    "  wall_clock_seconds, retention_expires_at"
+                    "  retention_expires_at"
                     ") VALUES ("
-                    "  777, 100, 1, 'sha1', 'awaiting_approval', 0, 0, 0, 0, 0, 0, 0, "
+                    "  777, 100, 1, 'sha1', 'awaiting_approval', "
                     "  NOW() + INTERVAL '90 days'"
                     ") RETURNING id"
                 )
@@ -153,11 +151,9 @@ async def test_distinct_review_ids_admit_separate_rows(
                     text(
                         "INSERT INTO reviews ("
                         "  installation_id, repo_id, pr_number, head_sha, status, "
-                        "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-                        "  total_input_tokens, total_output_tokens, total_cost_usd, "
-                        "  wall_clock_seconds, retention_expires_at"
+                        "  retention_expires_at"
                         ") VALUES ("
-                        "  888, 100, :pr, 'sha1', 'awaiting_approval', 0, 0, 0, 0, 0, 0, 0, "
+                        "  888, 100, :pr, 'sha1', 'awaiting_approval', "
                         "  NOW() + INTERVAL '90 days'"
                         ") RETURNING id"
                     ),

@@ -12,9 +12,9 @@ Every route is gated by the existing bearer-auth dependency
 `require_admin_api_key` (reused, not re-implemented — `hmac.compare_digest`).
 
 **Metric contract (the load-bearing part).** Review metrics are computed
-read-through from the audit stream, NOT from the `reviews.*` aggregate
-columns (which are seeded to zero and never rolled up — FUP-127 / FUP-093).
-Per metric:
+read-through from the audit stream. There is no `reviews.*` aggregate-column
+copy — the seeded-zero columns were dropped per DECISIONS.md#037 (FUP-127);
+the audit stream is the source of truth. Per metric:
 
   - `llm_calls_made` / `total_input_tokens` / `total_output_tokens` /
     `total_cost_usd` are summed from `LLMCallEvent` rows

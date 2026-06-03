@@ -275,11 +275,9 @@ async def _seed_install_and_review(
             text(
                 "INSERT INTO reviews ("
                 "  installation_id, repo_id, pr_number, head_sha, status, "
-                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "  total_input_tokens, total_output_tokens, total_cost_usd, "
-                "  wall_clock_seconds, retention_expires_at"
+                "  retention_expires_at"
                 ") VALUES ("
-                "  :id, 100, 1, 'sha1', 'running', 0, 0, 0, 0, 0, 0, 0, "
+                "  :id, 100, 1, 'sha1', 'running', "
                 "  NOW() + INTERVAL '90 days'"
                 ") RETURNING id"
             ),
@@ -540,11 +538,9 @@ async def eval_review_id(persister_setup: PersisterTestSetup) -> UUID:
             text(
                 "INSERT INTO reviews ("
                 "  installation_id, repo_id, pr_number, head_sha, status, "
-                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
-                "  total_input_tokens, total_output_tokens, total_cost_usd, "
-                "  wall_clock_seconds, is_eval, retention_expires_at"
+                "  is_eval, retention_expires_at"
                 ") VALUES ("
-                "  :iid, 100, 2, 'sha-eval', 'running', 0, 0, 0, 0, 0, 0, 0, "
+                "  :iid, 100, 2, 'sha-eval', 'running', "
                 "  true, NOW() + INTERVAL '90 days'"
                 ") RETURNING id"
             ),
