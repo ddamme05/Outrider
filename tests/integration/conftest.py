@@ -523,3 +523,31 @@ async def persister_setup(migrated_db: str) -> AsyncGenerator[PersisterTestSetup
         )
     finally:
         await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def eval_review_id(persister_setup: PersisterTestSetup) -> UUID:
+    """An `is_eval=True` reviews row under `persister_setup`'s installation.
+
+    FUP-130: `persist()` / `emit_finding()` now require `event.is_eval` to match
+    the reviews row's `is_eval`. Tests exercising the eval-tagged happy path emit
+    against THIS review (is_eval=True) instead of the production-default
+    `persister_setup.review_id` (is_eval=False), which would now be a mismatch.
+    Distinct pr_number/head_sha so it never collides with the default review.
+    """
+    async with persister_setup.engine.begin() as conn:
+        result = await conn.execute(
+            text(
+                "INSERT INTO reviews ("
+                "  installation_id, repo_id, pr_number, head_sha, status, "
+                "  files_examined, files_traced_beyond_diff, llm_calls_made, "
+                "  total_input_tokens, total_output_tokens, total_cost_usd, "
+                "  wall_clock_seconds, is_eval, retention_expires_at"
+                ") VALUES ("
+                "  :iid, 100, 2, 'sha-eval', 'running', 0, 0, 0, 0, 0, 0, 0, "
+                "  true, NOW() + INTERVAL '90 days'"
+                ") RETURNING id"
+            ),
+            {"iid": persister_setup.installation_id},
+        )
+        return UUID(str(result.scalar_one()))

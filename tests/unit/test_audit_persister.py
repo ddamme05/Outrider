@@ -24,6 +24,7 @@ from outrider.audit.persister import (
     AuditPersisterHITLRequestIdempotencyLookupError,
     AuditPersisterHITLRequestNaturalKeyConflict,
     AuditPersisterIdempotencyConflict,
+    AuditPersisterIsEvalMismatchError,
     AuditPersisterNaturalKeyConflict,
     AuditPersisterNaturalKeyLookupError,
     AuditPersisterPublishLockAcquisitionTimeoutError,
@@ -562,6 +563,7 @@ def test_metadata_only_exception_types_lists_every_persister_exception() -> None
         AuditPersisterEventRequestFieldMismatchError,
         AuditPersisterEventResponseFieldMismatchError,
         AuditPersisterFindingInstallationIdMismatchError,
+        AuditPersisterIsEvalMismatchError,
         AuditPersisterIdempotencyConflict,
         AuditPersisterNaturalKeyConflict,
         AuditPersisterHITLRequestNaturalKeyConflict,
@@ -1036,6 +1038,12 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
                 # branch above. An int param is a metadata identifier (e.g.
                 # installation_id), never content.
                 kwargs[name] = 42
+            elif ann is bool or ann == "bool":
+                # A bool param is a metadata flag (e.g. is_eval on
+                # AuditPersisterIsEvalMismatchError), never content. Same
+                # string-tolerant shape as the int branch for future-annotations
+                # modules. The docstring already names bool a valid metadata type.
+                kwargs[name] = True
             elif param.default is not inspect.Parameter.empty:
                 continue
             else:

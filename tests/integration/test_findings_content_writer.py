@@ -34,6 +34,7 @@ from outrider.audit.events import compute_finding_content_hash
 from outrider.audit.persister import (
     AuditPersisterFindingInstallationIdMismatchError,
     AuditPersisterIdempotencyConflict,
+    AuditPersisterIsEvalMismatchError,
 )
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
@@ -256,6 +257,25 @@ async def test_installation_id_mismatch_fails_loud(
     assert await _count_finding_events(setup, finding.finding_id) == 0
 
 
+async def test_is_eval_mismatch_fails_loud(
+    persister_setup: PersisterTestSetup,
+) -> None:
+    """emit_finding with is_eval disagreeing with the reviews row's is_eval is
+    refused with AuditPersisterIsEvalMismatchError (FUP-130) — the is_eval twin
+    of the installation_id cross-check above. The seeded review is is_eval=False;
+    emitting is_eval=True against it would leak eval data into the production
+    review's review_id-scoped dashboard findings query. Neither row lands."""
+    setup = persister_setup
+    finding = _make_finding(setup.review_id, setup.installation_id)
+
+    with pytest.raises(AuditPersisterIsEvalMismatchError):
+        await setup.persister.emit_finding(finding, is_eval=True)
+
+    # Neither row landed (the guard fires before any INSERT).
+    assert await _count_findings(setup, finding.finding_id) == 0
+    assert await _count_finding_events(setup, finding.finding_id) == 0
+
+
 # ---------------------------------------------------------------------------
 # is_eval threading to both rows.
 # ---------------------------------------------------------------------------
@@ -263,12 +283,14 @@ async def test_installation_id_mismatch_fails_loud(
 
 async def test_is_eval_threads_to_both_rows(
     persister_setup: PersisterTestSetup,
+    eval_review_id: UUID,
 ) -> None:
     """The is_eval kwarg threads to BOTH the FindingEvent audit row AND the
     findings content row. Eval isolation depends on every row a review touches
-    carrying the same flag (docs/testing.md)."""
+    carrying the same flag (docs/testing.md). Emitted against a matching
+    is_eval=True review — the FUP-130 cross-check requires the match."""
     setup = persister_setup
-    finding = _make_finding(setup.review_id, setup.installation_id)
+    finding = _make_finding(eval_review_id, setup.installation_id)
 
     await setup.persister.emit_finding(finding, is_eval=True)
 
