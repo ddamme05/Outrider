@@ -408,20 +408,23 @@ class AuditPersisterIsEvalMismatchError(ValueError):
     `is_eval` resolved from its `reviews` row.
 
     Eval isolation depends on every row a review touches carrying that review's
-    single `is_eval` value (`docs/testing.md` "Eval isolation"): the dashboard
-    read-API scopes its metric / findings / policy_version queries by
-    `review_id` ALONE, trusting that every event a review emits matches the
-    review's `is_eval`. A divergent event would silently leak eval data into a
-    production review's view (or hide production data) with no runtime backstop.
-    The persister already performs the sibling cross-check for `installation_id`
-    (`AuditPersisterFindingInstallationIdMismatchError`); this is the `is_eval`
-    twin. Fail loud rather than persist the divergence.
-
-    Scope: enforced at the two content-bearing sites that already resolve the
+    single `is_eval` value (`docs/testing.md` "Eval isolation"). Two FUP-130
+    defenses enforce it: (1) this WRITE-SIDE guard fails loud when a producer
+    emits a divergent `is_eval` at the two content-bearing sites that resolve the
     reviews row — `persist()` (`LLMCallEvent`) and `emit_finding()`
-    (`FindingEvent`) — which are exactly the dashboard's `is_eval`-sensitive read
-    surfaces (LLM-aggregate metrics + findings). Non-resolving emit paths
-    (`emit_phase`, etc.) are out of scope (they would each cost an extra SELECT).
+    (`FindingEvent`); and (2) the dashboard READ-API filters every per-review
+    event/content read by `is_eval == reviews.is_eval` (the read-side defense
+    that closes the leak at its manifestation point, mirroring replay's
+    `_verify_is_eval_consistent`). This exception is the write-side half — the
+    `is_eval` twin of the persister's `installation_id` cross-check
+    (`AuditPersisterFindingInstallationIdMismatchError`). Fail loud rather than
+    persist the divergence.
+
+    Scope of THIS write-side guard: only the two sites that already resolve the
+    reviews row (resolving in non-resolving paths like `emit_phase` would cost an
+    extra SELECT per event). The dashboard read-side predicates — not this guard —
+    are what cover the surfaces those non-resolving paths feed (synthesize
+    metrics, publish/HITL lifecycle, policy_version, the events explorer).
 
     Strict-keyword `event_is_eval: bool` + `review_is_eval: bool` + `review_id:
     UUID` constructor; message is metadata-only (two booleans + a UUID).
@@ -1785,11 +1788,10 @@ class AuditPersister:
             if review_row is None:
                 raise AuditPersisterReviewNotFoundError(review_id=event.review_id)
             installation_id, review_is_eval = review_row
-            # FUP-130: the reviews row's is_eval is the source of truth. An event
-            # whose is_eval diverges would leak across the eval/production
-            # isolation the dashboard's review_id-scoped metric queries depend on
-            # (it reads no is_eval predicate, trusting per-event propagation).
-            # Sibling of emit_finding's installation_id cross-check.
+            # FUP-130: the reviews row's is_eval is the source of truth. Fail
+            # loud here (write-side guard) on a divergent event; the dashboard
+            # read-API also filters these llm_call rows by is_eval (read-side
+            # defense). Sibling of emit_finding's installation_id cross-check.
             if event.is_eval != review_is_eval:
                 raise AuditPersisterIsEvalMismatchError(
                     event_is_eval=event.is_eval,
@@ -2324,9 +2326,9 @@ class AuditPersister:
                     review_id=finding.review_id,
                 )
             # FUP-130: the is_eval twin of the installation_id cross-check above.
-            # The reviews row's is_eval is the source of truth; a divergent
-            # event would leak a finding across eval/production isolation in the
-            # dashboard's review_id-scoped findings query.
+            # The reviews row's is_eval is the source of truth; fail loud here
+            # (write-side guard) on a divergent event. The dashboard findings
+            # read also filters by is_eval (read-side defense).
             if event.is_eval != review_is_eval:
                 raise AuditPersisterIsEvalMismatchError(
                     event_is_eval=event.is_eval,
