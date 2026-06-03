@@ -84,8 +84,9 @@ under-estimates. A tokenizer-grade estimate is FUP-049 scope.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -216,6 +217,19 @@ def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
     )
 
 
+def _round_ended_at(started_at: datetime, started_mono: float) -> datetime:
+    """Derive an `AnalysisRound.ended_at` that is always >= `started_at` (FUP-141).
+
+    `ended_at = started_at + (monotonic elapsed since the round started)`, NOT a
+    second wall-clock read. `time.monotonic()` is non-decreasing by contract, so a
+    backwards wall-clock jump (NTP step / VM resume / WSL2 skew) between round start
+    and end can't make `ended_at < started_at` and trip the `AnalysisRound`
+    ordering invariant mid-review. `started_at` itself stays wall-clock for the
+    audit trail. `max(0.0, …)` is belt-and-suspenders against a non-monotonic clock.
+    """
+    return started_at + timedelta(seconds=max(0.0, time.monotonic() - started_mono))
+
+
 async def analyze(
     state: ReviewState,
     *,
@@ -269,6 +283,14 @@ async def analyze(
         attempt_key=f"analyze-pass-{pass_index}",
     )
     started_at = datetime.now(UTC)
+    # Monotonic anchor for the round DURATION (FUP-141): `ended_at` is derived
+    # from this rather than a second wall-clock read, so a backwards clock jump
+    # (NTP step / VM resume / WSL2 skew) between start and end can't make
+    # `ended_at < started_at` and trip the `AnalysisRound` invariant mid-review.
+    # `started_at` stays wall-clock for the audit trail. Precondition: this mark
+    # and the matching end read stay in one process (`monotonic()` is per-process;
+    # a V1.5 parallel-analyze fan-out must re-anchor per worker, not hoist this).
+    started_mono = time.monotonic()
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
 
     # Step 1: start phase event. If this raises (audit infra outage),
@@ -553,7 +575,8 @@ async def analyze(
             elif fetched_file.path not in files_skipped:
                 files_skipped.append(fetched_file.path)
 
-    ended_at = datetime.now(UTC)
+    # ended_at is monotonic-derived so it can't precede started_at (FUP-141).
+    ended_at = _round_ended_at(started_at, started_mono)
 
     # Step 4: build AnalysisRound. `round_id` is content-derived from
     # pass_index + file lists + finding content_hashes per the canonical

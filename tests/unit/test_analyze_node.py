@@ -31,7 +31,7 @@ scaffolding; only the file content + tier map + provider response differ.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
@@ -45,6 +45,7 @@ from outrider.agent.nodes.analyze import (
     PER_FILE_CAP_FRACTION,
     _compute_per_file_cap,
     _estimate_tokens,
+    _round_ended_at,
     analyze,
 )
 from outrider.ast_facts.models import SkipReason
@@ -1213,3 +1214,113 @@ async def test_total_cost_usd_is_decimal_sum_then_float_cast(deps: dict[str, Any
     # Decimal-sum. A float-sum-per-call regression would (occasionally)
     # produce a different float at FP-noise precision.
     assert completed[0].total_cost_usd == expected_total_cost_usd
+
+
+# ---------------------------------------------------------------------------
+# _round_ended_at — FUP-141 monotonic-derived AnalysisRound.ended_at
+# ---------------------------------------------------------------------------
+# The AnalysisRound ordering invariant is `ended_at >= started_at`. The old
+# code took a second wall-clock read (`datetime.now(UTC)`) for ended_at, which
+# a backwards wall-clock jump (NTP step / VM resume / WSL2 skew) between round
+# start and end could violate. The fix derives ended_at from a monotonic delta
+# instead. These tests pin `ended_at >= started_at` across every sign of the
+# monotonic delta — the wall clock is never re-read, so it can't break it.
+
+
+def test_round_ended_at_is_monotonic_derived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forward elapsed: ended_at = started_at + (monotonic delta), to the second.
+
+    The helper reads `time.monotonic()` exactly once; with a fixed start mark
+    the result is the wall-clock start plus the elapsed monotonic seconds — NOT
+    a second `datetime.now()` read."""
+    import outrider.agent.nodes.analyze as analyze_mod
+
+    monkeypatch.setattr(analyze_mod.time, "monotonic", lambda: 1000.5)
+    started_at = datetime(2026, 6, 2, 12, 0, 0, tzinfo=UTC)
+    ended = _round_ended_at(started_at, started_mono=1000.0)
+    assert ended == started_at + timedelta(seconds=0.5)
+    assert ended >= started_at
+
+
+def test_round_ended_at_zero_elapsed_equals_started_at(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero elapsed (start mark == end mark): ended_at == started_at exactly.
+
+    A round that completes within the monotonic clock's resolution lands on the
+    boundary of the invariant — equal is allowed, before is not."""
+    import outrider.agent.nodes.analyze as analyze_mod
+
+    monkeypatch.setattr(analyze_mod.time, "monotonic", lambda: 1000.0)
+    started_at = datetime(2026, 6, 2, 12, 0, 0, tzinfo=UTC)
+    ended = _round_ended_at(started_at, started_mono=1000.0)
+    assert ended == started_at
+
+
+def test_round_ended_at_clamps_backwards_monotonic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FUP-141 regression: even a backwards monotonic delta yields ended_at ==
+    started_at, never before it.
+
+    `time.monotonic()` is non-decreasing by contract, so this is the defensive
+    `max(0.0, …)` floor — but it is exactly the condition the old wall-clock
+    re-read failed under. Pinning it proves the ordering invariant holds for a
+    negative delta, the worst case, without depending on the platform clock."""
+    import outrider.agent.nodes.analyze as analyze_mod
+
+    # End mark BEFORE the start mark — a contractually-impossible monotonic
+    # regression standing in for the backwards wall-clock jump the old code hit.
+    monkeypatch.setattr(analyze_mod.time, "monotonic", lambda: 999.0)
+    started_at = datetime(2026, 6, 2, 12, 0, 0, tzinfo=UTC)
+    ended = _round_ended_at(started_at, started_mono=1000.0)
+    assert ended == started_at
+    assert ended >= started_at
+
+
+class _BackwardsWallClock:
+    """`datetime` stand-in whose FIRST `now()` read is later than every
+    subsequent one — a backwards wall-clock jump (NTP step / VM resume /
+    WSL2 skew) between a node's start read and any later read.
+
+    Post-fix `analyze` reads the wall clock once (`started_at`) and derives
+    `ended_at` from a monotonic delta, so the jump can't trip the
+    `AnalysisRound` ordering invariant. If a refactor reintroduces a second
+    wall read for `ended_at` (the FUP-141 bug), that read returns the earlier
+    instant and the round's validator rejects `ended_at < started_at` —
+    failing this test. Guards the call site the three helper tests can't reach.
+    """
+
+    _later = datetime(2026, 6, 2, 12, 0, 1, tzinfo=UTC)
+    _earlier = datetime(2026, 6, 2, 11, 59, 59, tzinfo=UTC)
+
+    def __init__(self) -> None:
+        self._first = True
+
+    def now(self, tz: object = None) -> datetime:
+        if self._first:
+            self._first = False
+            return self._later
+        return self._earlier
+
+
+@pytest.mark.asyncio
+async def test_analyze_round_ordering_holds_under_backwards_wall_clock(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node-level FUP-141 regression: a backwards wall-clock jump during the
+    round still yields `ended_at >= started_at` on the constructed
+    `AnalysisRound`.
+
+    The three `_round_ended_at` tests pin the helper in isolation; this pins
+    the NODE wiring. Reverting the call site (`analyze.py`) to a second
+    `datetime.now(UTC)` read reintroduces the bug AND fails this test (the
+    second wall read returns the earlier instant → validator raises), where
+    the helper tests would stay green."""
+    import outrider.agent.nodes.analyze as analyze_mod
+
+    monkeypatch.setattr(analyze_mod, "datetime", _BackwardsWallClock())
+    state = _build_review_state()
+    result = await analyze(state, **deps)
+
+    round_ = result["analysis_rounds"][0]
+    # started_at is the single wall read (the later instant); ended_at is
+    # monotonic-derived, so ordering holds despite the backwards jump.
+    assert round_.started_at == _BackwardsWallClock._later
+    assert round_.ended_at >= round_.started_at
