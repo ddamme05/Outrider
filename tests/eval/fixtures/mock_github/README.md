@@ -89,11 +89,17 @@ the contents-API shape.
 ## HITL gating
 
 A CRITICAL/HIGH finding trips the HITL gate: the graph `interrupt()`s and
-`run_review` STOPS there (single-pass; no auto-resume — that's the deferred
-`run_review_with_resume`). On a gated run `EvalRunResult.findings` is still
-populated (synthesize ran first) but `.published_comments == ()` and
-`.hitl_gated is True`. Use a sub-HIGH (MEDIUM/LOW) finding when a scenario needs
-publish to run.
+`run_review` STOPS there (single-pass; no auto-resume). On a gated run
+`EvalRunResult.findings` is still populated (synthesize ran first) but
+`.published_comments == ()` and `.hitl_gated is True`. Use a sub-HIGH (MEDIUM/LOW)
+finding when a scenario needs `run_review` itself to reach publish.
+
+To drive a gated finding THROUGH the gate, use `run_review_with_resume(path,
+db_url=...)` (the resume driver): it interrupts on a real `AsyncPostgresSaver`,
+restarts on a fresh saver + graph (same DB, same `thread_id`), resumes with an
+explicit approve-all `Command(resume=...)`, and publishes — returning a
+`ResumedRunResult`. See `hitl_resume_critical.json` (a CRITICAL SQL-injection PR)
+for a worked example.
 
 ## Trace scenarios (beyond-diff import resolution)
 
