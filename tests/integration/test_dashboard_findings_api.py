@@ -73,17 +73,18 @@ async def _insert_finding(
 
 
 async def _insert_publish_routing(
-    conn: object, *, review_id: UUID, finding_id: UUID, destination: str
+    conn: object, *, review_id: UUID, finding_id: UUID, destination: str, is_eval: bool = False
 ) -> None:
     await conn.execute(  # type: ignore[attr-defined]
         text(
             "INSERT INTO audit_events "
             "(event_id, review_id, event_type, timestamp, is_eval, payload) "
-            "VALUES (:eid, :rid, 'publish_routing', NOW(), false, CAST(:payload AS jsonb))"
+            "VALUES (:eid, :rid, 'publish_routing', NOW(), :is_eval, CAST(:payload AS jsonb))"
         ),
         {
             "eid": uuid4(),
             "rid": review_id,
+            "is_eval": is_eval,
             "payload": json.dumps({"finding_id": str(finding_id), "destination": destination}),
         },
     )
@@ -413,6 +414,31 @@ async def test_routed_but_withheld_finding_shows_eligibility(
     assert f1["publish_destination"] == "inline_comment"
     assert f1["eligibility"] == "withheld"
     assert f1["eligibility_reason"] == "hitl_required_node_absent"
+
+
+@pytest.mark.asyncio
+async def test_publish_lifecycle_excludes_divergent_is_eval_event(
+    findings_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A divergent `is_eval=True` publish_routing event on a production
+    (is_eval=False) review must NOT decorate the finding — FUP-130 read-side
+    `is_eval` predicate. Without it, the unguarded publish-emit path would leak
+    eval lifecycle state onto a production review's findings view."""
+    client, ids, engine = findings_client
+    # F2 is unrouted in the fixture. Inject an is_eval=True routing for it.
+    async with engine.begin() as conn:
+        await _insert_publish_routing(
+            conn,
+            review_id=ids["review"],
+            finding_id=ids["f2"],
+            destination="inline_comment",
+            is_eval=True,
+        )
+    resp = client.get(f"/api/reviews/{ids['review']}/findings", headers=_AUTH)
+    f2 = {f["finding_id"]: f for f in resp.json()["findings"]}[str(ids["f2"])]
+    # The eval event is filtered out by the review's is_eval=False scope — F2
+    # stays unrouted, not decorated with the divergent eval routing.
+    assert f2["publish_destination"] is None
 
 
 @pytest.mark.asyncio
