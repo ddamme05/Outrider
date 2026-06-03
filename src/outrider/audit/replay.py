@@ -1086,6 +1086,11 @@ class AuditReplayer:
             if isinstance(event, FindingEvent)
         )
         # Orphans: stored findings the append-only audit stream never recorded.
+        # There is deliberately NO `llm_call_content` equivalent (DECISIONS.md#036):
+        # `findings` has no FK to its FindingEvent, so a row can outlive a deleted
+        # event → reachable orphan. `llm_call_content.event_id` IS an FK to
+        # `audit_events.event_id`, so the missing-parent orphan is schema-prevented
+        # (the residual tamper cases are #036's scope, not per-review replay).
         event_finding_ids = {e.finding_id for e in events if isinstance(e, FindingEvent)}
         orphan_finding_ids = tuple(
             fid for fid in sorted(finding_rows, key=str) if fid not in event_finding_ids
