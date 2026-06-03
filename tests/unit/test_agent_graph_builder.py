@@ -63,10 +63,13 @@ if TYPE_CHECKING:
 
 
 class _StubProvider:
-    """Satisfies LLMProvider Protocol structurally (has `complete`)."""
+    """Satisfies LLMProvider Protocol structurally (`complete` + `aclose`)."""
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         raise NotImplementedError("test stub")
+
+    async def aclose(self) -> None:
+        return None
 
 
 class _StubPhaseSink:

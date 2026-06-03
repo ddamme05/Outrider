@@ -83,6 +83,9 @@ class _MockLLMProvider:
         self._ranked_candidate_ids = ranked_candidate_ids
         self.calls: list[LLMRequest] = []
 
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls.append(request)
         if request.node_id != "trace":

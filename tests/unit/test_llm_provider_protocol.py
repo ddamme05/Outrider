@@ -48,7 +48,10 @@ def test_llm_provider_declares_exact_method_set() -> None:
     provider implementation + test fixture. Exact-membership check
     fails loudly on silent drift.
     """
-    expected = {"complete"}
+    # `aclose` formalized on the Protocol per DECISIONS.md#035 (the lifespan
+    # has always called provider.aclose(); the Protocol now declares it so the
+    # TracingLLMProvider decorator is a clean drop-in).
+    expected = {"complete", "aclose"}
     actual = {name for name in dir(LLMProvider) if not name.startswith("_")}
     assert actual == expected, (
         f"LLMProvider method set drift: missing={expected - actual}, "

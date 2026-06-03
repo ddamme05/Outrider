@@ -257,41 +257,11 @@ class AnthropicProvider:
             ),
         )
 
-        # Opt-in LangSmith I/O tracing for `messages.create(...)` calls.
-        # Gated on the same `LANGSMITH_TRACING=true` env var LangGraph
-        # itself reads, so node-level traces (LangGraph) and LLM-call
-        # traces (this wrap) activate together. The wrap is a
-        # transparent monkey-patch on the SDK client: same instance,
-        # same methods, same return types — `wrap_anthropic` pushes
-        # request/response payloads to LangSmith as a side effect.
-        # Lazy import keeps the no-trace path free of `import langsmith`
-        # (cold-start latency + the langsmith dep is technically optional
-        # at runtime when tracing is off). The import lives inside the
-        # `llm/` wrapper folder, honoring `vendor-sdks-only-in-wrappers`.
-        # `.strip()` before `.lower()` so a `.env` parser quirk that leaves
-        # surrounding whitespace (e.g., `LANGSMITH_TRACING=" true "`) doesn't
-        # silently disable tracing. Same loose-truthy shape LangSmith's own
-        # SDK uses internally for the env var. Both `LANGSMITH_TRACING=true`
-        # AND a non-empty `LANGSMITH_API_KEY` are required: without the key
-        # the LangSmith client accepts traces and silently drops them in the
-        # background, wasting per-call CPU on tracing logic that never
-        # surfaces in the UI; explicit pre-flight gate surfaces the
-        # misconfiguration as a WARN instead.
-        tracing_on = os.environ.get("LANGSMITH_TRACING", "").strip().lower() == "true"
-        api_key_set = bool(os.environ.get("LANGSMITH_API_KEY", "").strip())
-        if tracing_on and api_key_set:
-            from langsmith.wrappers import wrap_anthropic
-
-            self._client = wrap_anthropic(self._client)
-            _LOGGER.info("anthropic_provider: LangSmith tracing enabled via wrap_anthropic")
-        elif tracing_on and not api_key_set:
-            _LOGGER.warning(
-                "anthropic_provider: LANGSMITH_TRACING=true but LANGSMITH_API_KEY "
-                "is unset/empty; wrap_anthropic NOT activated and traces would "
-                "silently drop in the LangSmith client's background thread. Set "
-                "LANGSMITH_API_KEY to enable tracing, or unset LANGSMITH_TRACING "
-                "to silence this warning."
-            )
+        # NB: LLM-call tracing is NOT applied here. This provider is
+        # tracing-agnostic per DECISIONS.md#035 — the composition root applies
+        # `llm.tracing.wrap_provider_if_tracing(...)`, which wraps this provider
+        # in a `TracingLLMProvider` when tracing is enabled. No env read, no
+        # observability-SDK import in core transport.
 
         # Privacy startup notice — canonical text per DECISIONS#015
         # point 4. Operator-attestation only; never a per-request header.

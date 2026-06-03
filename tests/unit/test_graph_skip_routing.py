@@ -56,6 +56,9 @@ if TYPE_CHECKING:
 
 
 class _StubProvider:
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:  # noqa: ARG002
         msg = "introspection test never invokes provider"
         raise NotImplementedError(msg)

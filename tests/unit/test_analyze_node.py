@@ -161,6 +161,9 @@ class _StubLLMProvider:
         self.response_text = response_text
         self.calls: list[LLMRequest] = []
 
+    async def aclose(self) -> None:
+        return None
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls.append(request)
         return LLMResponse(
@@ -1111,6 +1114,9 @@ class _ConfigurableTokensStubProvider:
         self._tokens_per_call = tokens_per_call
         self._token_specs = list(token_specs) if token_specs is not None else None
         self.calls: list[LLMRequest] = []
+
+    async def aclose(self) -> None:
+        return None
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls.append(request)
