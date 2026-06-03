@@ -1036,6 +1036,10 @@ class HITLRequestEvent(AuditEventBase):
 class HITLDecisionEvent(AuditEventBase):
     """Records the reviewer's HITL submission.
 
+    Canonical stream record of HITL override provenance (`decisions[*]` by
+    `finding_id` + `reviewer_id`); the `findings`-table override columns are
+    read-model projections of it. See DECISIONS.md#034.
+
     Field name `decisions` (not `per_finding_decisions`) matches the
     cross-boundary `HITLDecision.decisions` type per `DECISIONS.md#014`
     Amended 2026-04-29.
