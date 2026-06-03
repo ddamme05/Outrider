@@ -44,22 +44,25 @@ class TracingLLMProvider:
 
     Constructed ONLY when the composition root has decided tracing is on
     (`wrap_provider_if_tracing`), so `langsmith` is imported here — lazily, to
-    keep the no-trace path free of the optional dep. `aclose()` forwards to the
-    wrapped provider (the decorator owns no transport resources of its own).
+    keep the no-trace path import-free (a cold-start optimization, NOT optionality:
+    langsmith is a hard dependency). `aclose()` forwards to the wrapped provider
+    (the decorator owns no transport resources of its own).
     """
 
     def __init__(self, inner: LLMProvider) -> None:
         self._inner = inner
         # Lazy import: only the trace-on path (this constructor) pulls langsmith,
-        # keeping cold-start + the no-trace path free of the optional dependency.
+        # keeping cold-start + the no-trace path import-free (langsmith is a hard
+        # dep; this is a latency optimization, not graceful-degradation).
         # `import langsmith` confined to llm/ per vendor-sdks-only-in-wrappers.
         from langsmith import traceable
 
         # Wrap once at construction (not per call). `traceable` detects the
         # async callable and returns an async wrapper that records the bound
         # `complete`'s input (the LLMRequest) and output (the LLMResponse) as a
-        # LangSmith run.
-        self._traced_complete = traceable(run_type="llm", name="LLMProvider.complete")(
+        # LangSmith run. Name the run by the concrete provider class so mixed
+        # Anthropic/OpenAI (V1.5) traffic is distinguishable in the UI.
+        self._traced_complete = traceable(run_type="llm", name=f"{type(inner).__name__}.complete")(
             inner.complete
         )
 

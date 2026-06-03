@@ -345,6 +345,12 @@ class _FixtureScriptedProvider:
             latency_ms=1,
         )
 
+    async def aclose(self) -> None:
+        # Owns no transport resources (no SDK client); satisfies the
+        # `LLMProvider.aclose` member formalized in DECISIONS.md#035 so this
+        # double passes build_graph's runtime isinstance(provider, LLMProvider).
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Adapter 2 — fake GitHub read client (intake's two-phase fetch; no `githubkit`)

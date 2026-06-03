@@ -299,6 +299,23 @@ def test_build_graph_rejects_provider_none() -> None:
         build_graph(**args)
 
 
+def test_build_graph_rejects_provider_missing_aclose() -> None:
+    """A provider with `complete` but no `aclose` fails the runtime-checkable
+    Protocol gate (aclose formalized per DECISIONS.md#035) and the error names
+    the ACTUAL missing member (`aclose`), not a hardcoded `complete`. This pins
+    the gap that let a `complete`-only eval-driver double regress past the gate.
+    """
+
+    class _NoAcloseProvider:
+        async def complete(self, request: LLMRequest) -> LLMResponse:
+            raise NotImplementedError("test stub")
+
+    args = _valid_args()
+    args["provider"] = _NoAcloseProvider()
+    with pytest.raises(BuildGraphError, match=r"missing member\(s\): aclose"):
+        build_graph(**args)
+
+
 def test_build_graph_rejects_model_config_none() -> None:
     args = _valid_args()
     args["model_config"] = None

@@ -125,11 +125,13 @@ async def test_decorator_delegates_complete_and_aclose() -> None:
     assert stub.aclose_calls == 1
 
 
-def test_decorator_applies_traceable_with_llm_run_type() -> None:
+def test_decorator_applies_traceable_with_llm_run_type_and_provider_name() -> None:
     """The decorator wraps the inner `complete` with `langsmith.traceable`
-    once, as an `llm` run."""
+    once, as an `llm` run named by the concrete provider class (so mixed
+    Anthropic/OpenAI traffic is distinguishable in the LangSmith UI)."""
     stub = _StubProvider()
     with patch("langsmith.traceable", return_value=(lambda fn: fn)) as mock_traceable:
         TracingLLMProvider(stub)
     mock_traceable.assert_called_once()
     assert mock_traceable.call_args.kwargs.get("run_type") == "llm"
+    assert mock_traceable.call_args.kwargs.get("name") == "_StubProvider.complete"
