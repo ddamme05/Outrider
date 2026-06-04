@@ -45,8 +45,9 @@ Order of operations (failure-path-significant):
      anomaly, then raise SynthesizeAggregationError.
   4. Dedup by content_hash (validator on ReviewReport.findings also
      enforces uniqueness as defense-in-depth).
-  5. Compute deterministic metrics (files_examined, files_traced
-     beyond_diff, wall_clock_seconds — others are V1 placeholders).
+  5. Compute metrics: files_examined / files_traced_beyond_diff /
+     wall_clock_seconds deterministically; LLM aggregates from the
+     audit-stream SUM (FUP-093, queried pre- and post-call).
   6. Build LLMRequest for the Sonnet summary call.
   7. Call provider.complete() (raises LLMProviderError subclasses
      on transport failure).
@@ -85,6 +86,7 @@ from outrider.schemas.review_report import ReviewMetrics, ReviewReport
 
 if TYPE_CHECKING:
     from outrider.anomaly import AnomalySink
+    from outrider.audit.aggregates import ReviewLLMAggregates
     from outrider.audit.sinks import PhaseEventSink, SynthesizeEventSink
     from outrider.llm.base import LLMProvider
     from outrider.policy.severity import FindingSeverity
@@ -441,20 +443,19 @@ def _compute_metrics(
     *,
     state: ReviewState,
     wall_clock_seconds: float,
+    llm_aggregates: ReviewLLMAggregates,
 ) -> ReviewMetrics:
-    """Build ReviewMetrics from state + wall-clock measurement.
+    """Build ReviewMetrics from state + wall-clock + the audit-stream LLM aggregates.
 
-    V1: LLM-aggregate metrics (llm_calls_made, total_*_tokens,
-    total_cost_usd) ship as `None` — honest "unknown" semantics rather
-    than false zeros. The deterministic derivation requires querying
-    `audit_events` for this review_id and summing `LLMCallEvent` rows;
-    that audit-query helper is a FUP. Dashboard reads audit truth
-    (joining LLMCallEvent by review_id), not these denormalized fields,
-    so V1 ships nullable; downstream consumers that need the aggregate
-    today must query audit directly.
+    The LLM-aggregate fields (llm_calls_made, total_*_tokens, total_cost_usd) are
+    populated from `llm_aggregates` — the SUM over this review's `LLMCallEvent`
+    rows, queried by the synthesize node via the single-source helper (FUP-093).
+    The fields stay `int | None` / `float | None` on the schema for append-only
+    read-compat with pre-FUP-093 rows that serialize `null` (`DECISIONS.md#030`,
+    amended), but every NEW row this node emits carries the real aggregate.
 
-    files_examined, files_traced_beyond_diff, and wall_clock_seconds
-    are computed deterministically and ship as real values.
+    files_examined, files_traced_beyond_diff, and wall_clock_seconds are computed
+    deterministically from state + the node-side monotonic delta.
     """
     files_examined: set[str] = set()
     for analysis_round in state.analysis_rounds:
@@ -463,12 +464,10 @@ def _compute_metrics(
     return ReviewMetrics(
         files_examined=len(files_examined),
         files_traced_beyond_diff=_compute_files_traced_beyond_diff(state),
-        # V1 placeholders — None semantics, not zero. FUP for
-        # audit-query-derived aggregates. See ReviewMetrics docstring.
-        llm_calls_made=None,
-        total_input_tokens=None,
-        total_output_tokens=None,
-        total_cost_usd=None,
+        llm_calls_made=llm_aggregates.llm_calls_made,
+        total_input_tokens=llm_aggregates.total_input_tokens,
+        total_output_tokens=llm_aggregates.total_output_tokens,
+        total_cost_usd=llm_aggregates.total_cost_usd,
         wall_clock_seconds=wall_clock_seconds,
     )
 
@@ -557,15 +556,18 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         )
     overall_risk = state.triage_result.overall_risk
 
-    # Pre-compute the user prompt with PLACEHOLDER metrics — the
-    # final wall_clock_seconds is set after the LLM call, but the
-    # prompt's metrics_summary is content the model sees BEFORE its
-    # own call lands. Using a pre-call snapshot is correct for the
-    # prompt (the model summarizes the review state at synthesize
-    # entry, not the synthesize call's own cost contribution).
+    # Pre-compute the user prompt metrics. The prompt's metrics_summary is content
+    # the model sees BEFORE its own call lands, so the pre-call aggregate snapshot is
+    # correct for the prompt: it reflects analyze/trace/triage cost at synthesize
+    # entry, NOT the synthesize summary call's own cost (that lands in final_metrics
+    # below, post-call). wall_clock is likewise a pre-call snapshot here.
+    pre_call_aggregates = await synthesize_event_sink.query_review_llm_aggregates(
+        review_id=state.review_id, is_eval=state.is_eval
+    )
     pre_call_metrics = _compute_metrics(
         state=state,
         wall_clock_seconds=time.monotonic() - t0,
+        llm_aggregates=pre_call_aggregates,
     )
     parts = synthesize_prompt.render(
         overall_risk=overall_risk,
@@ -606,9 +608,18 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # Step 10: construct the final ReviewReport. Schema validators
     # run: Field(max_length=2000) on summary, _canonicalize_findings
     # on the findings tuple, ge=0/le bounds on metrics.
+    #
+    # Post-call aggregate query: provider.complete() (step 7) already emitted
+    # synthesize's own LLMCallEvent before returning (per the LLMProvider contract),
+    # so this aggregate INCLUDES the summary call — the canonical "total cost of this
+    # review" the audit row records (the pre-call snapshot above excludes it).
+    final_aggregates = await synthesize_event_sink.query_review_llm_aggregates(
+        review_id=state.review_id, is_eval=state.is_eval
+    )
     final_metrics = _compute_metrics(
         state=state,
         wall_clock_seconds=time.monotonic() - t0,
+        llm_aggregates=final_aggregates,
     )
     review_report = ReviewReport(
         summary=summary_text,

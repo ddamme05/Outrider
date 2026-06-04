@@ -1,16 +1,17 @@
+# See DECISIONS.md#030 — this helper populates the (nullable-for-read-compat)
+# ReviewMetrics / SynthesizeCompletedEvent LLM aggregates that #030 governs.
 """Shared read-through aggregation of a review's LLM-call metrics.
 
-The single place that "sums this review's `LLMCallEvent` rows." Today the read side
-(dashboard `_aggregate_metrics`) is its only consumer. FUP-093's write side — the
-synthesize node populating its `SynthesizeCompletedEvent` aggregates via a forthcoming
-`AuditPersister.query_review_llm_aggregates` — will consume this SAME helper, at which
-point the audit row and the dashboard badge are computed by one aggregation path and
-cannot diverge. Keeping the SUM in one place is the FUP-093 "single-source it"
-requirement; landing the read side here first makes the write side a drop-in.
+The single place that "sums this review's `LLMCallEvent` rows", consumed by BOTH the
+read side (dashboard `_aggregate_metrics`) AND the write side (the synthesize node, via
+`AuditPersister.query_review_llm_aggregates`, populating its `SynthesizeCompletedEvent`
+aggregates — FUP-093). Because both go through this one function, the persisted audit
+row and the dashboard badge are computed by one aggregation path and cannot diverge —
+the FUP-093 "single-source it" requirement.
 
 The function is session-taking (not session-opening) so each caller supplies its own
-session model: the (forthcoming) persister method opens a per-call session and
-delegates here; the dashboard passes its request-scoped session.
+session model: the persister method opens a per-call session and delegates here; the
+dashboard passes its request-scoped session.
 
 **V1 aggregation is a naive `COUNT`/`SUM` — correct only while the dispatcher is
 non-durable.** Exactly one `llm_call` row lands per logical call under

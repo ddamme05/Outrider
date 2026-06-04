@@ -21,7 +21,9 @@ the audit stream is the source of truth. Per metric:
     (`event_type='llm_call'`) on `review_id`. These are the only metrics
     summed from raw rows, and the only ones available for a review that has
     not yet reached synthesize. `SynthesizeCompletedEvent`'s LLM-aggregate
-    fields are `None` in V1 (FUP-093) — never read them.
+    fields are populated from this same SUM going forward (FUP-093) but are
+    `None` for historical rows — so the dashboard sums `LLMCallEvent` directly
+    (the single source) rather than reading them.
   - `files_examined` / `files_traced_beyond_diff` / `wall_clock_seconds`
     are read from the per-review `SynthesizeCompletedEvent`
     (`event_type='synthesize_completed'`) payload — the persisted
@@ -325,10 +327,10 @@ async def _aggregate_metrics(
     read-time `_verify_is_eval_consistent`. Caller passes `reviews.is_eval`.
     """
     # LLM aggregates — read-through SUM over llm_call rows, single-sourced through
-    # `aggregate_review_llm_metrics`; today this is its only consumer. When FUP-093
-    # wires the synthesize node to the SAME helper, the badge and the persisted audit
-    # row share one aggregation path (no divergence). Scoped by is_eval (FUP-130).
-    # The V1-naive-SUM / V2-dedup contract lives in that helper.
+    # `aggregate_review_llm_metrics`: the synthesize node populates the audit row from
+    # this SAME helper (FUP-093), so the badge and the persisted audit row share one
+    # aggregation path (no divergence). Scoped by is_eval (FUP-130). The V1-naive-SUM /
+    # V2-dedup contract lives in that helper.
     agg = await aggregate_review_llm_metrics(session, review_id=review_id, is_eval=review_is_eval)
 
     # File / wall-clock — read from the persisted SynthesizeCompletedEvent

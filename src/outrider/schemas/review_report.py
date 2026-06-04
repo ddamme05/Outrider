@@ -122,8 +122,10 @@ class ReviewMetrics(BaseModel):
     # for the canonical-record amendment establishing:
     #   (a) `ReviewReport.findings: tuple[...]` as the permanent shape
     #       (vs spec.md §7.3's `list[...]` — unmaintained drift), AND
-    #   (b) `ReviewMetrics` LLM-aggregate fields as V1-transition
-    #       `int | None` / `float | None` per the audit-truth contract.
+    #   (b) `ReviewMetrics` LLM-aggregate fields as `int | None` /
+    #       `float | None` — populated from the audit stream (FUP-093) but
+    #       kept nullable for append-only historical-row read-compat
+    #       (#030 amended 2026-06-03; the planned type-revert was superseded).
     # The `files_traced_beyond_diff` union recipe Pass-1-folded under
     # #030 is documented at `_compute_files_traced_beyond_diff` and
     # pinned by `tests/unit/test_synthesize_files_traced_metric.py`.
@@ -137,17 +139,16 @@ class ReviewMetrics(BaseModel):
     # and the "beyond diff = outside changed-files set, NOT
     # Phase-2-fetched specifically" semantic.
     files_traced_beyond_diff: int = Field(ge=0)
-    # LLM-aggregate metrics. V1 placeholder semantics:
-    # `None` indicates "audit-query helper not yet wired" rather than
-    # "zero." The audit truth for these aggregates lives in
-    # `audit_events`: sum `LLMCallEvent.input_tokens` /
-    # `LLMCallEvent.output_tokens` / `LLMCallEvent.cost_usd` joined on
-    # `review_id`. The dashboard reads audit truth; ReviewMetrics
-    # is a denormalized convenience snapshot. FUP: wire the audit-query
-    # helper + populate these from the helper at synthesize-emit time.
-    # Optional+None makes the "unknown vs. zero" distinction explicit
-    # on the audit row — a placeholder-zero would land as durable
-    # false metadata.
+    # LLM-aggregate metrics. Populated at synthesize-emit time from the
+    # audit-stream SUM over this review's `LLMCallEvent` rows
+    # (`audit/aggregates.py::aggregate_review_llm_metrics` — the same
+    # single-source helper the dashboard read-API uses, FUP-093). Kept
+    # `int | None` / `float | None` NOT because they're unpopulated, but for
+    # append-only read-compat: pre-FUP-093 rows serialize `null` here and
+    # replay re-validates historical payloads through the strict adapter, so a
+    # required type would reject them (#030, amended). A `None` now means
+    # "historical row, predates population," never the false-zero #030
+    # rejected. New rows always carry the real aggregate.
     llm_calls_made: int | None = Field(default=None, ge=0)
     total_input_tokens: int | None = Field(default=None, ge=0)
     total_output_tokens: int | None = Field(default=None, ge=0)
@@ -155,7 +156,7 @@ class ReviewMetrics(BaseModel):
     # JSONB (some JSONB configs reject non-standard JSON `Infinity`).
     # le=100.0 is "this would already be a runaway"; real V1 reviews land
     # well under $1. Cap is policy-driven, not architectural — bump if
-    # average cost rises. Optional+None per the same V1-placeholder
+    # average cost rises. Optional+None per the same read-compat
     # rationale as the token fields above.
     total_cost_usd: float | None = Field(default=None, ge=0, le=100.0)
     # Wall-clock IS deterministically computable from node-side

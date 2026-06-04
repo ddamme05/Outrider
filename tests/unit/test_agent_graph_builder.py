@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from outrider.agent.graph import BuildGraphError, build_graph
+from outrider.audit.aggregates import ReviewLLMAggregates
 from outrider.llm.config import ModelConfig
 
 if TYPE_CHECKING:
@@ -160,6 +161,13 @@ class _StubSynthesizeEventSink:
 
     async def emit_synthesize_completed(self, event: Any) -> None:
         return None
+
+    async def query_review_llm_aggregates(  # noqa: ARG002
+        self, *, review_id: Any, is_eval: bool
+    ) -> ReviewLLMAggregates:
+        return ReviewLLMAggregates(
+            llm_calls_made=0, total_input_tokens=0, total_output_tokens=0, total_cost_usd=0.0
+        )
 
 
 class _StubAnomalySink:

@@ -7,7 +7,7 @@
 Pins:
 - **F1 regression** (prompt None-safety): `prompts/synthesize.py::render`
   must not crash when `ReviewMetrics` LLM-aggregate fields are `None`
-  (the V1 placeholder shape). The original implementation used
+  (the nullable-for-historical-compat shape, #030). The original implementation used
   `{value:.4f}` format specs which raise `TypeError` against
   `NoneType`; the fix renders "unknown" for None.
 
@@ -52,9 +52,9 @@ from outrider.schemas.triage_result import RiskLevel
 
 
 def test_render_does_not_crash_on_none_llm_aggregates() -> None:
-    """`ReviewMetrics` LLM-aggregate fields ship as `None` in V1 (audit-
-    query helper not yet wired). `render` must not raise TypeError on
-    `:.4f` format vs NoneType.
+    """`ReviewMetrics` LLM-aggregate fields can be `None` (historical rows /
+    nullable per #030). `render` must not raise TypeError on `:.4f` format vs
+    NoneType.
 
     Reproduces the sharp-edges F1 audit finding: original implementation
     used `f"${metrics.total_cost_usd:.4f}"` which crashes when
@@ -65,12 +65,12 @@ def test_render_does_not_crash_on_none_llm_aggregates() -> None:
         files_examined=3,
         files_traced_beyond_diff=1,
         wall_clock_seconds=12.5,
-        # LLM aggregates default to None (V1 placeholder semantics).
+        # LLM aggregates left None here (nullable per #030 — render must handle it).
     )
     # MUST NOT raise.
     parts = render(overall_risk=RiskLevel.MEDIUM, findings=(), metrics=metrics)
     # Verify the None values render as "unknown" rather than "None"
-    # (more reader-friendly + signals the V1 placeholder semantics).
+    # (more reader-friendly + None signals "unknown" for historical rows).
     assert "unknown" in parts.user_prompt
     # Per Pass-1 multi-lens audit test-quality lens: the prior slice
     # `split("Metrics:")[1].split("Wall clock:")[0]` was anchored on

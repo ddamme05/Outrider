@@ -32,6 +32,7 @@ import pytest
 from langgraph.graph import START
 
 from outrider.agent.graph import build_graph
+from outrider.audit.aggregates import ReviewLLMAggregates
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -134,6 +135,13 @@ class _StubHITLEventSink:
 class _StubSynthesizeEventSink:
     async def emit_synthesize_completed(self, event: Any) -> None:  # noqa: ARG002
         return None
+
+    async def query_review_llm_aggregates(  # noqa: ARG002
+        self, *, review_id: Any, is_eval: bool
+    ) -> ReviewLLMAggregates:
+        return ReviewLLMAggregates(
+            llm_calls_made=0, total_input_tokens=0, total_output_tokens=0, total_cost_usd=0.0
+        )
 
 
 class _StubAnomalySink:

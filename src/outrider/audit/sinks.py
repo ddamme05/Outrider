@@ -47,6 +47,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
+from outrider.audit.aggregates import ReviewLLMAggregates
 from outrider.audit.events import (
     AnalyzeCompletedEvent,
     AnalyzeResponseRejectedEvent,
@@ -571,6 +572,20 @@ class SynthesizeEventSink(Protocol):
 
     async def emit_synthesize_completed(self, event: SynthesizeCompletedEvent) -> None:
         """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
+        ...
+
+    async def query_review_llm_aggregates(
+        self, *, review_id: UUID, is_eval: bool
+    ) -> ReviewLLMAggregates:
+        """Sum the review's `LLMCallEvent` rows (count + tokens + cost).
+
+        Synthesize calls this at metric-build time to populate the `ReviewMetrics`
+        LLM aggregates from the audit stream (FUP-093) — the same single-source SUM
+        the dashboard read-API uses, so the persisted audit row and the dashboard
+        badge cannot diverge. Read-only; the durable `AuditPersister` implements it
+        alongside `emit_synthesize_completed` (mirrors `PublishEventSink`'s
+        emit + `query_prior_publish_event` shape).
+        """
         ...
 
 

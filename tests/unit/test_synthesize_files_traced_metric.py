@@ -65,9 +65,10 @@ def _make_state_stub(
     diff_paths: tuple[str, ...] = (),
     decisions: tuple[Any, ...] = (),
     fetched: tuple[Any, ...] = (),
+    analysis_rounds: tuple[Any, ...] = (),
 ) -> Any:
-    """Duck-typed ReviewState exposing only the three surfaces the
-    metric reads. Sibling to `_make_state_stub` in
+    """Duck-typed ReviewState exposing only the surfaces the metric
+    helpers read. Sibling to `_make_state_stub` in
     `test_synthesize_node_defenses.py` (different field set — that
     helper is forge-detection-scoped)."""
 
@@ -84,8 +85,35 @@ def _make_state_stub(
             self.pr_context = _PRContextStub()
             self.trace_decisions = decisions
             self.trace_fetched_files = fetched
+            self.analysis_rounds = analysis_rounds
 
     return _StateStub()
+
+
+def test_compute_metrics_populates_llm_aggregates() -> None:
+    """FUP-093 exit pin: `_compute_metrics` carries the audit-stream LLM
+    aggregates onto `ReviewMetrics` (the synthesize node queries them and
+    passes them in). Guards against a regression that re-hardcodes `None`."""
+    from outrider.agent.nodes.synthesize import _compute_metrics
+    from outrider.audit.aggregates import ReviewLLMAggregates
+
+    metrics = _compute_metrics(
+        state=_make_state_stub(),  # empty state → files_examined / traced = 0
+        wall_clock_seconds=1.5,
+        llm_aggregates=ReviewLLMAggregates(
+            llm_calls_made=3,
+            total_input_tokens=300,
+            total_output_tokens=150,
+            total_cost_usd=0.05,
+        ),
+    )
+    assert metrics.llm_calls_made == 3
+    assert metrics.total_input_tokens == 300
+    assert metrics.total_output_tokens == 150
+    assert metrics.total_cost_usd == 0.05
+    assert metrics.wall_clock_seconds == 1.5
+    assert metrics.files_examined == 0
+    assert metrics.files_traced_beyond_diff == 0
 
 
 # ---------------------------------------------------------------------------
