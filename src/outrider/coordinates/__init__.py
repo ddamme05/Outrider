@@ -50,23 +50,22 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
   raw unified-diff string; returns None on absence (analyze §7 step 3a).
 - `span_within_file(...)` — byte file-bounds check the analyze parser's
   degraded path composes (§4).
-- `span_within_scope_unit(...)` / `span_within_degraded_context(...)` —
-  byte-space containment checks with no current parser caller: the clean
-  gate is now line-space (`line_range_within_scope_unit`, FUP-126) and the
-  degraded-context check is unwired (FUP-138); both retained pending the
-  FUP-138 / FUP-139 decisions (§4).
+- `span_within_degraded_context(...)` — byte-space intersection check: a
+  degraded JUDGED finding's span must land within an addable diff hunk. Wired
+  into the analyze parser's degraded admission gate (FUP-138) alongside
+  `span_within_file` (§4).
+- `added_line_byte_ranges(...)` / `added_line_numbers(...)` — deterministic
+  producers of a `PatchedFile`'s addable-line byte ranges (+ source) / 1-indexed
+  line numbers; the byte ranges feed `span_within_degraded_context` (FUP-138).
 - `span_is_nonempty(...)` — degraded-path non-empty floor (`byte_start <
   byte_end`) applied to the byte `Span` from `line_range_to_span` before the
   `span_within_file` check; the `Span` carrier admits zero-width by design for
   non-finding consumers (§4).
-- `span_to_line_range(...)` — byte Span → 1-indexed `(line_start,
-  line_end)` over source text (§4).
 - `line_range_within_scope_unit(...)` — line-space containment of a
   1-indexed range in a ScopeUnit; the analyze parser's admission gate for
   line-based proposals (see `specs/2026-06-01-analyze-span-frame-mismatch.md`).
-- `line_range_to_span(...)` — 1-indexed line range → whole-line byte Span
-  (left-inverse of `span_to_line_range` except for a range on the trailing
-  empty line); raises past EOF.
+- `line_range_to_span(...)` — 1-indexed line range → whole-line byte Span;
+  raises past EOF.
 - `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to
   hunks inside a ScopeUnit (§4).
 - `scope_unit_has_added_lines(...)` / `patched_file_has_added_lines(...)`
@@ -110,10 +109,8 @@ from outrider.coordinates.spans import (
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
     span_is_nonempty,
-    span_to_line_range,
     span_within_degraded_context,
     span_within_file,
-    span_within_scope_unit,
 )
 from outrider.coordinates.translator import (
     GitHubCommentLocation,
@@ -141,10 +138,8 @@ __all__ = [
     "scope_unit_has_added_lines",
     "source_line_to_github",
     "span_is_nonempty",
-    "span_to_line_range",
     "span_within_degraded_context",
     "span_within_file",
-    "span_within_scope_unit",
     "tree_sitter_to_github",
     "validate_diff_path",
 ]

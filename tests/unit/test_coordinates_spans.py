@@ -1,11 +1,10 @@
 # See specs/2026-05-19-analyze-foundation.md §4.
 """Span-based coordinate helper tests.
 
-Five helpers, one file. Pins the half-open interval semantics
-(byte_end exclusive), the file-size safety floor, the addable-diff
-intersection rule for degraded-mode admission, the byte→1-indexed-line
-conversion (including multibyte UTF-8 safety), and the scope-unit-
-bounded hunk clipping.
+Pins the half-open interval semantics (byte_end exclusive), the file-size
+safety floor, the addable-diff intersection rule for degraded-mode admission,
+the 1-indexed-line → whole-line-byte-span conversion (including multibyte
+UTF-8 safety), and the scope-unit-bounded hunk clipping.
 """
 
 from __future__ import annotations
@@ -26,10 +25,8 @@ from outrider.coordinates import (
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
     span_is_nonempty,
-    span_to_line_range,
     span_within_degraded_context,
     span_within_file,
-    span_within_scope_unit,
 )
 
 
@@ -47,38 +44,6 @@ def _scope_unit(
         byte_start=byte_start,
         byte_end=byte_end,
     )
-
-
-# ---------------------------------------------------------------------------
-# span_within_scope_unit
-# ---------------------------------------------------------------------------
-
-
-def test_span_within_scope_unit_strictly_inside() -> None:
-    su = _scope_unit(byte_start=100, byte_end=200)
-    assert span_within_scope_unit(Span(byte_start=120, byte_end=180), su) is True
-
-
-def test_span_within_scope_unit_equal_bounds() -> None:
-    """Span equal to scope unit bounds is contained (half-open: end is exclusive)."""
-    su = _scope_unit(byte_start=100, byte_end=200)
-    assert span_within_scope_unit(Span(byte_start=100, byte_end=200), su) is True
-
-
-def test_span_within_scope_unit_extends_past_end_rejected() -> None:
-    su = _scope_unit(byte_start=100, byte_end=200)
-    assert span_within_scope_unit(Span(byte_start=100, byte_end=201), su) is False
-
-
-def test_span_within_scope_unit_starts_before_start_rejected() -> None:
-    su = _scope_unit(byte_start=100, byte_end=200)
-    assert span_within_scope_unit(Span(byte_start=99, byte_end=150), su) is False
-
-
-def test_span_within_scope_unit_empty_span_inside() -> None:
-    """Empty span [a, a) at any point inside the scope: contained."""
-    su = _scope_unit(byte_start=100, byte_end=200)
-    assert span_within_scope_unit(Span(byte_start=150, byte_end=150), su) is True
 
 
 # ---------------------------------------------------------------------------
@@ -211,62 +176,6 @@ def test_span_within_degraded_context_empty_range_skipped() -> None:
         )
         is False
     )
-
-
-# ---------------------------------------------------------------------------
-# span_to_line_range
-# ---------------------------------------------------------------------------
-
-
-def test_span_to_line_range_single_line() -> None:
-    source = "line one\nline two\nline three\n"
-    # Bytes 0-7 are "line one"; line_start = line_end = 1.
-    assert span_to_line_range(Span(byte_start=0, byte_end=8), source) == (1, 1)
-
-
-def test_span_to_line_range_multi_line() -> None:
-    source = "line one\nline two\nline three\n"
-    # Bytes 5-15 span "ne\nline t" — lines 1 to 2.
-    assert span_to_line_range(Span(byte_start=5, byte_end=15), source) == (1, 2)
-
-
-def test_span_to_line_range_starts_at_newline_boundary() -> None:
-    source = "aaa\nbbb\nccc\n"
-    # Byte 4 is 'b' (first byte of line 2); span (4, 7) = "bbb" on line 2.
-    assert span_to_line_range(Span(byte_start=4, byte_end=7), source) == (2, 2)
-
-
-def test_span_to_line_range_empty_span_returns_single_line() -> None:
-    source = "aaa\nbbb\nccc\n"
-    # Empty span at byte 5 (inside "bbb" on line 2).
-    assert span_to_line_range(Span(byte_start=5, byte_end=5), source) == (2, 2)
-
-
-def test_span_to_line_range_past_end_raises() -> None:
-    source = "short\n"
-    with pytest.raises(CoordinateError, match="exceeds source length"):
-        span_to_line_range(Span(byte_start=0, byte_end=999), source)
-
-
-def test_span_to_line_range_multibyte_safe() -> None:
-    """Span bytes must be counted against UTF-8 encoded source.
-
-    "café" is 4 chars / 5 bytes (é is 0xC3 0xA9). A naive `source[start:end]`
-    str-index would miscount; this test ensures byte counting is correct.
-    """
-    source = "café\nbar\n"  # bytes: "c","a","f", 0xC3,0xA9, "\n", "b","a","r","\n"
-    # Total source bytes = 10 (caf=3, é=2, \n=1, bar=3, \n=1).
-    # Byte 6 is 'b' (first byte of line 2).
-    assert span_to_line_range(Span(byte_start=6, byte_end=9), source) == (2, 2)
-
-
-def test_span_to_line_range_includes_trailing_newline() -> None:
-    """A span ending exactly at end-of-source is admitted (boundary, not past)."""
-    source = "abc\n"
-    # Length = 4 bytes. Span (0, 4) is admitted.
-    line_range = span_to_line_range(Span(byte_start=0, byte_end=4), source)
-    # Byte 3 is '\n' — still on line 1 (the newline terminates it).
-    assert line_range == (1, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -709,11 +618,6 @@ def test_line_range_to_span_multi_line() -> None:
     assert line_range_to_span(1, 3, _SRC) == Span(byte_start=0, byte_end=len(_SRC.encode()))
 
 
-def test_line_range_to_span_round_trips_with_span_to_line_range() -> None:
-    span = line_range_to_span(2, 3, _SRC)
-    assert span_to_line_range(span, _SRC) == (2, 3)
-
-
 def test_line_range_to_span_multibyte_safe() -> None:
     # α and β are 2-byte UTF-8; line 2 "β = 2" begins at byte 7 (after "α = 1\n").
     src = "α = 1\nβ = 2"
@@ -734,17 +638,14 @@ def test_line_range_to_span_invalid_range_raises() -> None:
         line_range_to_span(3, 2, _SRC)  # line_end < line_start
 
 
-def test_line_range_to_span_trailing_empty_line_is_left_inverse_boundary() -> None:
-    """A trailing `\\n` creates a phantom final empty line. A range ending on it
-    is admissible but is the one case where `span_to_line_range` does NOT round-
-    trip (it shares the prior line's end-of-source `byte_end`). Pins the narrowed
-    left-inverse contract documented on `line_range_to_span`.
+def test_line_range_to_span_range_ending_on_trailing_empty_line() -> None:
+    """A trailing `\\n` creates a phantom final empty line. A range ending on it is
+    admissible: `line_range_to_span(1, total_lines)` maps to the whole-file span
+    (the phantom line shares the prior line's end-of-source `byte_end`).
     """
     src = "a\nb\nc\n"  # 4 lines: "a", "b", "c", and the trailing empty line 4
     full = line_range_to_span(1, 4, src)
     assert full == Span(byte_start=0, byte_end=len(src.encode()))
-    # Round trip recovers line 3, not 4 — the documented boundary.
-    assert span_to_line_range(full, src) == (1, 3)
 
 
 def test_line_range_to_span_trailing_empty_line_alone_is_zero_width() -> None:
