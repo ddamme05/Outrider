@@ -28,7 +28,8 @@ is wired at `api/lifespan.py:Step 7b`).
 """
 
 from outrider.api.dashboard.hitl import router as hitl_router
+from outrider.api.dashboard.metrics import router as metrics_router
 from outrider.api.dashboard.policy import router as policy_router
 from outrider.api.dashboard.reviews import router as reviews_router
 
-__all__ = ["hitl_router", "policy_router", "reviews_router"]
+__all__ = ["hitl_router", "metrics_router", "policy_router", "reviews_router"]
