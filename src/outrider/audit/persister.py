@@ -146,6 +146,10 @@ if TYPE_CHECKING:
 # `_persist_keyed_by_natural_key`'s no-op recovery path calls
 # `TraceDecisionEvent.model_validate(existing_payload)` to reconstruct
 # the canonical persisted event for the M7 (b) return contract.
+from outrider.audit.aggregates import (  # noqa: E402  (runtime: read-side query delegate)
+    ReviewLLMAggregates,
+    aggregate_review_llm_metrics,
+)
 from outrider.audit.events import (
     FindingEvent,  # noqa: E402  (constructed at runtime by _lift_finding_event)
     HITLDecisionEvent,  # noqa: E402  (model_validate at runtime)
@@ -2861,6 +2865,20 @@ class AuditPersister:
         if payload is None:
             return None
         return PublishEvent.model_validate(payload)
+
+    async def query_review_llm_aggregates(
+        self, *, review_id: UUID, is_eval: bool
+    ) -> ReviewLLMAggregates:
+        """Sum a review's LLM-call metrics (count + tokens + cost).
+
+        Read-only; opens its own per-call `AsyncSession` (no transaction) and
+        delegates to `aggregate_review_llm_metrics` — the single shared SUM the
+        dashboard read-API also calls, so the synthesize-emitted audit row and the
+        dashboard badge are computed by one aggregation path (FUP-093). `is_eval`
+        is the review's own flag, scoping out divergent eval rows per FUP-130.
+        """
+        async with self._session_factory() as session:
+            return await aggregate_review_llm_metrics(session, review_id=review_id, is_eval=is_eval)
 
     # See DECISIONS.md#027 — V1 per-review publish-side advisory lock
     # (try-lock with bounded backoff, serialize-then-observe). The

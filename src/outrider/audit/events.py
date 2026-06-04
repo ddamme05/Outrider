@@ -2355,13 +2355,13 @@ class SynthesizeCompletedEvent(AuditEventBase):
     # the "beyond diff = outside changed-files set, NOT Phase-2-fetched
     # specifically" semantic. Mirror of `ReviewMetrics.files_traced_beyond_diff`.
     files_traced_beyond_diff: int = Field(ge=0)
-    # LLM-aggregate metrics. V1 placeholder semantics per spec audit:
-    # `None` indicates "audit-query helper not yet wired" rather than
-    # "zero." Dashboard joins `LLMCallEvent` rows by `review_id` for
-    # the truth; these fields are denormalized convenience and ship
-    # nullable in V1 to honestly distinguish "unknown" from "zero."
-    # Mirror of `ReviewMetrics`; see review_report.py for full
-    # rationale + FUP for the audit-query helper.
+    # LLM-aggregate metrics. Populated at synthesize-emit time from the
+    # audit-stream SUM over this review's `LLMCallEvent` rows (FUP-093) —
+    # mirror of `ReviewMetrics`. Kept nullable for append-only read-compat:
+    # pre-FUP-093 rows serialize `null` here and replay re-validates historical
+    # payloads through the strict adapter, so a required type would reject them
+    # (#030, amended). A `None` now means "historical row, predates population."
+    # See review_report.py for the full rationale.
     llm_calls_made: int | None = Field(default=None, ge=0)
     total_input_tokens: int | None = Field(default=None, ge=0)
     total_output_tokens: int | None = Field(default=None, ge=0)
@@ -2369,7 +2369,8 @@ class SynthesizeCompletedEvent(AuditEventBase):
     """Upper cap matches `ReviewMetrics.total_cost_usd` (le=100.0) —
     defense against `float('inf')` propagating into JSONB. Real V1
     reviews land well under $1; le=100 is "this would already be a
-    runaway." Optional+None per the V1-placeholder rationale above."""
+    runaway." Optional+None per the same read-compat rationale above
+    (populated going forward; nullable for historical rows)."""
     wall_clock_seconds: float = Field(ge=0, le=86400)
     """Upper cap matches `ReviewMetrics.wall_clock_seconds` (le=86400,
     24h). A multi-day review is a bug, not a workload."""

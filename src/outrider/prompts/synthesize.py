@@ -150,11 +150,11 @@ def render(
             )
         findings_summary = "\n".join(lines)
 
-    # LLM-aggregate metrics ship as Optional[X] = None in V1 (audit-query
-    # helper not yet wired). Render "unknown" for None values rather than
-    # crashing on `:.4f` format-spec against NoneType.
-    # _render_metric_value / _render_cost_value handle the
-    # None/numeric union safely.
+    # LLM-aggregate metrics are populated from the audit stream (FUP-093) but
+    # stay Optional[X] (nullable for historical-row read-compat, #030). Render
+    # "unknown" defensively for any None rather than crashing on `:.4f`
+    # format-spec against NoneType. _render_metric_value / _render_cost_value
+    # handle the None/numeric union safely.
     metrics_summary = (
         f"- Files examined: {metrics.files_examined}\n"
         f"- Files traced beyond diff: {metrics.files_traced_beyond_diff}\n"
@@ -177,9 +177,10 @@ def render(
 def _render_metric_value(value: int | None) -> str:
     """Render an Optional[int] metric for prose output.
 
-    V1 ships LLM-aggregate metrics as `None` (audit-query helper not
-    yet wired); render "unknown" so the prompt remains valid prose
-    when the value is absent. None values formatted via `:d` or
+    LLM-aggregate metrics are populated from the audit stream (FUP-093) but
+    stay Optional (None for historical rows / nullable per #030); render
+    "unknown" so the prompt remains valid prose when the value is absent.
+    None values formatted via `:d` or
     `:.4f` raise TypeError — this helper is the safety adapter at
     the prompt-render boundary.
     """

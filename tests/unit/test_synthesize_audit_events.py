@@ -6,8 +6,8 @@ Pins:
   `"synthesize_completed"`) — sibling to the analyze-completed routing
   test at `tests/unit/test_analyze_audit_events.py:310`.
 - `Optional[int]` / `Optional[float]` accept None on LLM-aggregate
-  fields (V1 placeholder semantics per the audit-fold; FUP wires
-  audit-query helper later).
+  fields (kept nullable for append-only historical-row read-compat per
+  #030; populated from the audit stream going forward per FUP-093).
 - `summary_content_hash` matches SHA-256 pattern at the schema layer.
 - `overall_risk` accepts the canonical RiskLevel ladder.
 - frozen=True + extra="forbid" (the AuditEventBase contract).
@@ -38,9 +38,9 @@ def _completed_kwargs(**overrides: Any) -> dict[str, Any]:
         "n_findings": 0,
         "files_examined": 0,
         "files_traced_beyond_diff": 0,
-        # LLM-aggregate Optional fields default to None (V1 placeholder
-        # semantics — audit-query helper not yet wired). Tests for the
-        # int-accepting case provide explicit overrides.
+        # LLM-aggregate Optional fields default to None (the schema default,
+        # kept nullable for historical-row read-compat per #030). Tests for
+        # the int-accepting case provide explicit overrides.
         "wall_clock_seconds": 0.0,
         "pricing_version": "v1",
         "policy_version": "1.0.0",
@@ -60,7 +60,7 @@ def test_synthesize_completed_constructs_with_minimal_kwargs() -> None:
     event = SynthesizeCompletedEvent(**_completed_kwargs())
     assert event.event_type == "synthesize_completed"
     assert event.node_id == "synthesize"
-    # V1 placeholder: None semantics on the LLM-aggregate fields.
+    # Schema default: None on the LLM-aggregate fields (nullable per #030).
     assert event.llm_calls_made is None
     assert event.total_input_tokens is None
     assert event.total_output_tokens is None
@@ -70,10 +70,9 @@ def test_synthesize_completed_constructs_with_minimal_kwargs() -> None:
 def test_synthesize_completed_accepts_explicit_llm_aggregates() -> None:
     """Optional[int]/[float] fields accept concrete values.
 
-    When the audit-query helper lands (FUP), synthesize will populate
-    these from `LLMCallEvent` row aggregates joined on `review_id`.
-    The schema must admit non-None values too — None is the V1 "unknown"
-    semantics, not a permanent constraint.
+    Synthesize populates these from the audit-stream SUM over `LLMCallEvent`
+    rows (FUP-093); the schema must admit non-None values. None remains valid
+    for historical rows (kept nullable per #030).
     """
     event = SynthesizeCompletedEvent(
         **_completed_kwargs(
@@ -191,3 +190,18 @@ def test_audit_event_adapter_round_trips_synthesize_completed() -> None:
     assert reconstructed.n_findings == original.n_findings
     assert reconstructed.llm_calls_made == 2
     assert reconstructed.total_cost_usd == pytest.approx(0.05)
+
+
+def test_historical_null_aggregates_round_trip_through_adapter() -> None:
+    """FUP-093 / #030 read-compat guard: a persisted `SynthesizeCompletedEvent`
+    with `null` LLM aggregates (the pre-FUP-093 shape) still deserializes through
+    `AuditEventAdapter` — the replay read path. MUST stay green; a future revert of
+    the four fields to required `int`/`float` would fail this, which is exactly why
+    #030 keeps them nullable (append-only historical rows serialize `null`)."""
+    original = SynthesizeCompletedEvent(**_completed_kwargs())  # aggregates default None
+    payload = original.model_dump(mode="json")
+    assert payload["llm_calls_made"] is None  # the historical persisted shape
+    reconstructed = AuditEventAdapter.validate_python(payload)
+    assert isinstance(reconstructed, SynthesizeCompletedEvent)
+    assert reconstructed.llm_calls_made is None
+    assert reconstructed.total_cost_usd is None
