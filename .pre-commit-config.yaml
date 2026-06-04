@@ -74,3 +74,24 @@ repos:
         language: system
         pass_filenames: false
         files: ^scripts/(check_decision_refs|test_check_decision_refs)\.py$
+
+      # Trust-boundary import lint (FUP-005 / DECISIONS.md#038) — the deterministic floor backing the
+      # in-session check-trust-boundaries skill. pass_filenames: false, so it scans the whole
+      # tree rather than the staged subset. Enforcement scope differs per boundary: the AST
+      # firewall scans src/outrider/ + tests/ (tree_sitter has no legit test use); the LLM/GitHub
+      # vendor rules + shell-exec scan src/outrider/ only (vendor-SDK use in tests is surface-tier,
+      # left to the skill/reviewer). files: fires the hook on any src/tests .py change or an edit
+      # to the checker itself.
+      - id: boundary-lint
+        name: trust-boundary import lint
+        entry: .venv/bin/python scripts/check_import_boundaries.py
+        language: system
+        pass_filenames: false
+        files: ^(src/outrider/.*\.py|tests/.*\.py|scripts/check_import_boundaries\.py)$
+
+      - id: boundary-lint-tests-pass
+        name: check_import_boundaries.py smoke tests pass
+        entry: .venv/bin/python scripts/test_check_import_boundaries.py
+        language: system
+        pass_filenames: false
+        files: ^scripts/(check_import_boundaries|test_check_import_boundaries)\.py$

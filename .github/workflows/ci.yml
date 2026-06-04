@@ -11,8 +11,13 @@
 # discipline gates that hook; future hooks that depend on gitignored paths
 # join the same excluded list.
 #
-# Six jobs:
+# Jobs (CI gates):
 #   1. lint          — ruff check + ruff format --check
+#   1b. boundary-lint — scripts/check_import_boundaries.py: the deterministic
+#                       trust-boundary floor (FUP-005 / DECISIONS.md#038). Fails on a vendor-SDK
+#                       import in the wrong wrapper folder, or shell-exec in
+#                       src/outrider/. Allowlists mirror the
+#                       check-trust-boundaries skill.
 #   2. types         — mypy --strict src
 #   3. unit          — pytest tests/unit
 #   4. integration   — pytest tests/integration against postgres-test brought
@@ -24,10 +29,12 @@
 #                       fixture). Runs harness-internal tests today; the
 #                       17 scaffolded scenarios are skip-marked on day one
 #                       and become real gates as their dependencies land.
-#   6. pre-commit-tracked-only — runs the subset of pre-commit hooks that
+#   6. dashboard     — npm ci + build (tsc --noEmit && vite build) + vitest run
+#                       for the React SPA under dashboard/ (Node toolchain, not uv).
+#   7. pre-commit-tracked-only — runs the subset of pre-commit hooks that
 #                       depend ONLY on tracked files: ruff, ruff-format,
 #                       decision-refs-resolve, decision-refs-tests-pass,
-#                       extractor-tests-pass.
+#                       extractor-tests-pass, boundary-lint-tests-pass.
 
 name: CI
 
@@ -71,6 +78,27 @@ jobs:
         run: ruff check
       - name: ruff format --check
         run: ruff format --check
+
+  boundary-lint:
+    name: boundary-lint (trust-boundary imports)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          activate-environment: true
+      - name: uv sync --frozen
+        run: uv sync --dev --frozen
+      # FUP-005: the deterministic floor for the AST-firewall / LLM-provider /
+      # GitHub-SDK / shell-exec boundaries (`docs/trust-boundaries.md`). The
+      # in-session `check-trust-boundaries` skill catches Claude-authored edits;
+      # this job catches commits made OUTSIDE a Claude session. Allowlists mirror
+      # the skill (stdlib-only checker, so no extra deps beyond the synced env).
+      - name: trust-boundary import lint
+        run: python scripts/check_import_boundaries.py
 
   types:
     name: types (mypy --strict)
@@ -263,3 +291,5 @@ jobs:
         run: pre-commit run decision-refs-tests-pass --all-files
       - name: extractor-tests-pass (pre-commit hook)
         run: pre-commit run extractor-tests-pass --all-files
+      - name: boundary-lint-tests-pass (pre-commit hook)
+        run: pre-commit run boundary-lint-tests-pass --all-files
