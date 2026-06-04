@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -80,7 +81,7 @@ def _triage_request() -> LLMRequest:
     return LLMRequest(
         system_prompt="s",
         user_prompt="u",
-        model="claude-haiku",
+        model="claude-haiku-4-5",
         max_tokens=100,
         temperature=0.0,
         review_id=uuid4(),
@@ -95,20 +96,40 @@ def _triage_request() -> LLMRequest:
 # ---------------------------------------------------------------------------
 
 
+class _RecordingPersist:
+    """Minimal `LLMExchangePersister` double: records persisted `LLMCallEvent`s,
+    no DB. Lets the unit tests exercise the fixture's now-persisting `complete()`
+    (FUP-093) without Postgres; the eval suite covers the real `persist()`
+    cross-checks end-to-end."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def persist(self, event: Any, request: Any, response: Any) -> None:  # noqa: ARG002
+        self.events.append(event)
+
+
 async def test_scripted_provider_returns_response_by_node_and_call_index() -> None:
-    provider = _FixtureScriptedProvider({"triage": ["first", "second"]})
+    persist = _RecordingPersist()
+    provider = _FixtureScriptedProvider({"triage": ["first", "second"]}, persister=persist)
     req = _triage_request()
     r1 = await provider.complete(req)
     r2 = await provider.complete(req)
     assert r1.text == "first"
     assert r2.text == "second"
     # echoes the request model + emits a valid LLMResponse shape.
-    assert r1.model == "claude-haiku"
+    assert r1.model == "claude-haiku-4-5"
     assert r1.finish_reason == "end_turn"
+    # FUP-093: each complete() emits a faithful LLMCallEvent (cost computed from the
+    # real pricing table) via the persister before returning.
+    assert len(persist.events) == 2
+    assert persist.events[0].node_id == "triage"
+    assert persist.events[0].input_tokens == 100
+    assert persist.events[0].cost_usd > 0
 
 
 async def test_scripted_provider_raises_loud_when_exhausted() -> None:
-    provider = _FixtureScriptedProvider({"triage": ["only-one"]})
+    provider = _FixtureScriptedProvider({"triage": ["only-one"]}, persister=_RecordingPersist())
     req = _triage_request()
     await provider.complete(req)
     with pytest.raises(EvalDriverError, match="no scripted LLM response"):
@@ -116,8 +137,8 @@ async def test_scripted_provider_raises_loud_when_exhausted() -> None:
 
 
 async def test_scripted_provider_raises_for_unscripted_node() -> None:
-    provider = _FixtureScriptedProvider({"triage": ["x"]})
-    # node_id="analyze" is unscripted in this provider.
+    provider = _FixtureScriptedProvider({"triage": ["x"]}, persister=_RecordingPersist())
+    # node_id="synthesize" is unscripted in this {"triage": ...} provider.
     req = LLMRequest(
         system_prompt="s",
         user_prompt="u",

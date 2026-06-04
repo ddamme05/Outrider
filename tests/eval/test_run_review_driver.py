@@ -136,3 +136,18 @@ def test_run_review_drives_graph_and_returns_result(tmp_path: Path) -> None:
     # Sub-HIGH finding on a changed line -> routed inline -> published.
     assert len(result.published_comments) >= 1
     assert result.review_id is not None
+
+    # FUP-093 Finding-2 pin: the eval driver emits faithful LLMCallEvent rows, and
+    # synthesize populates ReviewMetrics by SUMming them — so the aggregates are
+    # NON-ZERO, not the false-zero a non-emitting provider double would produce.
+    # Each scripted call carries fixed sentinels (100 in / 50 out), so the totals
+    # are exact multiples of the call count: the `== 100 * calls` form cannot pass
+    # at zero. This is the guard that the driver can't silently report false-zero
+    # metrics (and that synthesize's POST-call query counted synthesize's own call,
+    # not just the earlier scripted ones).
+    metrics = result.review_metrics
+    assert metrics is not None
+    assert metrics.llm_calls_made is not None and metrics.llm_calls_made > 0
+    assert metrics.total_input_tokens == 100 * metrics.llm_calls_made
+    assert metrics.total_output_tokens == 50 * metrics.llm_calls_made
+    assert metrics.total_cost_usd is not None and metrics.total_cost_usd > 0
