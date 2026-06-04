@@ -41,9 +41,10 @@ from uuid import UUID  # noqa: TC003  (runtime: Pydantic/route field type)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict
-from sqlalchemy import Integer, Numeric, cast, func, select
+from sqlalchemy import func, select
 
 from outrider.api.dashboard.auth import require_admin_api_key
+from outrider.audit.aggregates import aggregate_review_llm_metrics
 from outrider.audit.events import (  # noqa: TC001 (runtime: Pydantic response-model field type)
     AuditEvent as AuditEventUnion,
 )
@@ -323,31 +324,12 @@ async def _aggregate_metrics(
     event from surfacing on a production review's metrics, mirroring replay's
     read-time `_verify_is_eval_consistent`. Caller passes `reviews.is_eval`.
     """
-    # LLM aggregates — COUNT/SUM over llm_call payloads (never the None
-    # SynthesizeCompletedEvent LLM fields, per FUP-093). The SUM assumes one
-    # llm_call row per logical call — true in V1 (the non-durable BackgroundTasks
-    # dispatcher never replays a node body, so no crash-recovery re-emit lands a
-    # duplicate row; HITL-resume re-enters at hitl, after the LLM-calling nodes).
-    # Durable retry (V2 Celery + Redis) WOULD land duplicate rows with fresh
-    # event_ids → the SUM would double-count; dedup then needs the V2 `llm_call_event_id`
-    # binding (DECISIONS.md#029) — folded into FUP-093.
-    llm_stmt = select(
-        func.count().label("calls"),
-        func.coalesce(func.sum(cast(AuditEvent.payload["input_tokens"].astext, Integer)), 0).label(
-            "input_tokens"
-        ),
-        func.coalesce(func.sum(cast(AuditEvent.payload["output_tokens"].astext, Integer)), 0).label(
-            "output_tokens"
-        ),
-        func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0).label(
-            "cost_usd"
-        ),
-    ).where(
-        AuditEvent.review_id == review_id,
-        AuditEvent.is_eval == review_is_eval,
-        AuditEvent.event_type == "llm_call",
-    )
-    llm_row = (await session.execute(llm_stmt)).one()
+    # LLM aggregates — read-through SUM over llm_call rows, single-sourced through
+    # `aggregate_review_llm_metrics`; today this is its only consumer. When FUP-093
+    # wires the synthesize node to the SAME helper, the badge and the persisted audit
+    # row share one aggregation path (no divergence). Scoped by is_eval (FUP-130).
+    # The V1-naive-SUM / V2-dedup contract lives in that helper.
+    agg = await aggregate_review_llm_metrics(session, review_id=review_id, is_eval=review_is_eval)
 
     # File / wall-clock — read from the persisted SynthesizeCompletedEvent
     # (NOT recomputed from raw FileExaminationEvent/TraceDecisionEvent rows).
@@ -377,10 +359,10 @@ async def _aggregate_metrics(
         wall_clock_seconds = synth_payload["wall_clock_seconds"]
 
     return ReviewMetricsView(
-        llm_calls_made=llm_row.calls,
-        total_input_tokens=llm_row.input_tokens,
-        total_output_tokens=llm_row.output_tokens,
-        total_cost_usd=float(llm_row.cost_usd),
+        llm_calls_made=agg.llm_calls_made,
+        total_input_tokens=agg.total_input_tokens,
+        total_output_tokens=agg.total_output_tokens,
+        total_cost_usd=agg.total_cost_usd,
         files_examined=files_examined,
         files_traced_beyond_diff=files_traced_beyond_diff,
         wall_clock_seconds=(None if wall_clock_seconds is None else float(wall_clock_seconds)),
