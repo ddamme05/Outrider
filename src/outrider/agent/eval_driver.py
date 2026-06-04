@@ -90,10 +90,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from outrider.github import InstallationGitHubClient
-    from outrider.llm.base import LLMRequest, LLMResponse
+    from outrider.llm.base import LLMExchangePersister, LLMRequest, LLMResponse
     from outrider.schemas.analysis_round import AnalysisRound
     from outrider.schemas.publish import InlineComment
     from outrider.schemas.review_finding import ReviewFinding
+    from outrider.schemas.review_report import ReviewMetrics
     from outrider.schemas.trace_decision import TraceDecision
 
 # reviews.repo_id is an opaque int here; eval scenarios never assert on it.
@@ -268,6 +269,10 @@ class EvalRunResult:
     published_comments: tuple[InlineComment, ...]
     hitl_gated: bool
     hitl_request: HITLRequest | None = None
+    # The synthesize node's populated `ReviewMetrics` (FUP-093: LLM aggregates
+    # are summed from the review's `LLMCallEvent` rows). None only if synthesize
+    # never ran (e.g. an early-failed run). Lets scenarios pin metric population.
+    review_metrics: ReviewMetrics | None = None
 
     def __iter__(self) -> Any:
         return iter(self.findings)
@@ -310,18 +315,29 @@ class ResumedRunResult:
 class _FixtureScriptedProvider:
     """Returns canned responses keyed by `(request.node_id, call-index)`.
 
-    Implements the `LLMProvider` Protocol; imports no SDK. Token counts are
-    fixed sentinels (cost/latency aren't asserted by scenarios). Raises
-    `EvalDriverError` loudly when a node makes more calls than the fixture
-    scripts, so a scenario fails with a clear cause.
+    Implements the `LLMProvider` Protocol; imports no vendor SDK. Token counts
+    are fixed sentinels; cost is derived from them via the real pricing table.
+    Like the real provider, `complete()` emits a faithful `LLMCallEvent` (+
+    `llm_call_content`) via the injected persister BEFORE returning — so
+    driver-backed eval reviews carry real `llm_call` rows for synthesize's
+    FUP-093 aggregate SUM (a double that emitted nothing would report
+    false-zero metrics). Raises `EvalDriverError` loudly when a node makes more
+    calls than the fixture scripts, so a scenario fails with a clear cause.
     """
 
-    def __init__(self, responses: dict[str, list[str]]) -> None:
+    def __init__(self, responses: dict[str, list[str]], *, persister: LLMExchangePersister) -> None:
         self._responses = responses
         self._counts: dict[str, int] = {}
+        self._persister = persister
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        from outrider.llm.base import LLMResponse
+        from outrider.audit.events import LLMCallEvent
+        from outrider.llm.base import (
+            LLMResponse,
+            _canonical_prompt_hash,
+            _canonical_system_prompt_hash,
+        )
+        from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 
         node = request.node_id
         idx = self._counts.get(node, 0)
@@ -334,7 +350,7 @@ class _FixtureScriptedProvider:
                 f"this node). Add the response to the fixture's llm_responses."
             ) from exc
         self._counts[node] = idx + 1
-        return LLMResponse(
+        response = LLMResponse(
             text=text_out,
             model=request.model,
             input_tokens=100,
@@ -344,6 +360,56 @@ class _FixtureScriptedProvider:
             finish_reason="end_turn",
             latency_ms=1,
         )
+        # Emit LLMCallEvent + llm_call_content BEFORE returning, exactly as the real
+        # LLMProvider contract requires (mirrors AnthropicProvider Step 9). FUP-093:
+        # synthesize SUMs these rows for its ReviewMetrics aggregates, so a double
+        # that emitted nothing would report false-zero metrics. `persist()` cross-
+        # checks the prompt/system hashes, the request/response fields, and the
+        # recomputed cost (in-transaction) — so any drift from the real provider's
+        # shape fails loudly here rather than landing a silently-wrong audit row.
+        try:
+            cost = compute_cost_usd(
+                model=response.model,
+                input_tokens=response.input_tokens,
+                cache_write_tokens=response.cache_write_tokens,
+                cache_read_tokens=response.cache_read_tokens,
+                output_tokens=response.output_tokens,
+            )
+        except KeyError as exc:
+            # Mirror the real provider's named pricing error (it raises
+            # LLMPricingMissingError) so a misconfigured eval ModelConfig surfaces a
+            # clear cause instead of a bare KeyError mid-complete(). ModelConfig
+            # defaults (claude-haiku-4-5 / claude-sonnet-4-6) are priced; this only
+            # fires under an env override to a valid-but-unpriced model.
+            raise EvalDriverError(
+                f"eval fixture model {response.model!r} (node_id={request.node_id!r}) is "
+                f"not in the pricing RATE_TABLE — the fixture provider mirrors the real "
+                f"provider's cost path. Use a priced model in the eval's ModelConfig."
+            ) from exc
+        event = LLMCallEvent(
+            review_id=request.review_id,
+            timestamp=datetime.now(UTC),
+            is_eval=request.is_eval,
+            model=response.model,
+            node_id=request.node_id,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cached_tokens=response.cache_read_tokens,
+            cost_usd=float(cost),
+            pricing_version=PRICING_VERSION,
+            latency_ms=response.latency_ms,
+            prompt_hash=_canonical_prompt_hash(
+                system_prompt=request.system_prompt, user_prompt=request.user_prompt
+            ),
+            cache_hit=(response.cache_read_tokens > 0),
+            context_summary=request.context_summary,
+            prompt_template_version=request.prompt_template_version,
+            system_prompt_hash=_canonical_system_prompt_hash(request.system_prompt),
+            degraded_mode=request.degraded_mode,
+            degradation_reason=request.degradation_reason,
+        )
+        await self._persister.persist(event, request, response)
+        return response
 
     async def aclose(self) -> None:
         # Owns no transport resources (no SDK client); satisfies the
@@ -662,7 +728,7 @@ async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(fixture.llm_responses)
+        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister)
         graph = _build_eval_graph(
             fixture=fixture,
             session_factory=session_factory,
@@ -698,6 +764,7 @@ async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
             published_comments=published,
             hitl_gated=hitl_gated,
             hitl_request=hitl_request,
+            review_metrics=report.metrics if report else None,
         )
 
         # is_eval integrity gate (success path): a violation fails the run.
@@ -876,7 +943,7 @@ async def run_review_with_resume(
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(fixture.llm_responses)
+        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister)
 
         # Phase A (process 1): drive to the interrupt on saver A, then CLOSE it.
         async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_a:
