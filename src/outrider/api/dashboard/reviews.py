@@ -50,6 +50,7 @@ from outrider.audit.aggregates import aggregate_review_llm_metrics
 from outrider.audit.events import (  # noqa: TC001 (runtime: Pydantic response-model field type)
     AuditEvent as AuditEventUnion,
 )
+from outrider.audit.events import ReplayVerdictEvent
 from outrider.audit.replay import (
     AuditReplayer,
     ReplayEquivalenceError,
@@ -792,7 +793,12 @@ async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict
         review_id=review_id,
         replay_equivalent=equivalent,
         mode=reconstructed.mode.value,
-        event_count=len(reconstructed.events),
+        # Exclude the projected `replay_verdict` row from the count. This full-stream
+        # reconstruct includes it once the background projector has run; the PERSISTED
+        # verdict counted the judged prefix (non-verdict rows only), so counting it here
+        # would make this live surface report N+1 against the persisted N for an unchanged
+        # review. The verdict is replay METADATA, not review work.
+        event_count=sum(1 for e in reconstructed.events if not isinstance(e, ReplayVerdictEvent)),
         finding_count=len(reconstructed.findings),
         orphan_finding_count=len(reconstructed.orphan_finding_ids),
         reason=reason,
