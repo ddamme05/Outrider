@@ -17,6 +17,9 @@
   --text: #e7e9ee;
   --muted: #8b919c;
   --faint: #646b76;
+  /* legacy alias the mockup uses for the faintest text tier (audit-feed
+     timestamps, override-field labels, sticky-bar hint) */
+  --muted2: var(--faint);
 
   /* lines */
   --line: #222730;
@@ -1105,6 +1108,30 @@ h1 {
   border: 1px dashed var(--line2);
   border-radius: var(--radius-sm);
   padding: 1px 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* publish-destination color variants (mockup .dest-inline/.dest-review/.dest-dashboard):
+   the routing destination reads at a glance — INLINE_COMMENT (info), REVIEW_BODY (medium),
+   DASHBOARD_ONLY (faint/dashed, "won't post to GitHub"). The square .tdot carries the color. */
+.dest-inline {
+  color: color-mix(in srgb, var(--sev-info) 62%, var(--text));
+  border: 1px solid color-mix(in srgb, var(--sev-info) 40%, transparent);
+}
+.dest-review {
+  color: color-mix(in srgb, var(--sev-medium) 62%, var(--text));
+  border: 1px solid color-mix(in srgb, var(--sev-medium) 40%, transparent);
+}
+.dest-dashboard {
+  color: var(--muted);
+  border: 1px dashed var(--line2);
+}
+.dest .tdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
 }
 
 /* Finding cards — mockup-faithful: head chips, body (desc + proof + fix). Gated
@@ -1392,33 +1419,52 @@ h1 {
   border-radius: var(--radius-sm);
   padding: 7px 11px;
 }
-.submit-bar {
+/* HITL decision bar — the mockup's flush chrome-edge bar (.hitl-sticky): full-bleed
+   across the content gutter (.content has 26px side padding → -26px margins), pinned
+   to the bottom of the scroll viewport, a top hairline + lift shadow (no full border /
+   radius — it reads as an extension of the chrome, not a floating pill). React gates
+   visibility by rendering the element conditionally, so it ships display:flex (the
+   mockup's display:none + #screen-detail.show-hitl-sticky toggle is the static-HTML
+   equivalent of that conditional). */
+.hitl-sticky {
   position: sticky;
-  bottom: 16px;
-  margin-top: 16px;
+  bottom: 0;
+  z-index: 7;
+  margin: 16px -26px 0;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 13px 16px;
-  border-radius: var(--radius);
+  padding: 13px 26px;
   background: var(--header);
-  border: 1px solid var(--hair);
-  box-shadow: var(--shadow-pop);
+  border-top: 1px solid var(--hair);
+  box-shadow: 0 -10px 22px -16px rgba(0, 0, 0, 0.85);
 }
-.submit-bar .hs-tick {
+.hitl-sticky .hs-tick {
   width: 3px;
   height: 30px;
   background: var(--accent);
   flex: 0 0 auto;
   opacity: 0.85;
 }
-.submit-bar .status-text {
+.hitl-sticky .status-text {
   font-size: 12.5px;
   color: var(--muted);
 }
-.submit-bar .status-text b {
+.hitl-sticky .status-text b {
   color: var(--text);
   font-family: var(--mono);
+}
+.hitl-sticky .hs-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+@media (max-width: 1100px) {
+  .hitl-sticky {
+    margin-left: -26px;
+    margin-right: -26px;
+  }
 }
 /* decision pips — one per gated finding, fill green as decided */
 .hs-pips {
