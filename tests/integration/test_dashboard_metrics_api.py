@@ -376,3 +376,108 @@ async def test_empty_window_renders_all_zeros(empty_metrics_client: TestClient) 
 def test_requires_admin_key(metrics_client: TestClient) -> None:
     resp = metrics_client.get("/api/metrics")
     assert resp.status_code == 401
+
+
+@pytest_asyncio.fixture
+async def divergent_eval_client(migrated_db: str) -> AsyncGenerator[TestClient]:
+    """Seed DIVERGENT `is_eval` rows in BOTH directions — events whose `is_eval` disagrees with
+    their review's, the divergence the persister's write-side check forbids (`persister.py`
+    AuditPersisterIsEvalMismatchError), reproduced via raw INSERT to prove the read-side equality
+    defense (FUP-130 `AuditEvent.is_eval == review_is_eval`). A production review carries an
+    agreeing pair + an eval-labeled drift pair; an eval review carries an agreeing pair + a
+    prod-labeled drift finding.
+    """
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO installations "
+                "(installation_id, app_slug, account_id, account_login, "
+                " account_type, permissions_at_install) "
+                "VALUES (:id, 'test-app', 1, 'octocat', 'User', '{}'::jsonb)"
+            ),
+            {"id": _INSTALLATION_ID},
+        )
+        # Production review (is_eval=False): an AGREEING finding/cost (hp/cp) + a DRIFT pair
+        # mislabeled is_eval=True (hd/cd) — the prod-review->eval-event direction a one-sided
+        # Review.is_eval filter would have LEAKED into production.
+        prod = await _seed_review(conn, status="completed", is_eval=False, age_days=1, repo_id=100)
+        await _seed_llm(conn, prod, cost_usd=0.10, age_days=1, is_eval=False)  # agrees
+        await _seed_llm(conn, prod, cost_usd=5.00, age_days=1, is_eval=True)  # DRIFT
+        await _seed_finding(
+            conn,
+            prod,
+            content_hash="hp",
+            severity="high",
+            tier="observed",
+            age_days=1,
+            is_eval=False,  # agrees
+        )
+        await _seed_finding(
+            conn,
+            prod,
+            content_hash="hd",
+            severity="critical",
+            tier="observed",
+            age_days=1,
+            is_eval=True,  # DRIFT (prod review, eval-labeled event)
+        )
+        # Eval review (is_eval=True): an AGREEING finding/cost (he/ce) + a DRIFT finding mislabeled
+        # is_eval=False (hm) — the eval-review->prod-event direction.
+        ev = await _seed_review(conn, status="completed", is_eval=True, age_days=1, repo_id=300)
+        await _seed_llm(conn, ev, cost_usd=9.99, age_days=1, is_eval=True)  # agrees
+        await _seed_finding(
+            conn,
+            ev,
+            content_hash="he",
+            severity="critical",
+            tier="inferred",
+            age_days=1,
+            is_eval=True,  # agrees
+        )
+        await _seed_finding(
+            conn,
+            ev,
+            content_hash="hm",
+            severity="low",
+            tier="judged",
+            age_days=1,
+            is_eval=False,  # DRIFT (eval review, prod-labeled event)
+        )
+
+    app = FastAPI()
+    app.include_router(metrics_router)
+    app.state.session_factory = session_factory
+    app.state.admin_api_key = SecretStr(_ADMIN_KEY)
+    try:
+        yield TestClient(app)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_is_eval_drift_events_excluded_both_directions(
+    divergent_eval_client: TestClient,
+) -> None:
+    """An audit event whose `is_eval` DISAGREES with its review is drift and must not count — in
+    EITHER direction — matching the FUP-130 equality predicate (`reviews.py`) + the replay
+    consistency check. The endpoint requires `AuditEvent.is_eval == Review.is_eval`, so a
+    prod-review eval-labeled event (the case a one-sided `Review.is_eval` filter would have leaked)
+    AND an eval-review prod-labeled event are BOTH rejected — under production and include_eval.
+    """
+    # Production (include_eval defaults False): only the agreeing prod data (hp, $0.10).
+    body = _get(divergent_eval_client, window="7d")
+    cur = body["deltas"]["current"]
+    assert cur["findings"] == 1  # hp only — hd (drift) + he/hm (eval/drift) excluded
+    assert cur["cost_usd"] == pytest.approx(0.10)  # cp only — cd (drift) + ce (eval) excluded
+    assert body["severity_distribution"]["critical"] == 0  # neither hd (drift) nor he (eval) leaked
+    assert body["evidence_tier_distribution"]["observed"] == 1  # only hp
+
+    # include_eval=true: agreeing prod + agreeing eval (hp + he); drift (hd, hm, cd) stays excluded.
+    full = _get(divergent_eval_client, window="7d", include_eval="true")
+    fcur = full["deltas"]["current"]
+    assert fcur["findings"] == 2  # hp + he; hd + hm (drift) still excluded
+    assert fcur["cost_usd"] == pytest.approx(10.09)  # cp 0.10 + ce 9.99; cd (drift) excluded
+    assert full["severity_distribution"]["critical"] == 1  # he (agreeing eval), NOT hd (drift)

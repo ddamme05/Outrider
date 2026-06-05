@@ -54,7 +54,7 @@ function metrics(overrides: Record<string, unknown> = {}) {
     evidence_tier_distribution: { observed: 29, inferred: 14, judged: 20 },
     deltas: {
       current: { reviews: 24, cost_usd: 14.2, findings: 63, failed: 2 },
-      previous: { reviews: 20, cost_usd: 11.68, findings: 63, failed: 4 },
+      previous: { reviews: 20, cost_usd: 11.68, findings: 60, failed: 4 },
     },
     ...overrides,
   };
@@ -93,6 +93,8 @@ test("KPI cards render the windowed metric totals + period-over-period deltas", 
   // Reviews 24 vs prior 20 → up-good ▲ 20%. Failed 2 vs prior 4 → fewer-is-good ▼ 50%.
   expect(screen.getByText("20%")).toBeInTheDocument();
   expect(screen.getByText("50%")).toBeInTheDocument();
+  // Findings 63 vs prior 60 → neutral, but still shows magnitude (grey), not a flat dash.
+  expect(screen.getByText("5.0%")).toBeInTheDocument();
 });
 
 test("renders the analytics chrome — delta, sparkline, hero chart, range selector", async () => {
@@ -164,6 +166,13 @@ test("the needs-your-decision rail lists awaiting reviews", async () => {
   expect(await screen.findByText("Needs decision")).toBeInTheDocument();
   // rail rows render once the approval queries resolve (the header is immediate)
   expect(await screen.findByText("repo 100")).toBeInTheDocument();
+});
+
+test("rail shows the 'X of Y' notice when the queue exceeds the loaded page", async () => {
+  // 1 row loaded but a server total of 5 → the truncation notice must render (server `total`,
+  // not loaded-page length, drives it).
+  mount({ awaiting: [review({ id: "a", repo_id: 100, pr_number: 7 })], awaitingTotal: 5 });
+  expect(await screen.findByText(/Showing 1 of 5 reviews awaiting/)).toBeInTheDocument();
 });
 
 test("rail empty state when nothing awaits", async () => {
