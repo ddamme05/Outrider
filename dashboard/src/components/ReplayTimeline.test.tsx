@@ -349,3 +349,34 @@ test("an expanded panel survives a refetch (2s poll) without perturbing the scru
   rerender(<ReplayTimeline data={{ ...d, findings: [findingContent("f-1")] } as typeof d} />);
   expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
 });
+
+test("a finding expand shows its proof artifacts (tier + query_match_id), even when redacted", async () => {
+  const user = userEvent.setup();
+  // OBSERVED finding (proof = a query match) whose CONTENT is retention-redacted.
+  const fev = { ...findingEvent("e-p", "f-p"), evidence_tier: "observed", query_match_id: "sql_string_format.scm" };
+  render(
+    <ReplayTimeline
+      data={data({
+        events: [fev],
+        phases: [phaseWith([fev])],
+        findings: [
+          findingContent("f-p", {
+            content_redacted: true,
+            title: null,
+            description: null,
+            evidence: null,
+            suggested_fix: null,
+            redaction_sweep_at: "2026-05-20T00:00:00Z",
+          }),
+        ],
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  // Proof artifacts ride the permanent FindingEvent — they render even on a redacted stub.
+  const proof = document.querySelector(".tl-c-proof");
+  expect(proof).toHaveTextContent("observed");
+  expect(proof).toHaveTextContent("sql_string_format.scm");
+  // ...while the content itself is redacted.
+  expect(screen.getByText(/Content redacted/)).toBeInTheDocument();
+});

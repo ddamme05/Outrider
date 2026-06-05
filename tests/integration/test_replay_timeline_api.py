@@ -429,16 +429,16 @@ def _hitl_override(review_id: UUID, finding_id: UUID) -> HITLDecisionEvent:
 
 
 async def _insert_purge_audit(
-    engine: AsyncEngine, *, target_table: str, timestamp_iso: str
+    engine: AsyncEngine, *, target_table: str, timestamp_iso: str, installation_id: int = 0
 ) -> None:
     async with engine.begin() as conn:
         await conn.execute(
             text(
                 "INSERT INTO purge_audit "
                 "(installation_id, target_table, rows_affected, purge_role, timestamp) "
-                "VALUES (0, :tt, 1, 'sweep', :ts)"
+                "VALUES (:iid, :tt, 1, 'sweep', :ts)"
             ),
-            {"tt": target_table, "ts": timestamp_iso},
+            {"iid": installation_id, "tt": target_table, "ts": timestamp_iso},
         )
 
 
@@ -594,3 +594,38 @@ async def test_redaction_sweep_date_from_purge_audit(engine: AsyncEngine) -> Non
     # Each content type reads its OWN target_table sweep row, not the other's.
     assert fv["redaction_sweep_at"].startswith("2026-05-01")
     assert lv["redaction_sweep_at"].startswith("2026-05-20")
+
+
+@pytest.mark.asyncio
+async def test_redaction_sweep_date_scoped_to_review_installation(engine: AsyncEngine) -> None:
+    # MIXED: the review survives (installation_id present) while the shorter-TTL llm_call_content is
+    # purged. The LLM stub's sweep date must resolve from a purge_audit row scoped to the REVIEW's
+    # installation — exercising the (installation_id, GLOBAL) branch via the INSTALLATION match, not
+    # just the global sentinel covered by test_redaction_sweep_date_from_purge_audit.
+    review_id = uuid4()
+    finding = _finding(review_id)
+    llm = _llm_call(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id, status="completed")
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, llm)
+    await _insert_event(engine, finding)
+    await _insert_event(engine, _phase(review_id, "analyze", "end"))
+    await _seed_finding_row(engine, finding)  # finding content survives
+    # llm content purged -> MIXED; the sweep row carries the review's installation, not global 0.
+    await _insert_purge_audit(
+        engine,
+        target_table="llm_call_content",
+        timestamp_iso="2026-05-15T00:00:00+00:00",
+        installation_id=_INSTALLATION_ID,
+    )
+
+    body = _get(_mount(engine), review_id)
+    assert body["mode"] == "mixed"
+    (lv,) = body["llm_exchanges"]
+    assert lv["content_redacted"] is True
+    assert lv["redaction_sweep_at"].startswith("2026-05-15")
+    # The surviving finding content carries no redaction date.
+    (fv,) = body["findings"]
+    assert fv["content_redacted"] is False
+    assert fv["redaction_sweep_at"] is None
