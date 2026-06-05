@@ -1,31 +1,40 @@
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
-import { StatCard } from "../components/StatCard";
+import { HeroChart } from "../components/HeroChart";
+import { MetricCard } from "../components/MetricCard";
+import { RangeSeg, type MetricsWindow } from "../components/RangeSeg";
+import { SeverityBar } from "../components/SeverityBar";
 import { StatusPill } from "../components/StatusPill";
+import { TierRows } from "../components/TierRows";
+import { deltaInfo } from "../lib/metrics";
 import { useFilters } from "../state/filters";
 
 type ReviewListItem = components["schemas"]["ReviewListItem"];
 
-// The Overview is the operational landing screen. Stat cards show CURRENT counts
-// from server-side totals (each by-status count is a status-filtered query's
-// `total`, never a count of a loaded page — the queue is paginated). NO deltas,
-// sparklines, charts, or time-range: those need a metrics/time-series endpoint we
-// don't have, and inventing them would fabricate analytics (spec non-goal). Below
-// the cards is the "needs your decision" HITL rail (server-side status-filtered).
+// The Overview is the operational landing screen + the Signal analytics surface
+// (DECISIONS#039). The KPI cards, sparklines, hero chart, and distributions are
+// REAL read-only aggregations over the audit stream (GET /api/metrics, windowed by
+// the range selector) — honest zeros on a sparse window, never an invented series.
+// Below the analytics is the "needs your decision" HITL rail (server-side
+// status-filtered, fails closed). Replay-% is intentionally absent — it has no
+// cross-review aggregate source yet (sibling replay-verdict-projection feature).
 export function Overview() {
   const includeEval = useFilters((s) => s.includeEval);
+  const [window, setWindow] = useState<MetricsWindow>("7d");
   const opts = { refetchInterval: 2000 } as const;
-  // Unfiltered: grand total + the loaded rows we sum cost over.
-  const all = $api.useQuery(
+
+  const metrics = $api.useQuery(
     "get",
-    "/api/reviews",
-    { params: { query: { include_eval: includeEval, limit: 200 } } },
+    "/api/metrics",
+    { params: { query: { window, include_eval: includeEval } } },
     opts,
   );
-  // Status-filtered counts use each query's `total` (server-side), not loaded rows.
-  // awaiting/expired keep limit 200 because they ALSO feed the rail rows below.
+
+  // The HITL rail's two approval-queue queries (kept at limit 200 because they
+  // ALSO feed the rail rows). The analytics above read from /api/metrics instead.
   const awaiting = $api.useQuery(
     "get",
     "/api/reviews",
@@ -42,48 +51,13 @@ export function Overview() {
     },
     opts,
   );
-  const completed = $api.useQuery(
-    "get",
-    "/api/reviews",
-    { params: { query: { include_eval: includeEval, status: "completed", limit: 1 } } },
-    opts,
-  );
-  const failed = $api.useQuery(
-    "get",
-    "/api/reviews",
-    { params: { query: { include_eval: includeEval, status: "failed", limit: 1 } } },
-    opts,
-  );
 
-  if (all.isLoading) {
-    return <p>Loading…</p>;
-  }
-  if (all.error) {
-    return <p className="error">Failed to load the overview.</p>;
-  }
-
-  const count = (query: { data?: { total: number } | undefined }): string =>
-    query.data ? String(query.data.total) : "…";
-
-  // HITL visibility fails CLOSED. The two approval-queue queries gate the rail
-  // (and the "Awaiting decision" card) independently of `all`: if either errors
-  // before it ever resolved, never render a confident count or an "all clear"
-  // empty rail. The backend gate still holds the review at AWAITING_APPROVAL —
-  // this guards the operator's window into it, so "couldn't check" never reads as
-  // "nothing awaiting." Once resolved, react-query keeps last-good data across a
-  // failed background refetch, so a stale-but-real count/list still shows.
+  // HITL visibility fails CLOSED (unchanged from the pre-analytics Overview): never
+  // render a confident "0 awaiting" or an all-clear rail if either approval query
+  // errored before it ever resolved. react-query keeps last-good data across a
+  // failed background refetch, so a stale-but-real count still shows.
   const awaitingResolved = awaiting.data !== undefined && expired.data !== undefined;
   const awaitingError = Boolean(awaiting.error || expired.error);
-  const awaitingTotal = awaitingResolved
-    ? String((awaiting.data?.total ?? 0) + (expired.data?.total ?? 0))
-    : awaitingError
-      ? "—"
-      : "…";
-  const loadedCost = (all.data?.reviews ?? []).reduce(
-    (sum, r) => sum + r.metrics.total_cost_usd,
-    0,
-  );
-
   const railRows: ReviewListItem[] = [
     ...(awaiting.data?.reviews ?? []),
     ...(expired.data?.reviews ?? []),
@@ -91,15 +65,29 @@ export function Overview() {
   const railLoaded = railRows.length;
   const railTotal = (awaiting.data?.total ?? 0) + (expired.data?.total ?? 0);
 
+  const d = metrics.data;
+
   return (
     <section>
-      <div className="stat-row">
-        <StatCard label="Reviews" value={count(all)} cap="total" />
-        <StatCard label="Awaiting decision" value={awaitingTotal} cap="at the HITL gate" />
-        <StatCard label="Completed" value={count(completed)} />
-        <StatCard label="Failed" value={count(failed)} />
-        <StatCard label="Cost" value={`$${loadedCost.toFixed(2)}`} cap="across loaded reviews" />
+      <div className="ov-head">
+        <RangeSeg value={window} onChange={setWindow} />
       </div>
+
+      {metrics.error && !d ? (
+        <div className="panel">
+          <div className="panel-b">
+            <p className="error">Couldn&rsquo;t load metrics — retrying.</p>
+          </div>
+        </div>
+      ) : !d ? (
+        <div className="panel">
+          <div className="panel-b">
+            <p style={{ color: "var(--muted)" }}>Loading metrics…</p>
+          </div>
+        </div>
+      ) : (
+        <Analytics data={d} stale={Boolean(metrics.error)} />
+      )}
 
       <div className="panel">
         <div className="panel-h">
@@ -155,5 +143,85 @@ export function Overview() {
         )}
       </div>
     </section>
+  );
+}
+
+// The analytics block — pure render off a resolved metrics payload. Split out so
+// the loading/error/empty branching above stays readable and every value here is
+// a non-null field of `data` (the parent guards `data` before mounting this).
+function Analytics({
+  data,
+  stale,
+}: {
+  data: components["schemas"]["DashboardMetricsResponse"];
+  stale: boolean;
+}) {
+  const cur = data.deltas.current;
+  const prev = data.deltas.previous;
+  const sev = data.severity_distribution;
+  const buckets = data.buckets;
+  const avgCost = cur.reviews > 0 ? cur.cost_usd / cur.reviews : 0;
+
+  return (
+    <>
+      {stale ? (
+        <p className="queue-notice" role="alert">
+          Couldn&rsquo;t refresh metrics — showing the last loaded window.
+        </p>
+      ) : null}
+
+      <div className="stat-row">
+        <MetricCard
+          label="Reviews"
+          value={cur.reviews}
+          cap={`last ${data.window}`}
+          delta={deltaInfo(cur.reviews, prev.reviews, "up-good")}
+          spark={buckets.map((b) => b.reviews)}
+          sparkVariant="accent"
+        />
+        <MetricCard
+          label="Cost"
+          value={`$${cur.cost_usd.toFixed(2)}`}
+          cap={`$${avgCost.toFixed(2)} avg / review`}
+          delta={deltaInfo(cur.cost_usd, prev.cost_usd, "up-bad")}
+          spark={buckets.map((b) => b.cost_usd)}
+          sparkVariant="neg"
+        />
+        <MetricCard
+          label="Findings"
+          value={cur.findings}
+          cap={`${sev.critical ?? 0} crit · ${sev.high ?? 0} high · ${sev.medium ?? 0} med`}
+          delta={deltaInfo(cur.findings, prev.findings, "neutral")}
+          spark={buckets.map((b) => b.findings)}
+          sparkVariant="muted"
+        />
+        <MetricCard
+          label="Failed"
+          value={cur.failed}
+          cap={`last ${data.window}`}
+          delta={deltaInfo(cur.failed, prev.failed, "up-bad")}
+          spark={buckets.map((b) => b.failed)}
+          sparkVariant="pos"
+        />
+      </div>
+
+      <div className="grid-2">
+        <HeroChart buckets={buckets} granularity={data.granularity} />
+        <div className="panel dist-panel">
+          <div className="panel-h">
+            <h2>Findings distribution</h2>
+            <div className="sub">
+              {cur.findings} in {data.window}
+            </div>
+          </div>
+          <div className="panel-b">
+            <div className="dist-sub-h">by severity</div>
+            <SeverityBar distribution={sev} />
+            <div className="dist-sub-h">by evidence tier</div>
+            <TierRows distribution={data.evidence_tier_distribution} />
+          </div>
+        </div>
+      </div>
+    </>
   );
 }

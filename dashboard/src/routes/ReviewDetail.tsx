@@ -270,6 +270,19 @@ export function ReviewDetail() {
             <span className="mono">{eventCountLabel}</span> audit events
           </div>
         </div>
+        {/* the adaptive analyze⇄trace loop's headline output: how many files were
+            examined and how many were pulled in beyond the diff. Both null until
+            SynthesizeCompletedEvent — render "—", never a misleading 0. */}
+        <div className="ms-card">
+          <div className="lab">Files</div>
+          <div className="ms-val">
+            {m.files_examined ?? "—"}
+            <span style={{ color: "var(--faint)", fontSize: 12 }}> examined</span>
+          </div>
+          <div className="ms-sub">
+            <span className="mono">{m.files_traced_beyond_diff ?? "—"}</span> traced beyond diff
+          </div>
+        </div>
       </div>
 
       {/* pipeline — per-node cards from the audit stream */}

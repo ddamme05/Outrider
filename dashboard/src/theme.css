@@ -821,7 +821,7 @@ h1 {
 /* this-review metrics strip — 3 cards */
 .metrics-strip {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 14px;
 }
 @media (max-width: 1100px) {
@@ -1909,4 +1909,374 @@ table.policy tbody tr:hover {
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* ============================================================
+ * Overview analytics — KPI deltas/sparklines, hero chart,
+ * findings distributions, window selector (Signal, DECISIONS#039).
+ * Every surface here renders a REAL aggregate; honest zeros, no
+ * interpolation. Charts are hand-rolled SVG (no charting dep).
+ * ============================================================ */
+.ov-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+.rangeseg {
+  display: inline-flex;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.rseg {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-right: 1px solid var(--line2);
+  cursor: pointer;
+}
+.rseg:last-child {
+  border-right: 0;
+}
+.rseg:hover {
+  color: var(--text);
+}
+.rseg[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-on);
+}
+.rseg:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* KPI card analytics chrome — sparkline pinned bottom-right (the .card base is
+   position:relative + overflow:hidden), delta above it. */
+.metric-card {
+  padding: 14px 15px 13px;
+}
+.delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+.delta .num {
+  font-variant-numeric: tabular-nums;
+}
+.delta.up,
+.delta.down-good {
+  color: var(--pos);
+}
+.delta.down,
+.delta.up-bad {
+  color: var(--neg);
+}
+.delta.flat {
+  color: var(--muted);
+}
+.card-spark {
+  position: absolute;
+  right: 12px;
+  bottom: 11px;
+  width: 62px;
+  height: 22px;
+}
+.sk-accent {
+  color: var(--accent);
+}
+.sk-pos {
+  color: var(--pos);
+}
+.sk-neg {
+  color: var(--neg);
+}
+.sk-muted {
+  color: var(--muted);
+}
+
+/* two-column analytics row: hero chart | distributions */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1.7fr 1fr;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+@media (max-width: 1100px) {
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* hero chart (hand-rolled SVG) */
+.hero-chart .chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 6px;
+}
+.chart-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.chart-sub {
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 3px;
+}
+.chart-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chart-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.chart-toggle button {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 9px;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-right: 1px solid var(--line2);
+  cursor: pointer;
+}
+.chart-toggle button:last-child {
+  border-right: 0;
+}
+.chart-toggle button:hover {
+  color: var(--text);
+}
+.chart-toggle button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-on);
+}
+.chart-toggle button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.chart-plot {
+  position: relative;
+  padding: 4px 8px 0;
+}
+.chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.chart-ytick,
+.chart-xtick {
+  fill: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.chart-area {
+  fill: var(--accent);
+  opacity: 0.1;
+}
+.chart-line {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-dot {
+  fill: var(--accent);
+}
+.chart-bar {
+  fill: var(--accent);
+  opacity: 0.55;
+}
+.chart-marker {
+  fill: var(--accent);
+}
+.chart-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+.chart-hit:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.chart-tip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 2;
+}
+.chart-tip .tip-val {
+  color: var(--text);
+  font-weight: 600;
+}
+.chart-tip .tip-day {
+  color: var(--muted);
+}
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 16px 14px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.chart-legend b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* findings distribution panel */
+.dist-panel .panel-b {
+  padding-top: 14px;
+}
+.dist-sub-h {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+  font-family: var(--mono);
+  margin: 4px 0 9px;
+}
+.dist-sub-h ~ .dist-sub-h {
+  margin-top: 18px;
+}
+.dist-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 0 10px;
+}
+.seg-bar {
+  display: flex;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--on-bright);
+  min-width: 0;
+}
+.seg-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.seg-leg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-transform: capitalize;
+}
+.seg-leg-item b {
+  color: var(--text);
+  font-family: var(--mono);
+}
+.sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+/* evidence-tier magnitude tracks */
+.tier-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.tier-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 36px;
+  align-items: center;
+  gap: 10px;
+}
+.tier-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  text-transform: capitalize;
+}
+.tier-track {
+  height: 8px;
+  background: var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.tier-fill {
+  display: block;
+  height: 100%;
+  border-radius: 8px;
+}
+.tier-val {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.tier-note {
+  margin-top: 11px;
+}
+.tier-note code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+/* override-provenance line on a finding (its HITL decision) */
+.f-prov {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.f-prov .prov-k {
+  font-family: var(--mono);
+  color: var(--accent-on);
+  text-transform: capitalize;
+}
+.f-prov .prov-sev {
+  color: var(--text);
+}
+.f-prov .prov-by {
+  color: var(--faint);
 }
