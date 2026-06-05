@@ -152,25 +152,30 @@ test("an in-flight phase (no end marker) is labeled, not given a fabricated dura
 
 test("the step-back control moves the play cursor off the resting full view", async () => {
   const user = userEvent.setup();
+  const start = phaseMarker("analyze", "start", "2026-06-01T00:00:00Z");
   const e1 = llmEvent("e1", "analyze", 0.1);
   const e2 = llmEvent("e2", "analyze", 0.2);
+  const end = phaseMarker("analyze", "end", "2026-06-01T00:00:01Z");
   render(
     <ReplayTimeline
       data={data({
-        events: [e1, e2],
+        // Real wire shape: the flat stream CARRIES the phase start/end markers (the backend
+        // only strips the projected verdict). The two visible rows are e1/e2; the markers are
+        // represented by the phase card, never as rows — so playback must count 2, not 4.
+        events: [start, e1, e2, end],
         phases: [
           {
             phase_id: "p-analyze",
             node_id: "analyze",
-            start: phaseMarker("analyze", "start", "2026-06-01T00:00:00Z"),
-            end: phaseMarker("analyze", "end", "2026-06-01T00:00:01Z"),
+            start,
+            end,
             events: [e1, e2],
           },
         ],
       })}
     />,
   );
-  // Resting → the cursor sits at total/total.
+  // Resting → the cursor sits at total/total; total is the 2 RENDERED rows, NOT 4 (markers excluded).
   expect(screen.getByText("2/2")).toBeInTheDocument();
   // Step back once → cursor 1/2; the un-played last event goes "future", the cursor "current".
   await user.click(screen.getByRole("button", { name: "◀" }));

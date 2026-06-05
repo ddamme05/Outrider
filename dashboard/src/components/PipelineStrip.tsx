@@ -1,4 +1,5 @@
 import type { components } from "../api/schema";
+import { formatDurationMs, spanMs } from "../lib/format";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 // One reconstructed phase from the server's replay-VERIFIED grouping. A node can own
@@ -35,12 +36,6 @@ function prettyModel(model: string): string {
   return model;
 }
 
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const s = ms / 1000;
-  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
-}
-
 export function PipelineStrip({
   status,
   phases,
@@ -74,12 +69,10 @@ export function PipelineStrip({
     let total = 0;
     let any = false;
     for (const p of phasesFor(node)) {
-      if (p.start?.timestamp && p.end?.timestamp) {
-        const ms = new Date(p.end.timestamp).getTime() - new Date(p.start.timestamp).getTime();
-        if (Number.isFinite(ms) && ms >= 0) {
-          total += ms;
-          any = true;
-        }
+      const ms = spanMs(p.start?.timestamp, p.end?.timestamp);
+      if (ms !== null) {
+        total += ms;
+        any = true;
       }
     }
     return any ? total : null;
@@ -133,7 +126,7 @@ export function PipelineStrip({
     // it we show "—" — never an unbacked "passed"/"posted"/timing/cost.
     if (!phasesLoaded) return "—";
     const dur = durationMs(node);
-    const durStr = dur === null ? null : fmtDur(dur);
+    const durStr = dur === null ? null : formatDurationMs(dur);
     if (node === "hitl" || node === "publish") return durStr ?? "—";
     if (state !== "done") return "—";
     const parts: string[] = [];
