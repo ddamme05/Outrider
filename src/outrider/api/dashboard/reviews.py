@@ -53,6 +53,7 @@ from outrider.audit.events import (  # noqa: TC001 (runtime: Pydantic response-m
 from outrider.audit.events import ReplayVerdictEvent
 from outrider.audit.replay import (
     AuditReplayer,
+    ReconstructedPhase,
     ReplayEquivalenceError,
     ReplayReviewNotFoundError,
     reconstruct_event_from_row,
@@ -283,6 +284,40 @@ class ReplayVerdict(BaseModel):
     finding_count: int | None
     orphan_finding_count: int | None
     reason: str | None
+
+
+class ReplayTimelineResponse(BaseModel):
+    """The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6, PR 1).
+
+    A thin serialization of `reconstruct()`'s canonical `ReconstructedReview` — the same
+    reconstruction `assert_equivalent` consumes — NOT a re-interpretation of the audit
+    tables. Metadata-only RESPONSE: `reconstruct` reads the content tables server-side to
+    verify + classify `mode`, but no content is serialized here (content expansion is PR 2).
+
+    FUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,
+    so `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the
+    consumer falls back to the flat `events`. The failure contract mirrors `/replay`:
+    reconstruct-raised `ReplayEquivalenceError` → verdict only (`mode`/`status`/`phases` null,
+    `events` empty); reconstruct-raised `ValidationError` → 500; assert-raised → verdict false
+    + `mode` present + `phases` suppressed.
+
+    `events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion
+    replay metadata surfaced via the verdict, not a review-work operation — the `/replay`
+    `event_count` analogue). `inter_phase_events` is the positional set-difference (ordered
+    events not in any `phase.events`) — the transitions `_group_phases` drops from the grouped
+    view, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: UUID
+    replay_equivalent: bool
+    mode: str | None
+    reason: str | None
+    status: str | None
+    events: tuple[AuditEventUnion, ...]
+    phases: tuple[ReconstructedPhase, ...] | None
+    inter_phase_events: tuple[AuditEventUnion, ...]
 
 
 class ReviewEventsResponse(BaseModel):
@@ -802,6 +837,85 @@ async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict
         finding_count=len(reconstructed.findings),
         orphan_finding_count=len(reconstructed.orphan_finding_ids),
         reason=reason,
+    )
+
+
+@router.get("/{review_id}/replay-timeline", response_model=ReplayTimelineResponse)
+async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimelineResponse:
+    """Grouped, replay-verified timeline read-model (ROADMAP feature 6, PR 1).
+
+    Single-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)
+    then `assert_equivalent` over THAT SAME object — never `assert_replay_equivalent` (which
+    reconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`
+    inherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.
+    Phases (`reconstruct().phases`) are exposed ONLY on an equivalent verdict (FUP-125 — they are
+    trustworthy only once `_verify_phase_wellformed` has proven the non-nesting precondition that
+    makes `_group_phases` lossless). See `ReplayTimelineResponse` for the failure contract +
+    metadata-only / verdict-exclusion rules.
+    """
+    replayer = AuditReplayer(session_factory=request.app.state.session_factory)
+    try:
+        reconstructed = await replayer.reconstruct(review_id)
+    except ReplayReviewNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="review not found"
+        ) from exc
+    except ReplayEquivalenceError as exc:
+        # Reconstruction itself non-equivalent (row-vs-payload / is_eval drift) — verdict only;
+        # no trustworthy stream/phases exist. NOT a 500 (the verdict is the product). A corrupt
+        # payload that won't deserialize surfaces as ValidationError → 500 (genuine corruption).
+        return ReplayTimelineResponse(
+            review_id=review_id,
+            replay_equivalent=False,
+            mode=None,
+            reason=str(exc),
+            status=None,
+            events=(),
+            phases=None,
+            inter_phase_events=(),
+        )
+
+    equivalent = True
+    reason: str | None = None
+    try:
+        await replayer.assert_equivalent(reconstructed)
+    except ReplayEquivalenceError as exc:
+        equivalent = False
+        reason = str(exc)
+
+    # The flat ordered stream, EXCLUDING the projected ReplayVerdictEvent (post-completion replay
+    # metadata, surfaced via the verdict — not a review-work row; the /replay event_count analogue).
+    events = tuple(e for e in reconstructed.events if not isinstance(e, ReplayVerdictEvent))
+    review_status = reconstructed.review.status if reconstructed.review is not None else None
+
+    if equivalent:
+        phases: tuple[ReconstructedPhase, ...] | None = reconstructed.phases
+        # Positional set-difference: ordered events the phase structure does NOT account for — the
+        # inter-phase transitions `_group_phases` drops from the grouped view. A phase accounts for
+        # its `events` (between the markers) AND its `start`/`end` markers themselves, so exclude
+        # both; the verdict is already filtered out of `events`.
+        accounted_ids = {e.event_id for phase in reconstructed.phases for e in phase.events}
+        for phase in reconstructed.phases:
+            if phase.start is not None:
+                accounted_ids.add(phase.start.event_id)
+            if phase.end is not None:
+                accounted_ids.add(phase.end.event_id)
+        inter_phase = tuple(e for e in events if e.event_id not in accounted_ids)
+    else:
+        # FUP-125: the grouping is unverified — suppress phases; the consumer renders the flat
+        # `events` + a "not replay-equivalent — grouping unavailable" banner.
+        phases = None
+        inter_phase = ()
+
+    return ReplayTimelineResponse(
+        review_id=review_id,
+        replay_equivalent=equivalent,
+        mode=reconstructed.mode.value,
+        reason=reason,
+        status=review_status,
+        events=events,
+        phases=phases,
+        inter_phase_events=inter_phase,
     )
 
 
