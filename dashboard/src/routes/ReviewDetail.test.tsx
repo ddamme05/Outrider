@@ -132,12 +132,63 @@ test("renders header, aggregate metrics, and the replay verdict", async () => {
   expect(screen.getByText(/47 events · 5 findings · full/)).toBeInTheDocument();
 });
 
+test("metrics strip surfaces files_examined + files_traced_beyond_diff", async () => {
+  mount(); // detail() defaults: 5 examined, 2 traced beyond the diff
+  const filesCard = (await screen.findByText("Files")).closest(".ms-card");
+  expect(filesCard).toHaveTextContent("5");
+  expect(filesCard).toHaveTextContent("examined");
+  expect(filesCard).toHaveTextContent("2 traced beyond diff");
+});
+
+test("files render '—', never a misleading 0, before synthesize completes", async () => {
+  mount({
+    detail: detail({
+      metrics: {
+        llm_calls_made: 0,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_cost_usd: 0,
+        files_examined: null,
+        files_traced_beyond_diff: null,
+        wall_clock_seconds: null,
+      },
+    }),
+  });
+  const filesCard = (await screen.findByText("Files")).closest(".ms-card");
+  expect(filesCard).toHaveTextContent("—");
+  expect(filesCard).not.toHaveTextContent("0 examined");
+});
+
 test("renders a finding with severity pill, type, and destination", async () => {
   mount();
   expect(await screen.findByText(/sql_injection/)).toBeInTheDocument();
   const sevPill = screen.getByText("high");
   expect(sevPill.className).toContain("sev-high");
   expect(screen.getByText("INLINE_COMMENT")).toBeInTheDocument();
+});
+
+test("a finding with a HITL decision shows its override provenance", async () => {
+  mount({
+    findings: [
+      finding({
+        finding_id: "f2",
+        hitl_decision: {
+          outcome: "severity_override",
+          reviewer_id: "admin",
+          reason: "downgraded: test-only path",
+          original_severity: "high",
+          override_severity: "medium",
+        },
+      }),
+    ],
+  });
+  await screen.findByText(/sql_injection/);
+  const prov = document.querySelector(".f-prov");
+  expect(prov).not.toBeNull();
+  expect(prov).toHaveTextContent("severity_override");
+  expect(prov).toHaveTextContent("high → medium");
+  expect(prov).toHaveTextContent("by admin");
+  expect(prov).toHaveTextContent("downgraded: test-only path");
 });
 
 test("renders a redaction stub for content_redacted findings", async () => {

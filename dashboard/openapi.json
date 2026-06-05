@@ -386,7 +386,7 @@
           "dashboard"
         ],
         "summary": "Get Review Events",
-        "description": "The review's full audit-event stream, ordered by `sequence_number` (FUP-133).\n\nRead-only over `audit_events`, which is metadata-only by `DECISIONS.md#014`\n(hashes/ids/costs \u2014 never raw prompt or finding content), so there are no\ncontent-table joins and no redaction. Each row is rebuilt through the shared\n`reconstruct_event_from_row` (the replay read-path), so historical rows tolerate\npost-#025 field additions (DECISIONS.md#032) AND every row's mirrored base\ncolumns are verified against its payload. 404 when the review has no audit rows\n(parity with detail/replay). Like the detail endpoint, a by-id fetch is NOT\n`is_eval`-filtered \u2014 holding the id is sufficient to view it. A single review's\nstream is bounded by its graph run, so it is returned whole (no pagination).",
+        "description": "The review's full audit-event stream, ordered by `sequence_number` (FUP-133).\n\nRead-only over `audit_events`, which is metadata-only by `DECISIONS.md#014`\n(hashes/ids/costs \u2014 never raw prompt or finding content), so there are no\ncontent-table joins and no redaction. Each row is rebuilt through the shared\n`reconstruct_event_from_row` (the replay read-path), so historical rows tolerate\npost-#025 field additions (DECISIONS.md#032) AND every row's mirrored base\ncolumns are verified against its payload. 404 when the review doesn't exist.\nLike the detail endpoint, a by-id fetch is NOT gated on the caller's eval\npreference \u2014 holding the id is sufficient to view it \u2014 but the stream is\nscoped to the review's OWN `is_eval` (FUP-130 read-side defense): a divergent\neval event can't surface on a production review's explorer (the firehose was\nthe broadest unguarded leak). A single review's stream is bounded by its graph\nrun, so it is returned whole (no pagination).",
         "operationId": "get_review_events_api_reviews__review_id__events_get",
         "parameters": [
           {
@@ -450,6 +450,65 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PolicyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Metrics",
+        "description": "Honest Signal Overview analytics \u2014 see module docstring + `DECISIONS.md#039`.",
+        "operationId": "get_metrics_api_metrics_get",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "type": "string",
+              "default": "7d",
+              "title": "Window"
+            }
+          },
+          {
+            "name": "include_eval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Eval"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardMetricsResponse"
                 }
               }
             }
@@ -858,6 +917,64 @@
         ],
         "title": "ContextManifestEntry",
         "description": "One scope-unit entry inside `LLMCallEvent.context_summary`.\n\nFrozen + extra=forbid because the outer event's `frozen=True` does\nnot propagate to nested Pydantic models. Without this, an entry\ncould be mutated post-construction (`entry.file_path = \"...\"`) even\nwhen the containing event is frozen and the tuple is immutable."
+      },
+      "DashboardMetricsResponse": {
+        "properties": {
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h",
+              "7d",
+              "30d"
+            ],
+            "title": "Window"
+          },
+          "granularity": {
+            "type": "string",
+            "title": "Granularity"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/MetricBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          },
+          "severity_distribution": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Severity Distribution"
+          },
+          "evidence_tier_distribution": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Evidence Tier Distribution"
+          },
+          "deltas": {
+            "$ref": "#/components/schemas/MetricDeltas"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "window",
+          "granularity",
+          "generated_at",
+          "buckets",
+          "severity_distribution",
+          "evidence_tier_distribution",
+          "deltas"
+        ],
+        "title": "DashboardMetricsResponse"
       },
       "EvidenceTier": {
         "type": "string",
@@ -1867,6 +1984,64 @@
         "title": "LLMCallEvent",
         "description": "Metadata for one LLM call. Content lives in `llm_call_content` per #016.\n\nToken / cost / latency fields carry `ge=0` constraints so the cost-budget\nanomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't\nbe poisoned by a malformed negative-cost event understating review cost.\n\n`pricing_version` records the `llm.pricing.PRICING_VERSION` value the\nwrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended\n2026-05-05. Replay reads this field directly so reconstruction never\ndepends on an external version-effective-range map."
       },
+      "MetricBucket": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Bucket"
+          },
+          "reviews": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reviews"
+          },
+          "cost_usd": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Cost Usd"
+          },
+          "findings": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Findings"
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Failed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bucket",
+          "reviews",
+          "cost_usd",
+          "findings",
+          "failed"
+        ],
+        "title": "MetricBucket",
+        "description": "One UTC time bucket (hour or day) of honest counts; zero-filled across the window."
+      },
+      "MetricDeltas": {
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/PeriodTotals"
+          },
+          "previous": {
+            "$ref": "#/components/schemas/PeriodTotals"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current",
+          "previous"
+        ],
+        "title": "MetricDeltas",
+        "description": "Current vs the immediately-prior equal-length window (frontend computes the %)."
+      },
       "PerFindingDecision": {
         "properties": {
           "finding_id": {
@@ -1959,6 +2134,39 @@
         ],
         "title": "PerFindingOutcome",
         "description": "Per-finding HITL decision outcomes per spec \u00a77.4."
+      },
+      "PeriodTotals": {
+        "properties": {
+          "reviews": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reviews"
+          },
+          "cost_usd": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Cost Usd"
+          },
+          "findings": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Findings"
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Failed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reviews",
+          "cost_usd",
+          "findings",
+          "failed"
+        ],
+        "title": "PeriodTotals"
       },
       "PolicyEntry": {
         "properties": {

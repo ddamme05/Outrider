@@ -185,10 +185,13 @@ export interface paths {
          *     content-table joins and no redaction. Each row is rebuilt through the shared
          *     `reconstruct_event_from_row` (the replay read-path), so historical rows tolerate
          *     post-#025 field additions (DECISIONS.md#032) AND every row's mirrored base
-         *     columns are verified against its payload. 404 when the review has no audit rows
-         *     (parity with detail/replay). Like the detail endpoint, a by-id fetch is NOT
-         *     `is_eval`-filtered — holding the id is sufficient to view it. A single review's
-         *     stream is bounded by its graph run, so it is returned whole (no pagination).
+         *     columns are verified against its payload. 404 when the review doesn't exist.
+         *     Like the detail endpoint, a by-id fetch is NOT gated on the caller's eval
+         *     preference — holding the id is sufficient to view it — but the stream is
+         *     scoped to the review's OWN `is_eval` (FUP-130 read-side defense): a divergent
+         *     eval event can't surface on a production review's explorer (the firehose was
+         *     the broadest unguarded leak). A single review's stream is bounded by its graph
+         *     run, so it is returned whole (no pagination).
          */
         get: operations["get_review_events_api_reviews__review_id__events_get"];
         put?: never;
@@ -217,6 +220,26 @@ export interface paths {
          *     than a partial table. Entries sorted by `finding_type` for a stable render.
          */
         get: operations["get_policy_api_policy__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Metrics
+         * @description Honest Signal Overview analytics — see module docstring + `DECISIONS.md#039`.
+         */
+        get: operations["get_metrics_api_metrics_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -478,6 +501,32 @@ export interface components {
              * @enum {string}
              */
             inclusion_reason: "changed_scope" | "same_file_context" | "trace_expansion";
+        };
+        /** DashboardMetricsResponse */
+        DashboardMetricsResponse: {
+            /**
+             * Window
+             * @enum {string}
+             */
+            window: "24h" | "7d" | "30d";
+            /** Granularity */
+            granularity: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Buckets */
+            buckets: components["schemas"]["MetricBucket"][];
+            /** Severity Distribution */
+            severity_distribution: {
+                [key: string]: number;
+            };
+            /** Evidence Tier Distribution */
+            evidence_tier_distribution: {
+                [key: string]: number;
+            };
+            deltas: components["schemas"]["MetricDeltas"];
         };
         /**
          * EvidenceTier
@@ -1034,6 +1083,33 @@ export interface components {
             degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope") | null;
         };
         /**
+         * MetricBucket
+         * @description One UTC time bucket (hour or day) of honest counts; zero-filled across the window.
+         */
+        MetricBucket: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Reviews */
+            reviews: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Findings */
+            findings: number;
+            /** Failed */
+            failed: number;
+        };
+        /**
+         * MetricDeltas
+         * @description Current vs the immediately-prior equal-length window (frontend computes the %).
+         */
+        MetricDeltas: {
+            current: components["schemas"]["PeriodTotals"];
+            previous: components["schemas"]["PeriodTotals"];
+        };
+        /**
          * PerFindingDecision
          * @description One reviewer's decision on one finding.
          *
@@ -1084,6 +1160,17 @@ export interface components {
          * @enum {string}
          */
         PerFindingOutcome: "approve" | "reject" | "suppress" | "severity_override";
+        /** PeriodTotals */
+        PeriodTotals: {
+            /** Reviews */
+            reviews: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Findings */
+            findings: number;
+            /** Failed */
+            failed: number;
+        };
         /**
          * PolicyEntry
          * @description One `FindingType` → severity row for a policy version. `dimension` always
@@ -2135,6 +2222,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PolicyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metrics_api_metrics_get: {
+        parameters: {
+            query?: {
+                window?: "24h" | "7d" | "30d";
+                include_eval?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardMetricsResponse"];
                 };
             };
             /** @description Validation Error */

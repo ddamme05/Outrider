@@ -130,6 +130,26 @@ export function FindingCard({
             {finding.eligibility_reason ? ` · ${finding.eligibility_reason}` : ""}
           </div>
         ) : null}
+
+        {/* override provenance: present-or-absent as a unit (a finding never decided
+            on has hitl_decision === null). The severity pair is non-null ONLY under
+            outcome "severity_override" — guard before rendering the arrow. */}
+        {finding.hitl_decision ? (
+          <div className="f-prov">
+            <span className="prov-k">HITL · {finding.hitl_decision.outcome}</span>
+            {finding.hitl_decision.outcome === "severity_override" &&
+            finding.hitl_decision.original_severity &&
+            finding.hitl_decision.override_severity ? (
+              <span className="prov-sev mono">
+                {finding.hitl_decision.original_severity} → {finding.hitl_decision.override_severity}
+              </span>
+            ) : null}
+            <span className="prov-by">by {finding.hitl_decision.reviewer_id}</span>
+            {finding.hitl_decision.reason ? (
+              <span className="prov-reason"> · {finding.hitl_decision.reason}</span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {decision && onDecisionChange ? (
