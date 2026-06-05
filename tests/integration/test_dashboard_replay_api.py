@@ -27,6 +27,7 @@ from outrider.audit.events import (
     AuditEventBase,
     FindingEvent,
     LLMCallEvent,
+    ReplayVerdictEvent,
     ReviewPhaseEvent,
     compute_finding_content_hash,
 )
@@ -167,6 +168,35 @@ async def test_replay_verdict_equivalent(
     assert v["finding_count"] == 1
     assert v["orphan_finding_count"] == 0
     assert v["reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_replay_event_count_excludes_projected_verdict(
+    replay_client: tuple[TestClient, UUID, AsyncEngine],
+) -> None:
+    # Once the background projector appends a `replay_verdict` event, this full-stream
+    # reconstruct would otherwise count it (event_count 4 -> 5), diverging from the PERSISTED
+    # verdict's count (the judged non-verdict prefix). The verdict is replay METADATA, not
+    # review work, so it must be excluded. Revert-the-fold: drop the isinstance filter and the
+    # count becomes 5.
+    client, review_id, engine = replay_client
+    await _insert_event(
+        engine,
+        ReplayVerdictEvent(
+            review_id=review_id,
+            replay_equivalent=True,
+            mode="metadata_only",
+            event_count=4,
+            finding_count=1,
+            orphan_finding_count=0,
+            target_max_sequence_number=4,
+        ),
+    )
+    resp = client.get(f"/api/reviews/{review_id}/replay", headers=_AUTH)
+    assert resp.status_code == 200
+    v = resp.json()
+    assert v["event_count"] == 4  # the 4 work events, NOT 5 — the verdict row is excluded
+    assert v["replay_equivalent"] is True  # verdict is phase-unbounded-exempt; assert still passes
 
 
 @pytest.mark.asyncio
