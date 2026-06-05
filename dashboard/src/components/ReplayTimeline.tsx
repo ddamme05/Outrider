@@ -7,12 +7,71 @@ import { AuditFeed } from "./AuditFeed";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
+type FindingContent = TimelineData["findings"][number];
+type LLMContent = TimelineData["llm_exchanges"][number];
 
 // The duration slot stays empty for an open phase — the in-flight pill conveys that state,
 // so it isn't repeated here as text.
 function phaseDuration(phase: Phase): string {
   const ms = spanMs(phase.start?.timestamp, phase.end?.timestamp);
   return ms === null ? "—" : formatDurationMs(ms);
+}
+
+// Retention-redacted stub — content purged, metadata permanent (DECISIONS#014/#016, the same
+// shape FindingCard renders). The redaction date is the per-table-per-sweep `purge_audit` time.
+function RedactedNote({ kind, sweepAt }: { kind: "finding" | "llm"; sweepAt: string | null }) {
+  const permanent = kind === "finding" ? "type, severity, location, proof" : "model, tokens, cost";
+  const purged = kind === "finding" ? "title/description/evidence/fix" : "prompt/response";
+  return (
+    <div className="tl-content f-desc redacted">
+      Content redacted{sweepAt ? ` in the retention sweep on ${sweepAt.slice(0, 10)}` : ""}. The
+      {kind === "finding" ? " finding's" : " call's"} metadata ({permanent}) is permanent; its{" "}
+      {purged} were purged per the retention policy.
+    </div>
+  );
+}
+
+function FindingContentPanel({ content }: { content: FindingContent }) {
+  if (content.content_redacted) {
+    return <RedactedNote kind="finding" sweepAt={content.redaction_sweep_at} />;
+  }
+  const h = content.hitl_decision;
+  return (
+    <div className="tl-content">
+      {content.title ? <div className="tl-c-title">{content.title}</div> : null}
+      {content.description ? <div className="tl-c-body">{content.description}</div> : null}
+      {content.evidence ? <pre className="tl-c-pre">{content.evidence}</pre> : null}
+      {content.suggested_fix ? <div className="tl-c-fix">Fix: {content.suggested_fix}</div> : null}
+      {h ? (
+        // Override provenance from the HITLDecisionEvent stream (DECISIONS#034), never the table.
+        <div className="f-prov">
+          {h.outcome}
+          {h.original_severity && h.override_severity ? (
+            <span className="prov-sev">
+              {" "}
+              · {h.original_severity} → {h.override_severity}
+            </span>
+          ) : null}
+          <span className="prov-by"> · by {h.reviewer_id}</span>
+          {h.reason ? <span> · {h.reason}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LLMContentPanel({ content }: { content: LLMContent }) {
+  if (content.content_redacted) {
+    return <RedactedNote kind="llm" sweepAt={content.redaction_sweep_at} />;
+  }
+  return (
+    <div className="tl-content">
+      <div className="tl-c-label">prompt</div>
+      <pre className="tl-c-pre">{content.prompt}</pre>
+      <div className="tl-c-label">completion</div>
+      <pre className="tl-c-pre">{content.completion}</pre>
+    </div>
+  );
 }
 
 function VerdictHeader({ data }: { data: TimelineData }) {
@@ -31,11 +90,12 @@ function VerdictHeader({ data }: { data: TimelineData }) {
   );
 }
 
-// A read-only playable view of a review's reconstructed audit stream (ROADMAP feature 6,
-// PR 1). The grouped `phases` come from the server's replay-VERIFIED reconstruction and are
-// present only on an equivalent verdict (FUP-125); a non-equivalent review degrades to the
-// flat ordered feed + a banner. Metadata-only — no content expansion (PR 2). Playback is
-// pure client-side stepping over the static ordered DTO; nothing is fabricated.
+// A read-only playable view of a review's reconstructed audit stream (ROADMAP feature 6).
+// The grouped `phases` come from the server's replay-VERIFIED reconstruction and are present
+// only on an equivalent verdict (FUP-125); a non-equivalent review degrades to the flat ordered
+// feed + a banner. `finding` / `llm_call` rows expand on click to show the content `findings` /
+// `llm_exchanges` carry (PR 2) — redacted-stub when purged. Playback is pure client-side stepping
+// over the static ordered DTO; nothing is fabricated.
 export function ReplayTimeline({ data }: { data: TimelineData }) {
   const events = data.events;
   // The rows the GROUPED view actually renders, in chronological order: the flat stream MINUS
@@ -63,6 +123,28 @@ export function ReplayTimeline({ data }: { data: TimelineData }) {
     [rendered],
   );
 
+  // Content lookups for the expand panels: findings by finding_id, LLM exchanges by event_id.
+  const findingsByFid = useMemo(
+    () => new Map(data.findings.map((f) => [f.finding_id, f])),
+    [data.findings],
+  );
+  const llmByEventId = useMemo(
+    () => new Map(data.llm_exchanges.map((x) => [x.event_id, x])),
+    [data.llm_exchanges],
+  );
+
+  // Per-row expand state, keyed by event_id — independent of playback (`shown`/`orderIndex`) and
+  // NOT reset by the 2s poll (only a review change clears it), so an open panel survives refetches.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  useEffect(() => setExpanded(new Set()), [data.review_id]);
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   // Reset playback when the review (its rendered set) changes.
   useEffect(() => {
     setShown(total);
@@ -89,13 +171,43 @@ export function ReplayTimeline({ data }: { data: TimelineData }) {
     return i >= shown ? "future" : "";
   };
 
-  const row = (e: AuditEvent, withNode: boolean) => (
-    <div key={e.event_id} className={`tl-evrow ev-c-${eventFamily(e.event_type)} ${cls(e)}`}>
-      <span className="af-type mono">{e.event_type}</span>
-      {withNode ? <span className="af-node mono">{eventNode(e) ?? ""}</span> : null}
-      <span className="af-summary">{summarizeEvent(e)}</span>
-    </div>
-  );
+  const row = (e: AuditEvent, withNode: boolean) => {
+    const fc = e.event_type === "finding" ? findingsByFid.get(e.finding_id) : undefined;
+    const lc = e.event_type === "llm_call" ? llmByEventId.get(e.event_id ?? "") : undefined;
+    const id = e.event_id ?? "";
+    const expandable = fc !== undefined || lc !== undefined;
+    const open = expandable && expanded.has(id);
+    return (
+      <div key={e.event_id} className="tl-evgroup">
+        <div
+          className={`tl-evrow ev-c-${eventFamily(e.event_type)} ${cls(e)}${expandable ? " tl-expandable" : ""}`}
+          role={expandable ? "button" : undefined}
+          tabIndex={expandable ? 0 : undefined}
+          aria-expanded={expandable ? open : undefined}
+          onClick={expandable ? () => toggle(id) : undefined}
+          onKeyDown={
+            expandable
+              ? (ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.preventDefault();
+                    toggle(id);
+                  }
+                }
+              : undefined
+          }
+        >
+          <span className="af-type mono">
+            {expandable ? (open ? "▾ " : "▸ ") : ""}
+            {e.event_type}
+          </span>
+          {withNode ? <span className="af-node mono">{eventNode(e) ?? ""}</span> : null}
+          <span className="af-summary">{summarizeEvent(e)}</span>
+        </div>
+        {open && fc ? <FindingContentPanel content={fc} /> : null}
+        {open && lc ? <LLMContentPanel content={lc} /> : null}
+      </div>
+    );
+  };
 
   // FUP-125: phases are trustworthy only on an equivalent verdict. Otherwise the grouping is
   // suppressed server-side (`phases === null`); render the flat ordered stream + a banner.

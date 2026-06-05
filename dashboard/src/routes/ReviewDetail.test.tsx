@@ -76,6 +76,8 @@ function timelineData(overrides: Record<string, unknown> = {}) {
     events: [],
     phases: [],
     inter_phase_events: [],
+    findings: [],
+    llm_exchanges: [],
     ...overrides,
   };
 }
