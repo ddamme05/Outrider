@@ -6,7 +6,7 @@ import { $api } from "../api/client";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
-import { ReplayTimeline } from "../components/ReplayTimeline";
+import { ReplayFeed } from "../components/ReplayFeed";
 import { StatusPill } from "../components/StatusPill";
 import { expiresLabel } from "../lib/format";
 import {
@@ -62,7 +62,6 @@ export function ReviewDetail() {
 
   // Hooks must run unconditionally, before the early returns below.
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"findings" | "timeline">("findings");
   const [showPolicy, setShowPolicy] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -193,8 +192,8 @@ export function ReviewDetail() {
         </p>
       ) : null}
 
-      {/* hero panel — subject identity + replay verdict (no author/repo-slug: not
-          exposed by the API; no "reconstruct" button: that screen isn't built) */}
+      {/* hero panel — subject identity + the "Replay · reconstruct" action + the replay
+          verdict (no author/repo-slug: not exposed by the API) */}
       <div className="panel">
         <div className="panel-b">
           <div className="rd-head">
@@ -228,6 +227,28 @@ export function ReviewDetail() {
               </div>
             </div>
             <div className="rd-actions">
+              <Link
+                to={`/reviews/${reviewId}/replay`}
+                className="btn primary"
+                aria-label="Open the real-time replay reconstruction for this review"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path
+                    d="M3 8a5 5 0 1 1 1.5 3.5"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M2 5v3h3"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                Replay · reconstruct
+              </Link>
               {timeline.data ? (
                 <span className="pill" aria-label="replay verdict">
                   {timeline.data.replay_equivalent ? (
@@ -300,7 +321,7 @@ export function ReviewDetail() {
       </div>
 
       {/* pipeline — per-node cards from the server's replay-verified reconstruction
-          (one reconstruction surface, rendered two ways: here + the timeline tab). */}
+          (the same verified phases the audit feed below + the Replay page render). */}
       <PipelineStrip
         status={d.status}
         phases={timeline.data?.phases ?? null}
@@ -308,78 +329,63 @@ export function ReviewDetail() {
         policyVersion={d.policy_version}
       />
 
-      {/* findings / replay timeline */}
-      <div className="tabs" role="tablist">
-        <button
-          className={`tab ${tab === "findings" ? "active" : ""}`}
-          role="tab"
-          aria-selected={tab === "findings"}
-          onClick={() => setTab("findings")}
-        >
-          Findings <span className="muted">({findingCountLabel})</span>
-        </button>
-        <button
-          className={`tab ${tab === "timeline" ? "active" : ""}`}
-          role="tab"
-          aria-selected={tab === "timeline"}
-          onClick={() => setTab("timeline")}
-        >
-          Timeline <span className="muted">({eventCountLabel})</span>
-        </button>
+      {/* findings */}
+      <div className="panel">
+        <div className="panel-h">
+          <h2>Findings</h2>
+          <div className="sub">
+            {findingCountLabel} findings · {gatedCountLabel} gated
+          </div>
+        </div>
+        <div className="panel-b">
+          {findings.isLoading ? (
+            <p>Loading findings…</p>
+          ) : findings.error ? (
+            <p className="error">Failed to load findings.</p>
+          ) : allFindings.length === 0 ? (
+            <p style={{ color: "var(--muted)" }}>No findings recorded for this review.</p>
+          ) : (
+            allFindings.map((f) => {
+              const wasGated = gatedSet.has(f.finding_id);
+              const decidable = actionable && wasGated;
+              return (
+                <FindingCard
+                  key={f.finding_id}
+                  finding={f}
+                  wasGated={wasGated}
+                  decision={decidable ? getDraft(f.finding_id) : undefined}
+                  // Lock controls while submitting and once submitted — including
+                  // the stuck state: a re-submit must resend the SAME payload
+                  // (divergent content wedges the audit row), so editing stays
+                  // closed until the page reloads with fresh state.
+                  disabled={decide.isPending || submitted}
+                  onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
+                />
+              );
+            })
+          )}
+        </div>
       </div>
 
-      {tab === "findings" ? (
-        <div className="panel">
-          <div className="panel-h">
-            <h2>Findings</h2>
-            <div className="sub">
-              {findingCountLabel} findings · {gatedCountLabel} gated
-            </div>
-          </div>
-          <div className="panel-b">
-            {findings.isLoading ? (
-              <p>Loading findings…</p>
-            ) : findings.error ? (
-              <p className="error">Failed to load findings.</p>
-            ) : allFindings.length === 0 ? (
-              <p style={{ color: "var(--muted)" }}>No findings recorded for this review.</p>
-            ) : (
-              allFindings.map((f) => {
-                const wasGated = gatedSet.has(f.finding_id);
-                const decidable = actionable && wasGated;
-                return (
-                  <FindingCard
-                    key={f.finding_id}
-                    finding={f}
-                    wasGated={wasGated}
-                    decision={decidable ? getDraft(f.finding_id) : undefined}
-                    // Lock controls while submitting and once submitted — including
-                    // the stuck state: a re-submit must resend the SAME payload
-                    // (divergent content wedges the audit row), so editing stays
-                    // closed until the page reloads with fresh state.
-                    disabled={decide.isPending || submitted}
-                    onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
-                  />
-                );
-              })
-            )}
-          </div>
+      {/* audit feed — phase-grouped, replay-verified (static; the playable real-time
+          reconstruction lives on the Replay · reconstruct page reached from the hero button). */}
+      <div className="panel">
+        <div className="panel-h">
+          <h2>Audit feed</h2>
+          <div className="sub">phase-grouped · {eventCountLabel} events</div>
         </div>
-      ) : timeline.isLoading ? (
-        <div className="panel">
+        {timeline.isLoading ? (
           <div className="panel-b">
-            <p>Loading replay timeline…</p>
+            <p>Loading the audit feed…</p>
           </div>
-        </div>
-      ) : timeline.error ? (
-        <div className="panel">
+        ) : timeline.error ? (
           <div className="panel-b">
-            <p className="error">Failed to load the replay timeline.</p>
+            <p className="error">Failed to load the audit feed.</p>
           </div>
-        </div>
-      ) : timeline.data ? (
-        <ReplayTimeline data={timeline.data} />
-      ) : null}
+        ) : timeline.data ? (
+          <ReplayFeed data={timeline.data} />
+        ) : null}
+      </div>
 
       {submitted || (actionable && gated.length > 0) ? (
         <div className="submit-bar">

@@ -1,7 +1,7 @@
 import type { components } from "../api/schema";
 
 // The typed audit-event union, as returned by both /events and /replay-timeline (the
-// same `AuditEvent` schema union). Shared by AuditFeed (flat table) + ReplayTimeline.
+// same `AuditEvent` schema union). Shared by AuditFeed (flat table) + ReplayFeed.
 export type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"][number];
 
 // A terse one-line summary per event type. Only fields confirmed on each narrowed type

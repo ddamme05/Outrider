@@ -2300,12 +2300,30 @@ table.policy tbody tr:hover {
 .tl-inter .tl-evrow {
   grid-template-columns: 168px 1fr;
 }
+/* progressive reveal (Replay page): un-reached rows are hidden, the cursor row fades in. The
+   static audit feed passes shown=Infinity, so no row is future/current — everything renders. */
 .tl-evrow.future {
-  opacity: 0.28;
+  display: none;
 }
 .tl-evrow.current {
   background: var(--panel2);
   box-shadow: inset 3px 0 0 var(--accent);
+  animation: tlReveal 0.26s ease both;
+}
+@keyframes tlReveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tl-evrow.current {
+    animation: none;
+  }
 }
 /* expandable finding/llm rows (PR 2 content panels) */
 .tl-evrow.tl-expandable {
@@ -2357,4 +2375,109 @@ table.policy tbody tr:hover {
   word-break: break-word;
   margin: 0;
   color: var(--text);
+}
+
+/* ── Replay reconstruction page (ROADMAP feature 6 — "watch the reconstruction") ──────────── */
+/* `.panel-h .right` (margin-left:auto, flex row) is already defined above and applies here. */
+.rp-transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rp-counter {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+}
+.rp-counter b {
+  color: var(--text);
+}
+.rp-phase-now {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  padding: 3px 10px;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  background: var(--panel2);
+}
+.rp-speed {
+  display: inline-flex;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.rp-speed-btn {
+  background: var(--panel);
+  border: none;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.rp-speed-btn:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+.rp-speed-btn.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.rp-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+  margin-top: 4px;
+}
+.rp-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, var(--panel2)), var(--accent));
+  transition: width 0.18s linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rp-progress-fill {
+    transition: none;
+  }
+}
+.rp-verdict {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid color-mix(in srgb, var(--pos) 40%, transparent);
+  background: color-mix(in srgb, var(--pos) 8%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 13px 16px;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--pos) 60%, var(--text));
+  margin-top: 12px;
+}
+.rp-verdict .vmark {
+  color: var(--pos);
+  font-size: 16px;
+}
+.rp-verdict b {
+  color: color-mix(in srgb, var(--pos) 30%, var(--text));
+}
+.rp-verdict .vmeta {
+  font-family: var(--mono);
+  color: color-mix(in srgb, var(--pos) 60%, var(--text));
+}
+.rp-retain {
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  line-height: 1.5;
+}
+.rp-retain .lock {
+  color: var(--pos);
 }

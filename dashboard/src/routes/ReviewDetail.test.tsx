@@ -219,7 +219,6 @@ test("renders a redaction stub for content_redacted findings", async () => {
 });
 
 test("shows the failure reason when not replay-equivalent", async () => {
-  const user = userEvent.setup();
   mount({
     timeline: timelineData({
       replay_equivalent: false,
@@ -229,23 +228,12 @@ test("shows the failure reason when not replay-equivalent", async () => {
   });
   // Hero badge reflects the negative verdict at a glance.
   expect(await screen.findByText("not replay-equivalent")).toBeInTheDocument();
-  // The reason surfaces in the timeline tab's banner (phase grouping suppressed, FUP-125).
-  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
+  // The reason surfaces inline in the audit feed's banner (phase grouping suppressed, FUP-125) —
+  // no tab to click now; the playable reconstruction moved to its own Replay page.
   expect(await screen.findByText("finding_count mismatch: 5 vs 4")).toBeInTheDocument();
 });
 
-test("surfaces the reconstruction mode verbatim in the timeline header", async () => {
-  const user = userEvent.setup();
-  mount({ timeline: timelineData({ mode: "mixed" }) });
-  // Equivalent verdict in the hero…
-  expect(await screen.findByText("replay-equivalent")).toBeInTheDocument();
-  // …and the timeline header shows the raw mode — "mixed" is never relabeled.
-  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
-  expect(await screen.findByText(/· mixed/)).toBeInTheDocument();
-});
-
 test("handles a null-mode non-equivalent verdict (reconstruct failed)", async () => {
-  const user = userEvent.setup();
   mount({
     timeline: timelineData({
       replay_equivalent: false,
@@ -256,7 +244,6 @@ test("handles a null-mode non-equivalent verdict (reconstruct failed)", async ()
     }),
   });
   expect(await screen.findByText("not replay-equivalent")).toBeInTheDocument();
-  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
   expect(await screen.findByText("corrupt audit payload at event 12")).toBeInTheDocument();
   expect(screen.getByText(/phase grouping is unavailable/)).toBeInTheDocument();
 });
@@ -331,8 +318,7 @@ function phaseMarker(node: string, marker: "start" | "end", ts: string): Record<
   };
 }
 
-test("timeline tab renders the reconstructed event stream grouped by phase", async () => {
-  const user = userEvent.setup();
+test("the always-shown audit feed renders the reconstructed event stream grouped by phase", async () => {
   const ev = llmEvent("analyze", 0.27);
   mount({
     timeline: timelineData({
@@ -348,8 +334,7 @@ test("timeline tab renders the reconstructed event stream grouped by phase", asy
       ],
     }),
   });
-  await screen.findByText(/sql_injection/); // findings tab is default
-  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
+  // No tab to click — the phase-grouped audit feed renders inline below the findings.
   // The phase card surfaces the node header + the llm_call's metadata summary from the DTO.
   expect(await screen.findByText("llm_call")).toBeInTheDocument();
   const phaseNode = document.querySelector(".tl-phase .tl-node");
@@ -400,10 +385,15 @@ test("pipeline node cards derive per-node model and cost from the verified phase
     }),
   });
   await screen.findByText(/sql_injection/);
-  // Per-node costs derived from the phases, shown on the pipeline node cards.
-  expect(await screen.findByText(/\$0\.27/)).toBeInTheDocument();
-  expect(screen.getByText(/\$0\.01/)).toBeInTheDocument();
-  // model prettified from claude-sonnet-4-5 → Sonnet (analyze + triage nodes).
+  // Per-node costs derived from the phases, shown on the pipeline node cards. Scope to
+  // `.pn-stat` — the always-shown audit feed also surfaces these costs in its event-row
+  // summaries, so an unscoped getByText(/\$0.27/) would now match in two places.
+  const pnStats = Array.from(document.querySelectorAll(".pn-stat")).map((e) => e.textContent ?? "");
+  expect(pnStats.some((s) => /\$0\.27/.test(s))).toBe(true);
+  expect(pnStats.some((s) => /\$0\.01/.test(s))).toBe(true);
+  // model prettified from claude-sonnet-4-5 → Sonnet (analyze + triage nodes). The audit
+  // feed shows the raw "claude-sonnet-4-5", so an exact-text "Sonnet" match stays unique
+  // to the pipeline's two pn-model cards.
   expect(screen.getAllByText("Sonnet").length).toBe(2);
 });
 
