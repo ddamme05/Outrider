@@ -296,11 +296,11 @@ export function ReviewDetail() {
         </div>
       </div>
 
-      {/* pipeline — per-node cards from the audit stream */}
+      {/* pipeline — per-node cards from the server's replay-verified reconstruction
+          (one reconstruction surface, rendered two ways: here + the timeline tab). */}
       <PipelineStrip
         status={d.status}
-        events={events.data?.events ?? []}
-        eventsLoaded={eventsLoaded}
+        phases={timeline.data?.phases ?? null}
         gatedCount={gatedCount}
         policyVersion={d.policy_version}
       />
