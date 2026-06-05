@@ -2,7 +2,7 @@
 // follows `currentColor` set by the variant class (.sk-accent/.sk-pos/.sk-neg/
 // .sk-muted → theme tokens). N-agnostic: scales whatever per-day series it's given
 // (7 for 7d, 24 for 24h, 30 for 30d). Honest — an all-zero series draws a flat
-// baseline, never a faked wiggle.
+// midline, never a faked wiggle.
 export type SparkVariant = "accent" | "pos" | "neg" | "muted";
 
 const W = 62;

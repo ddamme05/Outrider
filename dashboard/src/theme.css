@@ -818,7 +818,7 @@ h1 {
   align-items: center;
 }
 
-/* this-review metrics strip — 3 cards */
+/* this-review metrics strip — 4 cards */
 .metrics-strip {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
