@@ -888,14 +888,15 @@ async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimeli
     events = tuple(e for e in reconstructed.events if not isinstance(e, ReplayVerdictEvent))
     review_status = reconstructed.review.status if reconstructed.review is not None else None
 
+    phases: tuple[ReconstructedPhase, ...] | None
     if equivalent:
-        phases: tuple[ReconstructedPhase, ...] | None = reconstructed.phases
+        phases = reconstructed.phases
         # Positional set-difference: ordered events the phase structure does NOT account for — the
         # inter-phase transitions `_group_phases` drops from the grouped view. A phase accounts for
         # its `events` (between the markers) AND its `start`/`end` markers themselves, so exclude
         # both; the verdict is already filtered out of `events`.
-        accounted_ids = {e.event_id for phase in reconstructed.phases for e in phase.events}
-        for phase in reconstructed.phases:
+        accounted_ids = {e.event_id for phase in phases for e in phase.events}
+        for phase in phases:
             if phase.start is not None:
                 accounted_ids.add(phase.start.event_id)
             if phase.end is not None:

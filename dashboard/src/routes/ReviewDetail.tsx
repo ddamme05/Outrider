@@ -50,8 +50,11 @@ export function ReviewDetail() {
     enabled,
     refetchInterval: 2000,
   });
-  // The audit-event stream powers the pipeline node cards + the event count. Polled with the
-  // detail so a running review's pipeline fills in.
+  // Retained ONLY for the metrics-strip raw event COUNT (events.data.total) — the authoritative
+  // count, which includes the projected ReplayVerdictEvent the timeline omits. The pipeline cards +
+  // the timeline now read the replay-verified `.phases`/`.events` off /replay-timeline (the
+  // FUP-125 closure), so events.data.events itself is no longer consumed. Polled with the detail
+  // so a running review's count climbs live.
   const events = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
     enabled,
     refetchInterval: 2000,

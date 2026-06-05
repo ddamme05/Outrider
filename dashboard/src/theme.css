@@ -924,7 +924,7 @@ h1 {
   color: var(--text);
 }
 
-/* Tabs — Findings / Audit feed (both backed; audit stream landed with FUP-133) */
+/* Tabs — Findings / Timeline (both backed; the replay-verified timeline landed with feature 6) */
 .tabs {
   display: flex;
   gap: 4px;
