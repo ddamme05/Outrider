@@ -58,6 +58,7 @@ from outrider.audit.events import (
     PublishEligibilityEvent,
     PublishEvent,
     PublishRoutingEvent,
+    ReplayVerdictEvent,
     ReviewPhaseEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
@@ -474,11 +475,17 @@ _NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxy
 
 # Node-less event types that legitimately occur outside any single node's phase
 # and so are exempt from node-containment. `AgentTransitionEvent` records a
-# transition BETWEEN phases (it carries from_node/to_node, not a single node_id).
-# `ReviewPhaseEvent` is the phase marker itself, handled before this check.
-# Keyed by `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]`
-# wants a class).
-_PHASE_UNBOUNDED_EVENTS: Final[tuple[type[AuditEventBase], ...]] = (AgentTransitionEvent,)
+# transition BETWEEN phases (it carries from_node/to_node, not a single node_id);
+# `ReplayVerdictEvent` is post-completion replay metadata appended by the verdict
+# projector AFTER all phases have closed (it is bounded by nothing). `ReviewPhaseEvent`
+# is the phase marker itself, handled before this check. Keyed by
+# `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]` wants a class).
+# The runtime `continue` in `_verify_phase_wellformed` consults THIS tuple, so adding
+# a member here both registers it (for the completeness guard test) and exempts it.
+_PHASE_UNBOUNDED_EVENTS: Final[tuple[type[AuditEventBase], ...]] = (
+    AgentTransitionEvent,
+    ReplayVerdictEvent,
+)
 
 
 def _required_phase_node(event: AuditEvent) -> str | None:
@@ -487,7 +494,7 @@ def _required_phase_node(event: AuditEvent) -> str | None:
     Prefers the event's own `node_id` (LLMCallEvent, FileExaminationEvent, the
     analyze/synthesize aggregates); falls back to the node-less owner map
     (FindingEvent → analyze, etc.). Returns None for phase-unbounded events
-    (`AgentTransitionEvent`) — they are bounded by nothing.
+    (`AgentTransitionEvent`, `ReplayVerdictEvent`) — they are bounded by nothing.
     """
     own = getattr(event, "node_id", None)
     if own is not None:
@@ -506,9 +513,11 @@ def _verify_phase_wellformed(
     within a `ReviewPhaseEvent` start/end pair — the causal barriers replay
     relies on. Walking in sequence order, this enforces:
 
-    - **Boundedness.** Every work event occurs while a phase is open.
-      `AgentTransitionEvent` and the phase markers themselves are exempt —
-      transitions legitimately occur before/between phases.
+    - **Boundedness.** Every work event occurs while a phase is open. The
+      `_PHASE_UNBOUNDED_EVENTS` types (`AgentTransitionEvent`,
+      `ReplayVerdictEvent`) and the phase markers themselves are exempt —
+      transitions occur before/between phases, the verdict is post-completion
+      replay metadata.
     - **Node containment.** A work event must occur inside a phase for the
       node that owns it — its own `node_id` when it carries one (`LLMCallEvent`,
       `FileExaminationEvent`, the analyze/synthesize aggregates), else the
@@ -516,9 +525,9 @@ def _verify_phase_wellformed(
       `TraceDecisionEvent` → trace, HITL → hitl, publish events → publish). An
       `analyze` LLM call belongs in an `analyze` phase, not a `triage` one; an
       analyze-owned `FindingEvent` likewise. This makes the stream
-      graph-faithful, not merely phase-bounded. Only `AgentTransitionEvent` is
-      unbounded (it records a transition BETWEEN phases); the completeness
-      guard test asserts every other node-less type has an owner.
+      graph-faithful, not merely phase-bounded. The `_PHASE_UNBOUNDED_EVENTS`
+      types (`AgentTransitionEvent`, `ReplayVerdictEvent`) are unbounded; the
+      completeness guard test asserts every other node-less type has an owner.
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).
@@ -584,8 +593,13 @@ def _verify_phase_wellformed(
                     )
                 ended.add(event.phase_id)
                 del open_phases[event.phase_id]
-        elif isinstance(event, AgentTransitionEvent):
-            continue  # transitions legitimately occur before/between phases
+        elif isinstance(event, _PHASE_UNBOUNDED_EVENTS):
+            # Phase-unbounded events legitimately occur outside any open phase:
+            # AgentTransitionEvent (a transition BETWEEN phases) and
+            # ReplayVerdictEvent (post-completion replay metadata). Consulting the
+            # tuple keeps this runtime gate in lockstep with the registry the
+            # completeness guard test reads.
+            continue
         elif not open_phases:
             raise ReplayEquivalenceError(
                 f"{type(event).__name__} (sequence {event.sequence_number}) occurs outside "
@@ -597,8 +611,8 @@ def _verify_phase_wellformed(
             # open phase for the node that owns it — its own `node_id` if it has
             # one, else the node-less owner map (`_required_phase_node`). An
             # analyze-owned FindingEvent in a triage phase is not a stream any
-            # graph node would emit. `AgentTransitionEvent` returns None (it is
-            # already `continue`d above) and so is never constrained here.
+            # graph node would emit. The `_PHASE_UNBOUNDED_EVENTS` types are
+            # already `continue`d above and so are never constrained here.
             required_node = _required_phase_node(event)
             if required_node is not None and not any(
                 phase.node_id == required_node for phase in open_phases.values()
@@ -987,8 +1001,20 @@ class AuditReplayer:
             raise ReplayError("session_factory is required")
         self._session_factory = session_factory
 
-    async def reconstruct(self, review_id: UUID) -> ReconstructedReview:
+    async def reconstruct(
+        self, review_id: UUID, *, max_sequence_number: int | None = None
+    ) -> ReconstructedReview:
         """Reconstruct a review into the canonical ordered read model.
+
+        `max_sequence_number` (when given) reconstructs over the PREFIX of the
+        stream with `sequence_number <= max_sequence_number` — the seam the
+        replay-verdict projector uses to judge a review's stream EXCLUDING any
+        prior `replay_verdict` events it appended (the projector targets
+        `max(sequence_number)` over the non-verdict rows, so every verdict — which
+        is always appended after the graph stream — falls outside the prefix). The
+        content-table reads stay `review_id`-keyed, so a prefix that cut BELOW a
+        `FindingEvent` would surface its `findings` row as an orphan; the projector
+        never does that (its target is after all findings).
 
         Reads the `audit_events` stream ascending by `sequence_number`,
         rebuilds each event via the shared `AuditEventAdapter` (re-merging
@@ -1019,22 +1045,23 @@ class AuditReplayer:
             # write-skew protection (SERIALIZABLE would be overkill). Must be set
             # before the first statement autobegins the transaction.
             await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
-            rows = (
-                await session.execute(
-                    select(
-                        AuditEventRow.event_id,
-                        AuditEventRow.review_id,
-                        AuditEventRow.event_type,
-                        AuditEventRow.timestamp,
-                        AuditEventRow.is_eval,
-                        AuditEventRow.phase_key,
-                        AuditEventRow.payload,
-                        AuditEventRow.sequence_number,
-                    )
-                    .where(AuditEventRow.review_id == review_id)
-                    .order_by(AuditEventRow.sequence_number.asc())
+            stmt = (
+                select(
+                    AuditEventRow.event_id,
+                    AuditEventRow.review_id,
+                    AuditEventRow.event_type,
+                    AuditEventRow.timestamp,
+                    AuditEventRow.is_eval,
+                    AuditEventRow.phase_key,
+                    AuditEventRow.payload,
+                    AuditEventRow.sequence_number,
                 )
-            ).all()
+                .where(AuditEventRow.review_id == review_id)
+                .order_by(AuditEventRow.sequence_number.asc())
+            )
+            if max_sequence_number is not None:
+                stmt = stmt.where(AuditEventRow.sequence_number <= max_sequence_number)
+            rows = (await session.execute(stmt)).all()
             if not rows:
                 raise ReplayReviewNotFoundError(f"no audit_events rows for review_id {review_id}")
             reconstructed: list[AuditEvent] = [
@@ -1132,8 +1159,16 @@ class AuditReplayer:
             orphan_finding_ids=orphan_finding_ids,
         )
 
-    async def assert_replay_equivalent(self, review_id: UUID) -> None:
+    async def assert_replay_equivalent(
+        self, review_id: UUID, *, max_sequence_number: int | None = None
+    ) -> None:
         """Reconstruct and assert the review replays faithfully (verify-only).
+
+        `max_sequence_number` is threaded to `reconstruct` (judged-prefix seam —
+        see `reconstruct`). A caller that needs the reconstruction's mode/counts
+        AND the verdict (the projector) should prefer `reconstruct(...,
+        max_sequence_number=...)` + `assert_equivalent(...)` to avoid a second
+        reconstruct on a different snapshot.
 
         Runs the mode-aware checklist: deserialization, row-vs-payload
         base-column consistency, and `is_eval` coherence across the stream +
@@ -1148,7 +1183,9 @@ class AuditReplayer:
         `ReplayEquivalenceError` naming the failing check; returns `None` on
         success.
         """
-        await self.assert_equivalent(await self.reconstruct(review_id))
+        await self.assert_equivalent(
+            await self.reconstruct(review_id, max_sequence_number=max_sequence_number)
+        )
 
     async def assert_equivalent(self, review: ReconstructedReview) -> None:
         """Verify an ALREADY-reconstructed review replays faithfully (verify-only).

@@ -22,6 +22,7 @@ from outrider.audit.events import (
     FindingEvent,
     HITLDecisionEvent,
     LLMCallEvent,
+    ReplayVerdictEvent,
     ReviewPhaseEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
@@ -638,6 +639,30 @@ def test_verify_phase_wellformed_rejects_node_less_owned_work_in_wrong_phase() -
     )
     with pytest.raises(ReplayEquivalenceError, match="owned by node 'analyze'"):
         _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_accepts_replay_verdict_after_phases_close() -> None:
+    # A ReplayVerdictEvent is appended post-completion, OUTSIDE any open phase. It
+    # is phase-unbounded replay metadata (like AgentTransitionEvent), so it must
+    # NOT raise "occurs outside any open review phase". This is the load-bearing
+    # guard: without the runtime _PHASE_UNBOUNDED_EVENTS broadening, appending a
+    # verdict would break every later replay of the review.
+    verdict = ReplayVerdictEvent(
+        review_id=_REVIEW_ID,
+        replay_equivalent=True,
+        mode="full",
+        event_count=3,
+        finding_count=1,
+        orphan_finding_count=0,
+        target_max_sequence_number=3,
+    )
+    events = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
+        _finding_event(),
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:0"),
+        verdict,  # appended after all phases closed
+    )
+    _verify_phase_wellformed(events)  # no raise
 
 
 def test_node_less_events_have_owner_or_exemption() -> None:
