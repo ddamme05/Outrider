@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, Numeric, and_, case, cast, func, select
+from sqlalchemy import Boolean, Numeric, and_, case, cast, func, select, type_coerce
 
 from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.audit.events import FindingEvent, LLMCallEvent, ReplayVerdictEvent
@@ -401,12 +401,15 @@ async def get_metrics(
 def _replay_equivalent_predicate() -> ColumnElement[bool]:
     """`replay_verdict` payload's `replay_equivalent` JSON bool as a SQL boolean predicate.
 
-    JSONB `->>` (`.astext`) renders the JSON boolean as the text `'true'`/`'false'`; casting
-    that text to `Boolean` yields a real SQL boolean — the `cast(payload[...].astext, <type>)`
-    idiom the rest of this module uses (`cost_usd` → `Numeric`). One verdict per review (partial
-    unique index), so counting verdict rows IS counting reviewed-and-verdicted reviews.
+    Compares the JSONB `->>` text (`.astext`) to `'true'` rather than `cast(... AS boolean)`:
+    Postgres `CAST(text AS boolean)` RAISES on any non-recognized literal, so one malformed
+    payload value would abort the whole aggregate and 500 the endpoint for the entire window.
+    The text comparison degrades a malformed value to `false` (counts inequivalent) instead of
+    erroring. `type_coerce` types the boolean expression for the caller without emitting a SQL
+    CAST (no runtime parse). One verdict per review (partial unique index), so counting verdict
+    rows IS counting reviewed-and-verdicted reviews.
     """
-    return cast(AuditEvent.payload["replay_equivalent"].astext, Boolean)
+    return type_coerce(AuditEvent.payload["replay_equivalent"].astext == "true", Boolean)
 
 
 async def _replay_by_bucket(
@@ -482,6 +485,13 @@ async def get_replay_metrics(
     `equivalent / total` per bucket (frontend derives the %); only reviews with a persisted
     `replay_verdict` are counted, so a projector-pending review is excluded, never assumed
     equivalent.
+
+    **`include_eval` is production-scoped (inert today).** The background projector verdicts
+    PRODUCTION reviews only (`sweep/replay_verdict.py`, docs/testing.md), so no `replay_verdict`
+    row is ever `is_eval=True` and `include_eval=true` returns the same production rate — the
+    param is retained for `/api/metrics` symmetry + forward-compatibility (if eval projection is
+    ever added) and still threads the FUP-130 is_eval-drift equality defense either way. The
+    Overview Replay card therefore does NOT pass the global eval toggle (it is always production).
     """
     delta = _WINDOWS[window]
     granularity = _GRANULARITY[window]
