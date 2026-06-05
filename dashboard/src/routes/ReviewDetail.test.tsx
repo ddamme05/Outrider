@@ -318,7 +318,7 @@ function phaseMarker(node: string, marker: "start" | "end", ts: string): Record<
   };
 }
 
-test("the always-shown audit feed renders the reconstructed event stream grouped by phase", async () => {
+test("the always-shown audit feed renders the reconstructed stream as a flat phase-divided feed", async () => {
   const ev = llmEvent("analyze", 0.27);
   mount({
     timeline: timelineData({
@@ -334,12 +334,14 @@ test("the always-shown audit feed renders the reconstructed event stream grouped
       ],
     }),
   });
-  // No tab to click — the phase-grouped audit feed renders inline below the findings.
-  // The phase card surfaces the node header + the llm_call's metadata summary from the DTO.
-  expect(await screen.findByText("llm_call")).toBeInTheDocument();
-  const phaseNode = document.querySelector(".tl-phase .tl-node");
-  expect(phaseNode).toHaveTextContent("analyze");
-  expect(screen.getByText(/claude-sonnet-4-5 · \$0.27/)).toBeInTheDocument();
+  // The mockup's flat .ae feed renders inline below the findings (no tab): an append-only banner,
+  // an .ae-phase divider naming the node, and .ae event rows with a type chip + rich body + time.
+  expect(await screen.findByText(/Append-only by database policy/)).toBeInTheDocument();
+  expect(document.querySelector(".ae-phase .pname")).toHaveTextContent("analyze");
+  expect(screen.getByText("llm_call")).toBeInTheDocument();
+  // The flat body bolds the model; the relative-timestamp column is present.
+  expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
+  expect(document.querySelector(".ae .ae-time")).toBeInTheDocument();
 });
 
 test("policy chip opens the versioned policy table from the endpoint", async () => {

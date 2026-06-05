@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import type { components } from "../api/schema";
 import { type AuditEvent, eventFamily, eventNode, summarizeEvent } from "../lib/auditEvent";
@@ -46,6 +53,57 @@ export function phaseNowLabel(data: TimelineData, shown: number): string {
 function phaseDuration(phase: Phase): string {
   const ms = spanMs(phase.start?.timestamp, phase.end?.timestamp);
   return ms === null ? "—" : formatDurationMs(ms);
+}
+
+// Rich per-event body for the flat `.ae` feed (mockup #screen-detail): the key fields bolded /
+// mono'd per event type. Mirrors summarizeEvent's narrowing, reading ONLY fields the AuditEvent
+// union actually carries — no fabricated latency / scope counts (display-only, DECISIONS#014/#016).
+function flatBody(e: AuditEvent): ReactNode {
+  switch (e.event_type) {
+    case "llm_call":
+      return (
+        <>
+          <b>{e.model}</b> · ${e.cost_usd.toFixed(2)} ·{" "}
+          <span className="mono">{e.input_tokens}</span> in /{" "}
+          <span className="mono">{e.output_tokens}</span> out
+        </>
+      );
+    case "finding":
+      return (
+        <>
+          <b>{e.severity}</b> {e.finding_type} · <span className="mono">{e.evidence_tier}</span> ·{" "}
+          <span className="mono">
+            {e.file_path}:{e.line_start}
+          </span>
+        </>
+      );
+    case "review_phase":
+      return (
+        <>
+          <b>{e.node_id}</b> · marker <b>{e.marker}</b>
+        </>
+      );
+    case "file_examination":
+      return (
+        <>
+          examined <span className="mono">{e.file_path}</span>
+        </>
+      );
+    case "trace_decision":
+      return (
+        <>
+          <span className="mono">{e.resolution_status}</span>
+        </>
+      );
+    case "agent_transition":
+      return (
+        <>
+          node <b>{e.from_node}</b> → <b>{e.to_node}</b>
+        </>
+      );
+    default:
+      return summarizeEvent(e);
+  }
 }
 
 // Retention-redacted stub — content purged, metadata permanent (DECISIONS#014/#016, the same
@@ -129,12 +187,23 @@ function LLMContentPanel({ content }: { content: LLMContent }) {
 export function ReplayFeed({
   data,
   shown = Number.POSITIVE_INFINITY,
+  flat = false,
 }: {
   data: TimelineData;
   shown?: number;
+  // false (default) → collapsible phase CARDS (the Replay page, with progressive reveal).
+  // true → the mockup's rich FLAT `.ae` feed (the review-detail static audit-of-record).
+  flat?: boolean;
 }) {
   const rendered = useMemo(() => renderedEvents(data), [data]);
   const total = rendered.length;
+  // Relative-timestamp baseline for the flat feed: the review's first phase-start marker (the
+  // "+0ms" origin), falling back to the first rendered event. Timestamps are client-relative —
+  // there is no server-provided relative field.
+  const base = useMemo(
+    () => data.phases?.[0]?.start?.timestamp ?? rendered[0]?.timestamp ?? null,
+    [data.phases, rendered],
+  );
   const orderIndex = useMemo(
     () => new Map(rendered.map((e, i) => [e.event_id, i])),
     [rendered],
@@ -169,7 +238,8 @@ export function ReplayFeed({
     return i >= shown ? "future" : "";
   };
 
-  const row = (e: AuditEvent, withNode: boolean) => {
+  // Per-event content lookup + expand state, shared by the card row and the flat `.ae` row.
+  const rowData = (e: AuditEvent) => {
     const fc = e.event_type === "finding" ? findingsByFid.get(e.finding_id) : undefined;
     const lc = e.event_type === "llm_call" ? llmByEventId.get(e.event_id ?? "") : undefined;
     // Proof artifacts ride the permanent FindingEvent (in `events`/`phases`), not the content view.
@@ -183,7 +253,25 @@ export function ReplayFeed({
         : null;
     const id = e.event_id ?? "";
     const expandable = fc !== undefined || lc !== undefined;
-    const open = expandable && expanded.has(id);
+    return { fc, lc, proof, id, expandable, open: expandable && expanded.has(id) };
+  };
+
+  // Relative timestamp for a flat-feed row, e.g. "+19s" / "+088ms" (mockup .ae-time).
+  const relTime = (e: AuditEvent): string => {
+    if (!base || !e.timestamp) return "";
+    const ms = spanMs(base, e.timestamp);
+    return ms === null ? "" : `+${formatDurationMs(Math.max(0, ms))}`;
+  };
+
+  const onRowKey = (id: string) => (ev: ReactKeyboardEvent) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      toggle(id);
+    }
+  };
+
+  const row = (e: AuditEvent, withNode: boolean) => {
+    const { fc, lc, proof, id, expandable, open } = rowData(e);
     return (
       <div key={e.event_id} className="tl-evgroup">
         <div
@@ -192,16 +280,7 @@ export function ReplayFeed({
           tabIndex={expandable ? 0 : undefined}
           aria-expanded={expandable ? open : undefined}
           onClick={expandable ? () => toggle(id) : undefined}
-          onKeyDown={
-            expandable
-              ? (ev) => {
-                  if (ev.key === "Enter" || ev.key === " ") {
-                    ev.preventDefault();
-                    toggle(id);
-                  }
-                }
-              : undefined
-          }
+          onKeyDown={expandable ? onRowKey(id) : undefined}
         >
           <span className="af-type mono">
             {expandable ? (open ? "▾ " : "▸ ") : ""}
@@ -209,6 +288,34 @@ export function ReplayFeed({
           </span>
           {withNode ? <span className="af-node mono">{eventNode(e) ?? ""}</span> : null}
           <span className="af-summary">{summarizeEvent(e)}</span>
+        </div>
+        {open && fc && proof ? <FindingContentPanel content={fc} proof={proof} /> : null}
+        {open && lc ? <LLMContentPanel content={lc} /> : null}
+      </div>
+    );
+  };
+
+  // The flat `.ae` row (mockup #screen-detail audit feed): a colored event-type chip, a rich body,
+  // and a relative timestamp. Still expand-on-click for finding/llm rows (the PR-2 content panels) —
+  // an enhancement over the static mockup, not a regression.
+  const aeRow = (e: AuditEvent) => {
+    const { fc, lc, proof, id, expandable, open } = rowData(e);
+    return (
+      <div key={e.event_id} className="tl-evgroup">
+        <div
+          className={`ae ev-c-${eventFamily(e.event_type)}${expandable ? " tl-expandable" : ""}`}
+          role={expandable ? "button" : undefined}
+          tabIndex={expandable ? 0 : undefined}
+          aria-expanded={expandable ? open : undefined}
+          onClick={expandable ? () => toggle(id) : undefined}
+          onKeyDown={expandable ? onRowKey(id) : undefined}
+        >
+          <span className="ae-type mono">{e.event_type}</span>
+          <span className="ae-body">
+            {expandable ? <span aria-hidden="true">{open ? "▾ " : "▸ "}</span> : null}
+            {flatBody(e)}
+          </span>
+          <span className="ae-time mono">{relTime(e)}</span>
         </div>
         {open && fc && proof ? <FindingContentPanel content={fc} proof={proof} /> : null}
         {open && lc ? <LLMContentPanel content={lc} /> : null}
@@ -229,6 +336,45 @@ export function ReplayFeed({
   }
 
   const phases = data.phases;
+
+  // Flat feed (review-detail audit-of-record): append-only banner, then per-phase `.ae-phase`
+  // dividers with their `.ae` event rows — the mockup's rich flat aesthetic.
+  if (flat) {
+    return (
+      <div className="panel-b">
+        <div className="audit-note">
+          <span className="lock" aria-hidden="true">
+            🔒
+          </span>
+          Append-only by database policy — events cannot be edited or deleted; corrections append
+          new events. This is what makes replay-equivalence verifiable.
+        </div>
+        {data.inter_phase_events.length > 0 ? (
+          <>
+            <div className="ae-phase">
+              <span className="pname">between phases</span>
+            </div>
+            {data.inter_phase_events.map((e) => aeRow(e))}
+          </>
+        ) : null}
+        {phases.map((phase) => (
+          <Fragment key={phase.phase_id}>
+            <div className="ae-phase">
+              <span className="pname">{phase.node_id}</span>
+              <span className="pdur">{phaseDuration(phase)}</span>
+              {phase.end === null ? <span className="pill">in-flight</span> : null}
+            </div>
+            {phase.events.length === 0 ? (
+              <div className="tl-empty">no operations</div>
+            ) : (
+              phase.events.map((e) => aeRow(e))
+            )}
+          </Fragment>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="panel-b">
       {data.inter_phase_events.length > 0 ? (
