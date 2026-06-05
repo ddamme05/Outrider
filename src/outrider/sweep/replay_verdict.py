@@ -16,7 +16,8 @@ a lock is load-bearing only for a non-idempotent status flip).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -37,27 +38,48 @@ logger = logging.getLogger(__name__)
 
 _VERDICT_EVENT_TYPE: str = ReplayVerdictEvent.model_fields["event_type"].default
 
+# Don't verdict a review until it's been `completed` for at least this long. The publish
+# node commits `status='completed'` (`mark_completed`) in one transaction, THEN the publish
+# phase-end `ReviewPhaseEvent` in a SEPARATE transaction (deliberately — a dangling phase is
+# the "publish interrupted" crash signal). A tick in that sub-second window would reconstruct
+# an unterminated stream and lock in a permanent WRONG `inequivalent` verdict (the partial
+# unique index is one-shot). The settle grace is the read-after-write window that lets the
+# phase-end become durable first — the sweep-family grace-period idiom (`hitl_expiry.py`).
+_DEFAULT_SETTLE_GRACE: Final[timedelta] = timedelta(seconds=60)
+
+# Per-tick candidate cap. `_candidate_reviews` returns EVERY un-verdicted completed review, so
+# a first deploy (or a tick after a long projector outage) would otherwise backfill the entire
+# production history in ONE tick (N reviews x ~6 sequential DB round-trips), blocking the sweep
+# loop. The work is idempotent + the anti-join excludes already-verdicted reviews, so a bounded
+# batch drains the backlog across ticks. Oldest-completed first so the drain is deterministic.
+_DEFAULT_BATCH_LIMIT: Final[int] = 200
+
 
 async def project_replay_verdicts(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     audit_persister: AuditPersister,
+    settle_grace: timedelta = _DEFAULT_SETTLE_GRACE,
+    batch_limit: int = _DEFAULT_BATCH_LIMIT,
 ) -> dict[str, int]:
     """Project a replay verdict for each completed PRODUCTION review lacking one.
 
     Candidates: `status='completed'`, `is_eval=False` (the sweep contract,
     docs/testing.md — eval reviews are not projected, so eval Replay-% is
-    production-scoped), and no `replay_verdict` event yet (an anti-join
-    optimization; correctness holds without it since `emit_replay_verdict` is
-    idempotent). Per review: target = `max(sequence_number)` over the NON-verdict
-    rows (so a re-projection excludes any prior verdict), reconstruct over that
-    prefix + assert_equivalent, build the verdict, emit. Per-row try/except so one
+    production-scoped), `completed_at` older than `settle_grace` (the publish
+    two-transaction completion race — see `_DEFAULT_SETTLE_GRACE`), and no
+    `replay_verdict` event yet (an anti-join optimization; correctness holds without
+    it since `emit_replay_verdict` is idempotent). Bounded to `batch_limit`
+    oldest-completed candidates per tick (the backlog drains across ticks; see
+    `_DEFAULT_BATCH_LIMIT`). Per review: target = `max(sequence_number)` over the
+    NON-verdict rows (so a re-projection excludes any prior verdict), reconstruct over
+    that prefix + assert_equivalent, build the verdict, emit. Per-row try/except so one
     bad review never aborts the tick. Returns `{"projected": N, "failed": M}`.
     """
     replayer = AuditReplayer(session_factory=session_factory)
     projected = 0
     failed = 0
-    for review_id, is_eval in await _candidate_reviews(session_factory):
+    for review_id, is_eval in await _candidate_reviews(session_factory, settle_grace, batch_limit):
         try:
             verdict = await _compute_verdict(replayer, session_factory, review_id, is_eval=is_eval)
             # Count only a FRESH insert: under concurrent ticks both can select the
@@ -75,6 +97,8 @@ async def project_replay_verdicts(
 
 async def _candidate_reviews(
     session_factory: async_sessionmaker[AsyncSession],
+    settle_grace: timedelta,
+    batch_limit: int,
 ) -> list[tuple[UUID, bool]]:
     verdict_exists = (
         select(AuditEventRow.review_id)
@@ -84,10 +108,19 @@ async def _candidate_reviews(
         )
         .exists()
     )
-    stmt = select(Review.id, Review.is_eval).where(
-        Review.status == "completed",
-        Review.is_eval.is_(False),
-        ~verdict_exists,
+    stmt = (
+        select(Review.id, Review.is_eval)
+        .where(
+            Review.status == "completed",
+            Review.is_eval.is_(False),
+            # Settle window: the review's stream must be durable before we judge it (the
+            # publish status-flip / phase-end two-transaction race). `< now - grace` also
+            # excludes a NULL `completed_at` (NULL comparison → NULL → not selected).
+            Review.completed_at < datetime.now(UTC) - settle_grace,
+            ~verdict_exists,
+        )
+        .order_by(Review.completed_at)  # oldest-first: deterministic backlog drain
+        .limit(batch_limit)
     )
     async with session_factory() as session:
         rows = (await session.execute(stmt)).all()

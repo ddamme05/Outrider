@@ -15,6 +15,7 @@ without aborting the tick. Replay-local + non-eval; reuses the `migrated_db` fix
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
@@ -67,17 +68,25 @@ async def _seed_installation(engine: AsyncEngine) -> None:
 
 
 async def _seed_review(
-    engine: AsyncEngine, review_id: UUID, *, status: str = "completed", is_eval: bool = False
+    engine: AsyncEngine,
+    review_id: UUID,
+    *,
+    status: str = "completed",
+    is_eval: bool = False,
+    completed_age_seconds: float = 300.0,
 ) -> None:
     # Derive head_sha from review_id so every seeded review has a distinct
-    # (repo_id, pr_number, head_sha) natural key (uq_review_natural_key).
+    # (repo_id, pr_number, head_sha) natural key (uq_review_natural_key). Default
+    # `completed_at` 5 minutes ago so the projector's settle-grace (60s) admits it;
+    # pass completed_age_seconds=0 to seed a freshly-completed (within-grace) review.
     head_sha = review_id.hex[:40]
     async with engine.begin() as conn:
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
                 "status, is_eval, completed_at, retention_expires_at) VALUES (:id, :iid, 100, 1, "
-                ":sha, :status, :is_eval, NOW(), NOW() + INTERVAL '180 days')"
+                ":sha, :status, :is_eval, NOW() - (:age * INTERVAL '1 second'), "
+                "NOW() + INTERVAL '180 days')"
             ),
             {
                 "id": review_id,
@@ -85,6 +94,7 @@ async def _seed_review(
                 "sha": head_sha,
                 "status": status,
                 "is_eval": is_eval,
+                "age": completed_age_seconds,
             },
         )
 
@@ -352,3 +362,67 @@ async def test_one_bad_review_does_not_abort_the_tick(engine: AsyncEngine) -> No
     assert result == {"projected": 1, "failed": 1}
     assert await persister.query_replay_verdict_event(review_id=good_id) is not None
     assert await persister.query_replay_verdict_event(review_id=bad_id) is None  # no fabrication
+
+
+@pytest.mark.asyncio
+async def test_freshly_completed_review_within_grace_is_not_verdicted(engine: AsyncEngine) -> None:
+    # The publish node commits status='completed' BEFORE the publish phase-end event, in a
+    # SEPARATE transaction. A tick in that window reconstructs an unterminated stream and would
+    # lock in a permanent WRONG inequivalent verdict. The settle-grace gate excludes a
+    # freshly-completed review until its stream is durable. Revert-the-fold: drop the
+    # `completed_at < now - grace` predicate and the within-grace review gets verdicted.
+    review_id = uuid4()
+    await _seed_installation(engine)
+    # A fully-VALID, terminated stream — but the review only JUST flipped to completed.
+    await _seed_review(engine, review_id, completed_age_seconds=0)
+    for node_id, marker in (
+        ("intake", "start"),
+        ("intake", "end"),
+        ("analyze", "start"),
+        ("analyze", "end"),
+    ):
+        await _insert_phase(engine, review_id, node_id=node_id, marker=marker)  # type: ignore[arg-type]
+    persister = _persister(engine)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+
+    # Default 60s grace: the fresh review is NOT yet a candidate.
+    assert await project_replay_verdicts(session_factory=sf, audit_persister=persister) == {
+        "projected": 0,
+        "failed": 0,
+    }
+    assert await persister.query_replay_verdict_event(review_id=review_id) is None
+    # grace=0: the same (settled) review IS verdicted — equivalent (the stream was always valid).
+    assert await project_replay_verdicts(
+        session_factory=sf, audit_persister=persister, settle_grace=timedelta(0)
+    ) == {"projected": 1, "failed": 0}
+    verdict = await persister.query_replay_verdict_event(review_id=review_id)
+    assert verdict is not None
+    assert verdict.replay_equivalent is True  # NOT a race-induced false inequivalent
+
+
+@pytest.mark.asyncio
+async def test_batch_limit_drains_backlog_across_ticks(engine: AsyncEngine) -> None:
+    # _candidate_reviews returns EVERY un-verdicted completed review; without a per-tick cap a
+    # cold start backfills the whole history in one tick. batch_limit bounds each tick; the
+    # idempotent anti-join drains the rest on later ticks. Three reviews, batch_limit=2.
+    ids = [uuid4() for _ in range(3)]
+    await _seed_installation(engine)
+    for rid in ids:
+        await _seed_valid_stream(engine, rid)
+    persister = _persister(engine)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+
+    first = await project_replay_verdicts(
+        session_factory=sf, audit_persister=persister, batch_limit=2
+    )
+    assert first == {"projected": 2, "failed": 0}  # only 2 this tick
+    second = await project_replay_verdicts(
+        session_factory=sf, audit_persister=persister, batch_limit=2
+    )
+    assert second == {"projected": 1, "failed": 0}  # the remaining one drains next tick
+    third = await project_replay_verdicts(
+        session_factory=sf, audit_persister=persister, batch_limit=2
+    )
+    assert third == {"projected": 0, "failed": 0}  # backlog empty
+    for rid in ids:
+        assert await persister.query_replay_verdict_event(review_id=rid) is not None
