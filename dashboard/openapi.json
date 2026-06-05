@@ -526,6 +526,65 @@
         }
       }
     },
+    "/api/metrics/replay": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Replay Metrics",
+        "description": "Replay-equivalence rate over time, from persisted verdicts \u2014 see module docstring + `#039`.\n\n`equivalent / total` per bucket (frontend derives the %); only reviews with a persisted\n`replay_verdict` are counted, so a projector-pending review is excluded, never assumed\nequivalent.",
+        "operationId": "get_replay_metrics_api_metrics_replay_get",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "type": "string",
+              "default": "7d",
+              "title": "Window"
+            }
+          },
+          {
+            "name": "include_eval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Eval"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayMetricsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -2683,6 +2742,115 @@
         "title": "PublishRoutingReason",
         "description": "Why the publisher routed a finding to its `PublishDestination`.\n\nStrEnum (not `Literal[...]`) so the routing reason mirrors the shape of\n`PublishEligibilityReason` and `PublishAttemptOutcome` below. Consumers\nbranching on the value get `match`-statement exhaustiveness; the\naudit-stream queries can filter by enum members rather than raw strings."
       },
+      "ReplayBucket": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Bucket"
+          },
+          "equivalent": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Equivalent"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bucket",
+          "equivalent",
+          "total"
+        ],
+        "title": "ReplayBucket",
+        "description": "One UTC bucket of replay-verdict counts. Raw `equivalent` / `total` (not a precomputed\nrate): callers derive the %, and `total == 0` has no defined rate (no divide-by-zero)."
+      },
+      "ReplayDeltas": {
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/ReplayPeriodTotals"
+          },
+          "previous": {
+            "$ref": "#/components/schemas/ReplayPeriodTotals"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current",
+          "previous"
+        ],
+        "title": "ReplayDeltas",
+        "description": "Current vs the immediately-prior equal-length window (frontend computes the % change)."
+      },
+      "ReplayMetricsResponse": {
+        "properties": {
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h",
+              "7d",
+              "30d"
+            ],
+            "title": "Window"
+          },
+          "granularity": {
+            "type": "string",
+            "title": "Granularity"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/ReplayBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          },
+          "deltas": {
+            "$ref": "#/components/schemas/ReplayDeltas"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "window",
+          "granularity",
+          "generated_at",
+          "buckets",
+          "deltas"
+        ],
+        "title": "ReplayMetricsResponse"
+      },
+      "ReplayPeriodTotals": {
+        "properties": {
+          "equivalent": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Equivalent"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "equivalent",
+          "total"
+        ],
+        "title": "ReplayPeriodTotals"
+      },
       "ReplayVerdict": {
         "properties": {
           "review_id": {
@@ -2763,6 +2931,129 @@
         ],
         "title": "ReplayVerdict",
         "description": "Replay-equivalence verdict for one review \u2014 a thin wrapper over\n`audit/replay.py::AuditReplayer`.\n\nDeliberately does NOT expose `reconstruct()`'s `phases` grouping (FUP-125:\ntrustworthy only after `assert_replay_equivalent`) \u2014 only the mode, the\ncounts, and the pass/fail verdict. `mode`/`event_count`/`finding_count`/\n`orphan_finding_count` are `None` only when `reconstruct` itself raised\n(corrupt row/payload/is_eval drift). `reason` carries the failing-check\nmessage when not equivalent \u2014 metadata only (ids / hashes / counts /\nenum values), never finding content (per the replay verifier's design)."
+      },
+      "ReplayVerdictEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "replay_verdict",
+            "title": "Event Type",
+            "default": "replay_verdict"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "replay_equivalent": {
+            "type": "boolean",
+            "title": "Replay Equivalent"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "metadata_only",
+                  "mixed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "event_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Count"
+          },
+          "finding_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Count"
+          },
+          "orphan_finding_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphan Finding Count"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "target_max_sequence_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Target Max Sequence Number"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "replay_equivalent",
+          "target_max_sequence_number"
+        ],
+        "title": "ReplayVerdictEvent",
+        "description": "Records the outcome of a replay-equivalence check over a judged prefix.\n\nEmitted by the background replay-verdict projector AFTER a review completes \u2014\nphase-unbounded replay metadata, NOT graph-node work, so it is exempt from\n`_verify_phase_wellformed` phase containment via\n`audit.replay._PHASE_UNBOUNDED_EVENTS`. `target_max_sequence_number` pins the\n`sequence_number` high-water mark of the prefix the verdict covers (the judged\nstream, EXCLUDING any prior `replay_verdict` events \u2014 a verdict is never\ncomputed over a stream containing its own kind). `mode` + the `*_count` fields\nmirror the on-demand `ReplayVerdict` shape (`api/dashboard/reviews.py`); they\nform an all-present-or-all-absent envelope, `None` only when reconstruction\nitself raised (see `_enforce_metadata_envelope`). `reason` is set iff the\nverdict is inequivalent."
       },
       "ReviewDetail": {
         "properties": {
@@ -2947,6 +3238,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/SynthesizeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReplayVerdictEvent"
                 }
               ],
               "discriminator": {
@@ -2965,6 +3259,7 @@
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
+                  "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
