@@ -9,7 +9,7 @@ import { RangeSeg, type MetricsWindow } from "../components/RangeSeg";
 import { SeverityBar } from "../components/SeverityBar";
 import { StatusPill } from "../components/StatusPill";
 import { TierRows } from "../components/TierRows";
-import { deltaInfo } from "../lib/metrics";
+import { type DeltaInfo, deltaInfo, replayRate, type ReplayMetricsResponse } from "../lib/metrics";
 import { useFilters } from "../state/filters";
 
 type ReviewListItem = components["schemas"]["ReviewListItem"];
@@ -19,8 +19,9 @@ type ReviewListItem = components["schemas"]["ReviewListItem"];
 // REAL read-only aggregations over the audit stream (GET /api/metrics, windowed by
 // the range selector) — honest zeros on a sparse window, never an invented series.
 // Below the analytics is the "needs your decision" HITL rail (server-side
-// status-filtered, fails closed). Replay-% is intentionally absent — it has no
-// cross-review aggregate source yet (sibling replay-verdict-projection feature).
+// status-filtered, fails closed). The Replay-equivalence KPI reads the sibling
+// /api/metrics/replay endpoint (the persisted replay_verdict projection, DECISIONS#039)
+// — equivalent/total over the same window; "—" when no reviews are verdicted yet.
 export function Overview() {
   const includeEval = useFilters((s) => s.includeEval);
   const [window, setWindow] = useState<MetricsWindow>("7d");
@@ -29,6 +30,14 @@ export function Overview() {
   const metrics = $api.useQuery(
     "get",
     "/api/metrics",
+    { params: { query: { window, include_eval: includeEval } } },
+    opts,
+  );
+  // Sibling Replay-% query (same window). Independent of /api/metrics: it degrades the
+  // ONE card to "—" if it's still loading or errors, without blocking the other four.
+  const replay = $api.useQuery(
+    "get",
+    "/api/metrics/replay",
     { params: { query: { window, include_eval: includeEval } } },
     opts,
   );
@@ -86,7 +95,7 @@ export function Overview() {
           </div>
         </div>
       ) : (
-        <Analytics data={d} stale={Boolean(metrics.error)} />
+        <Analytics data={d} replay={replay.data} stale={Boolean(metrics.error)} />
       )}
 
       <div className="panel">
@@ -151,9 +160,11 @@ export function Overview() {
 // a non-null field of `data` (the parent guards `data` before mounting this).
 function Analytics({
   data,
+  replay,
   stale,
 }: {
   data: components["schemas"]["DashboardMetricsResponse"];
+  replay: ReplayMetricsResponse | undefined;
   stale: boolean;
 }) {
   const cur = data.deltas.current;
@@ -161,6 +172,18 @@ function Analytics({
   const sev = data.severity_distribution;
   const buckets = data.buckets;
   const avgCost = cur.reviews > 0 ? cur.cost_usd / cur.reviews : 0;
+
+  // Replay-% (5th card): equivalent/total over the window. Degrades to a muted "—"
+  // when the sibling query hasn't resolved (loading/error) OR resolved with no
+  // verdicts — never a fabricated 0%. prevRate null (no prior verdicts) feeds
+  // deltaInfo a 0 previous, which it renders as "new", not ∞%.
+  const rc = replay?.deltas.current;
+  const curRate = rc ? replayRate(rc.equivalent, rc.total) : null;
+  const prevRate = replay
+    ? replayRate(replay.deltas.previous.equivalent, replay.deltas.previous.total)
+    : null;
+  const flat: DeltaInfo = { cls: "flat", glyph: "—", label: "vs prev" };
+  const replayDelta = curRate === null ? flat : deltaInfo(curRate, prevRate ?? 0, "up-good");
 
   return (
     <>
@@ -202,6 +225,20 @@ function Analytics({
           delta={deltaInfo(cur.failed, prev.failed, "up-bad")}
           spark={buckets.map((b) => b.failed)}
           sparkVariant="pos"
+        />
+        <MetricCard
+          label="Replay-equiv"
+          value={curRate === null ? "—" : `${curRate.toFixed(1)}%`}
+          cap={
+            rc
+              ? rc.total > 0
+                ? `${rc.equivalent}/${rc.total} verified`
+                : "no verdicts yet"
+              : "replay equivalence"
+          }
+          delta={replayDelta}
+          spark={replay ? replay.buckets.map((b) => b.equivalent) : []}
+          sparkVariant="accent"
         />
       </div>
 

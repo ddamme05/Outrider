@@ -1,5 +1,7 @@
 import { useLocation } from "react-router";
 
+import { $api } from "../api/client";
+import { replayRate } from "../lib/metrics";
 import { useFilters } from "../state/filters";
 
 // Signal topbar: a mono kicker + tick, the screen title (derived from the route),
@@ -17,6 +19,19 @@ export function Topbar() {
   const search = useFilters((s) => s.search);
   const setSearch = useFilters((s) => s.setSearch);
 
+  // Global replay-equivalence health pill: 30d production scope, slow poll (it's on
+  // every screen and the verdict stream changes slowly). Fails CLOSED — no pill while
+  // loading, on error, or when no reviews are verdicted yet (replayRate → null), never
+  // a fabricated 0%.
+  const replay = $api.useQuery(
+    "get",
+    "/api/metrics/replay",
+    { params: { query: { window: "30d" } } },
+    { refetchInterval: 30000 },
+  );
+  const rc = replay.data?.deltas.current;
+  const rate = rc ? replayRate(rc.equivalent, rc.total) : null;
+
   return (
     <header className="topbar">
       <div className="tb-title">
@@ -27,6 +42,14 @@ export function Topbar() {
         <h1>{screenTitle(pathname)}</h1>
       </div>
       <div className="topbar-right">
+        {rc && rate !== null ? (
+          <span
+            className="pill replay-pill"
+            title={`replay-equivalence over 30d — ${rc.equivalent}/${rc.total} verified`}
+          >
+            {rate.toFixed(0)}% replay
+          </span>
+        ) : null}
         <div className="cmdbar" role="search">
           <span className="prompt" aria-hidden="true">
             ›

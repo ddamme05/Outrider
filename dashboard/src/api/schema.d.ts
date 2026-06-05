@@ -248,6 +248,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Replay Metrics
+         * @description Replay-equivalence rate over time, from persisted verdicts — see module docstring + `#039`.
+         *
+         *     `equivalent / total` per bucket (frontend derives the %); only reviews with a persisted
+         *     `replay_verdict` are counted, so a projector-pending review is excluded, never assumed
+         *     equivalent.
+         */
+        get: operations["get_replay_metrics_api_metrics_replay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1492,6 +1516,55 @@ export interface components {
          */
         PublishRoutingReason: "reviewable_diff_line" | "unchanged_region" | "non_diffed_file" | "coordinate_error";
         /**
+         * ReplayBucket
+         * @description One UTC bucket of replay-verdict counts. Raw `equivalent` / `total` (not a precomputed
+         *     rate): callers derive the %, and `total == 0` has no defined rate (no divide-by-zero).
+         */
+        ReplayBucket: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Equivalent */
+            equivalent: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * ReplayDeltas
+         * @description Current vs the immediately-prior equal-length window (frontend computes the % change).
+         */
+        ReplayDeltas: {
+            current: components["schemas"]["ReplayPeriodTotals"];
+            previous: components["schemas"]["ReplayPeriodTotals"];
+        };
+        /** ReplayMetricsResponse */
+        ReplayMetricsResponse: {
+            /**
+             * Window
+             * @enum {string}
+             */
+            window: "24h" | "7d" | "30d";
+            /** Granularity */
+            granularity: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Buckets */
+            buckets: components["schemas"]["ReplayBucket"][];
+            deltas: components["schemas"]["ReplayDeltas"];
+        };
+        /** ReplayPeriodTotals */
+        ReplayPeriodTotals: {
+            /** Equivalent */
+            equivalent: number;
+            /** Total */
+            total: number;
+        };
+        /**
          * ReplayVerdict
          * @description Replay-equivalence verdict for one review — a thin wrapper over
          *     `audit/replay.py::AuditReplayer`.
@@ -1522,6 +1595,65 @@ export interface components {
             orphan_finding_count: number | null;
             /** Reason */
             reason: string | null;
+        };
+        /**
+         * ReplayVerdictEvent
+         * @description Records the outcome of a replay-equivalence check over a judged prefix.
+         *
+         *     Emitted by the background replay-verdict projector AFTER a review completes —
+         *     phase-unbounded replay metadata, NOT graph-node work, so it is exempt from
+         *     `_verify_phase_wellformed` phase containment via
+         *     `audit.replay._PHASE_UNBOUNDED_EVENTS`. `target_max_sequence_number` pins the
+         *     `sequence_number` high-water mark of the prefix the verdict covers (the judged
+         *     stream, EXCLUDING any prior `replay_verdict` events — a verdict is never
+         *     computed over a stream containing its own kind). `mode` + the `*_count` fields
+         *     mirror the on-demand `ReplayVerdict` shape (`api/dashboard/reviews.py`); they
+         *     form an all-present-or-all-absent envelope, `None` only when reconstruction
+         *     itself raised (see `_enforce_metadata_envelope`). `reason` is set iff the
+         *     verdict is inequivalent.
+         */
+        ReplayVerdictEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "replay_verdict";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Replay Equivalent */
+            replay_equivalent: boolean;
+            /** Mode */
+            mode?: ("full" | "metadata_only" | "mixed") | null;
+            /** Event Count */
+            event_count?: number | null;
+            /** Finding Count */
+            finding_count?: number | null;
+            /** Orphan Finding Count */
+            orphan_finding_count?: number | null;
+            /** Reason */
+            reason?: string | null;
+            /** Target Max Sequence Number */
+            target_max_sequence_number: number;
         };
         /** ReviewDetail */
         ReviewDetail: {
@@ -1587,7 +1719,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Total */
             total: number;
         };
@@ -2254,6 +2386,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DashboardMetricsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_replay_metrics_api_metrics_replay_get: {
+        parameters: {
+            query?: {
+                window?: "24h" | "7d" | "30d";
+                include_eval?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayMetricsResponse"];
                 };
             };
             /** @description Validation Error */

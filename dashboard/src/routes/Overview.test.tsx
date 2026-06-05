@@ -60,9 +60,36 @@ function metrics(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mount(opts: { metrics?: unknown; awaiting?: unknown[]; awaitingTotal?: number } = {}) {
+// A ReplayMetricsResponse fixture (DECISIONS#039 sibling). Current 23/24 = 95.8%
+// equivalent vs a prior 18/20 = 90.0% → up-good delta.
+function replay(overrides: Record<string, unknown> = {}) {
+  return {
+    window: "7d",
+    granularity: "day",
+    generated_at: "2026-06-04T12:00:00Z",
+    buckets: [
+      { bucket: "2026-05-29T00:00:00Z", equivalent: 2, total: 2 },
+      { bucket: "2026-05-30T00:00:00Z", equivalent: 3, total: 4 },
+      { bucket: "2026-05-31T00:00:00Z", equivalent: 3, total: 3 },
+      { bucket: "2026-06-01T00:00:00Z", equivalent: 5, total: 5 },
+      { bucket: "2026-06-02T00:00:00Z", equivalent: 4, total: 4 },
+      { bucket: "2026-06-03T00:00:00Z", equivalent: 2, total: 2 },
+      { bucket: "2026-06-04T00:00:00Z", equivalent: 4, total: 4 },
+    ],
+    deltas: {
+      current: { equivalent: 23, total: 24 },
+      previous: { equivalent: 18, total: 20 },
+    },
+    ...overrides,
+  };
+}
+
+function mount(opts: { metrics?: unknown; replay?: unknown; awaiting?: unknown[]; awaitingTotal?: number } = {}) {
   server.use(
     http.get("http://localhost/api/metrics", () => HttpResponse.json(opts.metrics ?? metrics())),
+    http.get("http://localhost/api/metrics/replay", () =>
+      HttpResponse.json(opts.replay ?? replay()),
+    ),
     http.get("http://localhost/api/reviews", ({ request }) => {
       const status = new URL(request.url).searchParams.get("status") ?? "";
       const reviews =
@@ -95,6 +122,55 @@ test("KPI cards render the windowed metric totals + period-over-period deltas", 
   expect(screen.getByText("50%")).toBeInTheDocument();
   // Findings 63 vs prior 60 → neutral, but still shows magnitude (grey), not a flat dash.
   expect(screen.getByText("5.0%")).toBeInTheDocument();
+});
+
+test("Replay-equiv card renders the equivalence rate + fraction + up-good delta", async () => {
+  mount();
+  // current 23/24 = 95.8% equivalent; cap shows the raw fraction (the coverage).
+  expect(await screen.findByText("95.8%")).toBeInTheDocument();
+  expect(screen.getByText("23/24 verified")).toBeInTheDocument();
+  // rate 95.8% vs prior 90.0% → up-good ▲ 6.5% (higher equivalence is good).
+  expect(screen.getByText("6.5%")).toBeInTheDocument();
+  // Assert the card's delta CLASS, not just the magnitude — rising equivalence must be
+  // up-GOOD (class "delta up"), so a polarity inversion to up-bad/neutral is caught here
+  // and not only in the isolated deltaInfo unit tests.
+  const replayCard = screen.getByText("Replay-equiv").closest(".metric-card");
+  expect(replayCard?.querySelector(".delta")?.className).toBe("delta up");
+});
+
+test("Replay-equiv card shows '—' + 'no verdicts yet' when nothing is verdicted, never 0%", async () => {
+  mount({
+    replay: replay({
+      buckets: [{ bucket: "2026-06-04T00:00:00Z", equivalent: 0, total: 0 }],
+      deltas: { current: { equivalent: 0, total: 0 }, previous: { equivalent: 0, total: 0 } },
+    }),
+  });
+  await screen.findByText("$0.59 avg / review"); // the other cards render
+  // total=0 → no DEFINED rate → honest "no verdicts yet", never a fabricated "0.0%".
+  expect(screen.getByText("no verdicts yet")).toBeInTheDocument();
+  expect(screen.queryByText("0.0%")).toBeNull();
+});
+
+test("Replay-equiv card degrades to the muted fallback when /api/metrics/replay errors", async () => {
+  server.use(
+    http.get("http://localhost/api/metrics", () => HttpResponse.json(metrics())),
+    http.get("http://localhost/api/metrics/replay", () => new HttpResponse(null, { status: 500 })),
+    http.get("http://localhost/api/reviews", () =>
+      HttpResponse.json({ reviews: [], total: 0, limit: 200, offset: 0 }),
+    ),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <Overview />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  // The other four cards still render (the replay query is independent + fails soft)…
+  expect(await screen.findByText("$0.59 avg / review")).toBeInTheDocument();
+  // …and the Replay card shows its muted fallback cap, not a fabricated rate.
+  expect(await screen.findByText("replay equivalence")).toBeInTheDocument();
 });
 
 test("renders the analytics chrome — delta, sparkline, hero chart, range selector", async () => {
@@ -144,6 +220,7 @@ test("honest zeros on an empty window — no fabricated series", async () => {
 test("metrics fail CLOSED — explicit error, never fabricated zeros", async () => {
   server.use(
     http.get("http://localhost/api/metrics", () => new HttpResponse(null, { status: 500 })),
+    http.get("http://localhost/api/metrics/replay", () => HttpResponse.json(replay())),
     http.get("http://localhost/api/reviews", () =>
       HttpResponse.json({ reviews: [], total: 0, limit: 200, offset: 0 }),
     ),
@@ -187,6 +264,7 @@ test("rail fails CLOSED when an approval-queue query errors — no false 'all cl
   // potentially blocked at the high/critical gate.
   server.use(
     http.get("http://localhost/api/metrics", () => HttpResponse.json(metrics())),
+    http.get("http://localhost/api/metrics/replay", () => HttpResponse.json(replay())),
     http.get("http://localhost/api/reviews", ({ request }) => {
       const status = new URL(request.url).searchParams.get("status") ?? "";
       if (status === "awaiting_approval") {

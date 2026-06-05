@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { deltaInfo, formatBucketLabel, seriesStats, thinLabels } from "./metrics";
+import { deltaInfo, formatBucketLabel, replayRate, seriesStats, thinLabels } from "./metrics";
 
 describe("deltaInfo", () => {
   test("up-good: an increase is a green up-arrow", () => {
@@ -30,6 +30,22 @@ describe("deltaInfo", () => {
   test("small deltas keep one decimal; large deltas round", () => {
     expect(deltaInfo(21, 20, "up-good").label).toBe("5.0%");
     expect(deltaInfo(40, 20, "up-good").label).toBe("100%");
+  });
+});
+
+describe("replayRate", () => {
+  test("equivalent/total as a percentage", () => {
+    expect(replayRate(23, 24)).toBeCloseTo(95.833, 2);
+    expect(replayRate(9, 10)).toBe(90);
+    expect(replayRate(5, 5)).toBe(100);
+  });
+  test("zero total → null (no DEFINED rate), never 0% — the honest-zeros guard", () => {
+    // total=0 means no reviews verdicted yet; 0/0 has no rate. Returning 0 would wrongly
+    // read as "every replay diverged"; null lets the card render "—".
+    expect(replayRate(0, 0)).toBeNull();
+  });
+  test("zero equivalent over a non-zero total → an honest 0%", () => {
+    expect(replayRate(0, 4)).toBe(0);
   });
 });
 

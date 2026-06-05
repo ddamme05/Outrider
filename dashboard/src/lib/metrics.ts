@@ -8,6 +8,16 @@ import type { components } from "../api/schema";
 export type MetricsResponse = components["schemas"]["DashboardMetricsResponse"];
 export type MetricBucket = components["schemas"]["MetricBucket"];
 export type PeriodTotals = components["schemas"]["PeriodTotals"];
+export type ReplayMetricsResponse = components["schemas"]["ReplayMetricsResponse"];
+
+// Replay-equivalence rate as a percentage, or null when the window has NO verdicts.
+// Honest-zeros sibling of seriesStats: a window with zero verdicted reviews has no
+// DEFINED rate, so we return null and the card renders "—" — never 0%, which would
+// wrongly imply "every replay diverged" (the denominator is verdicted reviews only,
+// DECISIONS#039). The frontend derives the %, never the server (no /0 server-side).
+export function replayRate(equivalent: number, total: number): number | null {
+  return total > 0 ? (equivalent / total) * 100 : null;
+}
 
 // Canonical display order — matches the policy severity enum (5 values) and the
 // evidence-tier enum (3 values). The endpoint zero-fills every key, so a key may
