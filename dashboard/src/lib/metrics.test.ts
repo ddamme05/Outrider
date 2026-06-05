@@ -17,8 +17,9 @@ describe("deltaInfo", () => {
   test("up-bad: failures falling is a green down-arrow", () => {
     expect(deltaInfo(2, 4, "up-bad")).toEqual({ cls: "down-good", glyph: "▼", label: "50%" });
   });
-  test("neutral polarity is always flat regardless of direction", () => {
-    expect(deltaInfo(63, 1, "neutral").cls).toBe("flat");
+  test("neutral polarity stays grey (flat) but still shows direction + magnitude", () => {
+    expect(deltaInfo(63, 60, "neutral")).toEqual({ cls: "flat", glyph: "▲", label: "5.0%" });
+    expect(deltaInfo(60, 63, "neutral")).toEqual({ cls: "flat", glyph: "▼", label: "4.8%" });
   });
   test("equal current/previous is flat", () => {
     expect(deltaInfo(5, 5, "up-good").cls).toBe("flat");
@@ -39,8 +40,8 @@ describe("seriesStats", () => {
   test("empty series", () => {
     expect(seriesStats([])).toEqual({ total: 0, avg: 0, peak: 0, peakIndex: -1 });
   });
-  test("all-zero (honest-empty) series has peak 0, not -Infinity", () => {
-    expect(seriesStats([0, 0, 0])).toEqual({ total: 0, avg: 0, peak: 0, peakIndex: 0 });
+  test("all-zero (honest-empty) series has peak 0 and peakIndex -1 (no fabricated peak day)", () => {
+    expect(seriesStats([0, 0, 0])).toEqual({ total: 0, avg: 0, peak: 0, peakIndex: -1 });
   });
 });
 

@@ -38,7 +38,7 @@ export function deltaInfo(
   previous: number,
   polarity: DeltaPolarity,
 ): DeltaInfo {
-  if (polarity === "neutral" || current === previous) {
+  if (current === previous) {
     return { cls: "flat", glyph: "—", label: "vs prev" };
   }
   const up = current > previous;
@@ -47,11 +47,20 @@ export function deltaInfo(
     const pct = (Math.abs(current - previous) / previous) * 100;
     label = `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   } else {
-    // previous === 0 < current: no finite ratio — honest "new", not ∞%.
-    label = up ? "new" : "vs prev";
+    // previous === 0 and current !== previous: counts are ≥ 0, so current > 0 — no finite
+    // ratio, render honest "new" rather than ∞%. (A decrease can't reach here.)
+    label = "new";
   }
-  const cls =
-    polarity === "up-good" ? (up ? "up" : "down") : up ? "up-bad" : "down-good";
+  // `neutral` (e.g. Findings) still shows direction + magnitude — more/fewer findings is real
+  // signal — but in grey, because up/down isn't inherently good or bad. up-good/up-bad colour it.
+  let cls: DeltaInfo["cls"];
+  if (polarity === "neutral") {
+    cls = "flat";
+  } else if (polarity === "up-good") {
+    cls = up ? "up" : "down";
+  } else {
+    cls = up ? "up-bad" : "down-good";
+  }
   return { cls, glyph: up ? "▲" : "▼", label };
 }
 
@@ -99,5 +108,7 @@ export function seriesStats(values: number[]): SeriesStats {
       peakIndex = i;
     }
   });
-  return { total, avg: total / values.length, peak, peakIndex };
+  // An all-zero (honest-empty) window has no meaningful peak DAY — report peakIndex -1 so the
+  // chart legend doesn't fabricate "peak $0.00 on <first bucket>" (DECISIONS#039 honest-zeros).
+  return { total, avg: total / values.length, peak, peakIndex: peak > 0 ? peakIndex : -1 };
 }

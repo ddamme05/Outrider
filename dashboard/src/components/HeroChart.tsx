@@ -61,7 +61,9 @@ export function HeroChart({
   const gridTicks = [0, 0.25, 0.5, 0.75, 1];
   const xTickLabels = thinLabels(labels, 7);
 
-  const peakDay = stats.peakIndex >= 0 ? labels[stats.peakIndex] : "—";
+  // null on an all-zero window (peakIndex -1) → the legend omits "on <day>" rather than
+  // claiming a peak day that didn't happen (honest-zeros).
+  const peakDay = stats.peakIndex >= 0 ? (labels[stats.peakIndex] ?? null) : null;
 
   return (
     <div className="panel hero-chart">
@@ -184,7 +186,8 @@ export function HeroChart({
           <b>{fmt(stats.avg)}</b> avg/{granularity === "hour" ? "hr" : "day"}
         </span>
         <span>
-          peak <b>{fmt(stats.peak)}</b> on {peakDay}
+          peak <b>{fmt(stats.peak)}</b>
+          {peakDay ? ` on ${peakDay}` : ""}
         </span>
       </div>
     </div>

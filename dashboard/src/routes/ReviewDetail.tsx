@@ -242,7 +242,7 @@ export function ReviewDetail() {
         <PolicyModal version={d.policy_version} onClose={() => setShowPolicy(false)} />
       ) : null}
 
-      {/* this-review metrics strip — 3 cards, all server-backed */}
+      {/* this-review metrics strip — 4 cards, all server-backed */}
       <div className="metrics-strip">
         <div className="ms-card">
           <div className="lab">Total cost</div>

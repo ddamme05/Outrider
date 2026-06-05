@@ -121,11 +121,19 @@ def _not_eval(column: InstrumentedAttribute[bool], include_eval: bool) -> list[C
 
 
 def _truncate(ts: datetime, granularity: str) -> datetime:
-    """UTC-truncate a timestamp to the bucket boundary — matches the SQL `date_trunc(..,'UTC')`."""
+    """UTC-truncate a timestamp to the bucket boundary — matches the SQL `date_trunc(..,'UTC')`.
+
+    Fail-loud on an unknown granularity: this Python truncation must agree with the SQL
+    `date_trunc` that buckets reviews/cost. A new granularity (e.g. `week`) that SQL understands
+    but this helper silently defaulted to day would desync the findings series — so raise rather
+    than guess. The full single-truncation-authority refactor (all-SQL bucketing) is a follow-up.
+    """
     ts = ts.astimezone(UTC)
     if granularity == "hour":
         return ts.replace(minute=0, second=0, microsecond=0)
-    return ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    if granularity == "day":
+        return ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    raise ValueError(f"unsupported granularity for truncation: {granularity!r}")
 
 
 def _bucket_starts(start: datetime, end: datetime, granularity: str) -> list[datetime]:
@@ -149,16 +157,25 @@ def _finding_representatives(start: datetime, end: datetime, *, include_eval: bo
     is the representative tier (see the module docstring for the seq-vs-timestamp bounded edge).
     """
     hash_col = AuditEvent.payload["finding_content_hash"].astext
+    # is_eval scoped via the JOINED review, matching the FUP-130 read-side EQUALITY rule
+    # (`reviews.py`: `AuditEvent.is_eval == review_is_eval`) + the replay consistency check
+    # (`_verify_is_eval_consistent`): an event must AGREE with its review's is_eval, so a drift
+    # row is rejected in BOTH directions (eval review w/ prod-labeled event AND prod review w/
+    # eval-labeled event), and production scope uses the review's authoritative is_eval. Identical
+    # under producer homogeneity; the predicate is the read-side defense the rest of the dashboard
+    # carries (a one-sided `Review.is_eval` filter alone would leak the prod-review->eval case).
     rep_seq = (
         select(
             AuditEvent.review_id.label("rid"),
             hash_col.label("h"),
             func.min(AuditEvent.sequence_number).label("seq"),
         )
+        .join(Review, Review.id == AuditEvent.review_id)
         .where(
             AuditEvent.event_type == _FINDING,
             AuditEvent.timestamp < end,
-            *_not_eval(AuditEvent.is_eval, include_eval),
+            AuditEvent.is_eval == Review.is_eval,  # reject is_eval drift (either direction)
+            *_not_eval(Review.is_eval, include_eval),
         )
         .group_by(AuditEvent.review_id, hash_col)
         .subquery()
@@ -223,6 +240,8 @@ async def _cost_by_bucket(
     session: AsyncSession, start: datetime, end: datetime, granularity: str, *, include_eval: bool
 ) -> dict[datetime, float]:
     bucket = func.date_trunc(granularity, AuditEvent.timestamp, "UTC").label("bucket")
+    # is_eval via the joined REVIEW with the FUP-130 equality predicate — see
+    # `_finding_representatives`. The reviews/failed series is reviews-table-only (no event join).
     stmt = (
         select(
             bucket,
@@ -230,11 +249,13 @@ async def _cost_by_bucket(
                 "cost"
             ),
         )
+        .join(Review, Review.id == AuditEvent.review_id)
         .where(
             AuditEvent.event_type == _LLM_CALL,
             AuditEvent.timestamp >= start,
             AuditEvent.timestamp < end,
-            *_not_eval(AuditEvent.is_eval, include_eval),
+            AuditEvent.is_eval == Review.is_eval,  # reject is_eval drift (either direction)
+            *_not_eval(Review.is_eval, include_eval),
         )
         .group_by(bucket)
     )
@@ -258,13 +279,16 @@ async def _review_cost_totals(
         *_not_eval(Review.is_eval, include_eval),
     )
     rrow = (await session.execute(rstmt)).one()
-    cstmt = select(
-        func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0)
-    ).where(
-        AuditEvent.event_type == _LLM_CALL,
-        AuditEvent.timestamp >= start,
-        AuditEvent.timestamp < end,
-        *_not_eval(AuditEvent.is_eval, include_eval),
+    cstmt = (
+        select(func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0))
+        .join(Review, Review.id == AuditEvent.review_id)
+        .where(
+            AuditEvent.event_type == _LLM_CALL,
+            AuditEvent.timestamp >= start,
+            AuditEvent.timestamp < end,
+            AuditEvent.is_eval == Review.is_eval,  # FUP-130 equality: reject is_eval drift
+            *_not_eval(Review.is_eval, include_eval),
+        )
     )
     cost = float((await session.execute(cstmt)).scalar_one())
     return int(rrow.reviews), int(rrow.failed), cost
