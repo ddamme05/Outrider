@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 
-import { deltaInfo, formatBucketLabel, replayRate, seriesStats, thinLabels } from "./metrics";
+import {
+  deltaInfo,
+  formatBucketLabel,
+  replayDeltaInfo,
+  replayRate,
+  seriesStats,
+  thinLabels,
+} from "./metrics";
 
 describe("deltaInfo", () => {
   test("up-good: an increase is a green up-arrow", () => {
@@ -46,6 +53,25 @@ describe("replayRate", () => {
   });
   test("zero equivalent over a non-zero total → an honest 0%", () => {
     expect(replayRate(0, 4)).toBe(0);
+  });
+});
+
+describe("replayDeltaInfo", () => {
+  test("percentage-POINT change with a directional glyph (rate, not relative %)", () => {
+    // 95.8% vs 90.0% → +5.8pp up-good (NOT the 6.5% relative change deltaInfo would give).
+    expect(replayDeltaInfo(95.833, 90)).toEqual({ cls: "up", glyph: "▲", label: "5.8pp" });
+    expect(replayDeltaInfo(90, 95)).toEqual({ cls: "down", glyph: "▼", label: "5.0pp" });
+  });
+  test("a REAL prior 0% (every replay diverged) yields a defined pp delta, NOT 'new'", () => {
+    // The bug deltaInfo(cur, prevRate ?? 0) had: it collapsed a real 0% baseline with "no data".
+    expect(replayDeltaInfo(95, 0)).toEqual({ cls: "up", glyph: "▲", label: "95.0pp" });
+  });
+  test("no PRIOR verdicts (prevRate null) is 'new'; no CURRENT verdicts is flat", () => {
+    expect(replayDeltaInfo(95, null)).toEqual({ cls: "flat", glyph: "—", label: "new" });
+    expect(replayDeltaInfo(null, 90)).toEqual({ cls: "flat", glyph: "—", label: "vs prev" });
+  });
+  test("a sub-0.05pp change is flat (no noise)", () => {
+    expect(replayDeltaInfo(90.02, 90).cls).toBe("flat");
   });
 });
 

@@ -19,6 +19,21 @@ export function replayRate(equivalent: number, total: number): number | null {
   return total > 0 ? (equivalent / total) * 100 : null;
 }
 
+// Period-over-period delta for the Replay-% card. UNLIKE deltaInfo (built for COUNTS,
+// where a relative %-change from a 0 baseline is undefined → "new"), the equivalence
+// rate is a RATE, so its honest delta is the percentage-POINT change (curRate − prevRate),
+// which is defined at ANY baseline — including a real prior 0% (every replay diverged),
+// which a count-style delta would wrongly collapse with "no prior data". Magnitude label
+// + directional glyph match the sibling cards; up = higher equivalence = good.
+export function replayDeltaInfo(curRate: number | null, prevRate: number | null): DeltaInfo {
+  if (curRate === null) return { cls: "flat", glyph: "—", label: "vs prev" }; // no current verdicts
+  if (prevRate === null) return { cls: "flat", glyph: "—", label: "new" }; // no PRIOR verdicts
+  const diff = curRate - prevRate; // percentage points
+  if (Math.abs(diff) < 0.05) return { cls: "flat", glyph: "—", label: "vs prev" };
+  const up = diff > 0;
+  return { cls: up ? "up" : "down", glyph: up ? "▲" : "▼", label: `${Math.abs(diff).toFixed(1)}pp` };
+}
+
 // Canonical display order — matches the policy severity enum (5 values) and the
 // evidence-tier enum (3 values). The endpoint zero-fills every key, so a key may
 // be present with count 0; render it honestly rather than dropping it.

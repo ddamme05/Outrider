@@ -9,7 +9,7 @@ import { RangeSeg, type MetricsWindow } from "../components/RangeSeg";
 import { SeverityBar } from "../components/SeverityBar";
 import { StatusPill } from "../components/StatusPill";
 import { TierRows } from "../components/TierRows";
-import { type DeltaInfo, deltaInfo, replayRate, type ReplayMetricsResponse } from "../lib/metrics";
+import { deltaInfo, replayDeltaInfo, replayRate, type ReplayMetricsResponse } from "../lib/metrics";
 import { useFilters } from "../state/filters";
 
 type ReviewListItem = components["schemas"]["ReviewListItem"];
@@ -34,11 +34,13 @@ export function Overview() {
     opts,
   );
   // Sibling Replay-% query (same window). Independent of /api/metrics: it degrades the
-  // ONE card to "—" if it's still loading or errors, without blocking the other four.
+  // ONE card to "—" if it's still loading or errors, without blocking the other four. The
+  // global eval toggle is NOT passed: replay verdicts are projected for PRODUCTION reviews
+  // only (the projector's scope, DECISIONS#039), so the card is always production-scoped.
   const replay = $api.useQuery(
     "get",
     "/api/metrics/replay",
-    { params: { query: { window, include_eval: includeEval } } },
+    { params: { query: { window } } },
     opts,
   );
 
@@ -175,15 +177,14 @@ function Analytics({
 
   // Replay-% (5th card): equivalent/total over the window. Degrades to a muted "—"
   // when the sibling query hasn't resolved (loading/error) OR resolved with no
-  // verdicts — never a fabricated 0%. prevRate null (no prior verdicts) feeds
-  // deltaInfo a 0 previous, which it renders as "new", not ∞%.
+  // verdicts — never a fabricated 0%. The delta is a rate-appropriate percentage-POINT
+  // change (replayDeltaInfo), not deltaInfo's count-relative %.
   const rc = replay?.deltas.current;
   const curRate = rc ? replayRate(rc.equivalent, rc.total) : null;
   const prevRate = replay
     ? replayRate(replay.deltas.previous.equivalent, replay.deltas.previous.total)
     : null;
-  const flat: DeltaInfo = { cls: "flat", glyph: "—", label: "vs prev" };
-  const replayDelta = curRate === null ? flat : deltaInfo(curRate, prevRate ?? 0, "up-good");
+  const replayDelta = replayDeltaInfo(curRate, prevRate);
 
   return (
     <>
@@ -237,7 +238,9 @@ function Analytics({
               : "replay equivalence"
           }
           delta={replayDelta}
-          spark={replay ? replay.buckets.map((b) => b.equivalent) : []}
+          // Spark the per-bucket RATE (matches the headline), not raw counts like the
+          // sibling cards — an empty bucket (no verdicts) has no rate, shown as 0.
+          spark={replay ? replay.buckets.map((b) => (b.total > 0 ? (b.equivalent / b.total) * 100 : 0)) : []}
           sparkVariant="accent"
         />
       </div>
