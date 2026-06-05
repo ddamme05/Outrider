@@ -289,10 +289,17 @@ async def drift_replay_client(migrated_db: str) -> AsyncGenerator[TestClient]:
         prod_drift = await _seed_completed_review(
             conn, is_eval=False, completed_age_days=1, repo_id=200
         )
+        # The OTHER drift direction: an EVAL review with a PROD-labeled verdict.
+        eval_drift = await _seed_completed_review(
+            conn, is_eval=True, completed_age_days=1, repo_id=300
+        )
         await _seed_verdict(conn, prod_ok, replay_equivalent=True, event_age_days=1, is_eval=False)
         await _seed_verdict(
             conn, prod_drift, replay_equivalent=True, event_age_days=1, is_eval=True
-        )  # DRIFT
+        )  # DRIFT: prod review, eval-labeled verdict
+        await _seed_verdict(
+            conn, eval_drift, replay_equivalent=True, event_age_days=1, is_eval=False
+        )  # DRIFT: eval review, prod-labeled verdict
     try:
         yield _mount(session_factory)
     finally:
@@ -301,13 +308,16 @@ async def drift_replay_client(migrated_db: str) -> AsyncGenerator[TestClient]:
 
 @pytest.mark.asyncio
 async def test_is_eval_drift_verdict_excluded(drift_replay_client: TestClient) -> None:
-    # The drift verdict (prod review, eval-labeled event) must NOT count under production scope —
-    # `AuditEvent.is_eval == Review.is_eval` rejects it. Only the agreeing prod verdict counts.
+    # `AuditEvent.is_eval == Review.is_eval` rejects a drift verdict in BOTH directions — only the
+    # agreeing prod verdict ever counts. Production scope: prod_drift (eval-labeled verdict on a
+    # prod review) is rejected by the equality; eval_drift (eval review) is excluded by the
+    # is_eval=False review filter itself.
     body = _get(drift_replay_client, window="7d")
-    assert body["deltas"]["current"]["total"] == 1  # prod_ok only; the drift verdict excluded
+    assert body["deltas"]["current"]["total"] == 1  # prod_ok only
     assert body["deltas"]["current"]["equivalent"] == 1
-    # Even with include_eval, the drift verdict (review is_eval=False, event is_eval=True) stays
-    # excluded — it agrees with NO review.
+    # include_eval=true brings the eval_drift REVIEW into scope, so the equality (not the review
+    # filter) is now the only thing rejecting its prod-labeled verdict — the other direction. Both
+    # drift verdicts stay out: total is still 1, not 2 or 3 (a one-sided filter would leak them).
     full = _get(drift_replay_client, window="7d", include_eval="true")
     assert full["deltas"]["current"]["total"] == 1
 
