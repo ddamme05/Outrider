@@ -386,7 +386,7 @@
           "dashboard"
         ],
         "summary": "Get Replay Timeline",
-        "description": "Grouped, replay-verified timeline read-model (ROADMAP feature 6, PR 1).\n\nSingle-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)\nthen `assert_equivalent` over THAT SAME object \u2014 never `assert_replay_equivalent` (which\nreconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`\ninherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.\nPhases (`reconstruct().phases`) are exposed ONLY on an equivalent verdict (FUP-125 \u2014 they are\ntrustworthy only once `_verify_phase_wellformed` has proven the non-nesting precondition that\nmakes `_group_phases` lossless). See `ReplayTimelineResponse` for the failure contract +\nmetadata-only / verdict-exclusion rules.",
+        "description": "Grouped, replay-verified timeline read-model (ROADMAP feature 6).\n\nSingle-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)\nthen `assert_equivalent` over THAT SAME object \u2014 never `assert_replay_equivalent` (which\nreconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`\ninherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.\nPhases (`reconstruct().phases`) AND the expandable `findings`/`llm_exchanges` content are\nexposed ONLY on an equivalent verdict (FUP-125 \u2014 phases are trustworthy only once\n`_verify_phase_wellformed` has proven the non-nesting precondition that makes `_group_phases`\nlossless; content rides the same gate). Content (PR 2) comes from `reconstruct()`'s already-\nhydrated `findings`/`llm_exchanges` (the content tables, not audit rows) via\n`_timeline_content`. See `ReplayTimelineResponse` for the failure contract + verdict-exclusion.",
         "operationId": "get_replay_timeline_api_reviews__review_id__replay_timeline_get",
         "parameters": [
           {
@@ -3250,6 +3250,20 @@
             },
             "type": "array",
             "title": "Inter Phase Events"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineFindingContentView"
+            },
+            "type": "array",
+            "title": "Findings"
+          },
+          "llm_exchanges": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineLLMExchangeView"
+            },
+            "type": "array",
+            "title": "Llm Exchanges"
           }
         },
         "additionalProperties": false,
@@ -3262,10 +3276,12 @@
           "status",
           "events",
           "phases",
-          "inter_phase_events"
+          "inter_phase_events",
+          "findings",
+          "llm_exchanges"
         ],
         "title": "ReplayTimelineResponse",
-        "description": "The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6, PR 1).\n\nA thin serialization of `reconstruct()`'s canonical `ReconstructedReview` \u2014 the same\nreconstruction `assert_equivalent` consumes \u2014 NOT a re-interpretation of the audit\ntables. Metadata-only RESPONSE: `reconstruct` reads the content tables server-side to\nverify + classify `mode`, but no content is serialized here (content expansion is PR 2).\n\nFUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,\nso `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the\nconsumer falls back to the flat `events`. The failure contract mirrors `/replay`:\nreconstruct-raised `ReplayEquivalenceError` \u2192 verdict only (`mode`/`status`/`phases` null,\n`events` empty); reconstruct-raised `ValidationError` \u2192 500; assert-raised \u2192 verdict false\n+ `mode` present + `phases` suppressed.\n\n`events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion\nreplay metadata surfaced via the verdict, not a review-work operation \u2014 the `/replay`\n`event_count` analogue). `inter_phase_events` is the positional set-difference (ordered\nevents not in any `phase.events`) \u2014 the transitions `_group_phases` drops from the grouped\nview, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`."
+        "description": "The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6).\n\nA thin serialization of `reconstruct()`'s canonical `ReconstructedReview` \u2014 the same\nreconstruction `assert_equivalent` consumes \u2014 NOT a re-interpretation of the audit\ntables. The `events`/`phases` are metadata-only (`reconstruct` reads the content tables\nserver-side to verify + classify `mode`); `findings`/`llm_exchanges` carry the expandable\nCONTENT (PR 2), serialized from the same verified snapshot and gated on the equivalent\nverdict. Content from the `findings`/`llm_call_content` tables only \u2014 never from an\n`audit_events` row (DECISIONS.md#014/#016 metadata-only-audit contract).\n\nFUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,\nso `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the\nconsumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate\n(empty on a non-equivalent verdict). The failure contract mirrors `/replay`:\nreconstruct-raised `ReplayEquivalenceError` \u2192 verdict only (`mode`/`status`/`phases` null,\n`events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` \u2192 500;\nassert-raised \u2192 verdict false + `mode` present + `phases`/content suppressed.\n\n`events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion\nreplay metadata surfaced via the verdict, not a review-work operation \u2014 the `/replay`\n`event_count` analogue). `inter_phase_events` is the positional set-difference (ordered\nevents not in any `phase.events`) \u2014 the transitions `_group_phases` drops from the grouped\nview, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`."
       },
       "ReplayVerdict": {
         "properties": {
@@ -4141,6 +4157,157 @@
         ],
         "title": "SynthesizeCompletedEvent",
         "description": "Per-review aggregate emitted at the end of the synthesize node.\n\n`policy_version` mirrors the triage-captured snapshot per\nDECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.\nSee also DECISIONS.md#029 for the V2 durable-retry idempotency\n+ content-binding via `llm_call_event_id` (out of scope for V1).\n\nOne per review (not per-pass like `AnalyzeCompletedEvent`). Carries\nthe canonical `ReviewMetrics` fields (mirror of\n`outrider.schemas.review_report.ReviewMetrics`), plus the binding\nmetadata (`summary_content_hash`, `overall_risk`, `n_findings`)\nthat lets replay reconstruct what summary text + what report shape\nthis synthesize-node invocation produced. Replay joins the\npaired `LLMCallEvent` by `review_id` + `node_id=\"synthesize\"` \u2014\n`LLMCallEvent` carries its own `event_id` AND scans `llm_call_content`\nby that key per `DECISIONS.md#016`; no explicit `llm_call_event_id`\nFK is needed on this event because the synthesize node emits\nexactly one LLM call per review (joinable unambiguously) and the\n`summary_content_hash` here cross-validates the content match.\n\nMetadata-only per `DECISIONS.md#016`: the summary prose lives in\n`llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint\npayload (operational-side; see spec gate #6 option (c) retention\nmodel). `summary_content_hash` is the sha256 of the RAW LLM\n`response.text` (matches the canon `llm_call_content.completion`\npersister stores \u2014 see synthesize.py `_compute_summary_content_hash`\ndocstring for the display-vs-canon split rationale). Within the\nLLM-content TTL window, replay can reconstruct prose by joining on\nthis hash; outside the window, metadata-only replay is the\ncanonical claim.\n\nIdempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-\nkey was rejected at pre-spec gate #1 because the natural-key\npersister cannot return enough payload to reconstruct\n`ReviewReport` (the summary text lives in `llm_call_content`, not\nin the audit-row payload) \u2014 state-lockstep gate iii fails. The\nevent_id-PK contract catches CONCURRENT re-emit of the same logical\nevent (e.g., dispatcher fires twice for one checkpoint state) but\ndoes NOT catch crash-recovery re-emit (Synthesize body crashes\nAFTER this event lands but BEFORE node return \u2192 resume mints a\nfresh UUID \u2192 second row lands). V1's in-process BackgroundTasks\ndispatcher does not durably retry; V2 Celery + Redis adds durable\nretry semantics and will need a natural-key add-on before durable\nretry lands (sibling of `emit_phase` which already keys natural).\nPer-review-aggregate dashboard queries should DISTINCT ON\n`(review_id, event_type)` or use MAX(timestamp) to be robust.\n\nNo content-hash binding on findings here (unlike `FindingEvent`):\nevery finding in the deduplicated `ReviewReport.findings` is already\nrecorded as its own `FindingEvent` upstream. `n_findings` is the\naggregate; replay can join to per-finding events via `review_id`."
+      },
+      "TimelineFindingContentView": {
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "content_redacted": {
+            "type": "boolean",
+            "title": "Content Redacted"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "suggested_fix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Fix"
+          },
+          "hitl_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HITLDecisionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "redaction_sweep_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Sweep At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finding_id",
+          "content_redacted",
+          "title",
+          "description",
+          "evidence",
+          "suggested_fix",
+          "hitl_decision",
+          "redaction_sweep_at"
+        ],
+        "title": "TimelineFindingContentView",
+        "description": "Expandable finding content for the replay timeline (ROADMAP \u00a76, PR 2).\n\nJoined to its `FindingEvent` row in the timeline by `finding_id`. Carries the\nCONTENT (`title`/`description`/`evidence`/`suggested_fix`) the event shadow lacks\n\u2014 all `None` with `content_redacted=True` once the `findings` row is purged but the\nevent survives (DECISIONS.md#014 point 3). The finding's metadata + proof artifacts\n(severity/tier/location/`query_match_id`/`trace_path`) live on the joined `FindingEvent`\n(in `events`/`phases`) and survive redaction \u2014 NOT duplicated here. `hitl_decision` is\nthe stream-canonical override provenance (DECISIONS.md#034) projected from the per-review\n`HITLDecisionEvent`, never the V1-null `findings` projection columns."
+      },
+      "TimelineLLMExchangeView": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "content_redacted": {
+            "type": "boolean",
+            "title": "Content Redacted"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion"
+          },
+          "redaction_sweep_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Sweep At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id",
+          "content_redacted",
+          "prompt",
+          "completion",
+          "redaction_sweep_at"
+        ],
+        "title": "TimelineLLMExchangeView",
+        "description": "Expandable LLM-exchange content for the replay timeline (ROADMAP \u00a76, PR 2).\n\nJoined to its `LLMCallEvent` row in the timeline by `event_id`. Carries the\n`prompt`/`completion` text from `llm_call_content` \u2014 both `None` with\n`content_redacted=True` once the content row is purged but the event survives\n(DECISIONS.md#016 point 5). The call's metadata (model/tokens/cost/hashes) lives on the\njoined `LLMCallEvent` and survives redaction \u2014 NOT duplicated here."
       },
       "TraceDecisionEvent": {
         "properties": {

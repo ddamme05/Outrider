@@ -178,16 +178,18 @@ export interface paths {
         };
         /**
          * Get Replay Timeline
-         * @description Grouped, replay-verified timeline read-model (ROADMAP feature 6, PR 1).
+         * @description Grouped, replay-verified timeline read-model (ROADMAP feature 6).
          *
          *     Single-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)
          *     then `assert_equivalent` over THAT SAME object — never `assert_replay_equivalent` (which
          *     reconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`
          *     inherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.
-         *     Phases (`reconstruct().phases`) are exposed ONLY on an equivalent verdict (FUP-125 — they are
-         *     trustworthy only once `_verify_phase_wellformed` has proven the non-nesting precondition that
-         *     makes `_group_phases` lossless). See `ReplayTimelineResponse` for the failure contract +
-         *     metadata-only / verdict-exclusion rules.
+         *     Phases (`reconstruct().phases`) AND the expandable `findings`/`llm_exchanges` content are
+         *     exposed ONLY on an equivalent verdict (FUP-125 — phases are trustworthy only once
+         *     `_verify_phase_wellformed` has proven the non-nesting precondition that makes `_group_phases`
+         *     lossless; content rides the same gate). Content (PR 2) comes from `reconstruct()`'s already-
+         *     hydrated `findings`/`llm_exchanges` (the content tables, not audit rows) via
+         *     `_timeline_content`. See `ReplayTimelineResponse` for the failure contract + verdict-exclusion.
          */
         get: operations["get_replay_timeline_api_reviews__review_id__replay_timeline_get"];
         put?: never;
@@ -1623,19 +1625,23 @@ export interface components {
         };
         /**
          * ReplayTimelineResponse
-         * @description The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6, PR 1).
+         * @description The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6).
          *
          *     A thin serialization of `reconstruct()`'s canonical `ReconstructedReview` — the same
          *     reconstruction `assert_equivalent` consumes — NOT a re-interpretation of the audit
-         *     tables. Metadata-only RESPONSE: `reconstruct` reads the content tables server-side to
-         *     verify + classify `mode`, but no content is serialized here (content expansion is PR 2).
+         *     tables. The `events`/`phases` are metadata-only (`reconstruct` reads the content tables
+         *     server-side to verify + classify `mode`); `findings`/`llm_exchanges` carry the expandable
+         *     CONTENT (PR 2), serialized from the same verified snapshot and gated on the equivalent
+         *     verdict. Content from the `findings`/`llm_call_content` tables only — never from an
+         *     `audit_events` row (DECISIONS.md#014/#016 metadata-only-audit contract).
          *
          *     FUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,
          *     so `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the
-         *     consumer falls back to the flat `events`. The failure contract mirrors `/replay`:
+         *     consumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate
+         *     (empty on a non-equivalent verdict). The failure contract mirrors `/replay`:
          *     reconstruct-raised `ReplayEquivalenceError` → verdict only (`mode`/`status`/`phases` null,
-         *     `events` empty); reconstruct-raised `ValidationError` → 500; assert-raised → verdict false
-         *     + `mode` present + `phases` suppressed.
+         *     `events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` → 500;
+         *     assert-raised → verdict false + `mode` present + `phases`/content suppressed.
          *
          *     `events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion
          *     replay metadata surfaced via the verdict, not a review-work operation — the `/replay`
@@ -1663,6 +1669,10 @@ export interface components {
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
             inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            /** Findings */
+            findings: components["schemas"]["TimelineFindingContentView"][];
+            /** Llm Exchanges */
+            llm_exchanges: components["schemas"]["TimelineLLMExchangeView"][];
         };
         /**
          * ReplayVerdict
@@ -2093,6 +2103,64 @@ export interface components {
             policy_version: string;
             /** Synthesize Model */
             synthesize_model: string;
+        };
+        /**
+         * TimelineFindingContentView
+         * @description Expandable finding content for the replay timeline (ROADMAP §6, PR 2).
+         *
+         *     Joined to its `FindingEvent` row in the timeline by `finding_id`. Carries the
+         *     CONTENT (`title`/`description`/`evidence`/`suggested_fix`) the event shadow lacks
+         *     — all `None` with `content_redacted=True` once the `findings` row is purged but the
+         *     event survives (DECISIONS.md#014 point 3). The finding's metadata + proof artifacts
+         *     (severity/tier/location/`query_match_id`/`trace_path`) live on the joined `FindingEvent`
+         *     (in `events`/`phases`) and survive redaction — NOT duplicated here. `hitl_decision` is
+         *     the stream-canonical override provenance (DECISIONS.md#034) projected from the per-review
+         *     `HITLDecisionEvent`, never the V1-null `findings` projection columns.
+         */
+        TimelineFindingContentView: {
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Content Redacted */
+            content_redacted: boolean;
+            /** Title */
+            title: string | null;
+            /** Description */
+            description: string | null;
+            /** Evidence */
+            evidence: string | null;
+            /** Suggested Fix */
+            suggested_fix: string | null;
+            hitl_decision: components["schemas"]["HITLDecisionView"] | null;
+            /** Redaction Sweep At */
+            redaction_sweep_at: string | null;
+        };
+        /**
+         * TimelineLLMExchangeView
+         * @description Expandable LLM-exchange content for the replay timeline (ROADMAP §6, PR 2).
+         *
+         *     Joined to its `LLMCallEvent` row in the timeline by `event_id`. Carries the
+         *     `prompt`/`completion` text from `llm_call_content` — both `None` with
+         *     `content_redacted=True` once the content row is purged but the event survives
+         *     (DECISIONS.md#016 point 5). The call's metadata (model/tokens/cost/hashes) lives on the
+         *     joined `LLMCallEvent` and survives redaction — NOT duplicated here.
+         */
+        TimelineLLMExchangeView: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Content Redacted */
+            content_redacted: boolean;
+            /** Prompt */
+            prompt: string | null;
+            /** Completion */
+            completion: string | null;
+            /** Redaction Sweep At */
+            redaction_sweep_at: string | null;
         };
         /**
          * TraceDecisionEvent

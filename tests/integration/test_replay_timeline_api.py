@@ -1,4 +1,4 @@
-"""Integration tests for `GET /api/reviews/{id}/replay-timeline` (ROADMAP feature 6, PR 1).
+"""Integration tests for `GET /api/reviews/{id}/replay-timeline` (ROADMAP feature 6).
 
 Proves the grouped+verified timeline contract against real seeded audit streams:
 
@@ -12,16 +12,21 @@ Proves the grouped+verified timeline contract against real seeded audit streams:
 - `reconstruct`-raised (is_eval drift) → verdict only, phases null, NOT a 500;
 - 404 + auth.
 
-Metadata-only RESPONSE: no content is serialized. Event factories mirror
-`tests/integration/test_dashboard_replay_api.py`; review/installation seeding mirrors
-`tests/integration/test_replay_verdict_projector.py`.
+PR 2 (content expansion): `findings`/`llm_exchanges` carry the expandable content from the same
+verified snapshot — FULL populates it, METADATA_ONLY/MIXED redact per-item (`content_redacted`),
+override provenance comes from the `HITLDecisionEvent` stream (DECISIONS.md#034, not the V1-null
+table columns), the redaction date comes from `purge_audit`, and a non-equivalent verdict suppresses
+content the same way it suppresses `phases`. Content seeding mirrors
+`tests/integration/test_audit_replay.py`; HITL + purge_audit seeding mirrors
+`tests/integration/test_dashboard_findings_api.py`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Literal
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 import pytest
@@ -37,14 +42,17 @@ from outrider.audit.events import (
     AgentTransitionEvent,
     AuditEventBase,
     FindingEvent,
+    HITLDecisionEvent,
     LLMCallEvent,
     ReplayVerdictEvent,
     ReviewPhaseEvent,
     compute_finding_content_hash,
 )
+from outrider.policy.canonical import compute_hitl_decision_content_hash
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
+from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -59,7 +67,7 @@ _INSTALLATION_ID = 661122
 # ---- event factories (is_eval threads through to the event so the column matches the payload) ----
 def _phase(
     review_id: UUID,
-    node_id: Literal["intake", "analyze"],
+    node_id: Literal["intake", "analyze", "hitl"],
     marker: Literal["start", "end"],
     *,
     is_eval: bool = False,
@@ -195,10 +203,10 @@ async def engine(migrated_db: str) -> AsyncGenerator[AsyncEngine]:
         await eng.dispose()
 
 
-def _get(client: TestClient, review_id: UUID) -> dict:
+def _get(client: TestClient, review_id: UUID) -> dict[str, Any]:
     resp = client.get(f"/api/reviews/{review_id}/replay-timeline", headers=_AUTH)
     assert resp.status_code == 200, resp.text
-    body: dict = resp.json()
+    body: dict[str, Any] = resp.json()
     return body
 
 
@@ -345,3 +353,244 @@ def test_unknown_review_404(engine: AsyncEngine) -> None:
 def test_auth_required(engine: AsyncEngine) -> None:
     resp = _mount(engine).get(f"/api/reviews/{uuid4()}/replay-timeline")
     assert resp.status_code == 401
+
+
+# ---- PR 2 content expansion: content seeding (mirrors test_audit_replay.py) ----
+async def _seed_finding_row(engine: AsyncEngine, event: FindingEvent) -> None:
+    """A surviving `findings` content row matching the FindingEvent (FULL mode).
+
+    Override columns (`original_severity`/`override_reason`/`overrider_id`) are
+    deliberately left NULL — the V1 read-model state (DECISIONS.md#034): provenance
+    lives in the stream, never the table.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO findings (finding_id, review_id, installation_id, policy_version, "
+                "finding_type, dimension, severity, evidence_tier, file_path, line_start, "
+                "line_end, title, description, evidence, content_hash, retention_expires_at) "
+                "VALUES (:fid, :rid, :iid, :pv, :ft, :dim, :sev, :tier, :fp, :ls, :le, "
+                "'t', 'd', 'e', :hash, NOW() + INTERVAL '180 days')"
+            ),
+            {
+                "fid": event.finding_id,
+                "rid": event.review_id,
+                "iid": _INSTALLATION_ID,
+                "pv": event.policy_version,
+                "ft": event.finding_type.value,
+                "dim": event.dimension.value,
+                "sev": event.severity.value,
+                "tier": event.evidence_tier.value,
+                "fp": event.file_path,
+                "ls": event.line_start,
+                "le": event.line_end,
+                "hash": event.finding_content_hash,
+            },
+        )
+
+
+async def _seed_llm_content(engine: AsyncEngine, event: LLMCallEvent) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO llm_call_content (event_id, installation_id, prompt, completion, "
+                "retention_expires_at) VALUES (:eid, :iid, 'the prompt', 'the completion', "
+                "NOW() + INTERVAL '90 days')"
+            ),
+            {"eid": event.event_id, "iid": _INSTALLATION_ID},
+        )
+
+
+def _hitl_override(review_id: UUID, finding_id: UUID) -> HITLDecisionEvent:
+    """A valid `HITLDecisionEvent` overriding one finding CRITICAL → HIGH.
+
+    Constructed via the model (not a raw insert) because the timeline goes through
+    `reconstruct()`, which validates every row against the discriminated union — a
+    minimal payload would fail the `event_type`/content-hash checks.
+    """
+    decision = PerFindingDecision(
+        finding_id=finding_id,
+        outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+        reason="downgraded: test-only path",
+        original_severity=FindingSeverity.CRITICAL,
+        override_severity=FindingSeverity.HIGH,
+    )
+    return HITLDecisionEvent(
+        review_id=review_id,
+        reviewer_id="admin",
+        decisions=(decision,),
+        annotation=None,
+        decided_at=datetime(2026, 6, 1, tzinfo=UTC),
+        decision_latency_seconds=12.0,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=(decision,), annotation=None
+        ),
+    )
+
+
+async def _insert_purge_audit(
+    engine: AsyncEngine, *, target_table: str, timestamp_iso: str
+) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO purge_audit "
+                "(installation_id, target_table, rows_affected, purge_role, timestamp) "
+                "VALUES (0, :tt, 1, 'sweep', :ts)"
+            ),
+            {"tt": target_table, "ts": timestamp_iso},
+        )
+
+
+@pytest.mark.asyncio
+async def test_full_mode_serializes_finding_and_llm_content(engine: AsyncEngine) -> None:
+    # FULL: review + finding row + llm content all present → content populated, not redacted.
+    review_id = uuid4()
+    finding = _finding(review_id)
+    llm = _llm_call(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id, status="completed")
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, llm)
+    await _insert_event(engine, finding)
+    await _insert_event(engine, _phase(review_id, "analyze", "end"))
+    await _seed_finding_row(engine, finding)
+    await _seed_llm_content(engine, llm)
+
+    body = _get(_mount(engine), review_id)
+    assert body["replay_equivalent"] is True
+    assert body["mode"] == "full"
+    (fv,) = body["findings"]
+    assert fv["finding_id"] == str(finding.finding_id)
+    assert fv["content_redacted"] is False
+    assert (fv["title"], fv["description"], fv["evidence"]) == ("t", "d", "e")
+    assert fv["hitl_decision"] is None  # no override
+    assert fv["redaction_sweep_at"] is None
+    (lv,) = body["llm_exchanges"]
+    assert lv["event_id"] == str(llm.event_id)
+    assert lv["content_redacted"] is False
+    assert (lv["prompt"], lv["completion"]) == ("the prompt", "the completion")
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_redacts_content(engine: AsyncEngine) -> None:
+    # No review/content rows → METADATA_ONLY: content views are redacted stubs, but the
+    # finding/llm metadata still rides the events/phases rows.
+    review_id = uuid4()
+    finding = _finding(review_id)
+    llm = _llm_call(review_id)
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, llm)
+    await _insert_event(engine, finding)
+    await _insert_event(engine, _phase(review_id, "analyze", "end"))
+
+    body = _get(_mount(engine), review_id)
+    assert body["replay_equivalent"] is True
+    assert body["mode"] == "metadata_only"
+    (fv,) = body["findings"]
+    assert fv["content_redacted"] is True
+    assert (fv["title"], fv["description"], fv["evidence"], fv["suggested_fix"]) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    (lv,) = body["llm_exchanges"]
+    assert lv["content_redacted"] is True
+    assert (lv["prompt"], lv["completion"]) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_mixed_mode_per_item_redaction(engine: AsyncEngine) -> None:
+    # MIXED: finding content survives, shorter-TTL llm_call_content purged → per-item flags,
+    # never silently hybridized.
+    review_id = uuid4()
+    finding = _finding(review_id)
+    llm = _llm_call(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id, status="completed")
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, llm)
+    await _insert_event(engine, finding)
+    await _insert_event(engine, _phase(review_id, "analyze", "end"))
+    await _seed_finding_row(engine, finding)
+    # deliberately NO _seed_llm_content — the LLM content row is purged.
+
+    body = _get(_mount(engine), review_id)
+    assert body["mode"] == "mixed"
+    (fv,) = body["findings"]
+    assert fv["content_redacted"] is False and fv["title"] == "t"
+    (lv,) = body["llm_exchanges"]
+    assert lv["content_redacted"] is True and lv["prompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_hitl_override_provenance_from_stream_not_table(engine: AsyncEngine) -> None:
+    # DECISIONS#034: the override shows from the HITLDecisionEvent stream even though the
+    # `findings` override columns are NULL (the seeded row leaves them unset).
+    review_id = uuid4()
+    finding = _finding(review_id)  # severity=CRITICAL
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id, status="completed")
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, finding)
+    await _insert_event(engine, _phase(review_id, "analyze", "end"))
+    await _seed_finding_row(engine, finding)  # override columns NULL
+    # The decision is phase-bound work → it lives inside a hitl phase, not loose in the stream.
+    await _insert_event(engine, _phase(review_id, "hitl", "start"))
+    await _insert_event(engine, _hitl_override(review_id, finding.finding_id))
+    await _insert_event(engine, _phase(review_id, "hitl", "end"))
+
+    body = _get(_mount(engine), review_id)
+    assert body["replay_equivalent"] is True
+    (fv,) = body["findings"]
+    hitl = fv["hitl_decision"]
+    assert hitl is not None
+    assert hitl["outcome"] == "severity_override"
+    assert hitl["reviewer_id"] == "admin"
+    assert (hitl["original_severity"], hitl["override_severity"]) == ("critical", "high")
+
+
+@pytest.mark.asyncio
+async def test_non_equivalent_verdict_suppresses_content(engine: AsyncEngine) -> None:
+    # A completed review with a dangling phase → non-equivalent → content suppressed (empty),
+    # parallel to the `phases` gate, even though the finding content row exists.
+    review_id = uuid4()
+    finding = _finding(review_id)
+    await _seed_installation(engine)
+    await _seed_review(engine, review_id, status="completed")
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, finding)  # dangling: no analyze-end on a completed review
+    await _seed_finding_row(engine, finding)
+
+    body = _get(_mount(engine), review_id)
+    assert body["replay_equivalent"] is False
+    assert body["phases"] is None
+    assert body["findings"] == []
+    assert body["llm_exchanges"] == []
+
+
+@pytest.mark.asyncio
+async def test_redaction_sweep_date_from_purge_audit(engine: AsyncEngine) -> None:
+    # FUP-129: the redacted LLM stub's date comes from the latest purge_audit row scoped to
+    # target_table='llm_call_content' (NOT 'findings'). No review/content rows → both redacted.
+    review_id = uuid4()
+    finding = _finding(review_id)
+    llm = _llm_call(review_id)
+    await _insert_event(engine, _phase(review_id, "analyze", "start"))
+    await _insert_event(engine, llm)
+    await _insert_event(engine, finding)
+    await _insert_event(engine, _phase(review_id, "analyze", "end"))
+    await _insert_purge_audit(
+        engine, target_table="findings", timestamp_iso="2026-05-01T00:00:00+00:00"
+    )
+    await _insert_purge_audit(
+        engine, target_table="llm_call_content", timestamp_iso="2026-05-20T00:00:00+00:00"
+    )
+
+    body = _get(_mount(engine), review_id)
+    (fv,) = body["findings"]
+    (lv,) = body["llm_exchanges"]
+    # Each content type reads its OWN target_table sweep row, not the other's.
+    assert fv["redaction_sweep_at"].startswith("2026-05-01")
+    assert lv["redaction_sweep_at"].startswith("2026-05-20")

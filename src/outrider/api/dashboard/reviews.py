@@ -64,8 +64,12 @@ from outrider.db.models.purge_audit import PurgeAudit
 from outrider.db.models.reviews import Review
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy import ColumnElement
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from outrider.audit.replay import ReconstructedReview
 
 # The sentinel `purge_audit.installation_id` the time-based retention sweep
 # writes (`sweep/purge_expired.py::_GLOBAL_SWEEP_INSTALLATION_ID` = 0; the sweep
@@ -286,20 +290,75 @@ class ReplayVerdict(BaseModel):
     reason: str | None
 
 
+class TimelineFindingContentView(BaseModel):
+    """Expandable finding content for the replay timeline (ROADMAP §6, PR 2).
+
+    Joined to its `FindingEvent` row in the timeline by `finding_id`. Carries the
+    CONTENT (`title`/`description`/`evidence`/`suggested_fix`) the event shadow lacks
+    — all `None` with `content_redacted=True` once the `findings` row is purged but the
+    event survives (DECISIONS.md#014 point 3). The finding's metadata + proof artifacts
+    (severity/tier/location/`query_match_id`/`trace_path`) live on the joined `FindingEvent`
+    (in `events`/`phases`) and survive redaction — NOT duplicated here. `hitl_decision` is
+    the stream-canonical override provenance (DECISIONS.md#034) projected from the per-review
+    `HITLDecisionEvent`, never the V1-null `findings` projection columns.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_id: UUID
+    content_redacted: bool
+    title: str | None
+    description: str | None
+    evidence: str | None
+    suggested_fix: str | None
+    hitl_decision: HITLDecisionView | None
+    # Findings-retention-SWEEP date for a redacted stub (latest `target_table='findings'`
+    # `purge_audit` row), `None` otherwise. Per-table-per-sweep, NOT a per-finding delete
+    # time (FUP-129). Frontend renders "content redacted in the findings retention sweep on
+    # <date>".
+    redaction_sweep_at: AwareDatetime | None
+
+
+class TimelineLLMExchangeView(BaseModel):
+    """Expandable LLM-exchange content for the replay timeline (ROADMAP §6, PR 2).
+
+    Joined to its `LLMCallEvent` row in the timeline by `event_id`. Carries the
+    `prompt`/`completion` text from `llm_call_content` — both `None` with
+    `content_redacted=True` once the content row is purged but the event survives
+    (DECISIONS.md#016 point 5). The call's metadata (model/tokens/cost/hashes) lives on the
+    joined `LLMCallEvent` and survives redaction — NOT duplicated here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: UUID
+    content_redacted: bool
+    prompt: str | None
+    completion: str | None
+    # LLM-content-retention-SWEEP date for a redacted stub (latest
+    # `target_table='llm_call_content'` `purge_audit` row), `None` otherwise. Same
+    # per-table-per-sweep caveat (FUP-129).
+    redaction_sweep_at: AwareDatetime | None
+
+
 class ReplayTimelineResponse(BaseModel):
-    """The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6, PR 1).
+    """The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6).
 
     A thin serialization of `reconstruct()`'s canonical `ReconstructedReview` — the same
     reconstruction `assert_equivalent` consumes — NOT a re-interpretation of the audit
-    tables. Metadata-only RESPONSE: `reconstruct` reads the content tables server-side to
-    verify + classify `mode`, but no content is serialized here (content expansion is PR 2).
+    tables. The `events`/`phases` are metadata-only (`reconstruct` reads the content tables
+    server-side to verify + classify `mode`); `findings`/`llm_exchanges` carry the expandable
+    CONTENT (PR 2), serialized from the same verified snapshot and gated on the equivalent
+    verdict. Content from the `findings`/`llm_call_content` tables only — never from an
+    `audit_events` row (DECISIONS.md#014/#016 metadata-only-audit contract).
 
     FUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,
     so `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the
-    consumer falls back to the flat `events`. The failure contract mirrors `/replay`:
+    consumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate
+    (empty on a non-equivalent verdict). The failure contract mirrors `/replay`:
     reconstruct-raised `ReplayEquivalenceError` → verdict only (`mode`/`status`/`phases` null,
-    `events` empty); reconstruct-raised `ValidationError` → 500; assert-raised → verdict false
-    + `mode` present + `phases` suppressed.
+    `events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` → 500;
+    assert-raised → verdict false + `mode` present + `phases`/content suppressed.
 
     `events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion
     replay metadata surfaced via the verdict, not a review-work operation — the `/replay`
@@ -318,6 +377,8 @@ class ReplayTimelineResponse(BaseModel):
     events: tuple[AuditEventUnion, ...]
     phases: tuple[ReconstructedPhase, ...] | None
     inter_phase_events: tuple[AuditEventUnion, ...]
+    findings: tuple[TimelineFindingContentView, ...]
+    llm_exchanges: tuple[TimelineLLMExchangeView, ...]
 
 
 class ReviewEventsResponse(BaseModel):
@@ -627,6 +688,88 @@ async def _hitl_decisions(
     return decisions
 
 
+async def _latest_sweep_at(
+    session: AsyncSession,
+    target_table: str,
+    installation_ids: tuple[int, ...],
+) -> datetime | None:
+    """Latest `purge_audit` sweep timestamp for `target_table`, scoped to the given
+    installation ids (the review's installation + the global TTL-sweep sentinel `0`).
+
+    The per-table-per-sweep date — NOT a proven per-item delete time (FUP-129); not
+    eval-scoped (`PurgeAudit` has no `is_eval` column). `None` if no sweep is recorded.
+    """
+    return (
+        await session.execute(
+            select(PurgeAudit.timestamp)
+            .where(
+                PurgeAudit.installation_id.in_(installation_ids),
+                PurgeAudit.target_table == target_table,
+            )
+            .order_by(PurgeAudit.timestamp.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _timeline_content(
+    session: AsyncSession,
+    review_id: UUID,
+    reconstructed: ReconstructedReview,
+) -> tuple[tuple[TimelineFindingContentView, ...], tuple[TimelineLLMExchangeView, ...]]:
+    """Serialize the reconstructed finding + LLM content for the timeline (ROADMAP §6, PR 2).
+
+    Content is already hydrated on `reconstructed` (the verified single snapshot); `content
+    is None` / `prompt is None` ⇒ retention-redacted (DECISIONS.md#014/#016). Override
+    provenance is the stream-canonical `HITLDecisionEvent` (DECISIONS.md#034), reusing
+    `_hitl_decisions` — NOT the V1-null `findings` projection columns. The only direct read is
+    the forensic `purge_audit` sweep date, queried once per content type when a stub exists.
+    """
+    hitl_by_fid = await _hitl_decisions(session, review_id, reconstructed.is_eval)
+    findings_redacted = any(f.content is None for f in reconstructed.findings)
+    llm_redacted = any(x.prompt is None for x in reconstructed.llm_exchanges)
+    # Review row survives → scope the sweep lookup to its installation + the global TTL
+    # sentinel; purged (METADATA_ONLY) → only the global TTL sweep is reachable.
+    installation_ids = (
+        (reconstructed.review.installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
+        if reconstructed.review is not None
+        else (_GLOBAL_SWEEP_INSTALLATION_ID,)
+    )
+    findings_sweep = (
+        await _latest_sweep_at(session, "findings", installation_ids) if findings_redacted else None
+    )
+    llm_sweep = (
+        await _latest_sweep_at(session, "llm_call_content", installation_ids)
+        if llm_redacted
+        else None
+    )
+
+    finding_views = tuple(
+        TimelineFindingContentView(
+            finding_id=f.event.finding_id,
+            content_redacted=f.content is None,
+            title=f.content.title if f.content is not None else None,
+            description=f.content.description if f.content is not None else None,
+            evidence=f.content.evidence if f.content is not None else None,
+            suggested_fix=f.content.suggested_fix if f.content is not None else None,
+            hitl_decision=hitl_by_fid.get(str(f.event.finding_id)),
+            redaction_sweep_at=findings_sweep if f.content is None else None,
+        )
+        for f in reconstructed.findings
+    )
+    llm_views = tuple(
+        TimelineLLMExchangeView(
+            event_id=x.event.event_id,
+            content_redacted=x.prompt is None,
+            prompt=x.prompt,
+            completion=x.completion,
+            redaction_sweep_at=llm_sweep if x.prompt is None else None,
+        )
+        for x in reconstructed.llm_exchanges
+    )
+    return finding_views, llm_views
+
+
 @router.get("/{review_id}/findings", response_model=FindingsResponse)
 async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
     """A review's findings, assembled from the permanent audit record.
@@ -740,19 +883,9 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
         # redacted stub here. None if no findings-purge sweep is recorded.
         redaction_sweep_at = None
         if redacted_by_fid:
-            redaction_sweep_at = (
-                await session.execute(
-                    select(PurgeAudit.timestamp)
-                    .where(
-                        PurgeAudit.installation_id.in_(
-                            (installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
-                        ),
-                        PurgeAudit.target_table == "findings",
-                    )
-                    .order_by(PurgeAudit.timestamp.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
+            redaction_sweep_at = await _latest_sweep_at(
+                session, "findings", (installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
+            )
         views.extend(
             FindingView(
                 finding_id=UUID(fid),
@@ -842,16 +975,18 @@ async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict
 
 @router.get("/{review_id}/replay-timeline", response_model=ReplayTimelineResponse)
 async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimelineResponse:
-    """Grouped, replay-verified timeline read-model (ROADMAP feature 6, PR 1).
+    """Grouped, replay-verified timeline read-model (ROADMAP feature 6).
 
     Single-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)
     then `assert_equivalent` over THAT SAME object — never `assert_replay_equivalent` (which
     reconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`
     inherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.
-    Phases (`reconstruct().phases`) are exposed ONLY on an equivalent verdict (FUP-125 — they are
-    trustworthy only once `_verify_phase_wellformed` has proven the non-nesting precondition that
-    makes `_group_phases` lossless). See `ReplayTimelineResponse` for the failure contract +
-    metadata-only / verdict-exclusion rules.
+    Phases (`reconstruct().phases`) AND the expandable `findings`/`llm_exchanges` content are
+    exposed ONLY on an equivalent verdict (FUP-125 — phases are trustworthy only once
+    `_verify_phase_wellformed` has proven the non-nesting precondition that makes `_group_phases`
+    lossless; content rides the same gate). Content (PR 2) comes from `reconstruct()`'s already-
+    hydrated `findings`/`llm_exchanges` (the content tables, not audit rows) via
+    `_timeline_content`. See `ReplayTimelineResponse` for the failure contract + verdict-exclusion.
     """
     replayer = AuditReplayer(session_factory=request.app.state.session_factory)
     try:
@@ -873,6 +1008,8 @@ async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimeli
             events=(),
             phases=None,
             inter_phase_events=(),
+            findings=(),
+            llm_exchanges=(),
         )
 
     equivalent = True
@@ -908,6 +1045,17 @@ async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimeli
         phases = None
         inter_phase = ()
 
+    # Content expansion (PR 2): serialize the finding + LLM content `reconstruct()` already
+    # hydrated under its verified snapshot, gated on the equivalent verdict (parallel to the
+    # `phases` gate). The FindingEvent/LLMCallEvent metadata + proof artifacts ride the
+    # `events`/`phases` rows; these views carry only the content the event shadow lacks + the
+    # redaction signal. Suppressed (empty) on a non-equivalent verdict.
+    finding_views: tuple[TimelineFindingContentView, ...] = ()
+    llm_views: tuple[TimelineLLMExchangeView, ...] = ()
+    if equivalent:
+        async with request.app.state.session_factory() as session:
+            finding_views, llm_views = await _timeline_content(session, review_id, reconstructed)
+
     return ReplayTimelineResponse(
         review_id=review_id,
         replay_equivalent=equivalent,
@@ -917,6 +1065,8 @@ async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimeli
         events=events,
         phases=phases,
         inter_phase_events=inter_phase,
+        findings=finding_views,
+        llm_exchanges=llm_views,
     )
 
 
