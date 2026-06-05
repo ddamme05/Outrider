@@ -369,32 +369,59 @@ test("policy chip opens the versioned policy table from the endpoint", async () 
   expect(screen.getByText("hardcoded_secret")).toBeInTheDocument();
 });
 
-test("pipeline node cards derive per-node model and cost from llm_call events", async () => {
-  // Completed review so analyze/triage are "done" and show their derived stats.
+test("pipeline node cards derive per-node model and cost from the verified phases", async () => {
+  // Completed review so analyze/triage are "done" and show their derived stats. The
+  // per-node stats now come from the server's replay-verified phases (the FUP-125
+  // closure), not from a client re-grouping of the raw /events stream.
+  const triageEv = llmEvent("triage", 0.01);
+  const analyzeEv = llmEvent("analyze", 0.27);
   mount({
     detail: detail({ status: "completed" }),
-    events: [llmEvent("analyze", 0.27), llmEvent("triage", 0.01)],
+    timeline: timelineData({
+      events: [triageEv, analyzeEv],
+      phases: [
+        {
+          phase_id: "p-triage",
+          node_id: "triage",
+          start: phaseMarker("triage", "start", "2026-06-01T00:00:00Z"),
+          end: phaseMarker("triage", "end", "2026-06-01T00:00:01Z"),
+          events: [triageEv],
+        },
+        {
+          phase_id: "p-analyze",
+          node_id: "analyze",
+          start: phaseMarker("analyze", "start", "2026-06-01T00:00:01Z"),
+          end: phaseMarker("analyze", "end", "2026-06-01T00:00:03Z"),
+          events: [analyzeEv],
+        },
+      ],
+    }),
   });
   await screen.findByText(/sql_injection/);
-  // Per-node costs derived from the events, shown on the pipeline node cards.
-  expect(await screen.findByText("$0.27")).toBeInTheDocument();
-  expect(screen.getByText("$0.01")).toBeInTheDocument();
+  // Per-node costs derived from the phases, shown on the pipeline node cards.
+  expect(await screen.findByText(/\$0\.27/)).toBeInTheDocument();
+  expect(screen.getByText(/\$0\.01/)).toBeInTheDocument();
   // model prettified from claude-sonnet-4-5 → Sonnet (analyze + triage nodes).
   expect(screen.getAllByText("Sonnet").length).toBe(2);
 });
 
-test("completed review fails CLOSED when /events is unavailable — no fabricated audit facts", async () => {
-  // A completed review whose /events stream 500s. Node states are status-backed
-  // (completed → done) but per-node stats + the event count must NOT be asserted
-  // from thin air: never "0 audit events", never hitl "passed" / publish "posted"
-  // without the stream loaded. Regression for the events fail-open bug.
+test("completed review fails CLOSED when the verified phases are unavailable — no fabricated audit facts", async () => {
+  // A completed review whose verdict is non-equivalent → the server suppresses phases
+  // (the FUP-125 gate), AND whose raw /events count stream 500s. Node states are
+  // status-backed (completed → done) but per-node stats + the event count must NOT be
+  // asserted from thin air: never "0 audit events", never hitl "passed" / publish
+  // "posted" without the verified reconstruction. Regression for the fail-open bug.
   server.use(
     http.get("http://localhost/api/policy/:version", ({ params }) =>
       HttpResponse.json({ version: params.version, entries: [] }),
     ),
     http.get(BASE, () => HttpResponse.json(detail({ status: "completed" }))),
     http.get(`${BASE}/findings`, () => HttpResponse.json({ review_id: "r1", findings: [finding()] })),
-    http.get(`${BASE}/replay-timeline`, () => HttpResponse.json(timelineData())),
+    http.get(`${BASE}/replay-timeline`, () =>
+      HttpResponse.json(
+        timelineData({ replay_equivalent: false, phases: null, reason: "drift", events: [] }),
+      ),
+    ),
     http.get(`${BASE}/events`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -407,8 +434,8 @@ test("completed review fails CLOSED when /events is unavailable — no fabricate
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  // Wait for the events-unavailable fallback note (proves eventsLoaded=false rendered).
-  await screen.findByText(/load from the audit stream/);
+  // Wait for the phases-unavailable fallback note (proves phasesLoaded=false rendered).
+  await screen.findByText(/load from the replay-verified timeline/);
   expect(screen.queryByText(/0 audit events/)).toBeNull();
   expect(screen.queryByText("passed")).toBeNull();
   expect(screen.queryByText("posted")).toBeNull();
