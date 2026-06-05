@@ -129,8 +129,8 @@ test("Replay-equiv card renders the equivalence rate + fraction + up-good delta"
   // current 23/24 = 95.8% equivalent; cap shows the raw fraction (the coverage).
   expect(await screen.findByText("95.8%")).toBeInTheDocument();
   expect(screen.getByText("23/24 verified")).toBeInTheDocument();
-  // rate 95.8% vs prior 90.0% → up-good ▲ 6.5% (higher equivalence is good).
-  expect(screen.getByText("6.5%")).toBeInTheDocument();
+  // rate 95.8% vs prior 90.0% → up-good ▲ 5.8pp (percentage-POINT change, not relative %).
+  expect(screen.getByText("5.8pp")).toBeInTheDocument();
   // Assert the card's delta CLASS, not just the magnitude — rising equivalence must be
   // up-GOOD (class "delta up"), so a polarity inversion to up-bad/neutral is caught here
   // and not only in the isolated deltaInfo unit tests.
