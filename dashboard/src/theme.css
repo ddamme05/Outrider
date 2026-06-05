@@ -2527,3 +2527,107 @@ table.policy tbody tr:hover {
 .rp-retain .lock {
   color: var(--pos);
 }
+
+/* ── Flat audit feed (review-detail audit-of-record, mockup #screen-detail) ──────────────────
+ * The rich flat aesthetic: an append-only banner, .ae-phase dividers, and .ae event rows with an
+ * event-family left accent + a colored type chip + a relative timestamp. Selectors verbatim from
+ * dashboard-mockups/22-signal-analytics. Rows reuse the .ev-c-* family classes (which set --evc)
+ * and the shared .tl-content expand panels. */
+.audit-note {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+.audit-note .lock {
+  color: var(--pos);
+}
+.ae-phase {
+  padding: 6px 14px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ae-phase .pname {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ae-phase .pdur {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+}
+.ae {
+  display: flex;
+  gap: 10px;
+  padding: 5px 14px 5px 26px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  align-items: flex-start;
+  border-left: 3px solid transparent;
+}
+.ae.tl-expandable {
+  cursor: pointer;
+}
+.ae.tl-expandable:hover {
+  background: var(--ov-weak);
+}
+.ae-type {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 6px 1px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--line2);
+  color: var(--muted);
+  background: var(--panel2);
+  flex: 0 0 auto;
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ae-type::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ev-framing);
+}
+.ae-body {
+  color: var(--muted);
+  min-width: 0;
+}
+.ae-body b {
+  color: var(--text);
+  font-weight: 600;
+}
+.ae-body .mono {
+  color: var(--text);
+}
+.ae-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted2);
+  flex: 0 0 auto;
+}
+.ae[class*="ev-c-"] {
+  border-left-color: var(--evc);
+}
+.ae[class*="ev-c-"] .ae-type {
+  border-color: color-mix(in srgb, var(--evc) 55%, var(--line2));
+  color: color-mix(in srgb, var(--evc) 72%, var(--text));
+}
+.ae[class*="ev-c-"] .ae-type::before {
+  background: var(--evc);
+}

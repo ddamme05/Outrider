@@ -383,7 +383,7 @@ export function ReviewDetail() {
             <p className="error">Failed to load the audit feed.</p>
           </div>
         ) : timeline.data ? (
-          <ReplayFeed data={timeline.data} />
+          <ReplayFeed data={timeline.data} flat />
         ) : null}
       </div>
 

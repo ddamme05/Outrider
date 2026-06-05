@@ -260,3 +260,30 @@ test("the `shown` count hides not-yet-reached rows (progressive reveal)", () => 
   expect(rows[0]?.className).toContain("current");
   expect(rows[1]?.className).toContain("future");
 });
+
+test("flat mode renders the append-only banner + .ae-phase dividers + .ae rows", () => {
+  const ev = llmEvent("e1", "analyze", 0.27);
+  render(<ReplayFeed data={data({ events: [ev], phases: [phaseWith([ev])] })} flat />);
+  expect(screen.getByText(/Append-only by database policy/)).toBeInTheDocument();
+  expect(document.querySelector(".ae-phase .pname")).toHaveTextContent("analyze");
+  const aeRow = document.querySelector(".ae");
+  expect(aeRow?.querySelector(".ae-type")).toHaveTextContent("llm_call");
+  // Relative timestamp column is present and prefixed with "+".
+  expect(aeRow?.querySelector(".ae-time")?.textContent).toMatch(/^\+/);
+  // Flat mode does NOT render the collapsible card chrome.
+  expect(document.querySelector(".tl-phase")).toBeNull();
+});
+
+test("flat mode keeps expand-on-click content panels", async () => {
+  const user = userEvent.setup();
+  const fev = findingEvent("e-finding", "f-1");
+  render(
+    <ReplayFeed
+      data={data({ events: [fev], phases: [phaseWith([fev])], findings: [findingContent("f-1")] })}
+      flat
+    />,
+  );
+  expect(screen.queryByText("Unparameterized query.")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
+});
