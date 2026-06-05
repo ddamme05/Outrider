@@ -380,3 +380,22 @@ test("a finding expand shows its proof artifacts (tier + query_match_id), even w
   // ...while the content itself is redacted.
   expect(screen.getByText(/Content redacted/)).toBeInTheDocument();
 });
+
+test("an INFERRED finding's proof line renders the trace path", async () => {
+  const user = userEvent.setup();
+  const fev = {
+    ...findingEvent("e-i", "f-i"),
+    evidence_tier: "inferred",
+    query_match_id: null,
+    trace_path: ["auth.login", "db.query", "execute"],
+  };
+  render(
+    <ReplayTimeline
+      data={data({ events: [fev], phases: [phaseWith([fev])], findings: [findingContent("f-i")] })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  const proof = document.querySelector(".tl-c-proof");
+  expect(proof).toHaveTextContent("inferred");
+  expect(proof).toHaveTextContent("auth.login → db.query → execute");
+});

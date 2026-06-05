@@ -2358,7 +2358,3 @@ table.policy tbody tr:hover {
   margin: 0;
   color: var(--text);
 }
-.tl-content.redacted {
-  font-style: italic;
-  color: var(--muted);
-}
