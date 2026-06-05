@@ -23,8 +23,13 @@ pre-window first emission isn't re-dated by an in-window re-emit. Under the prod
 invariant (earlier emission = lower sequence_number = earlier timestamp) that representative's
 timestamp IS the true minimum; out-of-order/backdated inserts are the spec's bounded edge.
 
-Replay-% is NOT here: it has no stored verdict (computed on demand per review), so it ships
-via a sibling replay-verdict-projection feature, not this read-only endpoint.
+Replay-% ships as a SIBLING route in this module (`GET /api/metrics/replay`,
+`get_replay_metrics`): it reads the PERSISTED `replay_verdict` events appended by the
+background projector (`sweep/replay_verdict.py`, `DECISIONS.md#039`) — equivalent / total
+bucketed by `reviews.completed_at`, with ONLY reviews carrying a persisted verdict in the
+denominator (a still-running or projector-pending review is excluded, never assumed
+equivalent, so projector lag does not distort the chart). The main `/api/metrics` response
+above does NOT carry Replay-%: the verdict is a separate append surfaced by its own route.
 """
 
 # See DECISIONS.md#039.
@@ -36,10 +41,10 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy import Numeric, and_, case, cast, func, select
+from sqlalchemy import Boolean, Numeric, and_, case, cast, func, select
 
 from outrider.api.dashboard.auth import require_admin_api_key
-from outrider.audit.events import FindingEvent, LLMCallEvent
+from outrider.audit.events import FindingEvent, LLMCallEvent, ReplayVerdictEvent
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.reviews import Review
 from outrider.policy.findings import EvidenceTier
@@ -63,6 +68,7 @@ _GRANULARITY: dict[str, str] = {"24h": "hour", "7d": "day", "30d": "day"}
 # so a discriminator rename can't silently zero this endpoint's cost/findings.
 _LLM_CALL: str = LLMCallEvent.model_fields["event_type"].default
 _FINDING: str = FindingEvent.model_fields["event_type"].default
+_VERDICT: str = ReplayVerdictEvent.model_fields["event_type"].default
 _FAILED = "failed"  # a `review_status_enum` value (db/models/_base.py); DB-enforced, stable.
 
 
@@ -106,6 +112,43 @@ class DashboardMetricsResponse(BaseModel):
     severity_distribution: dict[str, int]
     evidence_tier_distribution: dict[str, int]
     deltas: MetricDeltas
+
+
+class ReplayBucket(BaseModel):
+    """One UTC bucket of replay-verdict counts. Raw `equivalent` / `total` (not a precomputed
+    rate): callers derive the %, and `total == 0` has no defined rate (no divide-by-zero)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    bucket: AwareDatetime
+    equivalent: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
+class ReplayPeriodTotals(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    equivalent: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
+class ReplayDeltas(BaseModel):
+    """Current vs the immediately-prior equal-length window (frontend computes the % change)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    current: ReplayPeriodTotals
+    previous: ReplayPeriodTotals
+
+
+class ReplayMetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    window: _WindowParam
+    granularity: str
+    generated_at: AwareDatetime
+    buckets: tuple[ReplayBucket, ...]
+    deltas: ReplayDeltas
 
 
 router = APIRouter(
@@ -352,4 +395,126 @@ async def get_metrics(
         severity_distribution={s.value: sev_dist.get(s.value, 0) for s in FindingSeverity},
         evidence_tier_distribution={t.value: tier_dist.get(t.value, 0) for t in EvidenceTier},
         deltas=MetricDeltas(current=current, previous=previous),
+    )
+
+
+def _replay_equivalent_predicate() -> ColumnElement[bool]:
+    """`replay_verdict` payload's `replay_equivalent` JSON bool as a SQL boolean predicate.
+
+    JSONB `->>` (`.astext`) renders the JSON boolean as the text `'true'`/`'false'`; casting
+    that text to `Boolean` yields a real SQL boolean — the `cast(payload[...].astext, <type>)`
+    idiom the rest of this module uses (`cost_usd` → `Numeric`). One verdict per review (partial
+    unique index), so counting verdict rows IS counting reviewed-and-verdicted reviews.
+    """
+    return cast(AuditEvent.payload["replay_equivalent"].astext, Boolean)
+
+
+async def _replay_by_bucket(
+    session: AsyncSession, start: datetime, end: datetime, granularity: str, *, include_eval: bool
+) -> dict[datetime, tuple[int, int]]:
+    """`{bucket: (equivalent, total)}` over persisted verdicts, bucketed by `reviews.completed_at`.
+
+    Bucketing on the REVIEW's completion (not the verdict event's timestamp) keeps the chart's
+    time axis aligned to when work completed, so projector lag never shifts a point. is_eval via
+    the joined review with the FUP-130 equality predicate (see `_cost_by_bucket`).
+    """
+    bucket = func.date_trunc(granularity, Review.completed_at, "UTC").label("bucket")
+    stmt = (
+        select(
+            bucket,
+            func.count().label("total"),
+            func.coalesce(func.sum(case((_replay_equivalent_predicate(), 1), else_=0)), 0).label(
+                "equivalent"
+            ),
+        )
+        .join(Review, Review.id == AuditEvent.review_id)
+        .where(
+            AuditEvent.event_type == _VERDICT,
+            Review.completed_at >= start,
+            Review.completed_at < end,
+            AuditEvent.is_eval == Review.is_eval,  # reject is_eval drift (either direction)
+            *_not_eval(Review.is_eval, include_eval),
+        )
+        .group_by(bucket)
+    )
+    return {
+        r.bucket.astimezone(UTC): (int(r.equivalent), int(r.total))
+        for r in (await session.execute(stmt)).all()
+    }
+
+
+async def _replay_totals(
+    session: AsyncSession, start: datetime, end: datetime, *, include_eval: bool
+) -> tuple[int, int]:
+    """`(equivalent, total)` over [start, end) — used for the PREVIOUS window only.
+
+    The current window's totals are summed in Python from the rendered buckets, so they cannot
+    drift from the series (mirrors `_review_cost_totals`).
+    """
+    stmt = (
+        select(
+            func.count().label("total"),
+            func.coalesce(func.sum(case((_replay_equivalent_predicate(), 1), else_=0)), 0).label(
+                "equivalent"
+            ),
+        )
+        .join(Review, Review.id == AuditEvent.review_id)
+        .where(
+            AuditEvent.event_type == _VERDICT,
+            Review.completed_at >= start,
+            Review.completed_at < end,
+            AuditEvent.is_eval == Review.is_eval,  # FUP-130 equality: reject is_eval drift
+            *_not_eval(Review.is_eval, include_eval),
+        )
+    )
+    row = (await session.execute(stmt)).one()
+    return int(row.equivalent), int(row.total)
+
+
+@router.get("/replay", response_model=ReplayMetricsResponse)
+async def get_replay_metrics(
+    request: Request,
+    window: Annotated[_WindowParam, Query()] = "7d",
+    include_eval: Annotated[bool, Query()] = False,
+) -> ReplayMetricsResponse:
+    """Replay-equivalence rate over time, from persisted verdicts — see module docstring + `#039`.
+
+    `equivalent / total` per bucket (frontend derives the %); only reviews with a persisted
+    `replay_verdict` are counted, so a projector-pending review is excluded, never assumed
+    equivalent.
+    """
+    delta = _WINDOWS[window]
+    granularity = _GRANULARITY[window]
+    now = datetime.now(UTC)
+    start = now - delta
+    prev_start = start - delta
+
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        by_bucket = await _replay_by_bucket(
+            session, start, now, granularity, include_eval=include_eval
+        )
+        prev_equivalent, prev_total = await _replay_totals(
+            session, prev_start, start, include_eval=include_eval
+        )
+
+    buckets = tuple(
+        ReplayBucket(
+            bucket=b,
+            equivalent=by_bucket.get(b, (0, 0))[0],
+            total=by_bucket.get(b, (0, 0))[1],
+        )
+        for b in _bucket_starts(start, now, granularity)
+    )
+    current = ReplayPeriodTotals(
+        equivalent=sum(b.equivalent for b in buckets),
+        total=sum(b.total for b in buckets),
+    )
+    previous = ReplayPeriodTotals(equivalent=prev_equivalent, total=prev_total)
+    return ReplayMetricsResponse(
+        window=window,
+        granularity=granularity,
+        generated_at=now,
+        buckets=buckets,
+        deltas=ReplayDeltas(current=current, previous=previous),
     )
