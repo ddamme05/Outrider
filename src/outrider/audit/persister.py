@@ -155,6 +155,7 @@ from outrider.audit.events import (
     HITLDecisionEvent,  # noqa: E402  (model_validate at runtime)
     HITLRequestEvent,  # noqa: E402  (model_validate at runtime)
     PublishEvent,  # noqa: E402  (intentional post-TYPE_CHECKING runtime import)
+    ReplayVerdictEvent,  # noqa: E402  (model_validate at runtime in query_replay_verdict_event)
     TraceDecisionEvent,  # noqa: E402  (model_validate at runtime)
 )
 
@@ -1466,6 +1467,7 @@ def _serialize_event_payload(
         | HITLRequestEvent
         | HITLDecisionEvent
         | SynthesizeCompletedEvent
+        | ReplayVerdictEvent
     ),
 ) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
@@ -2573,6 +2575,45 @@ class AuditPersister:
         """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
         await self._persist_non_phase_event(event)
 
+    async def emit_replay_verdict(self, event: ReplayVerdictEvent) -> bool:
+        """Append a `ReplayVerdictEvent`, idempotent on `(review_id)` for
+        `event_type='replay_verdict'` via the partial unique index
+        `uq_audit_events_replay_verdict_natural_key`. Returns True if a verdict was
+        newly inserted, False if one already existed (the idempotent no-op) — so the
+        projector counts only fresh projections even under concurrent ticks (mirrors
+        the `.returning()`-and-branch shape of `_persist_keyed_by_natural_key`).
+
+        Deliberately NOT the natural-key divergence-detecting path (`emit_hitl_*`):
+        a replay verdict is DETERMINISTIC over the append-only judged prefix, so a
+        re-projection produces the identical row and `on_conflict_do_nothing` (no
+        content comparison) is the right altitude — unlike a HITL decision, two
+        verdicts for one review cannot legitimately diverge. If a projector bug ever
+        produced a divergent verdict the first-written one wins and the read side
+        surfaces it. Per-call `AsyncSession` in its own transaction, like the other
+        emit methods. The `index_where` mirrors the migration's partial-index WHERE
+        clause exactly, or the conflict-arbiter falls through to a seq scan.
+        """
+        async with self._session_factory() as session, session.begin():
+            stmt = (
+                postgresql_insert(AuditEventRow)
+                .values(
+                    event_id=event.event_id,
+                    review_id=event.review_id,
+                    event_type=event.event_type,
+                    phase_key=_NO_PHASE_KEY,
+                    timestamp=event.timestamp,
+                    is_eval=event.is_eval,
+                    payload=_serialize_event_payload(event),
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[AuditEventRow.review_id],
+                    index_where=AuditEventRow.event_type == "replay_verdict",
+                )
+                .returning(AuditEventRow.event_id)
+            )
+            inserted = await session.scalar(stmt)
+        return inserted is not None
+
     # -- Natural-key idempotency surface ------------------------------------
     # Per `DECISIONS.md#026` natural-key idempotency mode. The shape supports
     # multiple event types (trace_decision, hitl_request, hitl_decision in
@@ -3081,3 +3122,30 @@ class AuditPersister:
         if payload is None:
             return None
         return HITLDecisionEvent.model_validate(payload)
+
+    async def query_replay_verdict_event(self, *, review_id: UUID) -> ReplayVerdictEvent | None:
+        """Return the persisted `ReplayVerdictEvent` for `review_id`, or None.
+
+        Sister of `query_hitl_decision_event`. The partial unique index
+        `uq_audit_events_replay_verdict_natural_key` means AT MOST ONE verdict per
+        review; the ORDER BY is defensive (most-recent wins if the index is somehow
+        violated). Read-only — its own `AsyncSession`, no transaction.
+        """
+        verdict_event_type: str = ReplayVerdictEvent.model_fields["event_type"].default
+        async with self._session_factory() as session:
+            stmt = (
+                select(AuditEventRow.payload)
+                .where(
+                    AuditEventRow.review_id == review_id,
+                    AuditEventRow.event_type == verdict_event_type,
+                )
+                .order_by(
+                    AuditEventRow.timestamp.desc(),
+                    AuditEventRow.sequence_number.desc(),
+                )
+                .limit(1)
+            )
+            payload = await session.scalar(stmt)
+        if payload is None:
+            return None
+        return ReplayVerdictEvent.model_validate(payload)

@@ -2,7 +2,7 @@
 # sweep/purge_expired.py + sweep/hitl_expiry.py.
 """Single-callsite orchestrator for the V1 sweep family.
 
-Per `docs/spec.md` §4.1.6 + the HITL spec Group 8 prescription, two
+Per `docs/spec.md` §4.1.6 + the HITL spec Group 8 prescription, three
 sweep responsibilities run on a periodic cadence:
 
   1. `hitl_expiry.run_once(...)` — reclaim stuck HITL rows + transition
@@ -11,6 +11,15 @@ sweep responsibilities run on a periodic cadence:
      pass could purge the row.
   2. `purge_expired.purge_expired(...)` — time-based retention sweep
      across `llm_call_content`, `findings`, `reviews`.
+  3. `replay_verdict.project_replay_verdicts(...)` — append a
+     replay-equivalence verdict for each completed PRODUCTION review
+     lacking one (`DECISIONS.md#039` sibling). Runs LAST by ordering
+     convention; flips no status, idempotent, no advisory lock. (It does
+     NOT see purge's row deletions — those DELETEs are uncommitted in the
+     shared outer transaction when the projector opens its own sessions —
+     but verdicting a row purge will delete this tick is harmless:
+     `audit_events` is append-only with no FK to `reviews`, so the verdict
+     simply outlives the purged review and next tick has no candidate.)
 
 This module exposes ONE callable, `run_all_sweeps(...)`, that an
 operator-side scheduler (APScheduler, k8s CronJob, etc.) invokes per
@@ -48,7 +57,7 @@ import logging
 from datetime import timedelta  # noqa: TC003  (runtime: function-signature annotation)
 from typing import TYPE_CHECKING, Any
 
-from outrider.sweep import hitl_expiry, purge_expired
+from outrider.sweep import hitl_expiry, purge_expired, replay_verdict
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -82,6 +91,7 @@ async def run_all_sweeps(
         "hitl": {"reclaim_recovered": N, "reclaim_failed": M,
                  "transitioned": K},
         "purge": {<target_table>: <rows_affected>, ...},
+        "replay_verdict": {"projected": N, "failed": M},
       }
 
     Order is load-bearing:
@@ -149,8 +159,16 @@ async def run_all_sweeps(
 
     hitl_result = await hitl_expiry.run_once(**hitl_kwargs)
     purge_result = await purge_expired.purge_expired(conn=conn, purge_role=purge_role)
+    # Replay-verdict projection runs LAST by ordering convention. It flips no status
+    # and is natural-key idempotent, so it needs no advisory lock — it opens its own
+    # sessions via `session_factory`, OUTSIDE `conn`'s lock transaction, and so cannot
+    # see purge's uncommitted DELETEs above; verdicting a to-be-purged review is
+    # harmless (append-only audit row, no FK to reviews) (DECISIONS#039 sibling).
+    verdict_result = await replay_verdict.project_replay_verdicts(
+        session_factory=session_factory, audit_persister=audit_persister
+    )
 
-    return {"hitl": hitl_result, "purge": purge_result}
+    return {"hitl": hitl_result, "purge": purge_result, "replay_verdict": verdict_result}
 
 
 __all__ = ["run_all_sweeps"]
