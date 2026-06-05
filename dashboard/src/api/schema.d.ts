@@ -169,6 +169,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reviews/{review_id}/replay-timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Replay Timeline
+         * @description Grouped, replay-verified timeline read-model (ROADMAP feature 6, PR 1).
+         *
+         *     Single-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)
+         *     then `assert_equivalent` over THAT SAME object — never `assert_replay_equivalent` (which
+         *     reconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`
+         *     inherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.
+         *     Phases (`reconstruct().phases`) are exposed ONLY on an equivalent verdict (FUP-125 — they are
+         *     trustworthy only once `_verify_phase_wellformed` has proven the non-nesting precondition that
+         *     makes `_group_phases` lossless). See `ReplayTimelineResponse` for the failure contract +
+         *     metadata-only / verdict-exclusion rules.
+         */
+        get: operations["get_replay_timeline_api_reviews__review_id__replay_timeline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reviews/{review_id}/events": {
         parameters: {
             query?: never;
@@ -262,6 +291,13 @@ export interface paths {
          *     `equivalent / total` per bucket (frontend derives the %); only reviews with a persisted
          *     `replay_verdict` are counted, so a projector-pending review is excluded, never assumed
          *     equivalent.
+         *
+         *     **`include_eval` is production-scoped (inert today).** The background projector verdicts
+         *     PRODUCTION reviews only (`sweep/replay_verdict.py`, docs/testing.md), so no `replay_verdict`
+         *     row is ever `is_eval=True` and `include_eval=true` returns the same production rate — the
+         *     param is retained for `/api/metrics` symmetry + forward-compatibility (if eval projection is
+         *     ever added) and still threads the FUP-130 is_eval-drift equality defense either way. The
+         *     Overview Replay card therefore does NOT pass the global eval toggle (it is always production).
          */
         get: operations["get_replay_metrics_api_metrics_replay_get"];
         put?: never;
@@ -1516,6 +1552,27 @@ export interface components {
          */
         PublishRoutingReason: "reviewable_diff_line" | "unchanged_region" | "non_diffed_file" | "coordinate_error";
         /**
+         * ReconstructedPhase
+         * @description A graph-node phase bounded by a `ReviewPhaseEvent` start/end pair.
+         *
+         *     `phase-events-bound-work`: start/end markers (keyed by `phase_id`) are
+         *     the causal barriers. `end` is `None` for a phase that never closed (a
+         *     real crash state). `events` are the per-operation events that occurred
+         *     between the barriers, in sequence order.
+         */
+        ReconstructedPhase: {
+            /** Phase Id */
+            phase_id: string;
+            /** Node Id */
+            node_id: string;
+            /** Phase Key */
+            phase_key: string | null;
+            start: components["schemas"]["ReviewPhaseEvent"] | null;
+            end: components["schemas"]["ReviewPhaseEvent"] | null;
+            /** Events */
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+        };
+        /**
          * ReplayBucket
          * @description One UTC bucket of replay-verdict counts. Raw `equivalent` / `total` (not a precomputed
          *     rate): callers derive the %, and `total == 0` has no defined rate (no divide-by-zero).
@@ -1563,6 +1620,49 @@ export interface components {
             equivalent: number;
             /** Total */
             total: number;
+        };
+        /**
+         * ReplayTimelineResponse
+         * @description The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6, PR 1).
+         *
+         *     A thin serialization of `reconstruct()`'s canonical `ReconstructedReview` — the same
+         *     reconstruction `assert_equivalent` consumes — NOT a re-interpretation of the audit
+         *     tables. Metadata-only RESPONSE: `reconstruct` reads the content tables server-side to
+         *     verify + classify `mode`, but no content is serialized here (content expansion is PR 2).
+         *
+         *     FUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,
+         *     so `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the
+         *     consumer falls back to the flat `events`. The failure contract mirrors `/replay`:
+         *     reconstruct-raised `ReplayEquivalenceError` → verdict only (`mode`/`status`/`phases` null,
+         *     `events` empty); reconstruct-raised `ValidationError` → 500; assert-raised → verdict false
+         *     + `mode` present + `phases` suppressed.
+         *
+         *     `events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion
+         *     replay metadata surfaced via the verdict, not a review-work operation — the `/replay`
+         *     `event_count` analogue). `inter_phase_events` is the positional set-difference (ordered
+         *     events not in any `phase.events`) — the transitions `_group_phases` drops from the grouped
+         *     view, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`.
+         */
+        ReplayTimelineResponse: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /** Replay Equivalent */
+            replay_equivalent: boolean;
+            /** Mode */
+            mode: string | null;
+            /** Reason */
+            reason: string | null;
+            /** Status */
+            status: string | null;
+            /** Events */
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            /** Phases */
+            phases: components["schemas"]["ReconstructedPhase"][] | null;
+            /** Inter Phase Events */
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
         };
         /**
          * ReplayVerdict
@@ -2292,6 +2392,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReplayVerdict"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_replay_timeline_api_reviews__review_id__replay_timeline_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayTimelineResponse"];
                 };
             };
             /** @description Validation Error */

@@ -380,6 +380,50 @@
         }
       }
     },
+    "/api/reviews/{review_id}/replay-timeline": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Replay Timeline",
+        "description": "Grouped, replay-verified timeline read-model (ROADMAP feature 6, PR 1).\n\nSingle-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)\nthen `assert_equivalent` over THAT SAME object \u2014 never `assert_replay_equivalent` (which\nreconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`\ninherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.\nPhases (`reconstruct().phases`) are exposed ONLY on an equivalent verdict (FUP-125 \u2014 they are\ntrustworthy only once `_verify_phase_wellformed` has proven the non-nesting precondition that\nmakes `_group_phases` lossless). See `ReplayTimelineResponse` for the failure contract +\nmetadata-only / verdict-exclusion rules.",
+        "operationId": "get_replay_timeline_api_reviews__review_id__replay_timeline_get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayTimelineResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reviews/{review_id}/events": {
       "get": {
         "tags": [
@@ -532,7 +576,7 @@
           "dashboard"
         ],
         "summary": "Get Replay Metrics",
-        "description": "Replay-equivalence rate over time, from persisted verdicts \u2014 see module docstring + `#039`.\n\n`equivalent / total` per bucket (frontend derives the %); only reviews with a persisted\n`replay_verdict` are counted, so a projector-pending review is excluded, never assumed\nequivalent.",
+        "description": "Replay-equivalence rate over time, from persisted verdicts \u2014 see module docstring + `#039`.\n\n`equivalent / total` per bucket (frontend derives the %); only reviews with a persisted\n`replay_verdict` are counted, so a projector-pending review is excluded, never assumed\nequivalent.\n\n**`include_eval` is production-scoped (inert today).** The background projector verdicts\nPRODUCTION reviews only (`sweep/replay_verdict.py`, docs/testing.md), so no `replay_verdict`\nrow is ever `is_eval=True` and `include_eval=true` returns the same production rate \u2014 the\nparam is retained for `/api/metrics` symmetry + forward-compatibility (if eval projection is\never added) and still threads the FUP-130 is_eval-drift equality defense either way. The\nOverview Replay card therefore does NOT pass the global eval toggle (it is always production).",
         "operationId": "get_replay_metrics_api_metrics_replay_get",
         "parameters": [
           {
@@ -2742,6 +2786,142 @@
         "title": "PublishRoutingReason",
         "description": "Why the publisher routed a finding to its `PublishDestination`.\n\nStrEnum (not `Literal[...]`) so the routing reason mirrors the shape of\n`PublishEligibilityReason` and `PublishAttemptOutcome` below. Consumers\nbranching on the value get `match`-statement exhaustiveness; the\naudit-stream queries can filter by enum members rather than raw strings."
       },
+      "ReconstructedPhase": {
+        "properties": {
+          "phase_id": {
+            "type": "string",
+            "title": "Phase Id"
+          },
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewPhaseEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewPhaseEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "events": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AgentTransitionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReviewPhaseEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/LLMCallEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FileExaminationEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/TraceDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLRequestEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishRoutingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEligibilityEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishAttemptEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingProposalRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeResponseRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SynthesizeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReplayVerdictEvent"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "event_type",
+                "mapping": {
+                  "agent_transition": "#/components/schemas/AgentTransitionEvent",
+                  "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
+                  "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "file_examination": "#/components/schemas/FileExaminationEvent",
+                  "finding": "#/components/schemas/FindingEvent",
+                  "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
+                  "hitl_decision": "#/components/schemas/HITLDecisionEvent",
+                  "hitl_request": "#/components/schemas/HITLRequestEvent",
+                  "llm_call": "#/components/schemas/LLMCallEvent",
+                  "publish": "#/components/schemas/PublishEvent",
+                  "publish_attempt": "#/components/schemas/PublishAttemptEvent",
+                  "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
+                  "publish_routing": "#/components/schemas/PublishRoutingEvent",
+                  "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
+                  "trace_decision": "#/components/schemas/TraceDecisionEvent"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "phase_id",
+          "node_id",
+          "phase_key",
+          "start",
+          "end",
+          "events"
+        ],
+        "title": "ReconstructedPhase",
+        "description": "A graph-node phase bounded by a `ReviewPhaseEvent` start/end pair.\n\n`phase-events-bound-work`: start/end markers (keyed by `phase_id`) are\nthe causal barriers. `end` is `None` for a phase that never closed (a\nreal crash state). `events` are the per-operation events that occurred\nbetween the barriers, in sequence order."
+      },
       "ReplayBucket": {
         "properties": {
           "bucket": {
@@ -2850,6 +3030,242 @@
           "total"
         ],
         "title": "ReplayPeriodTotals"
+      },
+      "ReplayTimelineResponse": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "replay_equivalent": {
+            "type": "boolean",
+            "title": "Replay Equivalent"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "events": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AgentTransitionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReviewPhaseEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/LLMCallEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FileExaminationEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/TraceDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLRequestEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishRoutingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEligibilityEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishAttemptEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingProposalRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeResponseRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SynthesizeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReplayVerdictEvent"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "event_type",
+                "mapping": {
+                  "agent_transition": "#/components/schemas/AgentTransitionEvent",
+                  "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
+                  "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "file_examination": "#/components/schemas/FileExaminationEvent",
+                  "finding": "#/components/schemas/FindingEvent",
+                  "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
+                  "hitl_decision": "#/components/schemas/HITLDecisionEvent",
+                  "hitl_request": "#/components/schemas/HITLRequestEvent",
+                  "llm_call": "#/components/schemas/LLMCallEvent",
+                  "publish": "#/components/schemas/PublishEvent",
+                  "publish_attempt": "#/components/schemas/PublishAttemptEvent",
+                  "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
+                  "publish_routing": "#/components/schemas/PublishRoutingEvent",
+                  "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
+                  "trace_decision": "#/components/schemas/TraceDecisionEvent"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "phases": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ReconstructedPhase"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phases"
+          },
+          "inter_phase_events": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AgentTransitionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReviewPhaseEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/LLMCallEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FileExaminationEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/TraceDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLRequestEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/HITLDecisionEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishRoutingEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishEligibilityEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PublishAttemptEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/FindingProposalRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/AnalyzeResponseRejectedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SynthesizeCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/ReplayVerdictEvent"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "event_type",
+                "mapping": {
+                  "agent_transition": "#/components/schemas/AgentTransitionEvent",
+                  "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
+                  "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "file_examination": "#/components/schemas/FileExaminationEvent",
+                  "finding": "#/components/schemas/FindingEvent",
+                  "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
+                  "hitl_decision": "#/components/schemas/HITLDecisionEvent",
+                  "hitl_request": "#/components/schemas/HITLRequestEvent",
+                  "llm_call": "#/components/schemas/LLMCallEvent",
+                  "publish": "#/components/schemas/PublishEvent",
+                  "publish_attempt": "#/components/schemas/PublishAttemptEvent",
+                  "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
+                  "publish_routing": "#/components/schemas/PublishRoutingEvent",
+                  "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
+                  "trace_decision": "#/components/schemas/TraceDecisionEvent"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Inter Phase Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "replay_equivalent",
+          "mode",
+          "reason",
+          "status",
+          "events",
+          "phases",
+          "inter_phase_events"
+        ],
+        "title": "ReplayTimelineResponse",
+        "description": "The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6, PR 1).\n\nA thin serialization of `reconstruct()`'s canonical `ReconstructedReview` \u2014 the same\nreconstruction `assert_equivalent` consumes \u2014 NOT a re-interpretation of the audit\ntables. Metadata-only RESPONSE: `reconstruct` reads the content tables server-side to\nverify + classify `mode`, but no content is serialized here (content expansion is PR 2).\n\nFUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,\nso `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the\nconsumer falls back to the flat `events`. The failure contract mirrors `/replay`:\nreconstruct-raised `ReplayEquivalenceError` \u2192 verdict only (`mode`/`status`/`phases` null,\n`events` empty); reconstruct-raised `ValidationError` \u2192 500; assert-raised \u2192 verdict false\n+ `mode` present + `phases` suppressed.\n\n`events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion\nreplay metadata surfaced via the verdict, not a review-work operation \u2014 the `/replay`\n`event_count` analogue). `inter_phase_events` is the positional set-difference (ordered\nevents not in any `phase.events`) \u2014 the transitions `_group_phases` drops from the grouped\nview, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`."
       },
       "ReplayVerdict": {
         "properties": {
