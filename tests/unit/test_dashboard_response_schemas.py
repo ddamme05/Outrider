@@ -17,7 +17,12 @@ from outrider.api.dashboard.reviews import (
     ReviewDetail,
     ReviewListItem,
     ReviewMetricsView,
+    _hitl_decisions_from_events,
 )
+from outrider.audit.events import HITLDecisionEvent
+from outrider.policy.canonical import compute_hitl_decision_content_hash
+from outrider.policy.severity import FindingSeverity
+from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
 
 
 def _metrics(**overrides: object) -> ReviewMetricsView:
@@ -97,3 +102,36 @@ def test_detail_forbids_extra_fields() -> None:
             policy_version="1.0.0",
             bogus=1,  # type: ignore[call-arg]
         )
+
+
+def test_hitl_decisions_from_events_projects_only_from_passed_events() -> None:
+    # DECISIONS#034 + single-snapshot consistency: the projection's ONLY source is the events it is
+    # handed (reconstruct()'s VERIFIED stream), so a decision absent from those events cannot reach
+    # findings[].hitl_decision — no fresh DB query, no other source.
+    fid = uuid4()
+    decision = PerFindingDecision(
+        finding_id=fid,
+        outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+        reason="downgraded: test-only path",
+        original_severity=FindingSeverity.CRITICAL,
+        override_severity=FindingSeverity.HIGH,
+    )
+    event = HITLDecisionEvent(
+        review_id=uuid4(),
+        reviewer_id="admin",
+        decisions=(decision,),
+        annotation=None,
+        decided_at=datetime(2026, 6, 1, tzinfo=UTC),
+        decision_latency_seconds=1.0,
+        decisions_content_hash=compute_hitl_decision_content_hash(
+            decisions=(decision,), annotation=None
+        ),
+    )
+    # Present in the events → projected (stream-canonical, never the V1-null table columns).
+    projected = _hitl_decisions_from_events((event,))
+    assert projected[str(fid)].outcome == "severity_override"
+    assert projected[str(fid)].original_severity == "critical"
+    assert projected[str(fid)].override_severity == "high"
+    assert projected[str(fid)].reviewer_id == "admin"
+    # Absent from the events → cannot appear (the regression Codex asked for).
+    assert _hitl_decisions_from_events(()) == {}

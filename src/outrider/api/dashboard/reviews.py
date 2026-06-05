@@ -50,7 +50,7 @@ from outrider.audit.aggregates import aggregate_review_llm_metrics
 from outrider.audit.events import (  # noqa: TC001 (runtime: Pydantic response-model field type)
     AuditEvent as AuditEventUnion,
 )
-from outrider.audit.events import ReplayVerdictEvent
+from outrider.audit.events import HITLDecisionEvent, ReplayVerdictEvent
 from outrider.audit.replay import (
     AuditReplayer,
     ReconstructedPhase,
@@ -712,20 +712,52 @@ async def _latest_sweep_at(
     ).scalar_one_or_none()
 
 
+def _hitl_decisions_from_events(
+    events: tuple[AuditEventUnion, ...],
+) -> dict[str, HITLDecisionView]:
+    """`{finding_id: HITLDecisionView}` projected from the `HITLDecisionEvent` in the VERIFIED
+    reconstruction (DECISIONS.md#034) — the same stream-canonical source as `_hitl_decisions`, but
+    read from `reconstruct()`'s single snapshot rather than a fresh query, so the content panel can
+    never surface a decision the verified `events`/`phases` don't contain (single-snapshot
+    consistency). At most one `HITLDecisionEvent` per review (DB-guaranteed).
+    """
+    out: dict[str, HITLDecisionView] = {}
+    for event in events:
+        if not isinstance(event, HITLDecisionEvent):
+            continue
+        for decision in event.decisions:
+            out[str(decision.finding_id)] = HITLDecisionView(
+                outcome=decision.outcome.value,
+                reviewer_id=event.reviewer_id,
+                reason=decision.reason,
+                original_severity=(
+                    decision.original_severity.value
+                    if decision.original_severity is not None
+                    else None
+                ),
+                override_severity=(
+                    decision.override_severity.value
+                    if decision.override_severity is not None
+                    else None
+                ),
+            )
+    return out
+
+
 async def _timeline_content(
     session: AsyncSession,
-    review_id: UUID,
     reconstructed: ReconstructedReview,
 ) -> tuple[tuple[TimelineFindingContentView, ...], tuple[TimelineLLMExchangeView, ...]]:
     """Serialize the reconstructed finding + LLM content for the timeline (ROADMAP §6, PR 2).
 
     Content is already hydrated on `reconstructed` (the verified single snapshot); `content
-    is None` / `prompt is None` ⇒ retention-redacted (DECISIONS.md#014/#016). Override
-    provenance is the stream-canonical `HITLDecisionEvent` (DECISIONS.md#034), reusing
-    `_hitl_decisions` — NOT the V1-null `findings` projection columns. The only direct read is
-    the forensic `purge_audit` sweep date, queried once per content type when a stub exists.
+    is None` / `prompt is None` ⇒ retention-redacted (DECISIONS.md#014/#016). Override provenance
+    is the stream-canonical `HITLDecisionEvent` (DECISIONS.md#034), projected from `reconstruct()`'s
+    VERIFIED events (NOT a fresh query — single-snapshot consistency; NOT the V1-null `findings`
+    projection columns). The only direct read is the forensic `purge_audit` sweep date, queried once
+    per content type when a stub exists.
     """
-    hitl_by_fid = await _hitl_decisions(session, review_id, reconstructed.is_eval)
+    hitl_by_fid = _hitl_decisions_from_events(reconstructed.events)
     findings_redacted = any(f.content is None for f in reconstructed.findings)
     llm_redacted = any(x.prompt is None for x in reconstructed.llm_exchanges)
     # Review row survives → scope the sweep lookup to its installation + the global TTL
@@ -1054,7 +1086,7 @@ async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimeli
     llm_views: tuple[TimelineLLMExchangeView, ...] = ()
     if equivalent:
         async with request.app.state.session_factory() as session:
-            finding_views, llm_views = await _timeline_content(session, review_id, reconstructed)
+            finding_views, llm_views = await _timeline_content(session, reconstructed)
 
     return ReplayTimelineResponse(
         review_id=review_id,
