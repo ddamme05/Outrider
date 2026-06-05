@@ -2323,6 +2323,13 @@ table.policy tbody tr:hover {
   font-size: 12px;
   line-height: 1.5;
 }
+.tl-c-proof {
+  font-size: 11px;
+  color: var(--faint);
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
 .tl-c-title {
   font-weight: 600;
   margin-bottom: 4px;

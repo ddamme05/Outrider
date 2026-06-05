@@ -17,13 +17,18 @@ function phaseDuration(phase: Phase): string {
   return ms === null ? "—" : formatDurationMs(ms);
 }
 
+// The finding's proof artifacts — evidence tier + query_match_id (OBSERVED) / trace_path (INFERRED).
+// These ride the permanent FindingEvent (not the purgeable content row), so they render even on a
+// redacted stub — the "metadata is permanent" half of DECISIONS#014/#016 / the proof boundary.
+type ProofMeta = { tier: string; queryMatchId: string | null; tracePath: string[] | null };
+
 // Retention-redacted stub — content purged, metadata permanent (DECISIONS#014/#016, the same
 // shape FindingCard renders). The redaction date is the per-table-per-sweep `purge_audit` time.
 function RedactedNote({ kind, sweepAt }: { kind: "finding" | "llm"; sweepAt: string | null }) {
   const permanent = kind === "finding" ? "type, severity, location, proof" : "model, tokens, cost";
   const purged = kind === "finding" ? "title/description/evidence/fix" : "prompt/response";
   return (
-    <div className="tl-content f-desc redacted">
+    <div className="f-desc redacted">
       Content redacted{sweepAt ? ` in the retention sweep on ${sweepAt.slice(0, 10)}` : ""}. The
       {kind === "finding" ? " finding's" : " call's"} metadata ({permanent}) is permanent; its{" "}
       {purged} were purged per the retention policy.
@@ -31,45 +36,61 @@ function RedactedNote({ kind, sweepAt }: { kind: "finding" | "llm"; sweepAt: str
   );
 }
 
-function FindingContentPanel({ content }: { content: FindingContent }) {
-  if (content.content_redacted) {
-    return <RedactedNote kind="finding" sweepAt={content.redaction_sweep_at} />;
-  }
+function FindingContentPanel({ content, proof }: { content: FindingContent; proof: ProofMeta }) {
   const h = content.hitl_decision;
   return (
     <div className="tl-content">
-      {content.title ? <div className="tl-c-title">{content.title}</div> : null}
-      {content.description ? <div className="tl-c-body">{content.description}</div> : null}
-      {content.evidence ? <pre className="tl-c-pre">{content.evidence}</pre> : null}
-      {content.suggested_fix ? <div className="tl-c-fix">Fix: {content.suggested_fix}</div> : null}
-      {h ? (
-        // Override provenance from the HITLDecisionEvent stream (DECISIONS#034), never the table.
-        <div className="f-prov">
-          {h.outcome}
-          {h.original_severity && h.override_severity ? (
-            <span className="prov-sev">
-              {" "}
-              · {h.original_severity} → {h.override_severity}
-            </span>
+      {/* Proof artifacts render unconditionally — they survive content redaction. */}
+      <div className="tl-c-proof mono">
+        {proof.tier}
+        {proof.queryMatchId ? <span> · {proof.queryMatchId}</span> : null}
+        {proof.tracePath && proof.tracePath.length > 0 ? (
+          <span> · trace {proof.tracePath.join(" → ")}</span>
+        ) : null}
+      </div>
+      {content.content_redacted ? (
+        <RedactedNote kind="finding" sweepAt={content.redaction_sweep_at} />
+      ) : (
+        <>
+          {content.title ? <div className="tl-c-title">{content.title}</div> : null}
+          {content.description ? <div className="tl-c-body">{content.description}</div> : null}
+          {content.evidence ? <pre className="tl-c-pre">{content.evidence}</pre> : null}
+          {content.suggested_fix ? (
+            <div className="tl-c-fix">Fix: {content.suggested_fix}</div>
           ) : null}
-          <span className="prov-by"> · by {h.reviewer_id}</span>
-          {h.reason ? <span> · {h.reason}</span> : null}
-        </div>
-      ) : null}
+          {h ? (
+            // Override provenance from the HITLDecisionEvent stream (DECISIONS#034), not the table.
+            <div className="f-prov">
+              {h.outcome}
+              {h.original_severity && h.override_severity ? (
+                <span className="prov-sev">
+                  {" "}
+                  · {h.original_severity} → {h.override_severity}
+                </span>
+              ) : null}
+              <span className="prov-by"> · by {h.reviewer_id}</span>
+              {h.reason ? <span> · {h.reason}</span> : null}
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
 
 function LLMContentPanel({ content }: { content: LLMContent }) {
-  if (content.content_redacted) {
-    return <RedactedNote kind="llm" sweepAt={content.redaction_sweep_at} />;
-  }
   return (
     <div className="tl-content">
-      <div className="tl-c-label">prompt</div>
-      <pre className="tl-c-pre">{content.prompt}</pre>
-      <div className="tl-c-label">completion</div>
-      <pre className="tl-c-pre">{content.completion}</pre>
+      {content.content_redacted ? (
+        <RedactedNote kind="llm" sweepAt={content.redaction_sweep_at} />
+      ) : (
+        <>
+          <div className="tl-c-label">prompt</div>
+          <pre className="tl-c-pre">{content.prompt}</pre>
+          <div className="tl-c-label">completion</div>
+          <pre className="tl-c-pre">{content.completion}</pre>
+        </>
+      )}
     </div>
   );
 }
@@ -174,6 +195,15 @@ export function ReplayTimeline({ data }: { data: TimelineData }) {
   const row = (e: AuditEvent, withNode: boolean) => {
     const fc = e.event_type === "finding" ? findingsByFid.get(e.finding_id) : undefined;
     const lc = e.event_type === "llm_call" ? llmByEventId.get(e.event_id ?? "") : undefined;
+    // Proof artifacts ride the permanent FindingEvent (in `events`/`phases`), not the content view.
+    const proof: ProofMeta | null =
+      e.event_type === "finding"
+        ? {
+            tier: e.evidence_tier,
+            queryMatchId: e.query_match_id ?? null,
+            tracePath: e.trace_path ?? null,
+          }
+        : null;
     const id = e.event_id ?? "";
     const expandable = fc !== undefined || lc !== undefined;
     const open = expandable && expanded.has(id);
@@ -203,7 +233,7 @@ export function ReplayTimeline({ data }: { data: TimelineData }) {
           {withNode ? <span className="af-node mono">{eventNode(e) ?? ""}</span> : null}
           <span className="af-summary">{summarizeEvent(e)}</span>
         </div>
-        {open && fc ? <FindingContentPanel content={fc} /> : null}
+        {open && fc && proof ? <FindingContentPanel content={fc} proof={proof} /> : null}
         {open && lc ? <LLMContentPanel content={lc} /> : null}
       </div>
     );
