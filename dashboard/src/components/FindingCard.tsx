@@ -10,6 +10,20 @@ function loc(f: FindingView): string {
     : `${f.file_path}:${f.line_start}-${f.line_end}`;
 }
 
+// publish_destination → tag variant + dot color (mockup .dest-inline/.dest-review/
+// .dest-dashboard). INLINE_COMMENT posts on the diff (info), REVIEW_BODY rides the
+// review summary (medium), DASHBOARD_ONLY never reaches GitHub (faint/dashed).
+const DEST_CLASS: Record<string, string> = {
+  INLINE_COMMENT: "dest-inline",
+  REVIEW_BODY: "dest-review",
+  DASHBOARD_ONLY: "dest-dashboard",
+};
+const DEST_DOT: Record<string, string> = {
+  INLINE_COMMENT: "var(--sev-info)",
+  REVIEW_BODY: "var(--sev-medium)",
+  DASHBOARD_ONLY: "var(--sev-low)",
+};
+
 // The proof box: tier-keyed, always visible (mockup .f-proof). OBSERVED shows the
 // query_match_id, INFERRED the trace_path chain, JUDGED the model-interpretation
 // note. Proof metadata is permanent — it renders even when content is redacted.
@@ -88,7 +102,14 @@ export function FindingCard({
           {tier}
         </span>
         {finding.publish_destination ? (
-          <span className="dest">{finding.publish_destination}</span>
+          <span className={`dest ${DEST_CLASS[finding.publish_destination] ?? ""}`}>
+            <span
+              className="tdot"
+              aria-hidden="true"
+              style={{ background: DEST_DOT[finding.publish_destination] ?? "var(--muted)" }}
+            />
+            {finding.publish_destination}
+          </span>
         ) : null}
         <span className="ft-tag">
           {finding.finding_type} ·{" "}

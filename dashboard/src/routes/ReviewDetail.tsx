@@ -388,7 +388,7 @@ export function ReviewDetail() {
       </div>
 
       {submitted || (actionable && gated.length > 0) ? (
-        <div className="submit-bar">
+        <div className="hitl-sticky" role="region" aria-label="Pending decisions">
           <span className="hs-tick" aria-hidden="true" />
           <span className="status-text">
             {resumed ? (
@@ -421,17 +421,22 @@ export function ReviewDetail() {
               {decideErrorMessage(decide.error)}
             </span>
           ) : null}
-          <span style={{ flex: 1 }} />
-          {submitted && !resumed ? (
-            <button className="btn" onClick={() => void detail.refetch()}>
-              Refresh status
-            </button>
-          ) : null}
-          {!resumed ? (
-            <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
-              {decide.isPending ? "Submitting…" : submitted && stuck ? "Re-submit" : "Submit decision"}
-            </button>
-          ) : null}
+          <span className="hs-right">
+            {submitted && !resumed ? (
+              <button className="btn" onClick={() => void detail.refetch()}>
+                Refresh status
+              </button>
+            ) : null}
+            {!resumed ? (
+              <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
+                {decide.isPending
+                  ? "Submitting…"
+                  : submitted && stuck
+                    ? "Re-submit"
+                    : "Submit decision"}
+              </button>
+            ) : null}
+          </span>
         </div>
       ) : null}
     </section>
