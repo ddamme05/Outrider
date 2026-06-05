@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -310,3 +310,49 @@ async def test_is_eval_drift_verdict_excluded(drift_replay_client: TestClient) -
     # excluded — it agrees with NO review.
     full = _get(drift_replay_client, window="7d", include_eval="true")
     assert full["deltas"]["current"]["total"] == 1
+
+
+@pytest_asyncio.fixture
+async def malformed_replay_client(migrated_db: str) -> AsyncGenerator[TestClient]:
+    """A `replay_verdict` row whose `replay_equivalent` is a non-boolean string. Only reachable by
+    direct DB tamper / a future projector bug (NEVER via the Pydantic-validated event); the endpoint
+    reads it via SQL, not Pydantic. Proves the aggregate DEGRADES rather than 500-ing the window."""
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await _seed_installation(conn)
+        good = await _seed_completed_review(conn, is_eval=False, completed_age_days=1, repo_id=100)
+        bad = await _seed_completed_review(conn, is_eval=False, completed_age_days=1, repo_id=200)
+        await _seed_verdict(conn, good, replay_equivalent=True, event_age_days=1, is_eval=False)
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events (event_id, review_id, event_type, timestamp, is_eval, "
+                "payload) VALUES (:eid, :rid, 'replay_verdict', NOW() - INTERVAL '1 day', false, "
+                "CAST(:payload AS jsonb))"
+            ),
+            {
+                "eid": uuid4(),
+                "rid": bad,
+                # replay_equivalent is the string "maybe" — not a JSON boolean.
+                "payload": json.dumps(
+                    {"replay_equivalent": "maybe", "target_max_sequence_number": 4}
+                ),
+            },
+        )
+    try:
+        yield _mount(session_factory)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_malformed_replay_equivalent_degrades_not_500(
+    malformed_replay_client: TestClient,
+) -> None:
+    # `cast(text AS boolean)` would RAISE on "maybe" and 500 the whole window; the type_coerce
+    # `astext == 'true'` predicate degrades it to inequivalent. Revert-the-fold: swap the predicate
+    # back to cast(...) and this endpoint 500s instead of returning 200.
+    body = _get(malformed_replay_client, window="7d")
+    assert body["deltas"]["current"]["total"] == 2  # BOTH verdict rows counted — no 500
+    # only the well-formed `true` is equivalent; "maybe" degrades to false:
+    assert body["deltas"]["current"]["equivalent"] == 1
