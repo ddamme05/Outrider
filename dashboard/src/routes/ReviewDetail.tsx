@@ -3,11 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
-import { AuditFeed } from "../components/AuditFeed";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
-import { ReplayPanel } from "../components/ReplayPanel";
+import { ReplayTimeline } from "../components/ReplayTimeline";
 import { StatusPill } from "../components/StatusPill";
 import { expiresLabel } from "../lib/format";
 import {
@@ -44,9 +43,15 @@ export function ReviewDetail() {
   const findings = $api.useQuery("get", "/api/reviews/{review_id}/findings", pathParams, {
     enabled,
   });
-  const replay = $api.useQuery("get", "/api/reviews/{review_id}/replay", pathParams, { enabled });
-  // The audit-event stream powers the pipeline node cards AND the Audit-feed tab
-  // (FUP-133). Polled with the detail so a running review's feed fills in.
+  // The grouped, replay-verified timeline (ROADMAP feature 6) — the verdict header + the
+  // playable phase timeline. Polled so a running review's timeline fills in. Subsumes the
+  // standalone replay-verdict panel (one verdict surface, not three).
+  const timeline = $api.useQuery("get", "/api/reviews/{review_id}/replay-timeline", pathParams, {
+    enabled,
+    refetchInterval: 2000,
+  });
+  // The audit-event stream powers the pipeline node cards + the event count. Polled with the
+  // detail so a running review's pipeline fills in.
   const events = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
     enabled,
     refetchInterval: 2000,
@@ -54,7 +59,7 @@ export function ReviewDetail() {
 
   // Hooks must run unconditionally, before the early returns below.
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"findings" | "audit">("findings");
+  const [tab, setTab] = useState<"findings" | "timeline">("findings");
   const [showPolicy, setShowPolicy] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -220,9 +225,9 @@ export function ReviewDetail() {
               </div>
             </div>
             <div className="rd-actions">
-              {replay.data ? (
+              {timeline.data ? (
                 <span className="pill" aria-label="replay verdict">
-                  {replay.data.replay_equivalent ? (
+                  {timeline.data.replay_equivalent ? (
                     <>
                       replay-equivalent <b style={{ color: "var(--pos)" }}>✓</b>
                     </>
@@ -231,6 +236,12 @@ export function ReviewDetail() {
                       not replay-equivalent <b style={{ color: "var(--neg)" }}>✗</b>
                     </>
                   )}
+                </span>
+              ) : timeline.error ? (
+                // Fail loud, never silently omit: a failed verdict load reads as an
+                // explicit "unavailable", not an absent (and so implicitly-fine) badge.
+                <span className="pill status-expired" aria-label="replay verdict">
+                  replay verdict unavailable
                 </span>
               ) : null}
             </div>
@@ -294,17 +305,7 @@ export function ReviewDetail() {
         policyVersion={d.policy_version}
       />
 
-      {/* replay verdict detail (the live reconstruction screen isn't built; this
-          is the honest verdict surface for the replay equivalence check) */}
-      {replay.isLoading ? (
-        <p className="replay-status">Checking replay equivalence…</p>
-      ) : replay.error ? (
-        <p className="replay-status error">Replay verdict unavailable — couldn't load it.</p>
-      ) : replay.data ? (
-        <ReplayPanel verdict={replay.data} />
-      ) : null}
-
-      {/* findings / audit feed */}
+      {/* findings / replay timeline */}
       <div className="tabs" role="tablist">
         <button
           className={`tab ${tab === "findings" ? "active" : ""}`}
@@ -315,27 +316,25 @@ export function ReviewDetail() {
           Findings <span className="muted">({findingCountLabel})</span>
         </button>
         <button
-          className={`tab ${tab === "audit" ? "active" : ""}`}
+          className={`tab ${tab === "timeline" ? "active" : ""}`}
           role="tab"
-          aria-selected={tab === "audit"}
-          onClick={() => setTab("audit")}
+          aria-selected={tab === "timeline"}
+          onClick={() => setTab("timeline")}
         >
-          Audit feed <span className="muted">({eventCountLabel})</span>
+          Timeline <span className="muted">({eventCountLabel})</span>
         </button>
       </div>
 
-      <div className="panel">
-        <div className="panel-h">
-          <h2>{tab === "findings" ? "Findings" : "Audit feed"}</h2>
-          <div className="sub">
-            {tab === "findings"
-              ? `${findingCountLabel} findings · ${gatedCountLabel} gated`
-              : `${eventCountLabel} events`}
+      {tab === "findings" ? (
+        <div className="panel">
+          <div className="panel-h">
+            <h2>Findings</h2>
+            <div className="sub">
+              {findingCountLabel} findings · {gatedCountLabel} gated
+            </div>
           </div>
-        </div>
-        <div className="panel-b">
-          {tab === "findings" ? (
-            findings.isLoading ? (
+          <div className="panel-b">
+            {findings.isLoading ? (
               <p>Loading findings…</p>
             ) : findings.error ? (
               <p className="error">Failed to load findings.</p>
@@ -360,16 +359,24 @@ export function ReviewDetail() {
                   />
                 );
               })
-            )
-          ) : events.isLoading ? (
-            <p>Loading audit feed…</p>
-          ) : events.error ? (
-            <p className="error">Failed to load the audit feed.</p>
-          ) : (
-            <AuditFeed events={events.data?.events ?? []} />
-          )}
+            )}
+          </div>
         </div>
-      </div>
+      ) : timeline.isLoading ? (
+        <div className="panel">
+          <div className="panel-b">
+            <p>Loading replay timeline…</p>
+          </div>
+        </div>
+      ) : timeline.error ? (
+        <div className="panel">
+          <div className="panel-b">
+            <p className="error">Failed to load the replay timeline.</p>
+          </div>
+        </div>
+      ) : timeline.data ? (
+        <ReplayTimeline data={timeline.data} />
+      ) : null}
 
       {submitted || (actionable && gated.length > 0) ? (
         <div className="submit-bar">

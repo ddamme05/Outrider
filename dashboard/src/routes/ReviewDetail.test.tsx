@@ -63,15 +63,19 @@ function finding(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function replay(overrides: Record<string, unknown> = {}) {
+// The replay-timeline DTO (ROADMAP feature 6): metadata-only, replay-verified, phase-grouped.
+// `phases` is non-null only on an equivalent verdict (FUP-125); a non-equivalent verdict
+// carries phases:null and the flat `events` stream is rendered as the AuditFeed fallback.
+function timelineData(overrides: Record<string, unknown> = {}) {
   return {
     review_id: "r1",
     replay_equivalent: true,
     mode: "full",
-    event_count: 47,
-    finding_count: 5,
-    orphan_finding_count: 0,
     reason: null,
+    status: "completed",
+    events: [],
+    phases: [],
+    inter_phase_events: [],
     ...overrides,
   };
 }
@@ -80,7 +84,7 @@ function mount(
   responses: {
     detail?: unknown;
     findings?: unknown[];
-    replay?: unknown;
+    timeline?: unknown;
     detailStatus?: number;
     events?: unknown[];
     policyEntries?: unknown[];
@@ -98,7 +102,9 @@ function mount(
     http.get(`${BASE}/findings`, () =>
       HttpResponse.json({ review_id: "r1", findings: responses.findings ?? [finding()] }),
     ),
-    http.get(`${BASE}/replay`, () => HttpResponse.json(responses.replay ?? replay())),
+    http.get(`${BASE}/replay-timeline`, () =>
+      HttpResponse.json(responses.timeline ?? timelineData()),
+    ),
     http.get(`${BASE}/events`, () => {
       const events = responses.events ?? [];
       return HttpResponse.json({ review_id: "r1", events, total: events.length });
@@ -127,9 +133,10 @@ test("renders header, aggregate metrics, and the replay verdict", async () => {
   expect(screen.getByText("#7")).toBeInTheDocument();
   // Aggregate metric backed by the contract (72s → "1m12s").
   expect(screen.getByText("1m12s")).toBeInTheDocument();
-  // Replay verdict — fully contract-backed (hero badge + detail panel both show it).
-  expect((await screen.findAllByText("replay-equivalent")).length).toBeGreaterThan(0);
-  expect(screen.getByText(/47 events · 5 findings · full/)).toBeInTheDocument();
+  // Replay verdict — the hero badge reads off the timeline DTO's replay_equivalent.
+  const verdict = await screen.findByLabelText("replay verdict");
+  expect(verdict).toHaveTextContent("replay-equivalent");
+  expect(verdict).not.toHaveTextContent("not replay-equivalent");
 });
 
 test("metrics strip surfaces files_examined + files_traced_beyond_diff", async () => {
@@ -210,40 +217,57 @@ test("renders a redaction stub for content_redacted findings", async () => {
 });
 
 test("shows the failure reason when not replay-equivalent", async () => {
-  mount({ replay: replay({ replay_equivalent: false, reason: "finding_count mismatch: 5 vs 4" }) });
-  expect((await screen.findAllByText("not replay-equivalent")).length).toBeGreaterThan(0);
-  expect(screen.getByText("finding_count mismatch: 5 vs 4")).toBeInTheDocument();
+  const user = userEvent.setup();
+  mount({
+    timeline: timelineData({
+      replay_equivalent: false,
+      phases: null,
+      reason: "finding_count mismatch: 5 vs 4",
+    }),
+  });
+  // Hero badge reflects the negative verdict at a glance.
+  expect(await screen.findByText("not replay-equivalent")).toBeInTheDocument();
+  // The reason surfaces in the timeline tab's banner (phase grouping suppressed, FUP-125).
+  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
+  expect(await screen.findByText("finding_count mismatch: 5 vs 4")).toBeInTheDocument();
 });
 
-test("labels a mixed-mode replay distinctly (not as full reconstruction)", async () => {
-  mount({ replay: replay({ mode: "mixed" }) });
-  expect((await screen.findAllByText("replay-equivalent")).length).toBeGreaterThan(0);
-  expect(screen.getByText(/Mixed reconstruction/)).toBeInTheDocument();
-  expect(screen.queryByText(/Full reconstruction/)).not.toBeInTheDocument();
+test("surfaces the reconstruction mode verbatim in the timeline header", async () => {
+  const user = userEvent.setup();
+  mount({ timeline: timelineData({ mode: "mixed" }) });
+  // Equivalent verdict in the hero…
+  expect(await screen.findByText("replay-equivalent")).toBeInTheDocument();
+  // …and the timeline header shows the raw mode — "mixed" is never relabeled.
+  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
+  expect(await screen.findByText(/· mixed/)).toBeInTheDocument();
 });
 
 test("handles a null-mode non-equivalent verdict (reconstruct failed)", async () => {
+  const user = userEvent.setup();
   mount({
-    replay: replay({
+    timeline: timelineData({
       replay_equivalent: false,
       mode: null,
-      event_count: null,
-      finding_count: null,
-      orphan_finding_count: null,
+      status: null,
+      phases: null,
       reason: "corrupt audit payload at event 12",
     }),
   });
-  expect((await screen.findAllByText("not replay-equivalent")).length).toBeGreaterThan(0);
-  expect(screen.getByText("corrupt audit payload at event 12")).toBeInTheDocument();
-  expect(screen.getByText(/Reconstruction did not complete/)).toBeInTheDocument();
-  expect(screen.queryByText(/Full reconstruction/)).not.toBeInTheDocument();
+  expect(await screen.findByText("not replay-equivalent")).toBeInTheDocument();
+  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
+  expect(await screen.findByText("corrupt audit payload at event 12")).toBeInTheDocument();
+  expect(screen.getByText(/phase grouping is unavailable/)).toBeInTheDocument();
 });
 
-test("shows an explicit state when the replay endpoint fails (not silent omission)", async () => {
+test("shows an explicit state when the replay-timeline endpoint fails (not silent omission)", async () => {
   server.use(
+    http.get("http://localhost/api/policy/:version", ({ params }) =>
+      HttpResponse.json({ version: params.version, entries: [] }),
+    ),
     http.get(BASE, () => HttpResponse.json(detail())),
     http.get(`${BASE}/findings`, () => HttpResponse.json({ review_id: "r1", findings: [finding()] })),
-    http.get(`${BASE}/replay`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    http.get(`${BASE}/replay-timeline`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    http.get(`${BASE}/events`, () => HttpResponse.json({ review_id: "r1", events: [], total: 0 })),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -255,7 +279,8 @@ test("shows an explicit state when the replay endpoint fails (not silent omissio
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  expect(await screen.findByText(/Replay verdict unavailable/)).toBeInTheDocument();
+  // The hero badge fails loud: an explicit "unavailable", never an absent badge.
+  expect(await screen.findByText(/replay verdict unavailable/)).toBeInTheDocument();
 });
 
 test("renders an honest error when the review can't be loaded", async () => {
@@ -290,14 +315,43 @@ function llmEvent(node: string, cost: number): Record<string, unknown> {
   };
 }
 
-test("audit-feed tab renders the event stream from the events endpoint", async () => {
+function phaseMarker(node: string, marker: "start" | "end", ts: string): Record<string, unknown> {
+  return {
+    event_id: `e-${node}-${marker}`,
+    review_id: "r1",
+    event_type: "review_phase",
+    timestamp: ts,
+    sequence_number: 1,
+    is_eval: false,
+    node_id: node,
+    marker,
+    phase_key: null,
+  };
+}
+
+test("timeline tab renders the reconstructed event stream grouped by phase", async () => {
   const user = userEvent.setup();
-  mount({ events: [llmEvent("analyze", 0.27)] });
+  const ev = llmEvent("analyze", 0.27);
+  mount({
+    timeline: timelineData({
+      events: [ev],
+      phases: [
+        {
+          phase_id: "p-analyze",
+          node_id: "analyze",
+          start: phaseMarker("analyze", "start", "2026-06-01T00:00:00Z"),
+          end: phaseMarker("analyze", "end", "2026-06-01T00:00:01Z"),
+          events: [ev],
+        },
+      ],
+    }),
+  });
   await screen.findByText(/sql_injection/); // findings tab is default
-  // Tab shows the count from the events endpoint.
-  await user.click(screen.getByRole("tab", { name: /Audit feed/ }));
-  // The feed renders the event by type + node.
+  await user.click(screen.getByRole("tab", { name: /Timeline/ }));
+  // The phase card surfaces the node header + the llm_call's metadata summary from the DTO.
   expect(await screen.findByText("llm_call")).toBeInTheDocument();
+  const phaseNode = document.querySelector(".tl-phase .tl-node");
+  expect(phaseNode).toHaveTextContent("analyze");
   expect(screen.getByText(/claude-sonnet-4-5 · \$0.27/)).toBeInTheDocument();
 });
 
@@ -340,7 +394,7 @@ test("completed review fails CLOSED when /events is unavailable — no fabricate
     ),
     http.get(BASE, () => HttpResponse.json(detail({ status: "completed" }))),
     http.get(`${BASE}/findings`, () => HttpResponse.json({ review_id: "r1", findings: [finding()] })),
-    http.get(`${BASE}/replay`, () => HttpResponse.json(replay())),
+    http.get(`${BASE}/replay-timeline`, () => HttpResponse.json(timelineData())),
     http.get(`${BASE}/events`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -382,7 +436,7 @@ test("findings header fails CLOSED when /findings is unavailable — no fabricat
     ),
     http.get(BASE, () => HttpResponse.json(detail())),
     http.get(`${BASE}/findings`, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
-    http.get(`${BASE}/replay`, () => HttpResponse.json(replay())),
+    http.get(`${BASE}/replay-timeline`, () => HttpResponse.json(timelineData())),
     http.get(`${BASE}/events`, () => HttpResponse.json({ review_id: "r1", events: [], total: 0 })),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -2280,3 +2280,77 @@ table.policy tbody tr:hover {
 .f-prov .prov-by {
   color: var(--faint);
 }
+
+/* ── Replay timeline (ROADMAP feature 6): playable phase-grouped audit view ── */
+.tl-scrub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.tl-scrub input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.tl-pos {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  min-width: 52px;
+  text-align: right;
+}
+.tl-inter {
+  margin-bottom: 12px;
+}
+.tl-phase {
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.tl-phase-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--line);
+}
+.tl-node {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--text);
+}
+.tl-dur {
+  color: var(--faint);
+  font-size: 11px;
+}
+.tl-empty {
+  padding: 6px 10px;
+  color: var(--faint);
+  font-size: 11px;
+  font-style: italic;
+}
+.tl-evrow {
+  display: grid;
+  grid-template-columns: 168px 84px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 5px 10px;
+  border-left: 3px solid var(--evc, transparent);
+  font-size: 12px;
+  transition: opacity 0.15s ease;
+}
+.tl-inter .tl-evrow {
+  grid-template-columns: 168px 1fr;
+}
+.tl-evrow.future {
+  opacity: 0.28;
+}
+.tl-evrow.current {
+  background: var(--panel2);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
