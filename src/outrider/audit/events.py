@@ -2,15 +2,16 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has sixteen
+`AuditEventBase` is the shared base. The hierarchy has seventeen
 concrete subtypes: twelve V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
 `HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`,
 `PublishEligibilityEvent`, `PublishAttemptEvent`), three
 analyze-foundation additions (`AnalyzeCompletedEvent`,
-`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), and the
-synthesize-node addition (`SynthesizeCompletedEvent`). Each
+`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), the
+synthesize-node addition (`SynthesizeCompletedEvent`), and the
+replay-verdict-projection addition (`ReplayVerdictEvent`). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
@@ -26,7 +27,7 @@ reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
 because the outer model's frozen-ness does not propagate.
 
-Six event types carry validators (plus `PerFindingDecision` inherited
+Seven event types carry validators (plus `PerFindingDecision` inherited
 by `HITLDecisionEvent.decisions`):
 
   - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
@@ -56,6 +57,10 @@ by `HITLDecisionEvent.decisions`):
   - `FindingProposalRejectedEvent` enforces the bidirectional
     `claimed_evidence_tier` ↔ `rejection_reason ==
     "evidence_tier_not_in_enum"` coupling.
+  - `ReplayVerdictEvent` carries two validators: `reason` paired iff
+    inequivalent, and the reconstruction-metadata envelope (`mode` + the
+    three counts) all-present-or-all-absent — present iff reconstruction
+    succeeded, so an equivalent verdict requires it.
   - `PerFindingDecision` (referenced via `HITLDecisionEvent.decisions`)
     carries its own validator per `schemas/hitl.py`; the wrapping event
     inherits that gate.
@@ -2397,6 +2402,71 @@ class SynthesizeCompletedEvent(AuditEventBase):
     binds."""
 
 
+class ReplayVerdictEvent(AuditEventBase):
+    """Records the outcome of a replay-equivalence check over a judged prefix.
+
+    Emitted by the background replay-verdict projector AFTER a review completes —
+    phase-unbounded replay metadata, NOT graph-node work, so it is exempt from
+    `_verify_phase_wellformed` phase containment via
+    `audit.replay._PHASE_UNBOUNDED_EVENTS`. `target_max_sequence_number` pins the
+    `sequence_number` high-water mark of the prefix the verdict covers (the judged
+    stream, EXCLUDING any prior `replay_verdict` events — a verdict is never
+    computed over a stream containing its own kind). `mode` + the `*_count` fields
+    mirror the on-demand `ReplayVerdict` shape (`api/dashboard/reviews.py`); they
+    form an all-present-or-all-absent envelope, `None` only when reconstruction
+    itself raised (see `_enforce_metadata_envelope`). `reason` is set iff the
+    verdict is inequivalent.
+    """
+
+    event_type: Literal["replay_verdict"] = "replay_verdict"
+    replay_equivalent: bool
+    # Bare Literal mirroring `audit.replay.ReplayMode` values — NOT the enum, to
+    # avoid a circular import (`replay` already imports `events`); a drift test
+    # pins the two in sync. `None` ONLY when reconstruction itself raised.
+    mode: Literal["full", "metadata_only", "mixed"] | None = None
+    event_count: int | None = Field(default=None, ge=0)
+    finding_count: int | None = Field(default=None, ge=0)
+    orphan_finding_count: int | None = Field(default=None, ge=0)
+    reason: str | None = Field(default=None, max_length=500)
+    # >= 1: `sequence_number` is a BIGINT IDENTITY starting at 1, so the judged
+    # prefix's high-water mark always names a real row (a review always has events).
+    target_max_sequence_number: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _enforce_reason_paired_with_inequivalence(self) -> Self:
+        """`reason` is set iff `replay_equivalent is False` — an equivalent verdict
+        has nothing to explain; an inequivalent one must record why (mirrors the
+        on-demand `ReplayVerdict`: reason on failure, `None` on success)."""
+        if not self.replay_equivalent and self.reason is None:
+            raise ValueError("ReplayVerdictEvent with replay_equivalent=False requires a reason")
+        if self.replay_equivalent and self.reason is not None:
+            raise ValueError("ReplayVerdictEvent with replay_equivalent=True must have reason=None")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_metadata_envelope(self) -> Self:
+        """The reconstruction metadata (`mode` + the three counts) is ALL-present or
+        ALL-absent. It is present when reconstruction SUCCEEDED — whether the verdict
+        is equivalent or an `assert_equivalent` failure — and absent (all `None`) ONLY
+        when reconstruction itself raised, which is necessarily inequivalent. So a
+        partial envelope is malformed, and an EQUIVALENT verdict must carry the full
+        envelope (it can only be equivalent if reconstruction succeeded)."""
+        envelope = (self.mode, self.event_count, self.finding_count, self.orphan_finding_count)
+        present = [field is not None for field in envelope]
+        if any(present) and not all(present):
+            raise ValueError(
+                "ReplayVerdictEvent metadata envelope (mode + event/finding/orphan counts) "
+                "must be all-present or all-absent; got a partial envelope"
+            )
+        if self.replay_equivalent and not all(present):
+            raise ValueError(
+                "ReplayVerdictEvent with replay_equivalent=True requires the full reconstruction "
+                "metadata envelope (mode + counts) — an equivalent verdict means reconstruction "
+                "succeeded"
+            )
+        return self
+
+
 # Discriminated union for replay: TypeAdapter(AuditEvent).validate_python({...})
 # selects the right concrete subtype using the event_type field.
 AuditEvent = Annotated[
@@ -2415,7 +2485,8 @@ AuditEvent = Annotated[
     | AnalyzeCompletedEvent
     | FindingProposalRejectedEvent
     | AnalyzeResponseRejectedEvent
-    | SynthesizeCompletedEvent,
+    | SynthesizeCompletedEvent
+    | ReplayVerdictEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -2440,6 +2511,7 @@ AuditEventAdapter: Final[
         | FindingProposalRejectedEvent
         | AnalyzeResponseRejectedEvent
         | SynthesizeCompletedEvent
+        | ReplayVerdictEvent
     ]
 ] = TypeAdapter(AuditEvent)
 
@@ -2466,6 +2538,7 @@ __all__ = [
     "PublishEvent",
     "PublishRoutingEvent",
     "PublishRoutingReason",
+    "ReplayVerdictEvent",
     "ReviewPhaseEvent",
     "SynthesizeCompletedEvent",
     "TraceDecisionEvent",
