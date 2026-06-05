@@ -56,6 +56,8 @@ function data(overrides: Record<string, unknown> = {}): TimelineData {
     events: [],
     phases: [],
     inter_phase_events: [],
+    findings: [],
+    llm_exchanges: [],
     ...overrides,
   } as unknown as TimelineData;
 }
@@ -183,4 +185,167 @@ test("the step-back control moves the play cursor off the resting full view", as
   const rows = document.querySelectorAll(".tl-phase .tl-evrow");
   expect(rows[0]?.className).toContain("current");
   expect(rows[1]?.className).toContain("future");
+});
+
+// ---- PR 2: expand-on-click content panels ----
+function findingEvent(eventId: string, findingId: string): Record<string, unknown> {
+  return {
+    event_id: eventId,
+    review_id: "r1",
+    event_type: "finding",
+    timestamp: "2026-06-01T00:00:00Z",
+    sequence_number: 2,
+    is_eval: false,
+    finding_id: findingId,
+    finding_type: "sql_injection",
+    severity: "critical",
+    file_path: "src/app.py",
+    line_start: 10,
+    line_end: 20,
+    dimension: "security",
+    finding_content_hash: "a".repeat(64),
+    evidence_tier: "judged",
+    query_match_id: null,
+    trace_path: null,
+    policy_version: "1.0.0",
+    proposal_hash: "b".repeat(64),
+  };
+}
+
+function findingContent(
+  findingId: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    finding_id: findingId,
+    content_redacted: false,
+    title: "SQL injection",
+    description: "Unparameterized query.",
+    evidence: "cur.execute(f\"...{x}\")",
+    suggested_fix: "Use parameters.",
+    hitl_decision: null,
+    redaction_sweep_at: null,
+    ...overrides,
+  };
+}
+
+function llmContent(eventId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    event_id: eventId,
+    content_redacted: false,
+    prompt: "the prompt text",
+    completion: "the completion text",
+    redaction_sweep_at: null,
+    ...overrides,
+  };
+}
+
+function phaseWith(events: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    phase_id: "p-analyze",
+    node_id: "analyze",
+    start: phaseMarker("analyze", "start", "2026-06-01T00:00:00Z"),
+    end: phaseMarker("analyze", "end", "2026-06-01T00:00:01Z"),
+    events,
+  };
+}
+
+test("clicking a finding row expands its content panel", async () => {
+  const user = userEvent.setup();
+  const fev = findingEvent("e-finding", "f-1");
+  render(
+    <ReplayTimeline
+      data={data({ events: [fev], phases: [phaseWith([fev])], findings: [findingContent("f-1")] })}
+    />,
+  );
+  // Collapsed by default.
+  expect(screen.queryByText("Unparameterized query.")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
+  expect(screen.getByText("SQL injection")).toBeInTheDocument();
+});
+
+test("clicking an llm_call row expands the prompt + completion", async () => {
+  const user = userEvent.setup();
+  const lev = llmEvent("e-llm", "analyze", 0.1);
+  render(
+    <ReplayTimeline
+      data={data({ events: [lev], phases: [phaseWith([lev])], llm_exchanges: [llmContent("e-llm")] })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /llm_call/ }));
+  expect(screen.getByText("the prompt text")).toBeInTheDocument();
+  expect(screen.getByText("the completion text")).toBeInTheDocument();
+});
+
+test("a redacted finding row shows the retention stub, not content", async () => {
+  const user = userEvent.setup();
+  const fev = findingEvent("e-fr", "f-r");
+  render(
+    <ReplayTimeline
+      data={data({
+        events: [fev],
+        phases: [phaseWith([fev])],
+        findings: [
+          findingContent("f-r", {
+            content_redacted: true,
+            title: null,
+            description: null,
+            evidence: null,
+            suggested_fix: null,
+            redaction_sweep_at: "2026-05-20T00:00:00Z",
+          }),
+        ],
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  expect(
+    screen.getByText(/Content redacted in the retention sweep on 2026-05-20/),
+  ).toBeInTheDocument();
+  // The redaction stub carries no content text.
+  expect(screen.queryByText("Unparameterized query.")).toBeNull();
+});
+
+test("an overridden finding surfaces its HITL provenance (stream-canonical)", async () => {
+  const user = userEvent.setup();
+  const fev = findingEvent("e-fo", "f-o");
+  render(
+    <ReplayTimeline
+      data={data({
+        events: [fev],
+        phases: [phaseWith([fev])],
+        findings: [
+          findingContent("f-o", {
+            hitl_decision: {
+              outcome: "severity_override",
+              reviewer_id: "admin",
+              reason: "downgraded: test-only path",
+              original_severity: "critical",
+              override_severity: "high",
+            },
+          }),
+        ],
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  const prov = document.querySelector(".tl-content .f-prov");
+  expect(prov).not.toBeNull();
+  expect(prov).toHaveTextContent("severity_override");
+  expect(prov).toHaveTextContent("critical → high");
+  expect(prov).toHaveTextContent("by admin");
+});
+
+test("an expanded panel survives a refetch (2s poll) without perturbing the scrubber", async () => {
+  const user = userEvent.setup();
+  const fev = findingEvent("e-finding", "f-1");
+  const d = data({ events: [fev], phases: [phaseWith([fev])], findings: [findingContent("f-1")] });
+  const { rerender } = render(<ReplayTimeline data={d} />);
+  await user.click(screen.getByRole("button", { name: /finding/ }));
+  expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
+  // A 2s poll: same review_id, a fresh data object. Expand state is keyed by event_id and
+  // reset only on review change, so the open panel must survive.
+  rerender(<ReplayTimeline data={{ ...d, findings: [findingContent("f-1")] } as typeof d} />);
+  expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
 });
