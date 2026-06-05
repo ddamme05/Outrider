@@ -1,20 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { components } from "../api/schema";
 import { type AuditEvent, eventFamily, eventNode, summarizeEvent } from "../lib/auditEvent";
+import { formatDurationMs, spanMs } from "../lib/format";
 import { AuditFeed } from "./AuditFeed";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
 
+// The duration slot stays empty for an open phase — the in-flight pill conveys that state,
+// so it isn't repeated here as text.
 function phaseDuration(phase: Phase): string {
-  if (phase.start?.timestamp && phase.end?.timestamp) {
-    const ms = new Date(phase.end.timestamp).getTime() - new Date(phase.start.timestamp).getTime();
-    if (Number.isFinite(ms) && ms >= 0) {
-      return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
-    }
-  }
-  return phase.end === null ? "in-flight" : "—";
+  const ms = spanMs(phase.start?.timestamp, phase.end?.timestamp);
+  return ms === null ? "—" : formatDurationMs(ms);
 }
 
 function VerdictHeader({ data }: { data: TimelineData }) {
@@ -40,43 +38,55 @@ function VerdictHeader({ data }: { data: TimelineData }) {
 // pure client-side stepping over the static ordered DTO; nothing is fabricated.
 export function ReplayTimeline({ data }: { data: TimelineData }) {
   const events = data.events;
-  const total = events.length;
-  // `shown` = how many ordered events have "played" (0..total); total = the resting full view.
+  // The rows the GROUPED view actually renders, in chronological order: the flat stream MINUS
+  // the phase start/end markers (the phase CARDS represent those — they are never event rows).
+  // Playback counts + steps over THESE, so the scrubber denominator and the play cursor match
+  // what's on screen; counting raw `events` would over-count by ~2 markers/phase and stall the
+  // cursor on invisible marker steps. (Non-equivalent → no scrubber renders; `rendered` is moot.)
+  const rendered = useMemo(() => {
+    if (data.phases === null) return events;
+    const markerIds = new Set<string>();
+    for (const p of data.phases) {
+      if (p.start?.event_id) markerIds.add(p.start.event_id);
+      if (p.end?.event_id) markerIds.add(p.end.event_id);
+    }
+    return events.filter((e) => !markerIds.has(e.event_id ?? ""));
+  }, [events, data.phases]);
+  const total = rendered.length;
+  // `shown` = how many ordered rows have "played" (0..total); total = the resting full view.
   const [shown, setShown] = useState(total);
   const [playing, setPlaying] = useState(false);
 
-  // event_id → flat-order index, so per-event playback state works across the grouped view.
+  // event_id → rendered-order index, so per-event playback state works across the grouped view.
   const orderIndex = useMemo(
-    () => new Map(events.map((e, i) => [e.event_id, i])),
-    [events],
+    () => new Map(rendered.map((e, i) => [e.event_id, i])),
+    [rendered],
   );
 
-  // Reset playback when the review (its event set) changes.
+  // Reset playback when the review (its rendered set) changes.
   useEffect(() => {
     setShown(total);
     setPlaying(false);
   }, [total, data.review_id]);
 
-  const timer = useRef<number | null>(null);
   useEffect(() => {
     if (!playing) return;
     if (shown >= total) {
       setPlaying(false);
       return;
     }
-    timer.current = window.setTimeout(() => setShown((s) => Math.min(s + 1, total)), 450);
-    return () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    };
+    // Capture the handle locally so the cleanup clears THIS effect's timer, not a later one.
+    const handle = window.setTimeout(() => setShown((s) => Math.min(s + 1, total)), 450);
+    return () => window.clearTimeout(handle);
   }, [playing, shown, total]);
 
-  // "" (resting full view), else past / current / future relative to the play cursor.
+  // "" (resting full view OR an already-played row — neither is styled), "current" at the
+  // play cursor, "future" for not-yet-played rows (dimmed).
   const cls = (e: AuditEvent): string => {
     if (shown >= total) return "";
     const i = orderIndex.get(e.event_id) ?? 0;
-    if (i < shown - 1) return "past";
     if (i === shown - 1) return "current";
-    return "future";
+    return i >= shown ? "future" : "";
   };
 
   const row = (e: AuditEvent, withNode: boolean) => (
