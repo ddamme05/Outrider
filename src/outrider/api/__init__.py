@@ -13,14 +13,13 @@ V1 ships two surfaces:
     `outrider.api.webhooks.router` for the consumer to mount via
     `app.include_router(router)` at production wire-up time.
 
-The production FastAPI app entry point (e.g., `outrider/main.py` or a
-similar module that constructs `FastAPI(lifespan=lifespan)` and mounts
-the webhook router) is NOT in this package yet — see the spec backlog
-for the operator-facing app shape. Today the production composition is
-implicit in `tests/integration/test_webhook_router_integration.py`'s
-fixture and any operator wishing to deploy must construct it themselves.
+The production FastAPI app entry point lives in `outrider/main.py`, which
+constructs `FastAPI(lifespan=lifespan)` and mounts the webhook router for
+operator deployment.
 
-Dashboard endpoints (`dashboard/`) are future-spec work.
+Dashboard endpoints under `dashboard/` ship behind bearer auth
+(`dashboard/auth.py`) and mount on the same app (split at the router level
+so the dashboard API can later be extracted into its own service).
 """
 
 from outrider.api.lifespan import build_lifespan, lifespan
