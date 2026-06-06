@@ -97,6 +97,10 @@ function timeline(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// jsdom doesn't implement matchMedia (it's undefined); capture that so afterEach can restore it
+// and the reduced-motion stub doesn't leak into later tests in the shared jsdom worker.
+const originalMatchMedia = window.matchMedia;
+
 function setReducedMotion(reduced: boolean) {
   window.matchMedia = ((query: string) => ({
     matches: reduced,
@@ -133,6 +137,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+  window.matchMedia = originalMatchMedia;
 });
 
 test("renders the reconstruction title + back link to the review", async () => {
