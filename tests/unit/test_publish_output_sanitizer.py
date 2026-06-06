@@ -267,6 +267,42 @@ def test_apply_size_cap_truncation_does_not_split_mid_codepoint() -> None:
     result.encode("utf-8").decode("utf-8")
 
 
+def test_apply_size_cap_reserve_bytes_reduces_effective_cap() -> None:
+    """`reserve_bytes` holds back room for a block the caller appends AFTER the
+    cap (the S1 agent-marker block): the capped body fits within
+    GITHUB_COMMENT_BODY_MAX - reserve, so prose + a reserve-sized suffix still
+    fits GitHub's hard limit and the suffix is never truncated."""
+    reserve = 500
+    suffix = "Z" * reserve  # exactly `reserve` ASCII bytes
+    body = "x" * (GITHUB_COMMENT_BODY_MAX + 10_000)
+    capped = apply_size_cap(body, reserve_bytes=reserve)
+    assert len(capped.encode("utf-8")) <= GITHUB_COMMENT_BODY_MAX - reserve
+    assert "[truncated" in capped
+    # prose + the reserved-size suffix fits the real GitHub limit.
+    assert len((capped + suffix).encode("utf-8")) <= GITHUB_COMMENT_BODY_MAX
+
+
+def test_apply_size_cap_reserve_bytes_zero_matches_default() -> None:
+    """reserve_bytes=0 (the default) caps identically to the no-arg form."""
+    body = "x" * (GITHUB_COMMENT_BODY_MAX + 10_000)
+    assert apply_size_cap(body, reserve_bytes=0) == apply_size_cap(body)
+
+
+def test_apply_size_cap_negative_reserve_raises() -> None:
+    """A negative reserve is a caller bug — fail loud."""
+    with pytest.raises(ValueError, match="reserve_bytes must be >= 0"):
+        apply_size_cap("body", reserve_bytes=-1)
+
+
+def test_apply_size_cap_reserve_exceeding_cap_raises() -> None:
+    """A reserve_bytes large enough that no room remains for content + the
+    truncation marker is a caller bug (the appended block can't coexist with any
+    prose) — fail loud rather than silently drop all content."""
+    body = "x" * (GITHUB_COMMENT_BODY_MAX + 10_000)
+    with pytest.raises(RuntimeError, match="smaller than the truncation marker budget"):
+        apply_size_cap(body, reserve_bytes=GITHUB_COMMENT_BODY_MAX)
+
+
 # ---------------------------------------------------------------------------
 # 5. HMAC-tagged truncation marker
 # ---------------------------------------------------------------------------
