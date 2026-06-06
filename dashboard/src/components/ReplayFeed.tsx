@@ -1,5 +1,4 @@
 import {
-  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useEffect,
@@ -197,13 +196,17 @@ export function ReplayFeed({
 }) {
   const rendered = useMemo(() => renderedEvents(data), [data]);
   const total = rendered.length;
-  // Relative-timestamp baseline for the flat feed: the review's first phase-start marker (the
-  // "+0ms" origin), falling back to the first rendered event. Timestamps are client-relative —
-  // there is no server-provided relative field.
-  const base = useMemo(
-    () => data.phases?.[0]?.start?.timestamp ?? rendered[0]?.timestamp ?? null,
-    [data.phases, rendered],
-  );
+  // Relative-timestamp baseline for the flat feed (client-computed — no server field): the
+  // EARLIEST timestamp across the first phase-start marker AND every rendered event. Taking the
+  // min (not phases[0].start alone) keeps relTime ≥ 0 for a leading inter-phase transition that
+  // predates the first phase start — otherwise spanMs goes negative → null → a blank time column.
+  const base = useMemo(() => {
+    let min: string | null = data.phases?.[0]?.start?.timestamp ?? null;
+    for (const e of rendered) {
+      if (e.timestamp && (min === null || e.timestamp < min)) min = e.timestamp;
+    }
+    return min;
+  }, [data.phases, rendered]);
   const orderIndex = useMemo(
     () => new Map(rendered.map((e, i) => [e.event_id, i])),
     [rendered],
@@ -337,9 +340,35 @@ export function ReplayFeed({
 
   const phases = data.phases;
 
-  // Flat feed (review-detail audit-of-record): append-only banner, then per-phase `.ae-phase`
-  // dividers with their `.ae` event rows — the mockup's rich flat aesthetic.
+  // Flat feed (review-detail audit-of-record, mockup #screen-detail): append-only banner, then a
+  // single CHRONOLOGICAL walk of the sequence-ordered stream. A `.ae-phase` divider is emitted when
+  // a new phase's events begin; inter-phase transitions (e.g. analyze→trace — phase-unbounded, so
+  // they fall outside every phase) render INLINE at their real position rather than dumped in one
+  // block at the top. This preserves true append-only order (the banner's own claim) and matches
+  // the mockup, which shows each transition at the tail of the phase it follows.
   if (flat) {
+    const phaseByEventId = new Map<string, Phase>();
+    for (const p of phases) {
+      for (const e of p.events) {
+        if (e.event_id) phaseByEventId.set(e.event_id, p);
+      }
+    }
+    const feed: ReactNode[] = [];
+    let currentPhaseId: string | null = null;
+    for (const e of rendered) {
+      const ph = phaseByEventId.get(e.event_id ?? "") ?? null;
+      if (ph && ph.phase_id !== currentPhaseId) {
+        currentPhaseId = ph.phase_id;
+        feed.push(
+          <div className="ae-phase" key={`phase-${ph.phase_id}`}>
+            <span className="pname">{ph.node_id}</span>
+            <span className="pdur">{phaseDuration(ph)}</span>
+            {ph.end === null ? <span className="pill">in-flight</span> : null}
+          </div>,
+        );
+      }
+      feed.push(aeRow(e));
+    }
     return (
       <div className="panel-b">
         <div className="audit-note">
@@ -349,28 +378,7 @@ export function ReplayFeed({
           Append-only by database policy — events cannot be edited or deleted; corrections append
           new events. This is what makes replay-equivalence verifiable.
         </div>
-        {data.inter_phase_events.length > 0 ? (
-          <>
-            <div className="ae-phase">
-              <span className="pname">between phases</span>
-            </div>
-            {data.inter_phase_events.map((e) => aeRow(e))}
-          </>
-        ) : null}
-        {phases.map((phase) => (
-          <Fragment key={phase.phase_id}>
-            <div className="ae-phase">
-              <span className="pname">{phase.node_id}</span>
-              <span className="pdur">{phaseDuration(phase)}</span>
-              {phase.end === null ? <span className="pill">in-flight</span> : null}
-            </div>
-            {phase.events.length === 0 ? (
-              <div className="tl-empty">no operations</div>
-            ) : (
-              phase.events.map((e) => aeRow(e))
-            )}
-          </Fragment>
-        ))}
+        {feed}
       </div>
     );
   }
