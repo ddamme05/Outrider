@@ -63,7 +63,10 @@ from outrider.coordinates import (
 )
 from outrider.coordinates.errors import CoordinateErrorKind
 from outrider.policy.canonical import compute_phase_id
-from outrider.policy.publish_eligibility import is_eligible_for_v1_publish
+from outrider.policy.publish_eligibility import (
+    is_eligible_for_v1_publish,
+    is_hitl_gated_severity,
+)
 from outrider.schemas import (
     InlineComment,
     PublishDestination,
@@ -91,6 +94,17 @@ __all__ = ["publish"]
 # the same head_sha. Per Q6 + 4d sandbox verification, GitHub preserves
 # the body text verbatim under apiVersion 2026-03-10.
 _BODY_MARKER_TEMPLATE = "<!-- outrider-review-id:{review_id} -->"
+
+# Agent-readable marker template per ROADMAP.md section 3 / S1. Each marker is a
+# `<!-- outrider:KEY VALUE -->` HTML comment appended to inline-comment bodies so
+# AI coding agents can parse findings by ID + structured fields without
+# LLM-reading the prose. Values are deterministic, already-decided fields (never
+# model output, boundary #6); not model prose, so they bypass the display
+# sanitizer. Distinct prefix from _BODY_MARKER_TEMPLATE's review-body marker — and
+# these live on inline-comment bodies, a different GitHub surface, so they cannot
+# affect find_existing_review_on_head_sha's review-body startswith matcher. See
+# _build_agent_markers + specs/2026-06-06-agent-readable-markers.md.
+_AGENT_MARKER_TEMPLATE = "<!-- outrider:{key} {value} -->"
 
 
 async def publish(
@@ -829,7 +843,27 @@ async def _route_and_gate_one_finding(
         # construction is V1-minimal: severity + finding type + title
         # + description. The full sanitizer pipeline applies — caller
         # never sees raw model output.
-        body = _build_finding_comment_body(finding, effective_severity=effective_severity)
+        # S1 agent-readable markers (ROADMAP.md section 3): append a
+        # `<!-- outrider:KEY VALUE -->` block rendered from deterministic
+        # fields. hitl-gated keys on the BASELINE severity (the policy-assigned
+        # value the HITL gate actually fired on), NOT the post-override
+        # `finding.severity` — a baked-override finding (baseline CRITICAL →
+        # reviewer LOW: original_severity=CRITICAL, severity=LOW) WAS gated, so
+        # `hitl-gated true` must agree with the reviewer-* markers. Mirror of the
+        # baseline form in `_resolve_effective_severity` + `publish_eligibility`.
+        baseline_severity = (
+            finding.original_severity if finding.original_severity is not None else finding.severity
+        )
+        hitl_gated = is_hitl_gated_severity(baseline_severity) and state.hitl_request is not None
+        agent_markers = _build_agent_markers(
+            finding,
+            effective_severity=effective_severity,
+            hitl_gated=hitl_gated,
+            hitl_decision=state.hitl_decision,
+        )
+        body = _build_finding_comment_body(
+            finding, effective_severity=effective_severity, markers=agent_markers
+        )
         eligible_inline_comments.append(
             InlineComment.from_finding(
                 finding=finding,
@@ -997,8 +1031,99 @@ def _resolve_effective_severity(
     return baseline, None
 
 
+def _marker_safe(value: str) -> str:
+    """Make a free-string marker value safe to embed on a single
+    ``<!-- outrider:KEY VALUE -->`` line. Two structural risks, both neutralized:
+
+    1. A newline would let the value span into a FORGED authoritative marker line
+       — the block is ``"\\n".join(...)`` and agents parse it line-by-line — so
+       ``\\r`` / ``\\n`` collapse to a space.
+    2. ``<`` / ``>`` are HTML-escaped, so the value cannot contain a comment open
+       (``<!--``) or ANY comment close (``-->`` or the HTML5 ``--!>``). Escaping
+       the angle brackets is whack-a-mole-proof — no HTML-comment syntax survives
+       without a ``<`` or ``>``, so no early close and no nested/forged marker.
+
+    ``reviewer_id`` is the one free-string marker value (every other value is a
+    UUID / enum value / bare-semver / ISO timestamp / literal true|false — all
+    structurally angle-bracket- and newline-free). It is server-set to ``"admin"``
+    in V1, so this is a no-op today and a COMPLETE forward guard for per-user
+    identity (V2). Deterministic at the renderer — boundary #6, not caller trust."""
+    return value.replace("\r", " ").replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _build_agent_markers(
+    finding: ReviewFinding,
+    *,
+    effective_severity: FindingSeverity,
+    hitl_gated: bool,
+    hitl_decision: HITLDecision | None,
+) -> str:
+    """S1 agent-readable HTML-comment marker block (ROADMAP.md section 3).
+
+    Every value is a deterministic, already-decided field — never model output
+    (boundary #6). `severity` is the post-HITL-override `effective_severity`, the
+    same value the comment header and `PublishEligibilityEvent.severity` carry, so
+    an agent parsing the marker and a human reading the header always agree.
+    `policy-version` is the finding's captured snapshot (`DECISIONS.md#028`), not
+    the live `ACTIVE_POLICY_VERSION`.
+
+    Markers are identifiers / enum values / a semver / an ISO timestamp / the
+    server-set reviewer login ("admin" in V1) — NOT model prose — so they
+    intentionally bypass `sanitize_display_string`; routing them through it would
+    corrupt the `outrider:` grep contract. `reviewer_id` is the one free-string
+    value, so `_marker_safe` neutralizes any `-->` it could carry (a no-op for
+    V1's server-set "admin"); every other value is structurally `-->`-free.
+
+    Marker order matches the ROADMAP section 3 example (finding-id, finding-type,
+    severity, evidence-tier, policy-version, hitl-gated, reviewer-*, review-id).
+    The `outrider:agent-view-url` marker from the roadmap is deferred to S2 (the
+    REST /agent-view endpoint does not exist yet); a dead URL an agent might GET
+    is worse than its absence.
+    """
+    lines = [
+        _AGENT_MARKER_TEMPLATE.format(key="finding-id", value=finding.finding_id),
+        _AGENT_MARKER_TEMPLATE.format(key="finding-type", value=finding.finding_type.value),
+        _AGENT_MARKER_TEMPLATE.format(key="severity", value=effective_severity.value),
+        _AGENT_MARKER_TEMPLATE.format(key="evidence-tier", value=finding.evidence_tier.value),
+        _AGENT_MARKER_TEMPLATE.format(key="policy-version", value=finding.policy_version),
+        _AGENT_MARKER_TEMPLATE.format(key="hitl-gated", value="true" if hitl_gated else "false"),
+    ]
+    # reviewer-* markers only when a HITL decision exists for THIS finding. A
+    # non-gated (MEDIUM/LOW) finding has no human decision; hitl-gated=false is
+    # then the complete signal and the three reviewer markers are omitted.
+    decision = (
+        next(
+            (d for d in hitl_decision.decisions if d.finding_id == finding.finding_id),
+            None,
+        )
+        if hitl_decision is not None
+        else None
+    )
+    if decision is not None and hitl_decision is not None:
+        approved = decision.outcome in (
+            PerFindingOutcome.APPROVE,
+            PerFindingOutcome.SEVERITY_OVERRIDE,
+        )
+        lines.extend(
+            (
+                _AGENT_MARKER_TEMPLATE.format(
+                    key="reviewer-approved", value="true" if approved else "false"
+                ),
+                _AGENT_MARKER_TEMPLATE.format(
+                    key="reviewer-id", value=_marker_safe(hitl_decision.reviewer_id)
+                ),
+                _AGENT_MARKER_TEMPLATE.format(
+                    key="decided-at", value=hitl_decision.decided_at.isoformat()
+                ),
+            )
+        )
+    # review-id renders LAST, matching the ROADMAP section 3 example order.
+    lines.append(_AGENT_MARKER_TEMPLATE.format(key="review-id", value=finding.review_id))
+    return "\n".join(lines)
+
+
 def _build_finding_comment_body(
-    finding: ReviewFinding, *, effective_severity: FindingSeverity
+    finding: ReviewFinding, *, effective_severity: FindingSeverity, markers: str = ""
 ) -> str:
     """V1-minimal comment body. Full sanitizer pipeline applies.
 
@@ -1012,6 +1137,12 @@ def _build_finding_comment_body(
     runs it through `sanitize_display_string` + `apply_size_cap`. The
     sanitizer enforces the byte cap including the truncation marker
     and any fencing overhead the body composes.
+
+    When `markers` is non-empty (the S1 agent-marker block from
+    `_build_agent_markers`), the PROSE is size-capped reserving room for
+    `\n\n` + markers, then the block is appended UNCUT — an agent must be
+    able to parse every marker line intact, so the markers never enter
+    `apply_size_cap`'s truncation path.
     """
     # Local import to keep the module top-level clean and to avoid
     # pulling the sanitizer's HMAC-secret env-read at import time.
@@ -1027,7 +1158,11 @@ def _build_finding_comment_body(
         f"**{finding.finding_type.value}** — {title_sanitized}"
     )
     body = f"{header}\n\n{description_sanitized}"
-    return apply_size_cap(body)
+    if not markers:
+        return apply_size_cap(body)
+    suffix = f"\n\n{markers}"
+    capped_prose = apply_size_cap(body, reserve_bytes=len(suffix.encode("utf-8")))
+    return f"{capped_prose}{suffix}"
 
 
 # ---------------------------------------------------------------------------
