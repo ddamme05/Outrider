@@ -20,6 +20,23 @@ expand to a per-reviewer-id table; the Protocol seam is the existing
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Known placeholder values shipped in `.env.example` (and the usual suspects). A verbatim
+# `.env.example` copy would otherwise authenticate against a PUBLIC string — reject these
+# obvious non-secrets at startup so the operator must set a real value. Exact-match
+# (case-insensitive, stripped) so a real secret is never rejected by accident. Mirrored in
+# `github/config.py`; keep the two sets in sync.
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
+    {
+        "replace-me",
+        "replace-me-with-a-long-random-secret",
+        "change-me",
+        "changeme",
+        "secret",
+        "password",
+        "your-secret-here",
+    }
+)
+
 
 class DashboardSettings(BaseSettings):
     """Dashboard bearer-token credential.
@@ -49,12 +66,21 @@ class DashboardSettings(BaseSettings):
         value) would compare equal to the empty configured secret.
         """
         raw = v.get_secret_value()
-        if not raw.strip():
+        stripped = raw.strip()
+        if not stripped:
             msg = (
                 "OUTRIDER_ADMIN_API_KEY is empty or whitespace-only. "
                 "An empty admin key would admit empty `Bearer` headers "
                 "at the auth site (hmac.compare_digest of two empty "
                 "byte-strings is True). Set a non-empty secret."
+            )
+            raise ValueError(msg)
+        if stripped.lower() in _PLACEHOLDER_SECRETS:
+            msg = (
+                f"OUTRIDER_ADMIN_API_KEY is set to a known placeholder ({stripped!r}). A "
+                "verbatim .env.example copy would admit any client sending that public value "
+                'as a Bearer token. Set a real secret: python -c "import secrets; '
+                'print(secrets.token_urlsafe(32))".'
             )
             raise ValueError(msg)
         # Validation only — return v unchanged. Stripping the secret

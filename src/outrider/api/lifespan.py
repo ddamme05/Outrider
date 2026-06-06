@@ -649,7 +649,16 @@ def build_lifespan(
             app.state.audit_persister = persister
 
             sweep_task: asyncio.Task[None] | None = None
-            if os.environ.get("OUTRIDER_SWEEP_DISABLED") != "1":
+            # Accept the common truthy spellings — "1"/"true"/"yes" (any case) — so an
+            # operator who writes OUTRIDER_SWEEP_DISABLED=true doesn't silently keep the
+            # sweep running. (LANGSMITH_TRACING's literal-"true" parse is intentionally left
+            # as-is — it matches LangSmith's own convention.)
+            _sweep_disabled = os.environ.get("OUTRIDER_SWEEP_DISABLED", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if not _sweep_disabled:
                 from outrider.api.lifespan_sweep_loop import (  # noqa: PLC0415
                     start_periodic_sweep,
                 )
