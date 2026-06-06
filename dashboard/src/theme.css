@@ -2415,6 +2415,11 @@ table.policy tbody tr:hover {
   word-break: break-word;
   margin: 0;
   color: var(--text);
+  /* analyze-node prompts/completions (and finding evidence) can be 30–100 KB — cap the
+     render height and scroll the overflow so an expanded row can't blow out page height
+     or freeze the tab. */
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 /* ── Replay reconstruction page (ROADMAP feature 6 — "watch the reconstruction") ──────────── */
