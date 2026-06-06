@@ -191,6 +191,7 @@ def parse_analyze_response(
     degraded_context_byte_ranges: tuple[tuple[int, int], ...] = (),
     pass_index: int = 0,
     valid_trace_path_elements: frozenset[str] = frozenset(),
+    finish_reason: str = "unknown",
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -272,6 +273,23 @@ def parse_analyze_response(
         # findings were lost; this defense closes that coverage hole.
         raw = AnalyzeResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
     except ValidationError as e:
+        # When the provider reports `finish_reason == "max_tokens"`, the JSON is
+        # incomplete because the output was cut at the token limit — truncation
+        # is the root cause, not a malformed model response. Surface that
+        # directly instead of the opaque downstream ValidationError (which only
+        # shows where the truncated JSON happened to break). Still degrades to a
+        # `raw_response_unparseable` rejection (truncated JSON IS unparseable) so
+        # the review continues; the detail just names the real cause. The detail
+        # stays short to fit `FindingProposalRejectedEvent.rejection_detail`'s
+        # `max_length=500` when this rejection is lifted into the audit event.
+        if finish_reason == "max_tokens":
+            rejection_detail = (
+                "LLM response truncated at the max_tokens limit; output is "
+                "incomplete, so JSON validation failed. Raise max_tokens or "
+                "narrow the per-file analysis scope."
+            )
+        else:
+            rejection_detail = _format_validation_error_detail(e)
         return ParserResult(
             admitted_findings=(),
             trace_candidates=(),
@@ -280,7 +298,7 @@ def parse_analyze_response(
                 file_path=file_path,
                 response_hash=compute_response_hash(response_text),
                 rejection_reason="raw_response_unparseable",
-                rejection_detail=_format_validation_error_detail(e),
+                rejection_detail=rejection_detail,
             ),
             counters=ParserCounters(
                 n_proposals_seen=0,

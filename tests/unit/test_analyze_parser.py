@@ -292,6 +292,12 @@ def test_parse_analyze_response_signature() -> None:
         # fetched file's included_scope_units). Defaults to empty
         # frozenset for pass-0 calls.
         "valid_trace_path_elements",
+        # `finish_reason` added 2026-06-06 (FUP-153): the provider's
+        # LLMResponse.finish_reason, threaded so a max_tokens truncation
+        # produces a rejection_detail that names truncation as the root
+        # cause instead of the opaque downstream JSON ValidationError.
+        # Defaults to "unknown"; degradation behaviour is unchanged.
+        "finish_reason",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -361,6 +367,30 @@ def test_step0_malformed_json_returns_response_rejection() -> None:
     assert result.admitted_findings == ()
     assert result.trace_candidates == ()
     assert result.proposal_rejections == ()
+
+
+def test_step0_max_tokens_truncation_names_root_cause() -> None:
+    """A response truncated at the max_tokens limit still degrades to
+    `raw_response_unparseable` (the review continues — degradation is
+    unchanged), but `rejection_detail` names truncation as the root cause
+    instead of the opaque downstream JSON ValidationError (FUP-153)."""
+    result = _call_parser('{"findings": [', finish_reason="max_tokens")
+    assert result.response_rejection is not None
+    assert result.response_rejection.rejection_reason == "raw_response_unparseable"
+    detail = result.response_rejection.rejection_detail
+    assert "max_tokens" in detail
+    assert "truncated" in detail.lower()
+    # Stays within the audit event's rejection_detail max_length=500.
+    assert len(detail) <= 500
+
+
+def test_step0_non_truncation_keeps_validation_error_detail() -> None:
+    """The truncation message is max_tokens-specific: a normal finish_reason
+    leaves the detail as the formatted ValidationError, so a genuinely
+    malformed (not truncated) response is not mislabelled as truncated."""
+    result = _call_parser('{"findings": [', finish_reason="end_turn")
+    assert result.response_rejection is not None
+    assert "truncated at the max_tokens" not in result.response_rejection.rejection_detail
 
 
 def test_step0_valid_json_wrong_shape_returns_response_rejection() -> None:

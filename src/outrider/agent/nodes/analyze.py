@@ -1070,6 +1070,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         active_policy_version=active_policy_version,
         degraded_context_byte_ranges=degraded_context_byte_ranges,
         pass_index=pass_index,
+        finish_reason=response.finish_reason,
     )
 
     # Lift parser rejection payloads into audit events.
@@ -1363,6 +1364,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         active_policy_version=active_policy_version,
         pass_index=pass_index,
         valid_trace_path_elements=valid_trace_path_elements,
+        finish_reason=response.finish_reason,
     )
 
     for proposal_rej in parser_result.proposal_rejections:
