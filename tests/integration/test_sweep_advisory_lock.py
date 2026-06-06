@@ -98,6 +98,52 @@ async def test_concurrent_sweeps_serialize_via_advisory_lock(migrated_db: str) -
         await engine.dispose()
 
 
+async def test_concurrent_sweep_skips_despite_purgeable_data_present(
+    migrated_db: str,
+) -> None:
+    """Sweep-B returns {} via the lock even when purgeable data EXISTS.
+
+    Disambiguates the empty dict in the concurrent-sweep test above: there
+    both sweeps run against empty data, so sweep-B's {} could be a lock-skip
+    OR a no-data skip. Here an expired review is committed before either
+    transaction opens (so it is visible to sweep-B's separate connection
+    under READ COMMITTED), sweep-A purges it inside the uncommitted
+    transaction that holds the lock, and sweep-B still returns {} — proving
+    the empty dict is lock-based, not data-based.
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        await _seed_expired_review_for_tombstoned_install(engine)
+
+        async with engine.connect() as conn1, engine.connect() as conn2:
+            tx1 = await conn1.begin()
+            try:
+                # Sweep A acquires the lock and purges the seeded review
+                # (uncommitted in tx1; the xact lock is held until tx1 ends).
+                rows_a = await purge_expired(conn1, purge_role="sweep-A")
+                assert rows_a == {"reviews": 1}, (
+                    f"Sweep A should have purged the seeded expired review; got {rows_a}"
+                )
+
+                # Sweep B's transaction still SEES the expired review (tx1's
+                # delete is uncommitted under READ COMMITTED), yet cannot
+                # acquire the lock, so it short-circuits to {} without
+                # scanning — the empty dict is a lock-skip, not no-data.
+                tx2 = await conn2.begin()
+                try:
+                    rows_b = await purge_expired(conn2, purge_role="sweep-B")
+                    assert rows_b == {}, (
+                        "Sweep B must skip via the advisory lock even though a "
+                        f"purgeable expired review exists; got {rows_b}"
+                    )
+                finally:
+                    await tx2.rollback()
+            finally:
+                await tx1.rollback()
+    finally:
+        await engine.dispose()
+
+
 async def test_purge_installation_respects_advisory_lock(migrated_db: str) -> None:
     """purge_installation must also acquire SWEEP_LOCK_ID.
 
