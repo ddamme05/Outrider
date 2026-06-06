@@ -56,6 +56,7 @@ async def require_admin_api_key(request: Request) -> None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="unauthorized",
+            headers={"WWW-Authenticate": 'Bearer realm="outrider-admin"'},
         )
 
     auth_header = request.headers.get("Authorization")
@@ -63,6 +64,7 @@ async def require_admin_api_key(request: Request) -> None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="unauthorized",
+            headers={"WWW-Authenticate": 'Bearer realm="outrider-admin"'},
         )
 
     submitted = auth_header[len(_BEARER_PREFIX) :].encode("utf-8")
@@ -71,4 +73,5 @@ async def require_admin_api_key(request: Request) -> None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="unauthorized",
+            headers={"WWW-Authenticate": 'Bearer realm="outrider-admin"'},
         )

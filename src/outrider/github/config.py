@@ -34,6 +34,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["GitHubAppSettings"]
 
+# Known placeholder values shipped in `.env.example` (and the usual suspects). A verbatim
+# `.env.example` copy would otherwise authenticate UNSIGNED webhooks against a PUBLIC string —
+# reject these obvious non-secrets at startup. Exact-match (case-insensitive, stripped) so a
+# real secret is never rejected by accident. Mirrored in `api/dashboard/config.py`; keep in sync.
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
+    {
+        "replace-me",
+        "replace-me-with-a-long-random-secret",
+        "change-me",
+        "changeme",
+        "secret",
+        "password",
+        "your-secret-here",
+    }
+)
+
 
 class GitHubAppSettings(BaseSettings):
     """GitHub App identity + webhook secret, env-backed.
@@ -73,13 +89,22 @@ class GitHubAppSettings(BaseSettings):
         Mirrors the `DashboardSettings.admin_api_key` validator.
         """
         raw = v.get_secret_value()
-        if not raw.strip():
+        stripped = raw.strip()
+        if not stripped:
             msg = (
                 "OUTRIDER_GITHUB_* secret is empty or whitespace-only. "
                 "Set a non-empty value: empty webhook_secret admits "
                 "unsigned webhooks (hmac.compare_digest of two empty "
                 "byte-strings is True); empty app_private_key fails "
                 "at JWT-mint time with an opaque cryptography error."
+            )
+            raise ValueError(msg)
+        if stripped.lower() in _PLACEHOLDER_SECRETS:
+            msg = (
+                f"An OUTRIDER_GITHUB_* secret is set to a known placeholder ({stripped!r}). A "
+                "verbatim .env.example copy would authenticate unsigned webhooks against a "
+                'public value. Set a real secret: python -c "import secrets; '
+                'print(secrets.token_urlsafe(32))".'
             )
             raise ValueError(msg)
         # Validation only — return v unchanged. Stripping the secret
