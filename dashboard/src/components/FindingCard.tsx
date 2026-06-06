@@ -11,17 +11,20 @@ function loc(f: FindingView): string {
 }
 
 // publish_destination → tag variant + dot color (mockup .dest-inline/.dest-review/
-// .dest-dashboard). INLINE_COMMENT posts on the diff (info), REVIEW_BODY rides the
-// review summary (medium), DASHBOARD_ONLY never reaches GitHub (faint/dashed).
+// .dest-dashboard). inline_comment posts on the diff (info), review_body rides the
+// review summary (medium), dashboard_only never reaches GitHub (faint/dashed).
+// Keys are the LOWERCASE wire values the `PublishDestination` StrEnum serializes
+// (`inline_comment`/`review_body`/`dashboard_only`) — the API never sends uppercase;
+// the label is uppercased only for display (mockup shows INLINE_COMMENT).
 const DEST_CLASS: Record<string, string> = {
-  INLINE_COMMENT: "dest-inline",
-  REVIEW_BODY: "dest-review",
-  DASHBOARD_ONLY: "dest-dashboard",
+  inline_comment: "dest-inline",
+  review_body: "dest-review",
+  dashboard_only: "dest-dashboard",
 };
 const DEST_DOT: Record<string, string> = {
-  INLINE_COMMENT: "var(--sev-info)",
-  REVIEW_BODY: "var(--sev-medium)",
-  DASHBOARD_ONLY: "var(--sev-low)",
+  inline_comment: "var(--sev-info)",
+  review_body: "var(--sev-medium)",
+  dashboard_only: "var(--sev-low)",
 };
 
 // The proof box: tier-keyed, always visible (mockup .f-proof). OBSERVED shows the
@@ -108,7 +111,7 @@ export function FindingCard({
               aria-hidden="true"
               style={{ background: DEST_DOT[finding.publish_destination] ?? "var(--muted)" }}
             />
-            {finding.publish_destination}
+            {finding.publish_destination.toUpperCase()}
           </span>
         ) : null}
         <span className="ft-tag">

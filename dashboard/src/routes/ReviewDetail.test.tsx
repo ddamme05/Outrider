@@ -55,7 +55,9 @@ function finding(overrides: Record<string, unknown> = {}) {
     suggested_fix: "Use parameterized queries.",
     query_match_id: "sql_string_format.scm",
     trace_path: null,
-    publish_destination: "INLINE_COMMENT",
+    // The wire value is LOWERCASE (PublishDestination StrEnum) — the fixture must match the
+    // real API shape, not the uppercase display form (the bug the previous fixture masked).
+    publish_destination: "inline_comment",
     eligibility: "withheld",
     eligibility_reason: "hitl_required_node_absent",
     redaction_sweep_at: null,
@@ -173,7 +175,11 @@ test("renders a finding with severity pill, type, and destination", async () => 
   expect(await screen.findByText(/sql_injection/)).toBeInTheDocument();
   const sevPill = screen.getByText("high");
   expect(sevPill.className).toContain("sev-high");
-  expect(screen.getByText("INLINE_COMMENT")).toBeInTheDocument();
+  // Lowercase wire value "inline_comment" is uppercased for display AND drives the variant
+  // class off the lowercase key — regression guard for the uppercase-key bug that left the
+  // destination tag unstyled (colorless) despite valid data.
+  const dest = screen.getByText("INLINE_COMMENT");
+  expect(dest.className).toContain("dest-inline");
 });
 
 test("a finding with a HITL decision shows its override provenance", async () => {
