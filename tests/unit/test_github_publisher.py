@@ -21,11 +21,14 @@ This file pins:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from outrider.github.publisher import (
+    _REVIEWS_LIST_MAX_PAGES,
+    _REVIEWS_LIST_PER_PAGE,
     GitHubKitPublisher,
     GitHubPublishError,
     GitHubReviewValidationError,
@@ -397,6 +400,251 @@ def test_publish_event_sink_protocol_method_set_pinned() -> None:
 # ---------------------------------------------------------------------------
 # Body marker UUID shape pin
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# find_existing_review_on_head_sha — matcher-hardening (anti-forgery) tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeGitHubReview:
+    """Builder for a GitHub review dict matching the REST response shape."""
+
+    def __init__(
+        self,
+        *,
+        review_id: int,
+        body: str | None = None,
+        commit_id: str | None = None,
+        user_type: str | None = None,
+    ) -> None:
+        self._dict: dict[str, Any] = {"id": review_id}
+        if body is not None:
+            self._dict["body"] = body
+        if commit_id is not None:
+            self._dict["commit_id"] = commit_id
+        if user_type is not None:
+            self._dict["user"] = {"type": user_type}
+
+    def to_dict(self) -> dict[str, Any]:
+        return self._dict
+
+
+class _FakeGitHubPaginated:
+    """Stub `gh` client returning a fixed sequence of paginated pages.
+
+    `arequest` reads the `page` query param and returns that page's reviews
+    JSON-serialized via `response.text` — matching the real method's wire
+    contract (`json.loads(response.text)`).
+    """
+
+    def __init__(self, pages: list[list[dict[str, Any]]]) -> None:
+        self.pages = pages
+
+    async def arequest(self, *args: Any, **kwargs: Any) -> _FakeResponse:  # noqa: ARG002
+        page_num = kwargs.get("params", {}).get("page", 1)
+        if page_num < 1 or page_num > len(self.pages):
+            raise IndexError(f"page {page_num} out of range")
+        return _FakeResponse(status_code=200, text=json.dumps(self.pages[page_num - 1]))
+
+
+_FORGE_MARKER = "<!-- outrider-review-id:12345678-1234-1234-1234-123456789012 -->"
+_FORGE_SHA = "abc" * 13 + "deadbeef"
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_match_found_on_first_page(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """Marker-at-start + Bot author + matching commit_id → returns the id."""
+    match = _FakeGitHubReview(
+        review_id=999,
+        body=_FORGE_MARKER + "\n\nbody text",
+        commit_id=_FORGE_SHA,
+        user_type="Bot",
+    )
+    other = _FakeGitHubReview(
+        review_id=998, body="unrelated", commit_id=_FORGE_SHA, user_type="Bot"
+    )
+    gh = _FakeGitHubPaginated([[other.to_dict(), match.to_dict()]])  # type: ignore[arg-type]
+
+    result = await publisher.find_existing_review_on_head_sha(
+        gh=gh,
+        owner="o",
+        repo="r",
+        pull_number=42,
+        head_sha=_FORGE_SHA,
+        body_marker=_FORGE_MARKER,
+    )
+
+    assert result == 999
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_human_pasted_marker_rejected(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """Forgery defense: a human (`user.type == 'User'`) who pastes the marker
+    on the same head_sha does NOT match — only Bot-authored reviews count."""
+    forged = _FakeGitHubReview(
+        review_id=998,
+        body=_FORGE_MARKER + "\n\nhuman pasted the marker",
+        commit_id=_FORGE_SHA,
+        user_type="User",
+    )
+    gh = _FakeGitHubPaginated([[forged.to_dict()]])  # type: ignore[arg-type]
+
+    result = await publisher.find_existing_review_on_head_sha(
+        gh=gh,
+        owner="o",
+        repo="r",
+        pull_number=42,
+        head_sha=_FORGE_SHA,
+        body_marker=_FORGE_MARKER,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_different_commit_id_rejected(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """Marker + Bot but a different commit_id → no match (stale-sha guard)."""
+    stale = _FakeGitHubReview(
+        review_id=997,
+        body=_FORGE_MARKER + "\n\nfrom an earlier push",
+        commit_id="def" * 13 + "feedface",
+        user_type="Bot",
+    )
+    gh = _FakeGitHubPaginated([[stale.to_dict()]])  # type: ignore[arg-type]
+
+    result = await publisher.find_existing_review_on_head_sha(
+        gh=gh,
+        owner="o",
+        repo="r",
+        pull_number=42,
+        head_sha=_FORGE_SHA,
+        body_marker=_FORGE_MARKER,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_marker_mid_body_rejected(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """Forgery defense: marker embedded mid-body (not line-anchored at the
+    start) fails the `startswith` check even with Bot + matching commit."""
+    mid = _FakeGitHubReview(
+        review_id=996,
+        body="prose first\n" + _FORGE_MARKER + "\nmore",
+        commit_id=_FORGE_SHA,
+        user_type="Bot",
+    )
+    gh = _FakeGitHubPaginated([[mid.to_dict()]])  # type: ignore[arg-type]
+
+    result = await publisher.find_existing_review_on_head_sha(
+        gh=gh,
+        owner="o",
+        repo="r",
+        pull_number=42,
+        head_sha=_FORGE_SHA,
+        body_marker=_FORGE_MARKER,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_empty_page_terminates(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """An empty first page (shorter than per_page) terminates the walk → None."""
+    gh = _FakeGitHubPaginated([[]])  # type: ignore[arg-type]
+
+    result = await publisher.find_existing_review_on_head_sha(
+        gh=gh,
+        owner="o",
+        repo="r",
+        pull_number=42,
+        head_sha=_FORGE_SHA,
+        body_marker=_FORGE_MARKER,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_match_on_second_page(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """Pagination: a match on page 2 is found ONLY if page 1 is a full page.
+
+    The method terminates when `len(reviews) < _REVIEWS_LIST_PER_PAGE`, so
+    page 1 must carry exactly `_REVIEWS_LIST_PER_PAGE` non-matching reviews
+    for the walk to continue to page 2.
+    """
+    page1 = [
+        _FakeGitHubReview(
+            review_id=900 + i, body=f"review {i}", commit_id=_FORGE_SHA, user_type="Bot"
+        ).to_dict()
+        for i in range(_REVIEWS_LIST_PER_PAGE)
+    ]
+    page2 = [
+        _FakeGitHubReview(
+            review_id=1000,
+            body=_FORGE_MARKER + "\n\non page two",
+            commit_id=_FORGE_SHA,
+            user_type="Bot",
+        ).to_dict()
+    ]
+    gh = _FakeGitHubPaginated([page1, page2])  # type: ignore[arg-type]
+
+    result = await publisher.find_existing_review_on_head_sha(
+        gh=gh,
+        owner="o",
+        repo="r",
+        pull_number=42,
+        head_sha=_FORGE_SHA,
+        body_marker=_FORGE_MARKER,
+    )
+
+    assert result == 1000
+
+
+@pytest.mark.asyncio
+async def test_find_existing_review_page_cap_raises(
+    publisher: GitHubKitPublisher,
+) -> None:
+    """Walking past `_REVIEWS_LIST_MAX_PAGES` full pages without a match raises
+    `GitHubPublishError` rather than silently returning None."""
+    full_pages = [
+        [
+            _FakeGitHubReview(
+                review_id=p * _REVIEWS_LIST_PER_PAGE + i,
+                body=f"p{p} r{i}",
+                commit_id=_FORGE_SHA,
+                user_type="Bot",
+            ).to_dict()
+            for i in range(_REVIEWS_LIST_PER_PAGE)
+        ]
+        for p in range(_REVIEWS_LIST_MAX_PAGES + 1)
+    ]
+    gh = _FakeGitHubPaginated(full_pages)  # type: ignore[arg-type]
+
+    with pytest.raises(GitHubPublishError) as exc_info:
+        await publisher.find_existing_review_on_head_sha(
+            gh=gh,
+            owner="o",
+            repo="r",
+            pull_number=42,
+            head_sha=_FORGE_SHA,
+            body_marker=_FORGE_MARKER,
+        )
+
+    assert "_REVIEWS_LIST_MAX_PAGES" in str(exc_info.value)
 
 
 def test_body_marker_shape_pinned_to_uuid_format() -> None:
