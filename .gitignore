@@ -72,9 +72,9 @@ htmlcov/
 .uv_cache/
 
 # --- Node (dashboard frontend) ---
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
 
 # --- IDE ---
 .vscode/
