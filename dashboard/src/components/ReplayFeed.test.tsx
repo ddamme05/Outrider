@@ -205,6 +205,25 @@ test("clicking an llm_call row expands the prompt + completion", async () => {
   expect(screen.getByText("the completion text")).toBeInTheDocument();
 });
 
+test("llm content panel omits the prompt/completion labels when those fields are null", async () => {
+  const user = userEvent.setup();
+  const lev = llmEvent("e-llm", "analyze", 0.1);
+  render(
+    <ReplayFeed
+      data={data({
+        events: [lev],
+        phases: [phaseWith([lev])],
+        llm_exchanges: [llmContent("e-llm", { prompt: null, completion: null })],
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /llm_call/ }));
+  // No bare label over an empty <pre> — labels render only with content (the unbounded-<pre>
+  // fix's null guard; the <pre> height cap itself is CSS, not unit-observable in jsdom).
+  expect(screen.queryByText("prompt")).toBeNull();
+  expect(screen.queryByText("completion")).toBeNull();
+});
+
 test("a redacted finding shows the retention stub but keeps its proof line", async () => {
   const user = userEvent.setup();
   const fev = { ...findingEvent("e-p", "f-p"), evidence_tier: "observed", query_match_id: "sql.scm" };

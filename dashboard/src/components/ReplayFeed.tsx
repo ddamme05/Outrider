@@ -168,10 +168,21 @@ function LLMContentPanel({ content }: { content: LLMContent }) {
         <RedactedNote kind="llm" sweepAt={content.redaction_sweep_at} />
       ) : (
         <>
-          <div className="tl-c-label">prompt</div>
-          <pre className="tl-c-pre">{content.prompt}</pre>
-          <div className="tl-c-label">completion</div>
-          <pre className="tl-c-pre">{content.completion}</pre>
+          {/* render a label+block only when the field is present — an empty <pre> under a
+              "prompt"/"completion" label would imply absence-by-design rather than a null DB row
+              (matches the truthy guard FindingContentPanel uses for evidence). */}
+          {content.prompt ? (
+            <>
+              <div className="tl-c-label">prompt</div>
+              <pre className="tl-c-pre">{content.prompt}</pre>
+            </>
+          ) : null}
+          {content.completion ? (
+            <>
+              <div className="tl-c-label">completion</div>
+              <pre className="tl-c-pre">{content.completion}</pre>
+            </>
+          ) : null}
         </>
       )}
     </div>
