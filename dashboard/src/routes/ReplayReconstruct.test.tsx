@@ -159,6 +159,45 @@ test("under reduced motion the reconstruction renders instantly with the verdict
   expect(screen.getAllByText("llm_call")).toHaveLength(2);
 });
 
+test("verdict counts finding EVENTS, not the suppressed content array, on a non-equivalent timeline", async () => {
+  const findingEv = {
+    event_id: "f-ev",
+    review_id: "r1",
+    event_type: "finding",
+    timestamp: "2026-06-01T00:00:00Z",
+    sequence_number: 1,
+    is_eval: false,
+    finding_id: "f1",
+    finding_type: "sql_injection",
+    severity: "critical",
+    file_path: "src/app.py",
+    line_start: 10,
+    line_end: 20,
+    dimension: "security",
+    finding_content_hash: "a".repeat(64),
+    evidence_tier: "judged",
+    query_match_id: null,
+    trace_path: null,
+    policy_version: "1.0.0",
+    proposal_hash: "b".repeat(64),
+  };
+  // Non-equivalent verdict: the `findings` CONTENT array is suppressed to [] by the backend, but the
+  // FindingEvent still rides `events`. The verdict must report the real count (1), not a fabricated 0.
+  mount({
+    reduced: true,
+    timeline: timeline({
+      replay_equivalent: false,
+      phases: null,
+      reason: "drift",
+      events: [findingEv],
+      findings: [],
+      llm_exchanges: [],
+    }),
+  });
+  expect(await screen.findByText(/not replay-equivalent/)).toBeInTheDocument();
+  expect(screen.getByText(/1 events · 1 findings/)).toBeInTheDocument();
+});
+
 test("the speed multiplier offers 1×/2×/4×/8× and toggles the active one", async () => {
   const user = userEvent.setup();
   mount({ reduced: true });

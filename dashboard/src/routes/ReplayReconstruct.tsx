@@ -30,6 +30,14 @@ export function ReplayReconstruct() {
   const data = timeline.data;
   const d = detail.data;
   const total = useMemo(() => (data ? renderedEvents(data).length : 0), [data]);
+  // Count finding EVENTS off the permanent stream, not data.findings — the content array is
+  // suppressed to empty on a non-equivalent verdict (gated in reviews.py), so reading its length
+  // would fabricate "0 findings" for a divergent review that actually produced findings. The
+  // FindingEvents ride data.events in both cases (reviews.py builds events regardless of equivalence).
+  const findingCount = useMemo(
+    () => (data ? data.events.filter((e) => e.event_type === "finding").length : 0),
+    [data],
+  );
   const equivalent = Boolean(data?.replay_equivalent && data.phases !== null);
 
   const [shown, setShown] = useState(0);
@@ -172,7 +180,7 @@ export function ReplayReconstruct() {
                 <span>
                   <b>{equivalent ? "replay-equivalent" : "not replay-equivalent"}</b> ·{" "}
                   <span className="vmeta">
-                    {total} events · {data.findings.length} findings
+                    {total} events · {findingCount} findings
                     {data.mode ? ` · ${data.mode}` : ""}
                   </span>
                 </span>
