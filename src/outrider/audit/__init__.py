@@ -1,6 +1,14 @@
 """Audit event hierarchy + discriminated union per docs/spec.md §7.2.1 + §8.2.
 
-Re-exports the public symbols of the audit package. The emitter
+Re-exports the cross-boundary audit symbols other subsystems consume: the
+event hierarchy + the `AuditEvent` union, the persister + its error types, the
+replay reconstruction types, the node sinks, and `RetentionSettings`. This is
+NOT a full mirror of `events.py`'s `__all__` — the publish-node event details
+(`PublishAttemptEvent` / `PublishEligibilityEvent` + their
+`PublishAttemptOutcome` / `PublishEligibility` / `*Reason` enums and the
+`compute_publish_*` hashers) are imported directly from `audit/events.py` by
+the publish node and `policy/publish_eligibility.py`, so they are intentionally
+absent from this package surface. The emitter
 (`audit/emitter.py`, separate spec) constructs concrete events; replay
 (`audit/replay.py`) reconstructs them via `AuditEvent` and exposes
 `AuditReplayer` (re-exported below).
