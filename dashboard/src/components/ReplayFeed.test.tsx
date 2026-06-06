@@ -287,3 +287,51 @@ test("flat mode keeps expand-on-click content panels", async () => {
   await user.click(screen.getByRole("button", { name: /finding/ }));
   expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
 });
+
+test("flat mode renders inter-phase transitions inline in chronological order, not a top block", () => {
+  // A between-phase agent_transition (intake→triage) is phase-unbounded → it lands in
+  // inter_phase_events. It must render AFTER intake's row and BEFORE the triage divider — not
+  // dumped at the top out of order (the audit-of-record's append-only-order claim).
+  const e1 = llmEvent("e1", "intake", 0.1);
+  const trans: Record<string, unknown> = {
+    event_id: "t1",
+    review_id: "r1",
+    event_type: "agent_transition",
+    timestamp: "2026-06-01T00:00:02Z",
+    sequence_number: 3,
+    is_eval: false,
+    node_id: "intake",
+    from_node: "intake",
+    to_node: "triage",
+  };
+  const e2 = llmEvent("e2", "triage", 0.2);
+  const intake = {
+    phase_id: "p-intake",
+    node_id: "intake",
+    start: phaseMarker("intake", "start", "2026-06-01T00:00:00Z"),
+    end: phaseMarker("intake", "end", "2026-06-01T00:00:01Z"),
+    events: [e1],
+  };
+  const triage = {
+    phase_id: "p-triage",
+    node_id: "triage",
+    start: phaseMarker("triage", "start", "2026-06-01T00:00:03Z"),
+    end: phaseMarker("triage", "end", "2026-06-01T00:00:04Z"),
+    events: [e2],
+  };
+  render(
+    <ReplayFeed
+      data={data({
+        events: [intake.start, e1, intake.end, trans, triage.start, e2, triage.end],
+        phases: [intake, triage],
+        inter_phase_events: [trans],
+      })}
+      flat
+    />,
+  );
+  // Document-order walk of dividers + row type-chips: intake, e1, transition (inline), triage, e2.
+  const seq = Array.from(document.querySelectorAll(".ae-phase .pname, .ae .ae-type")).map(
+    (n) => n.textContent,
+  );
+  expect(seq).toEqual(["intake", "llm_call", "agent_transition", "triage", "llm_call"]);
+});
