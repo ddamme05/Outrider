@@ -131,8 +131,9 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_severity_policies_no_truncate ON severity_policies;")
     op.execute("DROP TRIGGER IF EXISTS trg_severity_policies_append_only ON severity_policies;")
     op.execute("DROP FUNCTION IF EXISTS outrider_severity_policies_append_only_guard();")
-    op.drop_constraint(
-        "ck_severity_policies_version_semver",
-        "severity_policies",
-        type_="check",
+    # IF EXISTS so a partial-failure downgrade retry doesn't raise on an already-dropped
+    # constraint — mirrors the upgrade()'s own DROP CONSTRAINT IF EXISTS idempotency.
+    op.execute(
+        "ALTER TABLE severity_policies "
+        "DROP CONSTRAINT IF EXISTS ck_severity_policies_version_semver;"
     )
