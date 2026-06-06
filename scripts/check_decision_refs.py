@@ -68,7 +68,13 @@ def non_code_spans(text: str) -> list[tuple[int, int]]:
                 in_fence = False
                 cursor = line_end + 1
 
-    if not in_fence and cursor < len(text):
+    if in_fence:
+        raise ValueError(
+            "Unclosed code fence: the document ends inside a ``` block, so every "
+            "cross-reference after the last opening fence would be silently skipped "
+            "(the bug this guards). Close the fence — the ``` marker count must be even."
+        )
+    if cursor < len(text):
         spans.append((cursor, len(text)))
 
     return spans
@@ -153,7 +159,11 @@ def main() -> int:
         help=f"Path to DECISIONS.md (default: {DECISIONS_PATH})",
     )
     args = parser.parse_args()
-    return check(args.file)
+    try:
+        return check(args.file)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

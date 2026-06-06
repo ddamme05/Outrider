@@ -116,7 +116,14 @@ def iter_non_code_spans(text: str) -> list[tuple[int, int]]:
                 cursor = line_end + 1  # skip past the closing fence line
         # else: normal line, no span boundary change
 
-    if not in_fence and cursor < len(text):
+    if in_fence:
+        raise ExtractorError(
+            "Unclosed code fence: the document ends inside a ``` block, so every "
+            "tag after the last opening fence would be silently dropped from "
+            "extraction (the bug this guards). Close the fence — the ``` marker "
+            "count must be even."
+        )
+    if cursor < len(text):
         spans.append((cursor, len(text)))
 
     return spans

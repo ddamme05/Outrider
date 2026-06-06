@@ -259,5 +259,13 @@ case(
     expect_code=0,
 )
 
+# --- Unclosed code fence fails loud (was: silent content drop) ---
+case(
+    "unclosed code fence at EOF fails loud",
+    spec="# Title\n\n## 1. Section\n\nprose\n\n```\nfile ends inside this fence block\n",
+    expect_code=1,
+    expect_stderr_contains="Unclosed code fence",
+)
+
 print("\ndone.")
 sys.exit(1 if _failures else 0)
