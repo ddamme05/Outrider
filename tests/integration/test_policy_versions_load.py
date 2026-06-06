@@ -126,23 +126,35 @@ async def test_load_malformed_severity_value_raises_shape_error(
         await engine.dispose()
 
 
-async def test_load_incomplete_policy_raises_shape_error(migrated_db: str) -> None:
-    """A policy with valid entries but missing FindingTypes raises PolicyVersionShapeError.
-
-    Inserts a policy that has 11 of 12 FindingType keys (every value is
-    valid; just one type is missing). The loader must refuse to return a
-    partial policy — silently returning it would let classification fall
-    through to lookup_severity's MEDIUM fallback for the missing type at
-    runtime, breaking severity-set-by-policy.
-
-    Closes Codex high-confidence audit finding on commit 9efb008.
-    """
-    # Build an 11-of-12 policy: drop UNUSED_IMPORT.
+def _incomplete_policy_json() -> str:
+    """The canonical v1.0.0 mapping minus UNUSED_IMPORT — 11 of the 12 current types."""
     canonical = dict(EXPECTED_V1_POLICY)
     del canonical[FindingType.UNUSED_IMPORT]
-    incomplete_json = (
-        "{" + ",".join(f'"{k.value}": "{v.value}"' for k, v in canonical.items()) + "}"
-    )
+    return "{" + ",".join(f'"{k.value}": "{v.value}"' for k, v in canonical.items()) + "}"
+
+
+async def test_active_version_incomplete_raises_shape_error(
+    migrated_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An incomplete ACTIVE policy raises PolicyVersionShapeError.
+
+    The completeness check (every current FindingType present) is scoped to the ACTIVE
+    version: a partial active policy would let classification fall through to
+    lookup_severity's MEDIUM fallback, breaking severity-set-by-policy. This is the
+    real bug the check guards — a FindingType added to the enum without seeding a
+    complete new active policy.
+
+    The genesis-seeded active row (1.0.0) is complete and append-only-protected, so we
+    point ACTIVE_POLICY_VERSION at a deliberately-incomplete row to exercise the branch.
+
+    Reframed from the prior `test_load_incomplete_policy_raises_shape_error` (which
+    asserted ANY incomplete version raised). The non-active case now LOADS — see
+    `test_historical_incomplete_policy_loads` — so replay survives enum growth
+    (severity-policy-versioned-for-replay; whole-repo review HIGH #3). Original closed
+    Codex high-confidence audit finding on commit 9efb008; that protection is preserved
+    here for the version that actually matters at classification time.
+    """
+    monkeypatch.setattr("outrider.policy.versions.ACTIVE_POLICY_VERSION", "9.9.2")
 
     engine = create_async_engine(migrated_db)
     try:
@@ -152,11 +164,43 @@ async def test_load_incomplete_policy_raises_shape_error(migrated_db: str) -> No
                     "INSERT INTO severity_policies (version, policy) "
                     "VALUES (:version, CAST(:policy AS jsonb))"
                 ),
-                {"version": "9.9.2", "policy": incomplete_json},
+                {"version": "9.9.2", "policy": _incomplete_policy_json()},
             )
 
         async with engine.connect() as conn:
             with pytest.raises(PolicyVersionShapeError, match="missing entries for"):
                 await load_policy_for_version("9.9.2", conn)
+    finally:
+        await engine.dispose()
+
+
+async def test_historical_incomplete_policy_loads(migrated_db: str) -> None:
+    """A HISTORICAL (non-active) version missing a current FindingType loads, no raise.
+
+    Simulates enum growth: a version seeded when the FindingType enum was smaller
+    legitimately lacks a type added in a later release. Re-checking it against the
+    CURRENT enum would raise and break replay of every pre-growth review — and the
+    replay path (`audit/replay.py`) + the dashboard policy browser both load historical
+    versions. So the completeness check is active-only; the historical row round-trips
+    its as-seeded mapping. (severity-policy-versioned-for-replay; whole-repo review HIGH #3.)
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO severity_policies (version, policy) "
+                    "VALUES (:version, CAST(:policy AS jsonb))"
+                ),
+                # NOT the active 1.0.0 — a historical version, intentionally incomplete.
+                {"version": "0.9.0", "policy": _incomplete_policy_json()},
+            )
+
+        async with engine.connect() as conn:
+            policy = await load_policy_for_version("0.9.0", conn)
+
+        assert FindingType.UNUSED_IMPORT not in policy  # the "missing" current type
+        assert len(policy) == len(EXPECTED_V1_POLICY) - 1
+        assert policy[FindingType.SQL_INJECTION] is FindingSeverity.CRITICAL
     finally:
         await engine.dispose()

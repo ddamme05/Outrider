@@ -8,9 +8,12 @@ table keyed by version string; this module exposes the loader.
 
 The loader returns a typed ``dict[FindingType, FindingSeverity]`` rather
 than a raw JSON dict — the type system enforces the policy shape at the
-load boundary, so a future migration that drifts from the FindingType
-enum (extra keys; missing required types) fails loud at replay rather
-than silently corrupting the classification chain.
+load boundary, so a row with a key/value that doesn't translate to a
+FindingType/FindingSeverity fails loud rather than silently corrupting
+classification. Completeness (every current FindingType present) is
+enforced for the ACTIVE version only; historical versions are exempt so
+replay survives later enum growth (``severity-policy-versioned-for-replay``).
+See ``load_policy_for_version`` for the active-vs-historical rationale.
 """
 
 import json
@@ -19,7 +22,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from outrider.policy.severity import FindingSeverity, FindingType
+from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity, FindingType
 
 
 class UnknownPolicyVersionError(LookupError):
@@ -105,24 +108,36 @@ async def load_policy_for_version(
             ) from exc
         typed_policy[finding_type] = severity
 
-    # Completeness check: every FindingType MUST have a severity assignment.
-    # A missing entry would silently fall through to the MEDIUM fallback in
-    # lookup_severity at classification time, breaking severity-set-by-policy
-    # for that finding type. The boundary is "policy is the source of
-    # severity"; an incomplete policy is not a source. Fail loud at load
-    # time rather than allow a partial policy to poison classification.
-    missing_types = set(FindingType) - set(typed_policy.keys())
-    if missing_types:
-        missing_values = sorted(t.value for t in missing_types)
-        raise PolicyVersionShapeError(
-            f"Policy for version {version!r} is missing entries for: "
-            f"{missing_values}. Every FindingType must have a severity "
-            "assignment for the policy to be admissible — otherwise "
-            "classification silently falls through to the MEDIUM fallback "
-            "for the missing types, breaking severity-set-by-policy. "
-            "If the gap is intentional (e.g., a future policy version "
-            "deprecates a FindingType), the right path is to deprecate "
-            "the enum value first, not to ship a partial policy row."
-        )
+    # Completeness check — ACTIVE version ONLY. The active policy must assign a
+    # severity to every CURRENT FindingType, or live classification silently falls
+    # through to lookup_severity's MEDIUM fallback (breaking severity-set-by-policy).
+    #
+    # Historical (non-active) versions are deliberately EXEMPT: a historical row is
+    # correct as of its seeding date, and a finding classified under it can only
+    # reference FindingTypes that existed then. If the enum GROWS later (a new type
+    # added in a future release + seeded as a new active version), the current enum
+    # would no longer match an older row's key set — and re-checking historical rows
+    # against the grown enum would raise on EVERY prior version, breaking
+    # `severity-policy-versioned-for-replay` (the replay path at
+    # `audit/replay.py::_policy_snapshots` and the dashboard policy browser both load
+    # historical versions). The active-version check still catches the real bug it
+    # was added for: a FindingType added to the enum without seeding a complete new
+    # active policy. (A historical key that is no longer a valid FindingType is a
+    # separate concern, still caught per-key above.)
+    if version == ACTIVE_POLICY_VERSION:
+        missing_types = set(FindingType) - set(typed_policy.keys())
+        if missing_types:
+            missing_values = sorted(t.value for t in missing_types)
+            raise PolicyVersionShapeError(
+                f"Active policy version {version!r} is missing entries for: "
+                f"{missing_values}. Every current FindingType must have a severity "
+                "assignment in the ACTIVE policy, or classification silently falls "
+                "through to the MEDIUM fallback for the missing types, breaking "
+                "severity-set-by-policy. This usually means a FindingType was added "
+                "to the enum without seeding a complete new policy version — add the "
+                "missing entries via a new severity_policies version migration "
+                "(never edit an existing version row; severity-policy-versioned-for-"
+                "replay forbids in-place changes)."
+            )
 
     return typed_policy
