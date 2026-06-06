@@ -174,23 +174,23 @@ async def test_purge_expired_skips_unexpired_rows(migrated_db: str) -> None:
 
 
 async def test_purge_expired_preserves_active_reviews_past_ttl(migrated_db: str) -> None:
-    """Reviews in 'running' or 'awaiting_approval' MUST survive the
-    time-based sweep even when retention_expires_at has passed.
+    """Reviews in 'running', 'awaiting_approval', or 'awaiting_approval_expired'
+    MUST survive the time-based sweep even when retention_expires_at has passed.
 
     Backs the status-filter introduced in commit da994e7 (data-integrity
     audit finding): a HITL-paused review left past TTL would otherwise
     be hard-deleted, breaking HITL resume. A 'running' review past TTL
-    would strand the LangGraph checkpoint.
+    would strand the LangGraph checkpoint. 'awaiting_approval_expired' is
+    the post-timeout REMEDIATION state — still decidable (spec.md: /decide
+    accepts expired reviews and publishes immediately); purging it would
+    close that human-decision path (whole-repo review fix).
 
-    Seeds two expired reviews:
-      - status='running' with retention_expires_at in the past
-      - status='awaiting_approval' with retention_expires_at in the past
-    Plus one expired 'completed' review as a positive control (must be
-    purged so the test fails if the filter accidentally protects all
-    reviews).
+    Seeds three expired active reviews ('running' / 'awaiting_approval' /
+    'awaiting_approval_expired') plus one expired 'completed' review as a
+    positive control (must be purged so the test fails if the filter
+    accidentally protects all reviews).
 
-    Expected: 1 review purged ('completed'); 2 reviews survive
-    ('running' + 'awaiting_approval'); 1 purge_audit row.
+    Expected: 1 review purged ('completed'); 3 reviews survive; 1 purge_audit row.
     """
     engine = create_async_engine(migrated_db)
     try:
@@ -209,6 +209,7 @@ async def test_purge_expired_preserves_active_reviews_past_ttl(migrated_db: str)
                 (1, "running"),
                 (2, "awaiting_approval"),
                 (3, "completed"),
+                (4, "awaiting_approval_expired"),
             ]:
                 await conn.execute(
                     text(
@@ -231,21 +232,22 @@ async def test_purge_expired_preserves_active_reviews_past_ttl(migrated_db: str)
         async with engine.begin() as conn:
             rows_per_table = await purge_expired(conn, purge_role="test")
 
-        # Only the 'completed' review purged; 'running' + 'awaiting_approval' survive.
+        # Only the 'completed' review purged; the three active states survive.
         assert rows_per_table == {"reviews": 1}, (
             f"Expected exactly 1 review purged (the 'completed' one); "
             f"got {rows_per_table}. The status filter is broken: either "
-            f"protecting too much (active filter wider than running + "
-            f"awaiting_approval) or protecting too little (active reviews "
-            f"being purged)."
+            f"protecting too much (active filter wider than the three resumable "
+            f"states) or too little (an active/resumable review being purged)."
         )
 
         async with engine.connect() as conn:
             surviving = await conn.execute(text("SELECT status FROM reviews ORDER BY pr_number"))
             statuses = [row[0] for row in surviving.fetchall()]
-            assert statuses == ["running", "awaiting_approval"], (
-                f"Expected running+awaiting_approval to survive; got {statuses}."
-            )
+            assert statuses == [
+                "running",
+                "awaiting_approval",
+                "awaiting_approval_expired",
+            ], f"Expected all three resumable states to survive; got {statuses}."
 
             # purge_audit side effect: one row for the `reviews` table per
             # sweep run that purged any rows. Pins the audit-write contract

@@ -55,17 +55,24 @@ _RETENTION_TABLES: Final[tuple[str, ...]] = (
     "reviews",
 )
 
-# Reviews in these statuses are NOT eligible for time-based purge even
-# if their `retention_expires_at` has passed: a 'running' review hasn't
-# completed (mid-graph; deleting it strands LangGraph checkpoints), and
-# an 'awaiting_approval' review is the HITL-paused state — purging
-# would prevent the human-decision resume path entirely. Operators who
-# need to force-delete stuck reviews can use a separate maintenance
-# action; the automated sweep MUST preserve active state. Child tables
-# (`llm_call_content`, `findings`) follow their own retention TTL
-# independently per `DECISIONS.md#012/#014` — purging content while a
-# parent review is still active is the documented retention semantics.
-_REVIEWS_ACTIVE_STATUSES: Final[tuple[str, ...]] = ("running", "awaiting_approval")
+# Reviews in these statuses are NOT eligible for time-based purge even if their
+# `retention_expires_at` has passed: a 'running' review hasn't completed (mid-graph;
+# deleting it strands LangGraph checkpoints); an 'awaiting_approval' review is the
+# HITL-paused state; and an 'awaiting_approval_expired' review is the post-timeout
+# REMEDIATION state — still decidable, NOT a dead end: per spec.md ("the remediation
+# path is explicit"), `POST /reviews/{id}/decide` accepts decisions on expired reviews
+# and publishes immediately, and the resume gate (`mark_running`) admits it. Purging
+# any of the three would silently close the human-decision path the HITL gate
+# (output boundary #6) guarantees. Operators who need to force-delete stuck reviews
+# can use a separate maintenance action; the automated sweep MUST preserve resumable
+# state. Child tables (`llm_call_content`, `findings`) follow their own retention TTL
+# independently per `DECISIONS.md#012/#014` — purging content while a parent review is
+# still active is the documented retention semantics.
+_REVIEWS_ACTIVE_STATUSES: Final[tuple[str, ...]] = (
+    "running",
+    "awaiting_approval",
+    "awaiting_approval_expired",
+)
 
 # Sentinel installation_id for time-based sweeps that aren't scoped to
 # a particular install. purge_audit.installation_id is a loose `bigint`
