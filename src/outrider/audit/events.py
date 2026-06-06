@@ -2109,7 +2109,9 @@ class AnalyzeCompletedEvent(AuditEventBase):
     here so a reader doesn't expect `sum(LLMCallEvent.cached_tokens) ==
     total_cache_read_tokens + total_cache_write_tokens`."""
     total_output_tokens: int = Field(ge=0)
-    total_cost_usd: float = Field(ge=0)
+    # le=100.0 matches SynthesizeCompletedEvent.total_cost_usd + ReviewMetrics.total_cost_usd —
+    # a float('inf') / JSONB-poisoning upper bound (real V1 reviews land well under $1).
+    total_cost_usd: float = Field(ge=0, le=100.0)
     pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
     analyze_model: str
