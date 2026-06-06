@@ -20,6 +20,7 @@ from outrider.schemas import (
     PerFindingDecision,
     PerFindingOutcome,
 )
+from outrider.schemas.hitl import HITL_MAX_GATED_FINDINGS
 
 
 def _build_request() -> HITLRequest:
@@ -46,6 +47,31 @@ def test_hitl_request_is_frozen() -> None:
     request = _build_request()
     with pytest.raises(ValidationError):
         request.findings_requiring_approval = []  # type: ignore[misc]
+
+
+def test_hitl_request_accepts_gated_findings_at_cap() -> None:
+    """findings_requiring_approval at exactly HITL_MAX_GATED_FINDINGS is accepted."""
+    now = datetime.now(UTC)
+    request = HITLRequest(
+        findings_requiring_approval=[uuid4() for _ in range(HITL_MAX_GATED_FINDINGS)],
+        auto_post_findings=(),
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    assert len(request.findings_requiring_approval) == HITL_MAX_GATED_FINDINGS
+
+
+def test_hitl_request_rejects_gated_findings_over_cap() -> None:
+    """One finding past the cap is rejected at construction (max_length guard),
+    so a pathological PR can't build an unbounded approval envelope."""
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError):
+        HITLRequest(
+            findings_requiring_approval=[uuid4() for _ in range(HITL_MAX_GATED_FINDINGS + 1)],
+            auto_post_findings=(),
+            created_at=now,
+            expires_at=now + timedelta(minutes=30),
+        )
 
 
 def test_hitl_decision_is_frozen() -> None:

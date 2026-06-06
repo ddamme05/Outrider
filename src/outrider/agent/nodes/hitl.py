@@ -72,7 +72,7 @@ from outrider.policy.canonical import (
     compute_phase_id,
 )
 from outrider.policy.publish_eligibility import is_hitl_gated_severity
-from outrider.schemas.hitl import HITLDecision, HITLRequest
+from outrider.schemas.hitl import HITL_MAX_GATED_FINDINGS, HITLDecision, HITLRequest
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -137,6 +137,18 @@ def _partition_findings(
             gated.add(finding.finding_id)
         else:
             autopost.add(finding.finding_id)
+    # Fail loud one step before HITLRequest construction (same bound as the
+    # schema's max_length): a gate with more than HITL_MAX_GATED_FINDINGS
+    # gated findings is unreviewable; refuse rather than ship a wall of
+    # findings to the dashboard. Clearer message than the schema's generic
+    # "tuple too long". See schemas/hitl.py HITL_MAX_GATED_FINDINGS.
+    if len(gated) > HITL_MAX_GATED_FINDINGS:
+        raise ValueError(
+            f"HITL gate exceeds the {HITL_MAX_GATED_FINDINGS}-finding cap: "
+            f"{len(gated)} findings require approval. A PR producing this many "
+            f"CRITICAL/HIGH findings is past the point a human reviewer can "
+            f"meaningfully approve per-finding; investigate before retrying."
+        )
     return tuple(sorted(gated)), tuple(sorted(autopost))
 
 

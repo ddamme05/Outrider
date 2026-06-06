@@ -29,7 +29,13 @@ from outrider.audit.events import (  # noqa: TC001  (used in test-double type an
 from outrider.policy import FindingSeverity
 from outrider.policy.canonical import compute_hitl_decision_content_hash
 from outrider.policy.publish_eligibility import is_hitl_gated_severity
-from outrider.schemas.hitl import HITLDecision, HITLRequest, PerFindingDecision, PerFindingOutcome
+from outrider.schemas.hitl import (
+    HITL_MAX_GATED_FINDINGS,
+    HITLDecision,
+    HITLRequest,
+    PerFindingDecision,
+    PerFindingOutcome,
+)
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -309,6 +315,43 @@ def test_partition_returns_sorted_tuples_for_determinism() -> None:
     assert autopost_1 == autopost_2
     # Sortedness: every adjacent pair is in order.
     assert list(gated_1) == sorted(gated_1)
+
+
+def test_partition_accepts_gated_findings_at_cap() -> None:
+    """Exactly HITL_MAX_GATED_FINDINGS gated findings partition without error."""
+    review_id = uuid4()
+    findings = [
+        _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+        for _ in range(HITL_MAX_GATED_FINDINGS)
+    ]
+    state = _make_state(
+        findings=findings,
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+    )
+
+    gated, autopost = _partition_findings(state)
+
+    assert len(gated) == HITL_MAX_GATED_FINDINGS
+    assert autopost == ()
+
+
+def test_partition_raises_over_gated_findings_cap() -> None:
+    """One finding past the cap fails loud at partition — before HITLRequest
+    construction would hit the schema's max_length — with a clearer message."""
+    review_id = uuid4()
+    findings = [
+        _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+        for _ in range(HITL_MAX_GATED_FINDINGS + 1)
+    ]
+    state = _make_state(
+        findings=findings,
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+    )
+
+    with pytest.raises(ValueError, match=r"exceeds the 256-finding cap"):
+        _partition_findings(state)
 
 
 def test_gated_severities_are_exactly_critical_and_high() -> None:

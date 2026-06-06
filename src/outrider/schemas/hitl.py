@@ -125,6 +125,16 @@ class PerFindingDecision(BaseModel):
         return self
 
 
+# Upper bound on how many findings a single HITL gate can hold for approval.
+# A pathological PR (thousands of CRITICAL/HIGH findings) would otherwise build
+# an unbounded approval request + audit envelope; the cap fails such a gate loud
+# at construction rather than shipping an unreviewable wall of findings to the
+# dashboard. The hitl node's `_partition_findings` enforces the same bound one
+# step earlier (clearer message) — both reference this constant so they can't
+# drift. 256 is comfortably above any realistic gated-finding count for one PR.
+HITL_MAX_GATED_FINDINGS = 256
+
+
 class HITLRequest(BaseModel):
     """Agent's gate envelope when it interrupts the graph for HITL approval.
 
@@ -135,7 +145,7 @@ class HITLRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    findings_requiring_approval: tuple[UUID, ...]
+    findings_requiring_approval: tuple[UUID, ...] = Field(max_length=HITL_MAX_GATED_FINDINGS)
     auto_post_findings: tuple[UUID, ...]
     created_at: AwareDatetime
     expires_at: AwareDatetime
