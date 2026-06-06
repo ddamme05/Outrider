@@ -7,9 +7,10 @@ privileged-role bypass, and `purge_audit` carries the same trigger as
 `audit_events` so the forensic trail of which content rows were purged
 on which `installation.deleted` event survives untouched.
 
-Three assertion concepts, six concrete cases:
+Four assertion concepts, eight concrete cases:
 
-  - Introspection: function + both triggers exist with expected names.
+  - Introspection: the guard function + all four triggers (two row-level
+    append-only + two statement-level no-truncate) exist with expected names.
     Overlaps deliberately with
     test_genesis_migration.py::test_genesis_upgrade_creates_full_schema —
     that test asserts the post-upgrade schema state at the introspection
@@ -20,6 +21,8 @@ Three assertion concepts, six concrete cases:
     fails the genesis test.
   - UPDATE raises on audit_events and on purge_audit.
   - DELETE raises on audit_events and on purge_audit.
+  - TRUNCATE raises on audit_events and on purge_audit (the statement-level
+    guard; row triggers don't fire for TRUNCATE — migration c22e2864d3d8).
 
 Uses ``migrated_db`` (not ``fresh_db``) — the test does not need to
 drive alembic itself, so it asks the fixture for a DB-at-head. This is
@@ -65,6 +68,21 @@ async def test_append_only_trigger_objects_exist(migrated_db: str) -> None:
                 )
             )
             assert purge_trigger.scalar_one() == "trg_purge_audit_append_only"
+
+            # Statement-level BEFORE TRUNCATE guards (migration c22e2864d3d8) — the
+            # companion the row-level triggers above can't provide (TRUNCATE skips them).
+            truncate_triggers = await conn.execute(
+                text(
+                    "SELECT tgname FROM pg_trigger "
+                    "WHERE tgname IN ('trg_audit_events_no_truncate', "
+                    "'trg_purge_audit_no_truncate') AND NOT tgisinternal "
+                    "ORDER BY tgname"
+                )
+            )
+            assert truncate_triggers.scalars().all() == [
+                "trg_audit_events_no_truncate",
+                "trg_purge_audit_no_truncate",
+            ]
     finally:
         await engine.dispose()
 
@@ -138,5 +156,36 @@ async def test_append_only_trigger_blocks_mutation(
         ):
             async with engine.begin() as conn:
                 await conn.execute(mutation_stmt, {"id": row_id})
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("table", ["audit_events", "purge_audit"])
+async def test_append_only_trigger_blocks_truncate(migrated_db: str, table: str) -> None:
+    """TRUNCATE ... CASCADE on an append-only table raises via the statement trigger.
+
+    Row-level triggers do NOT fire for TRUNCATE, so the row-level UPDATE/DELETE guard
+    above leaves a hole: a table-owner TRUNCATE would erase the entire audit log /
+    purge trail. The ``BEFORE TRUNCATE FOR EACH STATEMENT`` trigger (migration
+    ``c22e2864d3d8``) closes it, reusing the same ``outrider_audit_append_only_guard``
+    function — so ``TG_OP`` is ``TRUNCATE`` and the message keys on the same literal.
+
+    Why CASCADE: ``audit_events`` is referenced by foreign keys (findings /
+    llm_call_content), so a bare ``TRUNCATE audit_events`` raises Postgres's
+    feature-not-supported FK error (psycopg ``NotSupportedError``) BEFORE the trigger
+    even fires. CASCADE is precisely the path the FK can't stop — a determined
+    ``TRUNCATE audit_events CASCADE`` would otherwise wipe the log AND its referencing
+    rows — so it is the path the trigger uniquely guards. Exercising CASCADE proves the
+    trigger (not the incidental FK) is doing the protecting. No row insert is needed;
+    the statement trigger fires regardless of contents.
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        with pytest.raises(
+            ProgrammingError,
+            match=f"append-only table {table}: TRUNCATE not permitted",
+        ):
+            async with engine.begin() as conn:
+                await conn.execute(text(f"TRUNCATE {table} CASCADE"))  # noqa: S608
     finally:
         await engine.dispose()
