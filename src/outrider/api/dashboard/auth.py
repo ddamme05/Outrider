@@ -75,3 +75,42 @@ async def require_admin_api_key(request: Request) -> None:
             detail="unauthorized",
             headers={"WWW-Authenticate": 'Bearer realm="outrider-admin"'},
         )
+
+
+async def require_agent_api_key(request: Request) -> None:
+    """Validate `Authorization: Bearer <key>` against the lifespan-bound, OPTIONAL
+    agent key (feature 3 / S2). Read-only `/agent-view` scope ONLY.
+
+    SEPARATE scope from the admin key, with NO admin fallback: an agent must never
+    authenticate with the admin key (which can `POST /decide`), and the admin key
+    must not read this endpoint either — strict one-directional separation. Same
+    uniform-401 surface + `hmac.compare_digest`-on-bytes idiom as
+    `require_admin_api_key`. When `OUTRIDER_AGENT_API_KEY` is unset
+    (`app.state.agent_api_key is None`) the surface is DISABLED and every request
+    gets a uniform 401 — never a 500.
+    """
+    expected: SecretStr | None = getattr(request.app.state, "agent_api_key", None)
+    if expected is None:
+        # Agent surface not configured → disabled. Uniform 401 (not 500).
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+            headers={"WWW-Authenticate": 'Bearer realm="outrider-agent"'},
+        )
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header is None or not auth_header.startswith(_BEARER_PREFIX):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+            headers={"WWW-Authenticate": 'Bearer realm="outrider-agent"'},
+        )
+
+    submitted = auth_header[len(_BEARER_PREFIX) :].encode("utf-8")
+    expected_bytes = expected.get_secret_value().encode("utf-8")
+    if not hmac.compare_digest(submitted, expected_bytes):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+            headers={"WWW-Authenticate": 'Bearer realm="outrider-agent"'},
+        )

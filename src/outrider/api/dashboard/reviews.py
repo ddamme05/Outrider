@@ -802,24 +802,141 @@ async def _timeline_content(
     return finding_views, llm_views
 
 
+async def _assemble_finding_views(
+    session: AsyncSession,
+    *,
+    review_id: UUID,
+    installation_id: int,
+    review_is_eval: bool,
+) -> list[FindingView]:
+    """Assemble a review's findings from the permanent audit record + content rows.
+
+    Shared by `GET /{id}/findings` and the agent-view endpoint (`api/dashboard/
+    agent_view.py`). Surviving `findings` rows render as full findings; a
+    `FindingEvent` whose `findings` row was purged under retention renders as a
+    `content_redacted=True` stub from `FindingEvent` metadata (DECISIONS.md#014
+    point 3 — the audit trail outlives the content). Publish lifecycle
+    (`publish_destination` / `eligibility` / `eligibility_reason`, DECISIONS.md#023)
+    and HITL override-provenance (`hitl_decision`, DECISIONS.md#034) are joined from
+    the audit stream, never the (V1-null) `findings` columns, so they survive
+    content redaction. EVERY read is `is_eval`-scoped (FUP-130 read-side defense).
+    """
+    dest_by_fid = await _latest_publish_routing(session, review_id, review_is_eval)
+    elig_by_fid = await _latest_publish_eligibility(session, review_id, review_is_eval)
+    hitl_by_fid = await _hitl_decisions(session, review_id, review_is_eval)
+
+    def _lifecycle(fid: str) -> dict[str, Any]:
+        eligibility, reason = elig_by_fid.get(fid, (None, None))
+        return {
+            "publish_destination": dest_by_fid.get(fid),
+            "eligibility": eligibility,
+            "eligibility_reason": reason,
+            "hitl_decision": hitl_by_fid.get(fid),
+        }
+
+    # Surviving content rows -> full findings. Scoped by `is_eval` (FUP-130):
+    # leaking a finding's CONTENT across eval/production isolation is the worst
+    # case, so the read filters even though `emit_finding` enforces it write-side.
+    content_rows = (
+        (
+            await session.execute(
+                select(Finding).where(
+                    Finding.review_id == review_id,
+                    Finding.is_eval == review_is_eval,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    content_fids = {str(f.finding_id) for f in content_rows}
+    views = [
+        FindingView(
+            finding_id=f.finding_id,
+            finding_type=f.finding_type,
+            dimension=f.dimension,
+            severity=f.severity,
+            evidence_tier=f.evidence_tier,
+            file_path=f.file_path,
+            line_start=f.line_start,
+            line_end=f.line_end,
+            content_redacted=False,
+            title=f.title,
+            description=f.description,
+            evidence=f.evidence,
+            suggested_fix=f.suggested_fix,
+            query_match_id=f.query_match_id,
+            trace_path=f.trace_path,
+            redaction_sweep_at=None,
+            **_lifecycle(str(f.finding_id)),
+        )
+        for f in content_rows
+    ]
+
+    # Dangling FindingEvents (content row purged, event survives) ->
+    # retention-redacted stubs. Dedup by finding_id, keep latest.
+    event_payloads = (
+        (
+            await session.execute(
+                select(AuditEvent.payload)
+                .where(
+                    AuditEvent.review_id == review_id,
+                    AuditEvent.is_eval == review_is_eval,
+                    AuditEvent.event_type == "finding",
+                )
+                .order_by(AuditEvent.sequence_number.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    redacted_by_fid: dict[str, dict[str, Any]] = {
+        payload["finding_id"]: payload
+        for payload in event_payloads
+        if payload["finding_id"] not in content_fids
+    }
+    # Findings-retention-SWEEP date — the latest `target_table='findings'`
+    # purge_audit row matching EITHER the global TTL-sweep sentinel (the
+    # reachable "review survives" case) OR this review's installation. Best
+    # purge_audit can offer (per-table-per-sweep, not per-finding; FUP-129);
+    # shared by every redacted stub. None if no findings-purge sweep is recorded.
+    redaction_sweep_at = None
+    if redacted_by_fid:
+        redaction_sweep_at = await _latest_sweep_at(
+            session, "findings", (installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
+        )
+    views.extend(
+        FindingView(
+            finding_id=UUID(fid),
+            finding_type=meta["finding_type"],
+            dimension=meta["dimension"],
+            severity=meta["severity"],
+            evidence_tier=meta["evidence_tier"],
+            file_path=meta["file_path"],
+            line_start=meta["line_start"],
+            line_end=meta["line_end"],
+            content_redacted=True,
+            title=None,
+            description=None,
+            evidence=None,
+            suggested_fix=None,
+            query_match_id=meta.get("query_match_id"),
+            trace_path=meta.get("trace_path"),
+            redaction_sweep_at=redaction_sweep_at,
+            **_lifecycle(fid),
+        )
+        for fid, meta in redacted_by_fid.items()
+    )
+    views.sort(key=lambda v: (v.file_path, v.line_start, str(v.finding_id)))
+    return views
+
+
 @router.get("/{review_id}/findings", response_model=FindingsResponse)
 async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
-    """A review's findings, assembled from the permanent audit record.
-
-    404 if the review doesn't exist. Surviving `findings`-table rows render as
-    full findings; a `FindingEvent` whose `findings` row was purged under
-    retention renders as a `content_redacted=True` stub from `FindingEvent`
-    metadata (DECISIONS.md#014 point 3 — the audit trail outlives the content).
-    Each finding's publish lifecycle is joined from the audit stream:
-    `publish_destination` (`PublishRoutingEvent`) and `eligibility` /
-    `eligibility_reason` (`PublishEligibilityEvent`) — separate per
-    DECISIONS.md#023, so a routed finding can still show `withheld`. None of
-    these are read from the (V1-null) `findings.publish_destination` column.
-    HITL override-provenance (`hitl_decision`) is joined the same way from the
-    review's single `HITLDecisionEvent` (DECISIONS.md#034) — never the
-    (V1-null) `findings` override columns. Both lifecycle and override
-    provenance survive content redaction (stream-sourced), so a
-    `content_redacted` stub still carries them.
+    """A review's findings, assembled from the permanent audit record. 404 if the
+    review doesn't exist. The assembly — surviving content rows vs retention-
+    redacted stubs, publish lifecycle + HITL provenance from the audit stream, all
+    `is_eval`-scoped — lives in `_assemble_finding_views` (DECISIONS.md#014/#023/#034).
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -831,117 +948,12 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
         if review_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
         installation_id, review_is_eval = review_row
-
-        dest_by_fid = await _latest_publish_routing(session, review_id, review_is_eval)
-        elig_by_fid = await _latest_publish_eligibility(session, review_id, review_is_eval)
-        hitl_by_fid = await _hitl_decisions(session, review_id, review_is_eval)
-
-        def _lifecycle(fid: str) -> dict[str, Any]:
-            eligibility, reason = elig_by_fid.get(fid, (None, None))
-            return {
-                "publish_destination": dest_by_fid.get(fid),
-                "eligibility": eligibility,
-                "eligibility_reason": reason,
-                "hitl_decision": hitl_by_fid.get(fid),
-            }
-
-        # Surviving content rows -> full findings. Scoped by `is_eval` too
-        # (FUP-130 read-side defense): leaking a finding's CONTENT across
-        # eval/production isolation is the worst case, so the read filters even
-        # though `emit_finding` now also enforces the match write-side.
-        content_rows = (
-            (
-                await session.execute(
-                    select(Finding).where(
-                        Finding.review_id == review_id,
-                        Finding.is_eval == review_is_eval,
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        views = await _assemble_finding_views(
+            session,
+            review_id=review_id,
+            installation_id=installation_id,
+            review_is_eval=review_is_eval,
         )
-        content_fids = {str(f.finding_id) for f in content_rows}
-        views = [
-            FindingView(
-                finding_id=f.finding_id,
-                finding_type=f.finding_type,
-                dimension=f.dimension,
-                severity=f.severity,
-                evidence_tier=f.evidence_tier,
-                file_path=f.file_path,
-                line_start=f.line_start,
-                line_end=f.line_end,
-                content_redacted=False,
-                title=f.title,
-                description=f.description,
-                evidence=f.evidence,
-                suggested_fix=f.suggested_fix,
-                query_match_id=f.query_match_id,
-                trace_path=f.trace_path,
-                redaction_sweep_at=None,
-                **_lifecycle(str(f.finding_id)),
-            )
-            for f in content_rows
-        ]
-
-        # Dangling FindingEvents (content row purged, event survives) ->
-        # retention-redacted stubs. Dedup by finding_id, keep latest.
-        event_payloads = (
-            (
-                await session.execute(
-                    select(AuditEvent.payload)
-                    .where(
-                        AuditEvent.review_id == review_id,
-                        AuditEvent.is_eval == review_is_eval,
-                        AuditEvent.event_type == "finding",
-                    )
-                    .order_by(AuditEvent.sequence_number.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        redacted_by_fid: dict[str, dict[str, Any]] = {
-            payload["finding_id"]: payload
-            for payload in event_payloads
-            if payload["finding_id"] not in content_fids
-        }
-        # Findings-retention-SWEEP date — the latest `target_table='findings'`
-        # purge_audit row matching EITHER the global TTL-sweep sentinel (the
-        # reachable "review survives" case) OR this review's installation (the
-        # rarer installation-purge case). Best purge_audit can offer
-        # (per-table-per-sweep, not per-finding; FUP-129); shared by every
-        # redacted stub here. None if no findings-purge sweep is recorded.
-        redaction_sweep_at = None
-        if redacted_by_fid:
-            redaction_sweep_at = await _latest_sweep_at(
-                session, "findings", (installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
-            )
-        views.extend(
-            FindingView(
-                finding_id=UUID(fid),
-                finding_type=meta["finding_type"],
-                dimension=meta["dimension"],
-                severity=meta["severity"],
-                evidence_tier=meta["evidence_tier"],
-                file_path=meta["file_path"],
-                line_start=meta["line_start"],
-                line_end=meta["line_end"],
-                content_redacted=True,
-                title=None,
-                description=None,
-                evidence=None,
-                suggested_fix=None,
-                query_match_id=meta.get("query_match_id"),
-                trace_path=meta.get("trace_path"),
-                redaction_sweep_at=redaction_sweep_at,
-                **_lifecycle(fid),
-            )
-            for fid, meta in redacted_by_fid.items()
-        )
-
-        views.sort(key=lambda v: (v.file_path, v.line_start, str(v.finding_id)))
         return FindingsResponse(review_id=review_id, findings=views)
 
 

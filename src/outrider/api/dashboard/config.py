@@ -55,6 +55,13 @@ class DashboardSettings(BaseSettings):
 
     admin_api_key: SecretStr
 
+    # Optional read-only token for the agent-view endpoint (feature 3 / S2,
+    # `GET /reviews/{id}/agent-view`). SEPARATE scope from the admin key: agents
+    # must NEVER hold the admin key (it can `POST /decide`). `None` = the agent
+    # surface is disabled — `require_agent_api_key` returns a uniform 401 — so a
+    # deployment that doesn't expose `/agent-view` simply omits the env var.
+    agent_api_key: SecretStr | None = None
+
     @field_validator("admin_api_key", mode="after")
     @classmethod
     def _reject_empty_or_whitespace(cls, v: SecretStr) -> SecretStr:
@@ -88,4 +95,27 @@ class DashboardSettings(BaseSettings):
         # `api/dashboard/auth.py` uses `compare_digest` on the raw
         # bytes, so any rewrite here would silently desync from the
         # operator's configured value.
+        return v
+
+    @field_validator("agent_api_key", mode="after")
+    @classmethod
+    def _reject_empty_or_placeholder_agent_key(cls, v: SecretStr | None) -> SecretStr | None:
+        """Same guard as the admin key, but ONLY when set. `None` is valid (the
+        agent surface is simply disabled); a set-but-empty/whitespace/placeholder
+        key is a misconfiguration (an empty key would admit empty `Bearer`
+        headers at the `hmac.compare_digest` site) and fails loud at startup."""
+        if v is None:
+            return None
+        stripped = v.get_secret_value().strip()
+        if not stripped:
+            raise ValueError(
+                "OUTRIDER_AGENT_API_KEY is set but empty or whitespace-only. An empty agent "
+                "key would admit empty `Bearer` headers at the auth site. Unset it to disable "
+                "the agent surface, or set a non-empty secret."
+            )
+        if stripped.lower() in _PLACEHOLDER_SECRETS:
+            raise ValueError(
+                f"OUTRIDER_AGENT_API_KEY is a known placeholder ({stripped!r}); set a real "
+                'secret or unset it: python -c "import secrets; print(secrets.token_urlsafe(32))".'
+            )
         return v

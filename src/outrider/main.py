@@ -41,7 +41,13 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from outrider.api import lifespan
-from outrider.api.dashboard import hitl_router, metrics_router, policy_router, reviews_router
+from outrider.api.dashboard import (
+    agent_view_router,
+    hitl_router,
+    metrics_router,
+    policy_router,
+    reviews_router,
+)
 from outrider.api.webhooks.router import router as webhook_router
 
 app = FastAPI(
@@ -56,6 +62,9 @@ app.include_router(hitl_router)
 app.include_router(reviews_router)
 app.include_router(policy_router)
 app.include_router(metrics_router)
+# Feature 3 / S2: read-only agent-view endpoint on its own require_agent_api_key
+# router (separate scope from the admin-gated routers above).
+app.include_router(agent_view_router)
 
 
 @app.get("/health")
