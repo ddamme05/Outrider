@@ -17,7 +17,7 @@ expand to a per-reviewer-id table; the Protocol seam is the existing
 `require_admin_api_key` FastAPI dependency.
 """
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Known placeholder values shipped in `.env.example` (and the usual suspects). A verbatim
@@ -119,3 +119,24 @@ class DashboardSettings(BaseSettings):
                 'secret or unset it: python -c "import secrets; print(secrets.token_urlsafe(32))".'
             )
         return v
+
+    @model_validator(mode="after")
+    def _reject_admin_agent_key_collision(self) -> "DashboardSettings":
+        """When set, the agent key MUST differ from the admin key. Sharing one secret
+        collapses the read-only/admin scope separation `require_agent_api_key` promises:
+        the single secret satisfies BOTH gates, so an agent token could `POST /decide`.
+        Fail loud at startup rather than silently authenticating both surfaces with one
+        secret. Plain equality is fine — both operands are trusted operator config,
+        compared once at startup (no per-request timing surface to defend)."""
+        if (
+            self.agent_api_key is not None
+            and self.agent_api_key.get_secret_value() == self.admin_api_key.get_secret_value()
+        ):
+            msg = (
+                "OUTRIDER_AGENT_API_KEY must differ from OUTRIDER_ADMIN_API_KEY. Sharing one "
+                "secret defeats the read-only/admin scope separation: the agent token would also "
+                "authorize POST /reviews/{id}/decide. Set a distinct secret for the agent surface, "
+                "or unset it to disable /agent-view."
+            )
+            raise ValueError(msg)
+        return self

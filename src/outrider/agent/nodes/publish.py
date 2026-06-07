@@ -1093,9 +1093,10 @@ def _build_agent_markers(
 
     Marker order matches the ROADMAP section 3 example (finding-id, finding-type,
     severity, evidence-tier, policy-version, hitl-gated, reviewer-*, review-id).
-    The `outrider:agent-view-url` marker from the roadmap is deferred to S2 (the
-    REST /agent-view endpoint does not exist yet); a dead URL an agent might GET
-    is worse than its absence.
+    The `outrider:agent-view-url` marker from the roadmap is omitted: the REST
+    /agent-view endpoint exists, but emitting a usable link needs a configured
+    public base URL (FUP-155); a base-less URL an agent might GET is worse than
+    its absence.
     """
     lines = [
         _AGENT_MARKER_TEMPLATE.format(key="finding-id", value=finding.finding_id),
@@ -1174,8 +1175,8 @@ def _build_agent_prompt_block(
     untrusted context — never instructions (boundary #6: the model proposes, the
     human paste disposes). The scaffold (finding id / type / severity / evidence
     tier / policy version / location) is rendered from verified fields. No
-    `agent-view-url` until S2 ships the endpoint — a dead link is worse than its
-    absence.
+    `agent-view-url` until a public base URL is configured (FUP-155; the /agent-view
+    endpoint itself exists) — a dead link is worse than its absence.
     """
     from outrider.policy.output_sanitizer import (  # noqa: PLC0415
         GITHUB_COMMENT_BODY_MAX,
