@@ -91,7 +91,7 @@ async def agent_client(
     engine = create_async_engine(migrated_db, hide_parameters=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-    f_crit, f_med = uuid4(), uuid4()
+    f_crit, f_med, f_override = uuid4(), uuid4(), uuid4()
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -127,7 +127,9 @@ async def agent_client(
                             "iid": _INSTALLATION_ID,
                             "repo": _REPO_ID,
                             "pr": _PR_NUMBER,
-                            "hitl": json.dumps({"findings_requiring_approval": [str(f_crit)]}),
+                            "hitl": json.dumps(
+                                {"findings_requiring_approval": [str(f_crit), str(f_override)]}
+                            ),
                         },
                     )
                 ).scalar_one()
@@ -149,6 +151,16 @@ async def agent_client(
             policy_version=policy_version,
             finding_id=f_med,
             severity="medium",
+        )
+        # f_override: the Finding row stores the BASE/policy severity ("high"); the
+        # HITLDecisionEvent below carries the severity_override to "low". The endpoint
+        # must report the EFFECTIVE "low", not the stored "high".
+        await _insert_finding(
+            conn,
+            review_id=review_id,
+            policy_version=policy_version,
+            finding_id=f_override,
+            severity="high",
         )
         # A FindingEvent carrying policy_version (the per-review snapshot source,
         # DECISIONS.md#028) — deduped against f_crit's content row, so it does not
@@ -180,7 +192,14 @@ async def agent_client(
                         "reason": "operator-approved",
                         "original_severity": None,
                         "override_severity": None,
-                    }
+                    },
+                    {
+                        "finding_id": str(f_override),
+                        "outcome": "severity_override",
+                        "reason": "operator-downgraded",
+                        "original_severity": "high",
+                        "override_severity": "low",
+                    },
                 ],
             },
         )
@@ -192,7 +211,11 @@ async def agent_client(
     app.state.agent_api_key = SecretStr(_AGENT_KEY)
 
     try:
-        yield TestClient(app), {"review": review_id, "crit": f_crit, "med": f_med}, engine
+        yield (
+            TestClient(app),
+            {"review": review_id, "crit": f_crit, "med": f_med, "override": f_override},
+            engine,
+        )
     finally:
         await engine.dispose()
 
@@ -214,7 +237,7 @@ async def test_agent_view_full_shape(
     assert body["pr_url"] == f"https://github.com/{_REPO_FULL_NAME}/pull/{_PR_NUMBER}"
     assert body["status"] == "completed"
     assert body["policy_version"]  # a real version string
-    assert len(body["findings"]) == 2
+    assert len(body["findings"]) == 3
     assert body["publish_event"] == {
         "github_review_id": 4242,
         "review_status": "COMMENT",
@@ -261,11 +284,35 @@ async def test_agent_view_hitl_gated_and_decision(
         "reviewer_id": "admin",
         "reason": "operator-approved",
         "decided_at": "2026-06-06T19:10:24Z",
+        "original_severity": None,
+        "override_severity": None,
     }
 
     med = _finding(body, ids["med"])
     assert med["hitl_gated"] is False
     assert med["reviewer_decision"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_view_severity_override_reports_effective(
+    agent_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A `severity_override` decision: the agent reads the EFFECTIVE (overridden)
+    severity, NOT the stored policy baseline — matching the S1 `outrider:severity`
+    marker, with the policy value preserved as `original_severity`."""
+    client, ids, _ = agent_client
+    body = client.get(f"/api/reviews/{ids['review']}/agent-view", headers=_AGENT_AUTH).json()
+    ov = _finding(body, ids["override"])
+    assert ov["severity"] == "low"  # effective (override), NOT the seeded "high" baseline
+    assert ov["hitl_gated"] is True
+    assert ov["reviewer_decision"] == {
+        "outcome": "severity_override",
+        "reviewer_id": "admin",
+        "reason": "operator-downgraded",
+        "decided_at": "2026-06-06T19:10:24Z",
+        "original_severity": "high",
+        "override_severity": "low",
+    }
 
 
 @pytest.mark.asyncio
