@@ -1314,7 +1314,7 @@ def test_agent_prompt_block_neutralizes_untrusted_summary() -> None:
 
 
 def test_agent_prompt_block_omits_agent_view_url() -> None:
-    """No agent-view-url / link until S2 ships the endpoint."""
+    """No agent-view-url / link until a public base URL is configured (FUP-155)."""
     from outrider.agent.nodes.publish import _build_agent_prompt_block
 
     finding = _make_finding(severity=FindingSeverity.MEDIUM)

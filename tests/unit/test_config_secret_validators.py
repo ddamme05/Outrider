@@ -53,6 +53,37 @@ def test_dashboard_admin_key_accepts_a_real_secret() -> None:
 
 
 @pytest.mark.parametrize("bad", _BAD_SECRETS)
+def test_dashboard_agent_key_rejects_empty_and_placeholders(bad: str) -> None:
+    """The optional agent key, when SET, gets the same empty/placeholder reject as admin."""
+    with pytest.raises(ValidationError):
+        DashboardSettings(admin_api_key=SecretStr(_REAL_SECRET), agent_api_key=SecretStr(bad))
+
+
+def test_dashboard_agent_key_optional_when_unset() -> None:
+    """Unset agent key is valid — the /agent-view surface is simply disabled."""
+    settings = DashboardSettings(admin_api_key=SecretStr(_REAL_SECRET))
+    assert settings.agent_api_key is None
+
+
+def test_dashboard_rejects_equal_admin_and_agent_keys() -> None:
+    """Sharing one secret across both keys collapses the read-only/admin scope
+    separation (the agent token would also authorize POST /decide) → fail loud."""
+    with pytest.raises(ValidationError, match="must differ from OUTRIDER_ADMIN_API_KEY"):
+        DashboardSettings(
+            admin_api_key=SecretStr(_REAL_SECRET), agent_api_key=SecretStr(_REAL_SECRET)
+        )
+
+
+def test_dashboard_accepts_distinct_admin_and_agent_keys() -> None:
+    """Distinct secrets — the intended config — construct cleanly."""
+    settings = DashboardSettings(
+        admin_api_key=SecretStr(_REAL_SECRET),
+        agent_api_key=SecretStr(_REAL_SECRET + "-agent"),
+    )
+    assert settings.admin_api_key.get_secret_value() != settings.agent_api_key.get_secret_value()
+
+
+@pytest.mark.parametrize("bad", _BAD_SECRETS)
 def test_github_webhook_secret_rejects_empty_and_placeholders(bad: str) -> None:
     with pytest.raises(ValidationError):
         _github(webhook_secret=SecretStr(bad))
