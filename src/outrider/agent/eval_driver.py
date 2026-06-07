@@ -87,6 +87,7 @@ from outrider.schemas.publish import GitHubReviewCreated
 from outrider.schemas.review_state import ReviewState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from outrider.github import InstallationGitHubClient
@@ -312,6 +313,27 @@ class ResumedRunResult:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class CostProbe:
+    """Opt-in cost-measurement hook for `run_review` (zero-spend).
+
+    When attached, `_FixtureScriptedProvider` counts REAL prompt tokens via
+    `token_estimator(system_prompt + user_prompt)` instead of the fixed sentinel
+    (100/50), so a driven review's cost flows through the production pricing path
+    (`compute_cost_usd` + `LLMCallEvent` + the aggregate SUM) on real prompt sizes.
+    `output_tokens` models the response size (NOT measurable without a real
+    completion); `None` estimates it from the scripted response text. Each call's
+    metrics land in `.calls` for a per-node breakdown. Default OFF — eval
+    correctness runs keep the fixed sentinels (their assertions are over findings,
+    not cost). Cache tokens stay 0: V1 analyze does not drive a stable cache prefix
+    yet (caching lever unconsumed), so the measured baseline reflects today's code.
+    """
+
+    token_estimator: Callable[[str], int]
+    output_tokens: int | None = None
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+
 class _FixtureScriptedProvider:
     """Returns canned responses keyed by `(request.node_id, call-index)`.
 
@@ -325,10 +347,17 @@ class _FixtureScriptedProvider:
     calls than the fixture scripts, so a scenario fails with a clear cause.
     """
 
-    def __init__(self, responses: dict[str, list[str]], *, persister: LLMExchangePersister) -> None:
+    def __init__(
+        self,
+        responses: dict[str, list[str]],
+        *,
+        persister: LLMExchangePersister,
+        probe: CostProbe | None = None,
+    ) -> None:
         self._responses = responses
         self._counts: dict[str, int] = {}
         self._persister = persister
+        self._probe = probe
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.audit.events import LLMCallEvent
@@ -350,11 +379,26 @@ class _FixtureScriptedProvider:
                 f"this node). Add the response to the fixture's llm_responses."
             ) from exc
         self._counts[node] = idx + 1
+        # Token counts: fixed sentinels for correctness runs; REAL prompt-derived
+        # counts when a CostProbe is attached (zero-spend cost measurement). The
+        # graph has ALREADY rendered the real system+user prompts by this point, so
+        # the input count is grounded; output is modeled (no real completion).
+        if self._probe is not None:
+            input_tokens = self._probe.token_estimator(
+                f"{request.system_prompt}\n{request.user_prompt}"
+            )
+            output_tokens = (
+                self._probe.output_tokens
+                if self._probe.output_tokens is not None
+                else self._probe.token_estimator(text_out)
+            )
+        else:
+            input_tokens, output_tokens = 100, 50
         response = LLMResponse(
             text=text_out,
             model=request.model,
-            input_tokens=100,
-            output_tokens=50,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             cache_read_tokens=0,
             cache_write_tokens=0,
             finish_reason="end_turn",
@@ -386,6 +430,16 @@ class _FixtureScriptedProvider:
                 f"not in the pricing RATE_TABLE — the fixture provider mirrors the real "
                 f"provider's cost path. Use a priced model in the eval's ModelConfig."
             ) from exc
+        if self._probe is not None:
+            self._probe.calls.append(
+                {
+                    "node_id": request.node_id,
+                    "model": response.model,
+                    "input_tokens": response.input_tokens,
+                    "output_tokens": response.output_tokens,
+                    "cost_usd": float(cost),
+                }
+            )
         event = LLMCallEvent(
             review_id=request.review_id,
             timestamp=datetime.now(UTC),
@@ -710,7 +764,9 @@ def _build_eval_graph(
     )
 
 
-async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
+async def _drive(
+    fixture: EvalFixture, db_url: str, *, probe: CostProbe | None = None
+) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
     The is_eval integrity gate runs on BOTH the success and failure paths before
@@ -728,7 +784,7 @@ async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister)
+        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister, probe=probe)
         graph = _build_eval_graph(
             fixture=fixture,
             session_factory=session_factory,
@@ -780,18 +836,25 @@ async def _drive(fixture: EvalFixture, db_url: str) -> EvalRunResult:
         await engine.dispose()
 
 
-async def _arun_review(fixture: EvalFixture, base_url: str) -> EvalRunResult:
+async def _arun_review(
+    fixture: EvalFixture, base_url: str, *, probe: CostProbe | None = None
+) -> EvalRunResult:
     async with ephemeral_database(base_url=base_url) as db_url:
         await run_alembic_upgrade_head(db_url)
-        return await _drive(fixture, db_url)
+        return await _drive(fixture, db_url, probe=probe)
 
 
-def run_review(fixture_path: str | os.PathLike[str]) -> EvalRunResult:
+def run_review(
+    fixture_path: str | os.PathLike[str], *, probe: CostProbe | None = None
+) -> EvalRunResult:
     """Drive the real 7-node graph against a JSON PR fixture; return the result.
 
     Synchronous wrapper (the eval scenarios call it without `await`); the async
     graph runs inside `asyncio.run`. Fail-closed: requires `OUTRIDER_IS_EVAL=1`
     and a port-5433/"test" `TEST_DATABASE_URL` before any database work.
+
+    Pass a `CostProbe` to measure grounded cost-per-review on real prompt sizes
+    (zero Anthropic spend); default `None` keeps the fixed-sentinel token counts.
     """
     require_eval_mode()
     try:
@@ -806,7 +869,7 @@ def run_review(fixture_path: str | os.PathLike[str]) -> EvalRunResult:
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
 
-    return asyncio.run(_arun_review(fixture, base_url))
+    return asyncio.run(_arun_review(fixture, base_url, probe=probe))
 
 
 # ---------------------------------------------------------------------------
