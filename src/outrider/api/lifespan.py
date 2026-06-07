@@ -628,7 +628,13 @@ def build_lifespan(
                 DashboardSettings,
             )
 
-            app.state.admin_api_key = DashboardSettings().admin_api_key
+            _dashboard_settings = DashboardSettings()
+            app.state.admin_api_key = _dashboard_settings.admin_api_key
+            # Optional read-only agent token (feature 3 / S2). `None` when
+            # `OUTRIDER_AGENT_API_KEY` is unset → the agent-view surface is
+            # disabled (require_agent_api_key returns a uniform 401). Admin stays
+            # fail-loud above; the agent key tolerates absence.
+            app.state.agent_api_key = _dashboard_settings.agent_api_key
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
             # and start the periodic background task. Per
