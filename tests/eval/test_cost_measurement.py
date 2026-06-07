@@ -32,6 +32,7 @@ gross cost regression (or a broken cost path) fails CI.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from outrider.agent.eval_driver import CostProbe, run_review
@@ -77,10 +78,14 @@ def _measure_one(fixture: str) -> list[dict]:
     probe = CostProbe(token_estimator=_estimate_tokens)  # output=None -> from scripted text
     result = run_review(_FIXTURES / fixture, probe=probe)
     # Cross-check: the probe's per-call sum equals the review's aggregate snapshot.
+    # `total_cost_usd` is Optional (None until synthesize rolls it up); skip the
+    # check if absent. Use isclose, not a raw `< 1e-9`: both sums are over the same
+    # per-call floats but in different order (Python sum vs SQL SUM), so a relative
+    # tolerance is the robust comparison.
     probe_total = sum(c["cost_usd"] for c in probe.calls)
-    if result.review_metrics is not None:
+    if result.review_metrics is not None and result.review_metrics.total_cost_usd is not None:
         agg = result.review_metrics.total_cost_usd
-        assert abs(probe_total - agg) < 1e-9, (
+        assert math.isclose(probe_total, agg, rel_tol=1e-9, abs_tol=1e-12), (
             f"{fixture}: probe sum {probe_total} != aggregate {agg} — the measurement "
             "diverged from the production rollup path"
         )
@@ -97,6 +102,15 @@ def test_cost_per_review_measurement() -> None:
     for calls in runs.values():
         for c in calls:
             by_node.setdefault(c["node_id"], []).append(c)
+
+    # The composition (triage + analyze*N + synthesize) requires these nodes to have
+    # run. Assert loud HERE so a size-gated or mis-scripted fixture fails with a clear
+    # cause, not a downstream KeyError on `model_of["analyze"]` mid-report.
+    for required in ("triage", "analyze", "synthesize"):
+        assert required in by_node, (
+            f"no {required!r} LLM calls captured across {list(runs)} — the cost "
+            "composition needs fixtures that drive triage + analyze + synthesize"
+        )
 
     def avg(node: str, key: str) -> float:
         rows = by_node.get(node, [])
