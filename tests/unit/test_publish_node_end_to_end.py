@@ -916,7 +916,7 @@ async def test_publish_inline_comment_appends_agent_markers() -> None:
     """S1 wiring: a posted inline comment body carries the `outrider:*` marker
     block rendered from the finding's deterministic fields. A non-gated finding
     has no HITL decision, so hitl-gated=false and the reviewer markers + the
-    S2-deferred agent-view-url are absent."""
+    agent-view-url marker (deferred to FUP-155 — base-URL config) are absent."""
     finding = _make_finding(severity=FindingSeverity.MEDIUM)
     changed_file = _make_changed_file(path=finding.file_path)
     state = _make_state(findings=(finding,), changed_files=(changed_file,))
@@ -940,7 +940,7 @@ async def test_publish_inline_comment_appends_agent_markers() -> None:
     assert f"<!-- outrider:policy-version {finding.policy_version} -->" in body
     assert f"<!-- outrider:review-id {finding.review_id} -->" in body
     assert "<!-- outrider:hitl-gated false -->" in body
-    # non-gated → no human decision → reviewer markers omitted; S2 url deferred.
+    # non-gated → no human decision → reviewer markers omitted; agent-view-url deferred (FUP-155).
     assert "outrider:reviewer-id" not in body
     assert "outrider:reviewer-approved" not in body
     assert "outrider:decided-at" not in body
