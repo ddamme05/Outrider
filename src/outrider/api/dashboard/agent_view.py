@@ -42,7 +42,10 @@ if TYPE_CHECKING:
 class AgentReviewerDecision(BaseModel):
     """One finding's HITL decision, for an agent. Projected from the canonical
     HITLDecisionEvent (DECISIONS.md#034); `reviewer_id` is `"admin"` in V1
-    (DECISIONS.md#011). Present only when the finding was decided (gated + reached)."""
+    (DECISIONS.md#011). Present only when the finding was decided (gated + reached).
+    `original_severity` / `override_severity` are non-null ONLY when
+    `outcome == "severity_override"` (the policy value vs the reviewer's value); the
+    finding's `severity` already reflects the override, these carry the provenance."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -50,13 +53,18 @@ class AgentReviewerDecision(BaseModel):
     reviewer_id: str
     reason: str
     decided_at: AwareDatetime
+    original_severity: str | None
+    override_severity: str | None
 
 
 class AgentFindingView(BaseModel):
-    """One finding in the agent shape. `severity` / `evidence_tier` are the
-    already-decided values (never model output). `title` / `description` are `None`
-    on a retention-redacted stub. `github_comment_url` + `suggested_patch` are
-    omitted in V1 (not stored / feature-2)."""
+    """One finding in the agent shape. `severity` is the EFFECTIVE severity an agent
+    should act on — the post-HITL-override value (matching the S1 `outrider:severity`
+    marker); a `severity_override` decision swaps the policy value for the reviewer's,
+    and `reviewer_decision.original_severity` keeps the pre-override (policy) value.
+    `severity` / `evidence_tier` are policy/human-decided, never model output.
+    `title` / `description` are `None` on a retention-redacted stub.
+    `github_comment_url` + `suggested_patch` are omitted in V1 (not stored / feature-2)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -145,6 +153,13 @@ async def _latest_publish_event(
     ).scalar_one_or_none()
     if payload is None:
         return None
+    # Bracket-access (not `.get()`) is deliberate, here and in `_hitl_decided_at`:
+    # audit payloads are write-validated (Pydantic) + append-only, so these keys are
+    # present in all non-corrupt data. A malformed payload is corruption and SHOULD
+    # surface loudly (a 500), not be masked as a null field — the codebase's fail-loud /
+    # no-auto-coerce posture (see tests/eval is_eval gate). Same as the sibling dashboard
+    # reads (`reviews.py`). `_pr_url` returns None instead because a missing membership
+    # row is a NORMAL state (repo rename/removal), not corruption.
     return AgentPublishEvent(
         github_review_id=payload["github_review_id"],
         review_status=payload["review_status"],
@@ -184,19 +199,28 @@ def _to_agent_finding(
     """Map a `FindingView` (the shared assembly) to the agent shape. `hitl_gated` =
     the finding is in the persisted gated set; `reviewer_decision` is present only
     when the finding carries a HITL decision (gated + decided), with the event-level
-    `decided_at`."""
+    `decided_at`. `severity` is the EFFECTIVE value: a `severity_override` decision
+    swaps the policy value (kept as `reviewer_decision.original_severity`) for the
+    reviewer's — matching the S1 `outrider:severity` marker, so the two agent channels
+    agree. Both the policy and override values are human/policy-set, never model output."""
+    decision = fv.hitl_decision
+    effective_severity = fv.severity
     reviewer_decision = None
-    if fv.hitl_decision is not None and decided_at is not None:
+    if decision is not None and decided_at is not None:
+        if decision.outcome == "severity_override" and decision.override_severity is not None:
+            effective_severity = decision.override_severity
         reviewer_decision = AgentReviewerDecision(
-            outcome=fv.hitl_decision.outcome,
-            reviewer_id=fv.hitl_decision.reviewer_id,
-            reason=fv.hitl_decision.reason,
+            outcome=decision.outcome,
+            reviewer_id=decision.reviewer_id,
+            reason=decision.reason,
             decided_at=decided_at,
+            original_severity=decision.original_severity,
+            override_severity=decision.override_severity,
         )
     return AgentFindingView(
         finding_id=fv.finding_id,
         finding_type=fv.finding_type,
-        severity=fv.severity,
+        severity=effective_severity,
         file_path=fv.file_path,
         line_start=fv.line_start,
         line_end=fv.line_end,
