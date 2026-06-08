@@ -234,11 +234,23 @@ def _round_ended_at(started_at: datetime, started_mono: float) -> datetime:
     return started_at + timedelta(seconds=max(0.0, time.monotonic() - started_mono))
 
 
+def _model_for_tier(tier: ReviewTier, *, analyze_model: str, standard_analyze_model: str) -> str:
+    """The analyze model for a pass-0 file by its triage tier: STANDARD →
+    `standard_analyze_model` (the cost lever); everything else → `analyze_model`. Only
+    DEEP/STANDARD reach analyze (SKIM/SKIP are filtered upstream), and trace-fetched
+    files (pass 1) have no tier and call `analyze_model` directly. One place for the
+    choice keeps the call site literal-free (`model-strings-from-config-not-hardcoded`).
+    See `specs/2026-06-08-analyze-tiered-model-routing.md`.
+    """
+    return standard_analyze_model if tier is ReviewTier.STANDARD else analyze_model
+
+
 async def analyze(
     state: ReviewState,
     *,
     provider: LLMProvider,
     analyze_model: str,
+    standard_analyze_model: str,
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
@@ -341,6 +353,11 @@ async def analyze(
     # counters.
     n_trace_candidates_dropped_malformed = 0
     n_llm_calls = 0
+    # The STANDARD-tier model actually used this pass (an LLM call fired for at least
+    # one STANDARD-tier file), else None — lands on `AnalyzeCompletedEvent`.
+    # `analyze_model` (DEEP) is always recorded; the STANDARD model only when STANDARD
+    # routing fired this pass (`specs/2026-06-08-analyze-tiered-model-routing.md`).
+    standard_model_used: str | None = None
     total_input_tokens = 0
     total_output_tokens = 0
     total_cache_read_tokens = 0
@@ -377,6 +394,14 @@ async def analyze(
             if tier not in (ReviewTier.DEEP, ReviewTier.STANDARD):
                 continue
 
+            # Tier → model (the cost lever): STANDARD routes to standard_analyze_model,
+            # DEEP stays on analyze_model. Default-inert until the eval-gated flip.
+            model_for_file = _model_for_tier(
+                tier,
+                analyze_model=analyze_model,
+                standard_analyze_model=standard_analyze_model,
+            )
+
             # Step 3: per-file processing.
             file_outcome = await _process_one_file(
                 changed_file=changed_file,
@@ -384,7 +409,7 @@ async def analyze(
                 installation_id=state.pr_context.installation_id,
                 is_eval=state.is_eval,
                 provider=provider,
-                analyze_model=analyze_model,
+                analyze_model=model_for_file,
                 import_path_resolver=import_path_resolver,
                 file_examination_sink=file_examination_sink,
                 analyze_event_sink=analyze_event_sink,
@@ -397,6 +422,8 @@ async def analyze(
             if file_outcome.parser_result is not None:
                 # LLM call was made; parser ran.
                 n_llm_calls += 1
+                if tier is ReviewTier.STANDARD:
+                    standard_model_used = standard_analyze_model
                 n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
                 n_findings_emitted += file_outcome.parser_result.counters.n_findings_emitted
                 n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
@@ -629,6 +656,7 @@ async def analyze(
             pricing_version=PRICING_VERSION,
             policy_version=active_policy_version,
             analyze_model=analyze_model,
+            standard_analyze_model=standard_model_used,
         )
     )
 

@@ -16,9 +16,12 @@ What it grounds and what it models:
     (output bills at ~5x input, so it moves the number materially).
   - CACHING: 0 hits. V1 analyze does not drive a stable cache prefix yet (lever
     unconsumed), so this reflects today's code, not the cached projection.
-  - MODEL TIER: whatever the graph actually uses today (analyze -> Sonnet for every
-    file, regardless of tier — tier-based routing is not wired). So this is the
-    Sonnet-everywhere baseline the COST_ANALYSIS naive figure assumes.
+  - MODEL TIER: STANDARD-tier analyze routing is now WIRED
+    (specs/2026-06-08-analyze-tiered-model-routing.md), but `standard_analyze_model`
+    defaults to Sonnet — so analyze still runs Sonnet for every DEEP+STANDARD file
+    (the routing is INERT until the eval-gated flip to Haiku). So this is still the
+    Sonnet-everywhere baseline the COST_ANALYSIS naive figure assumes; the STANDARD ->
+    Haiku flip is the lever this probe is built to measure before/after.
 
 Run it explicitly (it spins an ephemeral DB per fixture, so it is slow):
 
@@ -169,7 +172,7 @@ def test_cost_per_review_measurement() -> None:
     print("-" * 78)
     print(f"Bands: naive ${_BAND_NAIVE} | defensible ${_BAND_DEFENSIBLE} | target ${_BAND_TARGET}")
     print("Caveats: input = bytes//3 UPPER bound; output modeled; caching unconsumed;")
-    print("         analyze = Sonnet for every file (tier routing not wired).")
+    print("         analyze = Sonnet for every file (STANDARD routing wired but default-inert).")
     print("=" * 78)
 
     # Sanity assertions (regression guard — loose, not a tight cost SLA).

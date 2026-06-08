@@ -66,6 +66,12 @@ class ModelConfig(BaseSettings):
     # active models are Opus 4.7, Sonnet 4.6, Haiku 4.5.
     triage_model: str = "claude-haiku-4-5"
     analyze_model: str = "claude-sonnet-4-6"
+    # See specs/2026-06-08-analyze-tiered-model-routing.md — the DEEP-tier model is
+    # `analyze_model`; STANDARD-tier files route here. Defaults to Sonnet so routing
+    # lands INERT (STANDARD == DEEP == Sonnet = today's behavior, no recall risk); the
+    # cost win is unlocked by an evidence-backed default flip to Haiku ONLY after the
+    # eval quality gate holds. Trace-fetched (no-tier) files stay on `analyze_model`.
+    standard_analyze_model: str = "claude-sonnet-4-6"
     synthesize_model: str = "claude-sonnet-4-6"
     trace_model: str = "claude-haiku-4-5"
     # See DECISIONS.md#040 — suggested-patch generation (synthesize) uses Haiku:
@@ -76,6 +82,7 @@ class ModelConfig(BaseSettings):
     @field_validator(
         "triage_model",
         "analyze_model",
+        "standard_analyze_model",
         "synthesize_model",
         "trace_model",
         "patch_model",

@@ -2115,6 +2115,18 @@ class AnalyzeCompletedEvent(AuditEventBase):
     pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
     analyze_model: str
+    """The DEEP-tier (and trace-fetched-file) model used this pass. Historically "the
+    analyze model"; NARROWED to DEEP-tier when tiered routing landed
+    (`specs/2026-06-08-analyze-tiered-model-routing.md`) — the STANDARD-tier model is
+    on `standard_analyze_model`."""
+    standard_analyze_model: str | None = None
+    """The STANDARD-tier model used this pass, or `None` when no STANDARD-tier file was
+    analyzed — routing inert (STANDARD == DEEP), a pass with no STANDARD files, or a
+    pass-1 trace round (trace-fetched files have no tier and stay on `analyze_model`).
+    Additive field; `None` on historical `AnalyzeCompletedEvent` payloads (none exist in
+    production yet — analyze hasn't shipped — so the default is a forward-compat hedge),
+    so persister / replay / dashboard readers tolerate its absence.
+    `specs/2026-06-08-analyze-tiered-model-routing.md`."""
 
     @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
