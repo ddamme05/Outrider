@@ -15,12 +15,15 @@ Five concerns this module owns:
    or terminal-rendering attacks; we strip rather than escape because
    GitHub's markdown renderer doesn't honor an escape syntax for them.
 
-2. **Fence neutralization for fenced content** (`evidence`,
-   `suggested_fix` and similar code-quoting fields) — the outer fence
-   is ALWAYS backticks for deterministic shape; the fence count is
+2. **Fence neutralization for fenced content** (`evidence` and
+   similar code-quoting fields) — the outer fence is ALWAYS backticks
+   for deterministic shape; the fence count is
    `max(longest_backtick_run_in_content, 2) + 1` so the content never
    breaks out. Computed AFTER truncation so the marker can't push the
-   inner content past the fence boundary.
+   inner content past the fence boundary. (`suggested_fix` is the
+   exception — it renders into a FIXED GitHub ```suggestion fence that
+   cannot be neutralized without killing the Apply button, so it is
+   REJECTED-not-transformed via `is_safe_suggestion_replacement`.)
 
 3. **Markdown-semantic neutralization for prose content** (`title`,
    `description` and similar narrative fields) — escape `@`, `#`, `!`,
@@ -220,9 +223,10 @@ def strip_fake_truncation_markers(text: str) -> str:
 def sanitize_display_string(text: str) -> str:
     """Strip codepoints, escape markdown semantics, return prose-safe text.
 
-    For PROSE fields (`title`, `description`). Code-quoting fields
-    (`evidence`, `suggested_fix`) use `render_fenced_block(text)`
-    instead, which fence-wraps rather than escapes.
+    For PROSE fields (`title`, `description`). The code-quoting field
+    `evidence` uses `render_fenced_block(text)` instead, which fence-wraps
+    rather than escapes; `suggested_fix` uses `is_safe_suggestion_replacement`
+    (reject-not-transform) + a fixed GitHub ```suggestion fence.
 
     Pipeline:
       1. Strip fake truncation markers (attacker-prepended).
