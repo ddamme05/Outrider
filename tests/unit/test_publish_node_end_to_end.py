@@ -1402,3 +1402,237 @@ def test_comment_body_total_within_cap_with_prompt_and_markers() -> None:
     assert len(body.encode("utf-8")) <= GITHUB_COMMENT_BODY_MAX
     assert body.endswith(markers), "marker block must survive intact at the very end"
     assert agent_prompt in body, "the agent-prompt fold must survive intact"
+
+
+# ---------------------------------------------------------------------------
+# Feature-2: GitHub ```suggestion block rendered from `suggested_fix`
+# (DECISIONS.md#040). Generation gates severity in synthesize; PUBLISH render is
+# severity-agnostic — it keys purely on routing (INLINE_COMMENT) + content
+# (suggested_fix present, no backtick). These tests lock the read-only,
+# render-after-routing contract.
+# ---------------------------------------------------------------------------
+
+_SUGGESTION = "    return sanitize(user_input)"
+
+
+def test_render_suggestion_block_wraps_in_suggestion_fence() -> None:
+    """A non-empty backtick-free `suggested_fix` renders as a fixed three-backtick
+    ```suggestion block — the literal token GitHub keys the Apply button on."""
+    from outrider.agent.nodes.publish import _render_suggestion_block
+
+    assert _render_suggestion_block(_SUGGESTION) == f"```suggestion\n{_SUGGESTION}\n```"
+
+
+def test_render_suggestion_block_suppresses_backtick_bearing_fix() -> None:
+    """A `suggested_fix` containing a backtick renders to "" — the fixed fence can't
+    be widened the way render_fenced_block widens plain fences (GitHub keys on the
+    literal ```suggestion token), so a backtick would break out. Second, independent
+    backtick gate behind the patch-generation parser's own reject."""
+    from outrider.agent.nodes.publish import _render_suggestion_block
+
+    assert _render_suggestion_block("x = `evil`") == ""
+    assert _render_suggestion_block("```") == ""
+
+
+def test_render_suggestion_block_suppresses_absent_and_empty_fix() -> None:
+    """No fix (None) and an empty fix both render to "" — nothing to suggest."""
+    from outrider.agent.nodes.publish import _render_suggestion_block
+
+    assert _render_suggestion_block(None) == ""
+    assert _render_suggestion_block("") == ""
+
+
+def test_comment_body_places_suggestion_before_agent_prompt_and_markers() -> None:
+    """The suggestion is the FIRST tail block — human-visible, right after the prose,
+    BEFORE the agent-prompt fold and the (invisible) marker block."""
+    from outrider.agent.nodes.publish import (
+        _build_agent_markers,
+        _build_agent_prompt_block,
+        _build_finding_comment_body,
+        _render_suggestion_block,
+    )
+
+    finding = _make_finding(severity=FindingSeverity.MEDIUM)
+    suggestion = _render_suggestion_block(_SUGGESTION)
+    agent_prompt = _build_agent_prompt_block(finding, effective_severity=FindingSeverity.MEDIUM)
+    markers = _build_agent_markers(
+        finding, effective_severity=FindingSeverity.MEDIUM, hitl_gated=False, hitl_decision=None
+    )
+    body = _build_finding_comment_body(
+        finding,
+        effective_severity=FindingSeverity.MEDIUM,
+        suggestion=suggestion,
+        agent_prompt=agent_prompt,
+        markers=markers,
+    )
+    assert "```suggestion" in body
+    assert body.index(suggestion) < body.index("<summary>Prompt for AI agents")
+    assert body.index(suggestion) < body.index("<!-- outrider:finding-id")
+
+
+def test_comment_body_keeps_suggestion_intact_under_byte_cap() -> None:
+    """A near-cap description truncates the PROSE; the suggestion (reserved tail)
+    survives uncut, so truncation can never sever the ```suggestion fence."""
+    from outrider.agent.nodes.publish import (
+        _build_finding_comment_body,
+        _render_suggestion_block,
+    )
+    from outrider.policy.output_sanitizer import GITHUB_COMMENT_BODY_MAX
+
+    finding = _make_finding(severity=FindingSeverity.MEDIUM)
+    finding = finding.model_copy(update={"description": "x" * (GITHUB_COMMENT_BODY_MAX + 5_000)})
+    suggestion = _render_suggestion_block(_SUGGESTION)
+    body = _build_finding_comment_body(
+        finding, effective_severity=FindingSeverity.MEDIUM, suggestion=suggestion
+    )
+    assert len(body.encode("utf-8")) <= GITHUB_COMMENT_BODY_MAX
+    assert suggestion in body, "the suggestion block must survive intact under the byte cap"
+    assert "[truncated" in body, "the prose (not the suggestion) is what got truncated"
+
+
+async def test_publish_inline_comment_includes_suggestion_block() -> None:
+    """Wiring: an INLINE_COMMENT + ELIGIBLE finding carrying a `suggested_fix` posts a
+    comment whose body contains the ```suggestion block before the agent markers."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    finding = finding.model_copy(update={"suggested_fix": _SUGGESTION})
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+
+    publisher = _StubPublisher()
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert len(publisher.create_calls) == 1
+    body = publisher.create_calls[0]["comments"][0].body
+    assert f"```suggestion\n{_SUGGESTION}\n```" in body
+    # Human-visible suggestion sits before the invisible marker block.
+    assert body.index("```suggestion") < body.index("<!-- outrider:finding-id")
+
+
+async def test_publish_inline_comment_no_block_when_no_suggested_fix() -> None:
+    """A finding WITHOUT a `suggested_fix` posts a comment with no suggestion block —
+    the render is purely opt-in on stored content."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    assert finding.suggested_fix is None  # default
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+
+    publisher = _StubPublisher()
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    body = publisher.create_calls[0]["comments"][0].body
+    assert "```suggestion" not in body
+
+
+async def test_publish_dashboard_only_finding_with_patch_renders_no_suggestion() -> None:
+    """Locks the 'generate before routing, render after routing' contract: a finding
+    that carries a `suggested_fix` but routes DASHBOARD_ONLY (non-diffed file) never
+    enters the inline-comment branch, so its patch reaches no posted comment. A
+    sibling INLINE finding (no patch) forces an actual create_review POST so we can
+    inspect that NO posted comment carries a ```suggestion block."""
+    inline_finding = _make_finding(
+        severity=FindingSeverity.MEDIUM, file_path="src/foo.py", line_start=2, line_end=2
+    )
+    dashboard_finding = _make_finding(
+        severity=FindingSeverity.MEDIUM,
+        file_path="src/other.py",  # NOT in changed_files → DASHBOARD_ONLY registry-miss
+        line_start=1,
+        line_end=1,
+    )
+    # Distinct proposal_hash: AnalysisRound rejects duplicates (DECISIONS.md#025 pt 4).
+    dashboard_finding = dashboard_finding.model_copy(
+        update={"suggested_fix": "LEAKED = patch", "proposal_hash": "b" * 64}
+    )
+    changed_file = _make_changed_file(path="src/foo.py")
+    state = _make_state(findings=(inline_finding, dashboard_finding), changed_files=(changed_file,))
+
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher()
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    # The dashboard finding routed away from inline; the inline finding forced a POST.
+    routing_by_id = {r.finding_id: r.destination for r in publish_sink.routing}
+    assert routing_by_id[dashboard_finding.finding_id] is PublishDestination.DASHBOARD_ONLY
+    assert routing_by_id[inline_finding.finding_id] is PublishDestination.INLINE_COMMENT
+    assert len(publisher.create_calls) == 1
+    # No posted comment carries a suggestion: the inline finding has no patch, and the
+    # dashboard finding's patch never rendered (it never reached the inline branch).
+    posted_bodies = [c.body for c in publisher.create_calls[0]["comments"]]
+    assert all("```suggestion" not in b for b in posted_bodies)
+    assert all("LEAKED" not in b for b in posted_bodies)
+    # Read-only: the dashboard finding's stored patch is untouched by the route decision.
+    assert dashboard_finding.suggested_fix == "LEAKED = patch"
+
+
+async def test_publish_withheld_high_finding_withholds_suggestion() -> None:
+    """HITL withholding withholds the whole inline comment — and with it the
+    suggestion. A HIGH finding carrying a `suggested_fix`, with NO HITL approval, is
+    withheld at the gate; the publisher is never called, so the patch never reaches
+    GitHub. (The whole-comment withholding is the mechanism; this pins it explicitly.)"""
+    finding = _make_finding(severity=FindingSeverity.HIGH, line_start=2, line_end=2)
+    finding = finding.model_copy(update={"suggested_fix": _SUGGESTION})
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher()
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert publish_sink.eligibility[0].eligibility is PublishEligibility.WITHHELD
+    assert len(publisher.create_calls) == 0  # nothing posted → no suggestion leaked
+    assert result["publish_result"].outcome == "empty"
+    # Read-only: withholding did not mutate the finding's stored patch.
+    assert finding.suggested_fix == _SUGGESTION
+
+
+async def test_publish_suppresses_backtick_suggestion_without_mutating_finding() -> None:
+    """A stored `suggested_fix` containing a backtick is suppressed at render (no
+    ```suggestion block in the posted comment) WITHOUT mutating the finding —
+    rendering is a read decision (DECISIONS.md#040)."""
+    backtick_fix = "x = `evil`"
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    finding = finding.model_copy(update={"suggested_fix": backtick_fix})
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+
+    publisher = _StubPublisher()
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    body = publisher.create_calls[0]["comments"][0].body
+    assert "```suggestion" not in body, "backtick-bearing fix must be suppressed at render"
+    # The finding's stored patch is untouched — suppression is read-only.
+    assert finding.suggested_fix == backtick_fix

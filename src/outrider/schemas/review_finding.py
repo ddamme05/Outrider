@@ -146,7 +146,9 @@ class ReviewFinding(BaseModel):
     # MB of fabricated evidence.
     evidence: Annotated[str, Field(max_length=2000)]
     # Model-output cap. Suggested fixes can include a code snippet so the
-    # cap matches `evidence`.
+    # cap matches `evidence`. Populated by the synthesize patch pass (the EXACT
+    # replacement text GitHub applies, not prose, not ```suggestion markdown);
+    # publish renders it as a GitHub suggestion block. See DECISIONS.md#040.
     suggested_fix: Annotated[str | None, Field(max_length=2000)] = None
     # Query-registry-id cap. Today's query ids are short paths (`security/sql_injection`);
     # 200 chars is well above the realistic max and well below pathological.

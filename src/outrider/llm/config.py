@@ -68,12 +68,17 @@ class ModelConfig(BaseSettings):
     analyze_model: str = "claude-sonnet-4-6"
     synthesize_model: str = "claude-sonnet-4-6"
     trace_model: str = "claude-haiku-4-5"
+    # See DECISIONS.md#040 — suggested-patch generation (synthesize) uses Haiku:
+    # patch-gen is the kind of bounded generation Haiku handles, and cost is
+    # analyze-dominated, so the patch call must not be a second Sonnet call.
+    patch_model: str = "claude-haiku-4-5"
 
     @field_validator(
         "triage_model",
         "analyze_model",
         "synthesize_model",
         "trace_model",
+        "patch_model",
     )
     @classmethod
     def _validate_model_string(cls, value: str) -> str:

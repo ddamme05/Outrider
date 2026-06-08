@@ -49,8 +49,8 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `provider: LLMProvider` — LLM transport for triage, analyze, and
     trace (Haiku ranking).
   - `model_config: ModelConfig` — `triage_model`, `analyze_model`,
-    `trace_model`, and `synthesize_model` are captured at callsite
-    (per `model-strings-from-config-not-hardcoded`).
+    `trace_model`, `synthesize_model`, and `patch_model` are captured at
+    callsite (per `model-strings-from-config-not-hardcoded`).
   - `phase_event_sink: PhaseEventSink` — required for all seven nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
@@ -84,6 +84,10 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     derivation. Per `nodes-receive-deps-via-closure`, config travels
     through the dependency-injection seam at `build_graph(...)` —
     the node body does not read env vars.
+  - `patch_config: PatchConfig` — required for synthesize's suggested-patch
+    pass (`patches_enabled` + the per-review cap; the patch model is
+    `model_config.patch_model`). Same closure-injection rule — synthesize
+    reads no env (DECISIONS.md#040).
   - `checkpointer: BaseCheckpointSaver` — required for HITL durability.
     `interrupt(...)` writes state to the checkpointer; `Command(resume=...)`
     reads it back on the next `ainvoke(..., config={"configurable":
@@ -130,6 +134,7 @@ from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.intake import intake
+from outrider.agent.nodes.patch_config import PatchConfig
 from outrider.agent.nodes.publish import publish
 from outrider.agent.nodes.synthesize import synthesize
 from outrider.agent.nodes.trace import MAX_ANALYSIS_ROUNDS, trace
@@ -194,6 +199,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     review_status_sink: ReviewStatusSink,
     anomaly_sink: AnomalySink,
     hitl_config: HITLConfig,
+    patch_config: PatchConfig,
     checkpointer: BaseCheckpointSaver[Any],
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
@@ -234,6 +240,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError("anomaly_sink must not be None")
     if hitl_config is None:
         raise BuildGraphError("hitl_config must not be None")
+    if patch_config is None:
+        raise BuildGraphError("patch_config must not be None")
     if checkpointer is None:
         raise BuildGraphError(
             "checkpointer must not be None — HITL `interrupt(...)` + "
@@ -356,6 +364,10 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError(
             f"hitl_config must be a HITLConfig instance (passed type: {type(hitl_config).__name__})"
         )
+    if not isinstance(patch_config, PatchConfig):
+        raise BuildGraphError(
+            f"patch_config must be a PatchConfig (passed type: {type(patch_config).__name__})"
+        )
     if not isinstance(publisher, GitHubPublisher):
         raise BuildGraphError(
             f"publisher does not satisfy GitHubPublisher Protocol "
@@ -422,6 +434,9 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         synthesize,
         provider=provider,
         synthesize_model=model_config.synthesize_model,
+        patch_model=model_config.patch_model,
+        patches_enabled=patch_config.patches_enabled,
+        max_suggestions=patch_config.max_patch_suggestions_per_review,
         phase_event_sink=phase_event_sink,
         synthesize_event_sink=synthesize_event_sink,
         anomaly_sink=anomaly_sink,

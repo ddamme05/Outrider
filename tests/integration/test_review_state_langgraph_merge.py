@@ -486,6 +486,7 @@ def _graph_kwargs(
     from langgraph.checkpoint.memory import InMemorySaver
 
     from outrider.agent.nodes.hitl_config import HITLConfig
+    from outrider.agent.nodes.patch_config import PatchConfig
 
     return {
         "db_factory": _stub_db_factory,  # type: ignore[arg-type]
@@ -502,6 +503,7 @@ def _graph_kwargs(
         "synthesize_event_sink": _StubSynthesizeEventSink(),
         "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
+        "patch_config": PatchConfig(patches_enabled=False),
         "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),

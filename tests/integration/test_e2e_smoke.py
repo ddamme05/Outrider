@@ -64,6 +64,7 @@ from sqlalchemy.pool import NullPool
 
 from outrider.agent.graph import build_graph
 from outrider.agent.nodes.hitl_config import HITLConfig
+from outrider.agent.nodes.patch_config import PatchConfig
 from outrider.anomaly.persister import AnomalyPersister
 from outrider.audit.config import RetentionSettings
 from outrider.audit.events import PublishEvent
@@ -443,6 +444,7 @@ async def test_full_review_reaches_publish_and_replays_equivalent(engine: AsyncE
         review_status_sink=review_status_sink,
         anomaly_sink=anomaly_sink,
         hitl_config=HITLConfig(),
+        patch_config=PatchConfig(patches_enabled=False),
         checkpointer=InMemorySaver(),
         publisher=publisher,
         import_path_resolver=_StubImportPathResolver(),

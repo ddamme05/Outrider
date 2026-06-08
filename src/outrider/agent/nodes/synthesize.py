@@ -72,6 +72,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from outrider.agent.nodes.patch_generation import generate_patches
 from outrider.anomaly import AnomalyRuleName, AnomalySeverity
 from outrider.audit.events import ReviewPhaseEvent, SynthesizeCompletedEvent
 from outrider.llm.base import LLMRequest
@@ -477,6 +478,9 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     *,
     provider: LLMProvider,
     synthesize_model: str,
+    patch_model: str,
+    patches_enabled: bool,
+    max_suggestions: int,
     phase_event_sink: PhaseEventSink,
     synthesize_event_sink: SynthesizeEventSink,
     anomaly_sink: AnomalySink,
@@ -538,6 +542,21 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # `ReviewReport._canonicalize_findings` re-sorts by severity; we
     # pass arbitrary order here (the schema canonicalizes).
     deduplicated_findings = tuple(kept_by_hash.values())
+
+    # Suggested-patch pass (DECISIONS.md#040): set `suggested_fix` on the deduped
+    # set BEFORE the summary request + the aggregate query + ReviewReport, so the
+    # report AND the SynthesizeCompletedEvent snapshot carry the same patches, and
+    # the patch LLMCallEvent (node_id="synthesize") is summed into synthesize's
+    # aggregate. No-op when disabled / nothing eligible; best-effort (a patch-call
+    # failure ships findings unpatched, never fails the review).
+    deduplicated_findings = await generate_patches(
+        deduplicated_findings,
+        state,
+        provider=provider,
+        patch_model=patch_model,
+        patches_enabled=patches_enabled,
+        max_suggestions=max_suggestions,
+    )
 
     # Step 6: build LLMRequest for the Sonnet summary call.
     # (Step 5's metrics computation is interleaved: a pre-call snapshot
