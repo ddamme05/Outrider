@@ -328,6 +328,7 @@ def deps() -> dict[str, Any]:
     return {
         "provider": _StubLLMProvider(_build_finding_proposal_json()),
         "analyze_model": "claude-sonnet-4-6",
+        "standard_analyze_model": "claude-sonnet-4-6",
         "phase_event_sink": _RecordingPhaseEventSink(),
         "file_examination_sink": _RecordingFileExaminationSink(),
         "analyze_event_sink": _RecordingAnalyzeEventSink(),
@@ -1370,3 +1371,67 @@ async def test_analyze_round_ordering_holds_under_backwards_wall_clock(
     # monotonic-derived, so ordering holds despite the backwards jump.
     assert round_.started_at == _BackwardsWallClock._later
     assert round_.ended_at >= round_.started_at
+
+
+# ---------------------------------------------------------------------------
+# Tiered model routing (specs/2026-06-08-analyze-tiered-model-routing.md):
+# DEEP → analyze_model, STANDARD → standard_analyze_model, recorded on the event.
+# ---------------------------------------------------------------------------
+
+
+async def test_analyze_routes_standard_tier_to_standard_model(deps: dict[str, Any]) -> None:
+    """The cost lever: a STANDARD-tier file's LLM call uses `standard_analyze_model`; a
+    DEEP-tier file's uses `analyze_model`. Both are read from config (the call site is
+    literal-free), and `AnalyzeCompletedEvent` records the DEEP model on `analyze_model`
+    and the STANDARD model on `standard_analyze_model`."""
+    deep_file = _build_changed_file(path="src/deep.py")
+    standard_file = _build_changed_file(path="src/standard.py")
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(deep_file, standard_file)),
+        triage_result=_build_triage_result(
+            file_tiers={
+                "src/deep.py": ReviewTier.DEEP,
+                "src/standard.py": ReviewTier.STANDARD,
+            }
+        ),
+    )
+    # Empty-findings response: a real LLM call per file (so routing is exercised)
+    # without two identical findings tripping AnalysisRound's proposal-hash uniqueness.
+    provider = _StubLLMProvider(json.dumps({"findings": []}))
+    routed_deps = {
+        **deps,
+        "provider": provider,
+        "analyze_model": "claude-sonnet-4-6",
+        "standard_analyze_model": "claude-haiku-4-5",
+    }
+
+    await analyze(state, **routed_deps)
+
+    # Two LLM calls, routed by tier — iteration order is `changed_files` order.
+    assert [c.model for c in provider.calls] == ["claude-sonnet-4-6", "claude-haiku-4-5"]
+    event = routed_deps["analyze_event_sink"].completed[0]
+    assert event.analyze_model == "claude-sonnet-4-6"  # DEEP
+    assert event.standard_analyze_model == "claude-haiku-4-5"  # STANDARD
+
+
+async def test_analyze_standard_model_none_when_no_standard_file(deps: dict[str, Any]) -> None:
+    """`AnalyzeCompletedEvent.standard_analyze_model` is `None` when no STANDARD-tier
+    file was analyzed (here: a DEEP-only pass) — even though the config carries a
+    distinct STANDARD model, it isn't 'used' this pass."""
+    state = _build_review_state(
+        triage_result=_build_triage_result(file_tiers={"src/example.py": ReviewTier.DEEP})
+    )
+    provider = _StubLLMProvider(json.dumps({"findings": []}))
+    routed_deps = {
+        **deps,
+        "provider": provider,
+        "analyze_model": "claude-sonnet-4-6",
+        "standard_analyze_model": "claude-haiku-4-5",
+    }
+
+    await analyze(state, **routed_deps)
+
+    assert provider.calls[0].model == "claude-sonnet-4-6"  # DEEP file on analyze_model
+    event = routed_deps["analyze_event_sink"].completed[0]
+    assert event.analyze_model == "claude-sonnet-4-6"
+    assert event.standard_analyze_model is None

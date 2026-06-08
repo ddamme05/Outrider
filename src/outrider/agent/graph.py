@@ -49,8 +49,9 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `provider: LLMProvider` — LLM transport for triage, analyze, and
     trace (Haiku ranking).
   - `model_config: ModelConfig` — `triage_model`, `analyze_model`,
-    `trace_model`, `synthesize_model`, and `patch_model` are captured at
-    callsite (per `model-strings-from-config-not-hardcoded`).
+    `standard_analyze_model` (STANDARD-tier analyze routing), `trace_model`,
+    `synthesize_model`, and `patch_model` are captured at callsite (per
+    `model-strings-from-config-not-hardcoded`).
   - `phase_event_sink: PhaseEventSink` — required for all seven nodes;
     each emits start/end phase markers.
   - `file_examination_sink: FileExaminationSink` — required for intake's
@@ -401,6 +402,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         analyze,
         provider=provider,
         analyze_model=model_config.analyze_model,
+        standard_analyze_model=model_config.standard_analyze_model,
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,

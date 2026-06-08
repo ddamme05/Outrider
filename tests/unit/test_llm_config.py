@@ -47,8 +47,21 @@ def test_defaults_match_canonical_spec() -> None:
     cfg = ModelConfig()
     assert cfg.triage_model == "claude-haiku-4-5"
     assert cfg.analyze_model == "claude-sonnet-4-6"
+    # STANDARD-tier analyze defaults to Sonnet so tiered routing lands INERT (==DEEP);
+    # the Haiku flip is evidence-gated (specs/2026-06-08-analyze-tiered-model-routing.md).
+    assert cfg.standard_analyze_model == "claude-sonnet-4-6"
     assert cfg.synthesize_model == "claude-sonnet-4-6"
     assert cfg.trace_model == "claude-haiku-4-5"
+
+
+def test_standard_analyze_model_env_override_and_validated() -> None:
+    """`standard_analyze_model` reads its own env var and runs the shared
+    `_validate_model_string` (the eval-gated flip is an env/default change, not a code
+    edit — `model-strings-from-config-not-hardcoded`)."""
+    with _env(OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL="claude-haiku-4-5"):
+        assert ModelConfig().standard_analyze_model == "claude-haiku-4-5"
+    with pytest.raises(ValidationError):
+        ModelConfig(standard_analyze_model="not-a-real-model")
 
 
 # ---------------------------------------------------------------------------

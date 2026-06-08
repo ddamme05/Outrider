@@ -524,6 +524,7 @@ def _build_kwargs(
     file_examination_sink: _RecordingFileExaminationSink,
     analyze_event_sink: _RecordingAnalyzeEventSink,
     total_review_budget_tokens: int | None = None,
+    model_config: ModelConfig | None = None,
 ) -> dict[str, Any]:
     from langgraph.checkpoint.memory import InMemorySaver
 
@@ -534,7 +535,7 @@ def _build_kwargs(
         "db_factory": _stub_db_factory,
         "github_factory": _stub_github_factory,
         "provider": provider,
-        "model_config": ModelConfig(),
+        "model_config": model_config or ModelConfig(),
         "phase_event_sink": phase_event_sink,
         "file_examination_sink": file_examination_sink,
         "analyze_event_sink": analyze_event_sink,
@@ -883,3 +884,42 @@ async def test_is_eval_propagates_through_full_graph(
     # `all(...) over empty` doesn't bite for them because there's no
     # contract that they MUST emit for this fixture — pinning their
     # length would over-specify.
+
+
+@pytest.mark.asyncio
+async def test_standard_tier_file_routes_to_standard_analyze_model(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    """End-to-end build_graph wiring (specs/2026-06-08-analyze-tiered-model-routing.md):
+    a STANDARD-tier file's analyze LLM call uses `model_config.standard_analyze_model`
+    — distinct here from `analyze_model` — proving `build_graph` injects the STANDARD
+    model into the analyze closure, and the `AnalyzeCompletedEvent` records both. The
+    analyze call + its event fire before the CRITICAL-finding HITL interrupt."""
+    provider = _RoutingMockLLMProvider(
+        triage_response=_triage_response(tier="standard"),
+        analyze_response=_analyze_response_one_finding(),
+    )
+    fe_sink = _RecordingFileExaminationSink()
+    ae_sink = _RecordingAnalyzeEventSink()
+    state = _build_seed_state()
+    graph = build_graph(
+        **_build_kwargs(
+            provider=provider,
+            phase_event_sink=recording_phase_event_sink,
+            file_examination_sink=fe_sink,
+            analyze_event_sink=ae_sink,
+            model_config=ModelConfig(
+                analyze_model="claude-sonnet-4-6",
+                standard_analyze_model="claude-haiku-4-5",
+            ),
+        )
+    )
+
+    await graph.ainvoke(state, config={"configurable": {"thread_id": str(state.review_id)}})
+
+    analyze_calls = [c for c in provider.calls if c.node_id == "analyze"]
+    assert len(analyze_calls) == 1
+    # The STANDARD-tier file routed to the cost-lever model, NOT analyze_model.
+    assert analyze_calls[0].model == "claude-haiku-4-5"
+    assert ae_sink.completed[0].analyze_model == "claude-sonnet-4-6"
+    assert ae_sink.completed[0].standard_analyze_model == "claude-haiku-4-5"

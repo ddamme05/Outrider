@@ -281,6 +281,7 @@ async def test_pass_index_derives_from_analysis_rounds_state() -> None:
         state_pass_0,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6-20251015",
+        standard_analyze_model="claude-sonnet-4-6-20251015",
         phase_event_sink=phase_sink,  # type: ignore[arg-type]
         file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
         analyze_event_sink=analyze_event_sink_0,  # type: ignore[arg-type]
@@ -301,6 +302,7 @@ async def test_pass_index_derives_from_analysis_rounds_state() -> None:
         state_pass_1,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6-20251015",
+        standard_analyze_model="claude-sonnet-4-6-20251015",
         phase_event_sink=phase_sink,  # type: ignore[arg-type]
         file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
         analyze_event_sink=analyze_event_sink_1,  # type: ignore[arg-type]
@@ -393,6 +395,7 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
         state,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6-20251015",
+        standard_analyze_model="claude-sonnet-4-6-20251015",
         phase_event_sink=phase_sink,  # type: ignore[arg-type]
         file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
         analyze_event_sink=analyze_event_sink,  # type: ignore[arg-type]

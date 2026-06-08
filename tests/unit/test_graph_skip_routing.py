@@ -176,6 +176,7 @@ class _StubGitHubPublisher:
 class _StubModelConfig:
     triage_model = "stub-model"
     analyze_model = "stub-analyze-model"
+    standard_analyze_model = "stub-standard-analyze-model"
     trace_model = "stub-trace-model"
     synthesize_model = "stub-synthesize-model"
     patch_model = "stub-patch-model"
