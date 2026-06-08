@@ -1435,3 +1435,32 @@ async def test_analyze_standard_model_none_when_no_standard_file(deps: dict[str,
     event = routed_deps["analyze_event_sink"].completed[0]
     assert event.analyze_model == "claude-sonnet-4-6"
     assert event.standard_analyze_model is None
+
+
+async def test_analyze_standard_model_recorded_even_when_equals_deep_inert(
+    deps: dict[str, Any],
+) -> None:
+    """Under INERT config (standard_analyze_model == analyze_model == Sonnet), a
+    STANDARD-tier file still records that model on the event — NOT `None`.
+    `standard_analyze_model is None` means "no STANDARD call ran", not "same model as
+    DEEP" (observability over distinctness). Pins the corrected contract."""
+    standard_file = _build_changed_file(path="src/standard.py")
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(standard_file,)),
+        triage_result=_build_triage_result(file_tiers={"src/standard.py": ReviewTier.STANDARD}),
+    )
+    provider = _StubLLMProvider(json.dumps({"findings": []}))
+    # Inert: both tiers on the same model.
+    routed_deps = {
+        **deps,
+        "provider": provider,
+        "analyze_model": "claude-sonnet-4-6",
+        "standard_analyze_model": "claude-sonnet-4-6",
+    }
+
+    await analyze(state, **routed_deps)
+
+    assert provider.calls[0].model == "claude-sonnet-4-6"  # STANDARD routed (== DEEP)
+    event = routed_deps["analyze_event_sink"].completed[0]
+    # A STANDARD LLM call ran → the field is the model used, even though it equals DEEP.
+    assert event.standard_analyze_model == "claude-sonnet-4-6"

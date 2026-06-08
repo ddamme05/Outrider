@@ -2120,13 +2120,16 @@ class AnalyzeCompletedEvent(AuditEventBase):
     (`specs/2026-06-08-analyze-tiered-model-routing.md`) — the STANDARD-tier model is
     on `standard_analyze_model`."""
     standard_analyze_model: str | None = None
-    """The STANDARD-tier model used this pass, or `None` when no STANDARD-tier file was
-    analyzed — routing inert (STANDARD == DEEP), a pass with no STANDARD files, or a
-    pass-1 trace round (trace-fetched files have no tier and stay on `analyze_model`).
-    Additive field; `None` on historical `AnalyzeCompletedEvent` payloads (none exist in
-    production yet — analyze hasn't shipped — so the default is a forward-compat hedge),
-    so persister / replay / dashboard readers tolerate its absence.
-    `specs/2026-06-08-analyze-tiered-model-routing.md`."""
+    """The STANDARD-tier model used this pass, or `None` when NO STANDARD-tier LLM call
+    ran — a pass with no STANDARD-tier files, or a pass-1 trace round (trace-fetched
+    files have no tier and stay on `analyze_model`). When a STANDARD file IS analyzed the
+    field records the model used EVEN under inert config where it equals the DEEP
+    `analyze_model`: `None` means "no STANDARD call ran," NOT "same model as DEEP"
+    (observability over distinctness — you can always tell which model handled the
+    STANDARD tier). Additive field; `None` on historical `AnalyzeCompletedEvent` payloads
+    (none exist in production yet — analyze hasn't shipped — so the default is a
+    forward-compat hedge), so persister / replay / dashboard readers tolerate its
+    absence. `specs/2026-06-08-analyze-tiered-model-routing.md`."""
 
     @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
