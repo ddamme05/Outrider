@@ -1228,18 +1228,28 @@ def _build_agent_prompt_block(
 def _render_suggestion_block(suggested_fix: str | None) -> str:
     """Render a finding's stored `suggested_fix` as a GitHub ```suggestion block.
 
-    Read-only (DECISIONS.md#040): a `suggested_fix` that is absent/empty or contains a
-    backtick renders to "" (suppressed) WITHOUT mutating the finding — rendering is a
-    route+content decision made at publish, not a state change. The fixed three-backtick
-    fence is safe only because the patch-generation parser already rejected any
-    replacement containing a backtick; a ```suggestion fence can't be widened the way
-    `render_fenced_block` widens a plain fence (GitHub keys the Apply button on the
-    literal ```suggestion token), so this is a second, independent backtick gate that
-    stops a direct DB write or future generator path from smuggling a fence-breaking
-    patch into the comment body. Dynamic fences stay out until a sandbox proves GitHub
-    accepts them for `suggestion`.
+    Read-only (DECISIONS.md#040): rendering is a publish-time decision, never a state
+    change. This is the SECOND, INDEPENDENT single-line + fence-safety gate behind the
+    patch-generation parser, so a direct DB write or a future generator path cannot
+    smuggle a contract-violating patch into a rendered comment. It mirrors the
+    string-intrinsic rejects of `patch_generation._is_valid_replacement` (it cannot run
+    the no-op `== original_line` check — it has no original line here): suppress (render
+    "") when the fix is empty/whitespace-only, multi-line (`\\n`/`\\r` — V1 is strictly
+    ONE line, #040, so a multi-line fix would quietly ship a multi-line GitHub
+    suggestion), backtick-bearing (a ```suggestion fence can't be widened the way
+    `render_fenced_block` widens a plain fence without killing GitHub's Apply button —
+    dynamic fences stay out until a sandbox proves GitHub accepts them), or a diff
+    marker.
     """
-    if not suggested_fix or "`" in suggested_fix:
+    if (
+        not suggested_fix
+        or not suggested_fix.strip()
+        or "\n" in suggested_fix
+        or "\r" in suggested_fix
+        or "`" in suggested_fix
+        or suggested_fix.lstrip().startswith("@@")
+        or suggested_fix[:2] in ("+ ", "- ")
+    ):
         return ""
     return f"```suggestion\n{suggested_fix}\n```"
 

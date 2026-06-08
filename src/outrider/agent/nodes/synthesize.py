@@ -45,6 +45,16 @@ Order of operations (failure-path-significant):
      anomaly, then raise SynthesizeAggregationError.
   4. Dedup by content_hash (validator on ReviewReport.findings also
      enforces uniqueness as defense-in-depth).
+  4b. Suggested-patch pass (DECISIONS.md#040): set `suggested_fix` on
+      the deduped set via one batched Haiku call. Runs HERE — after
+      final dedup, before the summary call — so the patch
+      `LLMCallEvent` (node_id="synthesize") lands BEFORE the step-5
+      aggregate query and rolls into synthesize's totals. No-op when
+      disabled / nothing eligible; best-effort (a patch-call failure
+      ships findings unpatched, never fails the review). The patch is
+      set on the in-memory `review_report` only (consumed by publish
+      to render the GitHub suggestion); it is NOT re-persisted to the
+      `findings` content row — see DECISIONS.md#040.
   5. Compute metrics: files_examined / files_traced_beyond_diff /
      wall_clock_seconds deterministically; LLM aggregates from the
      audit-stream SUM (FUP-093, queried pre- and post-call).
@@ -492,10 +502,13 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     appropriate here because `review_report` is a singleton field.
 
     Closure-injected dependencies per `nodes-receive-deps-via-closure`:
-    `provider` for the Sonnet call, `synthesize_model` from config per
-    `model-strings-from-config-not-hardcoded`, three sinks for the
-    three audit/anomaly surfaces this node touches (phase events,
-    synthesize completion, anomaly emission).
+    `provider` for the Sonnet summary call AND the Haiku patch call,
+    `synthesize_model` / `patch_model` from config per
+    `model-strings-from-config-not-hardcoded`, `patches_enabled` +
+    `max_suggestions` from `PatchConfig` to gate/cap the suggested-patch
+    pass (DECISIONS.md#040), three sinks for the three audit/anomaly
+    surfaces this node touches (phase events, synthesize completion,
+    anomaly emission).
 
     Raises:
         SynthesizeAggregationError: cross-round severity divergence
@@ -576,10 +589,11 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     overall_risk = state.triage_result.overall_risk
 
     # Pre-compute the user prompt metrics. The prompt's metrics_summary is content
-    # the model sees BEFORE its own call lands, so the pre-call aggregate snapshot is
-    # correct for the prompt: it reflects analyze/trace/triage cost at synthesize
-    # entry, NOT the synthesize summary call's own cost (that lands in final_metrics
-    # below, post-call). wall_clock is likewise a pre-call snapshot here.
+    # the model sees BEFORE the summary call lands, so the pre-call aggregate snapshot is
+    # correct for the prompt: it reflects analyze/trace/triage cost AND the step-4b
+    # suggested-patch call above (whose LLMCallEvent has already landed), but NOT the
+    # synthesize summary call's own cost (that lands in final_metrics below, post-call).
+    # wall_clock is likewise a pre-call snapshot here.
     pre_call_aggregates = await synthesize_event_sink.query_review_llm_aggregates(
         review_id=state.review_id, is_eval=state.is_eval
     )

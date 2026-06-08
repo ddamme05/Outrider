@@ -3,9 +3,9 @@
 The read-only structured agent channel. Covers: separate-token scope (the agent
 key works, the ADMIN key is rejected, no key 401, the surface is disabled when
 OUTRIDER_AGENT_API_KEY is unset); the full JSON shape; pr_url derivation;
-hitl_gated + reviewer_decision (incl. decided_at); publish_event; the exposed
-feature-2 `suggested_fix` + the still-omitted `github_comment_url`; 404. Auth is the
-load-bearing part — agents must NEVER hold the admin key (which can POST /decide).
+hitl_gated + reviewer_decision (incl. decided_at); publish_event; the omitted V1
+fields (`github_comment_url` + the not-yet-persisted feature-2 `suggested_fix`); 404.
+Auth is the load-bearing part — agents must NEVER hold the admin key (POSTs /decide).
 """
 
 from __future__ import annotations
@@ -51,8 +51,12 @@ async def _insert_finding(
             "  title, description, evidence, suggested_fix, query_match_id, trace_path, "
             "  content_hash, is_eval, retention_expires_at"
             ") VALUES ("
+            # suggested_fix is NULL: it matches production reality — analyze writes the
+            # findings row before the patch exists (synthesize), and the patch is never
+            # persisted back to this row in V1 (DECISIONS.md#040; it lives in graph
+            # state + the GitHub comment). Seeding a value here would be a false green.
             "  :fid, :rid, :iid, :pv, 'sql_injection', 'security', :sev, 'judged', "
-            "  'app/db.py', 10, 12, :title, 'a finding description', 'evidence', 'fix it', "
+            "  'app/db.py', 10, 12, :title, 'a finding description', 'evidence', NULL, "
             "  NULL, NULL, :ch, false, NOW() + INTERVAL '90 days'"
             ")"
         ),
@@ -316,20 +320,20 @@ async def test_agent_view_severity_override_reports_effective(
 
 
 @pytest.mark.asyncio
-async def test_agent_view_exposes_suggested_fix_omits_github_comment_url(
+async def test_agent_view_omits_unstored_fields(
     agent_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
-    """`suggested_fix` (feature 2 / DECISIONS.md#040) is surfaced from the stored
-    finding so the unforgeable channel carries the fix; `github_comment_url` stays
-    ABSENT (not stored). Pins both so a later contract change is deliberate."""
+    """`github_comment_url` (not stored) and `suggested_fix` (feature 2 /
+    DECISIONS.md#040 renders the patch as a GitHub suggestion at publish but does NOT
+    persist it to the finding row) are both ABSENT from the V1 agent-view contract.
+    Pins the omission so a later gated projection is a deliberate, versioned change."""
     client, ids, _ = agent_client
     crit = _finding(
         client.get(f"/api/reviews/{ids['review']}/agent-view", headers=_AGENT_AUTH).json(),
         ids["crit"],
     )
     assert "github_comment_url" not in crit
-    # The seeded finding carries suggested_fix='fix it' (see _insert_finding).
-    assert crit["suggested_fix"] == "fix it"
+    assert "suggested_fix" not in crit
     # The contract IS the trust-critical fields straight from decided state.
     assert crit["severity"] == "critical"
     assert crit["evidence_tier"] == "judged"
