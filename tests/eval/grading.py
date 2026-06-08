@@ -1,0 +1,242 @@
+"""Deterministic finding-grading for the analyze model-tier quality gate.
+
+This is the load-bearing methodology for `specs/2026-06-08-analyze-tiered-model-routing.md`
+step 2 (the eval quality gate): before STANDARD-tier files can move from Sonnet to a
+cheaper model, we need DETERMINISTIC evidence the cheaper model did not lose the known
+findings. So grading is STRUCTURAL, not LLM-as-judge — we do not put a model in the loop
+that is meant to validate a model (that would replace "did Haiku preserve recall?" with
+"does another model think Haiku preserved recall?").
+
+A model finding MATCHES a ground-truth finding iff ALL hold (the declared match contract):
+  1. same `finding_type`,
+  2. same `file_path`,
+  3. the finding's line range overlaps the expected range expanded by `line_window`,
+  4. same `severity` (policy-derived — a belt-and-suspenders check that catches a policy
+     drift even though severity follows `finding_type`).
+
+From the match set we compute recall (of the expected findings, how many were caught),
+precision (of the model's findings, how many matched an expected one — so extra/noise
+findings are counted separately, not hidden), and severity accuracy. `compare(...)` then
+applies the gate: the candidate model's recall must be within a DECLARED tolerance of the
+baseline's, AND its false-positive (extra) count must not balloon.
+
+Pure functions over already-validated `ReviewFinding`s + `ExpectedFinding` ground truth;
+no I/O, no LLM, no spend. The real-model run that produces the `ReviewFinding`s lives in
+the opt-in comparison runner; this module only grades.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, ConfigDict
+
+from outrider.policy import (  # noqa: TC001 — runtime use: Pydantic resolves these field annotations
+    FindingSeverity,
+    FindingType,
+)
+
+from .metrics import FindingPrecision, FindingRecall, SeverityAccuracy
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from outrider.schemas.review_finding import ReviewFinding
+
+# Default line-distance window: a finding whose range is within this many lines of the
+# expected range (after overlap expansion) still matches. Small + declared — a model that
+# points at the right vulnerability a line or two off is the same finding, not a miss; a
+# model that points at a different function is not.
+DEFAULT_LINE_WINDOW = 2
+
+
+class ExpectedFinding(BaseModel):
+    """One ground-truth finding a scenario is KNOWN to contain. The grader matches a
+    model's `ReviewFinding`s against a tuple of these. Frozen — ground truth is fixed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    file_path: str
+    line_start: int
+    line_end: int
+    finding_type: FindingType
+    severity: FindingSeverity
+
+
+def _line_ranges_match(
+    *, actual_start: int, actual_end: int, expected_start: int, expected_end: int, line_window: int
+) -> bool:
+    """True if `[actual_start, actual_end]` overlaps `[expected_start, expected_end]`
+    expanded by `line_window` on each side. Overlap of `[a, b]` and `[c, d]` is
+    `a <= d and c <= b`; the window widens the expected interval."""
+    lo = expected_start - line_window
+    hi = expected_end + line_window
+    return actual_start <= hi and lo <= actual_end
+
+
+def finding_matches(
+    actual: ReviewFinding, expected: ExpectedFinding, *, line_window: int = DEFAULT_LINE_WINDOW
+) -> bool:
+    """Whether one model finding matches one ground-truth finding (the declared contract:
+    same type + same file + line overlap-within-window + same severity)."""
+    return (
+        actual.finding_type == expected.finding_type
+        and actual.file_path == expected.file_path
+        and actual.severity == expected.severity
+        and _line_ranges_match(
+            actual_start=actual.line_start,
+            actual_end=actual.line_end,
+            expected_start=expected.line_start,
+            expected_end=expected.line_end,
+            line_window=line_window,
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class GradeResult:
+    """One model's grade against a scenario's ground truth.
+
+    `recall`/`precision`/`severity_accuracy` are the `metrics.py` ratio shapes.
+    `missed` are expected findings no model finding matched (the recall losses — the
+    thing this gate exists to catch). `extra` are model findings that matched NO expected
+    finding (the false positives — counted separately so noise can't hide)."""
+
+    recall: FindingRecall
+    precision: FindingPrecision
+    severity_accuracy: SeverityAccuracy
+    missed: tuple[ExpectedFinding, ...]
+    extra: tuple[ReviewFinding, ...]
+    n_matched: int
+
+    @property
+    def n_false_positives(self) -> int:
+        return len(self.extra)
+
+
+def grade(
+    actual: Sequence[ReviewFinding],
+    expected: Sequence[ExpectedFinding],
+    *,
+    line_window: int = DEFAULT_LINE_WINDOW,
+) -> GradeResult:
+    """Grade one model's findings against ground truth (structural match).
+
+    Each expected finding is matched by AT MOST one actual finding (greedy first-match);
+    each actual finding can satisfy at most one expected finding, so two model findings
+    can't both "claim" one ground-truth finding to inflate recall. Severity accuracy is
+    over the MATCHED set (of the findings that matched type+file+line, how many also got
+    severity right — though the match contract already requires it, so this is 1.0 unless
+    the contract is loosened; kept explicit for when the window/severity rules diverge).
+    """
+    expected_list = list(expected)
+    matched_expected_idx: set[int] = set()
+    matched_actual: list[ReviewFinding] = []
+    extra: list[ReviewFinding] = []
+
+    for af in actual:
+        hit_idx: int | None = None
+        for i, ef in enumerate(expected_list):
+            if i in matched_expected_idx:
+                continue
+            if finding_matches(af, ef, line_window=line_window):
+                hit_idx = i
+                break
+        if hit_idx is None:
+            extra.append(af)
+        else:
+            matched_expected_idx.add(hit_idx)
+            matched_actual.append(af)
+
+    n_expected = len(expected_list)
+    n_actual = len(list(actual))
+    n_matched = len(matched_expected_idx)
+    missed = tuple(ef for i, ef in enumerate(expected_list) if i not in matched_expected_idx)
+
+    recall = FindingRecall(
+        value=(n_matched / n_expected) if n_expected else 1.0,
+        numerator=n_matched,
+        denominator=n_expected,
+    )
+    precision = FindingPrecision(
+        value=(n_matched / n_actual) if n_actual else 1.0,
+        numerator=n_matched,
+        denominator=n_actual,
+    )
+    # Of the matched findings, how many got severity right. The match contract already
+    # requires severity equality, so this is 1.0 today; it stays a separate metric so a
+    # future looser match rule (match on type+line, score severity separately) needs no
+    # new plumbing.
+    n_sev_ok = sum(
+        1
+        for af in matched_actual
+        for ef in expected_list
+        if af.finding_type == ef.finding_type
+        and af.file_path == ef.file_path
+        and af.severity == ef.severity
+        and _line_ranges_match(
+            actual_start=af.line_start,
+            actual_end=af.line_end,
+            expected_start=ef.line_start,
+            expected_end=ef.line_end,
+            line_window=line_window,
+        )
+    )
+    severity_accuracy = SeverityAccuracy(
+        value=(min(n_sev_ok, n_matched) / n_matched) if n_matched else 1.0,
+        numerator=min(n_sev_ok, n_matched),
+        denominator=n_matched,
+    )
+
+    return GradeResult(
+        recall=recall,
+        precision=precision,
+        severity_accuracy=severity_accuracy,
+        missed=missed,
+        extra=tuple(extra),
+        n_matched=n_matched,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelComparison:
+    """Baseline (Sonnet) vs candidate (Haiku) on one scenario, with the gate verdict.
+
+    `recall_held` / `fp_bounded` are the two halves of the gate; `passes` is their AND.
+    The thresholds are DECLARED (`recall_tolerance`, `fp_allowance`) so the gate is
+    auditable: a reviewer reads exactly how much recall loss / FP growth was permitted."""
+
+    baseline: GradeResult
+    candidate: GradeResult
+    recall_tolerance: float
+    fp_allowance: int
+    recall_held: bool
+    fp_bounded: bool
+
+    @property
+    def passes(self) -> bool:
+        return self.recall_held and self.fp_bounded
+
+
+def compare(
+    baseline: GradeResult,
+    candidate: GradeResult,
+    *,
+    recall_tolerance: float = 0.0,
+    fp_allowance: int = 0,
+) -> ModelComparison:
+    """Apply the quality gate: the candidate (cheaper) model passes iff its recall is
+    within `recall_tolerance` of the baseline's AND it added no more than `fp_allowance`
+    false positives over the baseline. Defaults are STRICT (no recall loss, no extra FPs)
+    — callers loosen them explicitly and the chosen values are recorded on the result."""
+    recall_held = candidate.recall.value >= baseline.recall.value - recall_tolerance
+    fp_bounded = candidate.n_false_positives <= baseline.n_false_positives + fp_allowance
+    return ModelComparison(
+        baseline=baseline,
+        candidate=candidate,
+        recall_tolerance=recall_tolerance,
+        fp_allowance=fp_allowance,
+        recall_held=recall_held,
+        fp_bounded=fp_bounded,
+    )
