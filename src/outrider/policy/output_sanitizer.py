@@ -304,6 +304,46 @@ def render_fenced_block(content: str, *, language: str = "") -> str:
     return f"\n{fence}{safe_language}\n{content}{fence}\n"
 
 
+def is_safe_suggestion_replacement(replacement: str) -> bool:
+    """Whether `replacement` is safe to emit as a one-line GitHub ```suggestion block.
+
+    Single source of truth for the suggested-patch safety gate (DECISIONS.md#040),
+    called by BOTH the patch-generation parser (`_is_valid_replacement`, which adds the
+    no-op `!= original_line` check on top) AND the publish renderer
+    (`_render_suggestion_block`) — so the two layers are genuine defense in depth, not a
+    copy-pasted reject list that drifts.
+
+    A ```suggestion is committed VERBATIM by GitHub's Apply button and is grepped
+    raw-byte by AI agents (the S1 marker contract). Unlike prose fields it CANNOT be
+    `<`/`>`-escaped (that would corrupt the applied code), so unsafe content is
+    REJECTED, not transformed. Rejects: empty/whitespace-only; multi-line (`\\n`/`\\r`
+    — V1 is one line); backtick (would break out of the fence, killing the Apply
+    button); diff markers (`@@`/`+ `/`- `); Trojan-Source control codepoints
+    (bidi-override / zero-width / ANSI / NUL / lone surrogate — committed verbatim;
+    sibling prose channels strip these via `sanitize_display_string`); and HTML-comment
+    delimiters (`<!--`/`-->` — could forge a grep-parseable `<!-- outrider:KEY VALUE -->`
+    agent marker in the raw comment bytes, which the suggestion can't `<`/`>`-escape).
+    """
+    if not replacement or not replacement.strip():
+        return False
+    if "\n" in replacement or "\r" in replacement:
+        return False
+    if "`" in replacement:
+        return False
+    if replacement.lstrip().startswith("@@") or replacement[:2] in ("+ ", "- "):
+        return False
+    if "<!--" in replacement or "-->" in replacement:
+        return False
+    # Trojan-Source codepoints — the same set `render_fenced_block` strips from prose;
+    # here we REJECT (an applicable code fix can't be silently transformed).
+    return not (
+        _strip_bidi_and_zero_width(replacement) != replacement
+        or _ANSI_CONTROL_REGEX.search(replacement) is not None
+        or _NUL_CHAR in replacement
+        or _drop_lone_surrogates(replacement) != replacement
+    )
+
+
 def apply_size_cap(body: str, *, reserve_bytes: int = 0) -> str:
     """Truncate `body` to fit `GITHUB_COMMENT_BODY_MAX - reserve_bytes` UTF-8 bytes.
 

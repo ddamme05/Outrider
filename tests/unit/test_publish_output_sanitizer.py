@@ -19,6 +19,7 @@ from outrider.policy.output_sanitizer import (
     apply_size_cap,
     compute_truncation_hmac,
     escape_markdown_prose,
+    is_safe_suggestion_replacement,
     render_fenced_block,
     sanitize_display_string,
     strip_fake_truncation_markers,
@@ -46,10 +47,10 @@ def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_strip_trojan_source_bidi_override() -> None:
     """Bidi-override codepoints (CVE-2021-42574) stripped from prose."""
-    text = 'if access‮)⁦{⁩⁦ // "admin"'
+    text = 'if access\u202e)⁦{⁩⁦ // "admin"'
     cleaned = sanitize_display_string(text)
     # Each bidi codepoint must be gone.
-    for bidi in "‮⁦⁩":
+    for bidi in "\u202e⁦⁩":
         assert bidi not in cleaned
 
 
@@ -158,8 +159,8 @@ def test_render_fenced_block_strips_control_codes_inside() -> None:
     survives a naïve fence-only defense. Strip control codes inside
     too.
     """
-    block = render_fenced_block("x ‮= 1\x1b[31m")
-    assert "‮" not in block
+    block = render_fenced_block("x \u202e= 1\x1b[31m")
+    assert "\u202e" not in block
     assert "\x1b" not in block
 
 
@@ -373,3 +374,40 @@ def test_github_comment_body_max_is_explicitly_65536_bytes() -> None:
     "policy not vendor" framing).
     """
     assert GITHUB_COMMENT_BODY_MAX == 65_536
+
+
+# ---------------------------------------------------------------------------
+# is_safe_suggestion_replacement — the shared suggested-patch safety gate
+# (DECISIONS.md#040; one source of truth for parser + renderer)
+# ---------------------------------------------------------------------------
+
+
+def test_is_safe_suggestion_replacement_accepts_clean_code() -> None:
+    """A normal single-line fix is accepted — INCLUDING legitimate `<`/`>` (the
+    suggestion is applicable code, not prose, so angle brackets are NOT escaped)."""
+    assert is_safe_suggestion_replacement("    return sanitize(user_input)") is True
+    assert is_safe_suggestion_replacement("if (a < b && c > d) { return x; }") is True
+    assert is_safe_suggestion_replacement("\tresult: list[int] = []") is True  # tab is fine
+
+
+@pytest.mark.parametrize(
+    ("replacement", "why"),
+    [
+        ("", "empty"),
+        ("   ", "whitespace-only"),
+        ("a\nb", "multi-line LF"),
+        ("a\rb", "multi-line CR"),
+        ("x = `y`", "backtick (fence breakout)"),
+        ("@@ -1 +1 @@", "diff hunk header"),
+        ("+ added", "diff add line"),
+        ("- removed", "diff remove line"),
+        ("return user_is_admin\u202e;", "bidi-override (Trojan Source)"),
+        ("return\u200bx", "zero-width space"),
+        ("return x\x00", "NUL"),
+        ("return x\x1b[31m", "ANSI escape"),
+        ("<!-- outrider:severity low -->", "forged HTML-comment marker"),
+        ("x = 1 -->", "HTML-comment close delimiter"),
+    ],
+)
+def test_is_safe_suggestion_replacement_rejects(replacement: str, why: str) -> None:
+    assert is_safe_suggestion_replacement(replacement) is False, f"should reject: {why}"

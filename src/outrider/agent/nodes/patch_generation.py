@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from outrider.llm.base import LLMProviderError, LLMRequest
 from outrider.llm.parsing import strip_outer_json_fence
+from outrider.policy.output_sanitizer import is_safe_suggestion_replacement
 from outrider.policy.publish_eligibility import is_hitl_gated_severity
 from outrider.policy.severity import FindingSeverity
 from outrider.prompts import patch as patch_prompt
@@ -131,18 +132,12 @@ def extract_target_lines(
 
 
 def _is_valid_replacement(replacement: str, original_line: str) -> bool:
-    """A `replacement_line` must be ONE line (no newline), backtick-free (markdown-
-    fence risk; the V1 reject until a sandbox proves longer suggestion fences —
-    #040; the renderer defends too), non-empty, not a diff marker, and an actual
-    CHANGE from the original (drops no-op rewrites)."""
-    if "\n" in replacement or "`" in replacement:
-        return False
-    if not replacement.strip():  # empty / whitespace-only
-        return False
-    if replacement == original_line:  # no-op
-        return False
-    # diff markers (`@@ ` hunk header, `+ `/`- ` add/remove lines) — not a bare line.
-    return not (replacement.lstrip().startswith("@@") or replacement[:2] in ("+ ", "- "))
+    """A `replacement_line` must pass the shared single-line GitHub-suggestion safety
+    gate (`is_safe_suggestion_replacement` — one line, backtick-free, non-empty, no diff
+    marker, no Trojan-Source codepoint, no HTML-comment marker-forgery; #040) AND be an
+    actual CHANGE from the original (drops no-op rewrites). The renderer enforces the
+    same shared gate independently (defense in depth)."""
+    return is_safe_suggestion_replacement(replacement) and replacement != original_line
 
 
 def apply_patch_batch(
