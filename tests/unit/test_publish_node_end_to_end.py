@@ -1426,12 +1426,34 @@ def test_render_suggestion_block_wraps_in_suggestion_fence() -> None:
 def test_render_suggestion_block_suppresses_backtick_bearing_fix() -> None:
     """A `suggested_fix` containing a backtick renders to "" — the fixed fence can't
     be widened the way render_fenced_block widens plain fences (GitHub keys on the
-    literal ```suggestion token), so a backtick would break out. Second, independent
-    backtick gate behind the patch-generation parser's own reject."""
+    literal ```suggestion token), so a backtick would break out. Part of the second,
+    independent single-line/fence-safety gate behind the patch-generation parser."""
     from outrider.agent.nodes.publish import _render_suggestion_block
 
     assert _render_suggestion_block("x = `evil`") == ""
     assert _render_suggestion_block("```") == ""
+
+
+def test_render_suggestion_block_suppresses_multiline_fix() -> None:
+    """A multi-line `suggested_fix` renders to "" — V1 is strictly one-line (#040), so a
+    `\\n`/`\\r`-bearing fix (e.g. a direct DB write past the parser) must NOT ship a
+    multi-line GitHub suggestion. The renderer is the independent single-line gate."""
+    from outrider.agent.nodes.publish import _render_suggestion_block
+
+    assert _render_suggestion_block("line1\nline2") == ""
+    assert _render_suggestion_block("a = 1\r\nb = 2") == ""
+
+
+def test_render_suggestion_block_suppresses_diff_marker_and_whitespace() -> None:
+    """Diff-marker and whitespace-only fixes render to "" — mirrors the parser's
+    `_is_valid_replacement` string-intrinsic rejects so the renderer is a complete
+    independent gate (sans the no-op check, which needs the original line)."""
+    from outrider.agent.nodes.publish import _render_suggestion_block
+
+    assert _render_suggestion_block("@@ -1 +1 @@") == ""
+    assert _render_suggestion_block("+ added line") == ""
+    assert _render_suggestion_block("- removed line") == ""
+    assert _render_suggestion_block("   ") == ""
 
 
 def test_render_suggestion_block_suppresses_absent_and_empty_fix() -> None:

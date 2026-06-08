@@ -11,12 +11,15 @@ Read-only: a pure projection of existing state (the `reviews` row, FindingEvent 
 Finding content, HITLDecisionEvent, PublishEvent, InstallationRepository); it emits
 no audit event.
 
-Every audit read is `is_eval`-scoped (FUP-130). `suggested_fix` (feature 2 /
-DECISIONS.md#040) is surfaced when a patch was generated, so the unforgeable channel
-carries the fix the GitHub ```suggestion renders. Unstored fields are still OMITTED,
-not faked: `github_comment_url` (Outrider records only the review-level
-`github_review_id`). `schema_version` lets agents branch on future contract
-revisions; adding the nullable `suggested_fix` is additive, so it stays `"1"`.
+Every audit read is `is_eval`-scoped (FUP-130). Fields are OMITTED from the V1
+contract, not faked: `github_comment_url` (Outrider records only the review-level
+`github_review_id`), and `suggested_fix` (feature 2 / DECISIONS.md#040 generates the
+patch in synthesize and renders it as a GitHub ```suggestion at publish, but does NOT
+persist it to the finding content row — it lives only in graph state + the GitHub
+comment — so it is not readable here yet). Projecting `suggested_fix` on this
+unforgeable channel, gated on publish having routed the finding INLINE_COMMENT +
+ELIGIBLE, is a deferred follow-up (it requires the findings-row persistence first).
+`schema_version` lets agents branch on future contract revisions.
 """
 
 from __future__ import annotations
@@ -65,12 +68,11 @@ class AgentFindingView(BaseModel):
     marker); a `severity_override` decision swaps the policy value for the reviewer's,
     and `reviewer_decision.original_severity` keeps the pre-override (policy) value.
     `severity` / `evidence_tier` are policy/human-decided, never model output.
-    `title` / `description` / `suggested_fix` are model-generated content (`None` on a
-    retention-redacted stub). `suggested_fix` is the exact single-line replacement
-    feature 2 (DECISIONS.md#040) renders as a GitHub ```suggestion at publish —
-    surfaced here so the unforgeable channel carries the fix, not just the forgeable
-    comment; `None` when no patch was generated. `github_comment_url` is still omitted
-    (Outrider stores only the review-level `github_review_id`)."""
+    `title` / `description` are model-generated content (`None` on a retention-redacted
+    stub). `github_comment_url` AND the feature-2 `suggested_fix` are omitted in V1: the
+    patch (DECISIONS.md#040) is rendered as a GitHub ```suggestion at publish but is not
+    persisted to the finding row, so it is not readable here — gated projection is a
+    deferred follow-up."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -83,7 +85,6 @@ class AgentFindingView(BaseModel):
     evidence_tier: str
     title: str | None
     description: str | None
-    suggested_fix: str | None
     hitl_gated: bool
     reviewer_decision: AgentReviewerDecision | None
 
@@ -234,7 +235,6 @@ def _to_agent_finding(
         evidence_tier=fv.evidence_tier,
         title=fv.title,
         description=fv.description,
-        suggested_fix=fv.suggested_fix,
         hitl_gated=str(fv.finding_id) in gated_fids,
         reviewer_decision=reviewer_decision,
     )
