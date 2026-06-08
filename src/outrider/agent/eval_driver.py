@@ -60,6 +60,7 @@ from sqlalchemy.pool import NullPool
 
 from outrider.agent.graph import build_graph
 from outrider.agent.nodes.hitl_config import HITLConfig
+from outrider.agent.nodes.patch_config import PatchConfig
 from outrider.anomaly.persister import AnomalyPersister
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
@@ -758,6 +759,11 @@ def _build_eval_graph(
         review_status_sink=ReviewStatusPersister(session_factory=session_factory),
         anomaly_sink=AnomalyPersister(session_factory=session_factory),
         hitl_config=HITLConfig(),
+        # Suggested-patch pass OFF by default in eval: existing scenarios script LLM
+        # responses by node_id+call-index and do NOT script the extra synthesize patch
+        # call, so enabling it would raise EvalDriverError. A patch-specific scenario
+        # opts in by scripting the second synthesize response (DECISIONS.md#040).
+        patch_config=PatchConfig(patches_enabled=False),
         checkpointer=checkpointer,
         publisher=publisher,
         import_path_resolver=_NoOpImportPathResolver(),

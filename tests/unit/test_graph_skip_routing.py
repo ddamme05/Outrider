@@ -178,6 +178,7 @@ class _StubModelConfig:
     analyze_model = "stub-analyze-model"
     trace_model = "stub-trace-model"
     synthesize_model = "stub-synthesize-model"
+    patch_model = "stub-patch-model"
 
 
 def _stub_db_factory() -> Any:
@@ -201,6 +202,7 @@ def compiled_graph() -> Any:
     from langgraph.checkpoint.memory import InMemorySaver
 
     from outrider.agent.nodes.hitl_config import HITLConfig
+    from outrider.agent.nodes.patch_config import PatchConfig
 
     return build_graph(
         db_factory=_stub_db_factory,  # type: ignore[arg-type]
@@ -215,6 +217,7 @@ def compiled_graph() -> Any:
         review_status_sink=_StubReviewStatusSink(),
         anomaly_sink=_StubAnomalySink(),
         hitl_config=HITLConfig(),
+        patch_config=PatchConfig(),
         checkpointer=InMemorySaver(),
         publisher=_StubGitHubPublisher(),
         file_examination_sink=_StubFileSink(),

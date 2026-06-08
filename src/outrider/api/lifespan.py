@@ -508,10 +508,14 @@ def build_lifespan(
             # if timeout_action is set to anything other than
             # `expire_only` — V1's hitl-gates-high-severity guarantee.
             from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
+            from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
             from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: PLC0415
 
             review_status_persister = ReviewStatusPersister(session_factory=session_factory)
             hitl_config = HITLConfig()  # reads env vars; fails loud on AUTO_POST
+            # Suggested patches (DECISIONS.md#040): reads OUTRIDER_PATCHES_ENABLED
+            # (default on) + the per-review cap. Patch model is ModelConfig.patch_model.
+            patch_config = PatchConfig()
 
             # Step 7b: durable LangGraph checkpointer. HITL `interrupt(...)`
             # writes the suspended state to this checkpointer; the
@@ -558,6 +562,7 @@ def build_lifespan(
                 review_status_sink=review_status_persister,
                 anomaly_sink=anomaly_persister,
                 hitl_config=hitl_config,
+                patch_config=patch_config,
                 checkpointer=checkpointer,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,

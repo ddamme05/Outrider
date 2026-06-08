@@ -865,9 +865,16 @@ async def _route_and_gate_one_finding(
         # developer pastes into their coding agent. Built from verified fields; the
         # untrusted model summary is fenced + length-bounded. No LLM call.
         agent_prompt = _build_agent_prompt_block(finding, effective_severity=effective_severity)
+        # Feature-2 (DECISIONS.md#040): render the finding's stored single-line fix as
+        # a GitHub ```suggestion block. Reaches here ONLY on INLINE_COMMENT + ELIGIBLE,
+        # so a generated patch on a DASHBOARD_ONLY / REVIEW_BODY finding never renders
+        # (generate-before-routing, render-after-routing). Read-only: suppressed without
+        # mutation when suggested_fix is absent or backtick-bearing.
+        suggestion = _render_suggestion_block(finding.suggested_fix)
         body = _build_finding_comment_body(
             finding,
             effective_severity=effective_severity,
+            suggestion=suggestion,
             agent_prompt=agent_prompt,
             markers=agent_markers,
         )
@@ -1218,10 +1225,30 @@ def _build_agent_prompt_block(
     )
 
 
+def _render_suggestion_block(suggested_fix: str | None) -> str:
+    """Render a finding's stored `suggested_fix` as a GitHub ```suggestion block.
+
+    Read-only (DECISIONS.md#040): a `suggested_fix` that is absent/empty or contains a
+    backtick renders to "" (suppressed) WITHOUT mutating the finding — rendering is a
+    route+content decision made at publish, not a state change. The fixed three-backtick
+    fence is safe only because the patch-generation parser already rejected any
+    replacement containing a backtick; a ```suggestion fence can't be widened the way
+    `render_fenced_block` widens a plain fence (GitHub keys the Apply button on the
+    literal ```suggestion token), so this is a second, independent backtick gate that
+    stops a direct DB write or future generator path from smuggling a fence-breaking
+    patch into the comment body. Dynamic fences stay out until a sandbox proves GitHub
+    accepts them for `suggestion`.
+    """
+    if not suggested_fix or "`" in suggested_fix:
+        return ""
+    return f"```suggestion\n{suggested_fix}\n```"
+
+
 def _build_finding_comment_body(
     finding: ReviewFinding,
     *,
     effective_severity: FindingSeverity,
+    suggestion: str = "",
     agent_prompt: str = "",
     markers: str = "",
 ) -> str:
@@ -1238,12 +1265,13 @@ def _build_finding_comment_body(
     sanitizer enforces the byte cap including the truncation marker
     and any fencing overhead the body composes.
 
-    The uncuttable tail is the S1.5 agent-prompt block (`agent_prompt`, from
-    `_build_agent_prompt_block`) followed by the S1 agent-marker block (`markers`,
-    from `_build_agent_markers`). Both are pre-bounded; the PROSE is size-capped
-    reserving room for them, then each is appended UNCUT — an agent must parse the
-    markers + paste the prompt intact, so neither enters `apply_size_cap`'s
-    truncation path. With both empty, the prose is capped alone (original behaviour).
+    The uncuttable tail is, in human-visible order: the feature-2 GitHub
+    ```suggestion block (`suggestion`, from `_render_suggestion_block`; the Apply
+    button must not be truncated), then the S1.5 agent-prompt block (`agent_prompt`),
+    then the S1 agent-marker block (`markers`). All are pre-bounded; the PROSE is
+    size-capped reserving room for them, then each is appended UNCUT, so truncation
+    can never cut the suggestion fence or the marker block. With all empty, the prose
+    is capped alone (original behaviour).
     """
     # Local import to keep the module top-level clean and to avoid
     # pulling the sanitizer's HMAC-secret env-read at import time.
@@ -1259,7 +1287,7 @@ def _build_finding_comment_body(
         f"**{finding.finding_type.value}** — {title_sanitized}"
     )
     body = f"{header}\n\n{description_sanitized}"
-    tail_blocks = tuple(block for block in (agent_prompt, markers) if block)
+    tail_blocks = tuple(block for block in (suggestion, agent_prompt, markers) if block)
     if not tail_blocks:
         return apply_size_cap(body)
     suffix = "\n\n" + "\n\n".join(tail_blocks)

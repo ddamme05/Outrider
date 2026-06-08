@@ -259,6 +259,7 @@ def _valid_args() -> dict[str, Any]:
     from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
 
     from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
+    from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
 
     return {
         "provider": _StubProvider(),
@@ -273,6 +274,7 @@ def _valid_args() -> dict[str, Any]:
         "review_status_sink": _StubReviewStatusSink(),
         "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
+        "patch_config": PatchConfig(),
         "checkpointer": InMemorySaver(),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
