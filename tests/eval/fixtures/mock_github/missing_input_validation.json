@@ -1,0 +1,36 @@
+{
+  "installation_id": 5303,
+  "owner": "acme",
+  "repo": "accounts",
+  "pr_number": 33,
+  "base_sha": "5555555555555555555555555555555555555555",
+  "head_sha": "6666666666666666666666666666666666666666",
+  "pr_title": "Add set_age view",
+  "pr_body": "Adds set_age, which updates a user's age from a request parameter.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "accounts/views.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n # user views\n+\n+\n+def set_age(request, user):\n+    user.age = int(request.GET[\"age\"])\n+    user.save()\n",
+      "previous_path": null,
+      "content_base": "# user views\n",
+      "content_head": "# user views\n\n\ndef set_age(request, user):\n    user.age = int(request.GET[\"age\"])\n    user.save()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"accounts/views.py\": \"standard\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario: set_age int()-casts an untrusted request value with no validation -- flag the missing input validation.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"missing_input_validation\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unvalidated age from request in set_age\", \"description\": \"set_age reads request.GET['age'] and int()-casts it with no validation: a missing or non-numeric value raises, and any integer (negative, absurdly large) is persisted unchecked. Validate presence, type, and range before assigning.\", \"evidence\": \"    user.age = int(request.GET[\\\"age\\\"])\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one MEDIUM missing-input-validation finding -- set_age persists an unchecked request value."
+    ]
+  }
+}

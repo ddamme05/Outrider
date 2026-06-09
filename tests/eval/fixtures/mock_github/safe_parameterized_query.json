@@ -1,0 +1,36 @@
+{
+  "installation_id": 5301,
+  "owner": "acme",
+  "repo": "directory",
+  "pr_number": 31,
+  "base_sha": "1111111111111111111111111111111111111111",
+  "head_sha": "2222222222222222222222222222222222222222",
+  "pr_title": "Add get_user lookup",
+  "pr_body": "Adds a get_user helper that looks up a user by id with a parameterized query.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "directory/users.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n from django.db import connection\n+\n+\n+def get_user(user_id):\n+    with connection.cursor() as cursor:\n+        cursor.execute(\"SELECT * FROM users WHERE id = %s\", [user_id])\n+        return cursor.fetchone()\n",
+      "previous_path": null,
+      "content_base": "from django.db import connection\n",
+      "content_head": "from django.db import connection\n\n\ndef get_user(user_id):\n    with connection.cursor() as cursor:\n        cursor.execute(\"SELECT * FROM users WHERE id = %s\", [user_id])\n        return cursor.fetchone()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"directory/users.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision/false-positive scenario: a correctly-parameterized DB query (%s placeholder + params list) -- deep-review to confirm no SQL-injection finding is hallucinated (tracks the Haiku parameterized-query over-flag, DECISIONS#041).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Precision scenario: no findings. get_user uses a parameterized query (the %s placeholder with a separate params list), which is not injectable; no SQL-injection finding should be produced."
+    ]
+  }
+}

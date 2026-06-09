@@ -1,0 +1,36 @@
+{
+  "installation_id": 5302,
+  "owner": "acme",
+  "repo": "reports",
+  "pr_number": 32,
+  "base_sha": "3333333333333333333333333333333333333333",
+  "head_sha": "4444444444444444444444444444444444444444",
+  "pr_title": "Add report download view",
+  "pr_body": "Adds read_report, which returns the contents of a named report file.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "reports/views.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import pathlib\n+\n+\n+def read_report(request):\n+    name = request.GET[\"name\"]\n+    return pathlib.Path(\"/srv/reports/\" + name).read_text()\n",
+      "previous_path": null,
+      "content_base": "import pathlib\n",
+      "content_head": "import pathlib\n\n\ndef read_report(request):\n    name = request.GET[\"name\"]\n    return pathlib.Path(\"/srv/reports/\" + name).read_text()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"reports/views.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario: read_report joins an untrusted request value into a filesystem path and reads it -- deep-review the path-traversal exposure.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"path_traversal\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Path traversal via unsanitized filename in read_report\", \"description\": \"read_report concatenates the untrusted request 'name' into a filesystem path and reads it, so a value like '../../etc/passwd' escapes /srv/reports. Validate/normalize the path and enforce containment before reading.\", \"evidence\": \"    return pathlib.Path(\\\"/srv/reports/\\\" + name).read_text()\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one HIGH path-traversal finding -- read_report reads an attacker-controlled path joined from request input."
+    ]
+  }
+}
