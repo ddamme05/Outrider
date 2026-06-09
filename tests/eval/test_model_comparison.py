@@ -306,7 +306,8 @@ async def test_comparison_passes_when_candidate_holds_recall() -> None:
 
 def test_state_from_eval_fixture_builds_enriched_standard_state() -> None:
     """The adapter stands in for intake+triage: changed_files populated from the
-    fixture's real content, tier pinned STANDARD (the tier the flip evaluates)."""
+    fixture's real content, tier pinned STANDARD (the tier the flip evaluates), and
+    dimensions/risk read from the fixture's OWN triage (security/high here)."""
     state = state_from_eval_fixture(_PYGOAT_SQL_FIXTURE)
     assert state.triage_result is not None
     assert state.pr_context.changed_files  # intake's job, done by the adapter
@@ -314,6 +315,25 @@ def test_state_from_eval_fixture_builds_enriched_standard_state() -> None:
     assert cf.path == "pygoat/introduction/views.py"
     assert cf.content_head is not None and "search_users" in cf.content_head
     assert state.triage_result.file_tiers[cf.path] is ReviewTier.STANDARD
+    assert state.triage_result.relevant_dimensions == (ReviewDimension.SECURITY,)
+    assert state.triage_result.overall_risk is RiskLevel.HIGH
+
+
+def test_state_from_eval_fixture_reads_dimensions_from_fixture_triage() -> None:
+    """Regression guard: dimensions come from the fixture's own triage, NOT a hard-coded
+    SECURITY. A code-quality / performance scenario must carry its real dimension + risk —
+    only the tier is overridden — else the adapter's 'triage-faithful' claim is false and a
+    dimension-consuming analyze would under-scope exactly the subtler scenarios."""
+    eh = state_from_eval_fixture(_MISSING_ERROR_HANDLING_FIXTURE).triage_result
+    assert eh is not None
+    assert eh.relevant_dimensions == (ReviewDimension.CODE_QUALITY,)
+    assert eh.overall_risk is RiskLevel.MEDIUM  # fixture says medium, not hard-coded HIGH
+    assert eh.file_tiers["profile/client.py"] is ReviewTier.STANDARD  # tier still overridden
+
+    npo = state_from_eval_fixture(_N_PLUS_ONE_FIXTURE).triage_result
+    assert npo is not None
+    assert npo.relevant_dimensions == (ReviewDimension.PERFORMANCE,)
+    assert npo.overall_risk is RiskLevel.MEDIUM
 
 
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))

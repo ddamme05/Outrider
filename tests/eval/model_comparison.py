@@ -80,11 +80,27 @@ class _NoOpImportPathResolver:
         return []
 
 
+def _triage_dims_and_risk(
+    fixture: EvalFixture,
+) -> tuple[tuple[ReviewDimension, ...], RiskLevel]:
+    """The `relevant_dimensions` + `overall_risk` the fixture's OWN scripted triage
+    assigned — the canonical triage output the driven scenarios feed the real triage node.
+    Read here (not hard-coded) so the adapter is triage-faithful: a code-quality /
+    performance scenario gets its real dimensions, not a blanket SECURITY. Only the TIER is
+    overridden downstream (the single variable under test)."""
+    triage_responses = fixture.llm_responses.get("triage")
+    if not triage_responses:
+        raise ValueError("eval fixture has no scripted triage response to read dimensions from")
+    parsed = json.loads(triage_responses[0])
+    dimensions = tuple(ReviewDimension(d) for d in parsed["relevant_dimensions"])
+    return dimensions, RiskLevel(parsed["overall_risk"])
+
+
 def state_from_eval_fixture(
     fixture_path: str | Path,
     *,
     tier: ReviewTier = ReviewTier.STANDARD,
-    dimensions: tuple[ReviewDimension, ...] = (ReviewDimension.SECURITY,),
+    dimensions: tuple[ReviewDimension, ...] | None = None,
 ) -> ReviewState:
     """Build a post-intake / post-triage `ReviewState` from a `mock_github/*.json`
     eval fixture, every changed file pinned to `tier`.
@@ -101,6 +117,11 @@ def state_from_eval_fixture(
     builds the SAME `ChangedFile` shape intake produces (including `language=None`,
     which intake never sets — analyze infers Python from the path), so the state the
     real run analyzes is faithful to production.
+
+    `relevant_dimensions` and `overall_risk` are read from the fixture's OWN scripted
+    triage response (a code-quality / performance scenario gets its real dimensions, not a
+    blanket SECURITY) — only the TIER is overridden, the single variable under test. Pass
+    `dimensions` to override explicitly.
     """
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
@@ -140,12 +161,13 @@ def state_from_eval_fixture(
         total_deletions=fixture.total_deletions,
         changed_files=changed_files,
     )
+    fixture_dimensions, fixture_risk = _triage_dims_and_risk(fixture)
     triage_result = TriageResult(
         file_tiers={f.path: tier for f in fixture.files},
-        overall_risk=RiskLevel.HIGH,
-        relevant_dimensions=dimensions,
-        reasoning="model-tier comparison harness: triage held fixed so the gate "
-        "varies only the analyze model",
+        overall_risk=fixture_risk,
+        relevant_dimensions=dimensions if dimensions is not None else fixture_dimensions,
+        reasoning="model-tier comparison harness: triage held fixed (dimensions + risk from "
+        "the fixture's own triage) so the gate varies only the analyze model + STANDARD tier",
         policy_version=ACTIVE_POLICY_VERSION,
     )
     return ReviewState(
