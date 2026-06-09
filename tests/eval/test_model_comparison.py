@@ -77,16 +77,19 @@ _GROUND_TRUTH = (
 # Each maps a checked-in mock_github fixture (real code + patch, the same content the
 # driven scenarios exercise) to its ground-truth findings. The set spans the severity
 # range a STANDARD-tier flip actually has to hold — two blatant CRITICALs (SQLi, auth
-# bypass) AND two subtler findings a cheaper model is likelier to miss (a LOW
-# missing-error-handling and an N+1 query, the kind of thing the easy CRITICALs don't
-# probe). Severity comes from `lookup_severity` (policy is the source of truth — hard-
-# coding would drift if the table changes). Line numbers are HEAD source lines, matching
-# the fixtures' own scripted analyze responses (which the driven scenarios validate).
+# bypass) PLUS four subtler findings a cheaper model is likelier to miss: a HIGH
+# path-traversal, two MEDIUMs (an N+1 query and a distinct missing-input-validation), and a
+# LOW missing-error-handling — so recall spans CRITICAL -> HIGH -> MEDIUM(x2) -> LOW, not
+# just the easy CRITICALs. Severity comes from `lookup_severity` (policy is the source of
+# truth — hardcoding would drift if the table changes). Line numbers are HEAD source lines,
+# matching the fixtures' own scripted analyze responses (which the driven scenarios validate).
 # ---------------------------------------------------------------------------
 _PYGOAT_SQL_FIXTURE = "tests/eval/fixtures/mock_github/pygoat_sql_injection.json"
 _PYGOAT_AUTH_FIXTURE = "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json"
 _MISSING_ERROR_HANDLING_FIXTURE = "tests/eval/fixtures/mock_github/missing_error_handling.json"
 _N_PLUS_ONE_FIXTURE = "tests/eval/fixtures/mock_github/n_plus_one_query.json"
+_PATH_TRAVERSAL_FIXTURE = "tests/eval/fixtures/mock_github/path_traversal.json"
+_MISSING_INPUT_VALIDATION_FIXTURE = "tests/eval/fixtures/mock_github/missing_input_validation.json"
 
 _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
     _PYGOAT_SQL_FIXTURE: (
@@ -126,6 +129,26 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             severity=lookup_severity(FindingType.N_PLUS_ONE_QUERY),
         ),
     ),
+    # Severity-breadth fills (de-risk the flip): a HIGH and a second MEDIUM (distinct type),
+    # so recall now spans CRITICAL -> HIGH -> MEDIUM(x2) -> LOW rather than the easy CRITICALs.
+    _PATH_TRAVERSAL_FIXTURE: (
+        ExpectedFinding(
+            file_path="reports/views.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.PATH_TRAVERSAL,
+            severity=lookup_severity(FindingType.PATH_TRAVERSAL),
+        ),
+    ),
+    _MISSING_INPUT_VALIDATION_FIXTURE: (
+        ExpectedFinding(
+            file_path="accounts/views.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.MISSING_INPUT_VALIDATION,
+            severity=lookup_severity(FindingType.MISSING_INPUT_VALIDATION),
+        ),
+    ),
 }
 
 # Safe-code scenarios — the PRECISION instrument (distinct from the recall fixtures above).
@@ -139,6 +162,17 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     "tests/eval/fixtures/mock_github/safe_refactor.json",
     "tests/eval/fixtures/mock_github/eval_in_test_fixture.json",
 )
+
+# Regression-track fixtures — safe code where the BASELINE (Sonnet) is expected CLEAN
+# (fp=0), so the gate can be read ABSOLUTELY, not just relative-to-baseline. The general
+# `_SAFE_CODE_FIXTURES` gate on relative `fp_bounded` (candidate <= baseline + allowance) —
+# fine when a shared over-flag is acceptable (eval_in_test's test-code `eval()`), but it
+# would let a SHARED false positive pass. For these, baseline fp>0 means non-discriminating
+# (a product-prompt problem, not Haiku evidence); baseline fp=0 AND candidate fp>0 is the
+# tracked regression reproduced. `safe_parameterized_query` tracks the DECISIONS#041 caveat:
+# Haiku reproducibly over-flags a correctly-parameterized query as a potential sql_injection.
+_PARAMETERIZED_QUERY_FIXTURE = "tests/eval/fixtures/mock_github/safe_parameterized_query.json"
+_REGRESSION_FIXTURES: tuple[str, ...] = (_PARAMETERIZED_QUERY_FIXTURE,)
 
 
 def _judged_response_for(expected: ExpectedFinding) -> str:
@@ -348,7 +382,7 @@ def test_state_from_eval_fixture_reads_dimensions_from_fixture_triage() -> None:
     assert npo.overall_risk is RiskLevel.MEDIUM
 
 
-@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES)
+@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES + _REGRESSION_FIXTURES)
 def test_state_from_safe_code_fixture_builds(fixture_path: str) -> None:
     """The safe-code (precision) fixtures build an analyzable STANDARD-tier state the same
     way — multi-dimension triage read from the fixture, tier overridden to STANDARD."""
@@ -384,16 +418,51 @@ async def test_safe_code_clean_under_clean_model_scores_zero_fp(fixture_path: st
     assert cmp.fp_bounded is True  # neither over-flagged clean code → precision green
 
 
+@pytest.mark.asyncio
+async def test_parameterized_query_candidate_overflag_fails_precision() -> None:
+    """Regression track (DECISIONS#041): on the safe parameterized-query fixture, a
+    CANDIDATE-ONLY false positive — Haiku flags the correctly-parameterized query as a
+    `sql_injection` while Sonnet stays clean — FAILS the precision dimension. This is the
+    exact #041 caveat (baseline clean, candidate over-flags), and the gate catches it:
+    candidate fp (1) > baseline fp (0). The complementary SHARED-over-flag case (both fp>0,
+    which the relative gate would wrongly pass) is handled by the opt-in run's absolute
+    baseline-clean guard, not this test."""
+    overflag = _judged_response_for(
+        ExpectedFinding(
+            file_path="directory/users.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        )
+    )
+    baseline = _ScriptedProvider(_MISSES_RESPONSE)  # Sonnet: clean
+    candidate = _ScriptedProvider(overflag)  # Haiku: over-flags the parameterized query
+    cmp = await compare_models_on_scenario(
+        state_from_eval_fixture(_PARAMETERIZED_QUERY_FIXTURE),
+        (),  # safe code — the sql_injection is an unambiguous false positive
+        baseline_provider=baseline,
+        baseline_model="claude-sonnet-4-6",
+        candidate_provider=candidate,
+        candidate_model="claude-haiku-4-5",
+    )
+    assert baseline.calls and candidate.calls  # analyze actually invoked each model
+    assert cmp.baseline.n_false_positives == 0  # baseline clean — the discriminating precondition
+    assert cmp.candidate.n_false_positives == 1  # the over-flag reproduced
+    assert cmp.fp_bounded is False  # precision FAILS — the gate catches the candidate-only FP
+
+
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
-    """END-TO-END zero-spend over EACH recall fixture (all four in `_GROUND_TRUTH_BY_FIXTURE`
-    — SQLi, auth-bypass, missing-error-handling, N+1): a scripted "Sonnet" that returns the
-    known finding scores recall 1.0; a scripted "Haiku" that misses it scores 0.0 and FAILS
-    the gate. The STATE is the real vulnerable code (built by state_from_eval_fixture); only
-    the provider is faked — so the real run differs only by swapping in the AnthropicProvider.
-    Parametrized over every fixture so analyze accepting a finding at each known line (e.g.
-    views.py:5) is verified for all of them. A JUDGED stand-in needs no tree-sitter query."""
+    """END-TO-END zero-spend over EACH recall fixture (all six in `_GROUND_TRUTH_BY_FIXTURE`
+    — SQLi, auth-bypass, missing-error-handling, N+1, path-traversal, missing-input-validation):
+    a scripted "Sonnet" that returns the known finding scores recall 1.0; a scripted "Haiku"
+    that misses it scores 0.0 and FAILS the gate. The STATE is the real vulnerable code (built
+    by state_from_eval_fixture); only the provider is faked — so the real run differs only by
+    swapping in the AnthropicProvider. Parametrized over every fixture so analyze accepting a
+    finding at each known line (e.g. views.py:5) is verified for all of them. A JUDGED stand-in
+    needs no tree-sitter query."""
     ground_truth = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
     cmp = await compare_models_on_scenario(
         state_from_eval_fixture(fixture_path),
@@ -456,7 +525,7 @@ async def test_real_model_comparison_evidence() -> None:
     the printed output and the end summary, and the human adjudicates. It does not hard-fail
     because model output is nondeterministic; a hard pytest fail would red on that noise.
 
-    TWO DIMENSIONS, measured on the fixtures each is valid for:
+    THREE DIMENSIONS, measured on the fixtures each is valid for:
     - RECALL, over known-vulnerability fixtures (`_GROUND_TRUTH_BY_FIXTURE`): does the
       candidate catch the known finding? Gated on `recall_held` + `baseline_valid`. FP is
       ADVISORY here, NOT gated: a real run showed the "extras" on vulnerable files are
@@ -464,9 +533,13 @@ async def test_real_model_comparison_evidence() -> None:
       unvalidated-input finding alongside the SQLi), so fp on a vulnerable file is an
       unreliable over-flag signal. Read the printed extra detail, don't gate on it.
     - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
-      candidate over-flag clean code? ANY finding is an unambiguous FP, so gated on
-      `fp_bounded` (candidate must not exceed the baseline's FP count). This is the clean
-      over-flag signal the vulnerable fixtures can't give.
+      candidate over-flag clean code MORE than the baseline? Gated on `fp_bounded` (a RELATIVE
+      bound — fine where a shared over-flag is acceptable, e.g. eval()-in-test).
+    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES` (safe code where the baseline is expected
+      CLEAN): an ABSOLUTE verdict — baseline fp>0 is non-discriminating; baseline fp=0 AND
+      candidate fp>0 is the tracked regression reproduced. `safe_parameterized_query` tracks
+      the DECISIONS#041 Haiku parameterized-query false-CRITICAL. The relative `fp_bounded`
+      gate alone would let a SHARED over-flag pass, hence the absolute baseline-clean check.
 
     Run the analyze node under Sonnet (baseline — the DEEP model + the pre-flip STANDARD
     model) and Haiku (candidate — now the shipped STANDARD default, DECISIONS#041) per
@@ -540,6 +613,39 @@ async def test_real_model_comparison_evidence() -> None:
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             gate_results.append((fixture_path, "precision", cmp.fp_bounded))
             assert cmp.baseline is not None  # the run completed
+        # REGRESSION-TRACK dimension — safe code where the BASELINE is expected CLEAN, so the
+        # verdict is ABSOLUTE, not relative fp_bounded: a SHARED over-flag (both fp>0) would
+        # wrongly pass the relative gate (DECISIONS#041 / Codex). baseline fp>0 = the scenario
+        # is non-discriminating; baseline fp=0 AND candidate fp>0 = the #041 over-flag reproduced.
+        for fixture_path in _REGRESSION_FIXTURES:
+            cmp = await compare_models_on_scenario(
+                state_from_eval_fixture(fixture_path),
+                (),
+                baseline_provider=provider,
+                baseline_model=baseline_model,
+                candidate_provider=provider,
+                candidate_model=candidate_model,
+            )
+            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+            b_fp = cmp.baseline.n_false_positives
+            c_fp = cmp.candidate.n_false_positives
+            if b_fp > 0:
+                verdict, ok = (
+                    f"NON-DISCRIMINATING — baseline (Sonnet) itself over-flagged {b_fp}; "
+                    "this is a product-prompt issue, not valid Haiku evidence",
+                    False,
+                )
+            elif c_fp > 0:
+                verdict, ok = (
+                    f"#041 CAVEAT REPRODUCED — baseline clean, candidate (Haiku) over-flagged "
+                    f"{c_fp}",
+                    False,
+                )
+            else:
+                verdict, ok = ("CLEAN — both fp=0; the over-flag did not reproduce this run", True)
+            print(f"  REGRESSION-TRACK verdict: {verdict}")  # noqa: T201 — operator diagnostic
+            gate_results.append((fixture_path, "regression", ok))
+            assert cmp.baseline is not None  # the run completed
         # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
         failed = [(fx, dim) for fx, dim, ok in gate_results if not ok]
         green = len(gate_results) - len(failed)
@@ -549,7 +655,7 @@ async def test_real_model_comparison_evidence() -> None:
             + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
             + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
             + f"\n  {green}/{len(gate_results)} dimension-verdicts green "
-            + "(recall fixtures gate on recall; safe-code fixtures gate on FP)."
+            + "(recall→recall; safe-code→relative FP; regression-track→absolute baseline-clean)."
             + "".join(f"\n  {dim.upper()} FAILED: {fx}" for fx, dim in failed)
             + "\n"
             + "=" * 72
