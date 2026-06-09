@@ -17,8 +17,10 @@ A model finding MATCHES a ground-truth finding iff ALL hold (the declared match 
 From the match set we compute recall (of the expected findings, how many were caught),
 precision (of the model's findings, how many matched an expected one — so extra/noise
 findings are counted separately, not hidden), and severity accuracy. `compare(...)` then
-applies the gate: the candidate model's recall must be within a DECLARED tolerance of the
-baseline's, AND its false-positive (extra) count must not balloon.
+applies the gate, which passes only if ALL THREE hold: the BASELINE itself cleared a
+DECLARED recall floor (`baseline_valid` — else a scenario both models fail would "hold
+recall" vacuously), the candidate's recall is within a DECLARED tolerance of the
+baseline's, AND its false-positive (extra) count did not balloon.
 
 Pure functions over already-validated `ReviewFinding`s + `ExpectedFinding` ground truth;
 no I/O, no LLM, no spend. The real-model run that produces the `ReviewFinding`s lives in

@@ -97,6 +97,25 @@ def test_no_match_on_different_type() -> None:
     assert finding_matches(_finding(severity=FindingSeverity.HIGH), _expected()) is False
 
 
+def test_no_match_on_same_severity_different_type() -> None:
+    """Isolates the finding_type clause of the match contract. The other no-match cases
+    differ in severity too, so the severity check co-fires and the type check goes
+    unguarded (deleting it from finding_matches would pass every other test). Here actual
+    and expected are BOTH CRITICAL but of different types (SQL_INJECTION vs AUTH_BYPASS at
+    the same place) — only the type clause can reject it. This is the clause that separates
+    'caught the SQL injection' from 'flagged some other CRITICAL issue on this line', so it
+    is exactly what a false 'recall held' verdict on the live flip would hinge on."""
+    actual = _finding(severity=FindingSeverity.CRITICAL)  # SQL_INJECTION via _TYPE_FOR_SEVERITY
+    expected = ExpectedFinding(
+        file_path="app/db.py",
+        line_start=10,
+        line_end=10,
+        finding_type=FindingType.AUTH_BYPASS,  # same severity (CRITICAL), different type
+        severity=FindingSeverity.CRITICAL,
+    )
+    assert finding_matches(actual, expected) is False
+
+
 def test_no_match_on_different_file() -> None:
     assert finding_matches(_finding(file_path="app/a.py"), _expected(file_path="app/b.py")) is False
 
