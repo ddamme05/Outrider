@@ -170,11 +170,10 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
 # (eval_in_test's test-code `eval()`) but would let a SHARED false positive pass. Baseline fp>0
 # means NON-DISCRIMINATING (an alternate finding surface in the fixture, or a product-prompt
 # issue — not Haiku evidence); baseline fp=0 AND candidate fp>0 is the regression reproduced.
-# `safe_parameterized_query` tracks the DECISIONS#041 caveat (Haiku CAN over-flag a parameterized
-# query as sql_injection), but the over-flag is nondeterministic (the real run reproduced it on
-# n_plus_one, NOT here) AND this fixture's baseline is not yet reliably clean (Sonnet over-flags
-# get_user's unvalidated user_id / missing error handling), so the tracker is currently
-# INCONCLUSIVE — hardening it to a reliably-clean baseline is a follow-up.
+# `safe_parameterized_query` tracks the DECISIONS#041 caveat (Haiku can NONDETERMINISTICALLY
+# over-flag a parameterized query as sql_injection). Its baseline is not guaranteed clean —
+# get_user is independently flaggable (unvalidated user_id, no error handling) — so this tracker
+# can read NON-DISCRIMINATING rather than green.
 _PARAMETERIZED_QUERY_FIXTURE = "tests/eval/fixtures/mock_github/safe_parameterized_query.json"
 _REGRESSION_FIXTURES: tuple[str, ...] = (_PARAMETERIZED_QUERY_FIXTURE,)
 
@@ -388,8 +387,8 @@ def test_state_from_eval_fixture_reads_dimensions_from_fixture_triage() -> None:
 
 @pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES + _REGRESSION_FIXTURES)
 def test_state_from_safe_code_fixture_builds(fixture_path: str) -> None:
-    """The safe-code (precision) fixtures build an analyzable STANDARD-tier state the same
-    way — multi-dimension triage read from the fixture, tier overridden to STANDARD."""
+    """The safe-code fixtures (precision + regression-track) build an analyzable STANDARD-tier
+    state — multi-dimension triage read from the fixture, tier overridden to STANDARD."""
     state = state_from_eval_fixture(fixture_path)
     assert state.pr_context.changed_files
     assert state.triage_result is not None
