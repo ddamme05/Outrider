@@ -168,7 +168,8 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
 # `_SAFE_CODE_FIXTURES` gate on relative `fp_bounded` (candidate <= baseline + allowance) —
 # fine when a shared over-flag is acceptable (eval_in_test's test-code `eval()`), but it
 # would let a SHARED false positive pass. For these, baseline fp>0 means non-discriminating
-# (a product-prompt problem, not Haiku evidence); baseline fp=0 AND candidate fp>0 is the
+# (the fixture has an alternate finding surface, or a product-prompt issue — either way not
+# Haiku evidence); baseline fp=0 AND candidate fp>0 is the
 # tracked regression reproduced. `safe_parameterized_query` tracks the DECISIONS#041 caveat:
 # Haiku CAN over-flag a correctly-parameterized query as a sql_injection. The over-flag is
 # nondeterministic (the real-model run reproduced it on n_plus_one, not on this fixture), which
@@ -645,7 +646,7 @@ async def test_real_model_comparison_evidence() -> None:
             if b_fp > 0:
                 verdict, ok, fail_label = (
                     f"NON-DISCRIMINATING — baseline (Sonnet) itself over-flagged {b_fp}; "
-                    "this is a product-prompt issue, not valid Haiku evidence",
+                    "a fixture-ambiguity or product-prompt issue, not valid Haiku evidence",
                     False,
                     "INCONCLUSIVE (baseline non-clean)",
                 )
