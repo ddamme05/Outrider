@@ -51,18 +51,23 @@ def test_version_is_named_analyze_v3() -> None:
 
 def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
     """Guards the DECISIONS.md#041 over-flag fix. The prompt must tell the
-    model BOTH halves: (1) DB parameter binding (placeholder + a separate
-    params argument) is NOT sql_injection, AND (2) input built INTO the SQL
-    string still IS. Pinning both prevents the two regressions a refactor
-    could introduce — dropping (1) reopens the false-CRITICAL on
-    parameterized queries; dropping (2) turns the guidance into a blanket
-    sql_injection suppression that would lose recall on real string-built
-    SQLi (e.g. the pygoat `"...%s" % request.GET` fixture)."""
+    model THREE things, each pinned against an observed regression:
+    (1) DB parameter binding (placeholder + a separate params argument) is NOT
+    sql_injection — dropping it reopens the false-CRITICAL on parameterized
+    queries; (2) input built INTO the SQL string still IS — dropping it turns
+    the guidance into a blanket suppression that loses recall on real
+    string-built SQLi (the pygoat `"...%s" % request.GET` fixture); (3) the
+    rule is scoped to INJECTION only — the model must still flag OTHER issues
+    (N+1, missing error handling) on a parameterized query. (3) guards the
+    over-generalization an unscoped "SAFE" wording caused: Haiku dropped a real
+    n_plus_one finding along with the suppressed over-flag on the same line."""
     text = SYSTEM_PROMPT_INVARIANTS.lower()
-    assert "parameterized queries are not injectable" in text  # the safe-side instruction
-    # the still-injectable side must remain — not a blanket suppression
-    assert "f-string" in text
-    assert "concatenation" in text
+    assert "parameterized queries are not injectable" in text  # (1) safe-side instruction
+    assert "f-string" in text and "concatenation" in text  # (2) still-injectable side
+    # (3) scoped to INJECTION — must not generalize "safe" to "skip the query"; pins the
+    # clause that recovers the n_plus_one recall the unscoped "SAFE" wording dropped.
+    assert "only about injection" in text
+    assert "n+1" in text
 
 
 def test_max_tokens_bounded_within_llm_request_limit() -> None:

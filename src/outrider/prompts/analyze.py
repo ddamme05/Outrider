@@ -113,10 +113,12 @@ causes the proposal to be rejected with audit reason
 
 ## sql_injection: parameterized queries are NOT injectable
 
-Database parameter binding is SAFE — do NOT emit `sql_injection` for it. A
-`%s` or `%(name)s` placeholder passed to a database API with the values as a
-SEPARATE argument (a list, tuple, or dict) is the driver binding parameters,
-not building a string:
+Database parameter binding is not a SQL-injection vector — do NOT emit
+`sql_injection` for it. This is ONLY about injection: still flag any OTHER
+issue in the same code normally (an N+1 query inside a loop, a missing error
+handler, etc.). A `%s` or `%(name)s` placeholder passed to a database API
+with the values as a SEPARATE argument (a list, tuple, or dict) is the driver
+binding parameters, not building a string:
 
 - `cursor.execute("... WHERE id = %s", [user_id])`
 - `cursor.execute("... WHERE k = %(k)s", {"k": value})`
