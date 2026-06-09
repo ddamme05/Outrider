@@ -279,5 +279,32 @@ def test_gate_fails_on_false_positive_balloon() -> None:
     assert compare(baseline, candidate, fp_allowance=2).fp_bounded is True
 
 
+def test_gate_does_not_vacuously_pass_when_baseline_misses() -> None:
+    """A scenario the BASELINE can't solve certifies nothing. If Sonnet found nothing,
+    candidate-found-nothing trivially 'holds recall' (0.0 >= 0.0) — the baseline-validity
+    guard turns that vacuous pass into a fail so a non-discriminating scenario can't green-
+    light the flip."""
+    expected = (_expected(line_start=10),)
+    baseline = _grade_for((), expected)  # baseline missed it → recall 0.0
+    candidate = _grade_for((), expected)  # candidate also missed → recall 0.0
+    cmp = compare(baseline, candidate)
+    assert cmp.recall_held is True  # vacuously: 0.0 >= 0.0 - 0.0
+    assert cmp.baseline_valid is False  # but the baseline never established the finding
+    assert cmp.passes is False  # so the gate does NOT pass
+    # A caller can lower the floor to accept a partial/imperfect baseline, explicitly.
+    assert compare(baseline, candidate, baseline_recall_floor=0.0).baseline_valid is True
+
+
+def test_gate_baseline_valid_when_baseline_perfect() -> None:
+    """The common case: baseline catches the known finding (recall 1.0), so the scenario
+    is a valid discriminator and the floor doesn't block a genuine candidate pass."""
+    expected = (_expected(line_start=10),)
+    baseline = _grade_for((_finding(line_start=10),), expected)  # recall 1.0
+    candidate = _grade_for((_finding(line_start=10),), expected)  # recall 1.0
+    cmp = compare(baseline, candidate)
+    assert cmp.baseline_valid is True
+    assert cmp.passes is True
+
+
 def test_default_line_window_is_declared() -> None:
     assert DEFAULT_LINE_WINDOW == 2

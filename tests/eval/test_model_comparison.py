@@ -399,8 +399,8 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
                 f"\n  candidate ({candidate_model}): "
                 f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} "
                 f"fp={c.n_false_positives}"
-                f"\n  gate passes={cmp.passes} "
-                f"(recall_held={cmp.recall_held} fp_bounded={cmp.fp_bounded})"
+                f"\n  gate passes={cmp.passes} (baseline_valid={cmp.baseline_valid} "
+                f"recall_held={cmp.recall_held} fp_bounded={cmp.fp_bounded})"
             )
             assert cmp.baseline is not None  # the run completed
     finally:
