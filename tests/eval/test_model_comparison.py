@@ -163,17 +163,18 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     "tests/eval/fixtures/mock_github/eval_in_test_fixture.json",
 )
 
-# Regression-track fixtures — safe code where the BASELINE (Sonnet) is expected CLEAN
-# (fp=0), so the gate can be read ABSOLUTELY, not just relative-to-baseline. The general
-# `_SAFE_CODE_FIXTURES` gate on relative `fp_bounded` (candidate <= baseline + allowance) —
-# fine when a shared over-flag is acceptable (eval_in_test's test-code `eval()`), but it
-# would let a SHARED false positive pass. For these, baseline fp>0 means non-discriminating
-# (the fixture has an alternate finding surface, or a product-prompt issue — either way not
-# Haiku evidence); baseline fp=0 AND candidate fp>0 is the
-# tracked regression reproduced. `safe_parameterized_query` tracks the DECISIONS#041 caveat:
-# Haiku CAN over-flag a correctly-parameterized query as a sql_injection. The over-flag is
-# nondeterministic (the real-model run reproduced it on n_plus_one, not on this fixture), which
-# is why the gate is the absolute baseline-clean guard, not a single expected outcome.
+# Regression-track fixtures — read with an ABSOLUTE baseline-clean gate (NOT the relative
+# `fp_bounded` the general `_SAFE_CODE_FIXTURES` use): a candidate over-flag counts as the
+# tracked regression ONLY when the baseline is clean (fp=0) on the same fixture. Relative
+# `fp_bounded` (candidate <= baseline + allowance) is fine when a shared over-flag is acceptable
+# (eval_in_test's test-code `eval()`) but would let a SHARED false positive pass. Baseline fp>0
+# means NON-DISCRIMINATING (an alternate finding surface in the fixture, or a product-prompt
+# issue — not Haiku evidence); baseline fp=0 AND candidate fp>0 is the regression reproduced.
+# `safe_parameterized_query` tracks the DECISIONS#041 caveat (Haiku CAN over-flag a parameterized
+# query as sql_injection), but the over-flag is nondeterministic (the real run reproduced it on
+# n_plus_one, NOT here) AND this fixture's baseline is not yet reliably clean (Sonnet over-flags
+# get_user's unvalidated user_id / missing error handling), so the tracker is currently
+# INCONCLUSIVE — hardening it to a reliably-clean baseline is a follow-up.
 _PARAMETERIZED_QUERY_FIXTURE = "tests/eval/fixtures/mock_github/safe_parameterized_query.json"
 _REGRESSION_FIXTURES: tuple[str, ...] = (_PARAMETERIZED_QUERY_FIXTURE,)
 
@@ -538,11 +539,12 @@ async def test_real_model_comparison_evidence() -> None:
     - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
       candidate over-flag clean code MORE than the baseline? Gated on `fp_bounded` (a RELATIVE
       bound — fine where a shared over-flag is acceptable, e.g. eval()-in-test).
-    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES` (safe code where the baseline is expected
-      CLEAN): an ABSOLUTE verdict — baseline fp>0 is non-discriminating; baseline fp=0 AND
-      candidate fp>0 is the tracked regression reproduced. `safe_parameterized_query` tracks
-      the DECISIONS#041 Haiku parameterized-query false-CRITICAL. The relative `fp_bounded`
-      gate alone would let a SHARED over-flag pass, hence the absolute baseline-clean check.
+    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES`, read with an ABSOLUTE baseline-clean gate
+      (NOT a claim the baseline IS clean): baseline fp>0 is non-discriminating; baseline fp=0
+      AND candidate fp>0 is the tracked regression reproduced. `safe_parameterized_query` tracks
+      the DECISIONS#041 Haiku parameterized-query false-CRITICAL — currently INCONCLUSIVE (the
+      baseline over-flags it on unrelated dimensions). The relative `fp_bounded` gate alone would
+      let a SHARED over-flag pass, hence the absolute baseline-clean check.
 
     Run the analyze node under Sonnet (baseline — the DEEP model + the pre-flip STANDARD
     model) and Haiku (candidate — now the shipped STANDARD default, DECISIONS#041) per
@@ -622,10 +624,10 @@ async def test_real_model_comparison_evidence() -> None:
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
             assert cmp.baseline is not None  # the run completed
-        # REGRESSION-TRACK dimension — safe code where the BASELINE is expected CLEAN, so the
-        # verdict is ABSOLUTE, not relative fp_bounded: a SHARED over-flag (both fp>0) would
-        # wrongly pass the relative gate (DECISIONS#041 / Codex). baseline fp>0 = the scenario
-        # is non-discriminating; baseline fp=0 AND candidate fp>0 = the #041 over-flag reproduced.
+        # REGRESSION-TRACK dimension — read with an ABSOLUTE baseline-clean gate (not relative
+        # fp_bounded), because a SHARED over-flag (both fp>0) would wrongly pass the relative gate
+        # (DECISIONS#041). baseline fp>0 = the scenario is non-discriminating (the fixture itself
+        # is flaggable, or a prompt issue); baseline fp=0 AND candidate fp>0 = the #041 reproduced.
         for fixture_path in _REGRESSION_FIXTURES:
             cmp = await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
