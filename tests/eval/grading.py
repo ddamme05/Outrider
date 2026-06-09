@@ -203,20 +203,28 @@ def grade(
 class ModelComparison:
     """Baseline (Sonnet) vs candidate (Haiku) on one scenario, with the gate verdict.
 
-    `recall_held` / `fp_bounded` are the two halves of the gate; `passes` is their AND.
-    The thresholds are DECLARED (`recall_tolerance`, `fp_allowance`) so the gate is
-    auditable: a reviewer reads exactly how much recall loss / FP growth was permitted."""
+    Three conditions, all DECLARED-threshold and auditable:
+      - `baseline_valid` — the BASELINE itself cleared `baseline_recall_floor`. This guards
+        the VACUOUS pass: if the strong model didn't catch the scenario's known findings,
+        the scenario can't discriminate, and `recall_held` is trivially true (candidate
+        0.0 >= baseline 0.0). A scenario the baseline can't solve certifies nothing.
+      - `recall_held` — the candidate's recall is within `recall_tolerance` of the baseline.
+      - `fp_bounded` — the candidate added no more than `fp_allowance` false positives.
+    `passes` is the AND of all three: a recall hold over a non-discriminating baseline does
+    NOT pass."""
 
     baseline: GradeResult
     candidate: GradeResult
     recall_tolerance: float
     fp_allowance: int
+    baseline_recall_floor: float
+    baseline_valid: bool
     recall_held: bool
     fp_bounded: bool
 
     @property
     def passes(self) -> bool:
-        return self.recall_held and self.fp_bounded
+        return self.baseline_valid and self.recall_held and self.fp_bounded
 
 
 def compare(
@@ -225,11 +233,17 @@ def compare(
     *,
     recall_tolerance: float = 0.0,
     fp_allowance: int = 0,
+    baseline_recall_floor: float = 1.0,
 ) -> ModelComparison:
-    """Apply the quality gate: the candidate (cheaper) model passes iff its recall is
-    within `recall_tolerance` of the baseline's AND it added no more than `fp_allowance`
-    false positives over the baseline. Defaults are STRICT (no recall loss, no extra FPs)
-    — callers loosen them explicitly and the chosen values are recorded on the result."""
+    """Apply the quality gate. The candidate (cheaper) model passes iff ALL hold:
+      - the BASELINE's own recall clears `baseline_recall_floor` (default 1.0 — the strong
+        model must catch the scenario's known findings, else "recall held" is vacuous: a
+        scenario both models fail can't certify the candidate);
+      - the candidate's recall is within `recall_tolerance` of the baseline's; AND
+      - it added no more than `fp_allowance` false positives over the baseline.
+    Defaults are STRICT (baseline perfect, no recall loss, no extra FPs) — callers loosen
+    them explicitly and the chosen values are recorded on the result."""
+    baseline_valid = baseline.recall.value >= baseline_recall_floor
     recall_held = candidate.recall.value >= baseline.recall.value - recall_tolerance
     fp_bounded = candidate.n_false_positives <= baseline.n_false_positives + fp_allowance
     return ModelComparison(
@@ -237,6 +251,8 @@ def compare(
         candidate=candidate,
         recall_tolerance=recall_tolerance,
         fp_allowance=fp_allowance,
+        baseline_recall_floor=baseline_recall_floor,
+        baseline_valid=baseline_valid,
         recall_held=recall_held,
         fp_bounded=fp_bounded,
     )
