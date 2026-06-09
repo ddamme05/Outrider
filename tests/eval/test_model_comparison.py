@@ -365,19 +365,20 @@ def test_state_from_safe_code_fixture_builds(fixture_path: str) -> None:
 async def test_safe_code_clean_under_clean_model_scores_zero_fp(fixture_path: str) -> None:
     """Precision dimension, zero-spend: a model that returns NO finding on safe code scores
     0 false positives against the empty ground truth, so fp_bounded holds — the precision
-    PASS case. (This asserts the empty-findings -> zero-FP -> fp_bounded chain; it does NOT
-    by itself prove the state flowed through analyze — both providers return empty, so an
-    empty state would pass too. The state-flow guarantee is the sibling
-    test_state_from_safe_code_fixture_builds. The over-flag FAIL case is grading's precision
-    gate test.)"""
+    PASS case. The `provider.calls` assertions pin that analyze actually RAN on the safe-code
+    state (each model's `complete()` was invoked), so this is not a vacuous pass over an empty
+    state. The over-flag FAIL case is grading's precision gate test."""
+    baseline = _ScriptedProvider(_MISSES_RESPONSE)
+    candidate = _ScriptedProvider(_MISSES_RESPONSE)
     cmp = await compare_models_on_scenario(
         state_from_eval_fixture(fixture_path),
         (),  # safe code — no real finding, so any finding would be a false positive
-        baseline_provider=_ScriptedProvider(_MISSES_RESPONSE),
+        baseline_provider=baseline,
         baseline_model="claude-sonnet-4-6",
-        candidate_provider=_ScriptedProvider(_MISSES_RESPONSE),
+        candidate_provider=candidate,
         candidate_model="claude-haiku-4-5",
     )
+    assert baseline.calls and candidate.calls  # analyze actually invoked each model
     assert cmp.baseline.n_false_positives == 0
     assert cmp.candidate.n_false_positives == 0
     assert cmp.fp_bounded is True  # neither over-flagged clean code → precision green
@@ -487,12 +488,6 @@ async def test_real_model_comparison_evidence() -> None:
     from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
 
     cfg = ModelConfig()
-    # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete()
-    # is fail-closed on persister=None (raises before the SDK call). The comparison reads
-    # findings from analyze's return, so a no-op persister is the right wiring here.
-    provider = AnthropicProvider(
-        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
-    )
     # Baseline is `analyze_model` (today's Sonnet top-tier analyze behavior), NOT
     # `standard_analyze_model` — the latter is the very knob the flip changes, so reading it
     # would compare the candidate against ITSELF if the operator already set
@@ -502,12 +497,19 @@ async def test_real_model_comparison_evidence() -> None:
     candidate_model = "claude-haiku-4-5"  # the model the flip proposes for STANDARD
     # Belt-and-suspenders: fail loudly on a meaningless self-comparison (e.g. analyze_model
     # env-overridden to Haiku). Normalized so a dated pin (…-20251001) can't sneak past.
+    # Checked BEFORE constructing the provider so a guard-fire can't leak an unclosed client.
     if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
         pytest.fail(
             f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
             "same model — the comparison would prove nothing about Sonnet-vs-Haiku. Point "
             "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
         )
+    # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete()
+    # is fail-closed on persister=None (raises before the SDK call). The comparison reads
+    # findings from analyze's return, so a no-op persister is the right wiring here.
+    provider = AnthropicProvider(
+        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+    )
     gate_results: list[tuple[str, str, bool]] = []  # (fixture, dimension, verdict)
     try:
         # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).

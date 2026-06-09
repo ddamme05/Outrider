@@ -134,7 +134,10 @@ def grade(
     """
     expected_list = list(expected)
     matched_expected_idx: set[int] = set()
-    matched_actual: list[ReviewFinding] = []
+    # Greedy one-to-one matching: each actual finding claims at most one not-yet-claimed
+    # expected finding, recorded as a PAIR so downstream metrics score over the actual
+    # pairing rather than a cross product.
+    matched_pairs: list[tuple[ReviewFinding, ExpectedFinding]] = []
     extra: list[ReviewFinding] = []
 
     for af in actual:
@@ -149,11 +152,13 @@ def grade(
             extra.append(af)
         else:
             matched_expected_idx.add(hit_idx)
-            matched_actual.append(af)
+            matched_pairs.append((af, expected_list[hit_idx]))
 
     n_expected = len(expected_list)
-    n_actual = len(list(actual))
-    n_matched = len(matched_expected_idx)
+    n_matched = len(matched_pairs)
+    # From the partition (each actual is matched xor extra) — not a re-iteration of
+    # `actual`, which would miscount a one-shot iterable as 0 and force precision to 1.0.
+    n_actual = n_matched + len(extra)
     missed = tuple(ef for i, ef in enumerate(expected_list) if i not in matched_expected_idx)
 
     recall = FindingRecall(
@@ -166,28 +171,15 @@ def grade(
         numerator=n_matched,
         denominator=n_actual,
     )
-    # Of the matched findings, how many got severity right. The match contract already
-    # requires severity equality, so this is 1.0 today; it stays a separate metric so a
-    # future looser match rule (match on type+line, score severity separately) needs no
-    # new plumbing.
-    n_sev_ok = sum(
-        1
-        for af in matched_actual
-        for ef in expected_list
-        if af.finding_type == ef.finding_type
-        and af.file_path == ef.file_path
-        and af.severity == ef.severity
-        and _line_ranges_match(
-            actual_start=af.line_start,
-            actual_end=af.line_end,
-            expected_start=ef.line_start,
-            expected_end=ef.line_end,
-            line_window=line_window,
-        )
-    )
+    # Of the matched findings, how many also got severity right — scored over the greedy
+    # PAIRS (each actual with its one matched expected), not a cross product. The match
+    # contract already requires severity equality, so this is 1.0 today; it stays a separate
+    # metric so a future looser match rule (match on type+line, score severity separately)
+    # needs no new plumbing.
+    n_sev_ok = sum(1 for af, ef in matched_pairs if af.severity == ef.severity)
     severity_accuracy = SeverityAccuracy(
-        value=(min(n_sev_ok, n_matched) / n_matched) if n_matched else 1.0,
-        numerator=min(n_sev_ok, n_matched),
+        value=(n_sev_ok / n_matched) if n_matched else 1.0,
+        numerator=n_sev_ok,
         denominator=n_matched,
     )
 
@@ -211,7 +203,8 @@ class ModelComparison:
         the scenario can't discriminate, and `recall_held` is trivially true (candidate
         0.0 >= baseline 0.0). A scenario the baseline can't solve certifies nothing.
       - `recall_held` — the candidate's recall is within `recall_tolerance` of the baseline.
-      - `fp_bounded` — the candidate added no more than `fp_allowance` false positives.
+      - `fp_bounded` — the candidate's false positives did not exceed the baseline's by more
+        than `fp_allowance` (a RELATIVE bound: candidate FP <= baseline FP + `fp_allowance`).
     `passes` is the AND of all three: a recall hold over a non-discriminating baseline does
     NOT pass."""
 
