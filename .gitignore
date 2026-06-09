@@ -14,8 +14,8 @@ docs/
 # --- Dashboard design mockups (local-only HTML explorations) ---
 dashboard-mockups/
 
-# --- Bug postmortems (local-only; reference FUP IDs + audit internals) ---
-bug-reports/
+# --- Reports: postmortems + methodology write-ups (local-only; reference FUP IDs + audit internals) ---
+reports/
 
 # --- Local operational tracking (stays local even when public) ---
 COMMIT_LOG.md
