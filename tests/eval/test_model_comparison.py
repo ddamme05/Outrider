@@ -18,14 +18,18 @@ from uuid import uuid4
 import pytest
 
 from outrider.llm.base import LLMRequest, LLMResponse
-from outrider.policy import FindingSeverity, FindingType
+from outrider.policy import FindingSeverity, FindingType, lookup_severity
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
 
 from .grading import ExpectedFinding
-from .model_comparison import compare_models_on_scenario, run_analyze_under_model
+from .model_comparison import (
+    compare_models_on_scenario,
+    run_analyze_under_model,
+    state_from_eval_fixture,
+)
 
 _SIMPLE_PY = (
     "def my_function():\n    return 42\n\ndef another_function(x):\n    y = x + 1\n    return y\n"
@@ -68,6 +72,68 @@ _GROUND_TRUTH = (
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Real PyGoat true-positive scenarios — the ACTUAL gate inputs (not synthetic).
+# Each maps a checked-in mock_github fixture (real vulnerable code + patch, the same
+# content the driven scenarios in scenarios/true_positives/ exercise) to its
+# ground-truth findings. Severity comes from `lookup_severity` (policy is the source of
+# truth, per the scenario convention — hard-coding CRITICAL would drift if the table
+# changes). Line numbers are HEAD source lines of the vulnerability, matching the
+# fixtures' own scripted analyze responses (which the driven scenarios validate).
+# ---------------------------------------------------------------------------
+_PYGOAT_SQL_FIXTURE = "tests/eval/fixtures/mock_github/pygoat_sql_injection.json"
+_PYGOAT_AUTH_FIXTURE = "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json"
+
+_GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
+    _PYGOAT_SQL_FIXTURE: (
+        ExpectedFinding(
+            file_path="pygoat/introduction/views.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        ),
+    ),
+    _PYGOAT_AUTH_FIXTURE: (
+        ExpectedFinding(
+            file_path="pygoat/introduction/auth_views.py",
+            line_start=7,
+            line_end=8,
+            finding_type=FindingType.AUTH_BYPASS,
+            severity=lookup_severity(FindingType.AUTH_BYPASS),
+        ),
+    ),
+}
+
+
+def _judged_response_for(expected: ExpectedFinding) -> str:
+    """A scripted analyze response emitting one JUDGED finding matching `expected`.
+
+    JUDGED needs no `query_match_id` (the proof boundary's structural requirement is
+    OBSERVED/INFERRED only), so this stands in for "the model found the known
+    vulnerability" without depending on which tree-sitter queries fire — exactly what
+    the zero-spend wiring proof needs. Grading is evidence-tier-agnostic, so a JUDGED
+    stand-in matches ground truth the same as the fixture's own (sometimes OBSERVED)
+    response would."""
+    return json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": expected.finding_type.value,
+                    "evidence_tier": "judged",
+                    "query_match_id": None,
+                    "trace_path": None,
+                    "title": "known vulnerability",
+                    "description": "the finding the scenario is known to contain.",
+                    "evidence": "e",
+                    "line_start": expected.line_start,
+                    "line_end": expected.line_end,
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+
 
 class _ScriptedProvider:
     """Returns a fixed canned response (ignores request.model) — stands in for one
@@ -92,6 +158,18 @@ class _ScriptedProvider:
             finish_reason="end_turn",
             latency_ms=10,
         )
+
+
+class _NoOpExchangePersister:
+    """A no-op `LLMExchangePersister` for the real-model run. The comparison reads
+    findings from analyze's RETURN, not the llm_call/audit stream, so the exchange
+    persist is discarded — same rationale as `_NullSink`. Required (not `None`) because
+    the real `AnthropicProvider.complete()` is fail-closed: it raises
+    `LLMPersisterNotWiredError` BEFORE the SDK call when `persister is None` (DECISIONS
+    #016), so `persister=None` would crash the opt-in run on its first analyze call."""
+
+    async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
+        return None
 
 
 def _build_state() -> ReviewState:
@@ -197,7 +275,51 @@ async def test_comparison_passes_when_candidate_holds_recall() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Real-fixture wiring (ZERO-SPEND) — the gate over ACTUAL scenario content, with the
+# model still scripted. Proves state_from_eval_fixture -> analyze -> grade works on the
+# real PyGoat code (not synthetic `return 42`); only the provider response is faked.
+# ---------------------------------------------------------------------------
+
+
+def test_state_from_eval_fixture_builds_enriched_standard_state() -> None:
+    """The adapter stands in for intake+triage: changed_files populated from the
+    fixture's real content, tier pinned STANDARD (the tier the flip evaluates)."""
+    state = state_from_eval_fixture(_PYGOAT_SQL_FIXTURE)
+    assert state.triage_result is not None
+    assert state.pr_context.changed_files  # intake's job, done by the adapter
+    cf = state.pr_context.changed_files[0]
+    assert cf.path == "pygoat/introduction/views.py"
+    assert cf.content_head is not None and "search_users" in cf.content_head
+    assert state.triage_result.file_tiers[cf.path] is ReviewTier.STANDARD
+
+
+@pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
+@pytest.mark.asyncio
+async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
+    """END-TO-END zero-spend over EACH real PyGoat fixture: a scripted "Sonnet" that
+    returns the known finding scores recall 1.0; a scripted "Haiku" that misses it scores
+    0.0 and FAILS the gate. The STATE is the real vulnerable code (built by
+    state_from_eval_fixture); only the provider is faked — so the real run differs only by
+    swapping in the AnthropicProvider. Parametrized over BOTH fixtures so the SQL path
+    (analyze accepting a finding at views.py:5) is verified, not just the auth path the
+    opt-in run also depends on. A JUDGED stand-in needs no tree-sitter query to fire."""
+    ground_truth = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
+    cmp = await compare_models_on_scenario(
+        state_from_eval_fixture(fixture_path),
+        ground_truth,
+        baseline_provider=_ScriptedProvider(_judged_response_for(ground_truth[0])),
+        baseline_model="claude-sonnet-4-6",
+        candidate_provider=_ScriptedProvider(_MISSES_RESPONSE),
+        candidate_model="claude-haiku-4-5",
+    )
+    assert cmp.baseline.recall.value == 1.0  # found the known finding in real code
+    assert cmp.candidate.recall.value == 0.0  # missed it
+    assert cmp.passes is False  # the gate catches the recall regression
+
+
+# ---------------------------------------------------------------------------
 # Opt-in REAL-model run (SPEND) — the evidence path. Skipped unless explicitly enabled.
+# This is the ACTUAL gate: real models over real STANDARD-tier scenarios.
 # ---------------------------------------------------------------------------
 
 
@@ -206,32 +328,66 @@ async def test_comparison_passes_when_candidate_holds_recall() -> None:
     reason="real-model comparison spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
 )
 @pytest.mark.asyncio
-async def test_real_model_comparison_wires_anthropic_provider() -> None:
-    """OPT-IN, real API spend: run the SAME comparison path with the real
-    `AnthropicProvider`, Sonnet (baseline) vs Haiku (candidate). This wires the evidence
-    run; point `_build_state()` (or a real scenario fixture) at genuinely vulnerable code
-    and read the reported recall/precision before flipping the default. NOT a pass/fail
-    quality assertion here — the human reads the comparison; CI never runs this.
+async def test_real_model_comparison_pygoat_true_positives() -> None:
+    """OPT-IN, real API spend — the evidence run that gates the STANDARD->Haiku flip.
+
+    For each real PyGoat true-positive fixture (STANDARD tier), run the analyze node
+    under Sonnet (baseline, today's STANDARD model) and Haiku (candidate, the flip
+    target), grading recall/precision against the known CRITICAL finding, and report the
+    gate verdict per scenario. The operator reads whether Haiku held recall before
+    flipping the default. Bounded: 2 analyze calls per scenario over small files. NO
+    hard quality assertion (model output is nondeterministic — the human adjudicates);
+    CI never runs this.
+
+    Read the recall number as TYPE-EXACT recall: a match requires the same
+    `finding_type` AND policy severity (plus file + line window), per the structural
+    grading contract. So a candidate that genuinely SEES the vulnerability but labels it
+    a different type (e.g. SQL injection reported as `missing_input_validation`) scores
+    as a miss. That is intended — the gate protects the exact STANDARD-tier findings,
+    not "did it notice something here" — but when reading a recall drop, check the
+    `missed`/`extra` detail to tell a true regression from a classification disagreement
+    before acting on the flip.
     """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY is required for the real-model comparison")
+
+    from pydantic import SecretStr  # noqa: PLC0415
+
     from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
-    from outrider.llm.config import ModelConfig
+    from outrider.llm.config import ModelConfig  # noqa: PLC0415
 
     cfg = ModelConfig()
-    provider = AnthropicProvider()  # type: ignore[call-arg]  # real creds from env
+    # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete()
+    # is fail-closed on persister=None (raises before the SDK call). The comparison reads
+    # findings from analyze's return, so a no-op persister is the right wiring here.
+    provider = AnthropicProvider(
+        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+    )
+    baseline_model = cfg.standard_analyze_model  # today's STANDARD model (Sonnet)
+    candidate_model = "claude-haiku-4-5"  # the model the flip proposes for STANDARD
     try:
-        cmp = await compare_models_on_scenario(
-            _build_state(),
-            _GROUND_TRUTH,
-            baseline_provider=provider,
-            baseline_model=cfg.analyze_model,  # Sonnet
-            candidate_provider=provider,
-            candidate_model="claude-haiku-4-5",  # the proposed STANDARD-tier model
-        )
+        for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
+            cmp = await compare_models_on_scenario(
+                state_from_eval_fixture(fixture_path),
+                ground_truth,
+                baseline_provider=provider,
+                baseline_model=baseline_model,
+                candidate_provider=provider,
+                candidate_model=candidate_model,
+            )
+            b, c = cmp.baseline, cmp.candidate
+            print(  # noqa: T201 — opt-in evidence output for the operator
+                f"\n[{fixture_path}]"
+                f"\n  baseline ({baseline_model}): "
+                f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} "
+                f"fp={b.n_false_positives}"
+                f"\n  candidate ({candidate_model}): "
+                f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} "
+                f"fp={c.n_false_positives}"
+                f"\n  gate passes={cmp.passes} "
+                f"(recall_held={cmp.recall_held} fp_bounded={cmp.fp_bounded})"
+            )
+            assert cmp.baseline is not None  # the run completed
     finally:
         await provider.aclose()
-    # Reported for the human's flip decision; no quality assertion on synthetic input.
-    print(  # noqa: T201 — opt-in run output for the operator
-        f"\nREAL comparison: baseline recall={cmp.baseline.recall.value} "
-        f"candidate recall={cmp.candidate.recall.value} passes={cmp.passes}"
-    )
-    assert cmp.baseline is not None  # the run completed

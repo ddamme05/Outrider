@@ -19,10 +19,23 @@ the identical prompt + scope context; only `request.model` differs.
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003 — runtime use: resolver signature
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
+from outrider.agent.eval_driver import EvalFixture
 from outrider.agent.nodes.analyze import analyze
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
+from outrider.schemas.pr_context import ChangedFile, PRContext
+from outrider.schemas.review_state import ReviewState
+from outrider.schemas.triage_result import (
+    ReviewDimension,
+    ReviewTier,
+    RiskLevel,
+    TriageResult,
+)
 
 from .grading import DEFAULT_LINE_WINDOW, ModelComparison, compare, grade
 
@@ -31,7 +44,6 @@ if TYPE_CHECKING:
 
     from outrider.llm.base import LLMProvider
     from outrider.schemas.review_finding import ReviewFinding
-    from outrider.schemas.review_state import ReviewState
 
     from .grading import ExpectedFinding
 
@@ -66,6 +78,83 @@ class _NoOpImportPathResolver:
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:  # noqa: ARG002
         return []
+
+
+def state_from_eval_fixture(
+    fixture_path: str | Path,
+    *,
+    tier: ReviewTier = ReviewTier.STANDARD,
+    dimensions: tuple[ReviewDimension, ...] = (ReviewDimension.SECURITY,),
+) -> ReviewState:
+    """Build a post-intake / post-triage `ReviewState` from a `mock_github/*.json`
+    eval fixture, every changed file pinned to `tier`.
+
+    Reuses the fixture's REAL PR content — the vulnerable code + patch the driven
+    scenarios already exercise — but HOLDS TRIAGE FIXED. The model-tier gate varies
+    only the analyze model; if the triage tier were itself model-derived it would
+    confound the comparison. `tier` defaults to STANDARD (the tier whose model the
+    flip changes), so the scenario reads as "if this file were STANDARD, does the
+    candidate model still catch the known finding?". This builder STANDS IN for
+    intake+triage: it constructs the enriched `changed_files` that `run_review`'s
+    `_seed_state` leaves empty (intake fills it there via the fixture GitHub client),
+    because this harness runs the analyze node in isolation — no intake, no GitHub. It
+    builds the SAME `ChangedFile` shape intake produces (including `language=None`,
+    which intake never sets — analyze infers Python from the path), so the state the
+    real run analyzes is faithful to production.
+    """
+    with open(fixture_path, encoding="utf-8") as fh:
+        fixture = EvalFixture.model_validate(json.load(fh))
+    changed_files = tuple(
+        ChangedFile(
+            path=f.path,
+            status=f.status,
+            additions=f.additions,
+            deletions=f.deletions,
+            patch=f.patch,
+            content_base=f.content_base,
+            content_head=f.content_head,
+            # Left None to match intake EXACTLY (intake.py never sets `language`;
+            # analyze infers Python from the path via `_is_python_file`, and no
+            # production code reads this field). The harness builds the state intake
+            # would build, so the real run is faithful.
+            language=None,
+            # Normalize away a non-renamed `previous_path` exactly as intake does
+            # (intake.py: `previous_path = previous_filename if status == "renamed"
+            # else None`) — `ChangedFile` rejects a non-renamed file carrying one, so
+            # this keeps the adapter no stricter than the production intake path.
+            previous_path=f.previous_path if f.status == "renamed" else None,
+        )
+        for f in fixture.files
+    )
+    pr_context = PRContext(
+        installation_id=fixture.installation_id,
+        owner=fixture.owner,
+        repo=fixture.repo,
+        pr_number=fixture.pr_number,
+        base_sha=fixture.base_sha,
+        head_sha=fixture.head_sha,
+        pr_title=fixture.pr_title,
+        pr_body=fixture.pr_body,
+        author=fixture.author,
+        total_additions=fixture.total_additions,
+        total_deletions=fixture.total_deletions,
+        changed_files=changed_files,
+    )
+    triage_result = TriageResult(
+        file_tiers={f.path: tier for f in fixture.files},
+        overall_risk=RiskLevel.HIGH,
+        relevant_dimensions=dimensions,
+        reasoning="model-tier comparison harness: triage held fixed so the gate "
+        "varies only the analyze model",
+        policy_version=ACTIVE_POLICY_VERSION,
+    )
+    return ReviewState(
+        review_id=uuid4(),
+        received_at=datetime.now(UTC),
+        pr_context=pr_context,
+        triage_result=triage_result,
+        is_eval=True,
+    )
 
 
 async def run_analyze_under_model(
