@@ -1,0 +1,36 @@
+{
+  "installation_id": 5304,
+  "owner": "acme",
+  "repo": "billing",
+  "pr_number": 34,
+  "base_sha": "7777777777777777777777777777777777777777",
+  "head_sha": "8888888888888888888888888888888888888888",
+  "pr_title": "Add get_account lookup",
+  "pr_body": "Adds get_account, a psycopg2 lookup by owner with a parameterized query.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "billing/accounts.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n import psycopg2\n+\n+\n+def get_account(conn, owner):\n+    with conn.cursor() as cur:\n+        cur.execute(\"SELECT * FROM accounts WHERE owner = %s\", (owner,))\n+        return cur.fetchone()\n",
+      "previous_path": null,
+      "content_base": "import psycopg2\n",
+      "content_head": "import psycopg2\n\n\ndef get_account(conn, owner):\n    with conn.cursor() as cur:\n        cur.execute(\"SELECT * FROM accounts WHERE owner = %s\", (owner,))\n        return cur.fetchone()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"billing/accounts.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Regression-track scenario: a psycopg2 query parameterized with a %s placeholder + tuple params -- confirm no sql_injection finding is hallucinated (DECISIONS#041 Haiku parameterized-query over-flag).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Regression scenario: no findings. get_account uses a psycopg2 parameterized query (%s placeholder + tuple params), which is not injectable; no sql_injection finding should be produced."
+    ]
+  }
+}

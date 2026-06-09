@@ -1,0 +1,36 @@
+{
+  "installation_id": 5305,
+  "owner": "acme",
+  "repo": "catalog",
+  "pr_number": 35,
+  "base_sha": "9999999999999999999999999999999999999999",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pr_title": "Add find_item lookup",
+  "pr_body": "Adds find_item, a lookup by sku using a named-placeholder parameterized query.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "catalog/lookup.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n import psycopg2\n+\n+\n+def find_item(conn, sku):\n+    with conn.cursor() as cur:\n+        cur.execute(\"SELECT * FROM items WHERE sku = %(sku)s\", {\"sku\": sku})\n+        return cur.fetchone()\n",
+      "previous_path": null,
+      "content_base": "import psycopg2\n",
+      "content_head": "import psycopg2\n\n\ndef find_item(conn, sku):\n    with conn.cursor() as cur:\n        cur.execute(\"SELECT * FROM items WHERE sku = %(sku)s\", {\"sku\": sku})\n        return cur.fetchone()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"catalog/lookup.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Regression-track scenario: a query parameterized with a named %(sku)s placeholder + dict params -- confirm no sql_injection finding is hallucinated (DECISIONS#041 Haiku parameterized-query over-flag).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Regression scenario: no findings. find_item uses a named-placeholder parameterized query (%(sku)s + dict params), which is not injectable; no sql_injection finding should be produced."
+    ]
+  }
+}
