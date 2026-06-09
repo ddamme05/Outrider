@@ -16,12 +16,12 @@ What it grounds and what it models:
     (output bills at ~5x input, so it moves the number materially).
   - CACHING: 0 hits. V1 analyze does not drive a stable cache prefix yet (lever
     unconsumed), so this reflects today's code, not the cached projection.
-  - MODEL TIER: STANDARD-tier analyze routing is now WIRED
-    (specs/2026-06-08-analyze-tiered-model-routing.md), but `standard_analyze_model`
-    defaults to Sonnet — so analyze still runs Sonnet for every DEEP+STANDARD file
-    (the routing is INERT until the eval-gated flip to Haiku). So this is still the
-    Sonnet-everywhere baseline the COST_ANALYSIS naive figure assumes; the STANDARD ->
-    Haiku flip is the lever this probe is built to measure before/after.
+  - MODEL TIER: `standard_analyze_model` now defaults to Haiku (the eval-gated flip,
+    DECISIONS.md#041), but these 5 representative fixtures are all DEEP-tier, so analyze
+    routes to `analyze_model` (Sonnet) for every file regardless of the flip — this stays
+    the all-Sonnet baseline the COST_ANALYSIS naive figure assumes. The flip's saving lands
+    on STANDARD-tier files (a 3x same-token reduction, Sonnet $3/$15 vs Haiku $1/$5 per
+    MTok); the analyze STANDARD->Haiku lever below projects it on this measured analyze call.
 
 Run it explicitly (it spins an ephemeral DB per fixture, so it is slow):
 
@@ -169,10 +169,24 @@ def test_cost_per_review_measurement() -> None:
             f"(saves ${synth_sonnet - synth_haiku:.4f}/review)"
         )
 
+    # Landed lever (DECISIONS#041): STANDARD-tier analyze -> Haiku. These fixtures are all
+    # DEEP so they still bill at Sonnet; projected here on the measured analyze call to show
+    # the per-STANDARD-file saving (3x same-token, the realized model-price portion).
+    if haiku is not None and "analyze" in by_node:
+        an_sonnet = avg("analyze", "cost_usd")
+        an_haiku = _price(
+            haiku, int(avg("analyze", "input_tokens")), int(avg("analyze", "output_tokens"))
+        )
+        print(
+            f"Lever (STANDARD analyze Sonnet->Haiku, DECISIONS#041): ${an_sonnet:.4f} -> "
+            f"${an_haiku:.4f} per STANDARD file ({(1 - an_haiku / an_sonnet) * 100:.0f}% cheaper)"
+        )
+
     print("-" * 78)
     print(f"Bands: naive ${_BAND_NAIVE} | defensible ${_BAND_DEFENSIBLE} | target ${_BAND_TARGET}")
     print("Caveats: input = bytes//3 UPPER bound; output modeled; caching unconsumed;")
-    print("         analyze = Sonnet for every file (STANDARD routing wired but default-inert).")
+    print("         these fixtures are all DEEP, so analyze bills Sonnet regardless of the")
+    print("         STANDARD->Haiku flip (#041), which saves on STANDARD-tier files.")
     print("=" * 78)
 
     # Sanity assertions (regression guard — loose, not a tight cost SLA).

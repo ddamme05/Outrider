@@ -47,9 +47,9 @@ def test_defaults_match_canonical_spec() -> None:
     cfg = ModelConfig()
     assert cfg.triage_model == "claude-haiku-4-5"
     assert cfg.analyze_model == "claude-sonnet-4-6"
-    # STANDARD-tier analyze defaults to Sonnet so tiered routing lands INERT (==DEEP);
-    # the Haiku flip is evidence-gated (specs/2026-06-08-analyze-tiered-model-routing.md).
-    assert cfg.standard_analyze_model == "claude-sonnet-4-6"
+    # STANDARD-tier analyze defaults to Haiku (the eval-gated cost flip, DECISIONS.md#041);
+    # DEEP-tier files stay on analyze_model (Sonnet).
+    assert cfg.standard_analyze_model == "claude-haiku-4-5"
     assert cfg.synthesize_model == "claude-sonnet-4-6"
     assert cfg.trace_model == "claude-haiku-4-5"
 
