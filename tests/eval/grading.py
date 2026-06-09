@@ -1,9 +1,10 @@
 """Deterministic finding-grading for the analyze model-tier quality gate.
 
 This is the load-bearing methodology for `specs/2026-06-08-analyze-tiered-model-routing.md`
-step 2 (the eval quality gate): before STANDARD-tier files can move from Sonnet to a
-cheaper model, we need DETERMINISTIC evidence the cheaper model did not lose the known
-findings. So grading is STRUCTURAL, not LLM-as-judge — we do not put a model in the loop
+step 2 (the eval quality gate) — it gated the STANDARD→Haiku flip (`DECISIONS.md#041`, now
+shipped): before STANDARD-tier files could move from Sonnet to a cheaper model, we needed
+DETERMINISTIC evidence the cheaper model did not lose the known findings. So grading is
+STRUCTURAL, not LLM-as-judge — we do not put a model in the loop
 that is meant to validate a model (that would replace "did Haiku preserve recall?" with
 "does another model think Haiku preserved recall?").
 

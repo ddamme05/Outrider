@@ -468,8 +468,9 @@ async def test_real_model_comparison_evidence() -> None:
       `fp_bounded` (candidate must not exceed the baseline's FP count). This is the clean
       over-flag signal the vulnerable fixtures can't give.
 
-    Run the analyze node under Sonnet (baseline, today's STANDARD model) and Haiku
-    (candidate, the flip target) per scenario; bounded at 2 analyze calls/scenario over
+    Run the analyze node under Sonnet (baseline — the DEEP model + the pre-flip STANDARD
+    model) and Haiku (candidate — now the shipped STANDARD default, DECISIONS#041) per
+    scenario; bounded at 2 analyze calls/scenario over
     small files. CI never runs this.
 
     Recall is TYPE-EXACT: a match requires the same `finding_type` AND policy severity (plus
@@ -494,7 +495,7 @@ async def test_real_model_comparison_evidence() -> None:
     # OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL=claude-haiku-4-5. The methodological question is
     # "does Haiku preserve STANDARD findings vs today's Sonnet analyze?".
     baseline_model = cfg.analyze_model
-    candidate_model = "claude-haiku-4-5"  # the model the flip proposes for STANDARD
+    candidate_model = "claude-haiku-4-5"  # the shipped STANDARD default (DECISIONS#041)
     # Belt-and-suspenders: fail loudly on a meaningless self-comparison (e.g. analyze_model
     # env-overridden to Haiku). Normalized so a dated pin (…-20251001) can't sneak past.
     # Checked BEFORE constructing the provider so a guard-fire can't leak an unclosed client.
