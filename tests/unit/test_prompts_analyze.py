@@ -39,15 +39,30 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v2() -> None:
+def test_version_is_named_analyze_v3() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v2" name so future renames break the test and force a
-    registry decision. Replay attribution depends on this — old
-    prompt rows (emitted under analyze-v1) MUST be replayed against
-    the v1 contract; new rows under analyze-v2. The v2 bump landed
-    in the trace-node arc when pass-1 admission semantics +
-    render_post_trace + output-schema override landed."""
-    assert VERSION == "analyze-v2"
+    "analyze-v3" name so future renames break the test and force a
+    registry decision. Replay attribution depends on this — a prompt row
+    replays against the contract it was emitted under, not a newer one.
+    The v3 bump added the sql_injection parameterized-query false-positive
+    guidance (DECISIONS.md#041); v2 landed the trace-node pass-1 arc."""
+    assert VERSION == "analyze-v3"
+
+
+def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
+    """Guards the DECISIONS.md#041 over-flag fix. The prompt must tell the
+    model BOTH halves: (1) DB parameter binding (placeholder + a separate
+    params argument) is NOT sql_injection, AND (2) input built INTO the SQL
+    string still IS. Pinning both prevents the two regressions a refactor
+    could introduce — dropping (1) reopens the false-CRITICAL on
+    parameterized queries; dropping (2) turns the guidance into a blanket
+    sql_injection suppression that would lose recall on real string-built
+    SQLi (e.g. the pygoat `"...%s" % request.GET` fixture)."""
+    text = SYSTEM_PROMPT_INVARIANTS.lower()
+    assert "parameterized queries are not injectable" in text  # the safe-side instruction
+    # the still-injectable side must remain — not a blanket suppression
+    assert "f-string" in text
+    assert "concatenation" in text
 
 
 def test_max_tokens_bounded_within_llm_request_limit() -> None:

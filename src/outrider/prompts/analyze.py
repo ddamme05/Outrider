@@ -45,7 +45,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v2"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v3"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -68,13 +68,14 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
-# Bumped 2026-05-24 (was "analyze-v1") because the prompt contract
-# changed substantially in the trace-node arc: pass 0 vs pass 1
-# admission semantics; new `render_post_trace` variant; pass-1 output
-# schema overrides the pass-0 enum / trace_path / field semantics
-# (`<observed|inferred|judged>` + non-null trace_path admitted).
-# Reusing v1 would conflate old/new prompt shapes in replay attribution.
-VERSION: Final[str] = "analyze-v2"
+# Bumped 2026-06-09 (was "analyze-v2") for the sql_injection
+# false-positive guidance added to SYSTEM_PROMPT_INVARIANTS — parameterized
+# queries are not injectable (the DECISIONS.md#041 over-flag). The v2 bump
+# (2026-05-24, was "analyze-v1") landed the trace-node arc: pass 0 vs pass 1
+# admission semantics, `render_post_trace`, and the pass-1 output-schema
+# override. Each bump keeps replay attribution exact — a prompt row replays
+# against the contract it was emitted under, not a newer one.
+VERSION: Final[str] = "analyze-v3"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -109,6 +110,24 @@ causes the proposal to be rejected with audit reason
 - Code quality: `unused_import`, `missing_error_handling`
 - Test coverage: `missing_test`
 - Best practices: `deprecated_api`
+
+## sql_injection: parameterized queries are NOT injectable
+
+Database parameter binding is SAFE — do NOT emit `sql_injection` for it. A
+`%s` or `%(name)s` placeholder passed to a database API with the values as a
+SEPARATE argument (a list, tuple, or dict) is the driver binding parameters,
+not building a string:
+
+- `cursor.execute("... WHERE id = %s", [user_id])`
+- `cursor.execute("... WHERE k = %(k)s", {"k": value})`
+- `Model.objects.raw("... WHERE id = %s", [user_id])`
+
+The `%s` there is a bind placeholder, NOT Python string formatting. Emit
+`sql_injection` ONLY when untrusted input is built INTO the SQL string
+itself — an f-string, `str.format(...)`, `%`-formatting (`"... %s" % value`),
+or `+` concatenation of the query text. This holds even if OTHER values in
+the same query use placeholders: if ANY part of the SQL text is assembled
+from untrusted input, it is `sql_injection`.
 
 ## Evidence tier (proof rules)
 
