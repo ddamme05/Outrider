@@ -356,6 +356,7 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
 
     from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
     from outrider.llm.config import ModelConfig  # noqa: PLC0415
+    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
 
     cfg = ModelConfig()
     # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete()
@@ -364,8 +365,21 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
     provider = AnthropicProvider(
         api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
     )
-    baseline_model = cfg.standard_analyze_model  # today's STANDARD model (Sonnet)
+    # Baseline is `analyze_model` (today's Sonnet top-tier analyze behavior), NOT
+    # `standard_analyze_model` — the latter is the very knob the flip changes, so reading it
+    # would compare the candidate against ITSELF if the operator already set
+    # OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL=claude-haiku-4-5. The methodological question is
+    # "does Haiku preserve STANDARD findings vs today's Sonnet analyze?".
+    baseline_model = cfg.analyze_model
     candidate_model = "claude-haiku-4-5"  # the model the flip proposes for STANDARD
+    # Belt-and-suspenders: fail loudly on a meaningless self-comparison (e.g. analyze_model
+    # env-overridden to Haiku). Normalized so a dated pin (…-20251001) can't sneak past.
+    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
+        pytest.fail(
+            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
+            "same model — the comparison would prove nothing about Sonnet-vs-Haiku. Point "
+            "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
+        )
     try:
         for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
             cmp = await compare_models_on_scenario(
