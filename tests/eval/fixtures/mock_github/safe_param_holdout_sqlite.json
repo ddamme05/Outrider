@@ -1,0 +1,36 @@
+{
+  "installation_id": 5308,
+  "owner": "acme",
+  "repo": "inventory",
+  "pr_number": 38,
+  "base_sha": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+  "head_sha": "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2",
+  "pr_title": "Add get_item lookup",
+  "pr_body": "Adds get_item using a sqlite3 qmark-style parameterized query.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "inventory/items.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n import sqlite3\n+\n+\n+def get_item(conn, item_id):\n+    cur = conn.cursor()\n+    cur.execute(\"SELECT * FROM items WHERE id = ?\", (item_id,))\n+    return cur.fetchone()\n",
+      "previous_path": null,
+      "content_base": "import sqlite3\n",
+      "content_head": "import sqlite3\n\n\ndef get_item(conn, item_id):\n    cur = conn.cursor()\n    cur.execute(\"SELECT * FROM items WHERE id = ?\", (item_id,))\n    return cur.fetchone()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"inventory/items.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Regression-track HOLD-OUT idiom: a sqlite3 query with a qmark (?) placeholder + tuple params -- a placeholder style NOT shown in the analyze prompt examples. Confirm no sql_injection over-flag (generalization test).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Hold-out regression scenario: no findings. get_item uses a sqlite3 parameterized query (? placeholder + tuple params), which is not injectable; no sql_injection finding should be produced."
+    ]
+  }
+}

@@ -91,6 +91,14 @@ _N_PLUS_ONE_FIXTURE = "tests/eval/fixtures/mock_github/n_plus_one_query.json"
 _PATH_TRAVERSAL_FIXTURE = "tests/eval/fixtures/mock_github/path_traversal.json"
 _MISSING_INPUT_VALIDATION_FIXTURE = "tests/eval/fixtures/mock_github/missing_input_validation.json"
 
+# Recall HOLD-OUTS — real SQLi in injection forms the analyze-v3 prompt NAMES but never exemplifies
+# (f-string / str.format / `+` concatenation, vs the prompt's only-shown %-format). The model MUST
+# still flag these; a miss means the remediation over-suppressed real SQLi. NAMED-BUT-UNEXAMPLED — a
+# WEAKER generalization signal than the regression safe hold-outs (which the prompt never mentions).
+_SQLI_HOLDOUT_FSTRING_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json"
+_SQLI_HOLDOUT_FORMAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_format.json"
+_SQLI_HOLDOUT_CONCAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_concat.json"
+
 _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
     _PYGOAT_SQL_FIXTURE: (
         ExpectedFinding(
@@ -149,6 +157,36 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             severity=lookup_severity(FindingType.MISSING_INPUT_VALIDATION),
         ),
     ),
+    # Recall hold-outs: real SQLi in injection forms the prompt names but does not exemplify.
+    # Sonnet must catch them (baseline_valid) and Haiku must still catch them (recall_held) —
+    # if Haiku misses, the parameterized-query remediation over-suppressed real SQLi.
+    _SQLI_HOLDOUT_FSTRING_FIXTURE: (
+        ExpectedFinding(
+            file_path="search/views.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        ),
+    ),
+    _SQLI_HOLDOUT_FORMAT_FIXTURE: (
+        ExpectedFinding(
+            file_path="lookup/users.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        ),
+    ),
+    _SQLI_HOLDOUT_CONCAT_FIXTURE: (
+        ExpectedFinding(
+            file_path="contacts/lookup.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        ),
+    ),
 }
 
 # Safe-code scenarios — the PRECISION instrument (distinct from the recall fixtures above).
@@ -188,6 +226,26 @@ _REGRESSION_FIXTURES: tuple[str, ...] = (
     _PARAMETERIZED_QUERY_PSYCOPG_FIXTURE,
     _PARAMETERIZED_QUERY_NAMED_FIXTURE,
     _PARAMETERIZED_QUERY_ORM_FIXTURE,
+)
+
+# Regression-track HOLD-OUTS — safe, correctly-parameterized queries in placeholder styles the
+# analyze-v3 prompt NEVER MENTIONS (it only shows `%s`/`%(name)s`): SQLAlchemy `text()` + `:name`
+# bind, sqlite3 `?` qmark, asyncpg `$1` positional. FULLY UNSEEN — the STRONGEST anti-overfit signal
+# (stronger than the recall SQLi hold-outs, which the prompt names but does not exemplify). The
+# demonstrated idioms in
+# `_REGRESSION_FIXTURES` above have shapes the prompt exemplifies, so a CLEAN verdict there proves
+# the model follows guidance — NOT that it generalized. These hold-outs test the generalization: a
+# CLEAN verdict here means the model applied the rule (placeholder + separate args = not injection)
+# to a shape it was never shown — the real evidence the fix isn't overfit.
+_PARAM_HOLDOUT_SQLALCHEMY_FIXTURE = (
+    "tests/eval/fixtures/mock_github/safe_param_holdout_sqlalchemy.json"
+)
+_PARAM_HOLDOUT_SQLITE_FIXTURE = "tests/eval/fixtures/mock_github/safe_param_holdout_sqlite.json"
+_PARAM_HOLDOUT_ASYNCPG_FIXTURE = "tests/eval/fixtures/mock_github/safe_param_holdout_asyncpg.json"
+_REGRESSION_HOLDOUT_FIXTURES: tuple[str, ...] = (
+    _PARAM_HOLDOUT_SQLALCHEMY_FIXTURE,
+    _PARAM_HOLDOUT_SQLITE_FIXTURE,
+    _PARAM_HOLDOUT_ASYNCPG_FIXTURE,
 )
 
 
@@ -454,7 +512,9 @@ def test_state_from_eval_fixture_reads_dimensions_from_fixture_triage() -> None:
     assert npo.overall_risk is RiskLevel.MEDIUM
 
 
-@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES + _REGRESSION_FIXTURES)
+@pytest.mark.parametrize(
+    "fixture_path", _SAFE_CODE_FIXTURES + _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES
+)
 def test_state_from_safe_code_fixture_builds(fixture_path: str) -> None:
     """The safe-code fixtures (precision + regression-track) build an analyzable STANDARD-tier
     state — multi-dimension triage read from the fixture, tier overridden to STANDARD."""
@@ -580,6 +640,30 @@ async def test_regression_track_type_scoping_ignores_unrelated_baseline_overflag
     assert label.startswith("REPRODUCED")  # baseline noise did NOT force INCONCLUSIVE
 
 
+def test_holdout_sets_are_registered_and_disjoint() -> None:
+    """The anti-overfit hold-outs must be wired in and genuinely held out — guards against one
+    silently dropping from the real-model run, which would quietly weaken the generalization claim
+    back to "passes on the shapes the prompt demonstrates." Pins: (1) the regression hold-outs
+    (unseen placeholder styles) are disjoint from the DEMONSTRATED `_REGRESSION_FIXTURES`; (2) the
+    three recall hold-outs are registered as `sql_injection` in the recall ground truth; (3) every
+    hold-out fixture file exists on disk."""
+    assert set(_REGRESSION_HOLDOUT_FIXTURES).isdisjoint(_REGRESSION_FIXTURES)
+    assert len(_REGRESSION_HOLDOUT_FIXTURES) == 3
+
+    sqli_holdouts = (
+        _SQLI_HOLDOUT_FSTRING_FIXTURE,
+        _SQLI_HOLDOUT_FORMAT_FIXTURE,
+        _SQLI_HOLDOUT_CONCAT_FIXTURE,
+    )
+    for fixture in sqli_holdouts:
+        ground_truth = _GROUND_TRUTH_BY_FIXTURE[fixture]
+        assert len(ground_truth) == 1
+        assert ground_truth[0].finding_type is FindingType.SQL_INJECTION
+
+    for fixture in _REGRESSION_HOLDOUT_FIXTURES + sqli_holdouts:
+        assert os.path.exists(fixture), fixture
+
+
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
@@ -659,17 +743,22 @@ async def test_real_model_comparison_evidence() -> None:
       ADVISORY here, NOT gated: a real run showed the "extras" on vulnerable files are
       usually LEGITIMATE second findings the single-entry ground truth didn't encode (an
       unvalidated-input finding alongside the SQLi), so fp on a vulnerable file is an
-      unreliable over-flag signal. Read the printed extra detail, don't gate on it.
+      unreliable over-flag signal. Read the printed extra detail, don't gate on it. The set now
+      also carries three HOLD-OUT SQLi forms (f-string / `str.format` / `+` concatenation) the
+      analyze-v3 prompt names but never exemplifies — a recall MISS there means the
+      parameterized-query remediation over-suppressed real SQLi (generalization, not overfit).
     - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
       candidate over-flag clean code MORE than the baseline? Gated on `fp_bounded` (a RELATIVE
       bound — fine where a shared over-flag is acceptable, e.g. eval()-in-test).
-    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES` (safe parameterized queries in several
-      idioms), TYPE-SCOPED to sql_injection FPs via `_sqli_fp_count` and read with an ABSOLUTE
-      baseline-clean gate: baseline sql_injection-fp>0 is non-discriminating (the over-flag is not
-      Haiku-specific); baseline=0 AND candidate>0 is the DECISIONS#041 caveat reproduced. Scoping
-      to sql_injection — not total fp — keeps an unrelated baseline over-flag (e.g.
-      missing_error_handling on a try/except-less query) from forcing INCONCLUSIVE. The relative
-      `fp_bounded` gate alone would let a SHARED over-flag pass, hence the baseline-clean check.
+    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES` (DEMONSTRATED idioms — shapes the prompt
+      exemplifies) AND `_REGRESSION_HOLDOUT_FIXTURES` (HOLD-OUT placeholder styles it never shows:
+      SQLAlchemy `:name`, sqlite `?`, asyncpg `$1`), TYPE-SCOPED to sql_injection FPs via
+      `_sqli_fp_count` and read with an ABSOLUTE baseline-clean gate: baseline sql_injection-fp>0 is
+      non-discriminating; baseline=0 AND candidate>0 is the DECISIONS#041 caveat reproduced. CLEAN
+      on the HOLD-OUTS is the anti-overfit evidence — the model applied the rule to a shape it was
+      never shown, not just the demonstrated ones. Scoping to sql_injection keeps an unrelated
+      baseline over-flag from forcing INCONCLUSIVE; the relative `fp_bounded` gate alone would let a
+      SHARED over-flag pass, hence the baseline-clean check.
 
     Run the analyze node under Sonnet (baseline — the DEEP model + the pre-flip STANDARD
     model) and Haiku (candidate — now the shipped STANDARD default, DECISIONS#041) per
@@ -753,9 +842,10 @@ async def test_real_model_comparison_evidence() -> None:
         # with an ABSOLUTE baseline-clean gate. The caveat is type-specific (DECISIONS#041: Haiku
         # mislabels a parameterized query as SQLi), so an unrelated baseline over-flag must NOT
         # blind the track. `_regression_verdict` carries the 3-state logic (INCONCLUSIVE /
-        # REPRODUCED / clean); the scenario report printed above still shows total fp + every extra
-        # so the operator sees unrelated noise as context.
-        for fixture_path in _REGRESSION_FIXTURES:
+        # REPRODUCED / clean). Runs over the DEMONSTRATED idioms (`_REGRESSION_FIXTURES`) AND the
+        # HOLD-OUTS (`_REGRESSION_HOLDOUT_FIXTURES`, placeholder styles the prompt never shows) —
+        # CLEAN on the hold-outs is the anti-overfit evidence. The fixture path names the set.
+        for fixture_path in _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES:
             cmp = await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
                 (),

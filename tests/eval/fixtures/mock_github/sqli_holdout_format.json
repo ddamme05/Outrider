@@ -1,0 +1,36 @@
+{
+  "installation_id": 5311,
+  "owner": "acme",
+  "repo": "lookup",
+  "pr_number": 41,
+  "base_sha": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+  "head_sha": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+  "pr_title": "Add get_user lookup",
+  "pr_body": "Adds get_user, which looks up a user by id.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "lookup/users.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n from django.db import connection\n+\n+\n+def get_user(user_id):\n+    with connection.cursor() as cursor:\n+        cursor.execute(\"SELECT * FROM users WHERE id = {}\".format(user_id))\n+        return cursor.fetchone()\n",
+      "previous_path": null,
+      "content_base": "from django.db import connection\n",
+      "content_head": "from django.db import connection\n\n\ndef get_user(user_id):\n    with connection.cursor() as cursor:\n        cursor.execute(\"SELECT * FROM users WHERE id = {}\".format(user_id))\n        return cursor.fetchone()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"lookup/users.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Recall HOLD-OUT (real SQLi): get_user builds the query with str.format(), interpolating the untrusted `user_id` into the SQL string -- an injection form the analyze prompt NAMES but does not exemplify. The model MUST still flag sql_injection (recall-generalization test).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SQL injection via str.format in get_user\", \"description\": \"get_user interpolates the untrusted `user_id` into the SQL string with str.format(), so an attacker-controlled value alters the query. Use a parameterized query (a %s placeholder with user_id passed as a separate argument).\", \"evidence\": \"        cursor.execute(\\\"SELECT * FROM users WHERE id = {}\\\".format(user_id))\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one CRITICAL sql_injection finding -- get_user builds the query via str.format() from untrusted input."
+    ]
+  }
+}

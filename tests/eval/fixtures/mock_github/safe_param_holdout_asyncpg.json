@@ -1,0 +1,36 @@
+{
+  "installation_id": 5309,
+  "owner": "acme",
+  "repo": "wallet",
+  "pr_number": 39,
+  "base_sha": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+  "head_sha": "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2",
+  "pr_title": "Add get_account lookup",
+  "pr_body": "Adds get_account using an asyncpg positional-placeholder parameterized query.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "wallet/accounts.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n import asyncpg\n+\n+\n+async def get_account(conn, owner):\n+    return await conn.fetch(\"SELECT * FROM accounts WHERE owner = $1\", owner)\n",
+      "previous_path": null,
+      "content_base": "import asyncpg\n",
+      "content_head": "import asyncpg\n\n\nasync def get_account(conn, owner):\n    return await conn.fetch(\"SELECT * FROM accounts WHERE owner = $1\", owner)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"wallet/accounts.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Regression-track HOLD-OUT idiom: an asyncpg query with a $1 positional placeholder + a separate positional arg -- a placeholder style NOT shown in the analyze prompt examples. Confirm no sql_injection over-flag (generalization test).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Hold-out regression scenario: no findings. get_account uses an asyncpg parameterized query ($1 positional placeholder + a separate argument), which is not injectable; no sql_injection finding should be produced."
+    ]
+  }
+}
