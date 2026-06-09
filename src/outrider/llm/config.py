@@ -66,12 +66,13 @@ class ModelConfig(BaseSettings):
     # active models are Opus 4.7, Sonnet 4.6, Haiku 4.5.
     triage_model: str = "claude-haiku-4-5"
     analyze_model: str = "claude-sonnet-4-6"
-    # See specs/2026-06-08-analyze-tiered-model-routing.md — the DEEP-tier model is
-    # `analyze_model`; STANDARD-tier files route here. Defaults to Sonnet so routing
-    # lands INERT (STANDARD == DEEP == Sonnet = today's behavior, no recall risk); the
-    # cost win is unlocked by an evidence-backed default flip to Haiku ONLY after the
-    # eval quality gate holds. Trace-fetched (no-tier) files stay on `analyze_model`.
-    standard_analyze_model: str = "claude-sonnet-4-6"
+    # See DECISIONS.md#041 — the DEEP-tier model is `analyze_model`; STANDARD-tier files
+    # route here. Defaults to Haiku (1/3 of Sonnet's per-token price) after the eval
+    # quality gate (PR #51) showed Haiku holds STANDARD-tier recall and does not over-flag
+    # safe code worse than Sonnet. DEEP-tier files stay on `analyze_model` (Sonnet); so do
+    # trace-fetched (no-tier) files. Override per-deployment via
+    # OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL.
+    standard_analyze_model: str = "claude-haiku-4-5"
     synthesize_model: str = "claude-sonnet-4-6"
     trace_model: str = "claude-haiku-4-5"
     # See DECISIONS.md#040 — suggested-patch generation (synthesize) uses Haiku:

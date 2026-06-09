@@ -394,8 +394,8 @@ async def analyze(
             if tier not in (ReviewTier.DEEP, ReviewTier.STANDARD):
                 continue
 
-            # Tier → model (the cost lever): STANDARD routes to standard_analyze_model,
-            # DEEP stays on analyze_model. Default-inert until the eval-gated flip.
+            # Tier → model (the cost lever, DECISIONS.md#041): STANDARD routes to
+            # standard_analyze_model (Haiku by default), DEEP stays on analyze_model (Sonnet).
             model_for_file = _model_for_tier(
                 tier,
                 analyze_model=analyze_model,
