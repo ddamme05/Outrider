@@ -569,7 +569,7 @@ async def test_regression_track_type_scoping_ignores_unrelated_baseline_overflag
         candidate_provider=candidate,
         candidate_model="claude-haiku-4-5",
     )
-    assert baseline.calls and candidate.calls
+    assert baseline.calls and candidate.calls  # analyze actually invoked each model
     # Total fp shows the noise; the type-scoped count isolates the tracked caveat.
     assert cmp.baseline.n_false_positives == 1  # the unrelated missing_error_handling
     assert cmp.candidate.n_false_positives == 2  # sql_injection + missing_error_handling
