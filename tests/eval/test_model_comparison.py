@@ -363,10 +363,13 @@ def test_state_from_safe_code_fixture_builds(fixture_path: str) -> None:
 @pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES)
 @pytest.mark.asyncio
 async def test_safe_code_clean_under_clean_model_scores_zero_fp(fixture_path: str) -> None:
-    """Precision dimension, end-to-end zero-spend: a model that returns NO finding on safe
-    code scores 0 false positives against the empty ground truth, so fp_bounded holds. Proves
-    state_from_eval_fixture(safe) flows through the real analyze node and grades clean. The
-    over-flag FAIL case is covered by grading's precision gate test."""
+    """Precision dimension, zero-spend: a model that returns NO finding on safe code scores
+    0 false positives against the empty ground truth, so fp_bounded holds — the precision
+    PASS case. (This asserts the empty-findings -> zero-FP -> fp_bounded chain; it does NOT
+    by itself prove the state flowed through analyze — both providers return empty, so an
+    empty state would pass too. The state-flow guarantee is the sibling
+    test_state_from_safe_code_fixture_builds. The over-flag FAIL case is grading's precision
+    gate test.)"""
     cmp = await compare_models_on_scenario(
         state_from_eval_fixture(fixture_path),
         (),  # safe code — no real finding, so any finding would be a false positive
@@ -383,13 +386,13 @@ async def test_safe_code_clean_under_clean_model_scores_zero_fp(fixture_path: st
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
-    """END-TO-END zero-spend over EACH real PyGoat fixture: a scripted "Sonnet" that
-    returns the known finding scores recall 1.0; a scripted "Haiku" that misses it scores
-    0.0 and FAILS the gate. The STATE is the real vulnerable code (built by
-    state_from_eval_fixture); only the provider is faked — so the real run differs only by
-    swapping in the AnthropicProvider. Parametrized over BOTH fixtures so the SQL path
-    (analyze accepting a finding at views.py:5) is verified, not just the auth path the
-    opt-in run also depends on. A JUDGED stand-in needs no tree-sitter query to fire."""
+    """END-TO-END zero-spend over EACH recall fixture (all four in `_GROUND_TRUTH_BY_FIXTURE`
+    — SQLi, auth-bypass, missing-error-handling, N+1): a scripted "Sonnet" that returns the
+    known finding scores recall 1.0; a scripted "Haiku" that misses it scores 0.0 and FAILS
+    the gate. The STATE is the real vulnerable code (built by state_from_eval_fixture); only
+    the provider is faked — so the real run differs only by swapping in the AnthropicProvider.
+    Parametrized over every fixture so analyze accepting a finding at each known line (e.g.
+    views.py:5) is verified for all of them. A JUDGED stand-in needs no tree-sitter query."""
     ground_truth = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
     cmp = await compare_models_on_scenario(
         state_from_eval_fixture(fixture_path),
