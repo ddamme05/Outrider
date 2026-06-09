@@ -170,7 +170,9 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
 # would let a SHARED false positive pass. For these, baseline fp>0 means non-discriminating
 # (a product-prompt problem, not Haiku evidence); baseline fp=0 AND candidate fp>0 is the
 # tracked regression reproduced. `safe_parameterized_query` tracks the DECISIONS#041 caveat:
-# Haiku reproducibly over-flags a correctly-parameterized query as a potential sql_injection.
+# Haiku CAN over-flag a correctly-parameterized query as a sql_injection. The over-flag is
+# nondeterministic (the real-model run reproduced it on n_plus_one, not on this fixture), which
+# is why the gate is the absolute baseline-clean guard, not a single expected outcome.
 _PARAMETERIZED_QUERY_FIXTURE = "tests/eval/fixtures/mock_github/safe_parameterized_query.json"
 _REGRESSION_FIXTURES: tuple[str, ...] = (_PARAMETERIZED_QUERY_FIXTURE,)
 
@@ -584,7 +586,11 @@ async def test_real_model_comparison_evidence() -> None:
     provider = AnthropicProvider(
         api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
     )
-    gate_results: list[tuple[str, str, bool]] = []  # (fixture, dimension, verdict)
+    # (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
+    # non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (baseline non-clean,
+    # so no Haiku evidence) vs "REPRODUCED" (baseline clean, candidate over-flagged); recall/
+    # precision use plain "FAILED". Empty label for green verdicts (never printed).
+    gate_results: list[tuple[str, str, bool, str]] = []
     try:
         # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
         for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
@@ -597,7 +603,9 @@ async def test_real_model_comparison_evidence() -> None:
                 candidate_model=candidate_model,
             )
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
-            gate_results.append((fixture_path, "recall", cmp.recall_held and cmp.baseline_valid))
+            gate_results.append(
+                (fixture_path, "recall", cmp.recall_held and cmp.baseline_valid, "FAILED")
+            )
             assert cmp.baseline is not None  # the run completed
         # PRECISION dimension — safe code, empty ground truth so ANY finding is a real FP;
         # gate on fp_bounded (Haiku must not over-flag clean code more than Sonnet).
@@ -611,7 +619,7 @@ async def test_real_model_comparison_evidence() -> None:
                 candidate_model=candidate_model,
             )
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
-            gate_results.append((fixture_path, "precision", cmp.fp_bounded))
+            gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
             assert cmp.baseline is not None  # the run completed
         # REGRESSION-TRACK dimension — safe code where the BASELINE is expected CLEAN, so the
         # verdict is ABSOLUTE, not relative fp_bounded: a SHARED over-flag (both fp>0) would
@@ -629,25 +637,39 @@ async def test_real_model_comparison_evidence() -> None:
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             b_fp = cmp.baseline.n_false_positives
             c_fp = cmp.candidate.n_false_positives
+            # Three states, NOT two: a non-ok regression is either INCONCLUSIVE (baseline itself
+            # over-flagged, so this run yields no Haiku evidence — NOT a Haiku regression) or
+            # REPRODUCED (baseline clean, candidate over-flagged — the tracked #041 regression).
+            # Collapsing both to "FAILED" in the summary would read as "Haiku regressed" even when
+            # the baseline was the one that over-flagged and Haiku was clean.
             if b_fp > 0:
-                verdict, ok = (
+                verdict, ok, fail_label = (
                     f"NON-DISCRIMINATING — baseline (Sonnet) itself over-flagged {b_fp}; "
                     "this is a product-prompt issue, not valid Haiku evidence",
                     False,
+                    "INCONCLUSIVE (baseline non-clean)",
                 )
             elif c_fp > 0:
-                verdict, ok = (
+                verdict, ok, fail_label = (
                     f"#041 CAVEAT REPRODUCED — baseline clean, candidate (Haiku) over-flagged "
                     f"{c_fp}",
                     False,
+                    "REPRODUCED (baseline clean, candidate over-flagged)",
                 )
             else:
-                verdict, ok = ("CLEAN — both fp=0; the over-flag did not reproduce this run", True)
+                verdict, ok, fail_label = (
+                    "CLEAN — both fp=0; the over-flag did not reproduce this run",
+                    True,
+                    "",
+                )
             print(f"  REGRESSION-TRACK verdict: {verdict}")  # noqa: T201 — operator diagnostic
-            gate_results.append((fixture_path, "regression", ok))
+            gate_results.append((fixture_path, "regression", ok, fail_label))
             assert cmp.baseline is not None  # the run completed
         # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
-        failed = [(fx, dim) for fx, dim, ok in gate_results if not ok]
+        # Each non-green line carries its own label (recall/precision -> "FAILED"; regression ->
+        # "INCONCLUSIVE …" or "REPRODUCED …") so a skimmer can't misread an inconclusive
+        # regression as a Haiku failure.
+        failed = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
         green = len(gate_results) - len(failed)
         print(  # noqa: T201 — operator gate summary
             "\n"
@@ -656,7 +678,7 @@ async def test_real_model_comparison_evidence() -> None:
             + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
             + f"\n  {green}/{len(gate_results)} dimension-verdicts green "
             + "(recall→recall; safe-code→relative FP; regression-track→absolute baseline-clean)."
-            + "".join(f"\n  {dim.upper()} FAILED: {fx}" for fx, dim in failed)
+            + "".join(f"\n  {dim.upper()} {label}: {fx}" for fx, dim, label in failed)
             + "\n"
             + "=" * 72
         )
