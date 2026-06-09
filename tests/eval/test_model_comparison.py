@@ -24,7 +24,7 @@ from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
 
-from .grading import ExpectedFinding, ModelComparison
+from .grading import ExpectedFinding, GradeResult, ModelComparison
 from .model_comparison import (
     compare_models_on_scenario,
     run_analyze_under_model,
@@ -163,19 +163,32 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     "tests/eval/fixtures/mock_github/eval_in_test_fixture.json",
 )
 
-# Regression-track fixtures — read with an ABSOLUTE baseline-clean gate (NOT the relative
-# `fp_bounded` the general `_SAFE_CODE_FIXTURES` use): a candidate over-flag counts as the
-# tracked regression ONLY when the baseline is clean (fp=0) on the same fixture. Relative
-# `fp_bounded` (candidate <= baseline + allowance) is fine when a shared over-flag is acceptable
-# (eval_in_test's test-code `eval()`) but would let a SHARED false positive pass. Baseline fp>0
-# means NON-DISCRIMINATING (an alternate finding surface in the fixture, or a product-prompt
-# issue — not Haiku evidence); baseline fp=0 AND candidate fp>0 is the regression reproduced.
-# `safe_parameterized_query` tracks the DECISIONS#041 caveat (Haiku can NONDETERMINISTICALLY
-# over-flag a parameterized query as sql_injection). Its baseline is not guaranteed clean —
-# get_user is independently flaggable (unvalidated user_id, no error handling) — so this tracker
-# can read NON-DISCRIMINATING rather than green.
+# Regression-track fixtures — safe, correctly-parameterized queries in several idioms (cursor
+# `%s` + list/tuple params, named `%(x)s` + dict, Django ORM `raw()`). The tracked caveat
+# (DECISIONS#041) is TYPE-SPECIFIC: Haiku can NONDETERMINISTICALLY label a parameterized query
+# as sql_injection. So the verdict counts ONLY sql_injection false positives (`_sqli_fp_count`),
+# NOT total fp of any type — a baseline that over-flags an UNRELATED dimension (e.g.
+# missing_error_handling on a query with no try/except) must not blind the track. Read
+# ABSOLUTELY, not the relative `fp_bounded` the general `_SAFE_CODE_FIXTURES` use: baseline
+# sql_injection-fp>0 = the over-flag is not Haiku-specific (INCONCLUSIVE); baseline=0 AND
+# candidate>0 = the #041 over-flag reproduced; both 0 = clean. (Relative `fp_bounded` is for
+# `_SAFE_CODE_FIXTURES` — fine when a shared over-flag like eval_in_test's `eval()` is acceptable.)
 _PARAMETERIZED_QUERY_FIXTURE = "tests/eval/fixtures/mock_github/safe_parameterized_query.json"
-_REGRESSION_FIXTURES: tuple[str, ...] = (_PARAMETERIZED_QUERY_FIXTURE,)
+_PARAMETERIZED_QUERY_PSYCOPG_FIXTURE = (
+    "tests/eval/fixtures/mock_github/safe_parameterized_query_psycopg.json"
+)
+_PARAMETERIZED_QUERY_NAMED_FIXTURE = (
+    "tests/eval/fixtures/mock_github/safe_parameterized_query_named.json"
+)
+_PARAMETERIZED_QUERY_ORM_FIXTURE = (
+    "tests/eval/fixtures/mock_github/safe_parameterized_query_orm.json"
+)
+_REGRESSION_FIXTURES: tuple[str, ...] = (
+    _PARAMETERIZED_QUERY_FIXTURE,
+    _PARAMETERIZED_QUERY_PSYCOPG_FIXTURE,
+    _PARAMETERIZED_QUERY_NAMED_FIXTURE,
+    _PARAMETERIZED_QUERY_ORM_FIXTURE,
+)
 
 
 def _judged_response_for(expected: ExpectedFinding) -> str:
@@ -205,6 +218,62 @@ def _judged_response_for(expected: ExpectedFinding) -> str:
             ]
         }
     )
+
+
+def _judged_response_with(specs: list[tuple[FindingType, int, int]]) -> str:
+    """A scripted analyze response emitting several JUDGED findings — one per
+    `(finding_type, line_start, line_end)`. Like `_judged_response_for` but multi-finding,
+    for the type-scoping tests that need a MIX of sql_injection and non-sql_injection extras
+    on one safe fixture (so `_sqli_fp_count` can be shown to isolate the tracked caveat)."""
+    return json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": ft.value,
+                    "evidence_tier": "judged",
+                    "query_match_id": None,
+                    "trace_path": None,
+                    "title": f"{ft.value} finding",
+                    "description": "scripted finding for the type-scoping test.",
+                    "evidence": "e",
+                    "line_start": ls,
+                    "line_end": le,
+                    "trace_candidates": [],
+                }
+                for ft, ls, le in specs
+            ]
+        }
+    )
+
+
+def _sqli_fp_count(grade: GradeResult) -> int:
+    """Count ONLY `sql_injection` false positives (extras) in a grade. The regression track
+    is TYPE-SCOPED because the DECISIONS#041 caveat is type-specific (Haiku mislabeling a
+    parameterized query as SQL injection); counting total fp of any type lets an unrelated
+    baseline over-flag (e.g. missing_error_handling) wrongly force a NON-DISCRIMINATING verdict."""
+    return sum(1 for f in grade.extra if f.finding_type == FindingType.SQL_INJECTION)
+
+
+def _regression_verdict(baseline_sqli_fp: int, candidate_sqli_fp: int) -> tuple[str, bool, str]:
+    """Type-scoped regression verdict over sql_injection FP counts → (verdict_text, ok, label).
+    Three states: baseline sql_injection-fp>0 = the baseline itself over-flags a parameterized
+    query as SQLi, so the over-flag is NOT Haiku-specific (INCONCLUSIVE, ok=False); baseline=0
+    AND candidate>0 = the #041 Haiku over-flag REPRODUCED (ok=False); both 0 = CLEAN (ok=True)."""
+    if baseline_sqli_fp > 0:
+        return (
+            f"NON-DISCRIMINATING — baseline (Sonnet) itself emitted {baseline_sqli_fp} "
+            "sql_injection FP on a parameterized query; the over-flag is not Haiku-specific",
+            False,
+            "INCONCLUSIVE (baseline sql_injection-fp>0)",
+        )
+    if candidate_sqli_fp > 0:
+        return (
+            "#041 CAVEAT REPRODUCED — baseline clean of sql_injection FPs, candidate (Haiku) "
+            f"emitted {candidate_sqli_fp}",
+            False,
+            "REPRODUCED (baseline clean, candidate sql_injection-fp>0)",
+        )
+    return ("CLEAN — neither model emitted a sql_injection FP this run", True, "")
 
 
 class _ScriptedProvider:
@@ -455,6 +524,62 @@ async def test_parameterized_query_candidate_overflag_fails_precision() -> None:
     assert cmp.fp_bounded is False  # precision FAILS — the gate catches the candidate-only FP
 
 
+def test_regression_verdict_is_type_scoped_three_states() -> None:
+    """`_regression_verdict` has exactly three states keyed on sql_injection FP counts. The
+    discriminating property: it takes ALREADY-type-scoped counts, so a baseline that over-flags
+    only an UNRELATED dimension reaches it as 0 (via `_sqli_fp_count`) and yields CLEAN — where
+    the old total-fp gate would have read INCONCLUSIVE."""
+    _, ok_incon, label_incon = _regression_verdict(1, 0)  # baseline emits a SQLi FP itself
+    assert ok_incon is False
+    assert label_incon.startswith("INCONCLUSIVE")
+
+    _, ok_repro, label_repro = _regression_verdict(0, 1)  # baseline clean, candidate over-flags
+    assert ok_repro is False
+    assert label_repro.startswith("REPRODUCED")
+
+    _, ok_clean, label_clean = _regression_verdict(0, 0)  # neither emits a SQLi FP
+    assert ok_clean is True
+    assert label_clean == ""
+
+    # baseline-first precedence: when BOTH emit a SQLi FP, the baseline check wins (the
+    # over-flag is not Haiku-specific) — pins the if-block order against a future reorder.
+    _, _, label_both = _regression_verdict(1, 1)
+    assert label_both.startswith("INCONCLUSIVE")
+
+
+@pytest.mark.asyncio
+async def test_regression_track_type_scoping_ignores_unrelated_baseline_overflag() -> None:
+    """The reason for type-scoping (FUP-159): on the safe parameterized-query fixture, a BASELINE
+    that over-flags an UNRELATED dimension (missing_error_handling) while the CANDIDATE adds the
+    sql_injection over-flag must read REPRODUCED — not INCONCLUSIVE. Counting TOTAL fp, the
+    baseline's fp=1 would force INCONCLUSIVE and hide the candidate's tracked regression. Counting
+    only sql_injection FPs isolates the caveat. (get_user spans lines 4-7: line 5 the cursor
+    context, line 6 the cursor.execute — both admitted within the changed scope unit.)"""
+    baseline_resp = _judged_response_with([(FindingType.MISSING_ERROR_HANDLING, 5, 5)])
+    candidate_resp = _judged_response_with(
+        [(FindingType.SQL_INJECTION, 6, 6), (FindingType.MISSING_ERROR_HANDLING, 5, 5)]
+    )
+    baseline = _ScriptedProvider(baseline_resp)
+    candidate = _ScriptedProvider(candidate_resp)
+    cmp = await compare_models_on_scenario(
+        state_from_eval_fixture(_PARAMETERIZED_QUERY_FIXTURE),
+        (),  # safe code — every finding is a false positive
+        baseline_provider=baseline,
+        baseline_model="claude-sonnet-4-6",
+        candidate_provider=candidate,
+        candidate_model="claude-haiku-4-5",
+    )
+    assert baseline.calls and candidate.calls
+    # Total fp shows the noise; the type-scoped count isolates the tracked caveat.
+    assert cmp.baseline.n_false_positives == 1  # the unrelated missing_error_handling
+    assert cmp.candidate.n_false_positives == 2  # sql_injection + missing_error_handling
+    assert _sqli_fp_count(cmp.baseline) == 0  # baseline emitted NO sql_injection FP
+    assert _sqli_fp_count(cmp.candidate) == 1  # exactly the tracked caveat
+    _, ok, label = _regression_verdict(_sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate))
+    assert ok is False
+    assert label.startswith("REPRODUCED")  # baseline noise did NOT force INCONCLUSIVE
+
+
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
@@ -538,12 +663,13 @@ async def test_real_model_comparison_evidence() -> None:
     - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
       candidate over-flag clean code MORE than the baseline? Gated on `fp_bounded` (a RELATIVE
       bound — fine where a shared over-flag is acceptable, e.g. eval()-in-test).
-    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES`, read with an ABSOLUTE baseline-clean gate
-      (NOT a claim the baseline IS clean): baseline fp>0 is non-discriminating; baseline fp=0
-      AND candidate fp>0 is the tracked regression reproduced. `safe_parameterized_query` tracks
-      the DECISIONS#041 Haiku parameterized-query false-CRITICAL — currently INCONCLUSIVE (the
-      baseline over-flags it on unrelated dimensions). The relative `fp_bounded` gate alone would
-      let a SHARED over-flag pass, hence the absolute baseline-clean check.
+    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES` (safe parameterized queries in several
+      idioms), TYPE-SCOPED to sql_injection FPs via `_sqli_fp_count` and read with an ABSOLUTE
+      baseline-clean gate: baseline sql_injection-fp>0 is non-discriminating (the over-flag is not
+      Haiku-specific); baseline=0 AND candidate>0 is the DECISIONS#041 caveat reproduced. Scoping
+      to sql_injection — not total fp — keeps an unrelated baseline over-flag (e.g.
+      missing_error_handling on a try/except-less query) from forcing INCONCLUSIVE. The relative
+      `fp_bounded` gate alone would let a SHARED over-flag pass, hence the baseline-clean check.
 
     Run the analyze node under Sonnet (baseline — the DEEP model + the pre-flip STANDARD
     model) and Haiku (candidate — now the shipped STANDARD default, DECISIONS#041) per
@@ -589,9 +715,9 @@ async def test_real_model_comparison_evidence() -> None:
         api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
     )
     # (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
-    # non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (baseline non-clean,
-    # so no Haiku evidence) vs "REPRODUCED" (baseline clean, candidate over-flagged); recall/
-    # precision use plain "FAILED". Empty label for green verdicts (never printed).
+    # non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (the baseline emitted a
+    # sql_injection FP itself) vs "REPRODUCED" (only the candidate did); recall/precision use plain
+    # "FAILED". Empty label for green verdicts (never printed).
     gate_results: list[tuple[str, str, bool, str]] = []
     try:
         # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
@@ -623,10 +749,12 @@ async def test_real_model_comparison_evidence() -> None:
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
             assert cmp.baseline is not None  # the run completed
-        # REGRESSION-TRACK dimension — read with an ABSOLUTE baseline-clean gate (not relative
-        # fp_bounded), because a SHARED over-flag (both fp>0) would wrongly pass the relative gate
-        # (DECISIONS#041). baseline fp>0 = the scenario is non-discriminating (the fixture itself
-        # is flaggable, or a prompt issue); baseline fp=0 AND candidate fp>0 = the #041 reproduced.
+        # REGRESSION-TRACK dimension — TYPE-SCOPED to sql_injection FPs (`_sqli_fp_count`), read
+        # with an ABSOLUTE baseline-clean gate. The caveat is type-specific (DECISIONS#041: Haiku
+        # mislabels a parameterized query as SQLi), so an unrelated baseline over-flag must NOT
+        # blind the track. `_regression_verdict` carries the 3-state logic (INCONCLUSIVE /
+        # REPRODUCED / clean); the scenario report printed above still shows total fp + every extra
+        # so the operator sees unrelated noise as context.
         for fixture_path in _REGRESSION_FIXTURES:
             cmp = await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
@@ -637,33 +765,9 @@ async def test_real_model_comparison_evidence() -> None:
                 candidate_model=candidate_model,
             )
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
-            b_fp = cmp.baseline.n_false_positives
-            c_fp = cmp.candidate.n_false_positives
-            # Three states, NOT two: a non-ok regression is either INCONCLUSIVE (baseline itself
-            # over-flagged, so this run yields no Haiku evidence — NOT a Haiku regression) or
-            # REPRODUCED (baseline clean, candidate over-flagged — the tracked #041 regression).
-            # Collapsing both to "FAILED" in the summary would read as "Haiku regressed" even when
-            # the baseline was the one that over-flagged and Haiku was clean.
-            if b_fp > 0:
-                verdict, ok, fail_label = (
-                    f"NON-DISCRIMINATING — baseline (Sonnet) itself over-flagged {b_fp}; "
-                    "a fixture-ambiguity or product-prompt issue, not valid Haiku evidence",
-                    False,
-                    "INCONCLUSIVE (baseline non-clean)",
-                )
-            elif c_fp > 0:
-                verdict, ok, fail_label = (
-                    f"#041 CAVEAT REPRODUCED — baseline clean, candidate (Haiku) over-flagged "
-                    f"{c_fp}",
-                    False,
-                    "REPRODUCED (baseline clean, candidate over-flagged)",
-                )
-            else:
-                verdict, ok, fail_label = (
-                    "CLEAN — both fp=0; the over-flag did not reproduce this run",
-                    True,
-                    "",
-                )
+            verdict, ok, fail_label = _regression_verdict(
+                _sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate)
+            )
             print(f"  REGRESSION-TRACK verdict: {verdict}")  # noqa: T201 — operator diagnostic
             gate_results.append((fixture_path, "regression", ok, fail_label))
             assert cmp.baseline is not None  # the run completed
@@ -679,7 +783,8 @@ async def test_real_model_comparison_evidence() -> None:
             + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
             + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
             + f"\n  {green}/{len(gate_results)} dimension-verdicts green "
-            + "(recall→recall; safe-code→relative FP; regression-track→absolute baseline-clean)."
+            + "(recall→recall; safe-code→relative FP; "
+            + "regression-track→absolute baseline-clean, sql_injection-scoped)."
             + "".join(f"\n  {dim.upper()} {label}: {fx}" for fx, dim, label in failed)
             + "\n"
             + "=" * 72

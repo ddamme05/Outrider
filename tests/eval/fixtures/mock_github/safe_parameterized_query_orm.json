@@ -1,0 +1,36 @@
+{
+  "installation_id": 5306,
+  "owner": "acme",
+  "repo": "members",
+  "pr_number": 36,
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "pr_title": "Add user_by_email lookup",
+  "pr_body": "Adds user_by_email using a Django ORM raw() query with a bound parameter.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "members/queries.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n from members.models import User\n+\n+\n+def user_by_email(email):\n+    return list(User.objects.raw(\"SELECT * FROM members_user WHERE email = %s\", [email]))\n",
+      "previous_path": null,
+      "content_base": "from members.models import User\n",
+      "content_head": "from members.models import User\n\n\ndef user_by_email(email):\n    return list(User.objects.raw(\"SELECT * FROM members_user WHERE email = %s\", [email]))\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"members/queries.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Regression-track scenario: a Django ORM raw() query with a %s placeholder + bound params list -- confirm no sql_injection finding is hallucinated (DECISIONS#041 Haiku parameterized-query over-flag).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Regression scenario: no findings. user_by_email uses a Django ORM raw() query with a %s placeholder + bound params list, which is not injectable; no sql_injection finding should be produced."
+    ]
+  }
+}
