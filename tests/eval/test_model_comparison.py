@@ -73,16 +73,20 @@ _GROUND_TRUTH = (
 )
 
 # ---------------------------------------------------------------------------
-# Real PyGoat true-positive scenarios — the ACTUAL gate inputs (not synthetic).
-# Each maps a checked-in mock_github fixture (real vulnerable code + patch, the same
-# content the driven scenarios in scenarios/true_positives/ exercise) to its
-# ground-truth findings. Severity comes from `lookup_severity` (policy is the source of
-# truth, per the scenario convention — hard-coding CRITICAL would drift if the table
-# changes). Line numbers are HEAD source lines of the vulnerability, matching the
-# fixtures' own scripted analyze responses (which the driven scenarios validate).
+# Real STANDARD-tier true-positive scenarios — the ACTUAL gate inputs (not synthetic).
+# Each maps a checked-in mock_github fixture (real code + patch, the same content the
+# driven scenarios exercise) to its ground-truth findings. The set spans the severity
+# range a STANDARD-tier flip actually has to hold — two blatant CRITICALs (SQLi, auth
+# bypass) AND two subtler findings a cheaper model is likelier to miss (a LOW
+# missing-error-handling and an N+1 query, the kind of thing the easy CRITICALs don't
+# probe). Severity comes from `lookup_severity` (policy is the source of truth — hard-
+# coding would drift if the table changes). Line numbers are HEAD source lines, matching
+# the fixtures' own scripted analyze responses (which the driven scenarios validate).
 # ---------------------------------------------------------------------------
 _PYGOAT_SQL_FIXTURE = "tests/eval/fixtures/mock_github/pygoat_sql_injection.json"
 _PYGOAT_AUTH_FIXTURE = "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json"
+_MISSING_ERROR_HANDLING_FIXTURE = "tests/eval/fixtures/mock_github/missing_error_handling.json"
+_N_PLUS_ONE_FIXTURE = "tests/eval/fixtures/mock_github/n_plus_one_query.json"
 
 _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
     _PYGOAT_SQL_FIXTURE: (
@@ -101,6 +105,25 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             line_end=8,
             finding_type=FindingType.AUTH_BYPASS,
             severity=lookup_severity(FindingType.AUTH_BYPASS),
+        ),
+    ),
+    # Subtler STANDARD-tier findings — the coverage the blatant CRITICALs miss.
+    _MISSING_ERROR_HANDLING_FIXTURE: (
+        ExpectedFinding(
+            file_path="profile/client.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.MISSING_ERROR_HANDLING,
+            severity=lookup_severity(FindingType.MISSING_ERROR_HANDLING),
+        ),
+    ),
+    _N_PLUS_ONE_FIXTURE: (
+        ExpectedFinding(
+            file_path="orders/enrich.py",
+            line_start=7,
+            line_end=7,
+            finding_type=FindingType.N_PLUS_ONE_QUERY,
+            severity=lookup_severity(FindingType.N_PLUS_ONE_QUERY),
         ),
     ),
 }
