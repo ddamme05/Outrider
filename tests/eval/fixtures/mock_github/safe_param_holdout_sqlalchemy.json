@@ -1,0 +1,36 @@
+{
+  "installation_id": 5307,
+  "owner": "acme",
+  "repo": "ledger",
+  "pr_number": 37,
+  "base_sha": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+  "head_sha": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+  "pr_title": "Add get_user lookup",
+  "pr_body": "Adds get_user using a SQLAlchemy named-bind parameterized query.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "ledger/users.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n from sqlalchemy import text\n+\n+\n+def get_user(conn, user_id):\n+    return conn.execute(text(\"SELECT * FROM users WHERE id = :id\"), {\"id\": user_id}).fetchone()\n",
+      "previous_path": null,
+      "content_base": "from sqlalchemy import text\n",
+      "content_head": "from sqlalchemy import text\n\n\ndef get_user(conn, user_id):\n    return conn.execute(text(\"SELECT * FROM users WHERE id = :id\"), {\"id\": user_id}).fetchone()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"ledger/users.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Regression-track HOLD-OUT idiom: a SQLAlchemy text() query with a named :id bind parameter + params dict -- a placeholder style NOT shown in the analyze prompt examples. Confirm no sql_injection over-flag (generalization test).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Hold-out regression scenario: no findings. get_user uses a SQLAlchemy parameterized query (named :id bind + params dict), which is not injectable; no sql_injection finding should be produced."
+    ]
+  }
+}

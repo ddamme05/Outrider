@@ -1,0 +1,36 @@
+{
+  "installation_id": 5310,
+  "owner": "acme",
+  "repo": "search",
+  "pr_number": 40,
+  "base_sha": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+  "head_sha": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+  "pr_title": "Add search_users view",
+  "pr_body": "Adds search_users, which looks up users by name.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "search/views.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n from django.db import connection\n+\n+\n+def search_users(name):\n+    with connection.cursor() as cursor:\n+        cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")\n+        return cursor.fetchall()\n",
+      "previous_path": null,
+      "content_base": "from django.db import connection\n",
+      "content_head": "from django.db import connection\n\n\ndef search_users(name):\n    with connection.cursor() as cursor:\n        cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")\n        return cursor.fetchall()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"search/views.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Recall HOLD-OUT (real SQLi): search_users builds the query with an f-string interpolating the untrusted `name` into the SQL string -- an injection form the analyze prompt NAMES but does not exemplify. The model MUST still flag sql_injection (recall-generalization test).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SQL injection via f-string in search_users\", \"description\": \"search_users interpolates the untrusted `name` directly into the SQL string with an f-string, so a value like \\\"' OR '1'='1\\\" alters the query. Use a parameterized query (a %s placeholder with name passed as a separate argument).\", \"evidence\": \"        cursor.execute(f\\\"SELECT * FROM users WHERE name = '{name}'\\\")\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one CRITICAL sql_injection finding -- search_users builds the query via f-string from untrusted input."
+    ]
+  }
+}
