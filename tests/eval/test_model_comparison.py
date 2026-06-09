@@ -24,7 +24,7 @@ from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
 
-from .grading import ExpectedFinding
+from .grading import ExpectedFinding, ModelComparison
 from .model_comparison import (
     compare_models_on_scenario,
     run_analyze_under_model,
@@ -127,6 +127,18 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
         ),
     ),
 }
+
+# Safe-code scenarios — the PRECISION instrument (distinct from the recall fixtures above).
+# These checked-in fixtures contain NO real finding (a pure refactor; eval() on a hardcoded
+# literal in a test), so their ground truth is empty and ANY finding a model emits is an
+# UNAMBIGUOUS false positive. That's the clean over-flagging signal the known-vulnerability
+# fixtures can't give: on a vulnerable file a model's "extra" is often a legitimate second
+# finding the single-entry ground truth didn't encode (the real run showed exactly this), so
+# precision there is unreliable; on safe code there is nothing legitimate to find.
+_SAFE_CODE_FIXTURES: tuple[str, ...] = (
+    "tests/eval/fixtures/mock_github/safe_refactor.json",
+    "tests/eval/fixtures/mock_github/eval_in_test_fixture.json",
+)
 
 
 def _judged_response_for(expected: ExpectedFinding) -> str:
@@ -336,6 +348,38 @@ def test_state_from_eval_fixture_reads_dimensions_from_fixture_triage() -> None:
     assert npo.overall_risk is RiskLevel.MEDIUM
 
 
+@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES)
+def test_state_from_safe_code_fixture_builds(fixture_path: str) -> None:
+    """The safe-code (precision) fixtures build an analyzable STANDARD-tier state the same
+    way — multi-dimension triage read from the fixture, tier overridden to STANDARD."""
+    state = state_from_eval_fixture(fixture_path)
+    assert state.pr_context.changed_files
+    assert state.triage_result is not None
+    path = state.pr_context.changed_files[0].path
+    assert state.triage_result.file_tiers[path] is ReviewTier.STANDARD
+    assert len(state.triage_result.relevant_dimensions) >= 1
+
+
+@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES)
+@pytest.mark.asyncio
+async def test_safe_code_clean_under_clean_model_scores_zero_fp(fixture_path: str) -> None:
+    """Precision dimension, end-to-end zero-spend: a model that returns NO finding on safe
+    code scores 0 false positives against the empty ground truth, so fp_bounded holds. Proves
+    state_from_eval_fixture(safe) flows through the real analyze node and grades clean. The
+    over-flag FAIL case is covered by grading's precision gate test."""
+    cmp = await compare_models_on_scenario(
+        state_from_eval_fixture(fixture_path),
+        (),  # safe code — no real finding, so any finding would be a false positive
+        baseline_provider=_ScriptedProvider(_MISSES_RESPONSE),
+        baseline_model="claude-sonnet-4-6",
+        candidate_provider=_ScriptedProvider(_MISSES_RESPONSE),
+        candidate_model="claude-haiku-4-5",
+    )
+    assert cmp.baseline.n_false_positives == 0
+    assert cmp.candidate.n_false_positives == 0
+    assert cmp.fp_bounded is True  # neither over-flagged clean code → precision green
+
+
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
@@ -362,8 +406,37 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
 
 # ---------------------------------------------------------------------------
 # Opt-in REAL-model run (SPEND) — the evidence path. Skipped unless explicitly enabled.
-# This is the ACTUAL gate: real models over real STANDARD-tier scenarios.
+# Two dimensions: RECALL over known-vulnerability fixtures, PRECISION over safe code.
 # ---------------------------------------------------------------------------
+
+
+def _print_scenario_report(
+    fixture_path: str, cmp: ModelComparison, baseline_model: str, candidate_model: str
+) -> None:
+    """Print one scenario's recall/precision/fp + the raw gate flags + each model's
+    extra/missed detail, so a verdict is interpretable: is an extra noise, or a legitimate
+    finding the ground truth didn't encode? The caller picks which flag is the gate for the
+    scenario's dimension."""
+    b, c = cmp.baseline, cmp.candidate
+    print(  # noqa: T201 — operator evidence output
+        f"\n[{fixture_path}]"
+        f"\n  baseline ({baseline_model}): "
+        f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} fp={b.n_false_positives}"
+        f"\n  candidate ({candidate_model}): "
+        f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} fp={c.n_false_positives}"
+        f"\n  recall_held={cmp.recall_held} baseline_valid={cmp.baseline_valid} "
+        f"fp_bounded={cmp.fp_bounded}"
+    )
+    for label, g in (("baseline", b), ("candidate", c)):
+        for x in g.extra:
+            print(  # noqa: T201 — operator diagnostic
+                f"    {label} extra (finding not in ground truth): "
+                f"{x.finding_type.value} {x.file_path}:{x.line_start} — {x.title}"
+            )
+        for m in g.missed:
+            print(  # noqa: T201 — operator diagnostic
+                f"    {label} MISSED: {m.finding_type.value} {m.file_path}:{m.line_start}"
+            )
 
 
 @pytest.mark.skipif(
@@ -371,30 +444,34 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
     reason="real-model comparison spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
 )
 @pytest.mark.asyncio
-async def test_real_model_comparison_pygoat_true_positives() -> None:
+async def test_real_model_comparison_evidence() -> None:
     """OPT-IN, real API spend — the evidence REPORT for the STANDARD->Haiku flip decision.
 
     REPORT-ONLY, BY DESIGN: this asserts only that the run COMPLETED. So pytest "passed"
     means "the run executed", NOT "the gate passed" — the per-scenario gate verdict is in
-    the printed output and the end summary, and the human adjudicates. The report does not
-    hard-fail because model output is nondeterministic and the false-positive count is noisy
-    under single-finding ground truth (a real run has shown a scenario flip fp between runs
-    while recall stayed 1.0); a hard pytest fail would red on that noise. Whether/how to
-    hard-gate (e.g. on recall_held only, or with a tuned fp_allowance) is a separate call.
+    the printed output and the end summary, and the human adjudicates. It does not hard-fail
+    because model output is nondeterministic; a hard pytest fail would red on that noise.
 
-    For each real STANDARD-tier fixture, run the analyze node under Sonnet (baseline,
-    today's STANDARD model) and Haiku (candidate, the flip target), grading recall/precision
-    against the known finding, and print the gate verdict + the extra/missed detail per
-    scenario. Bounded: 2 analyze calls per scenario over small files. CI never runs this.
+    TWO DIMENSIONS, measured on the fixtures each is valid for:
+    - RECALL, over known-vulnerability fixtures (`_GROUND_TRUTH_BY_FIXTURE`): does the
+      candidate catch the known finding? Gated on `recall_held` + `baseline_valid`. FP is
+      ADVISORY here, NOT gated: a real run showed the "extras" on vulnerable files are
+      usually LEGITIMATE second findings the single-entry ground truth didn't encode (an
+      unvalidated-input finding alongside the SQLi), so fp on a vulnerable file is an
+      unreliable over-flag signal. Read the printed extra detail, don't gate on it.
+    - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
+      candidate over-flag clean code? ANY finding is an unambiguous FP, so gated on
+      `fp_bounded` (candidate must not exceed the baseline's FP count). This is the clean
+      over-flag signal the vulnerable fixtures can't give.
 
-    Read the recall number as TYPE-EXACT recall: a match requires the same
-    `finding_type` AND policy severity (plus file + line window), per the structural
-    grading contract. So a candidate that genuinely SEES the vulnerability but labels it
-    a different type (e.g. SQL injection reported as `missing_input_validation`) scores
-    as a miss. That is intended — the gate protects the exact STANDARD-tier findings,
-    not "did it notice something here" — but when reading a recall drop, check the
-    `missed`/`extra` detail to tell a true regression from a classification disagreement
-    before acting on the flip.
+    Run the analyze node under Sonnet (baseline, today's STANDARD model) and Haiku
+    (candidate, the flip target) per scenario; bounded at 2 analyze calls/scenario over
+    small files. CI never runs this.
+
+    Recall is TYPE-EXACT: a match requires the same `finding_type` AND policy severity (plus
+    file + line window). A candidate that SEES the vulnerability but labels it a different
+    type scores as a miss — so on a recall drop, read the `missed`/`extra` detail to tell a
+    true regression from a classification disagreement before acting on the flip.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -428,8 +505,9 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
             "same model — the comparison would prove nothing about Sonnet-vs-Haiku. Point "
             "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
         )
-    gate_results: list[tuple[str, bool]] = []
+    gate_results: list[tuple[str, str, bool]] = []  # (fixture, dimension, verdict)
     try:
+        # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
         for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
             cmp = await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
@@ -439,43 +517,34 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
                 candidate_provider=provider,
                 candidate_model=candidate_model,
             )
-            b, c = cmp.baseline, cmp.candidate
-            print(  # noqa: T201 — opt-in evidence output for the operator
-                f"\n[{fixture_path}]"
-                f"\n  baseline ({baseline_model}): "
-                f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} "
-                f"fp={b.n_false_positives}"
-                f"\n  candidate ({candidate_model}): "
-                f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} "
-                f"fp={c.n_false_positives}"
-                f"\n  gate passes={cmp.passes} (baseline_valid={cmp.baseline_valid} "
-                f"recall_held={cmp.recall_held} fp_bounded={cmp.fp_bounded})"
-            )
-            # Diagnostic detail so an fp_bounded fail / recall drop is INTERPRETABLE: name
-            # each model's extras (what counts as a false positive — noise, or a legitimate
-            # finding the single-entry ground truth didn't encode?) and any missed finding.
-            for label, g in (("baseline", b), ("candidate", c)):
-                for x in g.extra:
-                    print(  # noqa: T201 — operator diagnostic
-                        f"    {label} extra (counts as FP vs 1-finding ground truth): "
-                        f"{x.finding_type.value} {x.file_path}:{x.line_start} — {x.title}"
-                    )
-                for m in g.missed:
-                    print(  # noqa: T201 — operator diagnostic
-                        f"    {label} MISSED: {m.finding_type.value} {m.file_path}:{m.line_start}"
-                    )
-            gate_results.append((fixture_path, cmp.passes))
+            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+            gate_results.append((fixture_path, "recall", cmp.recall_held and cmp.baseline_valid))
             assert cmp.baseline is not None  # the run completed
-        # REPORT-ONLY summary — make "pytest passed" un-confusable with "gate passed".
-        # This test asserts only that the run completed; the gate verdict is per-scenario.
-        failed = [fx for fx, ok in gate_results if not ok]
+        # PRECISION dimension — safe code, empty ground truth so ANY finding is a real FP;
+        # gate on fp_bounded (Haiku must not over-flag clean code more than Sonnet).
+        for fixture_path in _SAFE_CODE_FIXTURES:
+            cmp = await compare_models_on_scenario(
+                state_from_eval_fixture(fixture_path),
+                (),
+                baseline_provider=provider,
+                baseline_model=baseline_model,
+                candidate_provider=provider,
+                candidate_model=candidate_model,
+            )
+            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+            gate_results.append((fixture_path, "precision", cmp.fp_bounded))
+            assert cmp.baseline is not None  # the run completed
+        # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
+        failed = [(fx, dim) for fx, dim, ok in gate_results if not ok]
+        green = len(gate_results) - len(failed)
         print(  # noqa: T201 — operator gate summary
             "\n"
             + "=" * 72
             + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
             + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
-            + f"\n  {len(gate_results) - len(failed)}/{len(gate_results)} scenario(s) green."
-            + "".join(f"\n  GATE FAILED (read its extra/missed detail): {fx}" for fx in failed)
+            + f"\n  {green}/{len(gate_results)} dimension-verdicts green "
+            + "(recall fixtures gate on recall; safe-code fixtures gate on FP)."
+            + "".join(f"\n  {dim.upper()} FAILED: {fx}" for fx, dim in failed)
             + "\n"
             + "=" * 72
         )

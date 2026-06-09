@@ -306,5 +306,21 @@ def test_gate_baseline_valid_when_baseline_perfect() -> None:
     assert cmp.passes is True
 
 
+def test_gate_precision_catches_overflag_on_safe_code() -> None:
+    """Precision dimension (safe code, EMPTY ground truth): any finding is an unambiguous
+    FP. A candidate that flags clean code while the baseline stays clean breaks fp_bounded,
+    so the gate fails — this is the over-flag signal the vulnerable fixtures can't give."""
+    clean = grade((), ())  # baseline: no findings on safe code → fp 0
+    overflag = grade((_finding(),), ())  # candidate: 1 finding on safe code → fp 1
+    assert clean.n_false_positives == 0
+    assert overflag.n_false_positives == 1
+    cmp = compare(clean, overflag)
+    assert cmp.baseline_valid is True  # empty ground truth is vacuously valid
+    assert cmp.fp_bounded is False  # candidate over-flagged
+    assert cmp.passes is False
+    # Both clean → precision passes.
+    assert compare(clean, grade((), ())).passes is True
+
+
 def test_default_line_window_is_declared() -> None:
     assert DEFAULT_LINE_WINDOW == 2
