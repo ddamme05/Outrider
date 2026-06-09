@@ -169,6 +169,11 @@ def test_cost_per_review_measurement() -> None:
             f"(saves ${synth_sonnet - synth_haiku:.4f}/review)"
         )
 
+    # Precondition for the lever's division below (and the regression guard for a broken
+    # pricing path) — asserted BEFORE the lever so a zero analyze cost fails with this clear
+    # message rather than a cryptic ZeroDivisionError from `(1 - an_haiku / an_sonnet)`.
+    assert avg("analyze", "cost_usd") > 0, "analyze cost is zero — pricing/token path broken"
+
     # Landed lever (DECISIONS#041): STANDARD-tier analyze -> Haiku. These fixtures are all
     # DEEP so they still bill at Sonnet; projected here on the measured analyze call to show
     # the per-STANDARD-file saving (3x same-token, the realized model-price portion).
@@ -189,9 +194,9 @@ def test_cost_per_review_measurement() -> None:
     print("         STANDARD->Haiku flip (#041), which saves on STANDARD-tier files.")
     print("=" * 78)
 
-    # Sanity assertions (regression guard — loose, not a tight cost SLA).
+    # Sanity assertions (regression guard — loose, not a tight cost SLA). The analyze-cost
+    # > 0 guard is asserted earlier (precondition for the lever division).
     assert by_node, "no LLM calls captured — the cost path is broken"
-    assert avg("analyze", "cost_usd") > 0, "analyze cost is zero — pricing/token path broken"
     # A 30-file all-Sonnet review at a realistic 1k output must land in a sane band:
     # well under $100 (catches an order-of-magnitude pricing bug) and above the
     # fully-optimized target (this is the UN-optimized baseline).
