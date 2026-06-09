@@ -213,12 +213,14 @@ async def compare_models_on_scenario(
     line_window: int = DEFAULT_LINE_WINDOW,
     recall_tolerance: float = 0.0,
     fp_allowance: int = 0,
+    baseline_recall_floor: float = 1.0,
 ) -> ModelComparison:
     """Run `state` under the baseline (Sonnet) and candidate (Haiku) models, grade each
     against `ground_truth`, and apply the gate. For the REAL run `baseline_provider` and
     `candidate_provider` are the SAME `AnthropicProvider` (the model differs via
     `*_model`); for the machinery test they are distinct scripted providers so a recall
-    divergence can be injected deterministically."""
+    divergence can be injected deterministically. All three declared gate thresholds
+    (`recall_tolerance`, `fp_allowance`, `baseline_recall_floor`) forward to `compare()`."""
     baseline_findings = await run_analyze_under_model(
         state, provider=baseline_provider, model=baseline_model
     )
@@ -232,4 +234,5 @@ async def compare_models_on_scenario(
         candidate_grade,
         recall_tolerance=recall_tolerance,
         fp_allowance=fp_allowance,
+        baseline_recall_floor=baseline_recall_floor,
     )
