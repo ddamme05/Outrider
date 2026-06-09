@@ -372,15 +372,20 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
 )
 @pytest.mark.asyncio
 async def test_real_model_comparison_pygoat_true_positives() -> None:
-    """OPT-IN, real API spend — the evidence run that gates the STANDARD->Haiku flip.
+    """OPT-IN, real API spend — the evidence REPORT for the STANDARD->Haiku flip decision.
 
-    For each real PyGoat true-positive fixture (STANDARD tier), run the analyze node
-    under Sonnet (baseline, today's STANDARD model) and Haiku (candidate, the flip
-    target), grading recall/precision against the known CRITICAL finding, and report the
-    gate verdict per scenario. The operator reads whether Haiku held recall before
-    flipping the default. Bounded: 2 analyze calls per scenario over small files. NO
-    hard quality assertion (model output is nondeterministic — the human adjudicates);
-    CI never runs this.
+    REPORT-ONLY, BY DESIGN: this asserts only that the run COMPLETED. So pytest "passed"
+    means "the run executed", NOT "the gate passed" — the per-scenario gate verdict is in
+    the printed output and the end summary, and the human adjudicates. The report does not
+    hard-fail because model output is nondeterministic and the false-positive count is noisy
+    under single-finding ground truth (a real run has shown a scenario flip fp between runs
+    while recall stayed 1.0); a hard pytest fail would red on that noise. Whether/how to
+    hard-gate (e.g. on recall_held only, or with a tuned fp_allowance) is a separate call.
+
+    For each real STANDARD-tier fixture, run the analyze node under Sonnet (baseline,
+    today's STANDARD model) and Haiku (candidate, the flip target), grading recall/precision
+    against the known finding, and print the gate verdict + the extra/missed detail per
+    scenario. Bounded: 2 analyze calls per scenario over small files. CI never runs this.
 
     Read the recall number as TYPE-EXACT recall: a match requires the same
     `finding_type` AND policy severity (plus file + line window), per the structural
@@ -423,6 +428,7 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
             "same model — the comparison would prove nothing about Sonnet-vs-Haiku. Point "
             "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
         )
+    gate_results: list[tuple[str, bool]] = []
     try:
         for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
             cmp = await compare_models_on_scenario(
@@ -445,6 +451,33 @@ async def test_real_model_comparison_pygoat_true_positives() -> None:
                 f"\n  gate passes={cmp.passes} (baseline_valid={cmp.baseline_valid} "
                 f"recall_held={cmp.recall_held} fp_bounded={cmp.fp_bounded})"
             )
+            # Diagnostic detail so an fp_bounded fail / recall drop is INTERPRETABLE: name
+            # each model's extras (what counts as a false positive — noise, or a legitimate
+            # finding the single-entry ground truth didn't encode?) and any missed finding.
+            for label, g in (("baseline", b), ("candidate", c)):
+                for x in g.extra:
+                    print(  # noqa: T201 — operator diagnostic
+                        f"    {label} extra (counts as FP vs 1-finding ground truth): "
+                        f"{x.finding_type.value} {x.file_path}:{x.line_start} — {x.title}"
+                    )
+                for m in g.missed:
+                    print(  # noqa: T201 — operator diagnostic
+                        f"    {label} MISSED: {m.finding_type.value} {m.file_path}:{m.line_start}"
+                    )
+            gate_results.append((fixture_path, cmp.passes))
             assert cmp.baseline is not None  # the run completed
+        # REPORT-ONLY summary — make "pytest passed" un-confusable with "gate passed".
+        # This test asserts only that the run completed; the gate verdict is per-scenario.
+        failed = [fx for fx, ok in gate_results if not ok]
+        print(  # noqa: T201 — operator gate summary
+            "\n"
+            + "=" * 72
+            + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
+            + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
+            + f"\n  {len(gate_results) - len(failed)}/{len(gate_results)} scenario(s) green."
+            + "".join(f"\n  GATE FAILED (read its extra/missed detail): {fx}" for fx in failed)
+            + "\n"
+            + "=" * 72
+        )
     finally:
         await provider.aclose()
