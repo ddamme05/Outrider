@@ -29,8 +29,8 @@ Constructor performs eager validation:
       cache_creation_input_tokens=0 AND cache_read_input_tokens=0, log a
       WARN once per (model, system_prompt_hash) per process — the SDK
       silently rejected caching, typically because the prompt is below
-      the model's min-cacheable threshold (Sonnet 4.6: 2048 tokens;
-      Haiku 4.5: 4096 tokens). Diagnostic only; does not raise.
+      the model's min-cacheable threshold (authoritative values:
+      `pricing.MIN_CACHEABLE_TOKENS`). Diagnostic only; does not raise.
   8. Compute cost_usd via pricing.compute_cost_usd() (uses
      `normalize_to_pricing_key` so dated SDK-catalog model pins resolve
      to their undated alias for RATE_TABLE lookup, ).
@@ -79,6 +79,7 @@ from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
     compute_cost_usd,
+    min_cacheable_tokens,
     normalize_to_pricing_key,
 )
 
@@ -101,8 +102,9 @@ _WARNED_RAW_VALUES: set[str] = set()
 
 # per Anthropic SDK 0.100 prompt-caching docs: silently-
 # disabled-cache diagnostic. Per the docs, prompts shorter than the
-# model's min-cacheable threshold (Sonnet 4.6: 2048 tokens; Haiku 4.5:
-# 4096 tokens) are processed without caching, with NO error returned.
+# model's min-cacheable threshold (authoritative per-model values:
+# `pricing.MIN_CACHEABLE_TOKENS`) are processed without caching, with
+# NO error returned.
 # Detection: `cache_control=True` request with both
 # `cache_creation_input_tokens=0` AND `cache_read_input_tokens=0` in the
 # response. Without this signal, an operator who opted into caching sees
@@ -413,9 +415,9 @@ class AnthropicProvider:
 
         # Prompt-caching silently-disabled diagnostic.
         # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than
-        # the model's min-cacheable threshold (Sonnet 4.6: 2048 tokens;
-        # Haiku 4.5: 4096 tokens) are processed without caching with NO
-        # error returned. The unambiguous signal is `cache_control=True`
+        # the model's min-cacheable threshold (authoritative per-model
+        # values: `pricing.MIN_CACHEABLE_TOKENS`) are processed without
+        # caching with NO error returned. The unambiguous signal is `cache_control=True`
         # AND both cache_creation/read tokens at 0. The first-ever cache
         # write has cache_creation > 0 (so doesn't trigger); cache eviction
         # also rewrites with cache_creation > 0 (so doesn't trigger). Only
@@ -440,15 +442,27 @@ class AnthropicProvider:
             )
             if cache_warn_key not in _WARNED_NONCACHEABLE:
                 _WARNED_NONCACHEABLE.add(cache_warn_key)
+                # Floor derived from the authoritative table rather than
+                # hardcoded prose, so a floor change can't strand a stale
+                # number in the operator-facing message. Defensive lookup:
+                # `response.model` is SDK-returned and could (in principle)
+                # be a substituted id outside the table.
+                try:
+                    floor_text = (
+                        f"{min_cacheable_tokens(response.model)} tokens for "
+                        f"{normalize_to_pricing_key(response.model)}"
+                    )
+                except KeyError:
+                    floor_text = "see llm/pricing.py::MIN_CACHEABLE_TOKENS"
                 _LOGGER.warning(
                     "anthropic_provider cache_control=True but neither "
                     "cache_creation_input_tokens nor cache_read_input_tokens "
                     "fired; system prompt likely below the model's "
-                    "min-cacheable threshold (Sonnet 4.6: 2048 tokens; "
-                    "Haiku 4.5: 4096 tokens — see Anthropic prompt-caching "
-                    "docs). cache_control=True will produce no cost savings "
-                    "on this prompt until it grows past the threshold or "
-                    "cache_control is removed.",
+                    "min-cacheable threshold (%s — see Anthropic "
+                    "prompt-caching docs). cache_control=True will produce "
+                    "no cost savings on this prompt until it grows past the "
+                    "threshold or cache_control is removed.",
+                    floor_text,
                     extra={
                         "model": response.model,
                         "request_model": request.model,
