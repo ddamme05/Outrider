@@ -1,0 +1,36 @@
+{
+  "installation_id": 5313,
+  "owner": "acme",
+  "repo": "crm",
+  "pr_number": 43,
+  "base_sha": "4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a",
+  "head_sha": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+  "pr_title": "Add find_contact lookup",
+  "pr_body": "Adds find_contact, which looks up a contact by email.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "crm/queries.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n from crm.models import Contact\n+\n+\n+def find_contact(email):\n+    return list(Contact.objects.raw(f\"SELECT * FROM crm_contact WHERE email = '{email}'\"))\n",
+      "previous_path": null,
+      "content_base": "from crm.models import Contact\n",
+      "content_head": "from crm.models import Contact\n\n\ndef find_contact(email):\n    return list(Contact.objects.raw(f\"SELECT * FROM crm_contact WHERE email = '{email}'\"))\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"crm/queries.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Recall HOLD-OUT (real SQLi): find_contact builds a Django ORM raw() query with an f-string interpolating the untrusted `email` into the SQL string. The analyze prompt names f-string as injectable, but its only ORM example is the SAFE raw(..., [param]) form -- so this is the over-generalization path the security review flagged. The model MUST still flag sql_injection (recall-generalization test).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SQL injection via f-string in ORM raw() in find_contact\", \"description\": \"find_contact interpolates the untrusted `email` into the SQL string of a Django ORM raw() call with an f-string, so a value like \\\"' OR '1'='1\\\" alters the query. Pass the value as a raw() bound parameter (`raw(\\\"... = %s\\\", [email])`) instead of building the string.\", \"evidence\": \"    return list(Contact.objects.raw(f\\\"SELECT * FROM crm_contact WHERE email = '{email}'\\\"))\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one CRITICAL sql_injection finding -- find_contact builds an ORM raw() query via f-string from untrusted input."
+    ]
+  }
+}
