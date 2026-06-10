@@ -4,8 +4,9 @@
 
 Backs the `model-strings-from-config-not-hardcoded` invariant: every LLM
 call site reads its model from this config, not a hardcoded string.
-Defaults match canonical spec §4.2 (Haiku for triage/trace; Sonnet for
-analyze/synthesize). Each field is overridable via
+Defaults match canonical spec §4.2 as amended: Sonnet for DEEP-tier
+analyze only; Haiku for triage/trace/patch, STANDARD-tier analyze
+(DECISIONS.md#041), and synthesize (DECISIONS.md#043). Each field is overridable via
 `OUTRIDER_MODEL_<FIELD>` env var (e.g., `OUTRIDER_MODEL_TRIAGE_MODEL`)
 so eval runs can swap models per-tier without code changes.
 
@@ -73,7 +74,13 @@ class ModelConfig(BaseSettings):
     # trace-fetched (no-tier) files. Override per-deployment via
     # OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL.
     standard_analyze_model: str = "claude-haiku-4-5"
-    synthesize_model: str = "claude-sonnet-4-6"
+    # See DECISIONS.md#043 — synthesize runs Haiku: nothing finding-bearing
+    # in the node is model-dependent (findings are analyze output, severity
+    # is policy-set, dedup is content-hash); the model writes only the
+    # user-facing summary PROSE, the same bounded-generation class as the
+    # already-Haiku trace/patch calls. Watch is summary quality, not
+    # findings. Override per-deployment via OUTRIDER_MODEL_SYNTHESIZE_MODEL.
+    synthesize_model: str = "claude-haiku-4-5"
     trace_model: str = "claude-haiku-4-5"
     # See DECISIONS.md#040 — suggested-patch generation (synthesize) uses Haiku:
     # patch-gen is the kind of bounded generation Haiku handles, and cost is

@@ -530,9 +530,10 @@ class LLMRequest(BaseModel):
 
         **Synthesize is NOT in this allowlist** (corrected per the
         synthesize-node spec audit). Synthesize aggregates already-
-        produced findings into a `ReviewReport` and runs ONE Sonnet
-        call for free-form summary prose; it does NOT walk per-file
-        scope, so it does not pack a `context_summary` manifest.
+        produced findings into a `ReviewReport` and runs ONE summary
+        call (config-routed; Haiku default per DECISIONS.md#043) for
+        free-form prose; it does NOT walk per-file scope, so it does
+        not pack a `context_summary` manifest.
         Triage + trace also legitimately omit the manifest.
         """
         nodes_requiring_context = frozenset({"analyze"})

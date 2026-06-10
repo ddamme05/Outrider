@@ -50,7 +50,9 @@ def test_defaults_match_canonical_spec() -> None:
     # STANDARD-tier analyze defaults to Haiku (the eval-gated cost flip, DECISIONS.md#041);
     # DEEP-tier files stay on analyze_model (Sonnet).
     assert cfg.standard_analyze_model == "claude-haiku-4-5"
-    assert cfg.synthesize_model == "claude-sonnet-4-6"
+    # Synthesize defaults to Haiku (DECISIONS.md#043 — one bounded summary call
+    # per review; findings/severity/dedup are not model-dependent).
+    assert cfg.synthesize_model == "claude-haiku-4-5"
     assert cfg.trace_model == "claude-haiku-4-5"
 
 

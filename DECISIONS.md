@@ -1334,3 +1334,18 @@ V1 ships the nullable shape. When FUP-093 lands (audit-query helper wired into `
 **Consequences.** The cached prefix is written once and read N−1 times per review per tier-model: break-even ≈ 8 analyze calls per review-model, ~40% analyze-input saving at 30 files; reviews under break-even pay a small premium traded for the exemplar content (quality-gated via the real-model comparison run). Same-file scope-context caching is no longer attempted in V1 — FUP-014's multi-block path recovers it. Prefix edits must preserve byte-stability and the floor margin (both pinned by unit test). The `analyze-v4` template bump keeps replay attribution exact. Non-analyze cached prompts remain below their floors by accepted tradeoff (FUP-163 — single-call nodes cannot hit a same-review cache by construction). The canonical §9.5 intro and TTL wording were reconciled to the cross-file framing in the same commit as this entry.
 
 **Referenced from.** `src/outrider/prompts/analyze.py`, `src/outrider/llm/pricing.py`, `src/outrider/llm/base.py`, `docs/spec.md` §9.5.
+
+## 043. Synthesize runs Haiku; single-call nodes accept the below-floor cache no-op
+
+**Status:** Accepted, 2026-06-10.
+
+**Context.** After the analyze tier flip (#041) and the cross-file cache packing (#042), the last non-analyze model assignment on Sonnet was synthesize's one summary call per review. Measured cost: ~679 tokens ≈ $0.0028/review — the flip saves ~$0.002/review, negligible (an earlier COST_ANALYSIS draft modeled $0.04; the measured table is authoritative). Separately, FUP-163 (local tracker) recorded that the triage/trace/synthesize system prompts sit below their models' minimum cacheable lengths (`llm/pricing.py::MIN_CACHEABLE_TOKENS`), so their `cache_control=True` silently never caches.
+
+**Decision.** Two related calls, one entry:
+
+1. `synthesize_model` defaults to `claude-haiku-4-5` (was `claude-sonnet-4-6`). Synthesize no longer affects finding generation, severity, or dedup — findings are analyze output, severity is policy-set, dedup is content-hash; none of that is model-dependent. What the model DOES still own is the user-facing summary prose, one bounded generation over already-final inputs — the same task class as the already-Haiku trace and patch calls (#040). The quality watch is therefore a SUMMARY-QUALITY watch: read the first production review summaries on the dashboard (V1's only summary surface — publish does not put the summary in the GitHub review body). Reversible per-deployment via `OUTRIDER_MODEL_SYNTHESIZE_MODEL`.
+2. Non-analyze cached prompts deliberately stay below their cache floors. Triage and synthesize make ONE call per review, so a same-review cache hit is structurally impossible; trace's prompt is below floor and runs ≤2 rounds, making the theoretical hit marginal. Growing prompts solely to clear a floor buys nothing for single-call nodes. The provider's below-floor WARN stays as the diagnostic, already spam-bounded by its once-per-(model, system_prompt_hash) per-process dedup — that dedup is the scoping; no downgrade needed.
+
+**Consequences.** All per-review LLM calls except DEEP-tier/trace-fetched analyze now run Haiku. The flip was taken as cleanup, not a cost lever — recorded so the cost narrative stays honest. A future prompt growing past its model's floor self-activates caching with no code change (`cache_control` stays on per #013 point 4). If the dashboard summary-quality watch surfaces drift, the rollback is one env var, not a code change.
+
+**Referenced from.** `src/outrider/llm/config.py` (the `synthesize_model` default), `docs/spec.md` §4.2 (model tiering), `docs/architecture.md` (synthesize node).

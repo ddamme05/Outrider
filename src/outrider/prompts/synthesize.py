@@ -1,25 +1,26 @@
 # Synthesize-node prompt template + render helper per specs/2026-05-28-synthesize-node.md
 """Synthesize prompt template, version, knobs, and render helper.
 
-The synthesize node uses a Sonnet pass to generate a free-form prose
-summary of the review's deduplicated findings. The prompt asks for a
-concise, reviewer-facing summary of overall risk + dominant themes +
-suggested next steps. Sonnet does NOT classify severity (the
+The synthesize node uses one LLM pass (config-routed; Haiku by default
+per `DECISIONS.md#043`) to generate a free-form prose summary of the
+review's deduplicated findings. The prompt asks for a concise,
+reviewer-facing summary of overall risk + dominant themes + suggested
+next steps. The model does NOT classify severity (the
 `severity-set-by-policy` invariant pins that upstream); the prompt is
 prose-only.
 
 Surfaces (per the synthesize-node spec's Reference Reconciliation):
 
 - `SYSTEM_PROMPT: Final[str]` — fully static instructions. Goes into
-  `LLMRequest.system_prompt`. NB: prompt caching has a minimum-tokens
-  threshold (Sonnet 4.6: 2048 tokens; Sonnet 4.5: 1024); this prompt
-  is well below the floor (~700 tokens), so cache_control attempts
-  fall through with a per-(model, hash) wrapper warning. V1 is fine
-  with no cache hit — synthesize fires once per review and the
-  per-call latency is dominated by completion-time, not prompt
-  hydration. Future enhancement: expand the prompt with shared
-  boilerplate to clear the 2048-token floor IF the warn-spam becomes
-  noisy in production logs.
+  `LLMRequest.system_prompt`. NB: prompt caching has a per-model
+  minimum-tokens floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS` —
+  4096 for Haiku 4.5, the `DECISIONS.md#043` default); this prompt
+  (~700 tokens) is far below any floor, so cache_control attempts
+  fall through with a per-(model, hash) wrapper warning. That is
+  ACCEPTED per #043 (closing FUP-163): synthesize fires ONCE per
+  review, so a same-review cache hit is structurally impossible and
+  growing the prompt solely to clear a floor would buy nothing —
+  per-call latency is completion-dominated, not prompt hydration.
 - `USER_TEMPLATE: Final[str]` — per-review `str.format` template with
   structural placeholders (`{overall_risk}`, `{findings_summary}`,
   `{metrics_summary}`). Values are filled at `render()` time; the
@@ -29,7 +30,7 @@ Surfaces (per the synthesize-node spec's Reference Reconciliation):
 - `TEMPLATE` — alias for USER_TEMPLATE.
 - `VERSION: Final[str] = "synthesize-v1"` — flows to
   `LLMRequest.prompt_template_version`.
-- `MAX_TOKENS: Final[int] = 1024` — bounds Sonnet output to the
+- `MAX_TOKENS: Final[int] = 1024` — bounds the summary output to the
   `Field(max_length=2000)` codepoint cap on `ReviewReport.summary`
   with headroom for the token-to-codepoint ratio.
 - `TEMPERATURE: Final[float] = 0.3` — slightly higher than triage's
