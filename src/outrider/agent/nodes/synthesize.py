@@ -58,7 +58,8 @@ Order of operations (failure-path-significant):
   5. Compute metrics: files_examined / files_traced_beyond_diff /
      wall_clock_seconds deterministically; LLM aggregates from the
      audit-stream SUM (FUP-093, queried pre- and post-call).
-  6. Build LLMRequest for the Sonnet summary call.
+  6. Build LLMRequest for the summary call (model from config;
+     Haiku default per DECISIONS.md#043).
   7. Call provider.complete() (raises LLMProviderError subclasses
      on transport failure).
   8. Parse summary via strip_outer_json_fence (Anthropic occasionally
@@ -502,7 +503,8 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     appropriate here because `review_report` is a singleton field.
 
     Closure-injected dependencies per `nodes-receive-deps-via-closure`:
-    `provider` for the Sonnet summary call AND the Haiku patch call,
+    `provider` for the summary call AND the patch call (both Haiku by
+    default — DECISIONS.md#043 / #040),
     `synthesize_model` / `patch_model` from config per
     `model-strings-from-config-not-hardcoded`, `patches_enabled` +
     `max_suggestions` from `PatchConfig` to gate/cap the suggested-patch
@@ -515,7 +517,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             detected (corruption per severity-set-by-policy). An
             anomaly row commits before the raise.
         LLMProviderError: provider transport/parsing failure on the
-            Sonnet summary call.
+            summary call.
         pydantic.ValidationError: ReviewReport/ReviewMetrics validators
             reject the constructed values (oversize summary, mutated
             findings tuple, out-of-range metrics).
@@ -571,7 +573,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         max_suggestions=max_suggestions,
     )
 
-    # Step 6: build LLMRequest for the Sonnet summary call.
+    # Step 6: build LLMRequest for the summary call (model from config).
     # (Step 5's metrics computation is interleaved: a pre-call snapshot
     # below feeds the prompt; the final snapshot at step 10 captures the
     # post-call wall-clock for the audit row.)
@@ -625,7 +627,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # llm_call_content rows BEFORE returning per LLMProvider contract.
     response = await provider.complete(request)
 
-    # Step 8: normalize Sonnet envelope (sometimes wraps in ```json```
+    # Step 8: normalize the Anthropic envelope (sometimes wraps in ```json```
     # despite the prompt instruction — vendor-payloads-normalized-at-
     # boundary). For prose output this is harmless when no fence is
     # present and removes the wrapper when one is.

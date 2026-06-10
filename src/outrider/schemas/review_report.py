@@ -4,11 +4,12 @@
 These models are the typed output contract of the synthesize node (specs/
 2026-05-28-synthesize-node.md). Synthesize aggregates findings from all
 analysis rounds into a single ReviewReport, computes deterministic metrics
-from audit_events + analysis_rounds, and runs one Sonnet call for the
-free-form summary prose. Downstream nodes (hitl, publish) consume the
-ReviewReport; they do NOT walk state.analysis_rounds[*].findings any more.
+from audit_events + analysis_rounds, and runs one config-routed LLM call
+(Haiku default per DECISIONS.md#043) for the free-form summary prose.
+Downstream nodes (hitl, publish) consume the ReviewReport; they do NOT
+walk state.analysis_rounds[*].findings any more.
 
-ReviewReport.summary is Sonnet output: untrusted prose rendered into the
+ReviewReport.summary is LLM output: untrusted prose rendered into the
 GitHub review body downstream. Per docs/trust-boundaries.md §6, the
 deterministic publish-time gate (policy/output_sanitizer.py::
 sanitize_display_string + apply_size_cap) sanitizes the prose at the
@@ -110,8 +111,8 @@ class ReviewMetrics(BaseModel):
     """Per-review statistics computed in synthesize, per spec.md:1106-1114.
 
     All fields derived deterministically from audit_events + analysis_rounds
-    + node wall-clock measurement. NOT computed by the Sonnet call; the
-    Sonnet call produces only the summary prose. ge=0 floors match the
+    + node wall-clock measurement. NOT computed by the LLM call; the
+    summary call produces only the summary prose. ge=0 floors match the
     LLMCallEvent pricing-field convention (input_tokens, output_tokens,
     cost_usd) at audit/events.py:320-323.
     """

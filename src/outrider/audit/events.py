@@ -2412,8 +2412,8 @@ class SynthesizeCompletedEvent(AuditEventBase):
     `FindingEvent.policy_version` must match (audit-side
     cross-consistency check)."""
     synthesize_model: str
-    """Model string for the Sonnet summary call (e.g.,
-    'claude-sonnet-4-6-20250101'). From config per
+    """Model string for the summary call (e.g., 'claude-haiku-4-5' —
+    the DECISIONS.md#043 default). From config per
     `model-strings-from-config-not-hardcoded`. Replay needs this to
     know which model produced the canonicalized summary text the hash
     binds."""

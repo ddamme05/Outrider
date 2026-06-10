@@ -160,14 +160,18 @@ def test_cost_per_review_measurement() -> None:
     for out in _OUTPUT_SWEEP:
         print(f"    analyze_output={out:>5} tok  ->  ${reference_cost(out):.4f} / review")
 
-    # Cheap lever projection: flip synthesize -> Haiku (one-line config default change).
-    if haiku is not None and "synthesize" in by_node:
-        synth_sonnet = avg("synthesize", "cost_usd")
-        synth_haiku = _price(
-            haiku, int(avg("synthesize", "input_tokens")), int(avg("synthesize", "output_tokens"))
+    # Landed lever (DECISIONS#043): synthesize -> Haiku. The measured synthesize
+    # cost above already bills at Haiku; shown against its Sonnet-equivalent so
+    # the realized saving stays visible in the report.
+    sonnet = next((m for m in model_of.values() if "sonnet" in m), None)
+    if sonnet is not None and "synthesize" in by_node:
+        synth_haiku = avg("synthesize", "cost_usd")
+        synth_sonnet = _price(
+            sonnet, int(avg("synthesize", "input_tokens")), int(avg("synthesize", "output_tokens"))
         )
         print(
-            f"Lever (synthesize Sonnet->Haiku): ${synth_sonnet:.4f} -> ${synth_haiku:.4f} "
+            f"Lever (synthesize -> Haiku, DECISIONS#043, landed): ${synth_sonnet:.4f} "
+            f"Sonnet-equivalent -> ${synth_haiku:.4f} measured "
             f"(saves ${synth_sonnet - synth_haiku:.4f}/review)"
         )
 
