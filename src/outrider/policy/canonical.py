@@ -62,10 +62,11 @@ SHA256_HEX_PATTERN_SHORT: Final[str] = r"^[a-f0-9]{16}$"
 #   payload `[file_path, line_start, line_end, finding_type.value]`,
 #   SHA-256 hex. Predates this module; stored hash values live in
 #   `audit_events.payload` rows. Re-canonicalizing would break those.
-# - `outrider.llm.base._canonical_prompt_hash` — `\x1e`-delimited
-#   two-string concatenation, SHA-256 hex. Predates this module;
-#   stored hash values live in `llm_call_content.prompt_hash` rows
-#   under retention. Re-canonicalizing would break those.
+# - `outrider.llm.base._canonical_prompt_hash` — length-prefixed
+#   two-string byte concatenation (`{len}:` before each segment),
+#   SHA-256 hex. Predates this module; stored hash values live in
+#   `llm_call_content.prompt_hash` rows under retention.
+#   Re-canonicalizing would break those.
 #
 # Both stay independent of this module to preserve wire-format
 # compatibility on historical rows. New STRUCTURED identity-bearing
