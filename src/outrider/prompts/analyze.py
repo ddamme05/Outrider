@@ -615,10 +615,10 @@ degraded analyze call, regardless of file. `cache_control: ephemeral`
 on this prefix caches it once per review per tier-model. Must stay
 above `llm/pricing.py::MIN_CACHEABLE_TOKENS` for the configured tier
 models (below the floor the API silently skips caching) and is never
-`.format()`ed — INVARIANTS carries zero `{placeholder}` markers and
-EXEMPLARS' brace markers are a fixed allowlisted set of static
-f-string EXAMPLE variables ({owner}, {x}); all enforced by unit
-test."""
+`.format()`ed — INVARIANTS carries zero `{placeholder}` markers
+(exact-empty, enforced by test) and EXEMPLARS' brace markers stay
+within an allowlisted CEILING of static f-string EXAMPLE variables
+({owner}, {x}) — the test blocks new markers, not removals."""
 
 
 FILE_CONTEXT_TEMPLATE: Final[str] = """\

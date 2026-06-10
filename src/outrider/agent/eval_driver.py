@@ -331,7 +331,7 @@ class CostProbe:
     `model_cache=False` (default): cache tokens stay 0 — the measurement ignores
     prompt caching entirely. `model_cache=True`: the provider double MODELS
     Anthropic's cache deterministically, mirroring the documented contract the
-    same way input counts are real-prompt-derived: per `(model, system_prompt)`
+    same way input counts are real-prompt-derived: per `(model, system_prompt_hash)`
     entry tracking (first occurrence above the model's `min_cacheable_tokens`
     floor → cache WRITE of the estimated system tokens; repeats → cache READ;
     below-floor or `cache_control=False` → uncached, both 0 — the silent no-op

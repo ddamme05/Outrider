@@ -91,13 +91,13 @@ _N_PLUS_ONE_FIXTURE = "tests/eval/fixtures/mock_github/n_plus_one_query.json"
 _PATH_TRAVERSAL_FIXTURE = "tests/eval/fixtures/mock_github/path_traversal.json"
 _MISSING_INPUT_VALIDATION_FIXTURE = "tests/eval/fixtures/mock_github/missing_input_validation.json"
 
-# Recall HOLD-OUTS — real SQLi in injection forms the analyze-v3 prompt NAMES but never exemplifies
-# (f-string / str.format / `+` concatenation, vs the prompt's only-shown %-format) PLUS an ORM
-# `raw()` built with an f-string — the over-generalization path the security review flagged: the
-# prompt's only ORM example is the SAFE `raw(..., [param])` form, so the model could wrongly read
-# "ORM raw() = safe." The model MUST still flag all of these; a miss means the remediation
-# over-suppressed real SQLi. NAMED-BUT-UNEXAMPLED — a WEAKER generalization signal than the
-# regression safe hold-outs (which the prompt never mentions at all).
+# Recall HOLD-OUTS — real SQLi across injection forms. Hold-out strength is PROMPT-VERSION-
+# RELATIVE: under analyze-v3 (the DECISIONS#041 evidence runs) all four were named-but-never-
+# exemplified. Under analyze-v4, SYSTEM_PROMPT_EXEMPLARS DEMONSTRATES f-string, `+`
+# concatenation, and ORM `raw(f"...")` as FLAG examples — for those forms these fixtures now
+# test guidance-following, not generalization; `str.format` remains the only never-exemplified
+# injection form (the residual generalization signal). The model MUST still flag all of these;
+# a miss means the parameterized-query remediation over-suppressed real SQLi.
 _SQLI_HOLDOUT_FSTRING_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json"
 _SQLI_HOLDOUT_FORMAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_format.json"
 _SQLI_HOLDOUT_CONCAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_concat.json"
@@ -241,15 +241,15 @@ _REGRESSION_FIXTURES: tuple[str, ...] = (
     _PARAMETERIZED_QUERY_ORM_FIXTURE,
 )
 
-# Regression-track HOLD-OUTS — safe, correctly-parameterized queries in placeholder styles the
-# analyze-v3 prompt NEVER MENTIONS (it only shows `%s`/`%(name)s`): SQLAlchemy `text()` + `:name`
-# bind, sqlite3 `?` qmark, asyncpg `$1` positional. FULLY UNSEEN — the STRONGEST anti-overfit signal
-# (stronger than the recall SQLi hold-outs, which the prompt names but does not exemplify). The
-# demonstrated idioms in
-# `_REGRESSION_FIXTURES` above have shapes the prompt exemplifies, so a CLEAN verdict there proves
-# the model follows guidance — NOT that it generalized. These hold-outs test the generalization: a
-# CLEAN verdict here means the model applied the rule (placeholder + separate args = not injection)
-# to a shape it was never shown — the real evidence the fix isn't overfit.
+# Regression-track HOLD-OUTS — safe, correctly-parameterized queries: SQLAlchemy `text()` +
+# `:name` bind, sqlite3 `?` qmark, asyncpg `$1` positional. Hold-out strength is PROMPT-VERSION-
+# RELATIVE: under analyze-v3 (the DECISIONS#041 evidence runs) these styles were NEVER MENTIONED
+# (only `%s`/`%(name)s` shown) — the strongest anti-overfit signal. Under analyze-v4 the
+# exemplars NAME `?`/`:name`/`$1` as binding styles and DEMONSTRATE the `:name` form, so for
+# future runs only `?` and `$1` remain demonstration-free (named-not-exemplified), and a CLEAN
+# verdict tests guidance-following more than generalization. The demonstrated idioms in
+# `_REGRESSION_FIXTURES` above have shapes the prompt exemplifies, so a CLEAN verdict there
+# proves the model follows guidance — NOT that it generalized.
 _PARAM_HOLDOUT_SQLALCHEMY_FIXTURE = (
     "tests/eval/fixtures/mock_github/safe_param_holdout_sqlalchemy.json"
 )
@@ -773,9 +773,10 @@ async def test_real_model_comparison_evidence() -> None:
       usually LEGITIMATE second findings the single-entry ground truth didn't encode (an
       unvalidated-input finding alongside the SQLi), so fp on a vulnerable file is an
       unreliable over-flag signal. Read the printed extra detail, don't gate on it. The set now
-      also carries three HOLD-OUT SQLi forms (f-string / `str.format` / `+` concatenation) the
-      analyze-v3 prompt names but never exemplifies — a recall MISS there means the
-      parameterized-query remediation over-suppressed real SQLi (generalization, not overfit).
+      also carries three HOLD-OUT SQLi forms (f-string / `str.format` / `+` concatenation;
+      named-but-unexemplified under analyze-v3, with f-string and `+` now DEMONSTRATED by
+      analyze-v4's exemplars — see the recall hold-out comment) — a recall MISS there means the
+      parameterized-query remediation over-suppressed real SQLi.
     - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
       candidate over-flag clean code MORE than the baseline? Gated on `fp_bounded` (a RELATIVE
       bound — fine where a shared over-flag is acceptable, e.g. eval()-in-test).
