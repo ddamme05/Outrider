@@ -191,7 +191,9 @@ def test_cost_per_review_measurement() -> None:
 
     print("-" * 78)
     print(f"Bands: naive ${_BAND_NAIVE} | defensible ${_BAND_DEFENSIBLE} | target ${_BAND_TARGET}")
-    print("Caveats: input = bytes//3 UPPER bound; output modeled; caching unconsumed;")
+    print("Caveats: input = bytes//3 UPPER bound; output modeled; this baseline is")
+    print("         UNCACHED by choice (model_cache=False) — the cache-modeled proof")
+    print("         is test_cache_packing_cross_file_proof;")
     print("         these fixtures are all DEEP, so analyze bills Sonnet regardless of the")
     print("         STANDARD->Haiku flip (#041), which saves on STANDARD-tier files.")
     print("=" * 78)
