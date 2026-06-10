@@ -25,6 +25,7 @@ from outrider.policy.canonical import compute_round_id
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import patch as patch_prompt
+from outrider.prompts import synthesize as synthesize_prompt
 from outrider.schemas import ChangedFile, PRContext, ReviewFinding, ReviewState
 from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.triage_result import (
@@ -263,3 +264,35 @@ async def test_synthesize_disabled_makes_no_patch_call() -> None:
     # Exactly one call (the summary); no patch-v1 call.
     assert all(r.prompt_template_version != patch_prompt.VERSION for r in provider.requests)
     assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_summary_request_carries_configured_model_and_prompt_version() -> None:
+    """Zero-spend pins for the DECISIONS#043 flip mechanics: the summary
+    LLMRequest carries (a) the injected `synthesize_model` verbatim — the
+    config→request routing the Haiku default flows through — and (b)
+    `prompts/synthesize.VERSION` as `prompt_template_version`, pinned to
+    "synthesize-v2" (the surface-neutral prompt bump) so audit provenance
+    records both halves of the flip."""
+    finding = _make_high_finding(line=2)
+    state = _make_state(finding, content_head="a = 1\nreturn x\nc = 3\n")
+    provider = _DispatchingProvider(
+        _batch_json(finding.finding_id, "return x", "return sanitize(x)")
+    )
+
+    await synthesize(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        synthesize_model="stub-synthesize-model",
+        patch_model="stub-patch-model",
+        patches_enabled=False,
+        max_suggestions=5,
+        phase_event_sink=_StubPhaseSink(),
+        synthesize_event_sink=_StubSynthesizeEventSink(),
+        anomaly_sink=_StubAnomalySink(),
+    )
+
+    [summary_req] = provider.requests
+    assert summary_req.model == "stub-synthesize-model"
+    assert summary_req.prompt_template_version == synthesize_prompt.VERSION
+    assert synthesize_prompt.VERSION == "synthesize-v2"
