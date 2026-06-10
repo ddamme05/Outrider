@@ -223,6 +223,29 @@ async def test_probe_cache_model_below_floor_is_silent_noop() -> None:
         assert r.input_tokens == len(f"{'S' * 100}\n{_USER}")
 
 
+async def test_probe_cache_model_unfloored_model_raises_named_error() -> None:
+    """A model with no MIN_CACHEABLE_TOKENS floor fails the cache-model
+    path with the module's named EvalDriverError (same loud-failure
+    contract as the pricing KeyError), not a bare KeyError."""
+    probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
+    provider = _FixtureScriptedProvider(
+        {"triage": ["one"]}, persister=_RecordingPersist(), probe=probe
+    )
+    req = LLMRequest(
+        system_prompt=_ABOVE_FLOOR_SYSTEM,
+        user_prompt=_USER,
+        model="claude-opus-9-9",  # valid shape, not in MIN_CACHEABLE_TOKENS
+        max_tokens=100,
+        temperature=0.0,
+        review_id=uuid4(),
+        node_id="triage",
+        prompt_template_version="v1",
+        degraded_mode=False,
+    )
+    with pytest.raises(EvalDriverError, match="MIN_CACHEABLE_TOKENS"):
+        await provider.complete(req)
+
+
 async def test_probe_cache_model_respects_cache_control_off() -> None:
     probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
     provider = _FixtureScriptedProvider(

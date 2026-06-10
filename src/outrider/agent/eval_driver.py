@@ -405,39 +405,55 @@ class _FixtureScriptedProvider:
         # graph has ALREADY rendered the real system+user prompts by this point, so
         # the input count is grounded; output is modeled (no real completion).
         cache_read_tokens, cache_write_tokens = 0, 0
-        if self._probe is not None:
+        probe = self._probe
+        if probe is not None:
             output_tokens = (
-                self._probe.output_tokens
-                if self._probe.output_tokens is not None
-                else self._probe.token_estimator(text_out)
+                probe.output_tokens
+                if probe.output_tokens is not None
+                else probe.token_estimator(text_out)
             )
-            if self._probe.model_cache and request.cache_control:
+
+            def _combined_estimate() -> int:
+                # Shared uncached-input recipe for the cache-off and
+                # below-floor branches; lazy so the cache-modeled path
+                # never estimates a concatenation it doesn't use.
+                return probe.token_estimator(f"{request.system_prompt}\n{request.user_prompt}")
+
+            if probe.model_cache and request.cache_control:
                 # Deterministic cache model (see CostProbe docstring): system
                 # prompt is the single V1 cacheable block; the accounting
                 # identity `total_input = cache_read + cache_creation +
                 # input_tokens` holds by construction.
-                system_tokens = self._probe.token_estimator(request.system_prompt)
-                if system_tokens >= min_cacheable_tokens(request.model):
+                system_tokens = probe.token_estimator(request.system_prompt)
+                try:
+                    floor = min_cacheable_tokens(request.model)
+                except KeyError as exc:
+                    # Same loud-failure contract as the pricing KeyError
+                    # below — a bare KeyError mid-complete() hides the cause.
+                    raise EvalDriverError(
+                        f"eval fixture model {request.model!r} "
+                        f"(node_id={request.node_id!r}) has no "
+                        f"MIN_CACHEABLE_TOKENS floor — the cache model needs "
+                        f"a priced+floored model. Use a priced model in the "
+                        f"eval's ModelConfig."
+                    ) from exc
+                if system_tokens >= floor:
                     entry = (
                         request.model,
                         _canonical_system_prompt_hash(request.system_prompt),
                     )
-                    if entry in self._probe._cache_entries:
+                    if entry in probe._cache_entries:
                         cache_read_tokens = system_tokens
                     else:
                         cache_write_tokens = system_tokens
-                        self._probe._cache_entries.add(entry)
-                    input_tokens = self._probe.token_estimator(request.user_prompt)
+                        probe._cache_entries.add(entry)
+                    input_tokens = probe.token_estimator(request.user_prompt)
                 else:
                     # Below the model's floor: processed without caching, no
                     # error returned — the real API's silent no-op.
-                    input_tokens = self._probe.token_estimator(
-                        f"{request.system_prompt}\n{request.user_prompt}"
-                    )
+                    input_tokens = _combined_estimate()
             else:
-                input_tokens = self._probe.token_estimator(
-                    f"{request.system_prompt}\n{request.user_prompt}"
-                )
+                input_tokens = _combined_estimate()
         else:
             input_tokens, output_tokens = 100, 50
         response = LLMResponse(
