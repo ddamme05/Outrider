@@ -4,40 +4,50 @@
 The analyze node runs one Sonnet call per eligible file. Prompts split
 into:
 
-- **System prompt** (cacheable): Outrider-wide invariants (output schema,
-  `FindingType` enum, `EvidenceTier` proof rules, severity-set-by-policy
-  and confidence-is-computed reminders) PLUS file-scoped context
-  (changed scope units with bodies + same-file callers/callees + imports
-  + decorators + pre-fired `query_match_id` set). Stable WITHIN a pass
-  for one file, so the provider's `cache_control: ephemeral` produces
-  cache hits across REPEATED pass-0 calls on the same file (e.g.,
-  retry, replay). Pass-0 → pass-1 (post-trace) crosses a different
-  system-prompt shape: `render_post_trace` appends
-  `POST_TRACE_SYSTEM_PROMPT_SUFFIX` and uses the whole-file
-  `POST_TRACE_FILE_CONTEXT_TEMPLATE` instead of the diff-scoped
-  `SYSTEM_FILE_CONTEXT_TEMPLATE`, so pass-1 does NOT cache-hit
-  against pass-0 for the same path — by design (different file
-  context, different admission semantics).
-- **User prompt** (volatile): pass-specific instruction + scope-unit-
-  clipped diff hunks. Outside the cache boundary.
+- **System prompt** (cacheable, CROSS-FILE stable): Outrider-wide
+  invariants (output schema, `FindingType` enum, `EvidenceTier` proof
+  rules, severity-set-by-policy and confidence-is-computed reminders)
+  PLUS the worked exemplars block — `SYSTEM_PROMPT_STABLE_PREFIX`,
+  byte-identical for every pass-0 and degraded call in a review, so
+  the provider's `cache_control: ephemeral` caches the prefix ONCE per
+  review per tier-model instead of once per file (the analyze
+  cache-packing spec; pre-v4 packing carried per-file scope context
+  here, keying the cache per file). Pass-1 (post-trace) appends
+  `POST_TRACE_SYSTEM_PROMPT_SUFFIX` — still static, so pass-1 calls
+  share a SECOND stable cache entry across files (exact-prefix
+  matching: the suffix-bearing system cannot hit the pass-0 entry).
+- **User prompt** (volatile, per-file + per-pass): file-scoped context
+  (path + fenced scope units with same-file callers/callees, imports,
+  decorators + pre-fired `query_match_id` set) + pass directives +
+  scope-unit-clipped diff hunks. Outside the cache boundary; moving
+  per-file context here is what makes the system prefix cross-file
+  stable.
 
 For degraded calls (parse failure or `has_error` nodes intersecting
 changed regions), the prompt swaps to a `judged`-only directive set;
-the registry/walk context is empty by construction, so the system
-prompt is shorter and the user prompt carries bounded changed hunks
-instead of scope-unit-clipped ones.
+the registry/walk context is empty by construction, so the user prompt
+carries bounded changed hunks instead of scope-unit-clipped ones. The
+system prompt is the SAME stable prefix — degraded calls share the
+pass-0 cache entry.
 
 Surfaces:
 
-- `SYSTEM_PROMPT_INVARIANTS` — fully static head of the system prompt.
-- `SYSTEM_FILE_CONTEXT_TEMPLATE` — diff-scoped file tail appended by
-  `render` (says "the file's CHANGED scope units"; correct for pass-0
-  on PR-diff files, NOT for post-trace whole-file context).
-- `POST_TRACE_FILE_CONTEXT_TEMPLATE` — whole-file analogue appended by
-  `render_post_trace` (drops "changed" wording; trace-fetched files
-  live outside the PR diff).
+- `SYSTEM_PROMPT_INVARIANTS` — fully static invariants head.
+- `SYSTEM_PROMPT_EXEMPLARS` — fully static worked flag/don't-flag
+  exemplars per `FindingType`; grows the cached prefix past the
+  per-model min-cacheable floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS`
+  — below the floor the API silently skips caching).
+- `SYSTEM_PROMPT_STABLE_PREFIX` — INVARIANTS + EXEMPLARS; THE cached
+  block. Zero `{placeholder}` markers, enforced by test.
+- `FILE_CONTEXT_TEMPLATE` — diff-scoped per-file context rendered into
+  the USER prompt by `render` (says "the file's CHANGED scope units";
+  correct for pass-0 on PR-diff files, NOT for post-trace whole-file
+  context).
+- `POST_TRACE_FILE_CONTEXT_TEMPLATE` — whole-file analogue rendered
+  into the USER prompt by `render_post_trace` (drops "changed"
+  wording; trace-fetched files live outside the PR diff).
 - `POST_TRACE_SYSTEM_PROMPT_SUFFIX` — pass-1 INFERRED-admission section
-  appended after the file-context template by `render_post_trace`.
+  appended to the stable prefix by `render_post_trace`.
 - `POST_TRACE_USER_TEMPLATE` — pass-1 user-prompt body naming the
   source finding (id + fenced title/description/evidence) and the
   source path; consumed by `render_post_trace`.
@@ -45,7 +55,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v3"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v4"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -68,14 +78,17 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
-# Bumped 2026-06-09 (was "analyze-v2") for the sql_injection
-# false-positive guidance added to SYSTEM_PROMPT_INVARIANTS — parameterized
+# Bumped 2026-06-09 (was "analyze-v3") for the cache-packing repartition:
+# per-file scope context moved from system_prompt to user_prompt, the
+# worked-exemplars block added to the cached prefix (analyze cache-packing
+# spec). The v3 bump (same day, was "analyze-v2") added the sql_injection
+# false-positive guidance to SYSTEM_PROMPT_INVARIANTS — parameterized
 # queries are not injectable (the DECISIONS.md#041 over-flag). The v2 bump
 # (2026-05-24, was "analyze-v1") landed the trace-node arc: pass 0 vs pass 1
 # admission semantics, `render_post_trace`, and the pass-1 output-schema
 # override. Each bump keeps replay attribution exact — a prompt row replays
 # against the contract it was emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v3"
+VERSION: Final[str] = "analyze-v4"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -212,7 +225,385 @@ at max_length=50). Up to 20 trace_candidates per finding.
 """
 
 
-SYSTEM_FILE_CONTEXT_TEMPLATE: Final[str] = """\
+SYSTEM_PROMPT_EXEMPLARS: Final[str] = """\
+
+## Worked exemplars (reference only — NOT the code under review)
+
+Every snippet below is an ILLUSTRATIVE EXAMPLE. Never emit a finding
+about exemplar code; findings come only from the file under review in
+the user message. Exemplar line numbers are illustrative. The fenced
+code formatting here is for reading — your OUTPUT remains exactly one
+bare JSON object, never fenced.
+
+Each exemplar shows the discrimination that matters for one
+`finding_type`: what to FLAG, and the adjacent safe idiom NOT to flag.
+When code matches a don't-flag idiom, emitting the finding anyway is an
+over-flag — the review's precision matters as much as its recall.
+
+### sql_injection
+
+```python
+q = f"SELECT * FROM orders WHERE owner = '{owner}'"     # FLAG
+cursor.execute("DELETE FROM t WHERE id = " + str(oid))  # FLAG
+cursor.execute("SELECT * FROM t WHERE id = %s", [oid])  # do NOT flag
+stmt = text("SELECT * FROM t WHERE k = :k"); conn.execute(stmt, {"k": k})  # do NOT flag
+```
+
+- FLAG only when untrusted input is assembled INTO the SQL text itself:
+  f-string, `str.format(...)`, `%`-formatting of the query string, or
+  `+` concatenation — including inside ORM escape hatches
+  (`Model.objects.raw(f"...")` is still string assembly).
+- Do NOT flag driver/ORM parameter binding, whatever the placeholder
+  style: `%s`, `%(name)s`, `?`, `:name`, `$1` — when values travel as a
+  SEPARATE argument (list/tuple/dict), the driver binds, the SQL text
+  is constant. This restates the parameterized-query rule above; the
+  placeholder style alone never decides the finding.
+
+### xss
+
+```python
+return HttpResponse("<h1>Hello " + request.GET["name"] + "</h1>")  # FLAG
+return render(request, "hello.html", {"name": request.GET["name"]})  # do NOT flag
+```
+
+- FLAG when request-derived text is concatenated or formatted into an
+  HTML/JS response body without escaping — `HttpResponse(f"...{x}...")`,
+  `innerHTML`-style template strings, `mark_safe(user_text)`,
+  `format_html` with pre-formatted (already-joined) user strings.
+- Do NOT flag values passed as template CONTEXT to an auto-escaping
+  engine (Django templates, Jinja2 with autoescape on), values run
+  through `escape()`/`markupsafe.Markup` escaping before insertion, or
+  JSON API responses with correct content types.
+
+### hardcoded_secret
+
+```python
+STRIPE_KEY = "sk_live_51Hxxxxxxxxxxxxxxxxxxxxxx"        # FLAG
+client = connect(password=os.environ["DB_PASSWORD"])    # do NOT flag
+EXAMPLE_KEY = "sk_test_example_do_not_use"               # judgment: usually not
+```
+
+- FLAG literal credential VALUES committed in code: API keys, tokens,
+  passwords, private-key material, connection strings embedding a real
+  password — including in test files when the value looks live
+  (provider prefixes like `sk_live_`, `ghp_`, `AKIA...`, long
+  high-entropy literals assigned to credential-named variables).
+- Do NOT flag reads from the environment or a secrets manager, variable
+  NAMES that merely mention "key"/"token" with non-secret values,
+  obvious documentation placeholders (`"<your-api-key>"`,
+  `"sk_test_example..."`), or empty-string defaults.
+
+### auth_bypass
+
+```python
+@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
+def delete_user(uid):                                    # FLAG (no auth check;
+    db.delete(User, uid)                                 #  sibling admin routes
+    return "", 204                                       #  all use @require_admin)
+
+if DEBUG_SKIP_AUTH or user.is_authenticated:             # FLAG
+```
+
+- FLAG privileged operations reachable without the authorization check
+  their siblings carry (a mutating admin route missing the decorator
+  every adjacent route has), checks short-circuited by debug flags or
+  `or True` leftovers, and object access keyed only by a user-supplied
+  id with no ownership check (IDOR shape: `get(id)` then mutate,
+  never comparing against the requesting principal).
+- Do NOT flag routes that are legitimately public (health checks,
+  login/registration), middleware-enforced auth applied at the
+  blueprint/router level (absence of a per-route decorator is not
+  absence of auth — check the scope-unit context for it), or
+  read-only endpoints over non-sensitive data.
+
+### path_traversal
+
+```python
+with open(os.path.join(UPLOAD_DIR, request.args["name"])) as f:  # FLAG
+safe = (UPLOAD_DIR / name).resolve()
+if not safe.is_relative_to(UPLOAD_DIR.resolve()):                 # do NOT flag
+    raise ValueError(name)
+```
+
+- FLAG request-derived path segments reaching `open()`, `Path(...)`,
+  `os.path.join`, archive extraction, or send-file helpers without
+  normalization + containment validation — `join(BASE, user_name)`
+  still traverses (`../../etc/passwd` survives join), and a prefix
+  check on the UNRESOLVED string (`str.startswith`) does not contain
+  `..` or symlinks.
+- Do NOT flag paths resolved and contained against a fixed root
+  (`resolve()` + `is_relative_to`/prefix-on-resolved), names mapped
+  through an allowlist or database lookup (id → stored path), or
+  filenames generated server-side (uuid4-based) with no user text.
+
+### missing_input_validation
+
+```python
+limit = int(request.args["limit"])                       # FLAG (unbounded;
+rows = db.fetch_recent(limit)                            #  negative/huge ok'd)
+
+payload = OrderCreate.model_validate_json(request.body)  # do NOT flag
+```
+
+- FLAG externally-sourced values flowing into queries, allocation
+  sizes, loop bounds, or state changes with no type/range/shape gate —
+  bare `int(...)`/`float(...)` casts (a cast is not a bound), dict
+  access trusting presence and type, file-size/count parameters used
+  unbounded.
+- Do NOT flag values already gated by a schema validator (Pydantic
+  model with constrained fields, form validation framework) in the
+  visible call path, values from project-internal config rather than
+  request data, or redundant re-validation deeper in the stack when
+  the boundary validates.
+
+### n_plus_one_query
+
+```python
+for order in Order.objects.filter(user=u):               # FLAG (one query
+    names.append(order.product.name)                     #  per iteration)
+
+for order in Order.objects.filter(user=u).select_related("product"):
+    names.append(order.product.name)                     # do NOT flag
+```
+
+- FLAG a per-iteration query inside a loop over a query result —
+  attribute access that lazy-loads a relation each pass
+  (`order.product`, `child.parent.field`), an explicit
+  `.get()`/`.filter()` call per element, or an awaited fetch inside a
+  gather-less `async for`.
+- Do NOT flag loops over prefetched relations (`select_related`,
+  `prefetch_related`, eager-load options), loops whose body queries a
+  CONSTANT number of times regardless of result size, or small
+  fixed-cardinality iterations (settings entries, enum members) where
+  the access pattern cannot scale with data.
+
+### blocking_call_in_async
+
+```python
+async def fetch_status(url):
+    return requests.get(url).status_code                 # FLAG
+
+async def fetch_status(url):
+    async with httpx.AsyncClient() as c:                 # do NOT flag
+        return (await c.get(url)).status_code
+```
+
+- FLAG synchronous I/O or sleeps inside `async def`: `time.sleep`,
+  `requests.*`, blocking DB drivers (psycopg2 cursor calls,
+  `Session.execute` on a sync Session), `subprocess.run`,
+  `pathlib.Path.read_text` on large/remote mounts — each stalls the
+  event loop for every concurrent task.
+- Do NOT flag awaited async equivalents (`await asyncio.sleep`, httpx
+  async client, asyncpg), blocking work explicitly delegated via
+  `asyncio.to_thread`/`run_in_executor`, or sync calls in SYNC
+  functions that merely live in the same file as async code.
+
+### unused_import
+
+```python
+import json                                              # FLAG (never used)
+from .models import User                                  # do NOT flag if in
+__all__ = ["User"]                                        #  __all__ (re-export)
+```
+
+- FLAG imports with zero references in the file — including imports
+  left behind by the change under review (the diff removed the last
+  use but kept the import).
+- Do NOT flag deliberate re-exports (`__init__.py` names listed in
+  `__all__` or imported with `as` re-export form `from x import y as
+  y`), imports used only inside type-checking blocks (`if
+  TYPE_CHECKING:`) or string annotations, conftest fixtures imported
+  for side effects, or `# noqa`-marked compatibility imports.
+
+### missing_error_handling
+
+```python
+def handler(request):
+    data = external_api.fetch(request.id)                # FLAG (network call;
+    return render(data)                                  #  raises crash the view)
+
+def handler(request):
+    try:
+        data = external_api.fetch(request.id)
+    except ExternalAPIError:                              # do NOT flag
+        return error_response(502)
+    return render(data)
+```
+
+- FLAG failure-prone operations (network calls, file I/O, parsing of
+  external data, subprocess exits) whose unhandled exception would
+  crash a long-lived loop, corrupt partial state (write A succeeded,
+  write B raised, no cleanup), or surface a raw 500 where the
+  surrounding code clearly owns the error contract.
+- Do NOT flag code that deliberately lets exceptions propagate to a
+  caller or framework handler that owns them (a documented raise, a
+  FastAPI exception handler upstream), pure in-memory computation, or
+  cases where the visible context already wraps the call. Absence of
+  try/except is not itself a finding — the finding is a CONSEQUENCE
+  (crash, partial state, leaked resource) you can name.
+
+### missing_test
+
+```python
+def proration_for(plan, days_used):                      # FLAG if the PR adds
+    ...30 lines of branching billing logic...            #  this with no test
+
+def get_plan_name(self):                                 # do NOT flag
+    return self.plan.name
+```
+
+- FLAG new or behavior-changed logic with branching, arithmetic, or
+  boundary conditions (billing, permissions, parsing, retry policies)
+  when the change introduces no corresponding test — name the specific
+  untested behavior, not "needs tests" generically.
+- Do NOT flag trivial accessors/delegations, generated code,
+  configuration-only changes, refactors that preserve behavior under
+  an EXISTING test that still covers the moved logic, or test files
+  themselves.
+
+### deprecated_api
+
+```python
+ts = datetime.utcnow()                                   # FLAG (naive; removed
+ts = datetime.now(UTC)                                   #  semantics) / do NOT flag
+```
+
+- FLAG calls the ecosystem has deprecated with a named replacement
+  where the deprecation has a CONSEQUENCE (naive datetimes from
+  `utcnow()`, `ssl.wrap_socket`, Pydantic v1 `.dict()`/`.parse_obj` in
+  a v2 codebase, `asyncio.get_event_loop()` in non-running contexts) —
+  cite the replacement in the description.
+- Do NOT flag APIs that are merely old but stable, deprecations not
+  applicable to the pinned major version visible in the code, or
+  vendored/third-party code the PR does not own.
+
+### Commonly-confused pairs (pick the root cause, not the symptom)
+
+When code matches two types, classify by ROOT CAUSE — the thing a fix
+would change:
+
+- `sql_injection` vs `missing_input_validation`: if the value is
+  assembled into SQL text, it is `sql_injection` even though
+  validation is also missing — injection names the exploitable sink.
+  Reserve `missing_input_validation` for unvalidated values whose sink
+  is NOT one of the named injection sinks (a bare cast into a query
+  LIMIT via parameter binding is validation, not injection).
+- `xss` vs `missing_input_validation`: same rule — an HTML-rendering
+  sink makes it `xss`; validation-shaped fixes don't remove the
+  escaping requirement.
+- `auth_bypass` vs `missing_input_validation`: a user-supplied id used
+  WITHOUT an ownership/permission check is `auth_bypass` (IDOR shape)
+  even when the id itself is well-formed; flag
+  `missing_input_validation` only when the missing gate is about the
+  VALUE's type/range/shape, not about WHO may use it.
+- `n_plus_one_query` vs `blocking_call_in_async`: a per-iteration
+  query inside `async def` without await-delegation is BOTH shapes —
+  pick `n_plus_one_query` when the cost scales with result size (the
+  loop is the root cause), `blocking_call_in_async` when a single
+  blocking call stalls the event loop regardless of iteration count.
+- `missing_error_handling` vs `missing_test`: an exception path that
+  exists but is UNTESTED is `missing_test`; an exception path that
+  does not exist (unhandled raise crashes the owner) is
+  `missing_error_handling`. Don't emit both for the same line unless
+  both root causes are independently true.
+- `deprecated_api` vs `best practices`-flavored judgment: only emit
+  `deprecated_api` for a NAMED deprecated call with a NAMED
+  replacement; stylistic modernization without a deprecation is not a
+  finding.
+
+### Finding quality (title / description / evidence)
+
+A finding the reviewer can act on without re-deriving your reasoning:
+
+GOOD:
+- title: "SQL built with f-string from request param `owner`"
+- description: names the untrusted source (`request.GET['owner']`),
+  the sink (`cursor.execute` at the quoted line), why binding is
+  bypassed, and the one-line fix shape (parameterize with `%s` + arg
+  list). Concrete nouns from the code under review.
+- evidence: the exact assembled-query line(s), verbatim.
+
+BAD (do not emit in these shapes):
+- title: "Possible security issue in query handling" — names neither
+  source nor sink; not actionable.
+- description: "User input should always be validated to follow
+  security best practices." — generic advice, no code nouns, no fix
+  shape.
+- evidence: a paraphrase of the code, or exemplar text from this
+  prompt, or 200 lines of context around a 2-line problem.
+
+Description discipline: lead with WHAT is wrong and WHERE; one
+sentence on WHY it matters; one sentence on the fix DIRECTION. Stay
+under the schema's length caps; never pad with boilerplate
+("As an automated reviewer, I noticed...").
+
+### Line-number discipline
+
+`line_start` / `line_end` are 1-indexed SOURCE line numbers in the
+file under review — the same frame as the scope-unit headers
+(`(lines A-B)`) and the diff `@@` markers:
+
+- Bound the finding to the NARROWEST span that contains the defect:
+  the assembled-query line, not the whole function. A reviewer
+  clicking the line should land on the problem.
+- Never report diff-relative offsets (the position within a hunk),
+  byte offsets, or lines from a DIFFERENT file's context.
+- The span must fall inside one of the listed scope units' line
+  ranges; spans outside every listed unit are rejected by the span
+  gate (`finding_proposal_rejected`), so re-check the scope-unit
+  header ranges before emitting.
+- Multi-line defects (a 3-line concatenation) use the real span
+  (`line_start` = first line, `line_end` = last); single-line defects
+  repeat the same number in both fields.
+
+### trace_candidates discipline (cross-file follow-up is a cost)
+
+Every candidate you propose can trigger a real repository fetch and a
+further analyze pass — propose them like they cost money, because they
+do:
+
+- Propose a candidate ONLY when the finding's verdict genuinely
+  depends on code outside this file: the flagged value flows into an
+  imported callable whose sanitization/authorization behavior decides
+  whether the finding is real, or a flagged pattern's definition
+  (a base class, a shared helper) lives behind a visible import.
+- `import_string_raw` is the dotted module string AS IMPORTED in this
+  file (`app.services.billing`), never a guessed file path, never a
+  stdlib or third-party module (the resolver only probes repository
+  paths — `os`, `django.db` candidates are wasted fetches).
+- One candidate per unresolved question; do not enumerate every import
+  "for context". A finding that stands on this file's evidence alone
+  (an f-string-assembled query is injectable regardless of the
+  caller) needs NO candidates — emit it with an empty array.
+- Give `reason` the specific question the fetched file would answer
+  ("does `sanitize_owner` escape quotes before this query?"), not a
+  restatement of the import.
+
+### Exemplar discipline (applies to every type above)
+
+- The exemplars do not extend the enum: `finding_type` must still be
+  one of the listed values, and unlisted concern types map to the
+  closest listed type or are omitted.
+- Evidence tier is independent of type: cite `observed` ONLY with a
+  pre-fired `query_match_id` from the registry section; otherwise
+  `judged` (pass 0) — exemplar similarity is NOT structural evidence.
+- `evidence` quotes the code under review verbatim — never exemplar
+  text.
+- One finding per root cause: a single unsanitized value used twice in
+  one scope is one finding, not two.
+"""
+
+
+SYSTEM_PROMPT_STABLE_PREFIX: Final[str] = SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS
+"""THE cached system block: byte-identical across every pass-0 and
+degraded analyze call, regardless of file. `cache_control: ephemeral`
+on this prefix caches it once per review per tier-model. Must stay
+above `llm/pricing.py::MIN_CACHEABLE_TOKENS` for the configured tier
+models (below the floor the API silently skips caching) and must carry
+zero `{placeholder}` markers — both enforced by unit test."""
+
+
+FILE_CONTEXT_TEMPLATE: Final[str] = """\
 
 ## File under review
 
@@ -295,31 +686,30 @@ def render(
 ) -> AnalyzePromptParts:
     """Build the (system, user) prompt pair for a clean-outcome call.
 
-    `system_prompt` carries stable-per-file content (invariants +
-    file-scoped scope-unit/query context); the provider's
-    `cache_control: ephemeral` produces cross-pass cache hits. The
-    `user_prompt` carries pass-specific volatile content (pass index +
-    scope-unit-clipped diff hunks).
+    `system_prompt` is the cross-file stable prefix
+    (`SYSTEM_PROMPT_STABLE_PREFIX`, byte-identical for every pass-0 and
+    degraded call); the provider's `cache_control: ephemeral` caches it
+    once per review per tier-model. `user_prompt` carries everything
+    per-file and per-pass: the file-scoped scope-unit/query context,
+    the pass index, and the scope-unit-clipped diff hunks.
 
-    Wraps `diff_hunks` in a dynamic-length `diff`-fence via
-    `safe_code_fence`, matching the `render_degraded` shape. The clean
-    diff content is PR-controlled identically to the degraded case — a
-    diff line containing `## Heading` or ` ``` ` markdown would forge
-    sections that mimic the prompt's own structure. See
-    `webhook-strings-are-data-not-format-strings`.
+    Wraps `diff_hunks` in a dynamic-length `diff`-fence and
+    `scope_unit_context` in a `text`-fence via `safe_code_fence` — both
+    are PR-controlled; a line containing `## Heading` or ` ``` `
+    markdown would forge sections that mimic the prompt's own
+    structure. See `webhook-strings-are-data-not-format-strings`.
     """
     from outrider.prompts import safe_code_fence
 
-    system_prompt = SYSTEM_PROMPT_INVARIANTS + SYSTEM_FILE_CONTEXT_TEMPLATE.format(
+    user_prompt = FILE_CONTEXT_TEMPLATE.format(
         file_path=file_path,
-        scope_unit_context=scope_unit_context,
+        scope_unit_context=safe_code_fence(scope_unit_context, lang="text"),
         query_match_id_list=query_match_id_list,
-    )
-    user_prompt = USER_TEMPLATE.format(
+    ) + USER_TEMPLATE.format(
         pass_index=pass_index,
         diff_hunks=safe_code_fence(diff_hunks, lang="diff"),
     )
-    return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
+    return AnalyzePromptParts(system_prompt=SYSTEM_PROMPT_STABLE_PREFIX, user_prompt=user_prompt)
 
 
 POST_TRACE_SYSTEM_PROMPT_SUFFIX: Final[str] = """\
@@ -369,7 +759,7 @@ that's not valid JSON.
 - `trace_path`: REQUIRED non-empty array of scope-unit names when
   `evidence_tier="inferred"`; `null` for `observed` / `judged`.
   Each element MUST be the EXACT scope-unit label rendered in the
-  system-prompt's "Scope unit context" section (the heading shown
+  user message's "Scope-unit context" section (the heading shown
   inside the backticks — `qualified_name` when set, else bare
   `name`; ONE label per scope unit, not both forms). A trace_path
   element that doesn't match a rendered label is rejected with
@@ -474,14 +864,16 @@ def render_post_trace(
     findings that connect the source finding's evidence to behavior in
     this file.
 
-    The system prompt = pass-0 invariants + WHOLE-FILE post-trace file
-    context (NOT `SYSTEM_FILE_CONTEXT_TEMPLATE`, which is diff-scoped
-    and would falsely tell the model "changed scope units") + the
-    post-trace INFERRED-admission suffix. The user prompt names the
-    source finding by id AND includes its title + description + evidence
-    so the model can connect the trace-fetched file back to the
-    originating finding — `source_finding_id` alone is opaque to the
-    model and drives generic whole-file review.
+    The system prompt = the cross-file stable prefix + the post-trace
+    INFERRED-admission suffix — byte-identical for every pass-1 call,
+    forming a second stable cache entry distinct from pass-0's. The
+    user prompt carries the WHOLE-FILE post-trace file context (NOT
+    `FILE_CONTEXT_TEMPLATE`, which is diff-scoped and would falsely
+    tell the model "changed scope units"), names the source finding by
+    id AND includes its title + description + evidence so the model can
+    connect the trace-fetched file back to the originating finding —
+    `source_finding_id` alone is opaque to the model and drives generic
+    whole-file review.
 
     `source_finding_id` is `UUID` — typed strictly so a caller passing
     `None` (which would render the literal string `"None"` into the
@@ -500,16 +892,11 @@ def render_post_trace(
     """
     from outrider.prompts import safe_code_fence
 
-    system_prompt = (
-        SYSTEM_PROMPT_INVARIANTS
-        + POST_TRACE_FILE_CONTEXT_TEMPLATE.format(
-            file_path=file_path,
-            scope_unit_context=scope_unit_context,
-            query_match_id_list=query_match_id_list,
-        )
-        + POST_TRACE_SYSTEM_PROMPT_SUFFIX
-    )
-    user_prompt = POST_TRACE_USER_TEMPLATE.format(
+    user_prompt = POST_TRACE_FILE_CONTEXT_TEMPLATE.format(
+        file_path=file_path,
+        scope_unit_context=safe_code_fence(scope_unit_context, lang="text"),
+        query_match_id_list=query_match_id_list,
+    ) + POST_TRACE_USER_TEMPLATE.format(
         file_path=file_path,
         source_finding_id=source_finding_id,
         source_finding_title_fenced=safe_code_fence(source_finding_title, lang="text"),
@@ -517,7 +904,10 @@ def render_post_trace(
         source_finding_evidence_fenced=safe_code_fence(source_finding_evidence, lang="text"),
         pass_index=pass_index,
     )
-    return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
+    return AnalyzePromptParts(
+        system_prompt=SYSTEM_PROMPT_STABLE_PREFIX + POST_TRACE_SYSTEM_PROMPT_SUFFIX,
+        user_prompt=user_prompt,
+    )
 
 
 def render_degraded(
@@ -546,24 +936,25 @@ def render_degraded(
     """
     from outrider.prompts import safe_code_fence
 
-    system_prompt = SYSTEM_PROMPT_INVARIANTS
     user_prompt = DEGRADED_USER_TEMPLATE.format(
         file_path=file_path,
         pass_index=pass_index,
         degradation_reason=degradation_reason,
         bounded_hunks=safe_code_fence(bounded_hunks, lang="diff"),
     )
-    return AnalyzePromptParts(system_prompt=system_prompt, user_prompt=user_prompt)
+    return AnalyzePromptParts(system_prompt=SYSTEM_PROMPT_STABLE_PREFIX, user_prompt=user_prompt)
 
 
 __all__ = [
     "DEGRADED_USER_TEMPLATE",
+    "FILE_CONTEXT_TEMPLATE",
     "MAX_TOKENS",
     "POST_TRACE_FILE_CONTEXT_TEMPLATE",
     "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
     "POST_TRACE_USER_TEMPLATE",
-    "SYSTEM_FILE_CONTEXT_TEMPLATE",
+    "SYSTEM_PROMPT_EXEMPLARS",
     "SYSTEM_PROMPT_INVARIANTS",
+    "SYSTEM_PROMPT_STABLE_PREFIX",
     "TEMPERATURE",
     "TEMPLATE",
     "USER_TEMPLATE",
