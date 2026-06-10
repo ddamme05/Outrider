@@ -13,11 +13,21 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 import pytest
 
-from outrider.llm.base import LLMProviderError, LLMRequest, LLMResponse
+from outrider.llm.base import (
+    LLMAuthError,
+    LLMProviderError,
+    LLMRequest,
+    LLMResponse,
+    LLMTimeoutError,
+)
 from outrider.policy import FindingSeverity, FindingType, lookup_severity
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewState
@@ -753,6 +763,68 @@ def _print_scenario_report(
             )
 
 
+async def _run_scenario_isolating_transients(
+    fixture_path: str,
+    dimension: str,
+    gate_results: list[tuple[str, str, bool, str]],
+    compare_call: Callable[[], Awaitable[ModelComparison]],
+) -> ModelComparison | None:
+    """Run one evidence scenario, isolating TRANSIENT provider failures.
+
+    ERRORED-and-continue applies only to the taxonomy's retry-eligible set
+    (`retry_at_layer="node"`: timeout/429/409/5xx) — the scenario records
+    "ERRORED — rerun" in `gate_results` and returns None so the paid run
+    continues. Terminal classes (auth, config, persister) recur on every
+    scenario — a revoked key would mark all ~28 scenarios ERRORED and
+    "complete" a run with zero verdicts — so they re-raise and abort on
+    first occurrence. Module-level (not nested in the opt-in test) so the
+    zero-spend pins below exercise both paths in the normal eval gate.
+    """
+    try:
+        return await compare_call()
+    except LLMProviderError as exc:
+        if exc.retry_at_layer != "node":
+            raise
+        print(  # noqa: T201 — operator diagnostic
+            f"\n[{fixture_path}]\n  ERRORED ({type(exc).__name__}) — scenario not "
+            "measured; rerun for this verdict"
+        )
+        gate_results.append(
+            (fixture_path, dimension, False, f"ERRORED ({type(exc).__name__}) — rerun")
+        )
+        return None
+
+
+async def test_scenario_isolation_transient_failure_records_errored_and_continues() -> None:
+    """Zero-spend pin for the evidence runner's transient path: a
+    retry_at_layer="node" failure (here LLMTimeoutError — the class that
+    killed the 2026-06-10 run) records ERRORED — rerun and returns None so
+    the run continues, instead of propagating."""
+    gate: list[tuple[str, str, bool, str]] = []
+
+    async def _boom() -> ModelComparison:
+        raise LLMTimeoutError()
+
+    result = await _run_scenario_isolating_transients("fx.json", "recall", gate, _boom)
+    assert result is None
+    assert gate == [("fx.json", "recall", False, "ERRORED (LLMTimeoutError) — rerun")]
+
+
+async def test_scenario_isolation_terminal_failure_reraises() -> None:
+    """Zero-spend pin for the terminal path: retry_at_layer="none" classes
+    (here LLMAuthError — the revoked-key shape) re-raise on first occurrence
+    and record nothing, aborting the run instead of burning the remaining
+    scenarios on a dead configuration."""
+    gate: list[tuple[str, str, bool, str]] = []
+
+    async def _boom() -> ModelComparison:
+        raise LLMAuthError()
+
+    with pytest.raises(LLMAuthError):
+        await _run_scenario_isolating_transients("fx.json", "recall", gate, _boom)
+    assert gate == []
+
+
 @pytest.mark.skipif(
     os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
     reason="real-model comparison spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
@@ -845,7 +917,7 @@ async def test_real_model_comparison_evidence() -> None:
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
     ) -> ModelComparison | None:
-        try:
+        async def _compare() -> ModelComparison:
             return await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
                 ground_truth,
@@ -854,22 +926,10 @@ async def test_real_model_comparison_evidence() -> None:
                 candidate_provider=provider,
                 candidate_model=candidate_model,
             )
-        except LLMProviderError as exc:
-            # ERRORED-and-continue is for TRANSIENT failures only (the
-            # taxonomy's retry-eligible set, retry_at_layer="node": timeout/
-            # 429/409/5xx). Terminal classes (auth, config, persister) recur
-            # on every scenario — a revoked key would mark all ~28 scenarios
-            # ERRORED and "complete" a run with zero verdicts; abort instead.
-            if exc.retry_at_layer != "node":
-                raise
-            print(  # noqa: T201 — operator diagnostic
-                f"\n[{fixture_path}]\n  ERRORED ({type(exc).__name__}) — scenario not "
-                "measured; rerun for this verdict"
-            )
-            gate_results.append(
-                (fixture_path, dimension, False, f"ERRORED ({type(exc).__name__}) — rerun")
-            )
-            return None
+
+        return await _run_scenario_isolating_transients(
+            fixture_path, dimension, gate_results, _compare
+        )
 
     try:
         # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
