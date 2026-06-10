@@ -28,7 +28,7 @@ Surfaces (per the synthesize-node spec's Reference Reconciliation):
   (finding titles/evidence/descriptions) gets fence-wrapped via
   `safe_code_fence` per `webhook-strings-are-data-not-format-strings`.
 - `TEMPLATE` — alias for USER_TEMPLATE.
-- `VERSION: Final[str] = "synthesize-v2"` — flows to
+- `VERSION: Final[str] = "synthesize-v3"` — flows to
   `LLMRequest.prompt_template_version`.
 - `MAX_TOKENS: Final[int] = 1024` — bounds the summary output to the
   `Field(max_length=2000)` codepoint cap on `ReviewReport.summary`
@@ -54,12 +54,16 @@ if TYPE_CHECKING:
     from outrider.schemas.triage_result import RiskLevel
 
 
-# Bumped 2026-06-10 (was "synthesize-v1"): the CRITICAL CONSTRAINTS bullet
-# claimed the output "is composed into a GitHub review body" — stale; V1's
-# only summary surface is the dashboard (FUP-149 tracks the GitHub-body
-# surface). Reworded surface-neutral. Model-visible text changed, so the
-# provenance version bumps; each bump keeps replay attribution exact.
-VERSION: Final[str] = "synthesize-v2"
+# Bumped 2026-06-10 (was "synthesize-v2"): the side-by-side prose read
+# caught an UNSATISFIABLE instruction — "be direct about auto-publish vs
+# HITL-gated findings" with no gating data in the input, which made both
+# models fabricate workflow claims (Haiku called a CRITICAL finding
+# "auto-published"). The clause is removed and a CRITICAL CONSTRAINT now
+# forbids pipeline-behavior claims outright. The v2 bump (same day)
+# corrected the stale GitHub-review-body surface claim (V1's only summary
+# surface is the dashboard, FUP-149). Each bump keeps replay attribution
+# exact.
+VERSION: Final[str] = "synthesize-v3"
 MAX_TOKENS: Final[int] = 1024
 TEMPERATURE: Final[float] = 0.3
 
@@ -79,8 +83,7 @@ You receive:
 Your job: write a 2-5 sentence prose summary that helps the human
 reviewer prioritize their attention. Lead with what matters most. Be
 specific about themes when patterns emerge across findings (e.g., "three
-SQL-injection findings in user-input handlers"); be direct about
-auto-publish vs HITL-gated findings without over-explaining the workflow.
+SQL-injection findings in user-input handlers").
 
 CRITICAL CONSTRAINTS:
 
@@ -90,6 +93,10 @@ CRITICAL CONSTRAINTS:
 - 2000 character maximum (the schema cap rejects anything longer).
 - Do NOT classify severity. Do NOT recommend severity overrides. Do NOT
   invent findings that aren't in the input list.
+- Do NOT make claims about pipeline behavior, including gating, HITL,
+  publishing, auto-publish, review submission, or what happens next.
+  Describe only the findings, risk, and remediation themes present in
+  the input.
 - Do NOT include any markdown links, URLs, or @-mentions (these are
   composed by the publisher from finding metadata).
 - Write in third person. "This PR introduces ..." not "I observed ...".

@@ -3,7 +3,7 @@
 
 REPORT-ONLY, BY DESIGN: prose quality has no ground truth, so there is no
 machine gate here (the #041-style recall gate is the wrong tool — synthesize
-decides no findings). This runner renders the REAL synthesize-v2 prompt over
+decides no findings). This runner renders the REAL current synthesize prompt (VERSION below) over
 six representative finding sets, sends each through the pre-flip baseline
 (Sonnet) and the shipped default (Haiku), and prints the summary pairs for
 the human to read. The verdict is recorded by the human in the flip arc's
@@ -14,7 +14,7 @@ Run:
     uv run pytest tests/eval/test_synthesize_summary_comparison.py --is-eval -v -s
 
 Cost: 12 calls (6 scenarios x 2 models), ~1k tokens in / ~300 out each.
-The mechanical pins for the flip (model routing, synthesize-v2 provenance,
+The mechanical pins for the flip (model routing, prompt VERSION provenance,
 no-GitHub-surface prompt claim) are zero-spend unit tests in
 tests/unit/test_synthesize_patch_pass.py + tests/unit/test_prompts_synthesize.py.
 """
