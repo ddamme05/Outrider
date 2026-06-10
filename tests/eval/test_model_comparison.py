@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import pytest
 
-from outrider.llm.base import LLMRequest, LLMResponse
+from outrider.llm.base import LLMProviderError, LLMRequest, LLMResponse
 from outrider.policy import FindingSeverity, FindingType, lookup_severity
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewState
@@ -845,8 +845,6 @@ async def test_real_model_comparison_evidence() -> None:
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
     ) -> ModelComparison | None:
-        from outrider.llm.base import LLMProviderError  # noqa: PLC0415
-
         try:
             return await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
@@ -857,6 +855,13 @@ async def test_real_model_comparison_evidence() -> None:
                 candidate_model=candidate_model,
             )
         except LLMProviderError as exc:
+            # ERRORED-and-continue is for TRANSIENT failures only (the
+            # taxonomy's retry-eligible set, retry_at_layer="node": timeout/
+            # 429/409/5xx). Terminal classes (auth, config, persister) recur
+            # on every scenario — a revoked key would mark all ~28 scenarios
+            # ERRORED and "complete" a run with zero verdicts; abort instead.
+            if exc.retry_at_layer != "node":
+                raise
             print(  # noqa: T201 — operator diagnostic
                 f"\n[{fixture_path}]\n  ERRORED ({type(exc).__name__}) — scenario not "
                 "measured; rerun for this verdict"
@@ -906,8 +911,9 @@ async def test_real_model_comparison_evidence() -> None:
             assert cmp.baseline is not None  # the run completed
         # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
         # Each non-green line carries its own label (recall/precision -> "FAILED"; regression ->
-        # "INCONCLUSIVE …" or "REPRODUCED …") so a skimmer can't misread an inconclusive
-        # regression as a Haiku failure.
+        # "INCONCLUSIVE …" or "REPRODUCED …"; transient provider failures -> "ERRORED (…) —
+        # rerun", which is an unmeasured scenario, not a gate verdict) so a skimmer can't
+        # misread an inconclusive regression or an errored scenario as a Haiku failure.
         failed = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
         green = len(gate_results) - len(failed)
         print(  # noqa: T201 — operator gate summary
