@@ -63,7 +63,11 @@ def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
     n_plus_one finding along with the suppressed over-flag on the same line."""
     text = SYSTEM_PROMPT_INVARIANTS.lower()
     assert "parameterized queries are not injectable" in text  # (1) safe-side instruction
-    assert "f-string" in text and "concatenation" in text  # (2) still-injectable side
+    # (2) still-injectable side — anchored to the injectable INSTRUCTION ("built INTO the SQL
+    # string"), not just the bare words, so a refactor moving "f-string"/"concatenation" onto the
+    # SAFE side (a blanket suppression) can't slip past this guard.
+    assert "built into the sql string" in text  # the directive that string-built SQL IS injectable
+    assert "f-string" in text and "concatenation" in text  # named as injectable forms
     # (3) scoped to INJECTION — must not generalize "safe" to "skip the query"; pins the
     # clause that recovers the n_plus_one recall the unscoped "SAFE" wording dropped.
     assert "only about injection" in text
