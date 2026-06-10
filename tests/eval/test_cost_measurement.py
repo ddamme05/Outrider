@@ -202,3 +202,76 @@ def test_cost_per_review_measurement() -> None:
     # fully-optimized target (this is the UN-optimized baseline).
     realistic = reference_cost(1000)
     assert _BAND_TARGET < realistic < 100.0, f"reference review cost {realistic} out of sane range"
+
+
+def test_cache_packing_cross_file_proof() -> None:
+    """The analyze cache-packing proof (specs/2026-06-09-analyze-cache-packing.md).
+
+    Drives a THREE-file STANDARD-tier review with the probe's deterministic
+    cache model on (`model_cache=True`) over the REAL rendered analyze-v4
+    prompts. Post-repartition contract, on Haiku — the tier with the
+    STRICTER 4096-token min-cacheable floor:
+
+      - analyze call 1 WRITES the stable prefix (cache_write > 0, read = 0);
+      - analyze calls 2..N READ the byte-identical prefix (read == call 1's
+        write, write = 0) — per-file content cannot vary the cache key;
+      - the modeled write clears the model's floor on the real rendered
+        prompt (below-floor would model the API's silent no-op as 0/0,
+        failing the first assertion loudly).
+
+    Pre-repartition packing (per-file context in system_prompt) makes every
+    call a distinct first-occurrence: 3 writes, 0 reads — pinned at the
+    unit level by `test_probe_cache_model_distinct_system_prompts_never_hit`.
+    The printed summary quantifies the prefix saving vs the uncached
+    repricing of the same calls.
+    """
+    from outrider.llm.pricing import min_cacheable_tokens
+
+    probe = CostProbe(token_estimator=_estimate_tokens, model_cache=True)
+    run_review(_FIXTURES / "cache_packing_three_files.json", probe=probe)
+
+    analyze_calls = [c for c in probe.calls if c["node_id"] == "analyze"]
+    assert len(analyze_calls) == 3, f"expected 3 analyze calls, got {len(analyze_calls)}"
+    first, *rest = analyze_calls
+
+    assert first["cache_write_tokens"] > 0, (
+        "first analyze call modeled NO cache write — the rendered stable prefix "
+        "is below the model's min-cacheable floor (the silent no-op the spec gates on)"
+    )
+    assert first["cache_read_tokens"] == 0
+    assert first["cache_write_tokens"] >= min_cacheable_tokens(first["model"])
+    for c in rest:
+        assert c["cache_write_tokens"] == 0, (
+            "a later analyze call re-WROTE the cache — the system prompt varied "
+            "per file; the repartition's byte-identical-prefix property broke"
+        )
+        assert c["cache_read_tokens"] == first["cache_write_tokens"]
+
+    # Quantify: same calls repriced with no cache vs the cache-modeled cost.
+    model = first["model"]
+    uncached = sum(
+        float(
+            compute_cost_usd(
+                model=c["model"],
+                input_tokens=c["input_tokens"] + c["cache_read_tokens"] + c["cache_write_tokens"],
+                cache_write_tokens=0,
+                cache_read_tokens=0,
+                output_tokens=c["output_tokens"],
+            )
+        )
+        for c in analyze_calls
+    )
+    cached = sum(c["cost_usd"] for c in analyze_calls)
+    prefix_tokens = first["cache_write_tokens"]
+    print("\n" + "=" * 78)
+    print("Cache-packing proof (3-file STANDARD review, model_cache probe):")
+    print(
+        f"  model {model}; stable prefix ~{prefix_tokens} est tokens (floor "
+        f"{min_cacheable_tokens(model)}); 1 write + {len(rest)} reads"
+    )
+    print(
+        f"  analyze input cost: uncached ${uncached:.6f} -> cache-modeled ${cached:.6f} "
+        f"({(1 - cached / uncached) * 100:.0f}% cheaper on these calls)"
+    )
+    print("=" * 78)
+    assert cached < uncached, "cache-modeled cost must beat uncached repricing"
