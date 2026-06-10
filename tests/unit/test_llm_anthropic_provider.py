@@ -643,10 +643,10 @@ async def test_cache_read_tokens_recorded_on_response() -> None:
 
 
 # ---------------------------------------------------------------------------
-# complete() — round-22 prompt-caching silently-disabled diagnostic.
+# complete() — prompt-caching silently-disabled diagnostic.
 # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than the
-# model's min-cacheable threshold (Sonnet 4.6: 2048 tokens; Haiku 4.5:
-# 4096 tokens) are processed without caching with NO error. Detection:
+# model's min-cacheable threshold (authoritative per-model values:
+# `pricing.MIN_CACHEABLE_TOKENS`) are processed without caching with NO error. Detection:
 # cache_control=True request with both cache_creation_input_tokens=0
 # AND cache_read_input_tokens=0 in the response.
 # ---------------------------------------------------------------------------
