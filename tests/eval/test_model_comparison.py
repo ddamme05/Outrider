@@ -836,12 +836,19 @@ async def test_real_model_comparison_evidence() -> None:
     # (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
     # non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (the baseline emitted a
     # sql_injection FP itself) vs "REPRODUCED" (only the candidate did); recall/precision use plain
-    # "FAILED". Empty label for green verdicts (never printed).
+    # "FAILED". Empty label for green verdicts (never printed). A scenario whose provider call
+    # dies (timeout, rate limit, 5xx) records "ERRORED — rerun" and the run CONTINUES — one
+    # transient API failure must not discard the rest of a paid evidence run (a 30s TTFT spike
+    # cost a full run on 2026-06-10).
     gate_results: list[tuple[str, str, bool, str]] = []
-    try:
-        # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
-        for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
-            cmp = await compare_models_on_scenario(
+
+    async def _compare_or_errored(
+        fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
+    ) -> ModelComparison | None:
+        from outrider.llm.base import LLMProviderError  # noqa: PLC0415
+
+        try:
+            return await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
                 ground_truth,
                 baseline_provider=provider,
@@ -849,6 +856,22 @@ async def test_real_model_comparison_evidence() -> None:
                 candidate_provider=provider,
                 candidate_model=candidate_model,
             )
+        except LLMProviderError as exc:
+            print(  # noqa: T201 — operator diagnostic
+                f"\n[{fixture_path}]\n  ERRORED ({type(exc).__name__}) — scenario not "
+                "measured; rerun for this verdict"
+            )
+            gate_results.append(
+                (fixture_path, dimension, False, f"ERRORED ({type(exc).__name__}) — rerun")
+            )
+            return None
+
+    try:
+        # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
+        for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
+            cmp = await _compare_or_errored(fixture_path, ground_truth, "recall")
+            if cmp is None:
+                continue
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             gate_results.append(
                 (fixture_path, "recall", cmp.recall_held and cmp.baseline_valid, "FAILED")
@@ -857,14 +880,9 @@ async def test_real_model_comparison_evidence() -> None:
         # PRECISION dimension — safe code, empty ground truth so ANY finding is a real FP;
         # gate on fp_bounded (Haiku must not over-flag clean code more than Sonnet).
         for fixture_path in _SAFE_CODE_FIXTURES:
-            cmp = await compare_models_on_scenario(
-                state_from_eval_fixture(fixture_path),
-                (),
-                baseline_provider=provider,
-                baseline_model=baseline_model,
-                candidate_provider=provider,
-                candidate_model=candidate_model,
-            )
+            cmp = await _compare_or_errored(fixture_path, (), "precision")
+            if cmp is None:
+                continue
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
             assert cmp.baseline is not None  # the run completed
@@ -876,14 +894,9 @@ async def test_real_model_comparison_evidence() -> None:
         # HOLD-OUTS (`_REGRESSION_HOLDOUT_FIXTURES`, placeholder styles the prompt never shows) —
         # CLEAN on the hold-outs is the anti-overfit evidence. The fixture path names the set.
         for fixture_path in _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES:
-            cmp = await compare_models_on_scenario(
-                state_from_eval_fixture(fixture_path),
-                (),
-                baseline_provider=provider,
-                baseline_model=baseline_model,
-                candidate_provider=provider,
-                candidate_model=candidate_model,
-            )
+            cmp = await _compare_or_errored(fixture_path, (), "regression")
+            if cmp is None:
+                continue
             _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
             verdict, ok, fail_label = _regression_verdict(
                 _sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate)
