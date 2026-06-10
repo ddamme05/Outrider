@@ -647,13 +647,27 @@ def test_holdout_sets_are_registered_and_disjoint() -> None:
     (unseen placeholder styles) are disjoint from the DEMONSTRATED `_REGRESSION_FIXTURES`; (2) the
     three recall hold-outs are registered as `sql_injection` in the recall ground truth; (3) every
     hold-out fixture file exists on disk."""
+    # By property, not headcount (adding a hold-out must not break this; dropping a NAMED one must):
+    # the three placeholder-style hold-outs are wired, and the regression hold-out set is disjoint
+    # from BOTH the demonstrated set and the safe-code set (landing in either corrupts its verdict).
+    for fixture in (
+        _PARAM_HOLDOUT_SQLALCHEMY_FIXTURE,
+        _PARAM_HOLDOUT_SQLITE_FIXTURE,
+        _PARAM_HOLDOUT_ASYNCPG_FIXTURE,
+    ):
+        assert fixture in _REGRESSION_HOLDOUT_FIXTURES
     assert set(_REGRESSION_HOLDOUT_FIXTURES).isdisjoint(_REGRESSION_FIXTURES)
-    assert len(_REGRESSION_HOLDOUT_FIXTURES) == 3
+    assert set(_REGRESSION_HOLDOUT_FIXTURES).isdisjoint(_SAFE_CODE_FIXTURES)
 
     sqli_holdouts = (
         _SQLI_HOLDOUT_FSTRING_FIXTURE,
         _SQLI_HOLDOUT_FORMAT_FIXTURE,
         _SQLI_HOLDOUT_CONCAT_FIXTURE,
+    )
+    # SQLi recall hold-outs carry a REAL finding — they must NOT sit in any safe/regression set,
+    # where the empty ground truth would flip the real finding into an apparent false positive.
+    assert set(sqli_holdouts).isdisjoint(
+        _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES + _SAFE_CODE_FIXTURES
     )
     for fixture in sqli_holdouts:
         ground_truth = _GROUND_TRUTH_BY_FIXTURE[fixture]
@@ -667,8 +681,9 @@ def test_holdout_sets_are_registered_and_disjoint() -> None:
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
-    """END-TO-END zero-spend over EACH recall fixture (all six in `_GROUND_TRUTH_BY_FIXTURE`
-    — SQLi, auth-bypass, missing-error-handling, N+1, path-traversal, missing-input-validation):
+    """END-TO-END zero-spend over EACH recall fixture (all nine in `_GROUND_TRUTH_BY_FIXTURE` —
+    SQLi, auth-bypass, missing-error-handling, N+1, path-traversal, missing-input-validation, plus
+    three held-out SQLi forms: f-string / str.format / concatenation):
     a scripted "Sonnet" that returns the known finding scores recall 1.0; a scripted "Haiku"
     that misses it scores 0.0 and FAILS the gate. The STATE is the real vulnerable code (built
     by state_from_eval_fixture); only the provider is faked — so the real run differs only by
