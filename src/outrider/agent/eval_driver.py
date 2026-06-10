@@ -326,13 +326,29 @@ class CostProbe:
     completion); `None` estimates it from the scripted response text. Each call's
     metrics land in `.calls` for a per-node breakdown. Default OFF — eval
     correctness runs keep the fixed sentinels (their assertions are over findings,
-    not cost). Cache tokens stay 0: V1 analyze does not drive a stable cache prefix
-    yet (caching lever unconsumed), so the measured baseline reflects today's code.
+    not cost).
+
+    `model_cache=False` (default): cache tokens stay 0 — the measurement ignores
+    prompt caching entirely. `model_cache=True`: the provider double MODELS
+    Anthropic's cache deterministically, mirroring the documented contract the
+    same way input counts are real-prompt-derived: per `(model, system_prompt)`
+    entry tracking (first occurrence above the model's `min_cacheable_tokens`
+    floor → cache WRITE of the estimated system tokens; repeats → cache READ;
+    below-floor or `cache_control=False` → uncached, both 0 — the silent no-op
+    the real API exhibits). The model ignores TTL (driven reviews run far inside
+    the 5-minute window) and concurrent-first-call races (the driver is serial).
+    Cache-modeled estimates feed the same pricing multipliers as production
+    (1.25x write / 0.1x read), so before/after packing comparisons price the
+    cache, not just raw token movement.
     """
 
     token_estimator: Callable[[str], int]
     output_tokens: int | None = None
+    model_cache: bool = False
     calls: list[dict[str, Any]] = field(default_factory=list)
+    # Modeled-cache state: (model, system_prompt_hash) entries already "written".
+    # Per-probe (= per driven review), matching one review's cache locality.
+    _cache_entries: set[tuple[str, str]] = field(default_factory=set)
 
 
 class _FixtureScriptedProvider:
@@ -367,7 +383,11 @@ class _FixtureScriptedProvider:
             _canonical_prompt_hash,
             _canonical_system_prompt_hash,
         )
-        from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
+        from outrider.llm.pricing import (
+            PRICING_VERSION,
+            compute_cost_usd,
+            min_cacheable_tokens,
+        )
 
         node = request.node_id
         idx = self._counts.get(node, 0)
@@ -384,15 +404,40 @@ class _FixtureScriptedProvider:
         # counts when a CostProbe is attached (zero-spend cost measurement). The
         # graph has ALREADY rendered the real system+user prompts by this point, so
         # the input count is grounded; output is modeled (no real completion).
+        cache_read_tokens, cache_write_tokens = 0, 0
         if self._probe is not None:
-            input_tokens = self._probe.token_estimator(
-                f"{request.system_prompt}\n{request.user_prompt}"
-            )
             output_tokens = (
                 self._probe.output_tokens
                 if self._probe.output_tokens is not None
                 else self._probe.token_estimator(text_out)
             )
+            if self._probe.model_cache and request.cache_control:
+                # Deterministic cache model (see CostProbe docstring): system
+                # prompt is the single V1 cacheable block; the accounting
+                # identity `total_input = cache_read + cache_creation +
+                # input_tokens` holds by construction.
+                system_tokens = self._probe.token_estimator(request.system_prompt)
+                if system_tokens >= min_cacheable_tokens(request.model):
+                    entry = (
+                        request.model,
+                        _canonical_system_prompt_hash(request.system_prompt),
+                    )
+                    if entry in self._probe._cache_entries:
+                        cache_read_tokens = system_tokens
+                    else:
+                        cache_write_tokens = system_tokens
+                        self._probe._cache_entries.add(entry)
+                    input_tokens = self._probe.token_estimator(request.user_prompt)
+                else:
+                    # Below the model's floor: processed without caching, no
+                    # error returned — the real API's silent no-op.
+                    input_tokens = self._probe.token_estimator(
+                        f"{request.system_prompt}\n{request.user_prompt}"
+                    )
+            else:
+                input_tokens = self._probe.token_estimator(
+                    f"{request.system_prompt}\n{request.user_prompt}"
+                )
         else:
             input_tokens, output_tokens = 100, 50
         response = LLMResponse(
@@ -400,8 +445,8 @@ class _FixtureScriptedProvider:
             model=request.model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
             finish_reason="end_turn",
             latency_ms=1,
         )
@@ -438,6 +483,8 @@ class _FixtureScriptedProvider:
                     "model": response.model,
                     "input_tokens": response.input_tokens,
                     "output_tokens": response.output_tokens,
+                    "cache_read_tokens": response.cache_read_tokens,
+                    "cache_write_tokens": response.cache_write_tokens,
                     "cost_usd": float(cost),
                 }
             )

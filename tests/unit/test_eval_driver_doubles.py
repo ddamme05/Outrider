@@ -19,6 +19,7 @@ import pytest
 from pydantic import ValidationError
 
 from outrider.agent.eval_driver import (
+    CostProbe,
     EvalDriverError,
     EvalFixture,
     EvalRunResult,
@@ -152,6 +153,108 @@ async def test_scripted_provider_raises_for_unscripted_node() -> None:
     )
     with pytest.raises(EvalDriverError, match="no scripted LLM response"):
         await provider.complete(req)
+
+
+# ---------------------------------------------------------------------------
+# CostProbe cache modeling (model_cache=True)
+# ---------------------------------------------------------------------------
+
+# token_estimator=len → 1 char = 1 token, so floor crossings are exact:
+# claude-haiku-4-5 floor is 4096 (MIN_CACHEABLE_TOKENS).
+_ABOVE_FLOOR_SYSTEM = "S" * 5000
+_USER = "diff under review"
+
+
+def _cache_request(
+    system: str,
+    *,
+    cache_control: bool = True,
+    review_id: Any = None,
+) -> LLMRequest:
+    return LLMRequest(
+        system_prompt=system,
+        user_prompt=_USER,
+        model="claude-haiku-4-5",
+        max_tokens=100,
+        temperature=0.0,
+        cache_control=cache_control,
+        review_id=review_id or uuid4(),
+        node_id="triage",
+        prompt_template_version="v1",
+        degraded_mode=False,
+    )
+
+
+async def test_probe_cache_model_first_call_writes_then_reads() -> None:
+    """Above-floor stable system prompt: first call models a cache WRITE,
+    repeats model READs; the accounting identity holds per call; the event
+    mirrors (cached_tokens, cache_hit); the read-priced call costs less."""
+    persist = _RecordingPersist()
+    probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
+    provider = _FixtureScriptedProvider({"triage": ["one", "two"]}, persister=persist, probe=probe)
+    req = _cache_request(_ABOVE_FLOOR_SYSTEM)
+    r1 = await provider.complete(req)
+    r2 = await provider.complete(req)
+    assert (r1.cache_write_tokens, r1.cache_read_tokens) == (5000, 0)
+    assert (r2.cache_write_tokens, r2.cache_read_tokens) == (0, 5000)
+    for r in (r1, r2):  # total_input = cache_read + cache_creation + input_tokens
+        assert r.cache_read_tokens + r.cache_write_tokens + r.input_tokens == 5000 + len(_USER)
+    assert persist.events[0].cache_hit is False
+    assert persist.events[1].cache_hit is True
+    assert persist.events[1].cached_tokens == 5000
+    assert probe.calls[0]["cache_write_tokens"] == 5000
+    assert probe.calls[1]["cache_read_tokens"] == 5000
+    # 0.1x read rate < 1.25x write rate → warm call is cheaper.
+    assert probe.calls[1]["cost_usd"] < probe.calls[0]["cost_usd"]
+
+
+async def test_probe_cache_model_below_floor_is_silent_noop() -> None:
+    """System prompt under the model's floor: processed without caching —
+    both cache fields 0, input falls back to the combined estimate."""
+    probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
+    provider = _FixtureScriptedProvider(
+        {"triage": ["one", "two"]}, persister=_RecordingPersist(), probe=probe
+    )
+    req = _cache_request("S" * 100)  # < 4096 haiku floor
+    r1 = await provider.complete(req)
+    r2 = await provider.complete(req)
+    for r in (r1, r2):
+        assert (r.cache_write_tokens, r.cache_read_tokens) == (0, 0)
+        assert r.input_tokens == len(f"{'S' * 100}\n{_USER}")
+
+
+async def test_probe_cache_model_respects_cache_control_off() -> None:
+    probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
+    provider = _FixtureScriptedProvider(
+        {"triage": ["one"]}, persister=_RecordingPersist(), probe=probe
+    )
+    r = await provider.complete(_cache_request(_ABOVE_FLOOR_SYSTEM, cache_control=False))
+    assert (r.cache_write_tokens, r.cache_read_tokens) == (0, 0)
+
+
+async def test_probe_default_model_cache_off_keeps_cache_zero() -> None:
+    """model_cache defaults False — existing cost-measurement baselines keep
+    their uncached semantics unless a test opts in."""
+    probe = CostProbe(token_estimator=len, output_tokens=10)
+    provider = _FixtureScriptedProvider(
+        {"triage": ["one"]}, persister=_RecordingPersist(), probe=probe
+    )
+    r = await provider.complete(_cache_request(_ABOVE_FLOOR_SYSTEM))
+    assert (r.cache_write_tokens, r.cache_read_tokens) == (0, 0)
+    assert r.input_tokens == len(f"{_ABOVE_FLOOR_SYSTEM}\n{_USER}")
+
+
+async def test_probe_cache_model_distinct_system_prompts_never_hit() -> None:
+    """Per-file system prompts (today's packing) each write their own entry —
+    no cross-prompt reads. This is the BEFORE shape the repartition fixes."""
+    probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
+    provider = _FixtureScriptedProvider(
+        {"triage": ["one", "two"]}, persister=_RecordingPersist(), probe=probe
+    )
+    r1 = await provider.complete(_cache_request("A" * 5000))
+    r2 = await provider.complete(_cache_request("B" * 5000))
+    assert (r1.cache_write_tokens, r1.cache_read_tokens) == (5000, 0)
+    assert (r2.cache_write_tokens, r2.cache_read_tokens) == (5000, 0)
 
 
 # ---------------------------------------------------------------------------

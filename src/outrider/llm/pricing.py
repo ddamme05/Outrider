@@ -35,10 +35,12 @@ from types import MappingProxyType
 from typing import Final, NamedTuple
 
 __all__ = [
+    "MIN_CACHEABLE_TOKENS",
     "PRICING_VERSION",
     "RATE_TABLE",
     "ModelPricing",
     "compute_cost_usd",
+    "min_cacheable_tokens",
     "normalize_to_pricing_key",
 ]
 
@@ -162,6 +164,35 @@ RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(
         ),
     }
 )
+
+
+# Minimum cacheable prompt length per model (Anthropic prompt-caching
+# contract): prompts whose prefix is below the floor are "processed
+# without caching, with no error returned" — both cache_creation and
+# cache_read report 0. Values from the canonical prompt-caching page
+# (anthropic/context-management/prompt-caching.md, "Cache Limitations").
+# Keyed by the same undated aliases as RATE_TABLE (dated pins resolve
+# via `normalize_to_pricing_key`); `test_llm_pricing.py` asserts the
+# key sets stay identical so a model priced without a declared floor
+# fails loud. Same inlined-literal + MappingProxyType immutability
+# discipline as RATE_TABLE above.
+MIN_CACHEABLE_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "claude-sonnet-4-6": 2048,
+        "claude-haiku-4-5": 4096,
+    }
+)
+
+
+def min_cacheable_tokens(model: str) -> int:
+    """Minimum cacheable prompt length (tokens) for `model`.
+
+    Resolves dated pins through `normalize_to_pricing_key`, same as the
+    rate lookup. Raises `KeyError` on an unknown model — callers that
+    reached pricing already passed the same coverage gate, so a miss
+    here means MIN_CACHEABLE_TOKENS lagged a RATE_TABLE addition.
+    """
+    return MIN_CACHEABLE_TOKENS[normalize_to_pricing_key(model)]
 
 
 def compute_cost_usd(
