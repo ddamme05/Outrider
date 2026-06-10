@@ -189,6 +189,12 @@ class ReviewReport(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # PROSE, not an audit-counting surface: numbers inside the summary are
+    # model-written and may drift on DERIVED counts (the prompt supplies a
+    # precomputed n_findings, but e.g. distinct-file counts are re-derived
+    # by the model — both Sonnet and Haiku miscounted one in the 2026-06-10
+    # side-by-side). Renderers display exact counts from `metrics` /
+    # the audit stream; never parse them out of this text.
     summary: str = Field(max_length=2000)
     overall_risk: RiskLevel
     # max_length cap follows AnalysisRound.findings precedent (50 per
