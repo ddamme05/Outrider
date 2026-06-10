@@ -252,16 +252,21 @@ STUBS: list[Stub] = [
             "canonical record lives in `DECISIONS.md#013` point 4 "
             '("Prompt caching. Enabled by default per the existing '
             'prompt-caching-always-on convention.") and `docs/spec.md` '
-            "§9.5. V1 ships single-cacheable-block packing: stable "
-            "content (prompt template + scope-unit file context reused "
-            "across the analyze ⇄ trace loop) goes in `system_prompt` "
-            "with `cache_control: ephemeral`; volatile content (the "
-            "diff under review, finding-generation instructions) goes "
-            "in `user_prompt` outside the cache boundary. V1.5+ "
-            "extends to multi-block messages with per-block "
-            "`cache_control` on stable file-context user blocks "
-            "(deferred until `LLMRequest.messages` becomes supported). "
-            "Wrapper-side default: `LLMRequest.cache_control: bool = True`."
+            "§9.5. V1 ships single-cacheable-block packing: "
+            "cross-call-stable content goes in `system_prompt` with "
+            "`cache_control: ephemeral`; per-call content goes in "
+            "`user_prompt` outside the cache boundary. For analyze "
+            "(the `analyze-v4` cache-packing repartition), stable means "
+            "CROSS-FILE stable — the invariant prefix "
+            "(`SYSTEM_PROMPT_STABLE_PREFIX`) is byte-identical across "
+            "every file in a review; per-file scope context travels in "
+            "`user_prompt`. Prompts below the model's min-cacheable "
+            "floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS`) silently "
+            "skip caching. V1.5+ extends to multi-block messages with "
+            "per-block `cache_control` on stable file-context user "
+            "blocks (deferred until `LLMRequest.messages` becomes "
+            "supported). Wrapper-side default: "
+            "`LLMRequest.cache_control: bool = True`."
         ),
         "pointer": "See `DECISIONS.md#013` point 4 and `docs/spec.md` §9.5.",
     },

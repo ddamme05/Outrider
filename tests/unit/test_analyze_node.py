@@ -941,14 +941,15 @@ async def test_registry_query_firing_populates_query_match_id_list(
 ) -> None:
     """For a Python file with function definitions, `query_match_id_set`
     contains `python.function_definition`. The registry-query block lives
-    in `system_prompt` (file-scoped, cacheable)."""
+    in `user_prompt` (per-file content; the system prompt is the
+    cross-file stable cache prefix per the analyze-v4 repartition)."""
     state = _build_review_state()
 
     await analyze(state, **deps)
 
     request = deps["provider"].calls[0]
-    assert "python.function_definition" in request.system_prompt
-    assert "(no registry query matches" not in request.system_prompt
+    assert "python.function_definition" in request.user_prompt
+    assert "(no registry query matches" not in request.user_prompt
 
 
 @pytest.mark.asyncio

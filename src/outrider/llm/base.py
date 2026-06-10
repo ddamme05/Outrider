@@ -392,20 +392,24 @@ class LLMRequest(BaseModel):
 
     # Transport fields.
     #
-    # V1 packing convention V1 has exactly ONE cacheable block — `system_prompt`.
-    # Calling nodes pack STABLE content (prompt template + scope-unit
-    # context that's reused across the analyze ⇄ trace loop on the same
-    # file) into `system_prompt`, and VOLATILE content (the diff under
-    # review, finding-generation instructions) into `user_prompt`. The
-    # wrapper marks `system_prompt` with `cache_control: ephemeral`
-    # , so reusing the same
+    # V1 packing convention: V1 has exactly ONE cacheable block — `system_prompt`.
+    # Calling nodes pack CROSS-CALL-STABLE content into `system_prompt`
+    # and everything per-call into `user_prompt`. For analyze (the
+    # analyze-v4 cache-packing repartition), stable means CROSS-FILE
+    # stable: the invariant prefix (`SYSTEM_PROMPT_STABLE_PREFIX`) is
+    # byte-identical for every file in a review, so the cache hits
+    # across the whole per-file fan-out; per-file scope context + the
+    # diff travel in `user_prompt`. The wrapper marks `system_prompt`
+    # with `cache_control: ephemeral`, so reusing the same
     # `system_prompt` across calls produces cache hits; `user_prompt`
-    # stays outside the cache boundary by design. Canonical
-    # `docs/spec.md` §9.5 explicitly stages this V1 single-block packing
-    # vs the V1.5+ multi-block extension (deferred until
-    # `LLMRequest.messages` becomes supported, which lets stable
-    # file-context blocks live in the user message with their own
-    # per-block `cache_control` markers).
+    # stays outside the cache boundary by design. NOTE: prompts below a
+    # model's min-cacheable floor (`pricing.MIN_CACHEABLE_TOKENS`) are
+    # silently processed uncached. Canonical `docs/spec.md` §9.5
+    # explicitly stages this V1 single-block packing vs the V1.5+
+    # multi-block extension (deferred until `LLMRequest.messages`
+    # becomes supported, which lets stable file-context blocks live in
+    # the user message with their own per-block `cache_control`
+    # markers — recovering same-file scope-context caching too).
     system_prompt: str = Field(min_length=1)
     user_prompt: str = Field(min_length=1)
     messages: list[LLMMessage] | None = None

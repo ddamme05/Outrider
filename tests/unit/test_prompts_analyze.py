@@ -22,9 +22,12 @@ import pytest
 
 from outrider.prompts.analyze import (
     DEGRADED_USER_TEMPLATE,
+    FILE_CONTEXT_TEMPLATE,
     MAX_TOKENS,
-    SYSTEM_FILE_CONTEXT_TEMPLATE,
+    POST_TRACE_SYSTEM_PROMPT_SUFFIX,
+    SYSTEM_PROMPT_EXEMPLARS,
     SYSTEM_PROMPT_INVARIANTS,
+    SYSTEM_PROMPT_STABLE_PREFIX,
     TEMPERATURE,
     TEMPLATE,
     USER_TEMPLATE,
@@ -32,6 +35,7 @@ from outrider.prompts.analyze import (
     AnalyzePromptParts,
     render,
     render_degraded,
+    render_post_trace,
 )
 
 # ---------------------------------------------------------------------------
@@ -39,14 +43,16 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v3() -> None:
+def test_version_is_named_analyze_v4() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v3" name so future renames break the test and force a
+    "analyze-v4" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v3 bump added the sql_injection parameterized-query false-positive
-    guidance (DECISIONS.md#041); v2 landed the trace-node pass-1 arc."""
-    assert VERSION == "analyze-v3"
+    The v4 bump landed the cache-packing repartition (per-file context →
+    user_prompt; exemplars block in the cached prefix); v3 added the
+    sql_injection parameterized-query false-positive guidance
+    (DECISIONS.md#041); v2 landed the trace-node pass-1 arc."""
+    assert VERSION == "analyze-v4"
 
 
 def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
@@ -97,20 +103,20 @@ def test_template_is_user_template_alias() -> None:
 
 
 def test_user_template_has_required_placeholders() -> None:
-    """Volatile (pass-specific) placeholders on USER_TEMPLATE. Stable
-    file-scoped placeholders live on SYSTEM_FILE_CONTEXT_TEMPLATE for
-    cross-pass caching."""
+    """Pass-specific placeholders on USER_TEMPLATE. Per-file placeholders
+    live on FILE_CONTEXT_TEMPLATE; both render into the volatile
+    user_prompt (the system_prompt is the cross-file stable prefix)."""
     expected_placeholders = {"pass_index", "diff_hunks"}
     found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", USER_TEMPLATE))
     assert found == expected_placeholders
 
 
-def test_system_file_context_template_has_required_placeholders() -> None:
-    """Stable-per-file placeholders. Combined with SYSTEM_PROMPT_INVARIANTS
-    they form the cacheable system_prompt block; reuse across passes for
-    the same file produces cache hits."""
+def test_file_context_template_has_required_placeholders() -> None:
+    """Per-file placeholders. Rendered into the USER prompt by render()
+    (cache-packing repartition: per-file content stays out of the cached
+    system prefix, which must be byte-identical across files)."""
     expected_placeholders = {"file_path", "scope_unit_context", "query_match_id_list"}
-    found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", SYSTEM_FILE_CONTEXT_TEMPLATE))
+    found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", FILE_CONTEXT_TEMPLATE))
     assert found == expected_placeholders
 
 
@@ -146,6 +152,100 @@ def test_system_prompt_invariants_has_no_placeholders() -> None:
         f"It must stay fully static (cacheable). Route any real placeholder "
         f"through render()'s kwargs rather than mutating the static head."
     )
+
+
+def test_system_prompt_exemplars_brace_markers_are_the_known_examples() -> None:
+    """SYSTEM_PROMPT_EXEMPLARS is fully static, but its FLAG examples
+    legitimately show f-string interpolation (`f"...{owner}..."`) — the
+    exact pattern the exemplar teaches the model to flag. Allowlist those
+    example variables; any OTHER brace-marker is a stray placeholder or a
+    refactor artifact that would break a future .format() loudly anyway.
+    The constant is never .format()ed — module-level concat only."""
+    found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", SYSTEM_PROMPT_EXEMPLARS))
+    assert found <= {"owner", "x"}, (
+        f"unexpected brace-markers in SYSTEM_PROMPT_EXEMPLARS: "
+        f"{found - {'owner', 'x'}}. Static exemplar f-string examples are "
+        f"allowlisted by name; anything else needs review."
+    )
+
+
+def test_stable_prefix_is_invariants_plus_exemplars() -> None:
+    """SYSTEM_PROMPT_STABLE_PREFIX is the cached block (cache-packing
+    spec). Pin its composition so content can't silently bypass the
+    floor + stability gates below by landing outside the constant."""
+    assert SYSTEM_PROMPT_STABLE_PREFIX == SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS
+
+
+def test_stable_prefix_clears_min_cacheable_floor_conservatively() -> None:
+    """The cache-floor gate (analyze cache-packing spec §2): below the
+    model's minimum cacheable prompt length, the API silently skips
+    caching (no error). There is no exact local tokenizer (FUP-049), so
+    this pins a deliberately UNDER-counting estimate — chars/5 lower-
+    bounds tokens for any realistic mixed prose/code text — with a ~10%
+    margin over the strictest configured-tier floor (Haiku 4.5: 4096).
+    The provider-estimated count_tokens verification at closeout is the
+    calibration; runtime cache_creation/cache_read activity is the
+    definitive proof. If this fails after a prompt edit, the prefix
+    SHRANK below the floor margin — grow it back or revisit the spec."""
+    from outrider.llm.config import ModelConfig
+    from outrider.llm.pricing import min_cacheable_tokens
+
+    cfg = ModelConfig()
+    strictest_floor = max(
+        min_cacheable_tokens(cfg.analyze_model),
+        min_cacheable_tokens(cfg.standard_analyze_model),
+    )
+    conservative_tokens = len(SYSTEM_PROMPT_STABLE_PREFIX) // 5
+    assert conservative_tokens >= int(strictest_floor * 1.1), (
+        f"stable prefix conservatively estimates {conservative_tokens} tokens; "
+        f"needs >= {int(strictest_floor * 1.1)} (strictest tier floor "
+        f"{strictest_floor} + 10% margin) or the cache silently no-ops."
+    )
+
+
+def test_render_system_prompt_is_byte_identical_across_files() -> None:
+    """THE cache-packing property: two different files (different paths,
+    scope contexts, query registries, diffs, passes) produce the SAME
+    system_prompt — the cross-file cache key. Identity (`is`) pins that
+    render() returns the module constant, not a rebuilt equal string."""
+    a = render(
+        file_path="src/a.py",
+        scope_unit_context="def a(): ...",
+        query_match_id_list="qm-1",
+        diff_hunks="@@ -1 +1 @@\n+a",
+        pass_index=0,
+    )
+    b = render(
+        file_path="lib/b.py",
+        scope_unit_context="class B: ...",
+        query_match_id_list="",
+        diff_hunks="@@ -2 +2 @@\n+b",
+        pass_index=1,
+    )
+    assert a.system_prompt == b.system_prompt
+    assert a.system_prompt is SYSTEM_PROMPT_STABLE_PREFIX
+
+
+def test_render_post_trace_system_prompt_is_byte_identical_across_files() -> None:
+    """Pass-1 calls share a SECOND stable cache entry: stable prefix +
+    the post-trace suffix, byte-identical across trace-fetched files."""
+    from uuid import uuid4 as _uuid4
+
+    common = {
+        "scope_unit_context": "def t(): ...",
+        "query_match_id_list": "",
+        "source_finding_title": "t",
+        "source_finding_description": "d",
+        "source_finding_evidence": "e",
+        "pass_index": 1,
+    }
+    a = render_post_trace(file_path="src/a.py", source_finding_id=_uuid4(), **common)
+    b = render_post_trace(file_path="lib/b.py", source_finding_id=_uuid4(), **common)
+    assert a.system_prompt == b.system_prompt
+    assert a.system_prompt == SYSTEM_PROMPT_STABLE_PREFIX + POST_TRACE_SYSTEM_PROMPT_SUFFIX
+    # Per-file + source-finding content lives in the user prompt.
+    assert "src/a.py" in a.user_prompt
+    assert "lib/b.py" in b.user_prompt
 
 
 def test_system_prompt_documents_all_finding_types() -> None:
@@ -497,9 +597,8 @@ def test_analyze_prompt_parts_supports_attribute_access() -> None:
 
 
 def test_render_system_prompt_starts_with_invariants() -> None:
-    """system_prompt begins with the static SYSTEM_PROMPT_INVARIANTS so
-    the cacheable prefix is byte-identical across calls; the per-file
-    suffix follows it."""
+    """system_prompt begins with the static SYSTEM_PROMPT_INVARIANTS —
+    the head of the cross-file stable prefix."""
     parts = render(
         file_path="src/example.py",
         scope_unit_context="<scope unit body>",
@@ -510,9 +609,10 @@ def test_render_system_prompt_starts_with_invariants() -> None:
     assert parts.system_prompt.startswith(SYSTEM_PROMPT_INVARIANTS)
 
 
-def test_render_system_prompt_contains_file_path() -> None:
-    """File path lives in system_prompt (per-file-stable) so the cacheable
-    boundary covers it. Reviews of the same file across passes hit cache."""
+def test_render_user_prompt_contains_file_path() -> None:
+    """File path is per-file content — user_prompt (cache-packing
+    repartition: the system prefix must be byte-identical across files,
+    so nothing per-file may render into it)."""
     parts = render(
         file_path="src/auth/login.py",
         scope_unit_context="",
@@ -520,12 +620,14 @@ def test_render_system_prompt_contains_file_path() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert "src/auth/login.py" in parts.system_prompt
+    assert "src/auth/login.py" in parts.user_prompt
+    assert "src/auth/login.py" not in parts.system_prompt
 
 
-def test_render_system_prompt_contains_scope_unit_context() -> None:
+def test_render_user_prompt_contains_scope_unit_context_fenced() -> None:
     """Scope-unit context (bodies + same-file callers/callees + imports +
-    decorators) is per-file-stable — system_prompt block."""
+    decorators) is per-file — user_prompt block, wrapped in a
+    safe_code_fence(lang="text") because scope text is PR-controlled."""
     sentinel = "def login(user, password):\n    # SENTINEL"
     parts = render(
         file_path="src/x.py",
@@ -534,12 +636,13 @@ def test_render_system_prompt_contains_scope_unit_context() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert sentinel in parts.system_prompt
+    assert sentinel in parts.user_prompt
+    assert sentinel not in parts.system_prompt
+    assert "```text\n" in parts.user_prompt
 
 
-def test_render_system_prompt_contains_query_match_id_list() -> None:
-    """Pre-fired query matches are file-scoped and stable across passes —
-    system_prompt block."""
+def test_render_user_prompt_contains_query_match_id_list() -> None:
+    """Pre-fired query matches are file-scoped — user_prompt block."""
     sentinel = "python.security.sql_injection:42"
     parts = render(
         file_path="src/x.py",
@@ -548,7 +651,8 @@ def test_render_system_prompt_contains_query_match_id_list() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert sentinel in parts.system_prompt
+    assert sentinel in parts.user_prompt
+    assert sentinel not in parts.system_prompt
 
 
 def test_render_user_prompt_contains_pass_index() -> None:
@@ -625,18 +729,19 @@ def test_render_user_prompt_fence_escapes_hostile_diff_hunks() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_degraded_returns_static_system_prompt_unchanged() -> None:
-    """Degraded path uses the SAME system prompt invariants — the
-    degraded directive lives in the user prompt, not the system prompt.
-    Keeps the cache key shape consistent across clean/degraded calls."""
+def test_render_degraded_returns_stable_prefix_unchanged() -> None:
+    """Degraded path uses the SAME stable prefix as clean pass-0 calls —
+    the degraded directive lives in the user prompt, not the system
+    prompt. Degraded calls therefore SHARE the pass-0 cache entry
+    (identity pins that render_degraded returns the module constant)."""
     parts = render_degraded(
         file_path="src/x.py",
         bounded_hunks="@@ -1,1 +1,1 @@",
         pass_index=0,
         degradation_reason="parse_failed",
     )
-    assert parts.system_prompt == SYSTEM_PROMPT_INVARIANTS
-    assert parts.system_prompt is SYSTEM_PROMPT_INVARIANTS
+    assert parts.system_prompt == SYSTEM_PROMPT_STABLE_PREFIX
+    assert parts.system_prompt is SYSTEM_PROMPT_STABLE_PREFIX
 
 
 def test_render_degraded_user_prompt_signals_degraded_mode() -> None:
@@ -690,7 +795,8 @@ def test_render_hostile_scope_unit_context_does_not_escape_template() -> None:
     """`webhook-strings-are-data-not-format-strings`: PR-sourced strings
     entering the prompt via .format(**kwargs) survive AS literal data;
     `{file_path}` / `{diff_hunks}` / `{pass_index}` markers in the input
-    must not interpolate. scope_unit_context lives in system_prompt."""
+    must not interpolate. scope_unit_context lives in user_prompt
+    (cache-packing repartition)."""
     hostile = "def f(): {file_path} {diff_hunks} {pass_index}"
     parts = render(
         file_path="src/x.py",
@@ -699,9 +805,9 @@ def test_render_hostile_scope_unit_context_does_not_escape_template() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert "{file_path}" in parts.system_prompt
-    assert "{diff_hunks}" in parts.system_prompt
-    assert "{pass_index}" in parts.system_prompt
+    assert "{file_path}" in parts.user_prompt
+    assert "{diff_hunks}" in parts.user_prompt
+    assert "{pass_index}" in parts.user_prompt
 
 
 def test_render_hostile_diff_hunks_does_not_escape_template() -> None:
@@ -730,7 +836,7 @@ def test_render_hostile_positional_metacharacters_do_not_trip_format() -> None:
         diff_hunks="",
         pass_index=0,
     )
-    assert "{}{}{}" in parts.system_prompt
+    assert "{}{}{}" in parts.user_prompt
 
 
 def test_render_degraded_hostile_bounded_hunks_does_not_escape() -> None:
@@ -789,18 +895,22 @@ def test_module_exports_all_documented_surfaces() -> None:
 
     expected = {
         "DEGRADED_USER_TEMPLATE",
+        "FILE_CONTEXT_TEMPLATE",
         "MAX_TOKENS",
         # Post-trace prompt surfaces added 2026-05-24 for trace-node arc
         # pass-1 INFERRED admission. See trace.py and analyze.py for the
         # render_post_trace call site. `POST_TRACE_FILE_CONTEXT_TEMPLATE`
-        # is the whole-file analogue of SYSTEM_FILE_CONTEXT_TEMPLATE —
+        # is the whole-file analogue of FILE_CONTEXT_TEMPLATE —
         # diff-scoped wording ("changed scope units") is wrong for
         # trace-fetched files outside the PR diff.
         "POST_TRACE_FILE_CONTEXT_TEMPLATE",
         "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
         "POST_TRACE_USER_TEMPLATE",
-        "SYSTEM_FILE_CONTEXT_TEMPLATE",
+        # Cache-packing surfaces (analyze-v4): the exemplars block + the
+        # composed cross-file stable prefix (THE cached system block).
+        "SYSTEM_PROMPT_EXEMPLARS",
         "SYSTEM_PROMPT_INVARIANTS",
+        "SYSTEM_PROMPT_STABLE_PREFIX",
         "TEMPERATURE",
         "TEMPLATE",
         "USER_TEMPLATE",
