@@ -38,7 +38,9 @@ Surfaces:
   per-model min-cacheable floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS`
   — below the floor the API silently skips caching).
 - `SYSTEM_PROMPT_STABLE_PREFIX` — INVARIANTS + EXEMPLARS; THE cached
-  block. Zero `{placeholder}` markers, enforced by test.
+  block. Never `.format()`ed: INVARIANTS has zero `{placeholder}`
+  markers; EXEMPLARS' braces are allowlisted static example text.
+  Both enforced by test.
 - `FILE_CONTEXT_TEMPLATE` — diff-scoped per-file context rendered into
   the USER prompt by `render` (says "the file's CHANGED scope units";
   correct for pass-0 on PR-diff files, NOT for post-trace whole-file
@@ -257,7 +259,11 @@ stmt = text("SELECT * FROM t WHERE k = :k"); conn.execute(stmt, {"k": k})  # do 
   style: `%s`, `%(name)s`, `?`, `:name`, `$1` — when values travel as a
   SEPARATE argument (list/tuple/dict), the driver binds, the SQL text
   is constant. This restates the parameterized-query rule above; the
-  placeholder style alone never decides the finding.
+  placeholder style alone never decides the finding. Binding some
+  values grants NO license for the rest of the query text: if ANY part
+  of the SQL string is assembled from untrusted input (an f-string
+  table name beside bound parameters), it is `sql_injection` —
+  assembly wins over binding.
 
 ### xss
 
@@ -291,7 +297,10 @@ EXAMPLE_KEY = "sk_test_example_do_not_use"               # judgment: usually not
 - Do NOT flag reads from the environment or a secrets manager, variable
   NAMES that merely mention "key"/"token" with non-secret values,
   obvious documentation placeholders (`"<your-api-key>"`,
-  `"sk_test_example..."`), or empty-string defaults.
+  `"sk_test_example..."`), or empty-string defaults. A live-provider
+  prefix WINS over placeholder-looking text: `sk_live_..._do_not_use`
+  is flagged as live — naming a real credential "example" or
+  "do_not_use" does not make it a placeholder.
 
 ### auth_bypass
 
@@ -311,10 +320,12 @@ if DEBUG_SKIP_AUTH or user.is_authenticated:             # FLAG
   id with no ownership check (IDOR shape: `get(id)` then mutate,
   never comparing against the requesting principal).
 - Do NOT flag routes that are legitimately public (health checks,
-  login/registration), middleware-enforced auth applied at the
-  blueprint/router level (absence of a per-route decorator is not
-  absence of auth — check the scope-unit context for it), or
-  read-only endpoints over non-sensitive data.
+  login/registration), middleware-enforced auth that is VISIBLE in the
+  provided scope-unit context (a blueprint/router-level guard shown in
+  the listing), or read-only endpoints over non-sensitive data. Never
+  assume invisible middleware: if a privileged operation has no auth
+  check visible anywhere in the provided context, FLAG it — a
+  false positive here is reviewed by a human; a missed bypass is not.
 
 ### path_traversal
 
@@ -413,7 +424,10 @@ __all__ = ["User"]                                        #  __all__ (re-export)
   `__all__` or imported with `as` re-export form `from x import y as
   y`), imports used only inside type-checking blocks (`if
   TYPE_CHECKING:`) or string annotations, conftest fixtures imported
-  for side effects, or `# noqa`-marked compatibility imports.
+  for side effects, or pre-existing `# noqa`-marked compatibility
+  imports. A `# noqa` ADDED BY THIS DIFF on an import whose last use
+  the same diff removed is not a compatibility marker — it is the
+  finding plus a suppression; flag it.
 
 ### missing_error_handling
 
@@ -599,8 +613,11 @@ SYSTEM_PROMPT_STABLE_PREFIX: Final[str] = SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROM
 degraded analyze call, regardless of file. `cache_control: ephemeral`
 on this prefix caches it once per review per tier-model. Must stay
 above `llm/pricing.py::MIN_CACHEABLE_TOKENS` for the configured tier
-models (below the floor the API silently skips caching) and must carry
-zero `{placeholder}` markers — both enforced by unit test."""
+models (below the floor the API silently skips caching) and is never
+`.format()`ed — INVARIANTS carries zero `{placeholder}` markers and
+EXEMPLARS' brace markers are a fixed allowlisted set of static
+f-string EXAMPLE variables ({owner}, {x}); all enforced by unit
+test."""
 
 
 FILE_CONTEXT_TEMPLATE: Final[str] = """\
