@@ -9,11 +9,13 @@ from audit_events + analysis_rounds, and runs one config-routed LLM call
 Downstream nodes (hitl, publish) consume the ReviewReport; they do NOT
 walk state.analysis_rounds[*].findings any more.
 
-ReviewReport.summary is LLM output: untrusted prose rendered into the
-GitHub review body downstream. Per docs/trust-boundaries.md §6, the
+ReviewReport.summary is LLM output: untrusted prose. V1's only summary
+surface is the dashboard (publish does NOT compose it into the GitHub
+review body — FUP-149 tracks that surface); when it lands, the
 deterministic publish-time gate (policy/output_sanitizer.py::
 sanitize_display_string + apply_size_cap) sanitizes the prose at the
-review-body builder. Field-level Field(max_length=2000) is the schema-side
+review-body builder per docs/trust-boundaries.md §6.
+Field-level Field(max_length=2000) is the schema-side
 codepoint cap that mirrors spec.md:1101 — note that this counts codepoints,
 not graphemes or UTF-8 bytes; publish-time `apply_size_cap` is the
 authoritative byte-budget gate. Sanitization happens at publish, not at

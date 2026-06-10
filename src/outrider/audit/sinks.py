@@ -539,7 +539,7 @@ class SynthesizeEventSink(Protocol):
     """Sink for the synthesize node's one audit event type.
 
     Synthesize emits exactly one audit event per review:
-    `SynthesizeCompletedEvent` at end-of-work (after the Sonnet summary
+    `SynthesizeCompletedEvent` at end-of-work (after the summary
     call returns, after deduplication + sort, before returning the state
     delta). One Protocol with one method matches the analyze-completed
     pattern conceptually but with simpler shape (no per-pass

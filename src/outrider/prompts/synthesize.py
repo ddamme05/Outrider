@@ -28,7 +28,7 @@ Surfaces (per the synthesize-node spec's Reference Reconciliation):
   (finding titles/evidence/descriptions) gets fence-wrapped via
   `safe_code_fence` per `webhook-strings-are-data-not-format-strings`.
 - `TEMPLATE` — alias for USER_TEMPLATE.
-- `VERSION: Final[str] = "synthesize-v1"` — flows to
+- `VERSION: Final[str] = "synthesize-v2"` — flows to
   `LLMRequest.prompt_template_version`.
 - `MAX_TOKENS: Final[int] = 1024` — bounds the summary output to the
   `Field(max_length=2000)` codepoint cap on `ReviewReport.summary`
@@ -54,7 +54,12 @@ if TYPE_CHECKING:
     from outrider.schemas.triage_result import RiskLevel
 
 
-VERSION: Final[str] = "synthesize-v1"
+# Bumped 2026-06-10 (was "synthesize-v1"): the CRITICAL CONSTRAINTS bullet
+# claimed the output "is composed into a GitHub review body" — stale; V1's
+# only summary surface is the dashboard (FUP-149 tracks the GitHub-body
+# surface). Reworded surface-neutral. Model-visible text changed, so the
+# provenance version bumps; each bump keeps replay attribution exact.
+VERSION: Final[str] = "synthesize-v2"
 MAX_TOKENS: Final[int] = 1024
 TEMPERATURE: Final[float] = 0.3
 
@@ -80,8 +85,8 @@ auto-publish vs HITL-gated findings without over-explaining the workflow.
 CRITICAL CONSTRAINTS:
 
 - Plain prose only. No markdown headers, no bullet lists, no code fences.
-  The output is composed into a GitHub review body by the publish layer;
-  markdown structure is the publisher's responsibility, not yours.
+  The output is rendered into the review report shown to the reviewer;
+  presentation structure is the rendering layer's responsibility, not yours.
 - 2000 character maximum (the schema cap rejects anything longer).
 - Do NOT classify severity. Do NOT recommend severity overrides. Do NOT
   invent findings that aren't in the input list.
