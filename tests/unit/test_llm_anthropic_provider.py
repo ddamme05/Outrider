@@ -807,9 +807,9 @@ async def test_cache_silently_disabled_warns_separately_per_model(
     _reset_noncacheable_warned_set: None,
 ) -> None:
     """The (response.model, system_prompt_hash) key correctly distinguishes
-    models — same prompt at the threshold for one model may be below for
-    another (Sonnet 4.6: 2048 tokens; Haiku 4.5: 4096 tokens), so each
-    model deserves its own warn-once budget. The dedup key uses
+    models — the same prompt can clear one model's min-cacheable floor and
+    miss another's (per-model values: `pricing.MIN_CACHEABLE_TOKENS`), so
+    each model deserves its own warn-once budget. The dedup key uses
     `response.model` (the executed model, which determines the threshold),
     not `request.model` — the SDK could substitute via alias resolution
     or deprecation routing."""
