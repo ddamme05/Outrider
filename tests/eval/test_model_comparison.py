@@ -92,12 +92,16 @@ _PATH_TRAVERSAL_FIXTURE = "tests/eval/fixtures/mock_github/path_traversal.json"
 _MISSING_INPUT_VALIDATION_FIXTURE = "tests/eval/fixtures/mock_github/missing_input_validation.json"
 
 # Recall HOLD-OUTS — real SQLi in injection forms the analyze-v3 prompt NAMES but never exemplifies
-# (f-string / str.format / `+` concatenation, vs the prompt's only-shown %-format). The model MUST
-# still flag these; a miss means the remediation over-suppressed real SQLi. NAMED-BUT-UNEXAMPLED — a
-# WEAKER generalization signal than the regression safe hold-outs (which the prompt never mentions).
+# (f-string / str.format / `+` concatenation, vs the prompt's only-shown %-format) PLUS an ORM
+# `raw()` built with an f-string — the over-generalization path the security review flagged: the
+# prompt's only ORM example is the SAFE `raw(..., [param])` form, so the model could wrongly read
+# "ORM raw() = safe." The model MUST still flag all of these; a miss means the remediation
+# over-suppressed real SQLi. NAMED-BUT-UNEXAMPLED — a WEAKER generalization signal than the
+# regression safe hold-outs (which the prompt never mentions at all).
 _SQLI_HOLDOUT_FSTRING_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json"
 _SQLI_HOLDOUT_FORMAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_format.json"
 _SQLI_HOLDOUT_CONCAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_concat.json"
+_SQLI_HOLDOUT_ORM_FSTRING_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json"
 
 _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
     _PYGOAT_SQL_FIXTURE: (
@@ -183,6 +187,15 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             file_path="contacts/lookup.py",
             line_start=6,
             line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        ),
+    ),
+    _SQLI_HOLDOUT_ORM_FSTRING_FIXTURE: (
+        ExpectedFinding(
+            file_path="crm/queries.py",
+            line_start=5,
+            line_end=5,
             finding_type=FindingType.SQL_INJECTION,
             severity=lookup_severity(FindingType.SQL_INJECTION),
         ),
@@ -663,6 +676,7 @@ def test_holdout_sets_are_registered_and_disjoint() -> None:
         _SQLI_HOLDOUT_FSTRING_FIXTURE,
         _SQLI_HOLDOUT_FORMAT_FIXTURE,
         _SQLI_HOLDOUT_CONCAT_FIXTURE,
+        _SQLI_HOLDOUT_ORM_FSTRING_FIXTURE,
     )
     # SQLi recall hold-outs carry a REAL finding — they must NOT sit in any safe/regression set,
     # where the empty ground truth would flip the real finding into an apparent false positive.
@@ -681,9 +695,9 @@ def test_holdout_sets_are_registered_and_disjoint() -> None:
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
-    """END-TO-END zero-spend over EACH recall fixture (all nine in `_GROUND_TRUTH_BY_FIXTURE` —
+    """END-TO-END zero-spend over EACH recall fixture (all ten in `_GROUND_TRUTH_BY_FIXTURE` —
     SQLi, auth-bypass, missing-error-handling, N+1, path-traversal, missing-input-validation, plus
-    three held-out SQLi forms: f-string / str.format / concatenation):
+    four held-out SQLi forms: f-string / str.format / concatenation / ORM raw() f-string):
     a scripted "Sonnet" that returns the known finding scores recall 1.0; a scripted "Haiku"
     that misses it scores 0.0 and FAILS the gate. The STATE is the real vulnerable code (built
     by state_from_eval_fixture); only the provider is faked — so the real run differs only by
