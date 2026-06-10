@@ -17,10 +17,12 @@ import pytest
 
 from outrider.llm.config import ModelConfig
 from outrider.llm.pricing import (
+    MIN_CACHEABLE_TOKENS,
     PRICING_VERSION,
     RATE_TABLE,
     ModelPricing,
     compute_cost_usd,
+    min_cacheable_tokens,
 )
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,33 @@ def test_anthropic_ratio_sanity_gates(model_id: str, pricing: ModelPricing) -> N
     assert pricing.out_per_token > pricing.in_per_token, (
         f"{model_id!r}: out_per_token should be > in_per_token"
     )
+
+
+# ---------------------------------------------------------------------------
+# MIN_CACHEABLE_TOKENS floor table.
+# ---------------------------------------------------------------------------
+
+
+def test_min_cacheable_keys_mirror_rate_table() -> None:
+    """A model priced without a declared cache floor fails loud here —
+    the floor table and the rate table cover the same model set."""
+    assert set(MIN_CACHEABLE_TOKENS.keys()) == set(RATE_TABLE.keys())
+
+
+def test_min_cacheable_floors_match_anthropic_contract() -> None:
+    """Values from the canonical prompt-caching page ("Cache Limitations"):
+    Sonnet 4.6 → 2048, Haiku 4.5 → 4096."""
+    assert min_cacheable_tokens("claude-sonnet-4-6") == 2048
+    assert min_cacheable_tokens("claude-haiku-4-5") == 4096
+
+
+def test_min_cacheable_resolves_dated_pins() -> None:
+    assert min_cacheable_tokens("claude-haiku-4-5-20251001") == 4096
+
+
+def test_min_cacheable_unknown_model_raises_keyerror() -> None:
+    with pytest.raises(KeyError):
+        min_cacheable_tokens("claude-sonnet-9-9")
 
 
 # ---------------------------------------------------------------------------
