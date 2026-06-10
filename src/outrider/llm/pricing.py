@@ -169,7 +169,9 @@ RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(
 # Minimum cacheable prompt length per model (Anthropic prompt-caching
 # contract): prompts whose prefix is below the floor are "processed
 # without caching, with no error returned" — both cache_creation and
-# cache_read report 0. Values from the canonical prompt-caching page
+# cache_read report 0. See
+# DECISIONS.md#042-analyze-prompt-cache-packs-a-cross-file-invariant-prefix.
+# Values from the canonical prompt-caching page
 # (anthropic/context-management/prompt-caching.md, "Cache Limitations").
 # Keyed by the same undated aliases as RATE_TABLE (dated pins resolve
 # via `normalize_to_pricing_key`); `test_llm_pricing.py` asserts the

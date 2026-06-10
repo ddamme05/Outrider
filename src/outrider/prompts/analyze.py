@@ -608,6 +608,7 @@ do:
 """
 
 
+# See DECISIONS.md#042-analyze-prompt-cache-packs-a-cross-file-invariant-prefix
 SYSTEM_PROMPT_STABLE_PREFIX: Final[str] = SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS
 """THE cached system block: byte-identical across every pass-0 and
 degraded analyze call, regardless of file. `cache_control: ephemeral`
