@@ -14,8 +14,10 @@ What it grounds and what it models:
   - OUTPUT tokens: MODELED. No real completion exists; the measured number uses the
     fixture's scripted-response size, and the report sweeps output to show sensitivity
     (output bills at ~5x input, so it moves the number materially).
-  - CACHING: 0 hits. V1 analyze does not drive a stable cache prefix yet (lever
-    unconsumed), so this reflects today's code, not the cached projection.
+  - CACHING: 0 hits BY CHOICE in the baseline runs — the probe defaults to
+    `model_cache=False`, so this measures the uncached cost shape. analyze-v4
+    DOES drive a cross-file stable cache prefix (the cache-packing repartition);
+    the cache-modeled proof lives in `test_cache_packing_cross_file_proof` below.
   - MODEL TIER: `standard_analyze_model` now defaults to Haiku (the eval-gated flip,
     DECISIONS.md#041), but these 5 representative fixtures are all DEEP-tier, so analyze
     routes to `analyze_model` (Sonnet) for every file regardless of the flip — this stays
@@ -247,17 +249,14 @@ def test_cache_packing_cross_file_proof() -> None:
         )
         assert c["cache_read_tokens"] == first["cache_write_tokens"]
 
-    # Quantify: same calls repriced with no cache vs the cache-modeled cost.
+    # Quantify: same calls repriced with no cache (via the file's analytic
+    # repricing helper) vs the cache-modeled cost.
     model = first["model"]
     uncached = sum(
-        float(
-            compute_cost_usd(
-                model=c["model"],
-                input_tokens=c["input_tokens"] + c["cache_read_tokens"] + c["cache_write_tokens"],
-                cache_write_tokens=0,
-                cache_read_tokens=0,
-                output_tokens=c["output_tokens"],
-            )
+        _price(
+            c["model"],
+            c["input_tokens"] + c["cache_read_tokens"] + c["cache_write_tokens"],
+            c["output_tokens"],
         )
         for c in analyze_calls
     )
