@@ -392,6 +392,7 @@ class LLMRequest(BaseModel):
 
     # Transport fields.
     #
+    # See DECISIONS.md#042-analyze-prompt-cache-packs-a-cross-file-invariant-prefix.
     # V1 packing convention: V1 has exactly ONE cacheable block — `system_prompt`.
     # Calling nodes pack CROSS-CALL-STABLE content into `system_prompt`
     # and everything per-call into `user_prompt`. For analyze (the
