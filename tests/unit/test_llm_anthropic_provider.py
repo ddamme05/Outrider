@@ -462,8 +462,12 @@ def test_constructor_disables_sdk_internal_retry() -> None:
     assert provider._client.max_retries == 0  # noqa: SLF001
 
 
-def test_constructor_uses_30s_read_timeout() -> None:
-    """AC#12: 30s read timeout fits inside the 60-120s webhook budget."""
+def test_constructor_uses_generation_sized_read_timeout() -> None:
+    """AC#12 (revised 2026-06-10): the read timeout must cover the worst
+    LEGITIMATE non-streaming generation the wrapper permits (MAX_TOKENS=8192
+    ≈ 234s at loaded-Sonnet throughput, plus TTFT tail) — the original 30s
+    capped legitimate work and a TTFT spike killed a paid eval run. Pinned
+    at 300s (half the SDK's 600s default); connect stays tight at 5s."""
     provider = AnthropicProvider(
         api_key=_api_key(),
         model_config=_model_config(),
@@ -471,7 +475,7 @@ def test_constructor_uses_30s_read_timeout() -> None:
     )
     timeout = provider._client.timeout  # noqa: SLF001
     assert isinstance(timeout, httpx.Timeout)
-    assert timeout.read == 30.0
+    assert timeout.read == 300.0
     assert timeout.connect == 5.0
 
 

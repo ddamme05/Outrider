@@ -115,10 +115,24 @@ _WARNED_RAW_VALUES: set[str] = set()
 _WARNED_NONCACHEABLE: set[tuple[str, str]] = set()
 
 
+# Read timeout for the SDK's httpx client. `complete()` is NON-streaming,
+# so no bytes arrive until generation finishes — the read timeout bounds
+# the WHOLE generation, not gaps between chunks. It must therefore cover
+# the worst LEGITIMATE response the wrapper itself permits: MAX_TOKENS=8192
+# at a loaded-Sonnet ~35 tok/s ≈ 234s, plus a TTFT/queuing tail (spikes
+# past 30s observed 2026-06-10 — one killed a full eval evidence run).
+# 300s covers that arithmetic and stays at half the SDK's own 600s
+# default. The original 30s (provider-wrapper spec AC#12, sized to the
+# "60-120s typical review" figure) conflated hung-connection fast-fail
+# with slow-but-healthy generation; fast hung-call detection properly
+# arrives with streaming or the FUP-025 node-retry layer, not by capping
+# legitimate work.
+_READ_TIMEOUT_SECONDS: Final[float] = 300.0
+
 # Bounded teardown for `AnthropicProvider.aclose()`. 10s is twice the
 # default httpx pool-timeout (5s) so a legitimately-slow drain still
-# completes; a hung close (e.g., in-flight request blocked on the 30s
-# read timeout) exceeds this and the wrapper releases without waiting.
+# completes; a hung close (e.g., an in-flight request still waiting out
+# the read timeout) exceeds this and the wrapper releases without waiting.
 _ACLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
@@ -253,7 +267,7 @@ class AnthropicProvider:
         self._client = anthropic.AsyncAnthropic(
             api_key=api_key.get_secret_value(),
             max_retries=0,
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=10.0),
+            timeout=httpx.Timeout(connect=5.0, read=_READ_TIMEOUT_SECONDS, write=30.0, pool=10.0),
             http_client=anthropic.DefaultAsyncHttpxClient(
                 limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
             ),
