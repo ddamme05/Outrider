@@ -2358,7 +2358,7 @@ class SynthesizeCompletedEvent(AuditEventBase):
     overall_risk: RiskLevel
     """Mirror of `ReviewReport.overall_risk`. PR-level risk classification
     carried forward from triage's `RiskLevel` ladder; synthesize does
-    NOT re-derive it from the Sonnet call (the summary call produces
+    NOT re-derive it from the LLM call (the summary call produces
     prose, not classification — `severity-set-by-policy` analog at the
     PR level)."""
     n_findings: int = Field(ge=0)

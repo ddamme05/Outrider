@@ -212,7 +212,7 @@ class ReviewState(BaseModel):
     # (LangGraph default for un-annotated fields). Aggregates findings
     # from `analysis_rounds` (deduped by `content_hash`, severity-sorted),
     # computes deterministic `ReviewMetrics` from audit events, and
-    # carries the Sonnet-generated summary prose. HITL and publish nodes
+    # carries the LLM-generated summary prose. HITL and publish nodes
     # consume `review_report.findings` instead of walking
     # `analysis_rounds[*].findings` directly. `None` until synthesize runs.
     review_report: ReviewReport | None = None

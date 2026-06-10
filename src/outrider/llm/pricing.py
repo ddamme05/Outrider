@@ -171,16 +171,19 @@ RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(
 # without caching, with no error returned" — both cache_creation and
 # cache_read report 0. See
 # DECISIONS.md#042-analyze-prompt-cache-packs-a-cross-file-invariant-prefix.
-# Values from the canonical prompt-caching page
-# (anthropic/context-management/prompt-caching.md, "Cache Limitations").
-# Keyed by the same undated aliases as RATE_TABLE (dated pins resolve
-# via `normalize_to_pricing_key`); `test_llm_pricing.py` asserts the
-# key sets stay identical so a model priced without a declared floor
-# fails loud. Same inlined-literal + MappingProxyType immutability
-# discipline as RATE_TABLE above.
+# Floors are RUNTIME API behavior, so the LIVE prompt-caching page
+# governs the values (platform.claude.com "Cache limitations",
+# verified 2026-06-10: Sonnet 4.6 = 1024, Haiku 4.5 = 4096). The pinned
+# aegis-docs mirror (anthropic v0.100.0 snapshot) still lists Sonnet 4.6
+# at 2048 — a stale snapshot value the live page lowered; the Haiku
+# floor agrees in both sources. Keyed by the same undated aliases as
+# RATE_TABLE (dated pins resolve via `normalize_to_pricing_key`);
+# `test_llm_pricing.py` asserts the key sets stay identical so a model
+# priced without a declared floor fails loud. Same inlined-literal +
+# MappingProxyType immutability discipline as RATE_TABLE above.
 MIN_CACHEABLE_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "claude-sonnet-4-6": 2048,
+        "claude-sonnet-4-6": 1024,
         "claude-haiku-4-5": 4096,
     }
 )
