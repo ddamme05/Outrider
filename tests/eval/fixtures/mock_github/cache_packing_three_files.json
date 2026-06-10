@@ -1,0 +1,58 @@
+{
+ "installation_id": 5404,
+ "owner": "acme",
+ "repo": "storefront",
+ "pr_number": 61,
+ "base_sha": "7777777777777777777777777777777777777777",
+ "head_sha": "8888888888888888888888888888888888888888",
+ "pr_title": "Strip whitespace from page handler params",
+ "pr_body": "Trims the v query parameter in three sibling page handlers.",
+ "author": "contributor",
+ "total_additions": 6,
+ "total_deletions": 3,
+ "files": [
+  {
+   "path": "app/handler_1.py",
+   "status": "modified",
+   "additions": 2,
+   "deletions": 1,
+   "patch": "@@ -1,3 +1,4 @@\n def handler_1(request):\n     value = request.GET.get('v', '')\n-    return render(request, 'page_1.html', {'v': value})\n+    cleaned = value.strip()\n+    return render(request, 'page_1.html', {'v': cleaned})\n",
+   "previous_path": "",
+   "content_base": "def handler_1(request):\n    value = request.GET.get('v', '')\n    return render(request, 'page_1.html', {'v': value})\n",
+   "content_head": "def handler_1(request):\n    value = request.GET.get('v', '')\n    cleaned = value.strip()\n    return render(request, 'page_1.html', {'v': cleaned})\n"
+  },
+  {
+   "path": "app/handler_2.py",
+   "status": "modified",
+   "additions": 2,
+   "deletions": 1,
+   "patch": "@@ -1,3 +1,4 @@\n def handler_2(request):\n     value = request.GET.get('v', '')\n-    return render(request, 'page_2.html', {'v': value})\n+    cleaned = value.strip()\n+    return render(request, 'page_2.html', {'v': cleaned})\n",
+   "previous_path": "",
+   "content_base": "def handler_2(request):\n    value = request.GET.get('v', '')\n    return render(request, 'page_2.html', {'v': value})\n",
+   "content_head": "def handler_2(request):\n    value = request.GET.get('v', '')\n    cleaned = value.strip()\n    return render(request, 'page_2.html', {'v': cleaned})\n"
+  },
+  {
+   "path": "app/handler_3.py",
+   "status": "modified",
+   "additions": 2,
+   "deletions": 1,
+   "patch": "@@ -1,3 +1,4 @@\n def handler_3(request):\n     value = request.GET.get('v', '')\n-    return render(request, 'page_3.html', {'v': value})\n+    cleaned = value.strip()\n+    return render(request, 'page_3.html', {'v': cleaned})\n",
+   "previous_path": "",
+   "content_base": "def handler_3(request):\n    value = request.GET.get('v', '')\n    return render(request, 'page_3.html', {'v': value})\n",
+   "content_head": "def handler_3(request):\n    value = request.GET.get('v', '')\n    cleaned = value.strip()\n    return render(request, 'page_3.html', {'v': cleaned})\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"app/handler_1.py\": \"standard\", \"app/handler_2.py\": \"standard\", \"app/handler_3.py\": \"standard\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"code_quality\"], \"reasoning\": \"Three sibling handlers each trim one query param; routine standard-tier review, no security surface change.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": []}",
+   "{\"findings\": []}",
+   "{\"findings\": []}"
+  ],
+  "synthesize": [
+   "Clean three-file refactor: whitespace trimming in sibling handlers, no findings."
+  ]
+ }
+}
