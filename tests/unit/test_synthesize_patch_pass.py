@@ -272,8 +272,8 @@ async def test_summary_request_carries_configured_model_and_prompt_version() -> 
     LLMRequest carries (a) the injected `synthesize_model` verbatim — the
     config→request routing the Haiku default flows through — and (b)
     `prompts/synthesize.VERSION` as `prompt_template_version`, pinned to
-    "synthesize-v2" (the surface-neutral prompt bump) so audit provenance
-    records both halves of the flip."""
+    "synthesize-v3" (the no-pipeline-claims prompt bump) so audit
+    provenance records both halves of the flip."""
     finding = _make_high_finding(line=2)
     state = _make_state(finding, content_head="a = 1\nreturn x\nc = 3\n")
     provider = _DispatchingProvider(
@@ -295,4 +295,4 @@ async def test_summary_request_carries_configured_model_and_prompt_version() -> 
     [summary_req] = provider.requests
     assert summary_req.model == "stub-synthesize-model"
     assert summary_req.prompt_template_version == synthesize_prompt.VERSION
-    assert synthesize_prompt.VERSION == "synthesize-v2"
+    assert synthesize_prompt.VERSION == "synthesize-v3"
