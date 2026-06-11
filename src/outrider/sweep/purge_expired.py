@@ -1,10 +1,12 @@
 # See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
 """Retention sweep — purge content past its TTL.
 
-Per DECISIONS.md#012/#014: retention purge applies to the three content
-tables (reviews, findings, llm_call_content) only. audit_events is
-append-only forever (its trigger blocks DELETE entirely), and
-purge_audit is the forensic trail of the purges themselves.
+Per DECISIONS.md#012/#014: retention purge applies to the four content
+tables (reviews, findings, llm_call_content, and — per
+specs/2026-06-11-file-hash-analyze-cache.md — analyze_file_cache) only.
+audit_events is append-only forever (its trigger blocks DELETE
+entirely), and purge_audit is the forensic trail of the purges
+themselves.
 
 Two operations:
 
@@ -24,11 +26,12 @@ what makes multi-table purge atomic. If the caller doesn't hold a
 transaction, the lock is process-scoped and the multi-table failure
 mode is exposed.
 
-Strict deletion order is load-bearing: ``llm_call_content`` → ``findings``
-→ ``reviews``. Reversing the order risks the ``findings → reviews``
-CASCADE silently dropping findings without writing the per-table
-purge_audit row. ``test_retention_sweep`` asserts the per-table
-purge_audit count, which catches order-reversal bugs.
+Strict deletion order is load-bearing: ``analyze_file_cache`` →
+``llm_call_content`` → ``findings`` → ``reviews``. Reversing the order
+risks a child-of-reviews CASCADE (``findings`` or ``analyze_file_cache``)
+silently dropping rows without writing the per-table purge_audit row.
+``test_retention_sweep`` asserts the per-table purge_audit count, which
+catches order-reversal bugs.
 """
 
 import logging
@@ -47,9 +50,13 @@ logger = logging.getLogger(__name__)
 SWEEP_LOCK_ID: Final[int] = 0x4F55545244520001
 
 # Strict deletion order — child tables first so the
-# `findings.review_id → reviews.id` CASCADE doesn't silently drop
-# findings without a per-table purge_audit row.
+# `findings.review_id → reviews.id` and
+# `analyze_file_cache.source_review_id → reviews.id` CASCADEs don't
+# silently drop child rows without a per-table purge_audit row.
+# `analyze_file_cache` joined per specs/2026-06-11-file-hash-analyze-cache.md
+# (the cache payload is user-code-derived content under the #014 regime).
 _RETENTION_TABLES: Final[tuple[str, ...]] = (
+    "analyze_file_cache",
     "llm_call_content",
     "findings",
     "reviews",
@@ -122,7 +129,7 @@ async def purge_expired(
 
     Acquires the sweep advisory lock first. If another sweep already
     holds it, returns an empty dict without scanning. Otherwise deletes
-    in strict order across the three retention tables and writes one
+    in strict order across the four retention tables and writes one
     purge_audit row per target table that had at least one row purged.
 
     Returns dict of {target_table: rows_affected} for tables that had
@@ -196,7 +203,8 @@ async def purge_installation(
     composes cleanly.
 
     Deletes all content rows scoped to this installation in strict
-    order (llm_call_content → findings → reviews), writes per-table
+    order (analyze_file_cache → llm_call_content → findings →
+    reviews), writes per-table
     purge_audit rows, then deletes the installations row itself.
     installation_repositories cascades automatically via the FK action
     declared in migration 0001. purge_audit rows survive the
