@@ -28,9 +28,10 @@ Two foreign keys, mirroring `findings`:
 
 `cache_key` (the nine-field digest — prompt digest + eight explicit
 components — from `cache/key.py::compute_analyze_cache_key`) is the
-primary key — the
-write path's `ON CONFLICT (cache_key) DO NOTHING` arbiter for concurrent
-same-key reviews. The key-component columns are denormalized for
+primary key — the write path's conflict arbiter for concurrent same-key
+reviews (`ON CONFLICT DO UPDATE ... WHERE` the existing row is expired:
+live rows keep first-writer-wins; an expired-but-unswept row is
+refreshed in place). The key-component columns are denormalized for
 observability (stale-rate by version, Stage-B telemetry queries); the
 key itself remains the only lookup identity.
 """
