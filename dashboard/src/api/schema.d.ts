@@ -112,22 +112,10 @@ export interface paths {
         };
         /**
          * List Findings
-         * @description A review's findings, assembled from the permanent audit record.
-         *
-         *     404 if the review doesn't exist. Surviving `findings`-table rows render as
-         *     full findings; a `FindingEvent` whose `findings` row was purged under
-         *     retention renders as a `content_redacted=True` stub from `FindingEvent`
-         *     metadata (DECISIONS.md#014 point 3 — the audit trail outlives the content).
-         *     Each finding's publish lifecycle is joined from the audit stream:
-         *     `publish_destination` (`PublishRoutingEvent`) and `eligibility` /
-         *     `eligibility_reason` (`PublishEligibilityEvent`) — separate per
-         *     DECISIONS.md#023, so a routed finding can still show `withheld`. None of
-         *     these are read from the (V1-null) `findings.publish_destination` column.
-         *     HITL override-provenance (`hitl_decision`) is joined the same way from the
-         *     review's single `HITLDecisionEvent` (DECISIONS.md#034) — never the
-         *     (V1-null) `findings` override columns. Both lifecycle and override
-         *     provenance survive content redaction (stream-sourced), so a
-         *     `content_redacted` stub still carries them.
+         * @description A review's findings, assembled from the permanent audit record. 404 if the
+         *     review doesn't exist. The assembly — surviving content rows vs retention-
+         *     redacted stubs, publish lifecycle + HITL provenance from the audit stream, all
+         *     `is_eval`-scoped — lives in `_assemble_finding_views` (DECISIONS.md#014/#023/#034).
          */
         get: operations["list_findings_api_reviews__review_id__findings_get"];
         put?: never;
@@ -310,6 +298,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reviews/{review_id}/agent-view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent View
+         * @description Structured, read-only review for an AI agent. 404 if the review is absent
+         *     (holding the id suffices, like `get_review`). Reuses `_assemble_finding_views`
+         *     then maps each finding to the agent shape. Every audit read is `is_eval`-scoped.
+         */
+        get: operations["get_agent_view_api_reviews__review_id__agent_view_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -345,6 +355,114 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AgentFindingView
+         * @description One finding in the agent shape. `severity` is the EFFECTIVE severity an agent
+         *     should act on — the post-HITL-override value (matching the S1 `outrider:severity`
+         *     marker); a `severity_override` decision swaps the policy value for the reviewer's,
+         *     and `reviewer_decision.original_severity` keeps the pre-override (policy) value.
+         *     `severity` / `evidence_tier` are policy/human-decided, never model output.
+         *     `title` / `description` are model-generated content (`None` on a retention-redacted
+         *     stub). `github_comment_url` AND the feature-2 `suggested_fix` are omitted in V1: the
+         *     patch (DECISIONS.md#040) is rendered as a GitHub ```suggestion at publish but is not
+         *     persisted to the finding row, so it is not readable here — gated projection is a
+         *     deferred follow-up.
+         */
+        AgentFindingView: {
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Finding Type */
+            finding_type: string;
+            /** Severity */
+            severity: string;
+            /** File Path */
+            file_path: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            /** Evidence Tier */
+            evidence_tier: string;
+            /** Title */
+            title: string | null;
+            /** Description */
+            description: string | null;
+            /** Hitl Gated */
+            hitl_gated: boolean;
+            reviewer_decision: components["schemas"]["AgentReviewerDecision"] | null;
+        };
+        /**
+         * AgentPublishEvent
+         * @description The review's GitHub publish outcome. `None` when publish never ran
+         *     (zero-eligible / no-op).
+         */
+        AgentPublishEvent: {
+            /** Github Review Id */
+            github_review_id: number;
+            /**
+             * Review Status
+             * @enum {string}
+             */
+            review_status: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /** Comments Posted */
+            comments_posted: number;
+        };
+        /**
+         * AgentReviewView
+         * @description The structured agent-view of a review (ROADMAP §3 / S2). `schema_version` is
+         *     the versioned contract handle so agents can branch on future shape changes.
+         */
+        AgentReviewView: {
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: "1";
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /** Pr Url */
+            pr_url: string | null;
+            /** Status */
+            status: string;
+            /** Policy Version */
+            policy_version: string | null;
+            /** Findings */
+            findings: components["schemas"]["AgentFindingView"][];
+            publish_event: components["schemas"]["AgentPublishEvent"] | null;
+        };
+        /**
+         * AgentReviewerDecision
+         * @description One finding's HITL decision, for an agent. Projected from the canonical
+         *     HITLDecisionEvent (DECISIONS.md#034); `reviewer_id` is `"admin"` in V1
+         *     (DECISIONS.md#011). Present only when the finding was decided (gated + reached).
+         *     `original_severity` / `override_severity` are non-null ONLY when
+         *     `outcome == "severity_override"` (the policy value vs the reviewer's value); the
+         *     finding's `severity` already reflects the override, these carry the provenance.
+         */
+        AgentReviewerDecision: {
+            /** Outcome */
+            outcome: string;
+            /** Reviewer Id */
+            reviewer_id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Original Severity */
+            original_severity: string | null;
+            /** Override Severity */
+            override_severity: string | null;
+        };
         /**
          * AgentTransitionEvent
          * @description Node-to-node transition in the LangGraph state machine.
@@ -483,6 +601,8 @@ export interface components {
             policy_version: string;
             /** Analyze Model */
             analyze_model: string;
+            /** Standard Analyze Model */
+            standard_analyze_model?: string | null;
         };
         /**
          * AnalyzeResponseRejectedEvent
@@ -1572,7 +1692,7 @@ export interface components {
             start: components["schemas"]["ReviewPhaseEvent"] | null;
             end: components["schemas"]["ReviewPhaseEvent"] | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
         };
         /**
          * ReplayBucket
@@ -1664,11 +1784,11 @@ export interface components {
             /** Status */
             status: string | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Phases */
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
-            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Findings */
             findings: components["schemas"]["TimelineFindingContentView"][];
             /** Llm Exchanges */
@@ -1829,7 +1949,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Total */
             total: number;
         };
@@ -1966,6 +2086,98 @@ export interface components {
          */
         RiskLevel: "low" | "medium" | "high" | "critical";
         /**
+         * ScopeExclusionEntry
+         * @description Nested payload of `ScopeExclusionEvent.entries` — one classified
+         *     scope. Declares its own frozen + extra=forbid because the outer
+         *     event's frozen-ness does not propagate to nested models
+         *     (`ContextManifestEntry` precedent).
+         *
+         *     Side-qualified evidence mirrors the both-sides classifier contract
+         *     (specs/2026-06-10-trivial-scope-filter.md): `head_added_lines`
+         *     verified against the head parse, `base_removed_lines` against the
+         *     base parse — the clipped-hunk kept-removed set, exactly what the
+         *     prompt would show. Replay reconstructs each classification from
+         *     these plus the event-level `filter_version`.
+         */
+        ScopeExclusionEntry: {
+            /** Scope Qualified Name */
+            scope_qualified_name: string;
+            /** Trivial */
+            trivial: boolean;
+            reason: components["schemas"]["TrivialityReason"];
+            /** Head Added Lines */
+            head_added_lines: number[];
+            /** Base Removed Lines */
+            base_removed_lines: number[];
+            /** Offending Side */
+            offending_side?: ("head" | "base") | null;
+            /** Offending Line */
+            offending_line?: number | null;
+        };
+        /**
+         * ScopeExclusionEvent
+         * @description Per-file trivial-scope classification record — one event per
+         *     examined pass-0 file the filter classified (≥1 admitted scope).
+         *
+         *     `applied=False` is shadow mode: the classifier ran and these are
+         *     would-exclude verdicts, but NOTHING was removed from the prompt —
+         *     the production telemetry the eval-backed default flip requires.
+         *     `applied=True` records enforcing mode (trivial scopes excluded from
+         *     the prompt; all-trivial files skipped with
+         *     `SkipReason.ALL_SCOPES_TRIVIAL`). This event is deliberately
+         *     SEPARATE from `LLMCallEvent.context_summary`, which stays exactly
+         *     "what the LLM actually saw" (spec §8.3) — and the all-trivial skip
+         *     has no LLM call to carry a manifest at all.
+         *
+         *     Carries `node_id` so replay's node-containment machinery binds it to
+         *     analyze's phase window without an owner-map exemption. Idempotency
+         *     mode: event_id-PK per `DECISIONS.md#026` — retry/resume re-emission
+         *     appends a fresh row; consumer-side dedup collapses.
+         */
+        ScopeExclusionEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "scope_exclusion";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** File Path */
+            file_path: string;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** Applied */
+            applied: boolean;
+            /** Filter Version */
+            filter_version: string;
+            /** Entries */
+            entries: components["schemas"]["ScopeExclusionEntry"][];
+        };
+        /**
          * SkipReason
          * @description Skip-reason taxonomy across parser AND analyze-node decisions.
          *
@@ -1989,7 +2201,7 @@ export interface components {
          *     Imported by `outrider/audit/events.py` per `DECISIONS.md#018`.
          * @enum {string}
          */
-        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE";
+        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL";
         /**
          * SynthesizeCompletedEvent
          * @description Per-review aggregate emitted at the end of the synthesize node.
@@ -2243,6 +2455,19 @@ export interface components {
             /** Trace Path */
             trace_path?: string[] | null;
         };
+        /**
+         * TrivialityReason
+         * @description Why the trivial-scope classifier ruled the way it did, per scope.
+         *
+         *     Produced by `ast_facts.triviality.classify_scope_triviality`; carried
+         *     on `ScopeExclusionEvent` entries (audit side imports this from the
+         *     light-types surface — the classifier module itself loads tree-sitter
+         *     and stays behind the lazy `__getattr__`). `ALL_LINES_ORDINARY_COMMENT`
+         *     is the only trivial=True reason; every other value is a fail-closed
+         *     veto. See specs/2026-06-10-trivial-scope-filter.md.
+         * @enum {string}
+         */
+        TrivialityReason: "all_lines_ordinary_comment" | "non_comment_content" | "blank_or_whitespace_line" | "directive_comment" | "parse_error" | "missing_base_content" | "no_changed_lines";
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2617,6 +2842,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReplayMetricsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_view_api_reviews__review_id__agent_view_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentReviewView"];
                 };
             };
             /** @description Validation Error */
