@@ -549,6 +549,15 @@ def build_lifespan(
 
             anomaly_persister = AnomalyPersister(session_factory=session_factory)
 
+            # Analyze-cache store (lever #8, Stage B shadow). Store-or-None
+            # IS the enable switch per the spec — production wires the
+            # store so shadow telemetry (CacheLookupEvent + cache writes)
+            # accrues; the eval driver pins None (eval bypass), and the
+            # store additionally disables itself on an is_eval scope.
+            from outrider.cache import AnalyzeCacheStore  # noqa: PLC0415
+
+            analyze_cache_store = AnalyzeCacheStore(session_factory=session_factory)
+
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -568,6 +577,7 @@ def build_lifespan(
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,
                 github_factory=github_factory,
+                analyze_cache_store=analyze_cache_store,
             )
 
             # Step 9: `run_graph` closure for the V1 dispatcher to call
