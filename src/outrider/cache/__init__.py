@@ -2,10 +2,12 @@
 """Analyze-result cache (cost lever #8).
 
 V1 surface: `compute_analyze_cache_key` (the key recipe — canonical
-prompt digest plus eight explicit scope/version components) plus the
-DB-backed store — `AnalyzeCacheStore` with its `CacheScope` /
-`CacheEntry` shapes and the `CACHE_TTL_DAYS` bound. The lookup audit
-event and the analyze wiring land with the same spec's later chunks.
+prompt digest plus eight explicit scope/version components), the
+DB-backed `AnalyzeCacheStore` with its `CacheScope` / `CacheEntry`
+shapes, the contained `CacheStoreError`, and the `CACHE_TTL_DAYS`
+bound. The analyze node consumes the store in shadow mode (lookup +
+`CacheLookupEvent` telemetry + write-on-miss; the model is always
+called); the serve flip is a later arc.
 """
 
 from outrider.cache.key import compute_analyze_cache_key
@@ -14,6 +16,7 @@ from outrider.cache.store import (
     AnalyzeCacheStore,
     CacheEntry,
     CacheScope,
+    CacheStoreError,
 )
 
 __all__ = [
@@ -21,5 +24,6 @@ __all__ = [
     "AnalyzeCacheStore",
     "CacheEntry",
     "CacheScope",
+    "CacheStoreError",
     "compute_analyze_cache_key",
 ]

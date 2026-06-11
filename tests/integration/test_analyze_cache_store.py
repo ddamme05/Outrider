@@ -1,7 +1,9 @@
 # Per specs/2026-06-11-file-hash-analyze-cache.md — store + retention contracts.
 """AnalyzeCacheStore against real Postgres: write/lookup round-trip,
-ON CONFLICT idempotency, the three no-resurrection layers (lookup-time
-expiry, review-purge CASCADE, retention bound at write), and the
+conflict semantics (live row wins; an EXPIRED row is refreshed in
+place), the three no-resurrection layers (lookup-time expiry on the DB
+clock, review-purge CASCADE, retention bound at write), the self-hit
+exclusion (a review never reads its own writes as hits), and the
 reviews-row scope resolution the key's tenant components come from.
 """
 
@@ -135,6 +137,66 @@ async def test_expired_row_is_a_miss(migrated_db: str) -> None:
             )
             assert exists.scalar_one() == 1  # physically present
         assert await store.lookup(key) is None  # but never served
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lookup_excludes_own_review_writes(migrated_db: str) -> None:
+    """Self-hit exclusion: a lookup that names its own review as the
+    excluded source gets a MISS on rows that review wrote — a
+    crash-resume re-run must not count its own first attempt as a hit —
+    while OTHER reviews still see the row as live."""
+    engine = create_async_engine(migrated_db)
+    try:
+        review_id = await _seed_review(engine)
+        store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
+        scope = await store.resolve_scope(review_id)
+        assert scope is not None
+        key = "1" * 64
+        await store.write(**_write_kwargs(key, scope, review_id))
+
+        assert await store.lookup(key, exclude_source_review_id=review_id) is None
+        other = await store.lookup(key, exclude_source_review_id=uuid4())
+        assert other is not None and other.source_review_id == review_id
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_expired_row_is_refreshed_by_a_new_write(migrated_db: str) -> None:
+    """Conflict semantics, expired arm: an expired-but-unswept row does
+    NOT block re-population — a new same-key write refreshes it in
+    place (payload, source review, retention), where a plain DO NOTHING
+    would brick the key until the sweep's next tick."""
+    engine = create_async_engine(migrated_db)
+    try:
+        review_id = await _seed_review(engine)
+        store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
+        scope = await store.resolve_scope(review_id)
+        assert scope is not None
+        key = "2" * 64
+        await store.write(**_write_kwargs(key, scope, review_id))
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE analyze_file_cache "
+                    "SET retention_expires_at = NOW() - INTERVAL '1 second' "
+                    "WHERE cache_key = :key"
+                ),
+                {"key": key},
+            )
+        assert await store.lookup(key) is None  # expired = MISS
+
+        fresh_review_id = await _seed_review(engine)
+        fresh = _write_kwargs(key, scope, fresh_review_id)
+        fresh["payload"] = {"findings": [{"title": "REFRESHED"}], "trace_candidates": []}
+        await store.write(**fresh)
+
+        entry = await store.lookup(key)
+        assert entry is not None  # the key is live again
+        assert entry.payload["findings"][0]["title"] == "REFRESHED"
+        assert entry.source_review_id == fresh_review_id
     finally:
         await engine.dispose()
 
