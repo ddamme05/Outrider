@@ -298,7 +298,7 @@
           "dashboard"
         ],
         "summary": "List Findings",
-        "description": "A review's findings, assembled from the permanent audit record.\n\n404 if the review doesn't exist. Surviving `findings`-table rows render as\nfull findings; a `FindingEvent` whose `findings` row was purged under\nretention renders as a `content_redacted=True` stub from `FindingEvent`\nmetadata (DECISIONS.md#014 point 3 \u2014 the audit trail outlives the content).\nEach finding's publish lifecycle is joined from the audit stream:\n`publish_destination` (`PublishRoutingEvent`) and `eligibility` /\n`eligibility_reason` (`PublishEligibilityEvent`) \u2014 separate per\nDECISIONS.md#023, so a routed finding can still show `withheld`. None of\nthese are read from the (V1-null) `findings.publish_destination` column.\nHITL override-provenance (`hitl_decision`) is joined the same way from the\nreview's single `HITLDecisionEvent` (DECISIONS.md#034) \u2014 never the\n(V1-null) `findings` override columns. Both lifecycle and override\nprovenance survive content redaction (stream-sourced), so a\n`content_redacted` stub still carries them.",
+        "description": "A review's findings, assembled from the permanent audit record. 404 if the\nreview doesn't exist. The assembly \u2014 surviving content rows vs retention-\nredacted stubs, publish lifecycle + HITL provenance from the audit stream, all\n`is_eval`-scoped \u2014 lives in `_assemble_finding_views` (DECISIONS.md#014/#023/#034).",
         "operationId": "list_findings_api_reviews__review_id__findings_get",
         "parameters": [
           {
@@ -629,6 +629,50 @@
         }
       }
     },
+    "/api/reviews/{review_id}/agent-view": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Get Agent View",
+        "description": "Structured, read-only review for an AI agent. 404 if the review is absent\n(holding the id suffices, like `get_review`). Reuses `_assemble_finding_views`\nthen maps each finding to the agent shape. Every audit read is `is_eval`-scoped.",
+        "operationId": "get_agent_view_api_reviews__review_id__agent_view_get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentReviewView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -655,6 +699,247 @@
   },
   "components": {
     "schemas": {
+      "AgentFindingView": {
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Finding Id"
+          },
+          "finding_type": {
+            "type": "string",
+            "title": "Finding Type"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "line_start": {
+            "type": "integer",
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "title": "Line End"
+          },
+          "evidence_tier": {
+            "type": "string",
+            "title": "Evidence Tier"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "hitl_gated": {
+            "type": "boolean",
+            "title": "Hitl Gated"
+          },
+          "reviewer_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentReviewerDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finding_id",
+          "finding_type",
+          "severity",
+          "file_path",
+          "line_start",
+          "line_end",
+          "evidence_tier",
+          "title",
+          "description",
+          "hitl_gated",
+          "reviewer_decision"
+        ],
+        "title": "AgentFindingView",
+        "description": "One finding in the agent shape. `severity` is the EFFECTIVE severity an agent\nshould act on \u2014 the post-HITL-override value (matching the S1 `outrider:severity`\nmarker); a `severity_override` decision swaps the policy value for the reviewer's,\nand `reviewer_decision.original_severity` keeps the pre-override (policy) value.\n`severity` / `evidence_tier` are policy/human-decided, never model output.\n`title` / `description` are model-generated content (`None` on a retention-redacted\nstub). `github_comment_url` AND the feature-2 `suggested_fix` are omitted in V1: the\npatch (DECISIONS.md#040) is rendered as a GitHub ```suggestion at publish but is not\npersisted to the finding row, so it is not readable here \u2014 gated projection is a\ndeferred follow-up."
+      },
+      "AgentPublishEvent": {
+        "properties": {
+          "github_review_id": {
+            "type": "integer",
+            "title": "Github Review Id"
+          },
+          "review_status": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REQUEST_CHANGES",
+              "COMMENT"
+            ],
+            "title": "Review Status"
+          },
+          "comments_posted": {
+            "type": "integer",
+            "title": "Comments Posted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "github_review_id",
+          "review_status",
+          "comments_posted"
+        ],
+        "title": "AgentPublishEvent",
+        "description": "The review's GitHub publish outcome. `None` when publish never ran\n(zero-eligible / no-op)."
+      },
+      "AgentReviewView": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1",
+            "title": "Schema Version",
+            "default": "1"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/AgentFindingView"
+            },
+            "type": "array",
+            "title": "Findings"
+          },
+          "publish_event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentPublishEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "pr_url",
+          "status",
+          "policy_version",
+          "findings",
+          "publish_event"
+        ],
+        "title": "AgentReviewView",
+        "description": "The structured agent-view of a review (ROADMAP \u00a73 / S2). `schema_version` is\nthe versioned contract handle so agents can branch on future shape changes."
+      },
+      "AgentReviewerDecision": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "reviewer_id": {
+            "type": "string",
+            "title": "Reviewer Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Decided At"
+          },
+          "original_severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Severity"
+          },
+          "override_severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Severity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "reviewer_id",
+          "reason",
+          "decided_at",
+          "original_severity",
+          "override_severity"
+        ],
+        "title": "AgentReviewerDecision",
+        "description": "One finding's HITL decision, for an agent. Projected from the canonical\nHITLDecisionEvent (DECISIONS.md#034); `reviewer_id` is `\"admin\"` in V1\n(DECISIONS.md#011). Present only when the finding was decided (gated + reached).\n`original_severity` / `override_severity` are non-null ONLY when\n`outcome == \"severity_override\"` (the policy value vs the reviewer's value); the\nfinding's `severity` already reflects the override, these carry the provenance."
+      },
       "AgentTransitionEvent": {
         "properties": {
           "event_id": {
@@ -856,6 +1141,7 @@
           },
           "total_cost_usd": {
             "type": "number",
+            "maximum": 100.0,
             "minimum": 0.0,
             "title": "Total Cost Usd"
           },
@@ -872,6 +1158,17 @@
           "analyze_model": {
             "type": "string",
             "title": "Analyze Model"
+          },
+          "standard_analyze_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standard Analyze Model"
           }
         },
         "additionalProperties": false,
@@ -2843,6 +3140,9 @@
                   "$ref": "#/components/schemas/FileExaminationEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ScopeExclusionEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -2900,6 +3200,7 @@
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -3091,6 +3392,9 @@
                   "$ref": "#/components/schemas/FileExaminationEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ScopeExclusionEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3148,6 +3452,7 @@
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -3186,6 +3491,9 @@
                   "$ref": "#/components/schemas/FileExaminationEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ScopeExclusionEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3243,6 +3551,7 @@
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -3636,6 +3945,9 @@
                   "$ref": "#/components/schemas/FileExaminationEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ScopeExclusionEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3693,6 +4005,7 @@
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
+                  "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -3986,6 +4299,158 @@
         "title": "RiskLevel",
         "description": "PR-level risk classification produced by the triage node, per spec \u00a77.2.\n\nSame ladder shape as FindingSeverity minus INFO (no operational meaning\nat PR-level). Distinct from FindingSeverity in scope: RiskLevel measures\nthe PR as a whole; FindingSeverity measures one finding within it.\n\nAdded 2026-05-08 to close the canonical-shape gap. See spec.md \u00a77.2\namendment + specs/2026-05-08-schema-foundation.md for rationale."
       },
+      "ScopeExclusionEntry": {
+        "properties": {
+          "scope_qualified_name": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Scope Qualified Name"
+          },
+          "trivial": {
+            "type": "boolean",
+            "title": "Trivial"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/TrivialityReason"
+          },
+          "head_added_lines": {
+            "items": {
+              "type": "integer",
+              "minimum": 1.0
+            },
+            "type": "array",
+            "title": "Head Added Lines"
+          },
+          "base_removed_lines": {
+            "items": {
+              "type": "integer",
+              "minimum": 1.0
+            },
+            "type": "array",
+            "title": "Base Removed Lines"
+          },
+          "offending_side": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "head",
+                  "base"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offending Side"
+          },
+          "offending_line": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offending Line"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scope_qualified_name",
+          "trivial",
+          "reason",
+          "head_added_lines",
+          "base_removed_lines"
+        ],
+        "title": "ScopeExclusionEntry",
+        "description": "Nested payload of `ScopeExclusionEvent.entries` \u2014 one classified\nscope. Declares its own frozen + extra=forbid because the outer\nevent's frozen-ness does not propagate to nested models\n(`ContextManifestEntry` precedent).\n\nSide-qualified evidence mirrors the both-sides classifier contract\n(specs/2026-06-10-trivial-scope-filter.md): `head_added_lines`\nverified against the head parse, `base_removed_lines` against the\nbase parse \u2014 the clipped-hunk kept-removed set, exactly what the\nprompt would show. Replay reconstructs each classification from\nthese plus the event-level `filter_version`."
+      },
+      "ScopeExclusionEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "scope_exclusion",
+            "title": "Event Type",
+            "default": "scope_exclusion"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "filter_version": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Filter Version"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ScopeExclusionEntry"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Entries"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "applied",
+          "filter_version",
+          "entries"
+        ],
+        "title": "ScopeExclusionEvent",
+        "description": "Per-file trivial-scope classification record \u2014 one event per\nexamined pass-0 file the filter classified (\u22651 admitted scope).\n\n`applied=False` is shadow mode: the classifier ran and these are\nwould-exclude verdicts, but NOTHING was removed from the prompt \u2014\nthe production telemetry the eval-backed default flip requires.\n`applied=True` records enforcing mode (trivial scopes excluded from\nthe prompt; all-trivial files skipped with\n`SkipReason.ALL_SCOPES_TRIVIAL`). This event is deliberately\nSEPARATE from `LLMCallEvent.context_summary`, which stays exactly\n\"what the LLM actually saw\" (spec \u00a78.3) \u2014 and the all-trivial skip\nhas no LLM call to carry a manifest at all.\n\nCarries `node_id` so replay's node-containment machinery binds it to\nanalyze's phase window without an owner-map exemption. Idempotency\nmode: event_id-PK per `DECISIONS.md#026` \u2014 retry/resume re-emission\nappends a fresh row; consumer-side dedup collapses."
+      },
       "SkipReason": {
         "type": "string",
         "enum": [
@@ -3998,7 +4463,8 @@
           "COST_BUDGET_EXHAUSTED",
           "NO_REVIEWABLE_CONTEXT",
           "NO_CHANGED_SCOPE_UNITS",
-          "UNSUPPORTED_LANGUAGE"
+          "UNSUPPORTED_LANGUAGE",
+          "ALL_SCOPES_TRIVIAL"
         ],
         "title": "SkipReason",
         "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze\n  adapter only handles Python; the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
@@ -4425,6 +4891,20 @@
         ],
         "title": "TraceDecisionEvent",
         "description": "One aggregate trace decision per source_finding_id (per DECISIONS.md#017,\namended by DECISIONS.md#024 \u2014 Accepted 2026-05-24).\n\nCross-field validator rules per #017 \u00d7 #024:\n(a) resolved \u2192 len(resolved_candidate_paths) == 1 AND\n    target_file == resolved_candidate_paths[0]\n(b) unresolved \u2192 len(resolved_candidate_paths) == 0 AND target_file is None\n(c) ambiguous \u2192 len(resolved_candidate_paths) > 1 AND target_file is None\n\nTwo parallel tuples:\n- `proposed_import_strings`: the LLM-proposed dotted Python import strings\n  (any cardinality). Per DECISIONS.md#024 trace candidates are import\n  strings, not file paths.\n- `resolved_candidate_paths`: the resolution outputs \u2014 file paths\n  the import strings resolved to (any cardinality, including zero /\n  one / multiple). V1 source per M8: GitHub fetch-probes (paths\n  whose `fetch_file_content_at` returned content). V1.5+ source:\n  filesystem-aware `coordinates.resolve_candidate_paths` (per\n  `DECISIONS.md#024` point 4 Amended 2026-05-24). Each element is\n  post-`validate_diff_path` per the audit-shadow rule (defense in\n  depth at the append-only log against a hypothetical future\n  direct emitter bypassing the resolution mechanism).\n\n`resolution_status` describes how many resolved (zero / exactly one /\nmultiple). `target_file`, when non-None, ALSO passes through\n`validate_diff_path` at the audit-event boundary. All tuples\nrequired (no default) per #017 \u2014 defaults would silently absorb\nemitter bugs and undermine \u00a78.7 replay equivalence; callers pass\n`()` explicitly for the zero-candidate case."
+      },
+      "TrivialityReason": {
+        "type": "string",
+        "enum": [
+          "all_lines_ordinary_comment",
+          "non_comment_content",
+          "blank_or_whitespace_line",
+          "directive_comment",
+          "parse_error",
+          "missing_base_content",
+          "no_changed_lines"
+        ],
+        "title": "TrivialityReason",
+        "description": "Why the trivial-scope classifier ruled the way it did, per scope.\n\nProduced by `ast_facts.triviality.classify_scope_triviality`; carried\non `ScopeExclusionEvent` entries (audit side imports this from the\nlight-types surface \u2014 the classifier module itself loads tree-sitter\nand stays behind the lazy `__getattr__`). `ALL_LINES_ORDINARY_COMMENT`\nis the only trivial=True reason; every other value is a fail-closed\nveto. See specs/2026-06-10-trivial-scope-filter.md."
       },
       "ValidationError": {
         "properties": {
