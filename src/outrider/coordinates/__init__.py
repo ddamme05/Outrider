@@ -74,9 +74,11 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
   raises past EOF.
 - `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to
   hunks inside a ScopeUnit (§4).
-- `scope_unit_has_added_lines(...)` / `patched_file_has_added_lines(...)`
-  — addable-line predicates that own `unidiff.Line` attribute reads
-  (§4 + analyze-node post-fold).
+- `scope_unit_has_added_lines(...)` / `patched_file_has_added_lines(...)` /
+  `patched_file_has_removed_lines(...)` — changed-line predicates that own
+  `unidiff.Line` attribute reads (§4 + analyze-node post-fold; the removed-line
+  sibling is the trivial-scope filter's fail-closed missing-base pre-check,
+  DECISIONS.md#044 arc).
 - `extract_scope_unit_body(...)` — UTF-8 byte slice of a ScopeUnit's
   byte range, returned as decoded `str`; owns the slice + decode +
   `errors="replace"` policy (analyze-node post-fold).
@@ -87,6 +89,10 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
 V1 boundary types + constants:
 
 - `GitHubCommentLocation` — Pydantic model per docs/spec.md §7.2.
+- `ChangedLineSpan` / `ScopeChangedLineSpans` — coordinates-owned domain
+  shape returned by `changed_line_spans` (per-side 1-indexed line numbers +
+  whole-line byte `Span`s); raw `unidiff.Line` objects never cross the
+  module boundary (DECISIONS.md#044).
 - `CoordinateError` — single failure-mode exception (§5.6).
 - `COORDINATES_IMPORT_PATH_RESOLVER` — module-level singleton
   `ImportPathResolver` implementation; wired into `build_graph` so

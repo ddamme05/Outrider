@@ -487,7 +487,7 @@ def test_build_graph_rejects_file_examination_sink_missing_member() -> None:
 
 def test_build_graph_rejects_analyze_event_sink_missing_member() -> None:
     """`isinstance(sink, AnalyzeEventSink)` fails on objects lacking any of
-    the four `emit_*` methods. PEP 544 member-presence semantics."""
+    the five `emit_*` methods. PEP 544 member-presence semantics."""
     args = _valid_args()
     args["analyze_event_sink"] = object()
     with pytest.raises(
