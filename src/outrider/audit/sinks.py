@@ -15,9 +15,10 @@ provider boundary, not by the audit-events surface): `PhaseEventSink`
 for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
-`AnalyzeEventSink` bundling the four analyze-emitted event types
+`AnalyzeEventSink` bundling the five analyze-emitted event types
 (`FindingEvent`, `FindingProposalRejectedEvent`,
-`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`),
+`AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`,
+`ScopeExclusionEvent`),
 `PublishEventSink` bundling the four publish-emitted event types
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
 `PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
@@ -60,6 +61,7 @@ from outrider.audit.events import (
     PublishEvent,
     PublishRoutingEvent,
     ReviewPhaseEvent,
+    ScopeExclusionEvent,
     SynthesizeCompletedEvent,
     TraceDecisionEvent,
 )
@@ -170,22 +172,26 @@ class FileExaminationSink(Protocol):
 
 @runtime_checkable
 class AnalyzeEventSink(Protocol):
-    """Sink for the four audit event types the analyze node emits.
+    """Sink for the five audit event types the analyze node emits.
 
-    The analyze-node spec (`specs/2026-05-19-analyze-node.md` §7) bundles
-    four event types under one Protocol rather than four separate sinks
-    because:
+    The analyze-node spec (`specs/2026-05-19-analyze-node.md` §7) bundled
+    the original four event types under one Protocol rather than separate
+    sinks (the trivial-scope-filter spec added the fifth,
+    `ScopeExclusionEvent`) because:
 
-    - All four are emitted by ONE node body in one transaction window;
+    - All five are emitted by ONE node body in one transaction window;
       the durable `AuditPersister` implements them under one session
       lifecycle.
     - The node body's local-bookkeeping counter discipline (per
       `_enforce_proposal_accounting` on `AnalyzeCompletedEvent`) treats
-      these four events as cardinal-related: one
+      the original four as cardinal-related: one
       `AnalyzeCompletedEvent` per pass, N `FindingEvent`s + M
       `FindingProposalRejectedEvent`s + at-most-one
       `AnalyzeResponseRejectedEvent` per per-file LLM call.
-    - Four separate kwargs on the analyze function signature would
+      `ScopeExclusionEvent` sits outside that accounting relation:
+      at-most-one per examined pass-0 file, emitted whether or not an
+      LLM call follows (the all-trivial skip has no call at all).
+    - Separate kwargs on the analyze function signature would
       crowd the deps surface and invite test-time mock proliferation;
       one sink keeps the test setup focused.
 
@@ -246,6 +252,14 @@ class AnalyzeEventSink(Protocol):
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
         """Persist the per-pass aggregate event."""
+        ...
+
+    async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
+        """Persist the per-file trivial-scope classification record.
+
+        `event_id`-PK idempotent per `DECISIONS.md#026` — resume
+        re-emission appends a fresh row; consumer-side dedup collapses.
+        """
         ...
 
 

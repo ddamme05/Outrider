@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         PublishEvent,
         PublishRoutingEvent,
         ReviewPhaseEvent,
+        ScopeExclusionEvent,
         TraceDecisionEvent,
     )
     from outrider.github import InstallationGitHubClient
@@ -100,6 +101,9 @@ class _StubAnalyzeEventSink:
         return None
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
+        return None
+
+    async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
         return None
 
 

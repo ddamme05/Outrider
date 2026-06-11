@@ -71,6 +71,9 @@ class _NullSink:
     async def emit_analyze_completed(self, event: Any) -> None:  # noqa: ARG002
         return None
 
+    async def emit_scope_exclusion(self, event: Any) -> None:  # noqa: ARG002
+        return None
+
 
 class _NoOpImportPathResolver:
     """Resolves nothing (returns `[]`) — the comparison runs pass-0 analyze only, which

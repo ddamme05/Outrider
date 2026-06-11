@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         FindingEvent,
         FindingProposalRejectedEvent,
         ReviewPhaseEvent,
+        ScopeExclusionEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
     from outrider.schemas.review_finding import ReviewFinding
@@ -326,6 +327,7 @@ class _RecordingAnalyzeEventSink:
         self.proposal_rejections: list[FindingProposalRejectedEvent] = []
         self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
         self.completed: list[AnalyzeCompletedEvent] = []
+        self.scope_exclusions: list[ScopeExclusionEvent] = []
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
         self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
@@ -338,6 +340,9 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
         self.completed.append(event)
+
+    async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
+        self.scope_exclusions.append(event)
 
 
 class _StubImportPathResolver:

@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         FindingEvent,
         FindingProposalRejectedEvent,
         ReviewPhaseEvent,
+        ScopeExclusionEvent,
     )
     from outrider.schemas.review_finding import ReviewFinding
 
@@ -131,6 +132,7 @@ class _RecordingAnalyzeEventSink:
         self.proposal_rejections: list[FindingProposalRejectedEvent] = []
         self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
         self.completed: list[AnalyzeCompletedEvent] = []
+        self.scope_exclusions: list[ScopeExclusionEvent] = []
         self.events: list[Any] = []
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
@@ -148,6 +150,10 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
         self.completed.append(event)
+        self.events.append(event)
+
+    async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
+        self.scope_exclusions.append(event)
         self.events.append(event)
 
 
