@@ -98,6 +98,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
 from outrider.agent.nodes.analyze_parser import (
+    ANALYZE_PARSER_VERSION,
     ParserResult,
     ProposalRejection,
     ResponseRejection,
@@ -118,6 +119,7 @@ from outrider.ast_facts.triviality import (
 from outrider.audit.events import (
     AnalyzeCompletedEvent,
     AnalyzeResponseRejectedEvent,
+    CacheLookupEvent,
     ContextManifestEntry,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
@@ -125,6 +127,7 @@ from outrider.audit.events import (
     ScopeExclusionEntry,
     ScopeExclusionEvent,
 )
+from outrider.cache import compute_analyze_cache_key
 from outrider.coordinates import (
     added_line_byte_ranges,
     bound_diff_hunks_text,
@@ -133,13 +136,14 @@ from outrider.coordinates import (
     lookup_patched_file,
     patched_file_has_removed_lines,
 )
-from outrider.llm.base import LLMRequest
+from outrider.llm.base import LLMRequest, _canonical_prompt_hash
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 from outrider.policy.canonical import compute_phase_id, compute_round_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
 from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
+from outrider.queries.registry import QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound
 from outrider.schemas.triage_result import ReviewTier
 
@@ -155,6 +159,7 @@ if TYPE_CHECKING:
         FileExaminationSink,
         PhaseEventSink,
     )
+    from outrider.cache import AnalyzeCacheStore, CacheScope
     from outrider.llm.base import LLMProvider, LLMResponse
     from outrider.schemas import (
         ReviewFinding,
@@ -273,6 +278,7 @@ async def analyze(
     active_policy_version: str = ACTIVE_POLICY_VERSION,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     trivial_scope_filter_enabled: bool = False,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
 ) -> dict[str, object]:
     """Run one analyze pass over the triage-classified PR.
 
@@ -325,6 +331,19 @@ async def analyze(
     # a V1.5 parallel-analyze fan-out must re-anchor per worker, not hoist this).
     started_mono = time.monotonic()
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
+
+    # Analyze-cache scope, resolved ONCE per pass from the reviews row —
+    # the canonical (installation_id, repo_id) tenant identity the cache
+    # key requires (never PRContext's mutable owner/repo strings). None
+    # disables the cache for this pass: store not injected (the eval
+    # driver's default), review row missing (fail-open to UNCACHED,
+    # never to cross-scope), or an is_eval review reaching a wired store
+    # (belt-and-suspenders for the spec's eval-bypass rule).
+    cache_scope: CacheScope | None = None
+    if analyze_cache_store is not None:
+        cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
+        if cache_scope is not None and cache_scope.is_eval:
+            cache_scope = None
 
     # Step 1: start phase event. If this raises (audit infra outage),
     # the node fails before any work — no dangling start.
@@ -436,8 +455,11 @@ async def analyze(
                 remaining_budget_tokens=remaining_budget_tokens,
                 # Pass-0 PR-diff files ONLY — trace-fetched files (pass 1,
                 # `_process_one_trace_fetched_file`) have no changed-scope
-                # set, so the filter never evaluates there by design.
+                # set, so the filter never evaluates there by design. The
+                # analyze cache is pass-0-only for the same reason.
                 trivial_scope_filter_enabled=trivial_scope_filter_enabled,
+                analyze_cache_store=analyze_cache_store,
+                cache_scope=cache_scope,
             )
 
             if file_outcome.parser_result is not None:
@@ -932,6 +954,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     per_file_cap_tokens: int,
     remaining_budget_tokens: int,
     trivial_scope_filter_enabled: bool = False,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_scope: CacheScope | None = None,
 ) -> _FileOutcome:
     """Process one triage-kept file through parse → outcome → cost
     gate → trivial-scope classification → LLM call → parser → audit
@@ -1191,6 +1215,40 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 pass_index=pass_index,
             )
 
+    # Step 3d-ter: analyze-cache shadow lookup (pass-0 clean mode only;
+    # specs/2026-06-11-file-hash-analyze-cache.md). The key is computed
+    # over the FINAL rendered parts — post trivial-filter re-render under
+    # enforcement — so the keyed prompt is the prompt actually sent. The
+    # all-trivial skip returned above without keying: skip outcomes are
+    # NEVER memoized (no prompt bytes to pin them). Shadow semantics: a
+    # would_hit still calls the model; nothing is served. The would-hit
+    # rate accumulated here is the serve flip's evidence.
+    cache_key: str | None = None
+    cache_would_hit = False
+    if analyze_cache_store is not None and cache_scope is not None and not degraded_mode:
+        cache_key = compute_analyze_cache_key(
+            system_prompt=parts.system_prompt,
+            user_prompt=parts.user_prompt,
+            installation_id=cache_scope.installation_id,
+            repo_id=cache_scope.repo_id,
+            model=analyze_model,
+            prompt_template_version=analyze_prompt.VERSION,
+            trivial_filter_version=TRIVIAL_FILTER_VERSION,
+            query_registry_digest=QUERY_REGISTRY_DIGEST,
+            active_policy_version=active_policy_version,
+            analyze_parser_version=ANALYZE_PARSER_VERSION,
+        )
+        cache_would_hit = await analyze_cache_store.lookup(cache_key) is not None
+        await analyze_event_sink.emit_cache_lookup(
+            CacheLookupEvent(
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                outcome="would_hit" if cache_would_hit else "miss",
+                cache_key=cache_key,
+            )
+        )
+
     # Step 3e: SINGLE FileExaminationEvent emission point.
     await file_examination_sink.emit_file_examination(
         FileExaminationEvent(
@@ -1295,6 +1353,42 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # Persist one finding (audit row + content row) per admitted finding.
     for finding in parser_result.admitted_findings:
         await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
+
+    # Step 3g: analyze-cache write-on-miss. Only completed clean-mode
+    # calls populate the store — a response-level rejection has no
+    # admitted outcome to cache (zero findings, by contrast, IS a valid
+    # cacheable outcome). The payload carries the content tier: admitted
+    # finding content (pre-HITL, policy-stamped) + FULL trace candidates
+    # including their LLM-derived `reason` — content lives in the
+    # retention-bound cache row, never on the audit events.
+    if (
+        analyze_cache_store is not None
+        and cache_scope is not None
+        and cache_key is not None
+        and not cache_would_hit
+        and parser_result.response_rejection is None
+    ):
+        await analyze_cache_store.write(
+            cache_key=cache_key,
+            scope=cache_scope,
+            source_review_id=review_id,
+            file_path=changed_file.path,
+            payload={
+                "findings": [f.model_dump(mode="json") for f in parser_result.admitted_findings],
+                "trace_candidates": [
+                    c.model_dump(mode="json") for c in parser_result.trace_candidates
+                ],
+            },
+            model=analyze_model,
+            prompt_template_version=analyze_prompt.VERSION,
+            trivial_filter_version=TRIVIAL_FILTER_VERSION,
+            query_registry_digest=QUERY_REGISTRY_DIGEST,
+            active_policy_version=active_policy_version,
+            analyze_parser_version=ANALYZE_PARSER_VERSION,
+            prompt_hash=_canonical_prompt_hash(
+                system_prompt=parts.system_prompt, user_prompt=parts.user_prompt
+            ),
+        )
 
     return _FileOutcome(
         parse_status=parse_status_for_event,

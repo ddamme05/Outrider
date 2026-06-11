@@ -162,6 +162,7 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from outrider.cache import AnalyzeCacheStore
     from outrider.github import InstallationGitHubClient
     from outrider.llm.config import ModelConfig
 
@@ -206,6 +207,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     trivial_scope_filter_enabled: bool = False,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -414,6 +416,11 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # is a later evidence-backed change per the trivial-scope-filter
         # spec's #041-style lifecycle.
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
+        # None disables the analyze cache (the eval driver's default per
+        # the spec's eval-bypass rule); production wiring injects a real
+        # AnalyzeCacheStore. Store-or-None IS the enable switch —
+        # nodes-receive-deps-via-closure, no separate flag to drift.
+        analyze_cache_store=analyze_cache_store,
     )
     publish_callable = functools.partial(
         publish,
