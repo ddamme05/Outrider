@@ -458,7 +458,7 @@ def changed_line_spans(
     base_source: str | None,
 ) -> ScopeChangedLineSpans:
     """Per-side changed-line spans for `scope_unit` — the trivial-scope
-    filter's veto input.
+    filter's veto input. See DECISIONS.md#044.
 
     HEAD side: added lines whose `target_line_no` falls in the scope's
     line range (the same rule that admits the scope via

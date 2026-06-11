@@ -9,10 +9,10 @@
 # =============================================================================
 """Coordinates module — translation surface per docs/spec.md §5.6.
 
-V1 §5.6 public surface — three translation functions + three supporting
+V1 §5.6 public surface — four translation functions + three supporting
 surfaces, all inside `coordinates/` per `coordinates-module-is-sole-translator`:
 
-Three translation functions:
+Four translation functions:
 
 - `tree_sitter_to_github(...)` — byte-span → GitHub comment location (§5.6).
   Canonical analyze→publish path; consumers with byte spans use this directly.
@@ -22,6 +22,12 @@ Three translation functions:
   `line_end` to the byte-based canonical translator without inlining
   line→byte math at the publish-node call site (which would violate
   `coordinates-module-is-sole-translator`).
+- `changed_line_spans(...)` — diff coordinates → per-side changed-line
+  numbers + whole-line byte spans (`ScopeChangedLineSpans`), the
+  trivial-scope veto's input. Base side is the prompt's kept-removed
+  clipping frame via the private `_clip_hunk_lines` core, so the veto
+  sees exactly the removed lines the prompt's clipped hunks show.
+  See DECISIONS.md#044.
 
 Three supporting surfaces:
 

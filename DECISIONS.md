@@ -617,6 +617,10 @@ The `FileExaminationEvent.skip_reason` Literal accepts the two new values automa
 - `agent/nodes/analyze.py::_process_one_file` switches the non-`_is_python_file(path)` early-return from `SkipReason.OVERSIZED` to `SkipReason.UNSUPPORTED_LANGUAGE`. Inline comment + module docstring updated to drop the FUP-033 temporary-mapping language.
 - Tests at `tests/unit/test_intake_node.py` (the `_classify_or_reserve_decode` regression tests) and `tests/unit/test_analyze_node.py::test_non_python_file_routed_to_skip_without_calling_provider` assert the specific new values instead of the temporary `OVERSIZED`.
 
+**Amended 2026-06-11** — one new `SkipReason` value for the trivial-scope filter's whole-file skip.
+
+Adds `ALL_SCOPES_TRIVIAL` to `ast_facts/models.py::SkipReason` (analyze-stage axis; eleventh value): every admitted scope of a pass-0 PR-diff file classified ordinary-comment-only by the trivial-scope filter, so the file's LLM call is skipped when the filter enforces (`trivial_scope_filter_enabled=True`; the shadow-mode default classifies and audits but never produces this skip). "Skipped" continues to mean "not sent to the LLM, parse succeeded" — the `COST_BUDGET_EXHAUSTED` precedent. Precedence is pinned: the baseline cost gate runs first, so `COST_BUDGET_EXHAUSTED` wins over `ALL_SCOPES_TRIVIAL` and a budget-skipped file is never re-described as trivial-skipped. The iff contract (`skip_reason` non-None iff `parse_status == "skipped"`) rides unchanged. `SkipReason.stage()` maps `ALL_SCOPES_TRIVIAL → "analyze"` (`_ANALYZE_STAGE_SKIP_REASONS`; the import-time lockstep guard). Companion evidence: the per-scope classification record lives on `ScopeExclusionEvent` (the #044 arc), NOT on `FileExaminationEvent` — the skip reason names the outcome; the exclusion event carries the why. No migration (JSONB payload per the original point 5). Count pin updated 10 → 11 in `tests/unit/test_skip_reason_analyze_additions.py`.
+
 ---
 
 ## 019. `schemas/` is for owner-less cross-boundary models; owned protocol/event surfaces live with their owner
@@ -1349,3 +1353,17 @@ V1 ships the nullable shape. When FUP-093 lands (audit-query helper wired into `
 **Consequences.** All per-review LLM calls except DEEP-tier/trace-fetched analyze now run Haiku. The flip was taken as cleanup, not a cost lever — recorded so the cost narrative stays honest. A future prompt growing past its model's floor self-activates caching with no code change (`cache_control` stays on per #013 point 4). If the dashboard summary-quality watch surfaces drift, the rollback is one env var, not a code change.
 
 **Referenced from.** `src/outrider/llm/config.py` (the `synthesize_model` default), `docs/spec.md` §4.2 (model tiering), `docs/architecture.md` (synthesize node).
+
+---
+
+## 044. `changed_line_spans` is the fourth coordinate translation function; the trivial-scope veto shares the prompt's clipping frame
+
+**Status:** Accepted, 2026-06-11.
+
+**Context.** The trivial-scope filter (cost lever #6) classifies a changed scope trivial only if every changed line on BOTH sides is an ordinary standalone comment. The base side needs an attribution rule: which removed lines belong to a head-admitted scope? Two candidate frames existed — base-range containment (a removed line belongs iff its base line number falls inside the scope's base range) and the prompt's clipped-hunk frame (`_clip_hunk_to_line_range` keeps removed lines that ride along with adjacent kept target context). Security review confirmed base-range attribution over-skips at scope boundaries: a deleted `@require_auth` one line above a def rides into today's prompt (the model reviews it) while mapping outside the scope's base range — under range attribution it would veto nothing and the scope could classify trivial, silently removing review coverage that exists today.
+
+**Decision.** `coordinates/` gains a fourth **translation** function, `changed_line_spans(scope_unit, patched_file, head_source, base_source) -> ScopeChangedLineSpans` (diff coordinates → per-side source-line numbers + whole-line byte `Span`s). The veto's removed-line set is defined as EXACTLY the kept-removed set the prompt's clipped hunks show: both consumers share one private structured clipping core (`_clip_hunk_lines`, extracted from `_clip_hunk_to_line_range`) — one clipping decision, two consumers, so "the veto sees what the prompt sees" is structural rather than two implementations agreeing by inspection. Raw unidiff `Line` objects never leave `coordinates/`; the classifier receives the coordinates-owned domain shape.
+
+**Consequences.** §5.6's surface inventory becomes "four translation functions plus three supporting surfaces; all seven live inside `coordinates/`", and `docs/trust-boundaries.md` boundary #3's enumeration matches — this entry is the paired source for both edits per the `enforce-decisions` gate. Anything needing different removed-line attribution semantics extends the shared clipping core rather than re-deriving it (FUP-050's deletion-aware admission, if built, formalizes the same ride-along frame into an inclusion rule). The filter version (`TRIVIAL_FILTER_VERSION`, code-pinned adjacent to the matcher in `ast_facts/triviality.py`) is a planned lever-#8 cache-key component per FUP-166.
+
+**Referenced from.** `docs/spec.md` §5.6, `docs/trust-boundaries.md` #3, `src/outrider/coordinates/spans.py`, `src/outrider/coordinates/__init__.py`, `src/outrider/ast_facts/triviality.py`.

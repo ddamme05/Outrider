@@ -1,4 +1,6 @@
 # Per specs/2026-06-10-trivial-scope-filter.md — the trivial-scope classifier.
+# See DECISIONS.md#044 (veto shares the prompt's clipping frame) and
+# DECISIONS.md#018 Amended 2026-06-11 (SkipReason.ALL_SCOPES_TRIVIAL).
 """Ordinary-comment-only change classification for the trivial-scope filter.
 
 A changed scope classifies TRIVIAL iff every changed line (head-side
