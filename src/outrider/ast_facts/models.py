@@ -136,10 +136,10 @@ class SkipReason(StrEnum):
     UNSUPPORTED_LANGUAGE = "UNSUPPORTED_LANGUAGE"
     # Every admitted scope classified trivial (ordinary-comment-only) —
     # the file's LLM call is skipped when the trivial-scope filter is
-    # enabled. "Skipped" = not sent to the LLM, parse succeeded
+    # enforcing. "Skipped" = not sent to the LLM, parse succeeded
     # (COST_BUDGET_EXHAUSTED precedent). Fires AFTER the baseline cost
     # gate: COST_BUDGET_EXHAUSTED wins the race. Per
-    # specs/2026-06-10-trivial-scope-filter.md; #018 amendment pending.
+    # `DECISIONS.md#018` Amended 2026-06-11.
     ALL_SCOPES_TRIVIAL = "ALL_SCOPES_TRIVIAL"
 
     def stage(self) -> Literal["parser", "analyze"]:
