@@ -9,8 +9,9 @@ FK CASCADE couples cache rows to their source review's purge,
 purge_audit), and `retention_expires_at` carries the
 min(TTL, source retention) write-time bound. `cache_key` (the
 nine-field digest: prompt digest + eight explicit scope/version
-components) is the PK and the `ON CONFLICT DO NOTHING` arbiter for
-concurrent same-key writes.
+components) is the PK and the conflict arbiter for concurrent same-key
+writes (live rows first-writer-win; expired rows refresh via
+`DO UPDATE ... WHERE` expired).
 
 Plain (non-concurrent) DDL: brand-new table, nothing to lock.
 """
