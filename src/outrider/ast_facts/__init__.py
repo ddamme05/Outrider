@@ -43,6 +43,7 @@ from outrider.ast_facts.models import (
     SkipReason,
     Span,
     SymbolCandidate,
+    TrivialityReason,
     compute_unit_id,
 )
 
@@ -65,6 +66,7 @@ __all__ = [
     "ParserOutcome",
     "ResolutionStatus",
     "SkipReason",
+    "TrivialityReason",
     # Protocols
     "ImportPathResolver",
     "LanguageAdapter",
@@ -75,18 +77,39 @@ __all__ = [
     "UnknownQueryMatchId",
     # Helpers
     "compute_unit_id",
-    # Lazy-loaded entry point (loads tree_sitter on first access)
+    # Lazy-loaded entry points (load tree_sitter on first access)
+    "FileTrivialityContext",
+    "TRIVIAL_FILTER_VERSION",
+    "TrivialityVerdict",
+    "build_triviality_context",
+    "classify_scope_triviality",
     "parse_python",
 ]
 
+# Names served by the lazy __getattr__ below. `triviality.py` imports
+# tree_sitter at module load (same as python_adapter), so its surface
+# stays behind the same import-light gate; only `TrivialityReason`
+# (models.py) is eager for audit-side consumers.
+_TRIVIALITY_LAZY: frozenset[str] = frozenset(
+    {
+        "FileTrivialityContext",
+        "TRIVIAL_FILTER_VERSION",
+        "TrivialityVerdict",
+        "build_triviality_context",
+        "classify_scope_triviality",
+    }
+)
+
 
 def __getattr__(name: str) -> object:
-    """Lazy-load `parse_python` to keep light-type imports tree-sitter-free.
+    """Lazy-load tree-sitter-backed entry points, keeping light-type
+    imports tree-sitter-free.
 
     Per `DECISIONS.md#018` point 6: this `__getattr__` is the gate that
     keeps `from outrider.ast_facts.models import SkipReason` cheap for
-    audit consumers. `parse_python` lives in `python_adapter.py` which
-    imports `tree_sitter`; loading it on every `from outrider.ast_facts`
+    audit consumers. `parse_python` (python_adapter.py) and the
+    trivial-scope classifier surface (triviality.py) both import
+    `tree_sitter`; loading either on every `from outrider.ast_facts`
     import would pull tree-sitter into every consumer's module graph.
     """
     if name == "parse_python":
@@ -96,4 +119,10 @@ def __getattr__(name: str) -> object:
         # tree_sitter is only loaded on first access, not on every access.
         globals()["parse_python"] = parse_python
         return parse_python
+    if name in _TRIVIALITY_LAZY:
+        from outrider.ast_facts import triviality
+
+        value = getattr(triviality, name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module 'outrider.ast_facts' has no attribute {name!r}")
