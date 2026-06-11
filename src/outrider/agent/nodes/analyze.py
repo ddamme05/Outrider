@@ -332,19 +332,6 @@ async def analyze(
     started_mono = time.monotonic()
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
 
-    # Analyze-cache scope, resolved ONCE per pass from the reviews row —
-    # the canonical (installation_id, repo_id) tenant identity the cache
-    # key requires (never PRContext's mutable owner/repo strings). None
-    # disables the cache for this pass: store not injected (the eval
-    # driver's default), review row missing (fail-open to UNCACHED,
-    # never to cross-scope), or an is_eval review reaching a wired store
-    # (belt-and-suspenders for the spec's eval-bypass rule).
-    cache_scope: CacheScope | None = None
-    if analyze_cache_store is not None:
-        cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
-        if cache_scope is not None and cache_scope.is_eval:
-            cache_scope = None
-
     # Step 1: start phase event. If this raises (audit infra outage),
     # the node fails before any work — no dangling start.
     await phase_event_sink.emit_phase(
@@ -357,6 +344,22 @@ async def analyze(
             phase_key=None,
         )
     )
+
+    # Analyze-cache scope, resolved ONCE per pass from the reviews row —
+    # the canonical (installation_id, repo_id) tenant identity the cache
+    # key requires (never PRContext's mutable owner/repo strings). Sits
+    # AFTER the phase-start emit: the resolve is node work (a DB read),
+    # and `phase-events-bound-work` requires node work inside the
+    # phase envelope. None disables the cache for this pass: store not
+    # injected (the eval driver's default), review row missing
+    # (fail-open to UNCACHED, never to cross-scope), or an is_eval
+    # review reaching a wired store (belt-and-suspenders for the spec's
+    # eval-bypass rule).
+    cache_scope: CacheScope | None = None
+    if analyze_cache_store is not None:
+        cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
+        if cache_scope is not None and cache_scope.is_eval:
+            cache_scope = None
 
     # Local accumulators — single source of truth for AnalyzeCompletedEvent
     # counters. Re-reading from the audit stream would couple counter
