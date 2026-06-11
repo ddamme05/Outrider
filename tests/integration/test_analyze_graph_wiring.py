@@ -798,9 +798,11 @@ async def test_is_eval_propagates_through_full_graph(
     """`is_eval` from the seed `ReviewState` must reach every emitted
     event — phase events (one start+end pair per node that ran),
     FileExaminationEvents (intake's per-file fetch + analyze's per-file
-    outcome), and the four analyze-specific event types (FindingEvent +
+    outcome), and the five analyze-specific event types (FindingEvent +
     FindingProposalRejectedEvent + AnalyzeResponseRejectedEvent +
-    AnalyzeCompletedEvent).
+    AnalyzeCompletedEvent + ScopeExclusionEvent — the last emitted by
+    the trivial-scope filter's shadow mode on every analyzed pass-0
+    clean file).
 
     Parametrized over `is_eval=True` AND `is_eval=False` so the
     production-side propagation (`is_eval=False`) doesn't silently break
@@ -883,6 +885,16 @@ async def test_is_eval_propagates_through_full_graph(
     )
     assert all(e.is_eval is eval_flag for e in ae_sink.completed), (
         f"AnalyzeCompletedEvent leaked the wrong is_eval flag (expected {eval_flag})"
+    )
+    # ScopeExclusionEvent: shadow mode classifies every analyzed pass-0
+    # clean file, so this fixture MUST produce at least one — pin
+    # non-empty first (vacuous-pass guard), then the propagation property.
+    assert len(ae_sink.scope_exclusions) >= 1, (
+        f"expected >=1 ScopeExclusionEvent (shadow-mode classification), "
+        f"got {len(ae_sink.scope_exclusions)}"
+    )
+    assert all(e.is_eval is eval_flag for e in ae_sink.scope_exclusions), (
+        f"ScopeExclusionEvent leaked the wrong is_eval flag (expected {eval_flag})"
     )
     # proposal_rejections / response_rejections are empty for this scenario
     # (clean DEEP file admits its sole JUDGED finding); the vacuous-pass on

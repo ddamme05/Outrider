@@ -213,11 +213,12 @@ class AnalyzeEventSink(Protocol):
           (`specs/2026-05-30-findings-content-writer.md`). So a single
           finding may have N append-only `FindingEvent` rows but exactly
           one (or zero, post-purge) `findings` content row.
-        - The other three methods (`emit_finding_proposal_rejected`,
-          `emit_analyze_response_rejected`, `emit_analyze_completed`) are
-          `event_id`-PK idempotent per `DECISIONS.md#026`: retry / replay
-          minting a fresh `event_id` is acceptable, and consumer-side
-          dedup handles read-time collapse.
+        - The other four methods (`emit_finding_proposal_rejected`,
+          `emit_analyze_response_rejected`, `emit_analyze_completed`,
+          `emit_scope_exclusion`) are `event_id`-PK idempotent per
+          `DECISIONS.md#026`: retry / replay minting a fresh `event_id`
+          is acceptable, and consumer-side dedup handles read-time
+          collapse.
 
     Test recorders (e.g., `RecordingAnalyzeEventSink`) record every
     emission into per-type lists for assertion; they are deliberately
@@ -225,7 +226,7 @@ class AnalyzeEventSink(Protocol):
     tests rather than being silently deduped).
 
     `@runtime_checkable` matches the sibling-Protocol precedent —
-    `build_graph` can reject sinks lacking any of the four `emit_*`
+    `build_graph` can reject sinks lacking any of the five `emit_*`
     members at construction time. PEP 544 caveat: member-presence
     only, not signature shape; mypy strict is the write-time gate.
     """
