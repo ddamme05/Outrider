@@ -29,6 +29,7 @@ Sort order per Internal contracts:
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Final, cast
 
@@ -159,6 +160,34 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
 
 
 _QUERY_BODIES, _COMPILED_QUERIES = _load_and_compile()
+
+
+def _registry_digest(bodies: dict[str, str]) -> str:
+    """Length-prefixed SHA-256 over the sorted (id, body) pairs.
+
+    The analyze-cache key component that pins query SEMANTICS: a pattern
+    edit that keeps its id changes this digest, so cached OBSERVED
+    findings can never be served under rules that no longer produced
+    them (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166).
+    Length-prefixing makes the pair boundaries unambiguous — the
+    `llm/base.py::_canonical_prompt_hash` precedent. Covers deprecated
+    ledger bodies too: strictly safer, and ledger changes are rare.
+    """
+    h = hashlib.sha256()
+    for query_id in sorted(bodies):
+        qid_bytes = query_id.encode("utf-8")
+        body_bytes = bodies[query_id].encode("utf-8")
+        h.update(f"{len(qid_bytes)}:".encode())
+        h.update(qid_bytes)
+        h.update(f"{len(body_bytes)}:".encode())
+        h.update(body_bytes)
+    return h.hexdigest()
+
+
+# Code-pinned at module load from the actual compiled sources — never
+# injectable, so the recorded digest cannot drift from the queries that
+# actually ran (the TRIVIAL_FILTER_VERSION adjacency precedent).
+QUERY_REGISTRY_DIGEST: Final[str] = _registry_digest(_QUERY_BODIES)
 
 
 def _all_known_ids() -> set[str]:

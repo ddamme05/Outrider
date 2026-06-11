@@ -65,6 +65,14 @@ if TYPE_CHECKING:
     from outrider.ast_facts.models import ScopeUnit
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
+# Versions the parser's admission semantics for the analyze-cache key
+# (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166): bump on ANY
+# change to the §6 admission flow — rejection rules, span gates, schema
+# construction — so cached findings can never be served under admission
+# rules that no longer produced them. Code-pinned adjacent to what it
+# versions, never injectable (the TRIVIAL_FILTER_VERSION precedent).
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v1"
+
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend
 # on `audit/events.py` at import time (keeps the parser's pure-data
