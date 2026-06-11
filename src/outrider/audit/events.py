@@ -576,7 +576,8 @@ class CacheLookupEvent(AuditEventBase):
     composed key (shadow mode still calls the model — nothing is
     served); `outcome="miss"` means none did and the store was
     populated. The accumulated would-hit rate is the evidence the serve
-    flip is gated on. `cache_key` is the eight-component digest from
+    flip is gated on. `cache_key` is the nine-field digest (prompt
+    digest + eight explicit scope/version components) from
     `cache/key.py::compute_analyze_cache_key`; the serve-stage
     `CacheServeEvent` (flip arc) carries the full self-contained replay
     payload — this shadow event deliberately stays thin.

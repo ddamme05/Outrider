@@ -26,8 +26,9 @@ Two foreign keys, mirroring `findings`:
     an installation hard-deletes; RESTRICT prevents a silent CASCADE
     that would skip the purge-audit row.
 
-`cache_key` (the eight-component digest from
-`cache/key.py::compute_analyze_cache_key`) is the primary key — the
+`cache_key` (the nine-field digest — prompt digest + eight explicit
+components — from `cache/key.py::compute_analyze_cache_key`) is the
+primary key — the
 write path's `ON CONFLICT (cache_key) DO NOTHING` arbiter for concurrent
 same-key reviews. The key-component columns are denormalized for
 observability (stale-rate by version, Stage-B telemetry queries); the
