@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from outrider.audit.events import (
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
         FileExaminationEvent,
         FindingProposalRejectedEvent,
         PublishAttemptEvent,
@@ -104,6 +105,9 @@ class _StubAnalyzeEventSink:
         return None
 
     async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
+        return None
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:
         return None
 
 
@@ -487,7 +491,7 @@ def test_build_graph_rejects_file_examination_sink_missing_member() -> None:
 
 def test_build_graph_rejects_analyze_event_sink_missing_member() -> None:
     """`isinstance(sink, AnalyzeEventSink)` fails on objects lacking any of
-    the five `emit_*` methods. PEP 544 member-presence semantics."""
+    the six `emit_*` methods. PEP 544 member-presence semantics."""
     args = _valid_args()
     args["analyze_event_sink"] = object()
     with pytest.raises(
