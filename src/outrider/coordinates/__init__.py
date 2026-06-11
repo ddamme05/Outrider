@@ -37,12 +37,6 @@ Three supporting surfaces:
 - `resolve_candidate_paths(...)` — ImportPathResolver Protocol implementation
   per `src/outrider/ast_facts/base.py`; root-aware surface for paths heading
   to filesystem stats per trust-boundary §5 sub-rule 3b.
-- `is_valid_import_string(...)` — validate + NFC-normalize a dotted Python
-  import string. Shared predicate per `DECISIONS.md#024` point 1: the
-  `TraceCandidate.import_string` field validator calls it (raises on invalid);
-  `resolve_candidate_paths` calls it (catches + returns []). Single source of
-  truth ensures producer-side schema validation and resolver-side input
-  validation accept the same set of strings.
 - `file_in_patch(...)` — coordinates-owned patch-membership helper. **NOT
   called by V1 publish** (publish uses the in-memory `ChangedFile` registry
   short-circuit per the publish-node spec's FUP-057 resolution); remains
@@ -54,6 +48,13 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
 - `file_in_patch(...)` — see "Three supporting surfaces" above.
 - `lookup_patched_file(...)` — locate a `PatchedFile` by path inside a
   raw unified-diff string; returns None on absence (analyze §7 step 3a).
+- `is_valid_import_string(...)` — validate + NFC-normalize a dotted Python
+  import string. Shared predicate per `DECISIONS.md#024` point 1: the
+  `TraceCandidate.import_string` field validator calls it (raises on invalid);
+  `resolve_candidate_paths` calls it (catches + returns []). Single source of
+  truth ensures producer-side schema validation and resolver-side input
+  validation accept the same set of strings. (A helper, not one of the
+  three canonical §5.6 supporting surfaces.)
 - `span_within_file(...)` — byte file-bounds check the analyze parser's
   degraded path composes (§4).
 - `span_within_degraded_context(...)` — byte-space intersection check: a

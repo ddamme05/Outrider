@@ -2,7 +2,7 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has seventeen
+`AuditEventBase` is the shared base. The hierarchy has eighteen
 concrete subtypes: twelve V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
@@ -10,8 +10,9 @@ concrete subtypes: twelve V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
 `PublishEligibilityEvent`, `PublishAttemptEvent`), three
 analyze-foundation additions (`AnalyzeCompletedEvent`,
 `FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), the
-synthesize-node addition (`SynthesizeCompletedEvent`), and the
-replay-verdict-projection addition (`ReplayVerdictEvent`). Each
+synthesize-node addition (`SynthesizeCompletedEvent`), the
+replay-verdict-projection addition (`ReplayVerdictEvent`), and the
+trivial-scope-filter addition (`ScopeExclusionEvent`). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
@@ -27,7 +28,7 @@ reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
 because the outer model's frozen-ness does not propagate.
 
-Seven event types carry validators (plus `PerFindingDecision` inherited
+Eight event types carry validators (plus `PerFindingDecision` inherited
 by `HITLDecisionEvent.decisions`):
 
   - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
@@ -35,6 +36,9 @@ by `HITLDecisionEvent.decisions`):
   - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
     per `DECISIONS.md#018`: `skip_reason is not None` ↔
     `parse_status == "skipped"`.
+  - `ScopeExclusionEvent` runs the `validate_diff_path` audit-shadow on
+    `file_path`; its nested `ScopeExclusionEntry` carries the
+    trivial ↔ reason pairing model validator.
   - `FindingEvent` carries three validators — proof-boundary
     (`policy/findings.enforce_proof_boundary`, backs
     `evidence-tier-schema-enforced`), the line constraint

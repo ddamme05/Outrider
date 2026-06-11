@@ -112,7 +112,8 @@ class SkipReason(StrEnum):
       by `should_skip` over file content + path.
     - Analyze-stage (rule rooted in analyze's decision rationale):
       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
-      `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the
+      `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
+      `ALL_SCOPES_TRIVIAL`. Set by the
       analyze node body when it skips a file mid-pass.
       `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze
       adapter only handles Python; the value names "today's analyze
