@@ -21,6 +21,10 @@ export function summarizeEvent(e: AuditEvent): string {
       return e.resolution_status;
     case "agent_transition":
       return `${e.from_node} → ${e.to_node}`;
+    case "cache_lookup":
+      return `${e.outcome} · ${e.file_path}`;
+    case "scope_exclusion":
+      return `${e.applied ? "applied" : "shadow"} · ${e.entries.length} scope(s) · ${e.file_path}`;
     default:
       return "";
   }
@@ -39,6 +43,8 @@ export const EV_FAMILY: Record<string, string> = {
   analyze_response_rejected: "rejected",
   finding_proposal_rejected: "rejected",
   file_examination: "file",
+  cache_lookup: "file",
+  scope_exclusion: "file",
   trace_decision: "trace",
   hitl_request: "human",
   hitl_decision: "human",
