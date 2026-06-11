@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from outrider.cache import AnalyzeCacheStore
     from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMExchangePersister, LLMRequest, LLMResponse
     from outrider.schemas.analysis_round import AnalysisRound
@@ -800,6 +801,7 @@ def _build_eval_graph(
     publisher: _CapturingPublisher,
     checkpointer: Any,
     trivial_scope_filter_enabled: bool = False,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -837,9 +839,11 @@ def _build_eval_graph(
         # (specs/2026-06-10-trivial-scope-filter.md).
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
         # Eval bypass per specs/2026-06-11-file-hash-analyze-cache.md:
-        # eval runs neither read nor write the production analyze cache.
-        # Dedicated cache eval scenarios inject their own store fixtures.
-        analyze_cache_store=None,
+        # eval runs neither read nor write the production analyze cache
+        # (default None). Dedicated cache eval scenarios inject their own
+        # store fixtures through this seam — the same opt-in shape as
+        # `trivial_scope_filter_enabled` above.
+        analyze_cache_store=analyze_cache_store,
     )
 
 
