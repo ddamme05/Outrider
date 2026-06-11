@@ -77,18 +77,37 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_prompt_component_uses_the_canonical_recipe() -> None:
-    """One recipe, two consumers: the key's prompt component IS
-    `_canonical_prompt_hash` output — two prompt pairs with equal
-    canonical hashes (i.e., identical pairs) produce equal keys, and the
-    recipe never forks from `LLMCallEvent.prompt_hash`."""
-    # Identical canonical hash inputs → identical keys (sanity direction).
-    assert _canonical_prompt_hash(
-        system_prompt=_BASE_KWARGS["system_prompt"], user_prompt=_BASE_KWARGS["user_prompt"]
-    ) == _canonical_prompt_hash(system_prompt="system text", user_prompt="user text")
-    assert compute_analyze_cache_key(**_BASE_KWARGS) == compute_analyze_cache_key(
-        **{**_BASE_KWARGS, "system_prompt": "system text", "user_prompt": "user text"}
-    )
+def test_golden_recipe_prompt_digest_plus_eight_framed_components() -> None:
+    """Golden pin of the FULL recipe, recomputed independently in the
+    test: nine length-prefixed fields — `_canonical_prompt_hash` output
+    first (one recipe, two consumers; never forks from
+    `LLMCallEvent.prompt_hash`), then the eight explicit scope/version
+    components in declaration order, each framed `{len(bytes)}:` on
+    UTF-8 bytes. Any change to the framing, the component order, or the
+    prompt component's recipe fails this test — deliberately: that
+    change is a cache-wide invalidation and must be made here too."""
+    import hashlib
+
+    expected = hashlib.sha256()
+    for component in (
+        _canonical_prompt_hash(
+            system_prompt=_BASE_KWARGS["system_prompt"],
+            user_prompt=_BASE_KWARGS["user_prompt"],
+        ),
+        str(_BASE_KWARGS["installation_id"]),
+        str(_BASE_KWARGS["repo_id"]),
+        _BASE_KWARGS["model"],
+        _BASE_KWARGS["prompt_template_version"],
+        _BASE_KWARGS["trivial_filter_version"],
+        _BASE_KWARGS["query_registry_digest"],
+        _BASE_KWARGS["active_policy_version"],
+        _BASE_KWARGS["analyze_parser_version"],
+    ):
+        component_bytes = component.encode("utf-8")
+        expected.update(f"{len(component_bytes)}:".encode())
+        expected.update(component_bytes)
+
+    assert compute_analyze_cache_key(**_BASE_KWARGS) == expected.hexdigest()
 
 
 # ---------------------------------------------------------------------------
