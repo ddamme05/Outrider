@@ -10,7 +10,8 @@ Two responsibilities:
    setup, integrity-gate query at the start of teardown, dropped at the
    end of teardown. The integrity gate is loud-failure: it queries every
    `is_eval`-bearing table (`reviews`, `audit_events`, `findings`,
-   `llm_call_content`, `anomalies` per `docs/schema.md` "Eval isolation")
+   `llm_call_content`, `anomalies`, `analyze_file_cache` per
+   `docs/schema.md` "Eval isolation" + the file-hash-analyze-cache spec)
    for rows where `is_eval` is not TRUE (FALSE or NULL, via `IS DISTINCT
    FROM TRUE` — robust against a future nullable `is_eval` column) and
    raises `AssertionError` if any are found. Does NOT auto-coerce — that

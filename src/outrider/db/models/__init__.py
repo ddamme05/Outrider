@@ -10,9 +10,7 @@ of declarative state and avoid any circular-import risk via the model files'
 """
 
 from outrider.db.models._base import Base, anomaly_status_enum, review_status_enum
-
-# After installations + reviews: AnalyzeFileCache FKs into both.
-from outrider.db.models.analyze_file_cache import AnalyzeFileCache  # noqa: E402  (FK parent order)
+from outrider.db.models.analyze_file_cache import AnalyzeFileCache
 from outrider.db.models.anomalies import Anomaly
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
