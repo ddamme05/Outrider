@@ -14,8 +14,8 @@ lets PURGE_AUDIT outlive the installation it references — by design.
 
 Per the schema-layer spec: one PURGE_AUDIT row per target table per sweep run.
 The schema's `target_table` column is a single concrete table name (one of
-"reviews", "findings", "llm_call_content"); a sweep run that purges all three
-content tables produces three rows. Implicit grouping is by `(installation_id,
+"reviews", "findings", "llm_call_content", "analyze_file_cache"); a sweep run
+that purges all four content tables produces four rows. Implicit grouping is by `(installation_id,
 timestamp)` clustering — the per-table rows commit in the same transaction so
 their `timestamp` defaults to a microsecond-precision window. Adding an explicit
 `sweep_run_id` column is a future additive change if forensic queries demand

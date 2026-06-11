@@ -574,8 +574,12 @@ class CacheLookupEvent(AuditEventBase):
     One event per pass-0 clean-mode candidate file when the cache is
     enabled: `outcome="would_hit"` means a live entry existed for the
     composed key (shadow mode still calls the model — nothing is
-    served); `outcome="miss"` means none did and the store was
-    populated. The accumulated would-hit rate is the evidence the serve
+    served); `outcome="miss"` means none did — a store write is then
+    ATTEMPTED, but a miss does not guarantee a row: the write is
+    additionally gated on response acceptance (no response-level
+    rejection, no max_tokens truncation), a concurrent live row wins
+    the insert, and a store failure is contained, not retried.
+    The accumulated would-hit rate is the evidence the serve
     flip is gated on. `cache_key` is the nine-field digest (prompt
     digest + eight explicit scope/version components) from
     `cache/key.py::compute_analyze_cache_key`; the serve-stage

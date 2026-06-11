@@ -9,7 +9,8 @@ production/test boundary stays at `pythonpath = ["src"]` per
 
 The eval_db fixture's teardown integrity gate ALSO runs after this test;
 both checks fire — the explicit assertions in this test and the gate's
-UNION-over-5-tables. Belt + suspenders.
+UNION-over-6-tables (analyze_file_cache joined per
+specs/2026-06-11-file-hash-analyze-cache.md). Belt + suspenders.
 """
 
 from typing import Any

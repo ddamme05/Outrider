@@ -805,9 +805,12 @@ async def test_is_eval_propagates_through_full_graph(
     FileExaminationEvents (intake's per-file fetch + analyze's per-file
     outcome), and the six analyze-specific event types (FindingEvent +
     FindingProposalRejectedEvent + AnalyzeResponseRejectedEvent +
-    AnalyzeCompletedEvent + ScopeExclusionEvent — the last emitted by
-    the trivial-scope filter's shadow mode on every analyzed pass-0
-    clean file).
+    AnalyzeCompletedEvent + ScopeExclusionEvent — emitted by the
+    trivial-scope filter's shadow mode on every analyzed pass-0 clean
+    file — + CacheLookupEvent, which this test does NOT exercise: no
+    cache store is wired here, and the either-flag eval veto means an
+    eval review can never emit one anyway; its propagation is pinned by
+    the unit wiring tests).
 
     Parametrized over `is_eval=True` AND `is_eval=False` so the
     production-side propagation (`is_eval=False`) doesn't silently break
