@@ -128,6 +128,7 @@ if TYPE_CHECKING:
         AgentTransitionEvent,
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
         FileExaminationEvent,
         FindingProposalRejectedEvent,
         LLMCallEvent,
@@ -1465,6 +1466,7 @@ def _serialize_event_payload(
         | PublishAttemptEvent
         | PublishEvent
         | ScopeExclusionEvent
+        | CacheLookupEvent
         | TraceDecisionEvent
         | HITLRequestEvent
         | HITLDecisionEvent
@@ -2228,6 +2230,7 @@ class AuditPersister:
             | PublishAttemptEvent
             | PublishEvent
             | ScopeExclusionEvent
+            | CacheLookupEvent
             | SynthesizeCompletedEvent
         ),
     ) -> None:
@@ -2545,6 +2548,11 @@ class AuditPersister:
     async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
         """Persist a `ScopeExclusionEvent` row (per-file trivial-scope
         classification; event_id-PK idempotent per `DECISIONS.md#026`)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:
+        """Persist a `CacheLookupEvent` row (analyze-cache shadow
+        telemetry; event_id-PK idempotent per `DECISIONS.md#026`)."""
         await self._persist_non_phase_event(event)
 
     # -- PublishEventSink surface -------------------------------------------

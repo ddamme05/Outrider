@@ -77,6 +77,7 @@ class _RecordingAnalyzeEventSink:
         self.response_rejections: list[Any] = []
         self.completed: list[Any] = []
         self.scope_exclusions: list[Any] = []
+        self.cache_lookups: list[Any] = []
 
     async def emit_finding(self, finding: Any, *, is_eval: bool) -> None:
         self.findings.append((finding, is_eval))
@@ -92,6 +93,9 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_scope_exclusion(self, event: Any) -> None:
         self.scope_exclusions.append(event)
+
+    async def emit_cache_lookup(self, event: Any) -> None:
+        self.cache_lookups.append(event)
 
 
 # Head: module import (query-bearing, outside every scope), alpha with a

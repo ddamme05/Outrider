@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from outrider.audit.events import (
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
         FileExaminationEvent,
         FindingEvent,
         FindingProposalRejectedEvent,
@@ -328,6 +329,7 @@ class _RecordingAnalyzeEventSink:
         self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
         self.completed: list[AnalyzeCompletedEvent] = []
         self.scope_exclusions: list[ScopeExclusionEvent] = []
+        self.cache_lookups: list[CacheLookupEvent] = []
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
         self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
@@ -343,6 +345,9 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
         self.scope_exclusions.append(event)
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:
+        self.cache_lookups.append(event)
 
 
 class _StubImportPathResolver:

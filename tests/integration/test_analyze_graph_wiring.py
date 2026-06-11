@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from outrider.audit.events import (
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
         FileExaminationEvent,
         FindingEvent,
         FindingProposalRejectedEvent,
@@ -285,6 +286,7 @@ class _RecordingAnalyzeEventSink:
         self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
         self.completed: list[AnalyzeCompletedEvent] = []
         self.scope_exclusions: list[ScopeExclusionEvent] = []
+        self.cache_lookups: list[CacheLookupEvent] = []
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
         self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
@@ -300,6 +302,9 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
         self.scope_exclusions.append(event)
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:
+        self.cache_lookups.append(event)
 
 
 class _StubImportPathResolver:
@@ -798,7 +803,7 @@ async def test_is_eval_propagates_through_full_graph(
     """`is_eval` from the seed `ReviewState` must reach every emitted
     event — phase events (one start+end pair per node that ran),
     FileExaminationEvents (intake's per-file fetch + analyze's per-file
-    outcome), and the five analyze-specific event types (FindingEvent +
+    outcome), and the six analyze-specific event types (FindingEvent +
     FindingProposalRejectedEvent + AnalyzeResponseRejectedEvent +
     AnalyzeCompletedEvent + ScopeExclusionEvent — the last emitted by
     the trivial-scope filter's shadow mode on every analyzed pass-0

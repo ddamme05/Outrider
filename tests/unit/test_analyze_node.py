@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from outrider.audit.events import (
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
         FileExaminationEvent,
         FindingEvent,
         FindingProposalRejectedEvent,
@@ -122,7 +123,7 @@ def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEven
 
 
 class _RecordingAnalyzeEventSink:
-    """Captures every emission of the five analyze-specific event
+    """Captures every emission of the six analyze-specific event
     types into per-type lists for assertion. The aggregate `events`
     list preserves emission order across types so tests can pin
     event-ordering invariants."""
@@ -133,6 +134,7 @@ class _RecordingAnalyzeEventSink:
         self.response_rejections: list[AnalyzeResponseRejectedEvent] = []
         self.completed: list[AnalyzeCompletedEvent] = []
         self.scope_exclusions: list[ScopeExclusionEvent] = []
+        self.cache_lookups: list[CacheLookupEvent] = []
         self.events: list[Any] = []
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
@@ -154,6 +156,10 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
         self.scope_exclusions.append(event)
+        self.events.append(event)
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:
+        self.cache_lookups.append(event)
         self.events.append(event)
 
 

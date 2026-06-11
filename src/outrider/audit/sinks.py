@@ -15,10 +15,10 @@ provider boundary, not by the audit-events surface): `PhaseEventSink`
 for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
-`AnalyzeEventSink` bundling the five analyze-emitted event types
+`AnalyzeEventSink` bundling the six analyze-emitted event types
 (`FindingEvent`, `FindingProposalRejectedEvent`,
 `AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`,
-`ScopeExclusionEvent`),
+`ScopeExclusionEvent`, `CacheLookupEvent`),
 `PublishEventSink` bundling the four publish-emitted event types
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
 `PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
@@ -52,6 +52,7 @@ from outrider.audit.aggregates import ReviewLLMAggregates
 from outrider.audit.events import (
     AnalyzeCompletedEvent,
     AnalyzeResponseRejectedEvent,
+    CacheLookupEvent,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
     HITLDecisionEvent,
@@ -172,14 +173,15 @@ class FileExaminationSink(Protocol):
 
 @runtime_checkable
 class AnalyzeEventSink(Protocol):
-    """Sink for the five audit event types the analyze node emits.
+    """Sink for the six audit event types the analyze node emits.
 
     The analyze-node spec (`specs/2026-05-19-analyze-node.md` §7) bundled
     the original four event types under one Protocol rather than separate
     sinks (the trivial-scope-filter spec added the fifth,
-    `ScopeExclusionEvent`) because:
+    `ScopeExclusionEvent`; the file-hash-analyze-cache spec added the
+    sixth, `CacheLookupEvent`) because:
 
-    - All five are emitted by ONE node body in one transaction window;
+    - All six are emitted by ONE node body in one transaction window;
       the durable `AuditPersister` implements them under one session
       lifecycle.
     - The node body's local-bookkeeping counter discipline (per
@@ -191,6 +193,9 @@ class AnalyzeEventSink(Protocol):
       `ScopeExclusionEvent` sits outside that accounting relation:
       at-most-one per examined pass-0 file, emitted whether or not an
       LLM call follows (the all-trivial skip has no call at all).
+      `CacheLookupEvent` likewise: at-most-one per pass-0 clean-mode
+      candidate file when the analyze cache is enabled (shadow-stage
+      would-hit/miss telemetry).
     - Separate kwargs on the analyze function signature would
       crowd the deps surface and invite test-time mock proliferation;
       one sink keeps the test setup focused.
@@ -213,12 +218,12 @@ class AnalyzeEventSink(Protocol):
           (`specs/2026-05-30-findings-content-writer.md`). So a single
           finding may have N append-only `FindingEvent` rows but exactly
           one (or zero, post-purge) `findings` content row.
-        - The other four methods (`emit_finding_proposal_rejected`,
+        - The other five methods (`emit_finding_proposal_rejected`,
           `emit_analyze_response_rejected`, `emit_analyze_completed`,
-          `emit_scope_exclusion`) are `event_id`-PK idempotent per
-          `DECISIONS.md#026`: retry / replay minting a fresh `event_id`
-          is acceptable, and consumer-side dedup handles read-time
-          collapse.
+          `emit_scope_exclusion`, `emit_cache_lookup`) are
+          `event_id`-PK idempotent per `DECISIONS.md#026`: retry /
+          replay minting a fresh `event_id` is acceptable, and
+          consumer-side dedup handles read-time collapse.
 
     Test recorders (e.g., `RecordingAnalyzeEventSink`) record every
     emission into per-type lists for assertion; they are deliberately
@@ -226,7 +231,7 @@ class AnalyzeEventSink(Protocol):
     tests rather than being silently deduped).
 
     `@runtime_checkable` matches the sibling-Protocol precedent —
-    `build_graph` can reject sinks lacking any of the five `emit_*`
+    `build_graph` can reject sinks lacking any of the six `emit_*`
     members at construction time. PEP 544 caveat: member-presence
     only, not signature shape; mypy strict is the write-time gate.
     """
@@ -260,6 +265,12 @@ class AnalyzeEventSink(Protocol):
 
         `event_id`-PK idempotent per `DECISIONS.md#026` — resume
         re-emission appends a fresh row; consumer-side dedup collapses.
+        """
+        ...
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:
+        """Persist the per-file analyze-cache lookup record (shadow-stage
+        would-hit/miss telemetry; event_id-PK per `DECISIONS.md#026`).
         """
         ...
 

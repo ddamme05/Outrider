@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from outrider.audit.events import (
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
         FileExaminationEvent,
         FindingProposalRejectedEvent,
         ReviewPhaseEvent,
@@ -90,6 +91,9 @@ class _StubAnalyzeEventSink:
         return None
 
     async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:  # noqa: ARG002
         return None
 
 

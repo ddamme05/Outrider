@@ -2,7 +2,7 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has eighteen
+`AuditEventBase` is the shared base. The hierarchy has nineteen
 concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
@@ -11,8 +11,9 @@ concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
 analyze-foundation additions (`AnalyzeCompletedEvent`,
 `FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), the
 synthesize-node addition (`SynthesizeCompletedEvent`), the
-replay-verdict-projection addition (`ReplayVerdictEvent`), and the
-trivial-scope-filter addition (`ScopeExclusionEvent`). Each
+replay-verdict-projection addition (`ReplayVerdictEvent`), the
+trivial-scope-filter addition (`ScopeExclusionEvent`), and the
+analyze-cache lookup addition (`CacheLookupEvent`). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
@@ -28,7 +29,7 @@ reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
 because the outer model's frozen-ness does not propagate.
 
-Eight event types carry validators (plus `PerFindingDecision` inherited
+Nine event types carry validators (plus `PerFindingDecision` inherited
 by `HITLDecisionEvent.decisions`):
 
   - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
@@ -39,6 +40,8 @@ by `HITLDecisionEvent.decisions`):
   - `ScopeExclusionEvent` runs the `validate_diff_path` audit-shadow on
     `file_path`; its nested `ScopeExclusionEntry` carries the
     trivial ↔ reason pairing model validator.
+  - `CacheLookupEvent` runs the same `validate_diff_path` audit-shadow
+    on `file_path`.
   - `FindingEvent` carries three validators — proof-boundary
     (`policy/findings.enforce_proof_boundary`, backs
     `evidence-tier-schema-enforced`), the line constraint
@@ -561,6 +564,40 @@ class ScopeExclusionEvent(AuditEventBase):
         """Audit-shadow mirror of `paths-validated-before-use` — same as
         every sibling path-bearing event: a traversal-bearing or
         shell-metacharacter path can't ride into the append-only log."""
+        return validate_diff_path(path)
+
+
+class CacheLookupEvent(AuditEventBase):
+    """Per-file analyze-cache lookup record — the lever-8 shadow-stage
+    telemetry (specs/2026-06-11-file-hash-analyze-cache.md).
+
+    One event per pass-0 clean-mode candidate file when the cache is
+    enabled: `outcome="would_hit"` means a live entry existed for the
+    composed key (shadow mode still calls the model — nothing is
+    served); `outcome="miss"` means none did and the store was
+    populated. The accumulated would-hit rate is the evidence the serve
+    flip is gated on. `cache_key` is the eight-component digest from
+    `cache/key.py::compute_analyze_cache_key`; the serve-stage
+    `CacheServeEvent` (flip arc) carries the full self-contained replay
+    payload — this shadow event deliberately stays thin.
+
+    Carries `node_id` so replay's node-containment binds it to analyze's
+    phase window without an owner-map exemption (`ScopeExclusionEvent`
+    precedent). Idempotency mode: event_id-PK per `DECISIONS.md#026` —
+    resume re-emission appends; consumer-side dedup collapses.
+    """
+
+    event_type: Literal["cache_lookup"] = "cache_lookup"
+    file_path: Annotated[str, Field(max_length=1024)]
+    node_id: Literal["analyze"] = "analyze"
+    outcome: Literal["would_hit", "miss"]
+    cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use` — same as
+        every sibling path-bearing event."""
         return validate_diff_path(path)
 
 
@@ -2577,6 +2614,7 @@ AuditEvent = Annotated[
     | LLMCallEvent
     | FileExaminationEvent
     | ScopeExclusionEvent
+    | CacheLookupEvent
     | FindingEvent
     | TraceDecisionEvent
     | HITLRequestEvent
@@ -2603,6 +2641,7 @@ AuditEventAdapter: Final[
         | LLMCallEvent
         | FileExaminationEvent
         | ScopeExclusionEvent
+        | CacheLookupEvent
         | FindingEvent
         | TraceDecisionEvent
         | HITLRequestEvent
@@ -2627,6 +2666,7 @@ __all__ = [
     "AuditEvent",
     "AuditEventAdapter",
     "AuditEventBase",
+    "CacheLookupEvent",
     "ContextManifestEntry",
     "FileExaminationEvent",
     "FindingEvent",
