@@ -49,6 +49,10 @@ backstops drift; producer-side correctness is the contract.
   analyze adapter only handles `.py` / `.pyi`. Capability-scoped per
   `DECISIONS.md#018` Amended 2026-05-21 — the value names "today's
   analyze cannot review this," not "Outrider forever cannot."
+- `skipped+ALL_SCOPES_TRIVIAL` — enforcing-mode trivial-scope filter:
+  every admitted scope classified ordinary-comment-only, so the LLM
+  call is skipped (the shadow default never produces this). Fires
+  after the cost gate per `DECISIONS.md#018` Amended 2026-06-11.
 
 **V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
 outcome; the analyze code path is wired to handle it, but in V1 the
@@ -280,7 +284,8 @@ async def analyze(
     Step order (failure-path-significant):
       1. Emit start phase event.
       2. Triage-gate filter over `state.pr_context.changed_files`.
-      3. Per kept file: parse + outcome + cost gate +
+      3. Per kept file: parse + outcome + cost gate + trivial-scope
+         classification (ScopeExclusionEvent, pass 0 only) +
          FileExaminationEvent + provider call + parser + lift
          rejection payloads + collect admitted findings + trace
          candidates.
@@ -932,8 +937,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     gate → trivial-scope classification → LLM call → parser → audit
     events.
 
-    Five outcomes per spec §7 step 3a (with parser-stage skip passed
-    through as a sixth):
+    File outcomes — the spec §7 step 3a set, plus the parser-stage
+    pass-through, plus the trivial-scope filter's skip (the
+    trivial-scope-filter spec):
 
     - `skipped+NO_REVIEWABLE_CONTEXT` — no content at all OR (V1
       unreachable, see module docstring) parse failure with no addable
@@ -942,6 +948,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       unit intersects the changed regions.
     - `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an
       LLM call but cost gate failed.
+    - `skipped+ALL_SCOPES_TRIVIAL` — enforcing-mode trivial-scope
+      filter: every admitted scope classified ordinary-comment-only
+      (after the cost gate; the shadow default never skips).
     - `failed+degraded_llm` — V1 unreachable (intake gates invalid
       UTF-8; analyze re-encodes valid str). Kept as a structural slot
       for the future raw-bytes intake path (FUP-053). Would fire on
@@ -1115,7 +1124,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # COST_BUDGET_EXHAUSTED wins over ALL_SCOPES_TRIVIAL, and the gate
     # evaluated the BASELINE prompt estimate, so enabling the filter can
     # never convert a budget skip into an LLM call (the filtered prompt is
-    # <= baseline). Shadow mode (flag off) still classifies and emits
+    # <= baseline). The baseline estimate also stays in
+    # `_FileOutcome.estimated_tokens` for the budget deduction — a
+    # deliberate conservative over-debit: later files see a tighter
+    # budget under enforcement, never a looser one.
+    # Shadow mode (flag off) still classifies and emits
     # `applied=False` would-exclude telemetry — the eval-backed flip's
     # production data; enforcing mode excludes trivial scopes from the
     # prompt and skips all-trivial files. Runs BEFORE step 3e so the

@@ -81,7 +81,7 @@ def test_skip_reason_has_eleven_total_values() -> None:
     """6 parser-stage (5 original + `BINARY` from #018 2026-05-21
     amendment) + 5 analyze-stage (3 from #018 2026-05-20 +
     `UNSUPPORTED_LANGUAGE` from #018 2026-05-21 + `ALL_SCOPES_TRIVIAL`
-    from the trivial-scope-filter spec, #018 amendment pending) = 11
+    from the trivial-scope-filter spec per #018 Amended 2026-06-11) = 11
     total.
 
     Pins the count so a future addition or removal surfaces in the
