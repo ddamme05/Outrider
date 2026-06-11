@@ -135,6 +135,7 @@ if TYPE_CHECKING:
         PublishEligibilityEvent,
         PublishRoutingEvent,
         ReviewPhaseEvent,
+        ScopeExclusionEvent,
         SynthesizeCompletedEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
@@ -1463,6 +1464,7 @@ def _serialize_event_payload(
         | PublishEligibilityEvent
         | PublishAttemptEvent
         | PublishEvent
+        | ScopeExclusionEvent
         | TraceDecisionEvent
         | HITLRequestEvent
         | HITLDecisionEvent
@@ -2225,6 +2227,7 @@ class AuditPersister:
             | PublishEligibilityEvent
             | PublishAttemptEvent
             | PublishEvent
+            | ScopeExclusionEvent
             | SynthesizeCompletedEvent
         ),
     ) -> None:
@@ -2537,6 +2540,11 @@ class AuditPersister:
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:
         """Persist an `AnalyzeCompletedEvent` row (per-pass aggregate)."""
+        await self._persist_non_phase_event(event)
+
+    async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:
+        """Persist a `ScopeExclusionEvent` row (per-file trivial-scope
+        classification; event_id-PK idempotent per `DECISIONS.md#026`)."""
         await self._persist_non_phase_event(event)
 
     # -- PublishEventSink surface -------------------------------------------

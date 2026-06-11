@@ -134,6 +134,13 @@ class SkipReason(StrEnum):
     NO_REVIEWABLE_CONTEXT = "NO_REVIEWABLE_CONTEXT"
     NO_CHANGED_SCOPE_UNITS = "NO_CHANGED_SCOPE_UNITS"
     UNSUPPORTED_LANGUAGE = "UNSUPPORTED_LANGUAGE"
+    # Every admitted scope classified trivial (ordinary-comment-only) —
+    # the file's LLM call is skipped when the trivial-scope filter is
+    # enabled. "Skipped" = not sent to the LLM, parse succeeded
+    # (COST_BUDGET_EXHAUSTED precedent). Fires AFTER the baseline cost
+    # gate: COST_BUDGET_EXHAUSTED wins the race. Per
+    # specs/2026-06-10-trivial-scope-filter.md; #018 amendment pending.
+    ALL_SCOPES_TRIVIAL = "ALL_SCOPES_TRIVIAL"
 
     def stage(self) -> Literal["parser", "analyze"]:
         """Return which decision stage produced this skip reason.
@@ -179,6 +186,7 @@ _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
         SkipReason.NO_REVIEWABLE_CONTEXT,
         SkipReason.NO_CHANGED_SCOPE_UNITS,
         SkipReason.UNSUPPORTED_LANGUAGE,
+        SkipReason.ALL_SCOPES_TRIVIAL,
     }
 )
 

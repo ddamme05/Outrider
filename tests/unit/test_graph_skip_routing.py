@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         FileExaminationEvent,
         FindingProposalRejectedEvent,
         ReviewPhaseEvent,
+        ScopeExclusionEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
     from outrider.schemas.review_finding import ReviewFinding
@@ -86,6 +87,9 @@ class _StubAnalyzeEventSink:
         return None
 
     async def emit_analyze_completed(self, event: AnalyzeCompletedEvent) -> None:  # noqa: ARG002
+        return None
+
+    async def emit_scope_exclusion(self, event: ScopeExclusionEvent) -> None:  # noqa: ARG002
         return None
 
 

@@ -88,7 +88,7 @@ from pydantic import (
     model_validator,
 )
 
-from outrider.ast_facts.models import SkipReason
+from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.coordinates import is_valid_import_string, validate_diff_path
 from outrider.llm.pricing import PRICING_VERSION_PATTERN
 from outrider.policy import (
@@ -477,6 +477,87 @@ class LLMCallEvent(AuditEventBase):
                 f"(file_path, scope_unit_name) entries: {sorted(keys)!r}"
             )
         return self
+
+
+class ScopeExclusionEntry(BaseModel):
+    """Nested payload of `ScopeExclusionEvent.entries` — one classified
+    scope. Declares its own frozen + extra=forbid because the outer
+    event's frozen-ness does not propagate to nested models
+    (`ContextManifestEntry` precedent).
+
+    Side-qualified evidence mirrors the both-sides classifier contract
+    (specs/2026-06-10-trivial-scope-filter.md): `head_added_lines`
+    verified against the head parse, `base_removed_lines` against the
+    base parse — the clipped-hunk kept-removed set, exactly what the
+    prompt would show. Replay reconstructs each classification from
+    these plus the event-level `filter_version`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scope_qualified_name: Annotated[str, Field(max_length=1024, min_length=1)]
+    trivial: bool
+    reason: TrivialityReason
+    head_added_lines: tuple[Annotated[int, Field(ge=1)], ...]
+    base_removed_lines: tuple[Annotated[int, Field(ge=1)], ...]
+    offending_side: Literal["head", "base"] | None = None
+    offending_line: Annotated[int, Field(ge=1)] | None = None
+
+    @model_validator(mode="after")
+    def _enforce_trivial_reason_pairing(self) -> Self:
+        """`trivial=True` iff reason is the one trivial reason; offending
+        fields only accompany vetoes — mirrors `TrivialityVerdict`."""
+        is_trivial_reason = self.reason == TrivialityReason.ALL_LINES_ORDINARY_COMMENT
+        if self.trivial != is_trivial_reason:
+            raise ValueError(
+                f"ScopeExclusionEntry: trivial={self.trivial} contradicts "
+                f"reason={self.reason.value!r}"
+            )
+        if self.trivial and (self.offending_side is not None or self.offending_line is not None):
+            raise ValueError(
+                "ScopeExclusionEntry: a trivial entry cannot carry offending_side/offending_line"
+            )
+        return self
+
+
+class ScopeExclusionEvent(AuditEventBase):
+    """Per-file trivial-scope classification record — one event per
+    examined pass-0 file the filter classified (≥1 admitted scope).
+
+    `applied=False` is shadow mode: the classifier ran and these are
+    would-exclude verdicts, but NOTHING was removed from the prompt —
+    the production telemetry the eval-backed default flip requires.
+    `applied=True` records enforcing mode (trivial scopes excluded from
+    the prompt; all-trivial files skipped with
+    `SkipReason.ALL_SCOPES_TRIVIAL`). This event is deliberately
+    SEPARATE from `LLMCallEvent.context_summary`, which stays exactly
+    "what the LLM actually saw" (spec §8.3) — and the all-trivial skip
+    has no LLM call to carry a manifest at all.
+
+    Carries `node_id` so replay's node-containment machinery binds it to
+    analyze's phase window without an owner-map exemption. Idempotency
+    mode: event_id-PK per `DECISIONS.md#026` — retry/resume re-emission
+    appends a fresh row; consumer-side dedup collapses.
+    """
+
+    event_type: Literal["scope_exclusion"] = "scope_exclusion"
+    file_path: Annotated[str, Field(max_length=1024)]
+    node_id: Literal["analyze"] = "analyze"
+    applied: bool
+    # The code-pinned matcher version (ast_facts.triviality
+    # TRIVIAL_FILTER_VERSION) — never caller-injected, so the recorded
+    # version cannot drift from the rules that actually ran. A lever-#8
+    # cache-key component per FUP-166.
+    filter_version: Annotated[str, Field(max_length=64, min_length=1)]
+    entries: tuple[ScopeExclusionEntry, ...] = Field(min_length=1)
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use` — same as
+        every sibling path-bearing event: a traversal-bearing or
+        shell-metacharacter path can't ride into the append-only log."""
+        return validate_diff_path(path)
 
 
 class FileExaminationEvent(AuditEventBase):
@@ -2491,6 +2572,7 @@ AuditEvent = Annotated[
     | ReviewPhaseEvent
     | LLMCallEvent
     | FileExaminationEvent
+    | ScopeExclusionEvent
     | FindingEvent
     | TraceDecisionEvent
     | HITLRequestEvent
@@ -2516,6 +2598,7 @@ AuditEventAdapter: Final[
         | ReviewPhaseEvent
         | LLMCallEvent
         | FileExaminationEvent
+        | ScopeExclusionEvent
         | FindingEvent
         | TraceDecisionEvent
         | HITLRequestEvent
@@ -2557,6 +2640,8 @@ __all__ = [
     "PublishRoutingReason",
     "ReplayVerdictEvent",
     "ReviewPhaseEvent",
+    "ScopeExclusionEntry",
+    "ScopeExclusionEvent",
     "SynthesizeCompletedEvent",
     "TraceDecisionEvent",
     "compute_publish_attempt_content_hash",

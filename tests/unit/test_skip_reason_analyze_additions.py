@@ -77,13 +77,15 @@ def test_file_examination_event_admits_no_changed_scope_units() -> None:
     assert event.skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
 
 
-def test_skip_reason_has_ten_total_values() -> None:
+def test_skip_reason_has_eleven_total_values() -> None:
     """6 parser-stage (5 original + `BINARY` from #018 2026-05-21
-    amendment) + 4 analyze-stage (3 from #018 2026-05-20 +
-    `UNSUPPORTED_LANGUAGE` from #018 2026-05-21) = 10 total.
+    amendment) + 5 analyze-stage (3 from #018 2026-05-20 +
+    `UNSUPPORTED_LANGUAGE` from #018 2026-05-21 + `ALL_SCOPES_TRIVIAL`
+    from the trivial-scope-filter spec, #018 amendment pending) = 11
+    total.
 
     Pins the count so a future addition or removal surfaces in the
     diff loud — adjusting this number is the canonical way to indicate
     intent to expand or contract the taxonomy.
     """
-    assert len(list(SkipReason)) == 10
+    assert len(list(SkipReason)) == 11
