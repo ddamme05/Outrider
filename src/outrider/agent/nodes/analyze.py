@@ -104,8 +104,13 @@ from outrider.agent.nodes.degradation import (
     _ParseStatus,
     decide_degradation,
 )
-from outrider.ast_facts.models import SkipReason
+from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.ast_facts.python_adapter import parse_python
+from outrider.ast_facts.triviality import (
+    TRIVIAL_FILTER_VERSION,
+    build_triviality_context,
+    classify_scope_triviality,
+)
 from outrider.audit.events import (
     AnalyzeCompletedEvent,
     AnalyzeResponseRejectedEvent,
@@ -113,12 +118,16 @@ from outrider.audit.events import (
     FileExaminationEvent,
     FindingProposalRejectedEvent,
     ReviewPhaseEvent,
+    ScopeExclusionEntry,
+    ScopeExclusionEvent,
 )
 from outrider.coordinates import (
     added_line_byte_ranges,
     bound_diff_hunks_text,
+    changed_line_spans,
     extract_scope_unit_body,
     lookup_patched_file,
+    patched_file_has_removed_lines,
 )
 from outrider.llm.base import LLMRequest
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
@@ -132,6 +141,8 @@ from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
     from uuid import UUID
+
+    from unidiff import PatchedFile
 
     from outrider.ast_facts.base import ImportPathResolver
     from outrider.ast_facts.models import ParseResult, ScopeUnit
@@ -257,6 +268,7 @@ async def analyze(
     import_path_resolver: ImportPathResolver,
     active_policy_version: str = ACTIVE_POLICY_VERSION,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
+    trivial_scope_filter_enabled: bool = False,
 ) -> dict[str, object]:
     """Run one analyze pass over the triage-classified PR.
 
@@ -417,6 +429,10 @@ async def analyze(
                 pass_index=pass_index,
                 per_file_cap_tokens=per_file_cap_tokens,
                 remaining_budget_tokens=remaining_budget_tokens,
+                # Pass-0 PR-diff files ONLY — trace-fetched files (pass 1,
+                # `_process_one_trace_fetched_file`) have no changed-scope
+                # set, so the filter never evaluates there by design.
+                trivial_scope_filter_enabled=trivial_scope_filter_enabled,
             )
 
             if file_outcome.parser_result is not None:
@@ -723,6 +739,83 @@ def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
     return frozenset(fired)
 
 
+def _filter_query_ids_to_scopes(
+    query_ids: frozenset[str],
+    file_content_bytes: bytes,
+    scope_units: tuple[ScopeUnit, ...],
+) -> frozenset[str]:
+    """Keep a fired query ID iff at least one of its match envelopes
+    intersects an INCLUDED scope unit's byte range.
+
+    Used only when the trivial-scope filter excluded scopes from the
+    prompt (specs/2026-06-10-trivial-scope-filter.md): IDs whose matches
+    fall only in excluded scopes must not advertise — the same filtered
+    set feeds both the prompt and the parser's OBSERVED admission, so a
+    finding cannot cite structural proof from code the model never saw.
+    Half-open intersection over `QueryMatchSpan` envelopes.
+    """
+    ranges = tuple((su.byte_start, su.byte_end) for su in scope_units)
+    kept: set[str] = set()
+    for query_id in query_ids:
+        for match_span in query_registry.match(query_id, file_content_bytes):
+            if any(s < match_span.byte_end and match_span.byte_start < e for s, e in ranges):
+                kept.add(query_id)
+                break
+    return frozenset(kept)
+
+
+def _classify_included_scopes(
+    *,
+    changed_file: ChangedFile,
+    content: str,
+    content_bytes: bytes,
+    patched_file: PatchedFile,
+    included_scope_units: tuple[ScopeUnit, ...],
+) -> tuple[ScopeExclusionEntry, ...]:
+    """Classify every admitted scope through the trivial-scope filter;
+    return one audit entry per scope (specs/2026-06-10-trivial-scope-filter.md).
+
+    Fail-closed pre-check: removed lines anywhere in the patch with no
+    base content means base-side verification is impossible — classify
+    every scope `MISSING_BASE_CONTENT` rather than reaching
+    `changed_line_spans`'s misuse guard (unreachable under the intake
+    contract: modified/renamed files carry `content_base`; added files
+    have no removed lines).
+    """
+    base_text = changed_file.content_base
+    if base_text is None and patched_file_has_removed_lines(patched_file):
+        return tuple(
+            ScopeExclusionEntry(
+                scope_qualified_name=su.qualified_name or su.name,
+                trivial=False,
+                reason=TrivialityReason.MISSING_BASE_CONTENT,
+                head_added_lines=(),
+                base_removed_lines=(),
+            )
+            for su in included_scope_units
+        )
+
+    context = build_triviality_context(
+        content_bytes, base_text.encode("utf-8") if base_text is not None else None
+    )
+    entries: list[ScopeExclusionEntry] = []
+    for su in included_scope_units:
+        changed = changed_line_spans(su, patched_file, head_source=content, base_source=base_text)
+        verdict = classify_scope_triviality(changed, context)
+        entries.append(
+            ScopeExclusionEntry(
+                scope_qualified_name=su.qualified_name or su.name,
+                trivial=verdict.trivial,
+                reason=verdict.reason,
+                head_added_lines=tuple(e.line_no for e in changed.head_added),
+                base_removed_lines=tuple(e.line_no for e in changed.base_removed),
+                offending_side=verdict.offending_side,
+                offending_line=verdict.offending_line,
+            )
+        )
+    return tuple(entries)
+
+
 # `coordinates.bound_diff_hunks_text` does the bounded-render math;
 # this module pins the cap values per spec §7 step 3c.
 
@@ -833,9 +926,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     pass_index: int,
     per_file_cap_tokens: int,
     remaining_budget_tokens: int,
+    trivial_scope_filter_enabled: bool = False,
 ) -> _FileOutcome:
     """Process one triage-kept file through parse → outcome → cost
-    gate → LLM call → parser → audit events.
+    gate → trivial-scope classification → LLM call → parser → audit
+    events.
 
     Five outcomes per spec §7 step 3a (with parser-stage skip passed
     through as a sixth):
@@ -1013,6 +1108,75 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             file_path=changed_file.path,
             skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
         )
+
+    # Step 3d-bis: trivial-scope classification (pass-0 clean mode only;
+    # degraded files are never classified). Runs AFTER the baseline cost
+    # gate by pinned precedence (specs/2026-06-10-trivial-scope-filter.md):
+    # COST_BUDGET_EXHAUSTED wins over ALL_SCOPES_TRIVIAL, and the gate
+    # evaluated the BASELINE prompt estimate, so enabling the filter can
+    # never convert a budget skip into an LLM call (the filtered prompt is
+    # <= baseline). Shadow mode (flag off) still classifies and emits
+    # `applied=False` would-exclude telemetry — the eval-backed flip's
+    # production data; enforcing mode excludes trivial scopes from the
+    # prompt and skips all-trivial files. Runs BEFORE step 3e so the
+    # all-trivial skip routes through `_emit_skip` and the single
+    # FileExaminationEvent emission point holds.
+    if not degraded_mode and patched_file is not None and included_scope_units:
+        entries = _classify_included_scopes(
+            changed_file=changed_file,
+            content=content,
+            content_bytes=content_bytes,
+            patched_file=patched_file,
+            included_scope_units=included_scope_units,
+        )
+        await analyze_event_sink.emit_scope_exclusion(
+            ScopeExclusionEvent(
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                applied=trivial_scope_filter_enabled,
+                filter_version=TRIVIAL_FILTER_VERSION,
+                entries=entries,
+            )
+        )
+        if trivial_scope_filter_enabled and any(e.trivial for e in entries):
+            kept = tuple(
+                (su, hunks)
+                for su, hunks, entry in zip(
+                    included_scope_units, included_clipped_hunks, entries, strict=True
+                )
+                if not entry.trivial
+            )
+            if not kept:
+                return await _emit_skip(
+                    file_examination_sink=file_examination_sink,
+                    review_id=review_id,
+                    is_eval=is_eval,
+                    file_path=changed_file.path,
+                    skip_reason=SkipReason.ALL_SCOPES_TRIVIAL,
+                )
+            included_scope_units = tuple(su for su, _ in kept)
+            included_clipped_hunks = tuple(hunks for _, hunks in kept)
+            # Span-filter the fired query-ID set to the kept scopes. The
+            # SAME filtered set feeds the prompt's query_match_id_list AND
+            # the parser's OBSERVED admission below — filtering only the
+            # prompt text would let a finding anchored in a shown scope
+            # cite a query ID whose match lives in an excluded scope (an
+            # OBSERVED proof pointing at never-shown code).
+            query_match_id_set = _filter_query_ids_to_scopes(
+                query_match_id_set, content_bytes, included_scope_units
+            )
+            # Re-render over the kept scopes; this filtered prompt is what
+            # is actually sent (and what context_summary describes).
+            parts = analyze_prompt.render(
+                file_path=changed_file.path,
+                scope_unit_context=_assemble_scope_unit_context(
+                    included_scope_units=included_scope_units, file_content=content
+                ),
+                query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
+                diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
+                pass_index=pass_index,
+            )
 
     # Step 3e: SINGLE FileExaminationEvent emission point.
     await file_examination_sink.emit_file_examination(

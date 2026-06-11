@@ -799,6 +799,7 @@ def _build_eval_graph(
     provider: _FixtureScriptedProvider,
     publisher: _CapturingPublisher,
     checkpointer: Any,
+    trivial_scope_filter_enabled: bool = False,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -830,6 +831,11 @@ def _build_eval_graph(
         checkpointer=checkpointer,
         publisher=publisher,
         import_path_resolver=_NoOpImportPathResolver(),
+        # Shadow mode by default, matching production: the classifier runs
+        # and audits would-exclude verdicts on every eval scenario. An
+        # enforce-mode scenario opts in through this seam
+        # (specs/2026-06-10-trivial-scope-filter.md).
+        trivial_scope_filter_enabled=trivial_scope_filter_enabled,
     )
 
 
