@@ -1274,6 +1274,81 @@
         "title": "AnalyzeResponseRejectedEvent",
         "description": "Response-level rejection \u2014 the LLM response failed to parse as `AnalyzeResponseRaw`.\n\nDistinct event from `FindingProposalRejectedEvent` because that event\npresupposes a proposal; no proposal exists when the raw response\nitself fails to parse. `response_hash` is the SHA-256 of the FULL\nraw response text encoded as UTF-8 bytes (no truncation prefix).\nHash-only \u2014 no content leak per `DECISIONS.md#014`."
       },
+      "CacheLookupEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "cache_lookup",
+            "title": "Event Type",
+            "default": "cache_lookup"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "would_hit",
+              "miss"
+            ],
+            "title": "Outcome"
+          },
+          "cache_key": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Cache Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "outcome",
+          "cache_key"
+        ],
+        "title": "CacheLookupEvent",
+        "description": "Per-file analyze-cache lookup record \u2014 the lever-8 shadow-stage\ntelemetry (specs/2026-06-11-file-hash-analyze-cache.md).\n\nOne event per pass-0 clean-mode candidate file when the cache is\nenabled: `outcome=\"would_hit\"` means a live entry existed for the\ncomposed key (shadow mode still calls the model \u2014 nothing is\nserved); `outcome=\"miss\"` means none did and the store was\npopulated. The accumulated would-hit rate is the evidence the serve\nflip is gated on. `cache_key` is the eight-component digest from\n`cache/key.py::compute_analyze_cache_key`; the serve-stage\n`CacheServeEvent` (flip arc) carries the full self-contained replay\npayload \u2014 this shadow event deliberately stays thin.\n\nCarries `node_id` so replay's node-containment binds it to analyze's\nphase window without an owner-map exemption (`ScopeExclusionEvent`\nprecedent). Idempotency mode: event_id-PK per `DECISIONS.md#026` \u2014\nresume re-emission appends; consumer-side dedup collapses."
+      },
       "ContextManifestEntry": {
         "properties": {
           "file_path": {
@@ -3143,6 +3218,9 @@
                   "$ref": "#/components/schemas/ScopeExclusionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheLookupEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3188,6 +3266,7 @@
                   "agent_transition": "#/components/schemas/AgentTransitionEvent",
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -3395,6 +3474,9 @@
                   "$ref": "#/components/schemas/ScopeExclusionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheLookupEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3440,6 +3522,7 @@
                   "agent_transition": "#/components/schemas/AgentTransitionEvent",
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -3494,6 +3577,9 @@
                   "$ref": "#/components/schemas/ScopeExclusionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheLookupEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3539,6 +3625,7 @@
                   "agent_transition": "#/components/schemas/AgentTransitionEvent",
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -3948,6 +4035,9 @@
                   "$ref": "#/components/schemas/ScopeExclusionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheLookupEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3993,6 +4083,7 @@
                   "agent_transition": "#/components/schemas/AgentTransitionEvent",
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
+                  "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -4467,7 +4558,7 @@
           "ALL_SCOPES_TRIVIAL"
         ],
         "title": "SkipReason",
-        "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze\n  adapter only handles Python; the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
+        "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,\n  `ALL_SCOPES_TRIVIAL`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze\n  adapter only handles Python; the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
       },
       "SynthesizeCompletedEvent": {
         "properties": {

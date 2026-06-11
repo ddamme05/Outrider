@@ -661,6 +661,70 @@ export interface components {
             rejection_detail: string;
         };
         /**
+         * CacheLookupEvent
+         * @description Per-file analyze-cache lookup record — the lever-8 shadow-stage
+         *     telemetry (specs/2026-06-11-file-hash-analyze-cache.md).
+         *
+         *     One event per pass-0 clean-mode candidate file when the cache is
+         *     enabled: `outcome="would_hit"` means a live entry existed for the
+         *     composed key (shadow mode still calls the model — nothing is
+         *     served); `outcome="miss"` means none did and the store was
+         *     populated. The accumulated would-hit rate is the evidence the serve
+         *     flip is gated on. `cache_key` is the eight-component digest from
+         *     `cache/key.py::compute_analyze_cache_key`; the serve-stage
+         *     `CacheServeEvent` (flip arc) carries the full self-contained replay
+         *     payload — this shadow event deliberately stays thin.
+         *
+         *     Carries `node_id` so replay's node-containment binds it to analyze's
+         *     phase window without an owner-map exemption (`ScopeExclusionEvent`
+         *     precedent). Idempotency mode: event_id-PK per `DECISIONS.md#026` —
+         *     resume re-emission appends; consumer-side dedup collapses.
+         */
+        CacheLookupEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "cache_lookup";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** File Path */
+            file_path: string;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "would_hit" | "miss";
+            /** Cache Key */
+            cache_key: string;
+        };
+        /**
          * ContextManifestEntry
          * @description One scope-unit entry inside `LLMCallEvent.context_summary`.
          *
@@ -1692,7 +1756,7 @@ export interface components {
             start: components["schemas"]["ReviewPhaseEvent"] | null;
             end: components["schemas"]["ReviewPhaseEvent"] | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
         };
         /**
          * ReplayBucket
@@ -1784,11 +1848,11 @@ export interface components {
             /** Status */
             status: string | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Phases */
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
-            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Findings */
             findings: components["schemas"]["TimelineFindingContentView"][];
             /** Llm Exchanges */
@@ -1949,7 +2013,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Total */
             total: number;
         };
@@ -2191,7 +2255,8 @@ export interface components {
          *       by `should_skip` over file content + path.
          *     - Analyze-stage (rule rooted in analyze's decision rationale):
          *       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
-         *       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`. Set by the
+         *       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
+         *       `ALL_SCOPES_TRIVIAL`. Set by the
          *       analyze node body when it skips a file mid-pass.
          *       `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze
          *       adapter only handles Python; the value names "today's analyze
