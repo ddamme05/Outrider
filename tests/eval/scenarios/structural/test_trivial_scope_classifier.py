@@ -499,6 +499,55 @@ def test_base_side_directive_deletion_vetoes() -> None:
     assert verdict.offending_side == "base"
 
 
+def test_differential_oracle_comment_detection_on_own_corpus() -> None:
+    """Differential proof of the trivial-eligibility primitive: over this
+    repo's own `src/outrider` Python corpus, the classifier's
+    comment-line table must agree EXACTLY with an independent oracle
+    (CPython's `tokenize`) on which lines are standalone comments.
+
+    The load-bearing direction is over-claims (classifier says
+    comment-eligible, tokenize disagrees) — that is over-skip risk and
+    must be zero. Under-claims would be the safe direction but are also
+    pinned at zero while true, so a tree-sitter grammar upgrade that
+    shifts comment-node spans surfaces here loudly instead of silently
+    changing classification behavior.
+    """
+    import io
+    import pathlib
+    import tokenize as tokenize_mod
+
+    corpus = sorted(pathlib.Path("src/outrider").rglob("*.py"))
+    assert len(corpus) > 50, "corpus unexpectedly small — wrong cwd?"
+
+    over_claims: list[str] = []
+    under_claims: list[str] = []
+    checked_files = 0
+    for path in corpus:
+        src = path.read_bytes()
+        ctx = build_triviality_context(src, None)
+        if not ctx.head.parse_ok:
+            continue
+        text = src.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        oracle: set[int] = set()
+        try:
+            for tok in tokenize_mod.generate_tokens(io.StringIO(text).readline):
+                if tok.type == tokenize_mod.COMMENT:
+                    raw = lines[tok.start[0] - 1]
+                    if tok.start[1] == len(raw) - len(raw.lstrip()):
+                        oracle.add(tok.start[0])
+        except (tokenize_mod.TokenError, IndentationError, SyntaxError):
+            continue
+        checked_files += 1
+        eligible = set(ctx.head.comment_lines)
+        over_claims.extend(f"{path}:{n}" for n in sorted(eligible - oracle))
+        under_claims.extend(f"{path}:{n}" for n in sorted(oracle - eligible))
+
+    assert checked_files > 50
+    assert over_claims == [], f"over-skip risk — classifier claims non-comments: {over_claims[:10]}"
+    assert under_claims == [], f"grammar drift — oracle-only comment lines: {under_claims[:10]}"
+
+
 def test_comment_only_modification_is_trivial_through_real_pipeline() -> None:
     """The savings case: replacing one ordinary comment with another —
     both sides comment-only — classifies trivial."""
