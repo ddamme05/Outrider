@@ -4,7 +4,9 @@
 
 Every row in an `is_eval`-bearing table (`reviews`, `audit_events`,
 `findings`, `llm_call_content`, `anomalies` per `docs/schema.md` "Eval
-isolation") produced during an eval run MUST carry `is_eval=True`. Factories
+isolation", plus `analyze_file_cache` per
+specs/2026-06-11-file-hash-analyze-cache.md) produced during an eval run
+MUST carry `is_eval=True`. Factories
 own setting the flag; this gate is the after-the-fact check that catches a
 factory — or a direct insert — that forgot it.
 
@@ -50,7 +52,10 @@ _IS_EVAL_VIOLATIONS_QUERY = text(
     "FROM llm_call_content WHERE is_eval IS DISTINCT FROM TRUE "
     "UNION ALL "
     "SELECT 'anomalies' AS table_name, id::text AS row_id "
-    "FROM anomalies WHERE is_eval IS DISTINCT FROM TRUE"
+    "FROM anomalies WHERE is_eval IS DISTINCT FROM TRUE "
+    "UNION ALL "
+    "SELECT 'analyze_file_cache' AS table_name, cache_key AS row_id "
+    "FROM analyze_file_cache WHERE is_eval IS DISTINCT FROM TRUE"
 )
 
 
