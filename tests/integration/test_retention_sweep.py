@@ -1,11 +1,12 @@
 """Retention sweep happy path: expired content rows are purged with audit trail.
 
 Backs the per-table purge_audit contract from the schema-layer spec:
-one purge_audit row per target table per sweep run. Verifies all three
-retention content tables (reviews, findings, llm_call_content) are
-swept correctly and audit_events is untouched (it's append-only forever
-per #014; the trigger would block any DELETE attempt and fail the test
-loud).
+one purge_audit row per target table per sweep run. Verifies all four
+retention content tables (reviews, findings, llm_call_content,
+analyze_file_cache — the last per
+specs/2026-06-11-file-hash-analyze-cache.md) are swept correctly and
+audit_events is untouched (it's append-only forever per #014; the
+trigger would block any DELETE attempt and fail the test loud).
 """
 
 from sqlalchemy import text
@@ -17,7 +18,7 @@ _INSTALLATION_ID = 12345
 
 
 async def _seed_expired_content(engine: AsyncEngine) -> None:
-    """Populate all three retention tables with rows that are already expired."""
+    """Populate all four retention tables with rows that are already expired."""
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -74,10 +75,26 @@ async def _seed_expired_content(engine: AsyncEngine) -> None:
             ),
             {"event_id": event_id, "id": _INSTALLATION_ID},
         )
+        await conn.execute(
+            text(
+                "INSERT INTO analyze_file_cache ("
+                "  cache_key, installation_id, repo_id, source_review_id, "
+                "  file_path, payload, model, prompt_template_version, "
+                "  trivial_filter_version, query_registry_digest, "
+                "  active_policy_version, analyze_parser_version, prompt_hash, "
+                "  retention_expires_at"
+                ") VALUES ("
+                "  :key, :id, 100, :review_id, 'foo.py', '{}'::jsonb, 'm', "
+                "  'pv', 'fv', 'qd', 'apv', 'parser', 'ph', "
+                "  NOW() - INTERVAL '1 day'"
+                ")"
+            ),
+            {"key": "a" * 64, "id": _INSTALLATION_ID, "review_id": review_id},
+        )
 
 
-async def test_purge_expired_deletes_all_three_tables(migrated_db: str) -> None:
-    """All three retention tables are swept, audit_events stays intact."""
+async def test_purge_expired_deletes_all_four_tables(migrated_db: str) -> None:
+    """All four retention tables are swept, audit_events stays intact."""
     engine = create_async_engine(migrated_db)
     try:
         await _seed_expired_content(engine)
@@ -95,13 +112,14 @@ async def test_purge_expired_deletes_all_three_tables(migrated_db: str) -> None:
             rows_per_table = await purge_expired(conn, purge_role="test")
 
         assert rows_per_table == {
+            "analyze_file_cache": 1,
             "llm_call_content": 1,
             "findings": 1,
             "reviews": 1,
         }
 
         async with engine.connect() as conn:
-            for table in ("llm_call_content", "findings", "reviews"):
+            for table in ("analyze_file_cache", "llm_call_content", "findings", "reviews"):
                 count = await conn.execute(
                     text(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
                 )
@@ -122,9 +140,9 @@ async def test_purge_expired_deletes_all_three_tables(migrated_db: str) -> None:
                 )
             )
             rows = list(purge_rows)
-            assert len(rows) == 3
+            assert len(rows) == 4
             tables = {row[0] for row in rows}
-            assert tables == {"llm_call_content", "findings", "reviews"}
+            assert tables == {"analyze_file_cache", "llm_call_content", "findings", "reviews"}
             for _table, rows_affected, purge_role in rows:
                 assert rows_affected == 1
                 assert purge_role == "test"

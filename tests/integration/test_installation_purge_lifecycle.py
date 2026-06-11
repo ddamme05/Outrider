@@ -93,6 +93,22 @@ async def _seed_full_installation_state(engine: AsyncEngine) -> None:
             ),
             {"event_id": event_id, "id": _INSTALLATION_ID},
         )
+        await conn.execute(
+            text(
+                "INSERT INTO analyze_file_cache ("
+                "  cache_key, installation_id, repo_id, source_review_id, "
+                "  file_path, payload, model, prompt_template_version, "
+                "  trivial_filter_version, query_registry_digest, "
+                "  active_policy_version, analyze_parser_version, prompt_hash, "
+                "  retention_expires_at"
+                ") VALUES ("
+                "  :key, :id, 100, :review_id, 'foo.py', '{}'::jsonb, 'm', "
+                "  'pv', 'fv', 'qd', 'apv', 'parser', 'ph', "
+                "  NOW() + INTERVAL '30 days'"
+                ")"
+            ),
+            {"key": "b" * 64, "id": _INSTALLATION_ID, "review_id": review_id},
+        )
 
 
 async def test_purge_installation_full_lifecycle(migrated_db: str) -> None:
@@ -107,13 +123,14 @@ async def test_purge_installation_full_lifecycle(migrated_db: str) -> None:
             )
 
         assert rows_per_table == {
+            "analyze_file_cache": 1,
             "llm_call_content": 1,
             "findings": 1,
             "reviews": 1,
         }
 
         async with engine.connect() as conn:
-            for table in ("llm_call_content", "findings", "reviews"):
+            for table in ("analyze_file_cache", "llm_call_content", "findings", "reviews"):
                 count = await conn.execute(
                     text(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
                 )
@@ -147,7 +164,7 @@ async def test_purge_installation_full_lifecycle(migrated_db: str) -> None:
                 )
             )
             rows = list(purge_rows)
-            assert len(rows) == 3
+            assert len(rows) == 4
             for installation_id, _table, rows_affected, purge_role in rows:
                 assert installation_id == _INSTALLATION_ID, (
                     "purge_audit row should record the scoped installation_id, "

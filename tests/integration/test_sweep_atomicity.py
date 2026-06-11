@@ -8,7 +8,7 @@ without writing the per-table purge_audit row, breaking the forensic
 trail.
 
 Approach: monkeypatch ``_write_purge_audit`` to raise after the second
-call. The deletes happen first (all three tables); writes to
+call. The deletes happen first (all four retention tables); writes to
 purge_audit happen after. By raising mid-purge_audit-write, the test
 verifies the whole transaction rolls back — both content rows AND any
 purge_audit rows that landed before the failure.
@@ -83,6 +83,22 @@ async def _seed_expired_content(engine: AsyncEngine) -> None:
             ),
             {"event_id": event_id, "id": _INSTALLATION_ID},
         )
+        await conn.execute(
+            text(
+                "INSERT INTO analyze_file_cache ("
+                "  cache_key, installation_id, repo_id, source_review_id, "
+                "  file_path, payload, model, prompt_template_version, "
+                "  trivial_filter_version, query_registry_digest, "
+                "  active_policy_version, analyze_parser_version, prompt_hash, "
+                "  retention_expires_at"
+                ") VALUES ("
+                "  :key, :id, 100, :review_id, 'foo.py', '{}'::jsonb, 'm', "
+                "  'pv', 'fv', 'qd', 'apv', 'parser', 'ph', "
+                "  NOW() - INTERVAL '1 day'"
+                ")"
+            ),
+            {"key": "c" * 64, "id": _INSTALLATION_ID, "review_id": review_id},
+        )
 
 
 async def test_failure_mid_sweep_rolls_back_all_deletes(
@@ -116,10 +132,10 @@ async def test_failure_mid_sweep_rolls_back_all_deletes(
             async with engine.begin() as conn:
                 await purge_expired(conn, purge_role="test")
 
-        # Transaction rolled back: all three content tables retain their
+        # Transaction rolled back: all four content tables retain their
         # rows; no purge_audit rows survive.
         async with engine.connect() as conn:
-            for table in ("llm_call_content", "findings", "reviews"):
+            for table in ("analyze_file_cache", "llm_call_content", "findings", "reviews"):
                 count = await conn.execute(
                     text(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
                 )
@@ -162,6 +178,7 @@ async def test_resumed_sweep_after_failure_completes_cleanly(
             rows_per_table = await purge_expired(conn, purge_role="test")
 
         assert rows_per_table == {
+            "analyze_file_cache": 1,
             "llm_call_content": 1,
             "findings": 1,
             "reviews": 1,
@@ -169,6 +186,6 @@ async def test_resumed_sweep_after_failure_completes_cleanly(
 
         async with engine.connect() as conn:
             purge_count = await conn.execute(text("SELECT COUNT(*) FROM purge_audit"))
-            assert purge_count.scalar_one() == 3
+            assert purge_count.scalar_one() == 4
     finally:
         await engine.dispose()
