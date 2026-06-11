@@ -79,6 +79,26 @@ ResolutionStatus = Literal["resolved", "ambiguous", "unresolved"]
 and consumed by the trace node per `DECISIONS.md#017`."""
 
 
+class TrivialityReason(StrEnum):
+    """Why the trivial-scope classifier ruled the way it did, per scope.
+
+    Produced by `ast_facts.triviality.classify_scope_triviality`; carried
+    on `ScopeExclusionEvent` entries (audit side imports this from the
+    light-types surface — the classifier module itself loads tree-sitter
+    and stays behind the lazy `__getattr__`). `ALL_LINES_ORDINARY_COMMENT`
+    is the only trivial=True reason; every other value is a fail-closed
+    veto. See specs/2026-06-10-trivial-scope-filter.md.
+    """
+
+    ALL_LINES_ORDINARY_COMMENT = "all_lines_ordinary_comment"
+    NON_COMMENT_CONTENT = "non_comment_content"
+    BLANK_OR_WHITESPACE_LINE = "blank_or_whitespace_line"
+    DIRECTIVE_COMMENT = "directive_comment"
+    PARSE_ERROR = "parse_error"
+    MISSING_BASE_CONTENT = "missing_base_content"
+    NO_CHANGED_LINES = "no_changed_lines"
+
+
 class SkipReason(StrEnum):
     """Skip-reason taxonomy across parser AND analyze-node decisions.
 
