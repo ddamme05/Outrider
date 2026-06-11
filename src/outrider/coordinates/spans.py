@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from outrider.ast_facts.models import (
     Span,  # noqa: TC001 — constructed at runtime by line_range_to_span
 )
@@ -29,6 +31,35 @@ if TYPE_CHECKING:
     from unidiff import PatchedFile
 
     from outrider.ast_facts.models import ScopeUnit
+
+
+class ChangedLineSpan(BaseModel):
+    """One changed line in one side's source: 1-indexed line number plus
+    its whole-line byte `Span` (via `line_range_to_span`, half-open).
+
+    The side (head vs base) is carried by which `ScopeChangedLineSpans`
+    field holds the entry, not by this model.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    line_no: int = Field(ge=1)
+    span: Span
+
+
+class ScopeChangedLineSpans(BaseModel):
+    """Per-side changed-line data for one scope unit — the trivial-scope
+    filter's veto input (see `changed_line_spans`).
+
+    `head_added` lines verify against the head parse; `base_removed`
+    lines verify against the base parse. Coordinates-owned domain shape:
+    raw `unidiff.Line` objects never leave `coordinates/`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    head_added: tuple[ChangedLineSpan, ...]
+    base_removed: tuple[ChangedLineSpan, ...]
 
 
 def span_within_file(span: Span, file_byte_length: int) -> bool:
@@ -407,33 +438,98 @@ def scope_unit_diff_hunks(scope_unit: ScopeUnit, patched_file: PatchedFile) -> t
     return tuple(surviving)
 
 
-def _clip_hunk_to_line_range(
+def changed_line_spans(
+    scope_unit: ScopeUnit,
+    patched_file: PatchedFile,
+    *,
+    head_source: str,
+    base_source: str | None,
+) -> ScopeChangedLineSpans:
+    """Per-side changed-line spans for `scope_unit` — the trivial-scope
+    filter's veto input.
+
+    HEAD side: added lines whose `target_line_no` falls in the scope's
+    line range (the same rule that admits the scope via
+    `scope_unit_has_added_lines`), each as a whole-line span in
+    `head_source`.
+
+    BASE side: the kept-removed set — removed lines that survive
+    `_clip_hunk_lines` clipping to the scope's range, i.e. EXACTLY the
+    deletions the prompt's clipped hunks show (ride-along semantics
+    included). Per the trivial-scope-filter spec, base-range containment
+    attribution is rejected: a deletion adjacent to the scope rides into
+    the prompt while mapping outside the scope's base range, and
+    anything the prompt would have shown the model must pass the veto.
+
+    `base_source=None` with a non-empty kept-removed set raises
+    `CoordinateError` — unreachable under the intake contract (modified
+    files carry `content_base`; added files have no removed lines;
+    removed files never pass admission), so this is a misuse guard, not
+    a control path. The filter wiring fail-closes BEFORE calling when
+    base content is genuinely absent.
+    """
+    added_nos = sorted(
+        line.target_line_no
+        for hunk in patched_file
+        for line in hunk
+        if line.is_added
+        and line.target_line_no is not None
+        and scope_unit.line_start <= line.target_line_no <= scope_unit.line_end
+    )
+    head_added = tuple(
+        ChangedLineSpan(line_no=n, span=line_range_to_span(n, n, head_source)) for n in added_nos
+    )
+
+    removed_nos: set[int] = set()
+    for hunk in patched_file:
+        kept = _clip_hunk_lines(
+            hunk, line_start=scope_unit.line_start, line_end=scope_unit.line_end
+        )
+        for line in kept:
+            src_no = getattr(line, "source_line_no", None)
+            if getattr(line, "is_removed", False) and src_no is not None:
+                removed_nos.add(src_no)
+
+    if removed_nos and base_source is None:
+        raise CoordinateError(
+            "changed_line_spans: kept-removed lines exist but base_source is None",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
+        )
+    base_removed: tuple[ChangedLineSpan, ...] = ()
+    if base_source is not None:
+        base_removed = tuple(
+            ChangedLineSpan(line_no=n, span=line_range_to_span(n, n, base_source))
+            for n in sorted(removed_nos)
+        )
+    return ScopeChangedLineSpans(head_added=head_added, base_removed=base_removed)
+
+
+def _clip_hunk_lines(
     hunk: object,
     *,
     line_start: int,
     line_end: int,
-) -> str | None:
-    """Return a clipped hunk text with header recomputed, or None if empty.
+) -> list[object]:
+    """Structured core of hunk clipping: the kept `unidiff.Line` objects.
 
-    Filters body lines by target-side line number. Removed lines carry
-    along with adjacent in-range target lines: a removed line is
-    included iff the surrounding context puts it inside the kept block
-    (in practice: between two kept lines, or adjacent to a kept added/
-    context line). Header `@@ -src_start,src_len +tgt_start,tgt_len @@`
-    is rewritten to match the surviving line counts.
+    Single source of truth for which lines survive clipping to the
+    inclusive target-side range `[line_start, line_end]`. Removed lines
+    have no target line number; they ride along with adjacent kept
+    target context (kept iff the next kept-or-skippable target line is
+    in range, OR the previous one was). Consumed by BOTH
+    `_clip_hunk_to_line_range` (prompt rendering) and
+    `changed_line_spans` (the trivial-scope veto), so the veto sees
+    exactly the lines the prompt shows — one clipping decision, two
+    consumers. Private: raw `unidiff.Line` objects never leave
+    `coordinates/`.
     """
     # unidiff's Hunk is iterable over Line objects; each Line has
     # `is_added`, `is_removed`, `is_context`, `source_line_no`,
     # `target_line_no`, and `value`.
-    hunk_lines: list[object] = list(hunk)  # type: ignore[call-overload]
-
-    # First pass: decide which lines to keep, walking forward. A removed
-    # line is kept iff its immediate target neighbor (next kept added/
-    # context line forward, or previous one backward) was kept.
     kept: list[object] = []
     pending_removed: list[object] = []
     any_kept_in_block = False
-    for line in hunk_lines:
+    for line in list(hunk):  # type: ignore[call-overload]
         target_no: int | None = getattr(line, "target_line_no", None)
         if target_no is not None:
             # Added or context line — has a target line number.
@@ -459,6 +555,24 @@ def _clip_hunk_to_line_range(
     # iff the last contiguous block ended with kept lines.
     if any_kept_in_block:
         kept.extend(pending_removed)
+    return kept
+
+
+def _clip_hunk_to_line_range(
+    hunk: object,
+    *,
+    line_start: int,
+    line_end: int,
+) -> str | None:
+    """Return a clipped hunk text with header recomputed, or None if empty.
+
+    Line selection is `_clip_hunk_lines` (the shared structured core);
+    this renderer rewrites the header `@@ -src_start,src_len
+    +tgt_start,tgt_len @@` to match the surviving line counts and
+    stringifies.
+    """
+    hunk_lines: list[object] = list(hunk)  # type: ignore[call-overload]
+    kept = _clip_hunk_lines(hunk, line_start=line_start, line_end=line_end)
 
     if not kept:
         return None
