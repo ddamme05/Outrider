@@ -235,8 +235,8 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert event.outcome == "miss"
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
-    # The written key is exactly the recomputed eight-component key over
-    # the request actually sent.
+    # The written key is exactly the recomputed full key (prompt digest
+    # + eight explicit components) over the request actually sent.
     [request] = provider.calls
     expected_key = compute_analyze_cache_key(
         system_prompt=request.system_prompt,

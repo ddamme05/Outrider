@@ -8,8 +8,9 @@ FK CASCADE couples cache rows to their source review's purge,
 `installation_id` FK RESTRICT forces purge-before-delete (with
 purge_audit), and `retention_expires_at` carries the
 min(TTL, source retention) write-time bound. `cache_key` (the
-eight-component digest) is the PK and the `ON CONFLICT DO NOTHING`
-arbiter for concurrent same-key writes.
+nine-field digest: prompt digest + eight explicit scope/version
+components) is the PK and the `ON CONFLICT DO NOTHING` arbiter for
+concurrent same-key writes.
 
 Plain (non-concurrent) DDL: brand-new table, nothing to lock.
 """

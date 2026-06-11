@@ -37,7 +37,9 @@ def compute_analyze_cache_key(
     active_policy_version: str,
     analyze_parser_version: str,
 ) -> str:
-    """The eight-component analyze-cache key, as one SHA-256 hex digest.
+    """The analyze-cache key: nine length-prefixed fields — the canonical
+    prompt digest plus eight explicit scope/version components — as one
+    SHA-256 hex digest.
 
     Component order is part of the recipe — changing it is a cache-wide
     invalidation and must be deliberate. `active_policy_version` is the
