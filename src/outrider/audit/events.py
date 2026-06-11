@@ -3,7 +3,7 @@
 """Audit event class hierarchy + discriminated union.
 
 `AuditEventBase` is the shared base. The hierarchy has eighteen
-concrete subtypes: twelve V1 subtypes per spec §8.2 (`AgentTransitionEvent`,
+concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
 `HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`,
