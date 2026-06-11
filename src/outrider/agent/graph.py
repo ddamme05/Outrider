@@ -205,6 +205,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
+    trivial_scope_filter_enabled: bool = False,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -408,6 +409,11 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         analyze_event_sink=analyze_event_sink,
         import_path_resolver=import_path_resolver,
         total_review_budget_tokens=total_review_budget_tokens,
+        # Inert default (shadow mode): the classifier runs and audits
+        # would-exclude verdicts but excludes nothing. The flip to True
+        # is a later evidence-backed change per the trivial-scope-filter
+        # spec's #041-style lifecycle.
+        trivial_scope_filter_enabled=trivial_scope_filter_enabled,
     )
     publish_callable = functools.partial(
         publish,

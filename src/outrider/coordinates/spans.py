@@ -242,6 +242,18 @@ def patched_file_has_added_lines(patched_file: PatchedFile) -> bool:
     return any(line.is_added for hunk in patched_file for line in hunk)
 
 
+def patched_file_has_removed_lines(patched_file: PatchedFile) -> bool:
+    """True iff any hunk in `patched_file` carries at least one removed line.
+
+    Sibling of `patched_file_has_added_lines` for the trivial-scope
+    filter's fail-closed pre-check (removed lines with no base content →
+    classify nothing trivial). Lives in `coordinates/` because reading
+    `unidiff.Line` attributes is the boundary owner's job per
+    `docs/trust-boundaries.md#3-coordinate-translation`.
+    """
+    return any(line.is_removed for hunk in patched_file for line in hunk)
+
+
 def added_line_byte_ranges(patched_file: PatchedFile, source: str) -> tuple[tuple[int, int], ...]:
     """Half-open `(byte_start, byte_end)` ranges in HEAD `source` covering every line
     the patch ADDS (target side).
