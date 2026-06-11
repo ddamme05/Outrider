@@ -91,6 +91,7 @@ under-estimates. A tokenizer-grade estimate is FUP-049 scope.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -127,7 +128,7 @@ from outrider.audit.events import (
     ScopeExclusionEntry,
     ScopeExclusionEvent,
 )
-from outrider.cache import compute_analyze_cache_key
+from outrider.cache import CacheStoreError, compute_analyze_cache_key
 from outrider.coordinates import (
     added_line_byte_ranges,
     bound_diff_hunks_text,
@@ -169,6 +170,8 @@ if TYPE_CHECKING:
     )
     from outrider.schemas.pr_context import ChangedFile
 
+
+logger = logging.getLogger(__name__)
 
 # One file can starve at most `1 / PER_FILE_CAP_FRACTION` others on the
 # review-wide budget; richer fairness (iteration ordering, per-installation
@@ -345,20 +348,31 @@ async def analyze(
         )
     )
 
-    # Analyze-cache scope, resolved ONCE per pass from the reviews row —
+    # Analyze-cache scope, resolved once on pass 0 from the reviews row —
     # the canonical (installation_id, repo_id) tenant identity the cache
-    # key requires (never PRContext's mutable owner/repo strings). Sits
-    # AFTER the phase-start emit: the resolve is node work (a DB read),
-    # and `phase-events-bound-work` requires node work inside the
-    # phase envelope. None disables the cache for this pass: store not
+    # key requires (never PRContext's mutable owner/repo strings); the
+    # cache is pass-0-only, so trace rounds skip the SELECT. Sits AFTER
+    # the phase-start emit: the resolve is node work (a DB read), and
+    # `phase-events-bound-work` requires node work inside the phase
+    # envelope. None disables the cache for this pass: store not
     # injected (the eval driver's default), review row missing
-    # (fail-open to UNCACHED, never to cross-scope), or an is_eval
-    # review reaching a wired store (belt-and-suspenders for the spec's
-    # eval-bypass rule).
+    # (fail-open to UNCACHED, never to cross-scope), an eval review by
+    # EITHER flag — the resolved row's is_eval or state.is_eval, so a
+    # divergence between the two can never write production rows
+    # (belt-and-suspenders for the spec's eval-bypass rule) — or a
+    # store DB failure: the shadow cache is optional telemetry and must
+    # never abort a review (`CacheStoreError` is contained, not raised).
     cache_scope: CacheScope | None = None
-    if analyze_cache_store is not None:
-        cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
-        if cache_scope is not None and cache_scope.is_eval:
+    if analyze_cache_store is not None and pass_index == 0:
+        try:
+            cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
+        except CacheStoreError:
+            logger.warning(
+                "analyze-cache resolve_scope failed; cache disabled for this pass",
+                exc_info=True,
+            )
+            cache_scope = None
+        if cache_scope is not None and (cache_scope.is_eval or state.is_eval):
             cache_scope = None
 
     # Local accumulators — single source of truth for AnalyzeCompletedEvent
@@ -1241,16 +1255,36 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             active_policy_version=active_policy_version,
             analyze_parser_version=ANALYZE_PARSER_VERSION,
         )
-        cache_would_hit = await analyze_cache_store.lookup(cache_key) is not None
-        await analyze_event_sink.emit_cache_lookup(
-            CacheLookupEvent(
-                review_id=review_id,
-                is_eval=is_eval,
-                file_path=changed_file.path,
-                outcome="would_hit" if cache_would_hit else "miss",
-                cache_key=cache_key,
+        try:
+            # Self-hit exclusion: a crash/retry re-execution of this node
+            # must not read its own first attempt's writes as hits — that
+            # would inflate the would-hit rate (the serve flip's evidence)
+            # and, post-flip, serve a review its own partial output.
+            cache_would_hit = (
+                await analyze_cache_store.lookup(cache_key, exclude_source_review_id=review_id)
+                is not None
             )
-        )
+        except CacheStoreError:
+            # Contained: the shadow cache must never abort a review. No
+            # CacheLookupEvent either — the lookup didn't complete, and a
+            # fabricated "miss" would be false audit history. cache_key is
+            # cleared so step 3g's write gate skips this file too.
+            logger.warning(
+                "analyze-cache lookup failed; cache skipped for %s",
+                changed_file.path,
+                exc_info=True,
+            )
+            cache_key = None
+        else:
+            await analyze_event_sink.emit_cache_lookup(
+                CacheLookupEvent(
+                    review_id=review_id,
+                    is_eval=is_eval,
+                    file_path=changed_file.path,
+                    outcome="would_hit" if cache_would_hit else "miss",
+                    cache_key=cache_key,
+                )
+            )
 
     # Step 3e: SINGLE FileExaminationEvent emission point.
     await file_examination_sink.emit_file_examination(
@@ -1360,38 +1394,54 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # Step 3g: analyze-cache write-on-miss. Only completed clean-mode
     # calls populate the store — a response-level rejection has no
     # admitted outcome to cache (zero findings, by contrast, IS a valid
-    # cacheable outcome). The payload carries the content tier: admitted
-    # finding content (pre-HITL, policy-stamped) + FULL trace candidates
-    # including their LLM-derived `reason` — content lives in the
-    # retention-bound cache row, never on the audit events.
+    # cacheable outcome), and a `max_tokens`-truncated response is never
+    # cached even when its JSON happens to validate: the finding set may
+    # be silently incomplete, and memoizing it would serve the truncated
+    # outcome for the row's whole lifetime. The payload carries the
+    # content tier: admitted finding content (pre-HITL, policy-stamped)
+    # + FULL trace candidates including their LLM-derived `reason` —
+    # content lives in the retention-bound cache row, never on the
+    # audit events.
     if (
         analyze_cache_store is not None
         and cache_scope is not None
         and cache_key is not None
         and not cache_would_hit
         and parser_result.response_rejection is None
+        and response.finish_reason != "max_tokens"
     ):
-        await analyze_cache_store.write(
-            cache_key=cache_key,
-            scope=cache_scope,
-            source_review_id=review_id,
-            file_path=changed_file.path,
-            payload={
-                "findings": [f.model_dump(mode="json") for f in parser_result.admitted_findings],
-                "trace_candidates": [
-                    c.model_dump(mode="json") for c in parser_result.trace_candidates
-                ],
-            },
-            model=analyze_model,
-            prompt_template_version=analyze_prompt.VERSION,
-            trivial_filter_version=TRIVIAL_FILTER_VERSION,
-            query_registry_digest=QUERY_REGISTRY_DIGEST,
-            active_policy_version=active_policy_version,
-            analyze_parser_version=ANALYZE_PARSER_VERSION,
-            prompt_hash=_canonical_prompt_hash(
-                system_prompt=parts.system_prompt, user_prompt=parts.user_prompt
-            ),
-        )
+        try:
+            await analyze_cache_store.write(
+                cache_key=cache_key,
+                scope=cache_scope,
+                source_review_id=review_id,
+                file_path=changed_file.path,
+                payload={
+                    "findings": [
+                        f.model_dump(mode="json") for f in parser_result.admitted_findings
+                    ],
+                    "trace_candidates": [
+                        c.model_dump(mode="json") for c in parser_result.trace_candidates
+                    ],
+                },
+                model=analyze_model,
+                prompt_template_version=analyze_prompt.VERSION,
+                trivial_filter_version=TRIVIAL_FILTER_VERSION,
+                query_registry_digest=QUERY_REGISTRY_DIGEST,
+                active_policy_version=active_policy_version,
+                analyze_parser_version=ANALYZE_PARSER_VERSION,
+                prompt_hash=_canonical_prompt_hash(
+                    system_prompt=parts.system_prompt, user_prompt=parts.user_prompt
+                ),
+            )
+        except CacheStoreError:
+            # Contained: the review's findings are already emitted; a
+            # failed cache write loses nothing but one memoization.
+            logger.warning(
+                "analyze-cache write failed; outcome not cached for %s",
+                changed_file.path,
+                exc_info=True,
+            )
 
     return _FileOutcome(
         parse_status=parse_status_for_event,

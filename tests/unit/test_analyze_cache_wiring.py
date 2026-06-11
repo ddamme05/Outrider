@@ -4,9 +4,14 @@
 Pins the Stage-B contracts: store-or-None is the enable switch (None =
 zero cache behavior); a miss emits `CacheLookupEvent(outcome="miss")`,
 calls the model, and writes the store with the composed key + content
-payload; a would-hit emits `outcome="would_hit"`, STILL calls the model
-(shadow — nothing served), and writes nothing; an is_eval review never
-touches a wired store; a response-level rejection caches nothing.
+payload + the full version-component set; a would-hit emits
+`outcome="would_hit"`, STILL calls the model (shadow — nothing served),
+and writes nothing; an eval review never touches a wired store (by
+EITHER the resolved scope's flag or state.is_eval); the lookup excludes
+the review's own prior writes (crash-resume self-hits); a
+response-level rejection and a `max_tokens`-truncated response cache
+nothing; and a `CacheStoreError` from any store call is contained — the
+shadow cache must never abort a review.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ import pytest
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
-from outrider.cache import CacheEntry, CacheScope, compute_analyze_cache_key
+from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
 from outrider.llm.base import LLMRequest, LLMResponse, _canonical_prompt_hash
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
@@ -39,31 +44,51 @@ _REVIEW_ID = UUID("11112222-3333-4444-5555-666677778888")
 
 
 class _FakeCacheStore:
-    """Records calls; lookup behavior is scripted per test."""
+    """Records calls; lookup behavior is scripted per test.
 
-    def __init__(self, *, scope: CacheScope | None, entry: CacheEntry | None = None) -> None:
+    `raise_on` scripts a `CacheStoreError` from one named method —
+    the containment tests' lever.
+    """
+
+    def __init__(
+        self,
+        *,
+        scope: CacheScope | None,
+        entry: CacheEntry | None = None,
+        raise_on: str | None = None,
+    ) -> None:
         self._scope = scope
         self._entry = entry
+        self._raise_on = raise_on
         self.resolve_calls: list[UUID] = []
-        self.lookup_calls: list[str] = []
+        self.lookup_calls: list[tuple[str, UUID | None]] = []
         self.write_calls: list[dict[str, Any]] = []
 
     async def resolve_scope(self, review_id: UUID) -> CacheScope | None:
         self.resolve_calls.append(review_id)
+        if self._raise_on == "resolve_scope":
+            raise CacheStoreError("scripted resolve failure")
         return self._scope
 
-    async def lookup(self, cache_key: str) -> CacheEntry | None:
-        self.lookup_calls.append(cache_key)
+    async def lookup(
+        self, cache_key: str, *, exclude_source_review_id: UUID | None = None
+    ) -> CacheEntry | None:
+        self.lookup_calls.append((cache_key, exclude_source_review_id))
+        if self._raise_on == "lookup":
+            raise CacheStoreError("scripted lookup failure")
         return self._entry
 
     async def write(self, **kwargs: Any) -> None:
         self.write_calls.append(kwargs)
+        if self._raise_on == "write":
+            raise CacheStoreError("scripted write failure")
 
 
 class _StubLLMProvider:
-    def __init__(self, response_text: str | None = None) -> None:
+    def __init__(self, response_text: str | None = None, finish_reason: str = "end_turn") -> None:
         self.calls: list[LLMRequest] = []
         self._text = response_text if response_text is not None else json.dumps({"findings": []})
+        self._finish_reason = finish_reason
 
     async def aclose(self) -> None:
         return None
@@ -77,7 +102,7 @@ class _StubLLMProvider:
             output_tokens=10,
             cache_read_tokens=0,
             cache_write_tokens=0,
-            finish_reason="end_turn",
+            finish_reason=self._finish_reason,
             latency_ms=10,
         )
 
@@ -156,7 +181,7 @@ _SCOPE = CacheScope(
 )
 
 
-def _state() -> ReviewState:
+def _state(*, is_eval: bool = False) -> ReviewState:
     changed = ChangedFile(
         path="src/cached.py",
         status="modified",
@@ -188,22 +213,28 @@ def _state() -> ReviewState:
         relevant_dimensions=(ReviewDimension.SECURITY,),
         reasoning="test",
     )
+    # Default is the production-real combination: state.is_eval matches
+    # the reviews row both False. The eval-veto tests override one side.
     return ReviewState(
         review_id=_REVIEW_ID,
         received_at=datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC),
         pr_context=pr_context,
         triage_result=triage,
-        is_eval=True,
+        is_eval=is_eval,
     )
 
 
 async def _run(
-    store: _FakeCacheStore | None, *, response_text: str | None = None
+    store: _FakeCacheStore | None,
+    *,
+    response_text: str | None = None,
+    finish_reason: str = "end_turn",
+    state_is_eval: bool = False,
 ) -> tuple[_StubLLMProvider, _RecordingAnalyzeEventSink]:
-    provider = _StubLLMProvider(response_text)
+    provider = _StubLLMProvider(response_text, finish_reason=finish_reason)
     sink = _RecordingAnalyzeEventSink()
     await analyze(
-        _state(),
+        _state(is_eval=state_is_eval),
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6",
         standard_analyze_model="claude-sonnet-4-6",
@@ -231,8 +262,13 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     provider, sink = await _run(store)
 
     assert store.resolve_calls == [_REVIEW_ID]
+    # Self-hit exclusion: the lookup names the current review so a
+    # crash-resume re-run can't count its own writes as hits.
+    [(looked_up_key, excluded)] = store.lookup_calls
+    assert excluded == _REVIEW_ID
     [event] = sink.cache_lookups
     assert event.outcome == "miss"
+    assert event.is_eval is False  # threaded from state, not hardcoded
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
     # The written key is exactly the recomputed full key (prompt digest
@@ -250,13 +286,23 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         active_policy_version=ACTIVE_POLICY_VERSION,
         analyze_parser_version=ANALYZE_PARSER_VERSION,
     )
-    assert write["cache_key"] == expected_key == event.cache_key
+    assert write["cache_key"] == expected_key == event.cache_key == looked_up_key
     assert write["source_review_id"] == _REVIEW_ID
     assert write["payload"]["findings"] == []  # zero findings IS cacheable
     assert write["payload"]["trace_candidates"] == []
     assert write["prompt_hash"] == _canonical_prompt_hash(
         system_prompt=request.system_prompt, user_prompt=request.user_prompt
     )
+    # The denormalized component columns must carry the SAME values the
+    # key was composed from — a write-side value drifting from the key
+    # side (e.g. module constant instead of the threaded policy version)
+    # would silently misdescribe rows in the Stage-B telemetry.
+    assert write["model"] == "claude-sonnet-4-6"
+    assert write["prompt_template_version"] == analyze_prompt.VERSION
+    assert write["trivial_filter_version"] == TRIVIAL_FILTER_VERSION
+    assert write["query_registry_digest"] == QUERY_REGISTRY_DIGEST
+    assert write["active_policy_version"] == ACTIVE_POLICY_VERSION
+    assert write["analyze_parser_version"] == ANALYZE_PARSER_VERSION
 
 
 @pytest.mark.asyncio
@@ -295,6 +341,77 @@ async def test_is_eval_review_never_touches_a_wired_store() -> None:
     assert store.write_calls == []
     assert sink.cache_lookups == []
     assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_state_is_eval_also_disables_a_wired_store() -> None:
+    """The veto consults EITHER flag: state.is_eval=True disables the
+    cache even when the resolved scope says is_eval=False — a divergence
+    between the two sources can never write production cache rows."""
+    store = _FakeCacheStore(scope=_SCOPE)  # scope says is_eval=False
+    provider, sink = await _run(store, state_is_eval=True)
+
+    assert store.resolve_calls == [_REVIEW_ID]
+    assert store.lookup_calls == []
+    assert store.write_calls == []
+    assert sink.cache_lookups == []
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_scope_failure_is_contained() -> None:
+    """A CacheStoreError from resolve_scope disables the cache for the
+    pass — the shadow cache must never abort a review."""
+    store = _FakeCacheStore(scope=_SCOPE, raise_on="resolve_scope")
+    provider, sink = await _run(store)
+
+    assert store.resolve_calls == [_REVIEW_ID]
+    assert store.lookup_calls == []
+    assert store.write_calls == []
+    assert sink.cache_lookups == []
+    assert len(provider.calls) == 1  # the review proceeded uncached
+
+
+@pytest.mark.asyncio
+async def test_lookup_failure_is_contained_no_event_no_write() -> None:
+    """A CacheStoreError from lookup skips the cache for the file: the
+    model is still called, NO CacheLookupEvent is emitted (the lookup
+    never completed — a fabricated 'miss' would be false audit
+    history), and the write gate skips."""
+    store = _FakeCacheStore(scope=_SCOPE, raise_on="lookup")
+    provider, sink = await _run(store)
+
+    assert len(store.lookup_calls) == 1  # the lookup was attempted
+    assert sink.cache_lookups == []  # ...but no event for a failed lookup
+    assert store.write_calls == []
+    assert len(provider.calls) == 1  # the review proceeded uncached
+
+
+@pytest.mark.asyncio
+async def test_write_failure_is_contained() -> None:
+    """A CacheStoreError from the write loses one memoization, nothing
+    else — findings are already emitted and the review completes."""
+    store = _FakeCacheStore(scope=_SCOPE, entry=None, raise_on="write")
+    provider, sink = await _run(store)
+
+    [event] = sink.cache_lookups
+    assert event.outcome == "miss"
+    assert len(store.write_calls) == 1  # attempted, raised, contained
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_truncated_response_is_not_cached() -> None:
+    """finish_reason='max_tokens' with JSON that still validates is NOT
+    memoized: the finding set may be silently incomplete, and a cached
+    truncation would be served for the row's whole lifetime."""
+    store = _FakeCacheStore(scope=_SCOPE, entry=None)
+    provider, sink = await _run(store, finish_reason="max_tokens")
+
+    [event] = sink.cache_lookups
+    assert event.outcome == "miss"  # the lookup itself was fine
+    assert len(provider.calls) == 1
+    assert store.write_calls == []  # ...but the truncated outcome never lands
 
 
 @pytest.mark.asyncio
