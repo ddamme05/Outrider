@@ -99,9 +99,12 @@ from outrider.coordinates.diff_parser import (
 )
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
+    ChangedLineSpan,
+    ScopeChangedLineSpans,
     added_line_byte_ranges,
     added_line_numbers,
     bound_diff_hunks_text,
+    changed_line_spans,
     extract_scope_unit_body,
     line_range_to_span,
     line_range_within_scope_unit,
@@ -120,11 +123,14 @@ from outrider.coordinates.translator import (
 
 __all__ = [
     "COORDINATES_IMPORT_PATH_RESOLVER",
+    "ChangedLineSpan",
     "CoordinateError",
     "GitHubCommentLocation",
+    "ScopeChangedLineSpans",
     "added_line_byte_ranges",
     "added_line_numbers",
     "bound_diff_hunks_text",
+    "changed_line_spans",
     "diff_line_to_scope",
     "extract_scope_unit_body",
     "file_in_patch",

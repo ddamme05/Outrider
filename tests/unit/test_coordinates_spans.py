@@ -18,6 +18,7 @@ from outrider.coordinates import (
     added_line_byte_ranges,
     added_line_numbers,
     bound_diff_hunks_text,
+    changed_line_spans,
     extract_scope_unit_body,
     line_range_to_span,
     line_range_within_scope_unit,
@@ -718,3 +719,145 @@ def test_added_line_numbers_returns_added_target_lines() -> None:
 def test_added_line_numbers_pure_deletion_is_empty() -> None:
     patch = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,2 @@\n a\n-b\n c\n"
     assert added_line_numbers(_patched_from(patch)) == frozenset()  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# changed_line_spans — the trivial-scope-filter veto input.
+# Per specs/2026-06-10-trivial-scope-filter.md: the base side is the
+# kept-removed set from the shared clipping core (`_clip_hunk_lines`),
+# i.e. exactly the deletions the prompt's clipped hunks show — NOT
+# base-range containment.
+# ---------------------------------------------------------------------------
+
+# Base:                          Head:
+#   1  @require_auth               1  def foo():
+#   2  def foo():                  2      return 1
+#   3      return 1                3      # note
+# The deletion of `@require_auth` (base line 1) maps OUTSIDE foo's base
+# range, but rides along into foo's clipped hunk (flushed by the kept
+# in-range `def foo():` target line). The veto must see it.
+_DECORATOR_DELETION_PATCH = (
+    "--- a/x.py\n+++ b/x.py\n"
+    "@@ -1,3 +1,3 @@\n"
+    "-@require_auth\n"
+    " def foo():\n"
+    "     return 1\n"
+    "+    # note\n"
+)
+_DECORATOR_DELETION_HEAD = "def foo():\n    return 1\n    # note\n"
+_DECORATOR_DELETION_BASE = "@require_auth\ndef foo():\n    return 1\n"
+
+
+def test_changed_line_spans_head_added_lines_in_scope() -> None:
+    """Added lines within the scope's head range land in head_added with
+    whole-line spans from the head source."""
+    su = _scope_unit(line_start=1, line_end=3)
+    result = changed_line_spans(
+        su,
+        _patched_from(_DECORATOR_DELETION_PATCH),  # type: ignore[arg-type]
+        head_source=_DECORATOR_DELETION_HEAD,
+        base_source=_DECORATOR_DELETION_BASE,
+    )
+    assert [e.line_no for e in result.head_added] == [3]
+    expected = line_range_to_span(3, 3, _DECORATOR_DELETION_HEAD)
+    assert result.head_added[0].span == expected
+
+
+def test_changed_line_spans_ride_along_deletion_is_in_base_removed() -> None:
+    """THE over-skip seam (security review Critical): a deletion adjacent
+    to the scope — outside its base range — rides into the prompt's
+    clipped hunk, so it MUST appear in base_removed. Base-range
+    attribution would miss it; the kept-removed frame catches it."""
+    su = _scope_unit(line_start=1, line_end=3)
+    result = changed_line_spans(
+        su,
+        _patched_from(_DECORATOR_DELETION_PATCH),  # type: ignore[arg-type]
+        head_source=_DECORATOR_DELETION_HEAD,
+        base_source=_DECORATOR_DELETION_BASE,
+    )
+    assert [e.line_no for e in result.base_removed] == [1]
+    expected = line_range_to_span(1, 1, _DECORATOR_DELETION_BASE)
+    assert result.base_removed[0].span == expected
+
+
+def test_changed_line_spans_agrees_with_rendered_clipped_hunks() -> None:
+    """One clipping decision, two consumers: every removed line in
+    base_removed appears in the RENDERED clipped hunks, and vice versa —
+    the veto sees exactly what the prompt shows."""
+    su = _scope_unit(line_start=1, line_end=3)
+    pf = _patched_from(_DECORATOR_DELETION_PATCH)
+    rendered = scope_unit_diff_hunks(su, pf)  # type: ignore[arg-type]
+    rendered_removed = [
+        line[1:]
+        for hunk_text in rendered
+        for line in hunk_text.splitlines()[1:]  # skip the @@ header
+        if line.startswith("-")
+    ]
+    result = changed_line_spans(
+        su,
+        pf,  # type: ignore[arg-type]
+        head_source=_DECORATOR_DELETION_HEAD,
+        base_source=_DECORATOR_DELETION_BASE,
+    )
+    base_lines = _DECORATOR_DELETION_BASE.splitlines()
+    veto_removed = [base_lines[e.line_no - 1] for e in result.base_removed]
+    assert veto_removed == rendered_removed == ["@require_auth"]
+
+
+def test_changed_line_spans_disjoint_hunk_deletions_excluded() -> None:
+    """Deletions in a hunk with no kept lines for the scope do not ride
+    into base_removed — the prompt would not show them either."""
+    from outrider.coordinates import changed_line_spans
+
+    patch = (
+        "--- a/x.py\n+++ b/x.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " def foo():\n"
+        "+    # note\n"
+        "     return 1\n"
+        "@@ -10,3 +11,2 @@\n"
+        " def bar():\n"
+        "-    check()\n"
+        "     return 2\n"
+    )
+    head = "def foo():\n    # note\n    return 1\n" + "\n" * 7 + "def bar():\n    return 2\n"
+    base = "def foo():\n    return 1\n" + "\n" * 7 + "def bar():\n    check()\n    return 2\n"
+    su = _scope_unit(line_start=1, line_end=3)
+    result = changed_line_spans(
+        su,
+        _patched_from(patch),  # type: ignore[arg-type]
+        head_source=head,
+        base_source=base,
+    )
+    assert [e.line_no for e in result.head_added] == [2]
+    assert result.base_removed == ()
+
+
+def test_changed_line_spans_missing_base_with_removed_lines_raises() -> None:
+    """Misuse guard: kept-removed lines + base_source=None is unreachable
+    under the intake contract; reaching it is a caller bug, fail loud."""
+    su = _scope_unit(line_start=1, line_end=3)
+    with pytest.raises(CoordinateError):
+        changed_line_spans(
+            su,
+            _patched_from(_DECORATOR_DELETION_PATCH),  # type: ignore[arg-type]
+            head_source=_DECORATOR_DELETION_HEAD,
+            base_source=None,
+        )
+
+
+def test_changed_line_spans_added_file_no_base_ok() -> None:
+    """Added-status files (base_source=None, no removed lines) classify
+    fine: empty base_removed, no error."""
+    from outrider.coordinates import changed_line_spans
+
+    patch = "--- /dev/null\n+++ b/x.py\n@@ -0,0 +1,2 @@\n+def foo():\n+    return 1\n"
+    su = _scope_unit(line_start=1, line_end=2)
+    result = changed_line_spans(
+        su,
+        _patched_from(patch),  # type: ignore[arg-type]
+        head_source="def foo():\n    return 1\n",
+        base_source=None,
+    )
+    assert [e.line_no for e in result.head_added] == [1, 2]
+    assert result.base_removed == ()
