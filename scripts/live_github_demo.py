@@ -165,8 +165,16 @@ async def _fetch_pr_seed(
 async def _run(args: argparse.Namespace) -> int:
     # --- setup gates ---
     for var in ("ANTHROPIC_API_KEY", "DATABASE_URL"):
-        if not os.environ.get(var):
+        value = os.environ.get(var)
+        if not value:
             _say(f"  {var} is not set — this runner needs it. Aborting.")
+            return 2
+        if value.startswith("op://"):
+            # Sourcing .env does NOT resolve 1Password references — the literal
+            # op:// string passes an is-set check, then fails at first use.
+            _say(f"  {var} is a 1Password reference (op://...), not a real value.")
+            _say("  Run through op so the references resolve:")
+            _say("    op run --env-file=.env -- uv run python scripts/live_github_demo.py ...")
             return 2
 
     owner, repo = args.owner, args.repo
@@ -600,6 +608,9 @@ def _main_with_log() -> int:
     print(f"  Full trace ........... {_TRACE.path}", flush=True)
     try:
         return asyncio.run(_run(_parse_args()))
+    except Exception:
+        _TRACE.write_current_exception()
+        raise
     finally:
         print(f"  Full trace ........... {_TRACE.path}", flush=True)
         _TRACE.close()

@@ -16,6 +16,7 @@ all three without packaging `scripts/`.
 
 from __future__ import annotations
 
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
@@ -35,6 +36,17 @@ class TraceTee:
     def write_line(self, msg: str) -> None:
         self._fh.write(msg + "\n")
         self._fh.flush()
+
+    def write_current_exception(self) -> None:
+        """Record the in-flight exception's full traceback in the trace file.
+
+        Crashes propagate outside the scripts' `_say` tee, so without this the
+        one thing a failed run most needs diagnosed — the traceback — would be
+        the one thing missing from its trace file.
+        """
+        self.write_line("")
+        self.write_line("UNHANDLED EXCEPTION (full traceback):")
+        self.write_line(traceback.format_exc())
 
     def close(self) -> None:
         self._fh.close()
