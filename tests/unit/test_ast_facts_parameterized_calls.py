@@ -2,11 +2,14 @@
 """The parameterized-call detection shape matrix.
 
 Exercises the public scan API only (no raw tree-sitter in tests — the
-AST firewall's test rule). Safe means: execute-like method, first
-argument a PURE literal string, at least one further argument. The
-placeholder STYLE inside the literal is irrelevant by design — the
-shape check is what generalizes across `%s`, `%(k)s`, `:name`, `?`,
-and `$1` alike.
+AST firewall's test rule). Safe means: execute-like method ON a
+conventional binding receiver (cursor/cur/conn/connection, or the
+Django `objects.raw` chain), first argument a PURE literal string, at
+least one further argument. Bare `execute(...)` and arbitrary-receiver
+wrappers are execute-like but never safe — binding is the callee's
+contract, and an unknown callee can interpolate. The placeholder STYLE
+inside the literal is irrelevant by design — the shape check is what
+generalizes across `%s`, `%(k)s`, `:name`, `?`, and `$1` alike.
 """
 
 from __future__ import annotations
@@ -74,9 +77,14 @@ def test_keyword_params_argument_counts_as_separate_args() -> None:
     assert _ranges(scan.safe_parameterized_calls) == [(1, 1)]
 
 
-def test_bare_function_call_shape_is_recognized() -> None:
-    scan = _scan('execute("SELECT 1 WHERE x = %s", (q,))\n')
-    assert _ranges(scan.safe_parameterized_calls) == [(1, 1)]
+def test_dotted_and_chained_binding_receivers_are_safe() -> None:
+    """`self.cursor.execute` and `conn.cursor().execute` — the final
+    dotted component carries the binding idiom."""
+    scan = _scan(
+        'self.cursor.execute("SELECT 1 WHERE x = %s", (q,))\n'
+        'connection.cursor().execute("SELECT 1 WHERE y = %s", (q,))\n'
+    )
+    assert _ranges(scan.safe_parameterized_calls) == [(1, 1), (2, 2)]
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +126,31 @@ def test_single_argument_execute_is_not_safe() -> None:
 def test_concatenation_with_variable_part_is_not_safe() -> None:
     scan = _scan('cursor.execute("SELECT " f"{q}", (x,))\n')
     assert scan.safe_parameterized_calls == ()
+
+
+def test_bare_execute_wrapper_is_never_safe() -> None:
+    """The audit counter-example: a project wrapper
+    `execute("SELECT … '%s'", name)` can interpolate its second argument
+    into the string internally — the call site looks parameterized, the
+    semantics are string-building. Literal-SQL proof covers the call
+    site only; binding is the CALLEE's contract, and a bare name pins no
+    contract. Execute-like (span-conflict protection), never safe."""
+    scan = _scan("execute(\"SELECT * FROM users WHERE name = '%s'\", name)\n")
+    assert scan.safe_parameterized_calls == ()
+    assert _ranges(scan.all_execute_like_calls) == [(1, 1)]
+
+
+def test_arbitrary_receiver_wrapper_is_never_safe() -> None:
+    """Same hazard one dot deeper: `wrapper.execute(...)` pins no binding
+    contract either — only the conventional DB-API receiver idioms
+    (cursor/cur/conn/connection, objects.raw) qualify."""
+    scan = _scan(
+        'wrapper.execute("SELECT 1 WHERE x = %s", (q,))\n'
+        'helpers.db_utils.execute("SELECT 1 WHERE y = %s", (q,))\n'
+        'qs.raw("SELECT * FROM t WHERE id = %s", [pk])\n'
+    )
+    assert scan.safe_parameterized_calls == ()
+    assert len(scan.all_execute_like_calls) == 3
 
 
 def test_non_execute_methods_are_ignored_entirely() -> None:
