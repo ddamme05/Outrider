@@ -434,8 +434,9 @@ async def _drive(
     interrupted = "__interrupt__" in result
     await _report(engine, review_id, result, publisher, interrupted=interrupted)
     # Full-granularity dumps (same recipe as scripts/smoke_e2e.py): the real
-    # provider persists every exchange, so the prompts Claude actually saw and
-    # its REAL responses come from llm_call_content — better than a spy.
+    # provider persists every exchange, so the USER prompt + Claude's REAL
+    # response come from llm_call_content (system prompt rides as hash +
+    # template version per #016 — reconstructable, not retained as text).
     await narrate_audit_stream(_say, engine, review_id)
     await narrate_llm_exchanges_from_db(_say, engine, review_id)
     narrate_recorded_publisher(_say, publisher)
