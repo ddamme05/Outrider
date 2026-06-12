@@ -266,30 +266,6 @@ class FindingsResponse(BaseModel):
     findings: list[FindingView]
 
 
-class ReplayVerdict(BaseModel):
-    """Replay-equivalence verdict for one review — a thin wrapper over
-    `audit/replay.py::AuditReplayer`.
-
-    Deliberately does NOT expose `reconstruct()`'s `phases` grouping (FUP-125:
-    trustworthy only after `assert_replay_equivalent`) — only the mode, the
-    counts, and the pass/fail verdict. `mode`/`event_count`/`finding_count`/
-    `orphan_finding_count` are `None` only when `reconstruct` itself raised
-    (corrupt row/payload/is_eval drift). `reason` carries the failing-check
-    message when not equivalent — metadata only (ids / hashes / counts /
-    enum values), never finding content (per the replay verifier's design).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    review_id: UUID
-    replay_equivalent: bool
-    mode: str | None
-    event_count: int | None
-    finding_count: int | None
-    orphan_finding_count: int | None
-    reason: str | None
-
-
 class TimelineFindingContentView(BaseModel):
     """Expandable finding content for the replay timeline (ROADMAP §6, PR 2).
 
@@ -355,14 +331,15 @@ class ReplayTimelineResponse(BaseModel):
     FUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,
     so `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the
     consumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate
-    (empty on a non-equivalent verdict). The failure contract mirrors `/replay`:
+    (empty on a non-equivalent verdict). The failure contract:
     reconstruct-raised `ReplayEquivalenceError` → verdict only (`mode`/`status`/`phases` null,
     `events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` → 500;
     assert-raised → verdict false + `mode` present + `phases`/content suppressed.
 
     `events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion
-    replay metadata surfaced via the verdict, not a review-work operation — the `/replay`
-    `event_count` analogue). `inter_phase_events` is the positional set-difference (ordered
+    replay metadata surfaced via the verdict, not a review-work operation — the same exclusion
+    `ReplayVerdictEvent.event_count` applies to the judged stream).
+    `inter_phase_events` is the positional set-difference (ordered
     events not in any `phase.events`) — the transitions `_group_phases` drops from the grouped
     view, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`.
     """
@@ -957,71 +934,11 @@ async def list_findings(request: Request, review_id: UUID) -> FindingsResponse:
         return FindingsResponse(review_id=review_id, findings=views)
 
 
-@router.get("/{review_id}/replay", response_model=ReplayVerdict)
-async def get_replay_verdict(request: Request, review_id: UUID) -> ReplayVerdict:
-    """Replay-equivalence verdict — wraps `audit/replay.py::AuditReplayer`.
-
-    404 if the review has no audit-event rows (`ReplayReviewNotFoundError`).
-    Single-snapshot: `reconstruct` (one REPEATABLE READ snapshot) gives mode +
-    counts, then `assert_equivalent` verifies THAT SAME reconstruction — so the
-    verdict can't mix counts from one snapshot with pass/fail from another (the
-    bug if we re-ran `assert_replay_equivalent`, which reconstructs again). Both
-    read-only (no mutation). A `ReplayEquivalenceError` from either step yields
-    `replay_equivalent=False` carrying the failing check's message, NOT a 500 —
-    the verdict IS the product. (A corrupt payload that won't even deserialize
-    surfaces as the underlying `ValidationError` → 500, the genuine-corruption
-    case.) `phases` is intentionally not exposed (FUP-125).
-    """
-    replayer = AuditReplayer(session_factory=request.app.state.session_factory)
-    try:
-        reconstructed = await replayer.reconstruct(review_id)
-    except ReplayReviewNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="review not found"
-        ) from exc
-    except ReplayEquivalenceError as exc:
-        # Reconstruction itself is non-equivalent (row-vs-payload / is_eval
-        # drift) — report the verdict; mode/counts are unavailable.
-        return ReplayVerdict(
-            review_id=review_id,
-            replay_equivalent=False,
-            mode=None,
-            event_count=None,
-            finding_count=None,
-            orphan_finding_count=None,
-            reason=str(exc),
-        )
-
-    equivalent = True
-    reason: str | None = None
-    try:
-        # Verify the SAME reconstruction (single snapshot), not a re-reconstruct.
-        await replayer.assert_equivalent(reconstructed)
-    except ReplayEquivalenceError as exc:
-        equivalent = False
-        reason = str(exc)
-
-    return ReplayVerdict(
-        review_id=review_id,
-        replay_equivalent=equivalent,
-        mode=reconstructed.mode.value,
-        # Exclude the projected `replay_verdict` row from the count. This full-stream
-        # reconstruct includes it once the background projector has run; the PERSISTED
-        # verdict counted the judged prefix (non-verdict rows only), so counting it here
-        # would make this live surface report N+1 against the persisted N for an unchanged
-        # review. The verdict is replay METADATA, not review work.
-        event_count=sum(1 for e in reconstructed.events if not isinstance(e, ReplayVerdictEvent)),
-        finding_count=len(reconstructed.findings),
-        orphan_finding_count=len(reconstructed.orphan_finding_ids),
-        reason=reason,
-    )
-
-
 @router.get("/{review_id}/replay-timeline", response_model=ReplayTimelineResponse)
 async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimelineResponse:
     """Grouped, replay-verified timeline read-model (ROADMAP feature 6).
 
-    Single-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)
+    Single-snapshot compose: `reconstruct` (one REPEATABLE READ snapshot)
     then `assert_equivalent` over THAT SAME object — never `assert_replay_equivalent` (which
     reconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`
     inherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.
@@ -1065,7 +982,8 @@ async def get_replay_timeline(request: Request, review_id: UUID) -> ReplayTimeli
         reason = str(exc)
 
     # The flat ordered stream, EXCLUDING the projected ReplayVerdictEvent (post-completion replay
-    # metadata, surfaced via the verdict — not a review-work row; the /replay event_count analogue).
+    # metadata, surfaced via the verdict — not a review-work row; the same judged-stream
+    # exclusion ReplayVerdictEvent.event_count applies).
     events = tuple(e for e in reconstructed.events if not isinstance(e, ReplayVerdictEvent))
     review_status = reconstructed.review.status if reconstructed.review is not None else None
 

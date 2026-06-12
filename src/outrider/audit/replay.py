@@ -860,7 +860,8 @@ def _verify_finding_override_projection(
         # Partial envelope: exactly one of the pair is populated. Reject before
         # the corroboration check — a faithful SEVERITY_OVERRIDE projection has
         # both. Metadata-only message (field NAMES, never the reviewer's
-        # free-text value) per the API-surfaced ReplayVerdict.reason contract.
+        # free-text value) per the `reason` contract shared by
+        # `ReplayVerdictEvent.reason` and the timeline verdict surface.
         present, missing = (
             ("original_severity", "override_reason")
             if has_severity
@@ -1196,7 +1197,8 @@ class AuditReplayer:
         ONE `reconstruct` snapshot, instead of `assert_replay_equivalent`'s
         internal second `reconstruct` on a *different* REPEATABLE READ snapshot
         (mixing snapshots could combine counts from one with pass/fail from
-        another — see the dashboard `/api/reviews/{id}/replay` endpoint). The
+        another — the dashboard `/replay-timeline` endpoint and the verdict
+        projector are the callers using this single-snapshot pattern). The
         only DB touch here is `_verify_historical_severity`, which reads the
         immutable `severity_policies` table (snapshot-safe). Raises
         `ReplayEquivalenceError` naming the failing check; returns `None` on

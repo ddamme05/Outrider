@@ -336,57 +336,13 @@
         }
       }
     },
-    "/api/reviews/{review_id}/replay": {
-      "get": {
-        "tags": [
-          "dashboard"
-        ],
-        "summary": "Get Replay Verdict",
-        "description": "Replay-equivalence verdict \u2014 wraps `audit/replay.py::AuditReplayer`.\n\n404 if the review has no audit-event rows (`ReplayReviewNotFoundError`).\nSingle-snapshot: `reconstruct` (one REPEATABLE READ snapshot) gives mode +\ncounts, then `assert_equivalent` verifies THAT SAME reconstruction \u2014 so the\nverdict can't mix counts from one snapshot with pass/fail from another (the\nbug if we re-ran `assert_replay_equivalent`, which reconstructs again). Both\nread-only (no mutation). A `ReplayEquivalenceError` from either step yields\n`replay_equivalent=False` carrying the failing check's message, NOT a 500 \u2014\nthe verdict IS the product. (A corrupt payload that won't even deserialize\nsurfaces as the underlying `ValidationError` \u2192 500, the genuine-corruption\ncase.) `phases` is intentionally not exposed (FUP-125).",
-        "operationId": "get_replay_verdict_api_reviews__review_id__replay_get",
-        "parameters": [
-          {
-            "name": "review_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Review Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReplayVerdict"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/reviews/{review_id}/replay-timeline": {
       "get": {
         "tags": [
           "dashboard"
         ],
         "summary": "Get Replay Timeline",
-        "description": "Grouped, replay-verified timeline read-model (ROADMAP feature 6).\n\nSingle-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)\nthen `assert_equivalent` over THAT SAME object \u2014 never `assert_replay_equivalent` (which\nreconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`\ninherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.\nPhases (`reconstruct().phases`) AND the expandable `findings`/`llm_exchanges` content are\nexposed ONLY on an equivalent verdict (FUP-125 \u2014 phases are trustworthy only once\n`_verify_phase_wellformed` has proven the non-nesting precondition that makes `_group_phases`\nlossless; content rides the same gate). Content (PR 2) comes from `reconstruct()`'s already-\nhydrated `findings`/`llm_exchanges` (the content tables, not audit rows) via\n`_timeline_content`. See `ReplayTimelineResponse` for the failure contract + verdict-exclusion.",
+        "description": "Grouped, replay-verified timeline read-model (ROADMAP feature 6).\n\nSingle-snapshot compose: `reconstruct` (one REPEATABLE READ snapshot)\nthen `assert_equivalent` over THAT SAME object \u2014 never `assert_replay_equivalent` (which\nreconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`\ninherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.\nPhases (`reconstruct().phases`) AND the expandable `findings`/`llm_exchanges` content are\nexposed ONLY on an equivalent verdict (FUP-125 \u2014 phases are trustworthy only once\n`_verify_phase_wellformed` has proven the non-nesting precondition that makes `_group_phases`\nlossless; content rides the same gate). Content (PR 2) comes from `reconstruct()`'s already-\nhydrated `findings`/`llm_exchanges` (the content tables, not audit rows) via\n`_timeline_content`. See `ReplayTimelineResponse` for the failure contract + verdict-exclusion.",
         "operationId": "get_replay_timeline_api_reviews__review_id__replay_timeline_get",
         "parameters": [
           {
@@ -3677,88 +3633,7 @@
           "llm_exchanges"
         ],
         "title": "ReplayTimelineResponse",
-        "description": "The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6).\n\nA thin serialization of `reconstruct()`'s canonical `ReconstructedReview` \u2014 the same\nreconstruction `assert_equivalent` consumes \u2014 NOT a re-interpretation of the audit\ntables. The `events`/`phases` are metadata-only (`reconstruct` reads the content tables\nserver-side to verify + classify `mode`); `findings`/`llm_exchanges` carry the expandable\nCONTENT (PR 2), serialized from the same verified snapshot and gated on the equivalent\nverdict. Content from the `findings`/`llm_call_content` tables only \u2014 never from an\n`audit_events` row (DECISIONS.md#014/#016 metadata-only-audit contract).\n\nFUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,\nso `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the\nconsumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate\n(empty on a non-equivalent verdict). The failure contract mirrors `/replay`:\nreconstruct-raised `ReplayEquivalenceError` \u2192 verdict only (`mode`/`status`/`phases` null,\n`events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` \u2192 500;\nassert-raised \u2192 verdict false + `mode` present + `phases`/content suppressed.\n\n`events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion\nreplay metadata surfaced via the verdict, not a review-work operation \u2014 the `/replay`\n`event_count` analogue). `inter_phase_events` is the positional set-difference (ordered\nevents not in any `phase.events`) \u2014 the transitions `_group_phases` drops from the grouped\nview, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`."
-      },
-      "ReplayVerdict": {
-        "properties": {
-          "review_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Review Id"
-          },
-          "replay_equivalent": {
-            "type": "boolean",
-            "title": "Replay Equivalent"
-          },
-          "mode": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mode"
-          },
-          "event_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Event Count"
-          },
-          "finding_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Finding Count"
-          },
-          "orphan_finding_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Orphan Finding Count"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "review_id",
-          "replay_equivalent",
-          "mode",
-          "event_count",
-          "finding_count",
-          "orphan_finding_count",
-          "reason"
-        ],
-        "title": "ReplayVerdict",
-        "description": "Replay-equivalence verdict for one review \u2014 a thin wrapper over\n`audit/replay.py::AuditReplayer`.\n\nDeliberately does NOT expose `reconstruct()`'s `phases` grouping (FUP-125:\ntrustworthy only after `assert_replay_equivalent`) \u2014 only the mode, the\ncounts, and the pass/fail verdict. `mode`/`event_count`/`finding_count`/\n`orphan_finding_count` are `None` only when `reconstruct` itself raised\n(corrupt row/payload/is_eval drift). `reason` carries the failing-check\nmessage when not equivalent \u2014 metadata only (ids / hashes / counts /\nenum values), never finding content (per the replay verifier's design)."
+        "description": "The grouped, replay-VERIFIED timeline read-model (ROADMAP feature 6).\n\nA thin serialization of `reconstruct()`'s canonical `ReconstructedReview` \u2014 the same\nreconstruction `assert_equivalent` consumes \u2014 NOT a re-interpretation of the audit\ntables. The `events`/`phases` are metadata-only (`reconstruct` reads the content tables\nserver-side to verify + classify `mode`); `findings`/`llm_exchanges` carry the expandable\nCONTENT (PR 2), serialized from the same verified snapshot and gated on the equivalent\nverdict. Content from the `findings`/`llm_call_content` tables only \u2014 never from an\n`audit_events` row (DECISIONS.md#014/#016 metadata-only-audit contract).\n\nFUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,\nso `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the\nconsumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate\n(empty on a non-equivalent verdict). The failure contract:\nreconstruct-raised `ReplayEquivalenceError` \u2192 verdict only (`mode`/`status`/`phases` null,\n`events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` \u2192 500;\nassert-raised \u2192 verdict false + `mode` present + `phases`/content suppressed.\n\n`events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion\nreplay metadata surfaced via the verdict, not a review-work operation \u2014 the same exclusion\n`ReplayVerdictEvent.event_count` applies to the judged stream).\n`inter_phase_events` is the positional set-difference (ordered\nevents not in any `phase.events`) \u2014 the transitions `_group_phases` drops from the grouped\nview, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`."
       },
       "ReplayVerdictEvent": {
         "properties": {
@@ -3881,7 +3756,7 @@
           "target_max_sequence_number"
         ],
         "title": "ReplayVerdictEvent",
-        "description": "Records the outcome of a replay-equivalence check over a judged prefix.\n\nEmitted by the background replay-verdict projector AFTER a review completes \u2014\nphase-unbounded replay metadata, NOT graph-node work, so it is exempt from\n`_verify_phase_wellformed` phase containment via\n`audit.replay._PHASE_UNBOUNDED_EVENTS`. `target_max_sequence_number` pins the\n`sequence_number` high-water mark of the prefix the verdict covers (the judged\nstream, EXCLUDING any prior `replay_verdict` events \u2014 a verdict is never\ncomputed over a stream containing its own kind). `mode` + the `*_count` fields\nmirror the on-demand `ReplayVerdict` shape (`api/dashboard/reviews.py`); they\nform an all-present-or-all-absent envelope, `None` only when reconstruction\nitself raised (see `_enforce_metadata_envelope`). `reason` is set iff the\nverdict is inequivalent."
+        "description": "Records the outcome of a replay-equivalence check over a judged prefix.\n\nEmitted by the background replay-verdict projector AFTER a review completes \u2014\nphase-unbounded replay metadata, NOT graph-node work, so it is exempt from\n`_verify_phase_wellformed` phase containment via\n`audit.replay._PHASE_UNBOUNDED_EVENTS`. `target_max_sequence_number` pins the\n`sequence_number` high-water mark of the prefix the verdict covers (the judged\nstream, EXCLUDING any prior `replay_verdict` events \u2014 a verdict is never\ncomputed over a stream containing its own kind). `mode` + the `*_count` fields\nform an all-present-or-all-absent envelope, `None` only when reconstruction\nitself raised (see `_enforce_metadata_envelope`). `reason` is set iff the\nverdict is inequivalent."
       },
       "ReviewDetail": {
         "properties": {
