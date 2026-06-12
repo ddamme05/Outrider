@@ -63,10 +63,12 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
+from outrider.agent.nodes.patch_config import PatchConfig  # noqa: E402
 from outrider.anomaly.persister import AnomalyPersister  # noqa: E402
 from outrider.audit.config import RetentionSettings  # noqa: E402
 from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer, ReplayMode  # noqa: E402
+from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.github.auth import make_installation_client_factory  # noqa: E402
@@ -287,9 +289,18 @@ async def _run(args: argparse.Namespace) -> int:
         review_status_sink=ReviewStatusPersister(session_factory=session_factory),
         anomaly_sink=AnomalyPersister(session_factory=session_factory),
         hitl_config=HITLConfig(),
+        # Required since the suggested-patches arc; OFF to keep the demo's
+        # live spend bounded to the review calls themselves.
+        patch_config=PatchConfig(patches_enabled=False),
         checkpointer=InMemorySaver(),
         publisher=GitHubKitPublisher(),
         import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
+        # Production-parity shadow wiring (mirrors api/lifespan.py). NOTE:
+        # this script targets the REAL configured DATABASE_URL — a demo run
+        # writes content-tier cache rows (findings + trace candidates) into
+        # that database's analyze_file_cache, exactly as a production review
+        # would; they age out under the same 30-day/retention bounds.
+        analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
     )
 
     from outrider.agent.state import ReviewState  # noqa: PLC0415
