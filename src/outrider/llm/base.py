@@ -384,7 +384,9 @@ class LLMRequest(BaseModel):
 
     - **Transport fields** the wrapper sends to the SDK:
       `system_prompt`, `user_prompt`, `messages` (V1.5+ only),
-      `model`, `max_tokens`, `cache_control`, `temperature`.
+      `model`, `max_tokens`, `cache_control`, `temperature`,
+      `response_schema_json` (sent as `output_config.format`; its
+      derived digest also rides to `LLMCallEvent` as provenance).
     - **Audit-context fields** the wrapper passes opaquely through to
       `LLMCallEvent` at `complete()` step 9: `review_id`, `node_id`,
       `is_eval`, `context_summary`, `prompt_template_version`,
