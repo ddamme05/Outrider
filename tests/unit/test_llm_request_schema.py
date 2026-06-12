@@ -579,3 +579,44 @@ def test_response_schema_json_rejects_sub_minimal_string() -> None:
         LLMRequest(**_kwargs(response_schema_json=""))
     with pytest.raises(ValidationError):
         LLMRequest(**_kwargs(response_schema_json="{"))
+
+
+def test_response_schema_json_rejects_malformed_json() -> None:
+    """A malformed string must fail at construction, not as a raw
+    `json.JSONDecodeError` inside the provider's kwargs-building (which
+    sits outside the typed SDK error translation)."""
+    with pytest.raises(ValidationError, match="must be valid JSON"):
+        LLMRequest(**_kwargs(response_schema_json="{not json}"))
+
+
+@pytest.mark.parametrize("non_object", ['["x"]', '"xx"', "42"])
+def test_response_schema_json_rejects_non_object(non_object: str) -> None:
+    """`output_config.format` schemas are JSON objects; scalars and
+    arrays are construction bugs."""
+    with pytest.raises(ValidationError, match="JSON object"):
+        LLMRequest(**_kwargs(response_schema_json=non_object))
+
+
+@pytest.mark.parametrize(
+    "noncanonical",
+    [
+        '{"a": 1}',  # whitespace after the colon
+        '{"b":1,"a":2}',  # unsorted keys
+        '{"a":1} ',  # trailing whitespace
+    ],
+)
+def test_response_schema_json_rejects_noncanonical_form(noncanonical: str) -> None:
+    """A valid-but-noncanonical string would mint a different
+    `response_format_digest` for the same parsed schema, fragmenting the
+    one request-format identity the audit stream and the analyze cache
+    key share. Only `canonicalize_for_hash` output is admitted."""
+    with pytest.raises(ValidationError, match="canonical form"):
+        LLMRequest(**_kwargs(response_schema_json=noncanonical))
+
+
+def test_response_schema_json_admits_canonical_form() -> None:
+    from outrider.policy.canonical import canonicalize_for_hash
+
+    canonical = canonicalize_for_hash({"b": 1, "a": 2}).decode("utf-8")
+    req = LLMRequest(**_kwargs(response_schema_json=canonical))
+    assert req.response_schema_json == canonical
