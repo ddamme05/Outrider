@@ -461,6 +461,38 @@ async def test_persist_raises_when_event_system_prompt_hash_disagrees_with_reque
         await engine.dispose()
 
 
+async def test_persist_raises_when_event_response_format_digest_disagrees_with_request(
+    migrated_db: str,
+) -> None:
+    """`event.response_format_digest` must equal the request's derived
+    digest (FUP-096). An event claiming a constrained-decoding digest
+    for a free-form request would mislabel the output population that
+    replay and the cache telemetry split on."""
+    from outrider.audit.persister import AuditPersisterEventRequestFieldMismatchError
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        consistent_event = _make_llm_call_event(seeded_review_id)
+        # Event claims a schema rode the call; the request carried none.
+        divergent_event = consistent_event.model_copy(update={"response_format_digest": "d" * 64})
+        request = _make_llm_request(seeded_review_id)
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        with pytest.raises(AuditPersisterEventRequestFieldMismatchError) as exc_info:
+            await persister.persist(divergent_event, request, response)
+        assert exc_info.value.field_name == "response_format_digest"
+
+        async with engine.connect() as conn:
+            audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            content_count = await conn.execute(text("SELECT COUNT(*) FROM llm_call_content"))
+            assert audit_count.scalar_one() == 0
+            assert content_count.scalar_one() == 0
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("field_name", "override"),
     [

@@ -400,6 +400,14 @@ class LLMCallEvent(AuditEventBase):
         ]
         | None
     ) = None
+    # Constrained-decoding provenance (specs/2026-06-12-constrained-decoding.md,
+    # FUP-096): digest of the response schema this call was constrained to
+    # (`LLMRequest.response_format_digest` pass-through); `None` = free-form
+    # call. Metadata-only (a hash, per #014). Identical prompt bytes + template
+    # version under different request formats are different output populations
+    # — replay/ops distinguish them by THIS field, and the analyze cache key
+    # folds the same value so the two surfaces cannot drift.
+    response_format_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_degradation_reason_consistency(self) -> Self:

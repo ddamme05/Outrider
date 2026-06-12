@@ -40,6 +40,7 @@ Constructor performs eager validation:
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -563,6 +564,11 @@ class AnthropicProvider:
             # through, the wrapper drops the typed cause that
             # `LLMRequest._enforce_degradation_provenance` mandates.
             degradation_reason=request.degradation_reason,
+            # Constrained-decoding provenance (FUP-096): identical prompt
+            # bytes + template version can produce different output
+            # populations once `output_config.format` exists — metadata-only
+            # replay/ops need the request-format identity on the stream.
+            response_format_digest=request.response_format_digest,
         )
         try:
             await self._persister.persist(event, request, response)
@@ -765,13 +771,30 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
         ]
     else:
         system_param = request.system_prompt
-    return {
+    kwargs: dict[str, Any] = {
         "model": request.model,
         "max_tokens": request.max_tokens,
         "temperature": request.temperature,
         "system": system_param,
         "messages": [{"role": "user", "content": request.user_prompt}],
     }
+    if request.response_schema_json is not None:
+        # Constrained decoding (specs/2026-06-12-constrained-decoding.md,
+        # FUP-096): `output_config.format` per the pinned structured-outputs
+        # docs — the API guarantees schema-valid JSON in the single text
+        # block, eliminating the invalid-JSON rejection class at the source.
+        # Two documented escapes remain (stop_reason "refusal" and
+        # "max_tokens" may not match the schema), which is why the parser's
+        # rejection path and `strip_outer_json_fence` stay as belt-and-
+        # suspenders. An unsupported-schema 400 surfaces through the normal
+        # APIError → typed-error translation (fail-loud, no fallback).
+        kwargs["output_config"] = {
+            "format": {
+                "type": "json_schema",
+                "schema": json.loads(request.response_schema_json),
+            }
+        }
+    return kwargs
 
 
 def _extract_single_text_block(message: Message) -> str:

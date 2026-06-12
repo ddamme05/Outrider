@@ -420,6 +420,15 @@ class LLMRequest(BaseModel):
     # §9.5 ("prompt-caching-always-on" convention).
     cache_control: bool = True
     temperature: float = Field(ge=0.0, le=1.0)
+    # Constrained-decoding schema (specs/2026-06-12-constrained-decoding.md,
+    # FUP-096): the CANONICAL-JSON string form of a pinned response schema
+    # (e.g. `ANALYZE_RESPONSE_SCHEMA_JSON`), produced by
+    # `policy/canonical.canonicalize_for_hash` — a string, not a dict, so
+    # nothing mutable lives inside this frozen request and the digest below
+    # is derivable from these exact bytes. `None` = free-form call (today's
+    # behavior); the provider translates presence into the API's
+    # `output_config.format` constrained decoding.
+    response_schema_json: str | None = Field(default=None, min_length=2)
 
     # Audit-context fields (pass-through to LLMCallEvent)
     review_id: UUID
@@ -450,6 +459,20 @@ class LLMRequest(BaseModel):
         ]
         | None
     ) = None
+
+    @property
+    def response_format_digest(self) -> str | None:
+        """SHA-256 hex of `response_schema_json`'s exact bytes; `None` for
+        free-form calls. Derived, never caller-supplied — the digest and
+        the schema bytes sent to the API cannot drift. Because the string
+        is `canonicalize_for_hash` output, this equals
+        `policy/canonical.compute_identity_hash(schema_dict)` for the same
+        schema — one recipe, provenance on `LLMCallEvent` and the analyze
+        cache key both read THIS value.
+        """
+        if self.response_schema_json is None:
+            return None
+        return hashlib.sha256(self.response_schema_json.encode("utf-8")).hexdigest()
 
     @field_serializer("system_prompt")
     def _redact_system_prompt(self, value: str, info: SerializationInfo) -> str:

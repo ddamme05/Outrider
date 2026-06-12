@@ -561,6 +561,67 @@ async def test_complete_uses_request_model() -> None:
 
 
 # ---------------------------------------------------------------------------
+# complete() — constrained decoding translation (FUP-096).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_response_schema_translates_to_output_config() -> None:
+    """`response_schema_json` set → the SDK call carries the documented
+    `output_config.format` envelope with the schema round-tripped
+    losslessly from the canonical JSON string."""
+    import json as _json
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    with _patched_create() as mock_create:
+        await provider.complete(_request(response_schema_json=_json.dumps(schema)))
+    assert mock_create.call_args.kwargs["output_config"] == {
+        "format": {"type": "json_schema", "schema": schema}
+    }
+
+
+@pytest.mark.asyncio
+async def test_no_response_schema_omits_output_config() -> None:
+    """Free-form requests (triage, synthesize, trace) must not carry the
+    kwarg at all — absent, not None."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    with _patched_create() as mock_create:
+        await provider.complete(_request())
+    assert "output_config" not in mock_create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_persisted_event_carries_response_format_digest() -> None:
+    """The LLMCallEvent the provider persists records the request's
+    derived digest — populated when a schema rode the call, None when
+    not — so replay/ops can split the two output populations."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=_model_config(),
+        persister=persister,
+    )
+    with _patched_create():
+        await provider.complete(_request(response_schema_json='{"type":"object"}'))
+        await provider.complete(_request())
+    (with_schema, req_with, _), (without_schema, _, _) = persister.calls
+    assert with_schema.response_format_digest == req_with.response_format_digest
+    assert with_schema.response_format_digest is not None
+    assert without_schema.response_format_digest is None
+
+
+# ---------------------------------------------------------------------------
 # complete() — cache_control translation (AC#6).
 # ---------------------------------------------------------------------------
 

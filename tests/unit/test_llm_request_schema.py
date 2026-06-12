@@ -539,3 +539,43 @@ def test_llm_request_admits_distinct_context_summary_entries() -> None:
 # `test_provenance_validator_fires_before_context_on_conflict` above —
 # a source-text introspection test would couple to private method names
 # and break on harmless renames while runtime behavior is unchanged.
+
+
+# ---------------------------------------------------------------------------
+# Constrained decoding (FUP-096): response_schema_json + derived digest.
+# ---------------------------------------------------------------------------
+
+
+def test_response_schema_json_defaults_none_digest_none() -> None:
+    req = LLMRequest(**_kwargs())
+    assert req.response_schema_json is None
+    assert req.response_format_digest is None
+
+
+def test_response_format_digest_is_sha256_of_the_string() -> None:
+    import hashlib
+
+    req = LLMRequest(**_kwargs(response_schema_json='{"type":"object"}'))
+    assert req.response_format_digest == hashlib.sha256(b'{"type":"object"}').hexdigest()
+
+
+def test_response_format_digest_matches_pinned_constant() -> None:
+    """The derivability chain: a request carrying the canonical JSON
+    string recomputes exactly the module-level digest, so the audit
+    event and the cache key can never disagree about the format."""
+    from outrider.schemas.llm.analyze import (
+        ANALYZE_RESPONSE_FORMAT_DIGEST,
+        ANALYZE_RESPONSE_SCHEMA_JSON,
+    )
+
+    req = LLMRequest(**_kwargs(response_schema_json=ANALYZE_RESPONSE_SCHEMA_JSON))
+    assert req.response_format_digest == ANALYZE_RESPONSE_FORMAT_DIGEST
+
+
+def test_response_schema_json_rejects_sub_minimal_string() -> None:
+    """min_length=2 — the shortest valid JSON-object serialization is
+    `{}`; empty/one-char strings are construction bugs, not schemas."""
+    with pytest.raises(ValidationError):
+        LLMRequest(**_kwargs(response_schema_json=""))
+    with pytest.raises(ValidationError):
+        LLMRequest(**_kwargs(response_schema_json="{"))
