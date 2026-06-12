@@ -256,8 +256,6 @@ async def _drive(engine: AsyncEngine) -> bool:
 
     await _narrate_nodes(engine, review_id, publisher)
     await _narrate_audit_stream(engine, review_id)
-    _narrate_llm_exchanges(provider)
-    _narrate_publisher(publisher)
 
     # ---- hard checks (mirror tests/integration/test_e2e_smoke.py asserts) ----
     posted = len(publisher.create_review_calls)
@@ -363,6 +361,12 @@ async def _drive(engine: AsyncEngine) -> bool:
         and run1_lookups[0].cache_key == run2_lookups[0].cache_key,
     )
 
+    # Full-trace dumps AFTER run 2 so they cover BOTH runs: the provider and
+    # publisher accumulate across runs (requests 1-3 = run 1, 4-6 = run 2;
+    # publish calls 1 and 2 likewise) — dumping earlier would silently omit
+    # run 2's traffic from the "prints everything" contract.
+    _narrate_llm_exchanges(provider)
+    _narrate_publisher(publisher)
     # Final full-DB dump — both runs' rows, the cache row's complete JSON
     # payload included, so any silent write failure is visible in the output.
     await _narrate_db_state(engine)
@@ -442,7 +446,9 @@ def _narrate_llm_exchanges(provider: _ScriptedLLMProvider) -> None:
     """Every request the graph sent to the provider, in full — prompts are the
     exact bytes the production AnthropicProvider would send to Claude (the
     graph renders them identically; only the transport is scripted here)."""
-    _say(f"  LLM exchanges ........ {len(provider.calls)} request(s), FULL prompts:")
+    _say(
+        f"  LLM exchanges ........ {len(provider.calls)} request(s) across BOTH runs, FULL prompts:"
+    )
     for i, req in enumerate(provider.calls, 1):
         _say(
             f"    --- request {i}: node={req.node_id} model={req.model} "
@@ -464,7 +470,10 @@ def _narrate_llm_exchanges(provider: _ScriptedLLMProvider) -> None:
 
 def _narrate_publisher(publisher: _RecordingPublisher) -> None:
     """The exact payload(s) that would have been POSTed to GitHub."""
-    _say(f"  GitHub publish ....... {len(publisher.create_review_calls)} call(s), FULL payloads:")
+    _say(
+        f"  GitHub publish ....... {len(publisher.create_review_calls)} call(s) "
+        "across BOTH runs, FULL payloads:"
+    )
     for i, call in enumerate(publisher.create_review_calls, 1):
         _say(f"    --- create_review call {i}:")
         _say_block("      ", _dump_json(call))
