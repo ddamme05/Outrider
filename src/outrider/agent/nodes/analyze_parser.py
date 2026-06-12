@@ -899,8 +899,15 @@ def _format_loc(loc: tuple[str | int, ...]) -> str:
 
     `("findings", 0, "finding_type")` → `"findings[0].finding_type"`.
     Integer segments attach to the preceding string as `[N]`; string
-    segments separate with `.`. Pure formatter; no IO.
+    segments separate with `.`. An EMPTY location — what Pydantic emits
+    for a root-level JSON-syntax failure (the whole document invalid,
+    e.g. an unescaped quote inside a string value) — renders as
+    `json_syntax`, not the empty string: the persisted detail used to
+    read `" x1"`, leaving the audit stream unable to name the failure
+    class once `llm_call_content` is purged. Pure formatter; no IO.
     """
+    if not loc:
+        return "json_syntax"
     parts: list[str] = []
     for seg in loc:
         if isinstance(seg, int):

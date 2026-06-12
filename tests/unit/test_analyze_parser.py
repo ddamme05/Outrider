@@ -467,6 +467,24 @@ def test_step0_rejection_detail_uses_json_pointer_format() -> None:
     )
 
 
+def test_step0_root_json_syntax_error_names_the_failure_class() -> None:
+    """A root-level JSON-syntax failure (whole document invalid — e.g. an
+    unescaped quote inside a string value, the 2026-06-12 live-run shape)
+    has an EMPTY Pydantic error location; it must render as `json_syntax`,
+    never the empty string. Regression: the persisted detail used to read
+    `" x1"`, leaving the audit stream unable to name the failure class
+    after `llm_call_content` purges (FUP-168)."""
+    # Invalid JSON: raw unescaped quotes inside a string value — exactly the
+    # live-run failure, NOT a fence-wrap (strip_outer_json_fence) case.
+    raw = '{"findings": [{"evidence": "results = [{"id": i}]"}]}'
+    result = _call_parser(raw)
+    assert result.response_rejection is not None
+    assert result.response_rejection.rejection_reason == "raw_response_unparseable"
+    detail = result.response_rejection.rejection_detail
+    assert "json_syntax" in detail, f"empty-loc rendering regressed. Got: {detail!r}"
+    assert not detail.startswith(" "), f"detail must not start with an empty path: {detail!r}"
+
+
 def test_step0_response_rejection_counters() -> None:
     """On response-level rejection: every counter is zero except
     `n_responses_rejected == 1`. The node body sums per-file counters
