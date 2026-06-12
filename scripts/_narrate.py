@@ -7,11 +7,14 @@ rides that script's terminal+file tee (`scripts/_trace_log.py`).
 
 LLM exchanges come from the DATABASE (`llm_call_event` rows joined to
 `llm_call_content`), not from a provider spy: the real AnthropicProvider
-persists every exchange per DECISIONS.md#016, so this shows the exact
-prompt bytes sent to Claude AND the real completion that came back. The
-scripted provider persists nothing — `smoke_e2e` additionally dumps its
-recorded requests provider-side, and this DB view prints an explanatory
-zero there.
+persists every exchange per DECISIONS.md#016. Retention nuance — the
+content row stores the USER prompt + the real completion; the SYSTEM
+prompt is deliberately retained as `system_prompt_hash` + template
+version on the event (reconstructable from the versioned template
+library, spec §8.3), NOT as text. The scripted provider persists
+nothing — `smoke_e2e` additionally dumps its recorded requests
+provider-side (where both prompts ARE available), and this DB view
+prints an explanatory zero there.
 
 `narrate_db_state` dumps whole tables only for the scripts' ephemeral
 scratch DBs; pass `review_id` to scope the dump when the target is a
@@ -101,7 +104,10 @@ async def narrate_llm_exchanges_from_db(
                 {"id": review_id},
             )
         ).all()
-    say(f"  LLM exchanges (DB) ... {len(rows)} persisted exchange(s), FULL prompt + response:")
+    say(
+        f"  LLM exchanges (DB) ... {len(rows)} persisted exchange(s) "
+        "(user prompt + real response; system prompt as hash/template):"
+    )
     if not rows:
         say("    (none persisted — a scripted/stub provider does not write llm_call_content)")
     for seq, payload, prompt, completion in rows:
@@ -110,7 +116,11 @@ async def narrate_llm_exchanges_from_db(
             f"model={payload.get('model')} in={payload.get('input_tokens')} "
             f"out={payload.get('output_tokens')} cost=${payload.get('cost_usd')}"
         )
-        say("    PROMPT (as sent):")
+        say(
+            f"    system prompt: hash={payload.get('system_prompt_hash')} "
+            f"template={payload.get('prompt_template_version')} (text not retained — #016)"
+        )
+        say("    USER PROMPT (persisted):")
         say_block(say, "      | ", prompt)
         say("    RESPONSE (real):")
         say_block(say, "      | ", completion)
