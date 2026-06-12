@@ -354,15 +354,19 @@ def _migrate(db_url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run(db_url: str, api_key: str, scenario: _Scenario | None) -> bool:
+async def _run(
+    db_url: str, api_key: str, scenario: _Scenario | None, *, expect_findings: bool
+) -> bool:
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:
-        return await _drive(engine, api_key, scenario)
+        return await _drive(engine, api_key, scenario, expect_findings=expect_findings)
     finally:
         await engine.dispose()
 
 
-async def _drive(engine: AsyncEngine, api_key: str, scenario: _Scenario | None) -> bool:
+async def _drive(
+    engine: AsyncEngine, api_key: str, scenario: _Scenario | None, *, expect_findings: bool
+) -> bool:
     review_id = uuid4()
     await _seed_installation(engine)
     await _seed_review(engine, review_id)
@@ -436,7 +440,13 @@ async def _drive(engine: AsyncEngine, api_key: str, scenario: _Scenario | None) 
     await narrate_llm_exchanges_from_db(_say, engine, review_id)
     narrate_recorded_publisher(_say, publisher)
     await narrate_db_state(_say, engine)
-    return await _verify(engine, session_factory, review_id, interrupted=interrupted)
+    return await _verify(
+        engine,
+        session_factory,
+        review_id,
+        interrupted=interrupted,
+        expect_findings=expect_findings,
+    )
 
 
 async def _report(
@@ -553,6 +563,7 @@ async def _verify(
     review_id: UUID,
     *,
     interrupted: bool,
+    expect_findings: bool,
 ) -> bool:
     checks: list[tuple[str, bool, str]] = []
 
@@ -613,6 +624,38 @@ async def _verify(
     )
     checks.append(("real LLMCallEvents persisted", n_llm > 0, f"{n_llm} llm calls"))
 
+    if expect_findings:
+        # Semantic gate (opt-in): the run must ADMIT findings, not merely run.
+        # Catches the failure mode where the model found issues but its
+        # response was rejected wholesale (e.g. invalid JSON) — structurally a
+        # pass, semantically empty. See the 2026-06-12 unescaped-quote run.
+        async with engine.begin() as conn:
+            n_findings = (
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM audit_events WHERE review_id = :id "
+                        "AND event_type = 'finding'"
+                    ),
+                    {"id": review_id},
+                )
+            ).scalar_one()
+            n_resp_rejected = (
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM audit_events WHERE review_id = :id "
+                        "AND event_type = 'analyze_response_rejected'"
+                    ),
+                    {"id": review_id},
+                )
+            ).scalar_one()
+        checks.append(
+            (
+                "--expect-findings: findings were admitted",
+                n_findings > 0,
+                f"{n_findings} finding(s), {n_resp_rejected} response rejection(s)",
+            )
+        )
+
     # Replay over the real stream — the headline capability.
     replayer = AuditReplayer(session_factory=session_factory)  # type: ignore[arg-type]
     try:
@@ -645,6 +688,16 @@ def main() -> int:
             "DEEP/STANDARD (triage reads the diff content, the precondition for analyze "
             "to run), and its body has MEDIUM vulns that publish. Omit to run the "
             "built-in synthetic diff."
+        ),
+    )
+    parser.add_argument(
+        "--expect-findings",
+        action="store_true",
+        help=(
+            "fail the run unless findings were ADMITTED (not just produced). By default "
+            "the verdict is structural — a wholesale response rejection (e.g. the model "
+            "emitted invalid JSON) still passes. Pass this when the run is meant to prove "
+            "the findings -> admission -> publish flow on a fixture with known vulns."
         ),
     )
     args = parser.parse_args()
@@ -685,7 +738,7 @@ def main() -> int:
         _migrate(db_url)
         _say("  Migrated ............. alembic upgrade head")
         _say()
-        ok = asyncio.run(_run(db_url, api_key, scenario))
+        ok = asyncio.run(_run(db_url, api_key, scenario, expect_findings=args.expect_findings))
     finally:
         asyncio.run(_drop_db(admin_url, db_name))
         _say(f"  Ephemeral DB ......... {db_name} (dropped)")
