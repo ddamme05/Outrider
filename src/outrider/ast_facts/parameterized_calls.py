@@ -3,11 +3,16 @@
 
 The structural half of the `sql_injection` parameterized-call veto: the
 analyze parser rejects a JUDGED `sql_injection` proposal whose claimed
-lines land on a call this module proves safe — a SQL argument that is a
-pure string LITERAL (no f-string interpolation, no concatenation with
-non-literals) passed alongside a SEPARATE params argument. With a
-literal-only query string, injection at that call site is structurally
-impossible regardless of prompt wording or model version.
+lines land on a call this module classifies safe. Safe has TWO parts:
+(1) the SQL argument is a pure string LITERAL (no f-string
+interpolation, no concatenation with non-literals) passed alongside a
+SEPARATE params argument — structural proof that no user input reaches
+the string AT THE CALL SITE; and (2) the receiver idiom conventionally
+pins binding semantics (`_BINDING_RECEIVERS` / the Django manager
+chain) — because whether the callee BINDS the second argument or
+interpolates it into the string is the callee's contract, not the call
+shape's. Bare `execute(...)` and arbitrary-receiver wrappers fail open
+to HITL.
 
 Triviality-filter precedent (`ast_facts/triviality.py`): this module
 parses with tree-sitter directly and walks raw nodes INTERNALLY; only
@@ -42,6 +47,18 @@ _PARSER: Final = Parser(_PY_LANGUAGE)
 # an ANALYZE_PARSER_VERSION bump.
 _EXECUTE_LIKE_METHODS: Final = frozenset({"execute", "executemany", "raw"})
 
+# Receiver idioms whose binding contract is conventionally pinned. The
+# safety claim has TWO parts and only one is structural: a pure-literal
+# SQL argument proves no user input reaches the STRING at the call site,
+# but whether the second argument is BOUND (safe) or interpolated into
+# the string by the callee (injectable) is the callee's contract. A bare
+# `execute(...)` or an arbitrary `wrapper.execute(...)` can interpolate —
+# a project wrapper doing `sql % args` internally looks identical at the
+# call site — so only receivers whose idiom conventionally pins DB-API /
+# ORM binding semantics qualify for the safe set. Everything else stays
+# execute-like (span-conflict protection) and FAILS OPEN to HITL.
+_BINDING_RECEIVERS: Final = frozenset({"cursor", "cur", "conn", "connection"})
+
 
 class ExecuteCallSite(BaseModel):
     """1-indexed inclusive line range of one execute-like call node.
@@ -74,19 +91,59 @@ class ParameterizedCallScan(BaseModel):
     all_execute_like_calls: tuple[ExecuteCallSite, ...] = ()
 
 
-def _execute_like_name(call: Node) -> str | None:
-    """The called method/function name, if the call shape names one."""
+def _identifier_text(node: Node | None) -> str | None:
+    if node is not None and node.type == "identifier" and node.text is not None:
+        return node.text.decode("utf-8")
+    return None
+
+
+def _final_attribute_name(node: Node) -> str | None:
+    """The last dotted component of a receiver expression, if nameable.
+
+    `cursor` → "cursor"; `self.cursor` → "cursor"; `conn.cursor()` →
+    "cursor" (the chained-call idiom); anything else → None.
+    """
+    if node.type == "identifier":
+        return _identifier_text(node)
+    if node.type == "attribute":
+        return _identifier_text(node.child_by_field_name("attribute"))
+    if node.type == "call":
+        function = node.child_by_field_name("function")
+        if function is not None and function.type == "attribute":
+            return _identifier_text(function.child_by_field_name("attribute"))
+        if function is not None and function.type == "identifier":
+            return _identifier_text(function)
+    return None
+
+
+def _call_names(call: Node) -> tuple[str | None, str | None]:
+    """(method_name, receiver_final_component) for a call node.
+
+    Receiver is None for bare calls (`execute(...)`) — which are
+    execute-like for span-conflict purposes but never safe: a bare name
+    is most likely a project wrapper with unknown binding semantics.
+    """
     function = call.child_by_field_name("function")
     if function is None:
-        return None
+        return (None, None)
     if function.type == "attribute":
-        attr = function.child_by_field_name("attribute")
-        if attr is not None and attr.type == "identifier" and attr.text is not None:
-            return attr.text.decode("utf-8")
-        return None
-    if function.type == "identifier" and function.text is not None:
-        return function.text.decode("utf-8")
-    return None
+        method = _identifier_text(function.child_by_field_name("attribute"))
+        obj = function.child_by_field_name("object")
+        receiver = _final_attribute_name(obj) if obj is not None else None
+        return (method, receiver)
+    return (_identifier_text(function), None)
+
+
+def _binding_receiver_ok(method: str, receiver: str | None) -> bool:
+    """True iff the receiver idiom conventionally pins binding semantics."""
+    if receiver is None:
+        return False
+    if method in ("execute", "executemany"):
+        return receiver in _BINDING_RECEIVERS
+    if method == "raw":
+        # The Django manager chain: `Model.objects.raw(...)`.
+        return receiver == "objects"
+    return False
 
 
 def _unwrap_parentheses(node: Node) -> Node:
@@ -150,14 +207,16 @@ def scan_parameterized_calls(source: bytes) -> ParameterizedCallScan:
     stack: list[Node] = [tree.root_node]
     while stack:
         node = stack.pop()
-        if node.type == "call" and _execute_like_name(node) in _EXECUTE_LIKE_METHODS:
-            site = ExecuteCallSite(
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-            )
-            all_sites.append(site)
-            if _is_safe_parameterized(node):
-                safe.append(site)
+        if node.type == "call":
+            method, receiver = _call_names(node)
+            if method in _EXECUTE_LIKE_METHODS:
+                site = ExecuteCallSite(
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                )
+                all_sites.append(site)
+                if _binding_receiver_ok(method, receiver) and _is_safe_parameterized(node):
+                    safe.append(site)
         stack.extend(node.named_children)
     return ParameterizedCallScan(
         safe_parameterized_calls=tuple(safe),
