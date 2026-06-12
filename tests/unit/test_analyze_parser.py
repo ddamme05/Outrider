@@ -485,6 +485,20 @@ def test_step0_root_json_syntax_error_names_the_failure_class() -> None:
     assert not detail.startswith(" "), f"detail must not start with an empty path: {detail!r}"
 
 
+def test_step0_valid_json_wrong_root_shape_names_root_schema() -> None:
+    """Valid JSON whose ROOT is the wrong shape (`[]` / `null` where the
+    response object is expected) is a schema failure of well-formed JSON,
+    not a syntax failure — the detail must say `root_schema`, never
+    `json_syntax` (Codex residual on the FUP-168 fold: conflating the two
+    misdirects the diagnosis)."""
+    for raw in ("[]", "null"):
+        result = _call_parser(raw)
+        assert result.response_rejection is not None, raw
+        detail = result.response_rejection.rejection_detail
+        assert "root_schema" in detail, f"{raw!r}: expected root_schema, got {detail!r}"
+        assert "json_syntax" not in detail, f"{raw!r}: mislabeled as syntax: {detail!r}"
+
+
 def test_step0_response_rejection_counters() -> None:
     """On response-level rejection: every counter is zero except
     `n_responses_rejected == 1`. The node body sums per-file counters

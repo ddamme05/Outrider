@@ -886,6 +886,15 @@ def _format_validation_error_detail(error: ValidationError) -> str:
     path_counts: dict[str, int] = {}
     for err in error.errors():
         loc = _format_loc(err["loc"])
+        if not loc:
+            # Root-level error (empty location) — name it by error TYPE, which
+            # only this caller has: `json_invalid` is a JSON-SYNTAX failure
+            # (e.g. an unescaped quote inside a string — the 2026-06-12 live
+            # run); anything else at the root (e.g. `model_type` for a valid
+            # `[]`/`null` where the response object is expected) is a schema
+            # failure of well-formed JSON. Conflating them would misdirect
+            # the diagnosis the audit detail exists to enable.
+            loc = "json_syntax" if err["type"] == "json_invalid" else "root_schema"
         path_counts[loc] = path_counts.get(loc, 0) + 1
     parts = [f"{path} x{count}" for path, count in sorted(path_counts.items())]
     rendered = ", ".join(parts) if parts else "no_errors"
@@ -899,15 +908,11 @@ def _format_loc(loc: tuple[str | int, ...]) -> str:
 
     `("findings", 0, "finding_type")` → `"findings[0].finding_type"`.
     Integer segments attach to the preceding string as `[N]`; string
-    segments separate with `.`. An EMPTY location — what Pydantic emits
-    for a root-level JSON-syntax failure (the whole document invalid,
-    e.g. an unescaped quote inside a string value) — renders as
-    `json_syntax`, not the empty string: the persisted detail used to
-    read `" x1"`, leaving the audit stream unable to name the failure
-    class once `llm_call_content` is purged. Pure formatter; no IO.
+    segments separate with `.`. An EMPTY location renders as the empty
+    string here — the CALLER (`_format_validation_error_detail`) names
+    root-level errors by error type (`json_syntax` vs `root_schema`),
+    which only it can see. Pure formatter; no IO.
     """
-    if not loc:
-        return "json_syntax"
     parts: list[str] = []
     for seg in loc:
         if isinstance(seg, int):
