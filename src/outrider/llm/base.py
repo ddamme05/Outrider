@@ -35,6 +35,7 @@ notes worth pinning here:
 """
 
 import hashlib
+import json
 from typing import (
     Any,
     ClassVar,
@@ -52,11 +53,13 @@ from pydantic import (
     ConfigDict,
     Field,
     field_serializer,
+    field_validator,
     model_validator,
 )
 from pydantic_core.core_schema import SerializationInfo
 
 from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+from outrider.policy.canonical import canonicalize_for_hash
 
 __all__ = [
     "INCLUDE_TEXT_OPT_IN",
@@ -460,12 +463,44 @@ class LLMRequest(BaseModel):
         | None
     ) = None
 
+    @field_validator("response_schema_json")
+    @classmethod
+    def _enforce_canonical_schema_json(cls, value: str | None) -> str | None:
+        """The string must BE `canonicalize_for_hash` output: a JSON object
+        that round-trips to exactly these bytes. Two failure modes this
+        closes at construction instead of downstream: a malformed string
+        would raise raw `json.JSONDecodeError` inside the provider's
+        kwargs-building (outside the typed SDK error translation), and a
+        valid-but-noncanonical string (whitespace, key order) would mint a
+        different `response_format_digest` for the same parsed schema —
+        fragmenting the one request-format identity the audit stream and
+        the analyze cache key are supposed to share.
+        """
+        if value is None:
+            return value
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            msg = "response_schema_json must be valid JSON (canonicalize_for_hash output)"
+            raise ValueError(msg) from exc
+        if not isinstance(parsed, dict):
+            msg = "response_schema_json must be a JSON object, not a scalar or array"
+            raise ValueError(msg)
+        if canonicalize_for_hash(parsed).decode("utf-8") != value:
+            msg = (
+                "response_schema_json is not in canonical form; serialize the "
+                "schema dict via policy/canonical.canonicalize_for_hash"
+            )
+            raise ValueError(msg)
+        return value
+
     @property
     def response_format_digest(self) -> str | None:
         """SHA-256 hex of `response_schema_json`'s exact bytes; `None` for
         free-form calls. Derived, never caller-supplied — the digest and
         the schema bytes sent to the API cannot drift. Because the string
-        is `canonicalize_for_hash` output, this equals
+        is `canonicalize_for_hash` output (enforced at construction by
+        `_enforce_canonical_schema_json`), this equals
         `policy/canonical.compute_identity_hash(schema_dict)` for the same
         schema — one recipe, provenance on `LLMCallEvent` and the analyze
         cache key both read THIS value.
