@@ -40,7 +40,9 @@ import asyncio
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TextIO
 from uuid import UUID, uuid4
 
 # Repo root on sys.path so `tests.integration.*` imports resolve when run as a
@@ -111,8 +113,18 @@ _EXPECTED_NODES = frozenset({"intake", "triage", "analyze", "synthesize", "hitl"
 _RUN2_HEAD_SHA = "c" * 40
 
 
+# The full trace also tees to a file here — the ~2,200-line dump truncates in
+# most terminals, and the file is the diagnosable artifact. Gitignored
+# (`generated/` in .gitignore); created on demand; one timestamped file per run.
+_GENERATED_DIR = _REPO_ROOT / "scripts" / "generated"
+_LOG_FILE: TextIO | None = None
+
+
 def _say(msg: str = "") -> None:
     print(msg, flush=True)
+    if _LOG_FILE is not None:
+        _LOG_FILE.write(msg + "\n")
+        _LOG_FILE.flush()
 
 
 def _dump_json(obj: object) -> str:
@@ -560,5 +572,23 @@ def main() -> int:
     return 0 if ok else 1
 
 
+def _main_with_log() -> int:
+    """Open the per-run log file, run, and name the file on both ends so the
+    full untruncated trace is always one `less` away."""
+    global _LOG_FILE  # noqa: PLW0603 — single assignment per process, set before any _say
+    _GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    log_path = _GENERATED_DIR / f"smoke_e2e_{stamp}.txt"
+    with log_path.open("w", encoding="utf-8") as log_file:
+        _LOG_FILE = log_file
+        print(f"  Full trace ........... {log_path}", flush=True)
+        try:
+            code = main()
+        finally:
+            _LOG_FILE = None
+        print(f"  Full trace ........... {log_path}", flush=True)
+    return code
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_main_with_log())
