@@ -3,7 +3,8 @@
 
 Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
 `FileExaminationSink`, `AnalyzeEventSink`, `PublishEventSink`,
-`TraceEventSink`, `HITLEventSink` (`audit/sinks.py`) from one body,
+`TraceEventSink`, `HITLEventSink`, `SynthesizeEventSink`
+(`audit/sinks.py`) from one body,
 sharing transaction lifecycle and session-per-call discipline. The
 non-phase events route through a shared `_persist_non_phase_event`
 helper so the idempotency + payload-mismatch discipline is uniform
@@ -1647,7 +1648,7 @@ def _finding_field_digests(
 class AuditPersister:
     """Durable persister; implements `LLMExchangePersister` + `PhaseEventSink`
     + `FileExaminationSink` + `AnalyzeEventSink` + `PublishEventSink`
-    + `TraceEventSink` + `HITLEventSink`.
+    + `TraceEventSink` + `HITLEventSink` + `SynthesizeEventSink`.
 
     Constructor accepts dependencies via keyword args:
 
