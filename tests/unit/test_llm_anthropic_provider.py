@@ -569,8 +569,9 @@ async def test_complete_uses_request_model() -> None:
 async def test_response_schema_translates_to_output_config() -> None:
     """`response_schema_json` set → the SDK call carries the documented
     `output_config.format` envelope with the schema round-tripped
-    losslessly from the canonical JSON string."""
-    from outrider.policy.canonical import canonicalize_for_hash
+    losslessly from the compact order-preserving JSON string (the
+    production serialization — property order is part of the format)."""
+    import json as _json
 
     persister = _RecordingPersister()
     provider = AnthropicProvider(
@@ -581,7 +582,7 @@ async def test_response_schema_translates_to_output_config() -> None:
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
     with _patched_create() as mock_create:
         await provider.complete(
-            _request(response_schema_json=canonicalize_for_hash(schema).decode("utf-8"))
+            _request(response_schema_json=_json.dumps(schema, separators=(",", ":")))
         )
     assert mock_create.call_args.kwargs["output_config"] == {
         "format": {"type": "json_schema", "schema": schema}

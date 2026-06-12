@@ -598,25 +598,31 @@ def test_response_schema_json_rejects_non_object(non_object: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "noncanonical",
+    "non_compact",
     [
         '{"a": 1}',  # whitespace after the colon
-        '{"b":1,"a":2}',  # unsorted keys
         '{"a":1} ',  # trailing whitespace
+        '{"a": 1, "b": 2}',  # default-dumps spacing
     ],
 )
-def test_response_schema_json_rejects_noncanonical_form(noncanonical: str) -> None:
-    """A valid-but-noncanonical string would mint a different
-    `response_format_digest` for the same parsed schema, fragmenting the
-    one request-format identity the audit stream and the analyze cache
-    key share. Only `canonicalize_for_hash` output is admitted."""
-    with pytest.raises(ValidationError, match="canonical form"):
-        LLMRequest(**_kwargs(response_schema_json=noncanonical))
+def test_response_schema_json_rejects_non_compact_form(non_compact: str) -> None:
+    """A whitespace-variant string would mint a different
+    `response_format_digest` for byte-identical wire intent, fragmenting
+    the request-format identity the audit stream and the analyze cache
+    key share. Only the compact serialization is admitted."""
+    with pytest.raises(ValidationError, match="compact order-preserving form"):
+        LLMRequest(**_kwargs(response_schema_json=non_compact))
 
 
-def test_response_schema_json_admits_canonical_form() -> None:
-    from outrider.policy.canonical import canonicalize_for_hash
-
-    canonical = canonicalize_for_hash({"b": 1, "a": 2}).decode("utf-8")
-    req = LLMRequest(**_kwargs(response_schema_json=canonical))
-    assert req.response_schema_json == canonical
+def test_response_schema_json_admits_any_key_order_compact() -> None:
+    """Key order is deliberately NOT normalized: the API emits object
+    properties in the schema's defined order, so property order is part
+    of the format identity (FUP-169 — a key-sorted schema forced prose
+    fields to generate before the model's classification tokens existed).
+    Two orders are two formats; both are admitted and carry two digests."""
+    reasoning_order = '{"b":1,"a":2}'
+    sorted_order = '{"a":2,"b":1}'
+    req_reasoning = LLMRequest(**_kwargs(response_schema_json=reasoning_order))
+    req_sorted = LLMRequest(**_kwargs(response_schema_json=sorted_order))
+    assert req_reasoning.response_schema_json == reasoning_order
+    assert req_reasoning.response_format_digest != req_sorted.response_format_digest

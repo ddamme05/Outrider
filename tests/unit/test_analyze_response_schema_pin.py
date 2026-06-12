@@ -18,7 +18,6 @@ import hashlib
 import json
 from typing import Any
 
-from outrider.policy.canonical import canonicalize_for_hash, compute_identity_hash
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA,
@@ -80,22 +79,45 @@ def _required_fields(model: type[Any]) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_json_string_is_the_canonical_serialization() -> None:
+def test_json_string_is_the_compact_order_preserving_serialization() -> None:
+    """Deliberately NOT `canonicalize_for_hash`: its key sorting is
+    generatively load-bearing under constrained decoding (the API emits
+    properties in schema order — FUP-169: a sorted schema forced prose
+    fields to generate before the model's classification tokens existed,
+    and three consecutive live runs returned them empty)."""
     assert (
-        canonicalize_for_hash(ANALYZE_RESPONSE_SCHEMA).decode("utf-8")
+        json.dumps(ANALYZE_RESPONSE_SCHEMA, separators=(",", ":"), ensure_ascii=False)
         == ANALYZE_RESPONSE_SCHEMA_JSON
     )
 
 
-def test_digest_derives_from_both_representations() -> None:
-    """digest == identity-hash(dict) == sha256(json-string): the chain
+def test_digest_derives_from_the_wire_bytes() -> None:
+    """digest == sha256(json-string bytes): the chain
     `LLMRequest.response_format_digest` (recomputed from the string) and
-    the cache key (passed the constant) both depend on."""
-    assert compute_identity_hash(ANALYZE_RESPONSE_SCHEMA) == ANALYZE_RESPONSE_FORMAT_DIGEST
+    the cache key (passed the constant) both depend on. The identity is
+    the exact wire bytes — property order included."""
     assert (
         hashlib.sha256(ANALYZE_RESPONSE_SCHEMA_JSON.encode("utf-8")).hexdigest()
         == ANALYZE_RESPONSE_FORMAT_DIGEST
     )
+
+
+def test_classification_fields_precede_prose_in_emission_order() -> None:
+    """THE FUP-169 regression tripwire. The API emits required
+    properties first, in the schema's defined order — so the schema must
+    order `finding_type`/`evidence_tier`/`title` BEFORE
+    `description`/`evidence`, or the grammar forces the model to write
+    its explanation before its own classification tokens exist (observed
+    three live runs in a row: empty prose). Dict insertion order in the
+    constant IS the wire order; this pins it."""
+    finding_property_order = list(_FINDING_SCHEMA["properties"])
+    for classification in ("finding_type", "evidence_tier", "title"):
+        for prose in ("description", "evidence"):
+            assert finding_property_order.index(classification) < finding_property_order.index(
+                prose
+            ), f"{classification} must precede {prose}"
+    required_order = list(_FINDING_SCHEMA["required"])
+    assert required_order.index("title") < required_order.index("description")
 
 
 def test_json_string_round_trips_to_the_dict() -> None:

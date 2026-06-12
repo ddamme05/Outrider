@@ -40,6 +40,8 @@ import strings; the prior `candidate_path` framing was renamed in lockstep.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Annotated, Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -49,7 +51,6 @@ from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
     FindingType,
 )
-from outrider.policy.canonical import canonicalize_for_hash, compute_identity_hash
 
 # ---------------------------------------------------------------------------
 # Raw layer — what the LLM provider returns. Bounded but non-canonical.
@@ -307,13 +308,23 @@ ANALYZE_RESPONSE_SCHEMA: Final[dict[str, Any]] = {
     "additionalProperties": False,
 }
 
-# Canonical-JSON form (sorted keys, stable separators — the
-# `policy/canonical.py` chokepoint recipe) and its digest. The digest is
-# sha256 over exactly these canonical bytes, so
-# `LLMRequest.response_format_digest` (recomputed from the string) and
-# this constant can never disagree:
-# `compute_identity_hash(d) == sha256(canonicalize_for_hash(d))`.
-ANALYZE_RESPONSE_SCHEMA_JSON: Final[str] = canonicalize_for_hash(ANALYZE_RESPONSE_SCHEMA).decode(
-    "utf-8"
+# Compact ORDER-PRESERVING serialization — deliberately NOT
+# `canonicalize_for_hash`, whose key sorting is generatively load-bearing
+# under constrained decoding: the API emits object properties in the
+# schema's defined order (structured-outputs doc, "Property ordering" —
+# required first, in schema order), so a sorted schema forced
+# `description`/`evidence` to be generated BEFORE `finding_type`/`title`
+# existed in the model's own context, and three consecutive live runs
+# returned them empty (FUP-169). The dict literal above is written in
+# reasoning order — classify, name, explain, quote, locate — and these
+# bytes preserve it on the wire. The digest is sha256 over exactly these
+# bytes, so `LLMRequest.response_format_digest` (recomputed from the
+# string) and this constant can never disagree; a property-order change
+# rotates the digest, which is correct — emission order is part of the
+# format's identity.
+ANALYZE_RESPONSE_SCHEMA_JSON: Final[str] = json.dumps(
+    ANALYZE_RESPONSE_SCHEMA, separators=(",", ":"), ensure_ascii=False, allow_nan=False
 )
-ANALYZE_RESPONSE_FORMAT_DIGEST: Final[str] = compute_identity_hash(ANALYZE_RESPONSE_SCHEMA)
+ANALYZE_RESPONSE_FORMAT_DIGEST: Final[str] = hashlib.sha256(
+    ANALYZE_RESPONSE_SCHEMA_JSON.encode("utf-8")
+).hexdigest()
