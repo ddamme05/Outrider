@@ -2567,6 +2567,8 @@ class ReplayVerdictEvent(AuditEventBase):
     # avoid a circular import (`replay` already imports `events`); a drift test
     # pins the two in sync. `None` ONLY when reconstruction itself raised.
     mode: Literal["full", "metadata_only", "mixed"] | None = None
+    # Counts the judged prefix (the stream up to `target_max_sequence_number`,
+    # which already EXCLUDES replay_verdict rows — see the class docstring).
     event_count: int | None = Field(default=None, ge=0)
     finding_count: int | None = Field(default=None, ge=0)
     orphan_finding_count: int | None = Field(default=None, ge=0)
