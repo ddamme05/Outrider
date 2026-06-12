@@ -18,6 +18,7 @@ convention applies to `addable_diff_byte_ranges` tuples consumed by
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from unidiff import PatchedFile
 
     from outrider.ast_facts.models import ScopeUnit
+    from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
 
 
 class ChangedLineSpan(BaseModel):
@@ -138,6 +140,51 @@ def line_range_within_scope_unit(line_start: int, line_end: int, scope_unit: Sco
     See `specs/2026-06-01-analyze-span-frame-mismatch.md`.
     """
     return scope_unit.line_start <= line_start and line_end <= scope_unit.line_end
+
+
+def line_range_vetoed_by_parameterized_call(
+    line_start: int,
+    line_end: int,
+    scan: ParameterizedCallScan,
+) -> bool:
+    """True iff a finding's claimed 1-indexed inclusive line range lands on a
+    provably-parameterized execute call (specs/2026-06-12-sqli-parameterized-
+    call-veto.md, FUP-162).
+
+    Vetoed iff BOTH: (a) the range is contained in some
+    `safe_parameterized_calls` site (inclusive both ends, the
+    `line_range_within_scope_unit` semantics), AND (b) it intersects no
+    `all_execute_like_calls` site outside the safe set — a range spanning
+    a safe and an unsafe call is NOT vetoed and flows through to HITL.
+
+    Line space — not byte space — is the comparison frame, for the same
+    reason as `line_range_within_scope_unit` above: a whole-line byte span
+    starts at column 0, before an indented call node's token-based byte
+    start, so byte containment would silently never veto indented
+    `cursor.execute(...)` calls (the FUP-126 frame-mismatch class).
+    """
+    contained_in_safe = any(
+        site.line_start <= line_start and line_end <= site.line_end
+        for site in scan.safe_parameterized_calls
+    )
+    if not contained_in_safe:
+        return False
+    # Multiset subtraction, not set membership: two calls on one line (one
+    # safe, one not) share a line range, and a set would silently absorb
+    # the unsafe twin into the safe one — vetoing a valid finding. Each
+    # safe site cancels exactly ONE all-sites occurrence of its range; any
+    # remainder is an unsafe site the range must not intersect.
+    unsafe_budget = Counter(
+        (site.line_start, site.line_end) for site in scan.all_execute_like_calls
+    )
+    unsafe_budget.subtract(
+        (site.line_start, site.line_end) for site in scan.safe_parameterized_calls
+    )
+    return not any(
+        # Inclusive interval intersection with each remaining unsafe site.
+        count > 0 and not (line_end < site_start or site_end < line_start)
+        for (site_start, site_end), count in unsafe_budget.items()
+    )
 
 
 def line_range_to_span(line_start: int, line_end: int, source: str) -> Span:

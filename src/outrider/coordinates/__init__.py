@@ -71,6 +71,9 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
 - `line_range_within_scope_unit(...)` — line-space containment of a
   1-indexed range in a ScopeUnit; the analyze parser's admission gate for
   line-based proposals (see `specs/2026-06-01-analyze-span-frame-mismatch.md`).
+- `line_range_vetoed_by_parameterized_call(...)` — line-space veto decision
+  for JUDGED sql_injection proposals landing on a provably-parameterized
+  execute call (FUP-162; specs/2026-06-12-sqli-parameterized-call-veto.md).
 - `line_range_to_span(...)` — 1-indexed line range → whole-line byte Span;
   raises past EOF.
 - `scope_unit_diff_hunks(...)` — clip a unified-diff PatchedFile to
@@ -120,6 +123,7 @@ from outrider.coordinates.spans import (
     changed_line_spans,
     extract_scope_unit_body,
     line_range_to_span,
+    line_range_vetoed_by_parameterized_call,
     line_range_within_scope_unit,
     patched_file_has_added_lines,
     patched_file_has_removed_lines,
@@ -150,6 +154,7 @@ __all__ = [
     "file_in_patch",
     "is_valid_import_string",
     "line_range_to_span",
+    "line_range_vetoed_by_parameterized_call",
     "line_range_within_scope_unit",
     "lookup_patched_file",
     "patched_file_has_added_lines",

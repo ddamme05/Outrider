@@ -861,3 +861,57 @@ def test_changed_line_spans_added_file_no_base_ok() -> None:
     )
     assert [e.line_no for e in result.head_added] == [1, 2]
     assert result.base_removed == ()
+
+
+# ---------------------------------------------------------------------------
+# line_range_vetoed_by_parameterized_call (FUP-162,
+# specs/2026-06-12-sqli-parameterized-call-veto.md). Line-space on purpose:
+# byte containment would silently never veto indented calls (the FUP-126
+# frame-mismatch class) — the scan sites here mimic indented/multiline calls.
+# ---------------------------------------------------------------------------
+
+
+def _scan(safe: tuple[tuple[int, int], ...], extra_unsafe: tuple[tuple[int, int], ...] = ()):  # type: ignore[no-untyped-def]
+    from outrider.ast_facts.parameterized_calls import ExecuteCallSite, ParameterizedCallScan
+
+    safe_sites = tuple(ExecuteCallSite(line_start=s, line_end=e) for s, e in safe)
+    unsafe_sites = tuple(ExecuteCallSite(line_start=s, line_end=e) for s, e in extra_unsafe)
+    return ParameterizedCallScan(
+        safe_parameterized_calls=safe_sites,
+        all_execute_like_calls=safe_sites + unsafe_sites,
+    )
+
+
+def test_veto_fires_when_range_contained_in_safe_call() -> None:
+    from outrider.coordinates import line_range_vetoed_by_parameterized_call
+
+    assert line_range_vetoed_by_parameterized_call(4, 4, _scan(safe=((4, 4),)))
+    # Multi-line call: range equal to or inside the call's lines.
+    assert line_range_vetoed_by_parameterized_call(10, 13, _scan(safe=((10, 13),)))
+    assert line_range_vetoed_by_parameterized_call(11, 12, _scan(safe=((10, 13),)))
+
+
+def test_veto_does_not_fire_outside_or_wider_than_safe_call() -> None:
+    from outrider.coordinates import line_range_vetoed_by_parameterized_call
+
+    scan = _scan(safe=((4, 4),))
+    assert not line_range_vetoed_by_parameterized_call(5, 5, scan)
+    assert not line_range_vetoed_by_parameterized_call(3, 4, scan)  # wider than the call
+    assert not line_range_vetoed_by_parameterized_call(4, 5, scan)
+    assert not line_range_vetoed_by_parameterized_call(1, 1, _scan(safe=()))  # empty scan
+
+
+def test_veto_blocked_by_intersecting_unsafe_execute_site() -> None:
+    """A range contained in a safe call but touching an unsafe execute-like
+    site is NOT vetoed — it flows through to HITL (the spec's spanning rule)."""
+    from outrider.coordinates import line_range_vetoed_by_parameterized_call
+
+    # Unsafe site shares the safe call's line (e.g. two calls on one line).
+    scan = _scan(safe=((4, 4),), extra_unsafe=((4, 4),))
+    assert not line_range_vetoed_by_parameterized_call(4, 4, scan)
+    # Unsafe site adjacent but non-intersecting: veto still fires.
+    scan = _scan(safe=((4, 4),), extra_unsafe=((5, 5),))
+    assert line_range_vetoed_by_parameterized_call(4, 4, scan)
+    # Boundary intersection (range end == unsafe start) blocks the veto.
+    scan = _scan(safe=((4, 5),), extra_unsafe=((5, 6),))
+    assert not line_range_vetoed_by_parameterized_call(4, 5, scan)
