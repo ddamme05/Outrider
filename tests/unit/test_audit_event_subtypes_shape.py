@@ -319,6 +319,22 @@ def test_llm_call_event_hash_fields_reject_non_hex(field_name: str) -> None:
         LLMCallEvent(review_id=uuid4(), **kwargs)
 
 
+def test_llm_call_event_response_format_digest_optional_sha256_hex() -> None:
+    """`response_format_digest` (FUP-096): None for free-form calls
+    (and every pre-migration historical row — optional-with-default, no
+    replay defaults entry needed); when present it is the SHA-256 of
+    the canonical schema JSON that rode the request, same hex pattern
+    as the sibling hash fields."""
+    base = LLMCallEvent(review_id=uuid4(), **_llm_call_kwargs())
+    assert base.response_format_digest is None
+    constrained = LLMCallEvent(
+        review_id=uuid4(), response_format_digest="c" * 64, **_llm_call_kwargs()
+    )
+    assert constrained.response_format_digest == "c" * 64
+    with pytest.raises(ValidationError):
+        LLMCallEvent(review_id=uuid4(), response_format_digest="not-hex", **_llm_call_kwargs())
+
+
 # ---------------------------------------------------------------------------
 # §0b crazy-audit fold: LLMCallEvent.degradation_reason provenance pairing.
 # Mirrors the LLMRequest._enforce_degradation_provenance bidirectional rule

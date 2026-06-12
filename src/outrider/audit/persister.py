@@ -568,6 +568,11 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             # allowlist so wrapper drift (event drops the reason, request
             # had one) is caught at persist time, not just at construction.
             "degradation_reason",
+            # FUP-096: the constrained-decoding provenance must survive the
+            # wrapper intact — event digest diverging from the request's
+            # derived digest would mislabel the output population replay
+            # and the cache telemetry split on.
+            "response_format_digest",
             "prompt_hash",
             "system_prompt_hash",
         }

@@ -2391,6 +2391,18 @@
               }
             ],
             "title": "Degradation Reason"
+          },
+          "response_format_digest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format Digest"
           }
         },
         "additionalProperties": false,

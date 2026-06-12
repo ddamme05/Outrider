@@ -1301,6 +1301,8 @@ export interface components {
             degraded_mode: boolean;
             /** Degradation Reason */
             degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope") | null;
+            /** Response Format Digest */
+            response_format_digest?: string | null;
         };
         /**
          * MetricBucket
