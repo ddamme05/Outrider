@@ -84,7 +84,7 @@ async def narrate_audit_stream(
 async def narrate_llm_exchanges_from_db(
     say: Callable[..., None], engine: AsyncEngine, review_id: UUID
 ) -> None:
-    """The persisted LLM exchanges: the exact prompt sent + the REAL response.
+    """The persisted LLM exchanges: persisted user prompt + real response.
 
     Joins each `llm_call` audit row to its `llm_call_content` row (single
     transaction per DECISIONS.md#016). A scripted/stub provider persists
