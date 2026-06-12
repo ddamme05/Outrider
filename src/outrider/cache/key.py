@@ -36,10 +36,16 @@ def compute_analyze_cache_key(
     query_registry_digest: str,
     active_policy_version: str,
     analyze_parser_version: str,
+    response_format_digest: str,
 ) -> str:
-    """The analyze-cache key: nine length-prefixed fields — the canonical
-    prompt digest plus eight explicit scope/version components — as one
-    SHA-256 hex digest.
+    """The analyze-cache key: ten length-prefixed fields — the canonical
+    prompt digest plus nine explicit scope/version components — as one
+    SHA-256 hex digest. `response_format_digest` (FUP-096) pins the
+    request format: constrained-decoding and free-form calls are
+    different output populations for identical prompt bytes, so they
+    must never share an entry (pass a fixed sentinel such as
+    `"none"` only if a caller genuinely has no format concept — analyze
+    always passes the real digest).
 
     Component order is part of the recipe — changing it is a cache-wide
     invalidation and must be deliberate. `active_policy_version` is the
@@ -58,6 +64,7 @@ def compute_analyze_cache_key(
         query_registry_digest,
         active_policy_version,
         analyze_parser_version,
+        response_format_digest,
     ):
         component_bytes = component.encode("utf-8")
         h.update(f"{len(component_bytes)}:".encode())
