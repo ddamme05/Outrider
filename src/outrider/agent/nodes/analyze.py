@@ -111,6 +111,7 @@ from outrider.agent.nodes.degradation import (
     decide_degradation,
 )
 from outrider.ast_facts.models import SkipReason, TrivialityReason
+from outrider.ast_facts.parameterized_calls import scan_parameterized_calls
 from outrider.ast_facts.python_adapter import parse_python
 from outrider.ast_facts.triviality import (
     TRIVIAL_FILTER_VERSION,
@@ -1381,6 +1382,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         degraded_context_byte_ranges=degraded_context_byte_ranges,
         pass_index=pass_index,
         finish_reason=response.finish_reason,
+        # FUP-162 veto facts: clean outcomes only — degraded files have no
+        # trustworthy parse tree, so the veto stays disabled for them.
+        parameterized_call_scan=(
+            None if degraded_mode else scan_parameterized_calls(content.encode("utf-8"))
+        ),
     )
 
     # Lift parser rejection payloads into audit events.
@@ -1732,6 +1738,11 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         pass_index=pass_index,
         valid_trace_path_elements=valid_trace_path_elements,
         finish_reason=response.finish_reason,
+        # FUP-162 veto facts — trace-fetched files run with has_error scope
+        # units filtered out, not a whole-file degraded mode; the scan
+        # itself returns empty for any error-bearing tree, so a partially
+        # erroring file disables the veto rather than trusting recovery.
+        parameterized_call_scan=scan_parameterized_calls(content.encode("utf-8")),
     )
 
     for proposal_rej in parser_result.proposal_rejections:

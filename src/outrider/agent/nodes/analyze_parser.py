@@ -42,6 +42,7 @@ from outrider.coordinates import is_valid_import_string
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     line_range_to_span,
+    line_range_vetoed_by_parameterized_call,
     line_range_within_scope_unit,
     span_is_nonempty,
     span_within_degraded_context,
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from outrider.ast_facts.models import ScopeUnit
+    from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
 # Versions the parser's admission semantics for the analyze-cache key
@@ -71,7 +73,7 @@ if TYPE_CHECKING:
 # construction — so cached findings can never be served under admission
 # rules that no longer produced them. Code-pinned adjacent to what it
 # versions, never injectable (the TRIVIAL_FILTER_VERSION precedent).
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v1"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v2"
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend
@@ -88,6 +90,7 @@ _ProposalRejectionReason = Literal[
     "span_outside_scope_unit",
     "span_outside_file",
     "span_outside_degraded_context",
+    "sql_injection_on_parameterized_call",
     "schema_construction_failed",
 ]
 
@@ -200,6 +203,7 @@ def parse_analyze_response(
     pass_index: int = 0,
     valid_trace_path_elements: frozenset[str] = frozenset(),
     finish_reason: str = "unknown",
+    parameterized_call_scan: ParameterizedCallScan | None = None,
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -237,6 +241,12 @@ def parse_analyze_response(
     - `active_policy_version` — closure-captured per
       `nodes-receive-deps-via-closure`; goes into
       `ReviewFinding.policy_version` on admitted proposals.
+    - `parameterized_call_scan` — the FUP-162 veto's structural facts
+      (`ast_facts.parameterized_calls.scan_parameterized_calls` over the
+      head content), supplied by the node for CLEAN outcomes only; `None`
+      (the default) disables the veto — degraded files have no
+      trustworthy parse tree (`parse-errors-degrade-to-judged`), so the
+      node must not pass a scan for them.
 
     The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
     and threads it here for INFERRED admission: pass 0 (the original
@@ -580,6 +590,34 @@ def parse_analyze_response(
                     proposal_hash=proposal_hash,
                     file_path=file_path,
                     rejection_reason="span_outside_scope_unit",
+                    rejection_detail=f"({line_start},{line_end})",
+                    claimed_evidence_tier=evidence_tier,
+                )
+            )
+            trace_candidates.extend(proposal_trace_candidates)
+            continue
+
+        # FUP-162 parameterized-call veto (specs/2026-06-12-sqli-parameterized-
+        # call-veto.md): a JUDGED sql_injection whose claimed lines land on a
+        # provably-parameterized execute call is structurally impossible at
+        # that site — reject deterministically, independent of prompt wording.
+        # Runs LAST among the gates so its reason fires only on proposals that
+        # would otherwise admit. Clean-mode only: degraded callers pass
+        # scan=None (`parse-errors-degrade-to-judged` — no trustworthy tree).
+        if (
+            parameterized_call_scan is not None
+            and finding_type is FindingType.SQL_INJECTION
+            and evidence_tier is EvidenceTier.JUDGED
+            and line_range_vetoed_by_parameterized_call(
+                line_start, line_end, parameterized_call_scan
+            )
+        ):
+            proposal_rejections.append(
+                _build_proposal_rejection(
+                    raw_proposal,
+                    proposal_hash=proposal_hash,
+                    file_path=file_path,
+                    rejection_reason="sql_injection_on_parameterized_call",
                     rejection_detail=f"({line_start},{line_end})",
                     claimed_evidence_tier=evidence_tier,
                 )

@@ -51,7 +51,7 @@ def test_key_is_deterministic_64_hex() -> None:
         ("trivial_filter_version", "trivial-filter-v2"),
         ("query_registry_digest", "b" * 64),
         ("active_policy_version", "policy-v2"),
-        ("analyze_parser_version", "analyze-parser-v2"),
+        ("analyze_parser_version", "analyze-parser-v3"),
         ("response_format_digest", "c" * 64),
     ],
 )
@@ -121,8 +121,9 @@ def test_golden_recipe_prompt_digest_plus_nine_framed_components() -> None:
 
 def test_analyze_parser_version_pinned() -> None:
     """Bump rule: ANY admission-flow change bumps this (the spec's
-    TRIVIAL_FILTER_VERSION precedent)."""
-    assert ANALYZE_PARSER_VERSION == "analyze-parser-v1"
+    TRIVIAL_FILTER_VERSION precedent). v2: the FUP-162 parameterized-call
+    veto joined the admission flow."""
+    assert ANALYZE_PARSER_VERSION == "analyze-parser-v2"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:

@@ -575,24 +575,27 @@ async def test_safe_code_clean_under_clean_model_scores_zero_fp(fixture_path: st
 
 @pytest.mark.asyncio
 async def test_parameterized_query_candidate_overflag_fails_precision() -> None:
-    """Regression track (DECISIONS#041): on the safe parameterized-query fixture, a
-    CANDIDATE-ONLY false positive — Haiku flags the correctly-parameterized query as a
-    `sql_injection` while Sonnet stays clean — FAILS the precision dimension. This is the
-    exact #041 caveat (baseline clean, candidate over-flags), and the gate catches it:
-    candidate fp (1) > baseline fp (0). The complementary SHARED-over-flag case (both fp>0,
-    which the relative gate would wrongly pass) is handled by the opt-in run's absolute
-    baseline-clean guard, not this test."""
+    """Regression track (DECISIONS#041): a CANDIDATE-ONLY sql_injection false positive
+    near the parameterized query FAILS the precision dimension while the baseline stays
+    clean — candidate fp (1) > baseline fp (0). Since FUP-162, an over-flag ON the
+    execute call itself (line 6) is absorbed deterministically at admission (pinned by
+    `test_parameterized_overflag_on_the_call_is_vetoed_deterministically` below), so
+    this test scripts the FP at line 5 — the cursor-context line the veto deliberately
+    does NOT cover — pinning the harness's ability to catch the FPs that survive
+    admission. The complementary SHARED-over-flag case (both fp>0, which the relative
+    gate would wrongly pass) is handled by the opt-in run's absolute baseline-clean
+    guard, not this test."""
     overflag = _judged_response_for(
         ExpectedFinding(
             file_path="directory/users.py",
-            line_start=6,
-            line_end=6,
+            line_start=5,
+            line_end=5,
             finding_type=FindingType.SQL_INJECTION,
             severity=lookup_severity(FindingType.SQL_INJECTION),
         )
     )
     baseline = _ScriptedProvider(_MISSES_RESPONSE)  # Sonnet: clean
-    candidate = _ScriptedProvider(overflag)  # Haiku: over-flags the parameterized query
+    candidate = _ScriptedProvider(overflag)  # Haiku: over-flags near the parameterized query
     cmp = await compare_models_on_scenario(
         state_from_eval_fixture(_PARAMETERIZED_QUERY_FIXTURE),
         (),  # safe code — the sql_injection is an unambiguous false positive
@@ -605,6 +608,39 @@ async def test_parameterized_query_candidate_overflag_fails_precision() -> None:
     assert cmp.baseline.n_false_positives == 0  # baseline clean — the discriminating precondition
     assert cmp.candidate.n_false_positives == 1  # the over-flag reproduced
     assert cmp.fp_bounded is False  # precision FAILS — the gate catches the candidate-only FP
+
+
+@pytest.mark.asyncio
+async def test_parameterized_overflag_on_the_call_is_vetoed_deterministically() -> None:
+    """FUP-162 (specs/2026-06-12-sqli-parameterized-call-veto.md), end-to-end through
+    the eval driver: the EXACT #041 caveat — a JUDGED sql_injection ON the provably-
+    parameterized execute call (line 6) — cannot reach a graded finding anymore,
+    regardless of prompt wording or model version. The parser's deterministic veto
+    rejects it at admission (`sql_injection_on_parameterized_call` on the audit
+    stream; the rejection mechanics are pinned at the parser unit tier), so the
+    candidate grades CLEAN and the precision gate passes WITHOUT prompt-layer help."""
+    overflag = _judged_response_for(
+        ExpectedFinding(
+            file_path="directory/users.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+            severity=lookup_severity(FindingType.SQL_INJECTION),
+        )
+    )
+    baseline = _ScriptedProvider(_MISSES_RESPONSE)  # clean
+    candidate = _ScriptedProvider(overflag)  # the on-call over-flag
+    cmp = await compare_models_on_scenario(
+        state_from_eval_fixture(_PARAMETERIZED_QUERY_FIXTURE),
+        (),
+        baseline_provider=baseline,
+        baseline_model="claude-sonnet-4-6",
+        candidate_provider=candidate,
+        candidate_model="claude-haiku-4-5",
+    )
+    assert baseline.calls and candidate.calls
+    assert cmp.candidate.n_false_positives == 0  # the veto absorbed the over-flag
+    assert cmp.fp_bounded is True  # precision holds without the prompt layer's help
 
 
 def test_regression_verdict_is_type_scoped_three_states() -> None:
@@ -636,11 +672,12 @@ async def test_regression_track_type_scoping_ignores_unrelated_baseline_overflag
     that over-flags an UNRELATED dimension (missing_error_handling) while the CANDIDATE adds the
     sql_injection over-flag must read REPRODUCED — not INCONCLUSIVE. Counting TOTAL fp, the
     baseline's fp=1 would force INCONCLUSIVE and hide the candidate's tracked regression. Counting
-    only sql_injection FPs isolates the caveat. (get_user spans lines 4-7: line 5 the cursor
-    context, line 6 the cursor.execute — both admitted within the changed scope unit.)"""
+    only sql_injection FPs isolates the caveat. (get_user spans lines 4-7; the sql_injection FP
+    scripts at line 5, the cursor-context line — since FUP-162, line 6's on-call over-flag is
+    deterministically vetoed at admission and can no longer reach a graded finding.)"""
     baseline_resp = _judged_response_with([(FindingType.MISSING_ERROR_HANDLING, 5, 5)])
     candidate_resp = _judged_response_with(
-        [(FindingType.SQL_INJECTION, 6, 6), (FindingType.MISSING_ERROR_HANDLING, 5, 5)]
+        [(FindingType.SQL_INJECTION, 5, 5), (FindingType.MISSING_ERROR_HANDLING, 5, 5)]
     )
     baseline = _ScriptedProvider(baseline_resp)
     candidate = _ScriptedProvider(candidate_resp)

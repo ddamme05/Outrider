@@ -27,6 +27,7 @@ from outrider.agent.nodes.analyze_parser import (
     parse_analyze_response,
 )
 from outrider.policy.findings import EvidenceTier
+from outrider.policy.severity import FindingType
 
 # ---------------------------------------------------------------------------
 # Frozen + slots discipline
@@ -298,6 +299,11 @@ def test_parse_analyze_response_signature() -> None:
         # cause instead of the opaque downstream JSON ValidationError.
         # Defaults to "unknown"; degradation behaviour is unchanged.
         "finish_reason",
+        # `parameterized_call_scan` added 2026-06-12 (FUP-162): the
+        # structural facts for the sql_injection parameterized-call
+        # veto. Defaults to None (veto disabled — the degraded-mode
+        # value); the node supplies a scan for clean outcomes only.
+        "parameterized_call_scan",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -1679,3 +1685,133 @@ def test_module_exports_all_documented_surfaces() -> None:
         "parse_analyze_response",
     }
     assert set(analyze_parser.__all__) == expected
+
+
+# ---------------------------------------------------------------------------
+# FUP-162 parameterized-call veto
+# (specs/2026-06-12-sqli-parameterized-call-veto.md). The scan comes from
+# the REAL detection module so these tests exercise the full deterministic
+# chain: source bytes -> ast_facts scan -> coordinates veto -> rejection.
+# ---------------------------------------------------------------------------
+
+_PARAMETERIZED_SOURCE = (
+    "def find(cursor, q):\n"  # 1
+    "    x = 1\n"  # 2
+    "    y = 2\n"  # 3
+    '    cursor.execute("SELECT * FROM t WHERE x = %s", (q,))\n'  # 4
+    '    cursor.execute(f"SELECT * FROM {q}")\n'  # 5
+    "    return x\n"  # 6
+)
+
+
+def _parameterized_scan():  # type: ignore[no-untyped-def]
+    from outrider.ast_facts.parameterized_calls import scan_parameterized_calls
+
+    return scan_parameterized_calls(_PARAMETERIZED_SOURCE.encode("utf-8"))
+
+
+def _veto_parser_kwargs() -> dict[str, object]:
+    return {
+        "file_content": _PARAMETERIZED_SOURCE,
+        "file_byte_length": len(_PARAMETERIZED_SOURCE.encode("utf-8")),
+        "included_scope_units": (_build_scope_unit(line_start=1, line_end=6),),
+        "parameterized_call_scan": _parameterized_scan(),
+    }
+
+
+def test_veto_rejects_judged_sqli_on_indented_parameterized_call() -> None:
+    """THE spec-pinned case: a single-line `cursor.execute("…%s…", (q,))`
+    INDENTED inside a function body must veto. Byte containment would have
+    silently missed it (whole-line span starts before the call node's
+    token start) — line space is the load-bearing frame."""
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="sql_injection", evidence_tier="judged", line_start=4, line_end=4
+        )
+    )
+    result = _call_parser(response, **_veto_parser_kwargs())
+    assert result.admitted_findings == ()
+    [rejection] = result.proposal_rejections
+    assert rejection.rejection_reason == "sql_injection_on_parameterized_call"
+    assert rejection.rejection_detail == "(4,4)"
+    assert rejection.claimed_evidence_tier == EvidenceTier.JUDGED
+    assert result.counters.n_proposals_rejected == 1
+    assert result.counters.n_findings_emitted == 0
+
+
+def test_veto_disabled_when_scan_is_none() -> None:
+    """scan=None (the degraded-mode value and the default) admits the same
+    proposal — the veto never rests on an absent or untrustworthy parse."""
+    kwargs = _veto_parser_kwargs()
+    kwargs.pop("parameterized_call_scan")
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="sql_injection", evidence_tier="judged", line_start=4, line_end=4
+        )
+    )
+    result = _call_parser(response, **kwargs)
+    [finding] = result.admitted_findings
+    assert finding.finding_type == FindingType.SQL_INJECTION
+
+
+def test_veto_is_type_scoped_other_findings_on_same_call_admit() -> None:
+    """Per DECISIONS.md#041 guidance: other finding types on the same
+    parameterized query stay flaggable — the veto removes only the
+    structurally-impossible sql_injection claim."""
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="missing_error_handling",
+            evidence_tier="judged",
+            line_start=4,
+            line_end=4,
+        )
+    )
+    result = _call_parser(response, **_veto_parser_kwargs())
+    [finding] = result.admitted_findings
+    assert finding.finding_type == FindingType.MISSING_ERROR_HANDLING
+
+
+def test_veto_not_fired_when_range_touches_unsafe_execute() -> None:
+    """Lines 4-5 span the safe call AND the f-string call — the proposal
+    flows through to HITL (the spec's spanning rule)."""
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="sql_injection", evidence_tier="judged", line_start=4, line_end=5
+        )
+    )
+    result = _call_parser(response, **_veto_parser_kwargs())
+    [finding] = result.admitted_findings
+    assert finding.finding_type == FindingType.SQL_INJECTION
+
+
+def test_veto_not_fired_on_the_unsafe_call_itself() -> None:
+    """The f-string call at line 5 is exactly what sql_injection should
+    flag — never vetoed."""
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="sql_injection", evidence_tier="judged", line_start=5, line_end=5
+        )
+    )
+    result = _call_parser(response, **_veto_parser_kwargs())
+    [finding] = result.admitted_findings
+    assert finding.finding_type == FindingType.SQL_INJECTION
+
+
+def test_veto_requires_judged_tier_observed_sqli_admits() -> None:
+    """An OBSERVED sql_injection with a registry-valid query_match_id is
+    NOT vetoed — the veto is scoped to JUDGED claims; structural-evidence
+    tiers carry their own deterministic proof requirements."""
+    response = _build_response_json(
+        _minimal_proposal(
+            finding_type="sql_injection",
+            evidence_tier="observed",
+            query_match_id="python.function_definition",
+            line_start=4,
+            line_end=4,
+        )
+    )
+    kwargs = _veto_parser_kwargs()
+    kwargs["query_match_id_set"] = frozenset({"python.function_definition"})
+    result = _call_parser(response, **kwargs)
+    [finding] = result.admitted_findings
+    assert finding.evidence_tier == EvidenceTier.OBSERVED
