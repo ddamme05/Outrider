@@ -444,6 +444,7 @@ async def _drive(
         engine,
         session_factory,
         review_id,
+        publisher=publisher,
         interrupted=interrupted,
         expect_findings=expect_findings,
     )
@@ -562,6 +563,7 @@ async def _verify(
     session_factory: async_sessionmaker[object],  # type: ignore[type-arg]
     review_id: UUID,
     *,
+    publisher: _RecordingPublisher,
     interrupted: bool,
     expect_findings: bool,
 ) -> bool:
@@ -655,6 +657,27 @@ async def _verify(
                 f"{n_findings} finding(s), {n_resp_rejected} response rejection(s)",
             )
         )
+        # Publish side of the same gate: admitted findings must reach the
+        # (recording) publisher with at least one comment — UNLESS the HITL
+        # gate interrupted, which is the gate working, not a publish failure.
+        if interrupted:
+            checks.append(
+                (
+                    "--expect-findings: publish side",
+                    True,
+                    "deferred at the HITL gate (CRITICAL/HIGH finding) — gate working",
+                )
+            )
+        else:
+            calls = publisher.create_review_calls
+            n_comments = len(calls[0]["comments"]) if calls else 0
+            checks.append(
+                (
+                    "--expect-findings: publish posted >=1 comment",
+                    len(calls) >= 1 and n_comments >= 1,
+                    f"{len(calls)} publish call(s), {n_comments} comment(s)",
+                )
+            )
 
     # Replay over the real stream — the headline capability.
     replayer = AuditReplayer(session_factory=session_factory)  # type: ignore[arg-type]
@@ -694,10 +717,12 @@ def main() -> int:
         "--expect-findings",
         action="store_true",
         help=(
-            "fail the run unless findings were ADMITTED (not just produced). By default "
-            "the verdict is structural — a wholesale response rejection (e.g. the model "
-            "emitted invalid JSON) still passes. Pass this when the run is meant to prove "
-            "the findings -> admission -> publish flow on a fixture with known vulns."
+            "fail the run unless findings were ADMITTED and (absent a HITL interrupt) "
+            "the publisher captured at least one comment. By default the verdict is "
+            "structural — a wholesale response rejection (e.g. the model emitted "
+            "invalid JSON) still passes. Pass this when the run is meant to prove the "
+            "findings -> admission -> publish flow on a fixture with known vulns; a "
+            "HITL pause counts as a pass (the gate firing IS the flow working)."
         ),
     )
     args = parser.parse_args()
