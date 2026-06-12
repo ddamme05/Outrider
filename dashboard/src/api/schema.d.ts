@@ -126,37 +126,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/reviews/{review_id}/replay": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Replay Verdict
-         * @description Replay-equivalence verdict — wraps `audit/replay.py::AuditReplayer`.
-         *
-         *     404 if the review has no audit-event rows (`ReplayReviewNotFoundError`).
-         *     Single-snapshot: `reconstruct` (one REPEATABLE READ snapshot) gives mode +
-         *     counts, then `assert_equivalent` verifies THAT SAME reconstruction — so the
-         *     verdict can't mix counts from one snapshot with pass/fail from another (the
-         *     bug if we re-ran `assert_replay_equivalent`, which reconstructs again). Both
-         *     read-only (no mutation). A `ReplayEquivalenceError` from either step yields
-         *     `replay_equivalent=False` carrying the failing check's message, NOT a 500 —
-         *     the verdict IS the product. (A corrupt payload that won't even deserialize
-         *     surfaces as the underlying `ValidationError` → 500, the genuine-corruption
-         *     case.) `phases` is intentionally not exposed (FUP-125).
-         */
-        get: operations["get_replay_verdict_api_reviews__review_id__replay_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/reviews/{review_id}/replay-timeline": {
         parameters: {
             query?: never;
@@ -168,7 +137,7 @@ export interface paths {
          * Get Replay Timeline
          * @description Grouped, replay-verified timeline read-model (ROADMAP feature 6).
          *
-         *     Single-snapshot compose, mirroring `/replay`: `reconstruct` (one REPEATABLE READ snapshot)
+         *     Single-snapshot compose: `reconstruct` (one REPEATABLE READ snapshot)
          *     then `assert_equivalent` over THAT SAME object — never `assert_replay_equivalent` (which
          *     reconstructs again, risking phases-from-snapshot-A / verdict-from-snapshot-B). `reconstruct`
          *     inherits historical-field tolerance + row-consistency + `is_eval` coherence by construction.
@@ -1827,14 +1796,15 @@ export interface components {
          *     FUP-125 gate: `reconstruct().phases` is trustworthy only after equivalence verification,
          *     so `phases` is populated IFF `replay_equivalent` is true; otherwise it is `None` and the
          *     consumer falls back to the flat `events`. `findings`/`llm_exchanges` ride the same gate
-         *     (empty on a non-equivalent verdict). The failure contract mirrors `/replay`:
+         *     (empty on a non-equivalent verdict). The failure contract:
          *     reconstruct-raised `ReplayEquivalenceError` → verdict only (`mode`/`status`/`phases` null,
          *     `events`/`findings`/`llm_exchanges` empty); reconstruct-raised `ValidationError` → 500;
          *     assert-raised → verdict false + `mode` present + `phases`/content suppressed.
          *
          *     `events` / `inter_phase_events` EXCLUDE the projected `ReplayVerdictEvent` (post-completion
-         *     replay metadata surfaced via the verdict, not a review-work operation — the `/replay`
-         *     `event_count` analogue). `inter_phase_events` is the positional set-difference (ordered
+         *     replay metadata surfaced via the verdict, not a review-work operation — the same exclusion
+         *     `ReplayVerdictEvent.event_count` applies to the judged stream).
+         *     `inter_phase_events` is the positional set-difference (ordered
          *     events not in any `phase.events`) — the transitions `_group_phases` drops from the grouped
          *     view, NOT an enumeration of `_PHASE_UNBOUNDED_EVENTS`.
          */
@@ -1864,38 +1834,6 @@ export interface components {
             llm_exchanges: components["schemas"]["TimelineLLMExchangeView"][];
         };
         /**
-         * ReplayVerdict
-         * @description Replay-equivalence verdict for one review — a thin wrapper over
-         *     `audit/replay.py::AuditReplayer`.
-         *
-         *     Deliberately does NOT expose `reconstruct()`'s `phases` grouping (FUP-125:
-         *     trustworthy only after `assert_replay_equivalent`) — only the mode, the
-         *     counts, and the pass/fail verdict. `mode`/`event_count`/`finding_count`/
-         *     `orphan_finding_count` are `None` only when `reconstruct` itself raised
-         *     (corrupt row/payload/is_eval drift). `reason` carries the failing-check
-         *     message when not equivalent — metadata only (ids / hashes / counts /
-         *     enum values), never finding content (per the replay verifier's design).
-         */
-        ReplayVerdict: {
-            /**
-             * Review Id
-             * Format: uuid
-             */
-            review_id: string;
-            /** Replay Equivalent */
-            replay_equivalent: boolean;
-            /** Mode */
-            mode: string | null;
-            /** Event Count */
-            event_count: number | null;
-            /** Finding Count */
-            finding_count: number | null;
-            /** Orphan Finding Count */
-            orphan_finding_count: number | null;
-            /** Reason */
-            reason: string | null;
-        };
-        /**
          * ReplayVerdictEvent
          * @description Records the outcome of a replay-equivalence check over a judged prefix.
          *
@@ -1906,7 +1844,6 @@ export interface components {
          *     `sequence_number` high-water mark of the prefix the verdict covers (the judged
          *     stream, EXCLUDING any prior `replay_verdict` events — a verdict is never
          *     computed over a stream containing its own kind). `mode` + the `*_count` fields
-         *     mirror the on-demand `ReplayVerdict` shape (`api/dashboard/reviews.py`); they
          *     form an all-present-or-all-absent envelope, `None` only when reconstruction
          *     itself raised (see `_enforce_metadata_envelope`). `reason` is set iff the
          *     verdict is inequivalent.
@@ -2724,37 +2661,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_replay_verdict_api_reviews__review_id__replay_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                review_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReplayVerdict"];
                 };
             };
             /** @description Validation Error */

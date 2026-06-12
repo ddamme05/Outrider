@@ -2556,7 +2556,6 @@ class ReplayVerdictEvent(AuditEventBase):
     `sequence_number` high-water mark of the prefix the verdict covers (the judged
     stream, EXCLUDING any prior `replay_verdict` events — a verdict is never
     computed over a stream containing its own kind). `mode` + the `*_count` fields
-    mirror the on-demand `ReplayVerdict` shape (`api/dashboard/reviews.py`); they
     form an all-present-or-all-absent envelope, `None` only when reconstruction
     itself raised (see `_enforce_metadata_envelope`). `reason` is set iff the
     verdict is inequivalent.
@@ -2579,8 +2578,8 @@ class ReplayVerdictEvent(AuditEventBase):
     @model_validator(mode="after")
     def _enforce_reason_paired_with_inequivalence(self) -> Self:
         """`reason` is set iff `replay_equivalent is False` — an equivalent verdict
-        has nothing to explain; an inequivalent one must record why (mirrors the
-        on-demand `ReplayVerdict`: reason on failure, `None` on success)."""
+        has nothing to explain; an inequivalent one must record why (reason on
+        failure, `None` on success — the timeline verdict surface mirrors this)."""
         if not self.replay_equivalent and self.reason is None:
             raise ValueError("ReplayVerdictEvent with replay_equivalent=False requires a reason")
         if self.replay_equivalent and self.reason is not None:
