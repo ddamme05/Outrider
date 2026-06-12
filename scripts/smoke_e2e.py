@@ -37,6 +37,7 @@ code 0 = every check passed, 1 = something broke (or setup failed).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -74,11 +75,13 @@ from tests.integration.test_e2e_smoke import (  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
+from outrider.agent.nodes.patch_config import PatchConfig  # noqa: E402
 from outrider.anomaly.persister import AnomalyPersister  # noqa: E402
 from outrider.audit.config import RetentionSettings  # noqa: E402
-from outrider.audit.events import PublishEvent  # noqa: E402
+from outrider.audit.events import CacheLookupEvent, PublishEvent  # noqa: E402
 from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer, ReplayMode  # noqa: E402
+from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.eval_support import (  # noqa: E402
     EvalDBIsolationError,
@@ -96,9 +99,31 @@ _RULE = "=" * 62
 # coverage assertion in tests/integration/test_e2e_smoke.py.
 _EXPECTED_NODES = frozenset({"intake", "triage", "analyze", "synthesize", "hitl", "publish"})
 
+# Run 2's head SHA — the re-push shape: a NEW head SHA for the same PR with
+# byte-identical file content/patch. head_sha never enters the per-file analyze
+# prompt, so run 2 renders the same prompt bytes and the analyze cache must
+# report would_hit. A two-run rerun of THIS SCRIPT stays deterministic because
+# every invocation gets its own ephemeral scratch DB (empty cache table).
+#
+# NOTE this proves the cache MECHANISM, not a production hit rate: a fixture
+# re-run is ~100% would-hit BY CONSTRUCTION (identical inputs + versions). The
+# serve-flip evidence is the dev-DB ledger fed by real reviews.
+_RUN2_HEAD_SHA = "c" * 40
+
 
 def _say(msg: str = "") -> None:
     print(msg, flush=True)
+
+
+def _dump_json(obj: object) -> str:
+    """Pretty JSON with non-JSON types (UUID/datetime/Decimal) stringified."""
+    return json.dumps(obj, indent=2, sort_keys=True, default=str)
+
+
+def _say_block(prefix: str, body: str) -> None:
+    """Print a multi-line body with a per-line prefix so sections stay scannable."""
+    for line in body.splitlines() or [""]:
+        _say(f"{prefix}{line}")
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +229,16 @@ async def _drive(engine: AsyncEngine) -> bool:
         review_status_sink=ReviewStatusPersister(session_factory=session_factory),
         anomaly_sink=AnomalyPersister(session_factory=session_factory),
         hitl_config=HITLConfig(),
+        # Required since the suggested-patches arc; OFF in rehearsal — the
+        # scripted provider carries no patch responses.
+        patch_config=PatchConfig(patches_enabled=False),
         checkpointer=InMemorySaver(),
         publisher=publisher,
         import_path_resolver=_StubImportPathResolver(),
+        # Production-parity shadow wiring (mirrors api/lifespan.py): lookup +
+        # CacheLookupEvent telemetry + write-on-miss; the model is always
+        # called, nothing is served.
+        analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
     )
     _say("  Graph built .......... 7-node topology; scripted LLM + fake GitHub")
     _say(f"  Running review ....... synthetic PR ({_FILE_PATH}, +1 MEDIUM finding)")
@@ -224,6 +256,8 @@ async def _drive(engine: AsyncEngine) -> bool:
 
     await _narrate_nodes(engine, review_id, publisher)
     await _narrate_audit_stream(engine, review_id)
+    _narrate_llm_exchanges(provider)
+    _narrate_publisher(publisher)
 
     # ---- hard checks (mirror tests/integration/test_e2e_smoke.py asserts) ----
     posted = len(publisher.create_review_calls)
@@ -271,6 +305,67 @@ async def _drive(engine: AsyncEngine) -> bool:
     )
     checks.record("is_eval propagated (False)", post.is_eval is False)
     checks.record("assert_replay_equivalent passes", ok_replay)
+
+    # ---- shadow-cache two-run proof (specs/2026-06-11-file-hash-analyze-cache.md) ----
+    # Run 1 above was the cold pass: the analyze lookup must have recorded a
+    # MISS and written one cache row. Run 2 models the re-push (same PR, new
+    # head SHA, byte-identical content): the lookup must report WOULD_HIT, the
+    # model must STILL be called (shadow serves nothing), and no second row
+    # may land. Mechanism proof only — see the _RUN2_HEAD_SHA note.
+    run1_lookups = [e for e in pre.events if isinstance(e, CacheLookupEvent)]
+    checks.record(
+        "run 1: one cache lookup, outcome=miss",
+        len(run1_lookups) == 1 and run1_lookups[0].outcome == "miss",
+        f"outcomes={[e.outcome for e in run1_lookups]}",
+    )
+    async with engine.begin() as conn:
+        rows_after_run1 = (
+            await conn.execute(text("SELECT count(*) FROM analyze_file_cache"))
+        ).scalar_one()
+    checks.record("run 1: one cache row written", rows_after_run1 == 1, f"rows={rows_after_run1}")
+
+    analyze_calls_before = sum(1 for c in provider.calls if c.node_id == "analyze")
+    review_id_2 = uuid4()
+    await _seed_review(engine, review_id_2, head_sha=_RUN2_HEAD_SHA)
+    _say("  Run 2 (re-push) ...... same PR content, new head SHA — expecting would_hit")
+    _say()
+    await graph.ainvoke(
+        _seed_state(review_id_2, head_sha=_RUN2_HEAD_SHA),
+        config={"configurable": {"thread_id": str(review_id_2)}},
+    )
+
+    await _narrate_audit_stream(engine, review_id_2)
+
+    run2 = await replayer.reconstruct(review_id_2)
+    run2_lookups = [e for e in run2.events if isinstance(e, CacheLookupEvent)]
+    checks.record(
+        "run 2: one cache lookup, outcome=would_hit",
+        len(run2_lookups) == 1 and run2_lookups[0].outcome == "would_hit",
+        f"outcomes={[e.outcome for e in run2_lookups]}",
+    )
+    checks.record(
+        "run 2: model still called (shadow serves nothing)",
+        sum(1 for c in provider.calls if c.node_id == "analyze") == analyze_calls_before + 1,
+    )
+    async with engine.begin() as conn:
+        rows_after_run2 = (
+            await conn.execute(text("SELECT count(*) FROM analyze_file_cache"))
+        ).scalar_one()
+    checks.record(
+        "run 2: no second cache row (hit skips the write)",
+        rows_after_run2 == 1,
+        f"rows={rows_after_run2}",
+    )
+    checks.record(
+        "run 2: keys match across runs (re-push hits the same entry)",
+        len(run1_lookups) == 1
+        and len(run2_lookups) == 1
+        and run1_lookups[0].cache_key == run2_lookups[0].cache_key,
+    )
+
+    # Final full-DB dump — both runs' rows, the cache row's complete JSON
+    # payload included, so any silent write failure is visible in the output.
+    await _narrate_db_state(engine)
 
     return checks.print_and_verdict()
 
@@ -325,7 +420,7 @@ async def _narrate_audit_stream(engine: AsyncEngine, review_id: UUID) -> None:
                 {"id": review_id},
             )
         ).all()
-    _say(f"  Audit stream ......... {len(rows)} events (append-only):")
+    _say(f"  Audit stream ......... {len(rows)} events (append-only), FULL payloads:")
     for seq, et, payload in rows:
         detail = ""
         if et == "review_phase":
@@ -339,6 +434,68 @@ async def _narrate_audit_stream(engine: AsyncEngine, review_id: UUID) -> None:
         elif et == "publish_routing":
             detail = f"-> {payload.get('destination')}"
         _say(f"    {seq:>3}  {et:<20} {detail}")
+        _say_block("         ", _dump_json(payload))
+    _say()
+
+
+def _narrate_llm_exchanges(provider: _ScriptedLLMProvider) -> None:
+    """Every request the graph sent to the provider, in full — prompts are the
+    exact bytes the production AnthropicProvider would send to Claude (the
+    graph renders them identically; only the transport is scripted here)."""
+    _say(f"  LLM exchanges ........ {len(provider.calls)} request(s), FULL prompts:")
+    for i, req in enumerate(provider.calls, 1):
+        _say(
+            f"    --- request {i}: node={req.node_id} model={req.model} "
+            f"max_tokens={req.max_tokens} temp={req.temperature} "
+            f"template={req.prompt_template_version} degraded={req.degraded_mode}"
+        )
+        _say("    SYSTEM PROMPT:")
+        _say_block("      | ", req.system_prompt)
+        _say("    USER PROMPT:")
+        _say_block("      | ", req.user_prompt)
+        scripted = {
+            "triage": provider.triage_response,
+            "analyze": provider.analyze_response,
+        }.get(req.node_id, "Smoke test: one input-validation finding on the new function.")
+        _say("    SCRIPTED RESPONSE (returned to the graph):")
+        _say_block("      | ", scripted)
+    _say()
+
+
+def _narrate_publisher(publisher: _RecordingPublisher) -> None:
+    """The exact payload(s) that would have been POSTed to GitHub."""
+    _say(f"  GitHub publish ....... {len(publisher.create_review_calls)} call(s), FULL payloads:")
+    for i, call in enumerate(publisher.create_review_calls, 1):
+        _say(f"    --- create_review call {i}:")
+        _say_block("      ", _dump_json(call))
+    _say()
+
+
+# Every content/forensic table in the scratch DB — fixed allowlist, dumped
+# whole so silent-write failures (a row that should exist and doesn't, a
+# column silently NULL, an is_eval flag gone wrong) are visible in the output.
+_DB_DUMP_TABLES = (
+    "reviews",
+    "findings",
+    "analyze_file_cache",
+    "llm_call_content",
+    "anomalies",
+    "purge_audit",
+)
+
+
+async def _narrate_db_state(engine: AsyncEngine) -> None:
+    _say("  Database state ....... full dump, every content table (scratch DB):")
+    async with engine.begin() as conn:
+        for table in _DB_DUMP_TABLES:
+            rows = (
+                (await conn.execute(text(f"SELECT * FROM {table}")))  # noqa: S608 — fixed allowlist above
+                .mappings()
+                .all()
+            )
+            _say(f"    {table}: {len(rows)} row(s)")
+            for row in rows:
+                _say_block("      ", _dump_json(dict(row)))
     _say()
 
 

@@ -348,7 +348,11 @@ async def _seed_installation(engine: AsyncEngine) -> None:
         )
 
 
-async def _seed_review(engine: AsyncEngine, review_id: UUID) -> None:
+async def _seed_review(engine: AsyncEngine, review_id: UUID, *, head_sha: str = _HEAD_SHA) -> None:
+    # `head_sha` is parameterizable so a caller can seed a SECOND review of the
+    # same PR (the re-push shape) without tripping the
+    # `(repo_id, pr_number, head_sha)` natural-key UNIQUE — the smoke script's
+    # two-run cache proof needs exactly that.
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -356,7 +360,7 @@ async def _seed_review(engine: AsyncEngine, review_id: UUID) -> None:
                 "status, retention_expires_at) VALUES (:id, :iid, 100, :pr, :sha, 'running', "
                 "NOW() + INTERVAL '180 days')"
             ),
-            {"id": review_id, "iid": _INSTALLATION_ID, "pr": _PULL_NUMBER, "sha": _HEAD_SHA},
+            {"id": review_id, "iid": _INSTALLATION_ID, "pr": _PULL_NUMBER, "sha": head_sha},
         )
 
 
@@ -374,7 +378,10 @@ async def engine(migrated_db: str) -> AsyncGenerator[AsyncEngine]:
         await eng.dispose()
 
 
-def _seed_state(review_id: UUID) -> ReviewState:
+def _seed_state(review_id: UUID, *, head_sha: str = _HEAD_SHA) -> ReviewState:
+    # `head_sha` mirrors `_seed_review`'s kwarg: the smoke script's second run
+    # models a re-push (new SHA, identical file content/patch), and head_sha
+    # never enters the per-file analyze prompt — so the cache key is unchanged.
     return ReviewState(
         review_id=review_id,
         received_at=datetime.now(UTC),
@@ -384,7 +391,7 @@ def _seed_state(review_id: UUID) -> ReviewState:
             repo=_REPO,
             pr_number=_PULL_NUMBER,
             base_sha=_BASE_SHA,
-            head_sha=_HEAD_SHA,
+            head_sha=head_sha,
             pr_title="Add vulnerable handler",
             pr_body=None,
             author="someone",

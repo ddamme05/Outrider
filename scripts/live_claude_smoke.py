@@ -91,10 +91,12 @@ from tests.integration.test_e2e_smoke import (  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
+from outrider.agent.nodes.patch_config import PatchConfig  # noqa: E402
 from outrider.anomaly.persister import AnomalyPersister  # noqa: E402
 from outrider.audit.config import RetentionSettings  # noqa: E402
 from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer  # noqa: E402
+from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
@@ -388,9 +390,16 @@ async def _drive(engine: AsyncEngine, api_key: str, scenario: _Scenario | None) 
         review_status_sink=ReviewStatusPersister(session_factory=session_factory),
         anomaly_sink=AnomalyPersister(session_factory=session_factory),
         hitl_config=HITLConfig(),
+        # Required since the suggested-patches arc; OFF here to keep the live
+        # spend bounded to the review calls themselves.
+        patch_config=PatchConfig(patches_enabled=False),
         checkpointer=InMemorySaver(),
         publisher=publisher,
         import_path_resolver=_StubImportPathResolver(),
+        # Production-parity shadow wiring (mirrors api/lifespan.py). Writes go
+        # to this script's ephemeral test DB; telemetry is queryable there
+        # until the run's DB is dropped.
+        analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
     )
     _say(
         f"  Models ............... {ModelConfig().analyze_model} (analyze) + "
