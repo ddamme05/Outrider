@@ -59,7 +59,6 @@ from pydantic import (
 from pydantic_core.core_schema import SerializationInfo
 
 from outrider.audit.events import ContextManifestEntry, LLMCallEvent
-from outrider.policy.canonical import canonicalize_for_hash
 
 __all__ = [
     "INCLUDE_TEXT_OPT_IN",
@@ -426,11 +425,13 @@ class LLMRequest(BaseModel):
     cache_control: bool = True
     temperature: float = Field(ge=0.0, le=1.0)
     # Constrained-decoding schema (specs/2026-06-12-constrained-decoding.md,
-    # FUP-096): the CANONICAL-JSON string form of a pinned response schema
-    # (e.g. `ANALYZE_RESPONSE_SCHEMA_JSON`), produced by
-    # `policy/canonical.canonicalize_for_hash` — a string, not a dict, so
-    # nothing mutable lives inside this frozen request and the digest below
-    # is derivable from these exact bytes. `None` = free-form call (today's
+    # FUP-096): the COMPACT ORDER-PRESERVING JSON string form of a pinned
+    # response schema (e.g. `ANALYZE_RESPONSE_SCHEMA_JSON`) — a string, not
+    # a dict, so nothing mutable lives inside this frozen request and the
+    # digest below is derivable from these exact bytes. Property order is
+    # part of the format's identity (the API emits properties in schema
+    # order — FUP-169), so the validator below requires a compact
+    # round-trip but never sorts. `None` = free-form call (today's
     # behavior); the provider translates presence into the API's
     # `output_config.format` constrained decoding.
     response_schema_json: str | None = Field(default=None, min_length=2)
@@ -467,31 +468,38 @@ class LLMRequest(BaseModel):
 
     @field_validator("response_schema_json")
     @classmethod
-    def _enforce_canonical_schema_json(cls, value: str | None) -> str | None:
-        """The string must BE `canonicalize_for_hash` output: a JSON object
-        that round-trips to exactly these bytes. Two failure modes this
-        closes at construction instead of downstream: a malformed string
-        would raise raw `json.JSONDecodeError` inside the provider's
-        kwargs-building (outside the typed SDK error translation), and a
-        valid-but-noncanonical string (whitespace, key order) would mint a
-        different `response_format_digest` for the same parsed schema —
-        fragmenting the one request-format identity the audit stream and
-        the analyze cache key are supposed to share.
+    def _enforce_compact_schema_json(cls, value: str | None) -> str | None:
+        """The string must be the COMPACT, ORDER-PRESERVING serialization
+        of a JSON object: round-trip through `json.dumps(json.loads(v),
+        separators=(",", ":"))` to exactly these bytes. Two failure modes
+        this closes at construction instead of downstream: a malformed
+        string would raise raw `json.JSONDecodeError` inside the
+        provider's kwargs-building (outside the typed SDK error
+        translation), and a whitespace-variant string would mint a
+        different `response_format_digest` for byte-identical wire intent.
+
+        Key order is deliberately NOT normalized (no sorting): the API
+        emits object properties in the schema's defined order, so
+        property order is generatively load-bearing — two orders ARE two
+        formats and must carry two digests (FUP-169: a key-sorted schema
+        forced prose fields to be generated before the model's own
+        classification tokens existed, and they came back empty).
         """
         if value is None:
             return value
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
-            msg = "response_schema_json must be valid JSON (canonicalize_for_hash output)"
+            msg = "response_schema_json must be valid JSON (compact serialization)"
             raise ValueError(msg) from exc
         if not isinstance(parsed, dict):
             msg = "response_schema_json must be a JSON object, not a scalar or array"
             raise ValueError(msg)
-        if canonicalize_for_hash(parsed).decode("utf-8") != value:
+        if json.dumps(parsed, separators=(",", ":"), ensure_ascii=False, allow_nan=False) != value:
             msg = (
-                "response_schema_json is not in canonical form; serialize the "
-                "schema dict via policy/canonical.canonicalize_for_hash"
+                "response_schema_json is not in compact order-preserving form; "
+                'serialize the schema dict via json.dumps(..., separators=(",", ":"), '
+                "ensure_ascii=False)"
             )
             raise ValueError(msg)
         return value
@@ -500,12 +508,12 @@ class LLMRequest(BaseModel):
     def response_format_digest(self) -> str | None:
         """SHA-256 hex of `response_schema_json`'s exact bytes; `None` for
         free-form calls. Derived, never caller-supplied — the digest and
-        the schema bytes sent to the API cannot drift. Because the string
-        is `canonicalize_for_hash` output (enforced at construction by
-        `_enforce_canonical_schema_json`), this equals
-        `policy/canonical.compute_identity_hash(schema_dict)` for the same
-        schema — one recipe, provenance on `LLMCallEvent` and the analyze
-        cache key both read THIS value.
+        the schema bytes sent to the API cannot drift. The string is the
+        compact order-preserving serialization (enforced at construction
+        by `_enforce_compact_schema_json`), and property order is part of
+        the format identity, so two key orders carry two digests — by
+        design. Provenance on `LLMCallEvent` and the analyze cache key
+        both read THIS value.
         """
         if self.response_schema_json is None:
             return None
