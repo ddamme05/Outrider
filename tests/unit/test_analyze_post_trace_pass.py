@@ -430,6 +430,11 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     assert len(provider.calls) == 1
     call = provider.calls[0]
     assert call.node_id == "analyze"
+    # FUP-096: the trace-fetched request site carries the pinned schema
+    # the same as pass-0 — constrained decoding rides every analyze call.
+    from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_SCHEMA_JSON
+
+    assert call.response_schema_json == ANALYZE_RESPONSE_SCHEMA_JSON
     # Verify the post-trace SUFFIX was appended to the system prompt.
     # Assert against the actual `POST_TRACE_SYSTEM_PROMPT_SUFFIX`
     # constant (whole-string presence) rather than incidental wording

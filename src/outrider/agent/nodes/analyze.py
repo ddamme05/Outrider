@@ -146,6 +146,10 @@ from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound
+from outrider.schemas.llm.analyze import (
+    ANALYZE_RESPONSE_FORMAT_DIGEST,
+    ANALYZE_RESPONSE_SCHEMA_JSON,
+)
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
@@ -1254,6 +1258,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             query_registry_digest=QUERY_REGISTRY_DIGEST,
             active_policy_version=active_policy_version,
             analyze_parser_version=ANALYZE_PARSER_VERSION,
+            response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
         )
         try:
             # Self-hit exclusion: a crash/retry re-execution of this node
@@ -1330,6 +1335,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         degraded_mode=degraded_mode,
         degradation_reason=degradation_reason,
         context_summary=context_summary,
+        # Constrained decoding (FUP-096): the pinned analyze response schema
+        # rides every analyze call — pass-0 and trace-fetched alike — so the
+        # API guarantees syntactically valid, shape-conforming JSON. The
+        # parser's rejection path stays (refusal/max_tokens escapes).
+        response_schema_json=ANALYZE_RESPONSE_SCHEMA_JSON,
     )
     # Provider failure (LLMProviderError subclasses) propagates. No
     # try/except — the dangling start phase event is the audit signal
@@ -1674,6 +1684,11 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         degraded_mode=False,
         degradation_reason=None,
         context_summary=context_summary,
+        # Constrained decoding (FUP-096): the pinned analyze response schema
+        # rides every analyze call — pass-0 and trace-fetched alike — so the
+        # API guarantees syntactically valid, shape-conforming JSON. The
+        # parser's rejection path stays (refusal/max_tokens escapes).
+        response_schema_json=ANALYZE_RESPONSE_SCHEMA_JSON,
     )
     response: LLMResponse = await provider.complete(request)
 

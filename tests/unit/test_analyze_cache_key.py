@@ -15,6 +15,7 @@ from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
 from outrider.cache import compute_analyze_cache_key
 from outrider.llm.base import _canonical_prompt_hash
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST, _registry_digest
+from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_FORMAT_DIGEST
 
 _BASE_KWARGS = {
     "system_prompt": "system text",
@@ -27,6 +28,7 @@ _BASE_KWARGS = {
     "query_registry_digest": "a" * 64,
     "active_policy_version": "policy-v1",
     "analyze_parser_version": ANALYZE_PARSER_VERSION,
+    "response_format_digest": ANALYZE_RESPONSE_FORMAT_DIGEST,
 }
 
 
@@ -50,11 +52,12 @@ def test_key_is_deterministic_64_hex() -> None:
         ("query_registry_digest", "b" * 64),
         ("active_policy_version", "policy-v2"),
         ("analyze_parser_version", "analyze-parser-v2"),
+        ("response_format_digest", "c" * 64),
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the ten inputs is load-bearing: changing any one of them
-    alone produces a different key (the correct-by-construction
+    """Each of the eleven inputs is load-bearing: changing any one of
+    them alone produces a different key (the correct-by-construction
     invalidation property the spec pins)."""
     base = compute_analyze_cache_key(**_BASE_KWARGS)
     varied = compute_analyze_cache_key(**{**_BASE_KWARGS, field: changed})
@@ -77,11 +80,11 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_prompt_digest_plus_eight_framed_components() -> None:
+def test_golden_recipe_prompt_digest_plus_nine_framed_components() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: nine length-prefixed fields — `_canonical_prompt_hash` output
+    test: ten length-prefixed fields — `_canonical_prompt_hash` output
     first (one recipe, two consumers; never forks from
-    `LLMCallEvent.prompt_hash`), then the eight explicit scope/version
+    `LLMCallEvent.prompt_hash`), then the nine explicit scope/version
     components in declaration order, each framed `{len(bytes)}:` on
     UTF-8 bytes. Any change to the framing, the component order, or the
     prompt component's recipe fails this test — deliberately: that
@@ -102,6 +105,7 @@ def test_golden_recipe_prompt_digest_plus_eight_framed_components() -> None:
         _BASE_KWARGS["query_registry_digest"],
         _BASE_KWARGS["active_policy_version"],
         _BASE_KWARGS["analyze_parser_version"],
+        _BASE_KWARGS["response_format_digest"],
     ):
         component_bytes = component.encode("utf-8")
         expected.update(f"{len(component_bytes)}:".encode())

@@ -8,8 +8,9 @@ FK CASCADE couples cache rows to their source review's purge,
 `installation_id` FK RESTRICT forces purge-before-delete (with
 purge_audit), and `retention_expires_at` carries the
 min(TTL, source retention) write-time bound. `cache_key` (the
-nine-field digest: prompt digest + eight explicit scope/version
-components) is the PK and the conflict arbiter for concurrent same-key
+length-prefixed multi-component digest from
+`cache/key.py::compute_analyze_cache_key` — see its docstring for the
+component list) is the PK and the conflict arbiter for concurrent same-key
 writes (live rows first-writer-win; expired rows refresh via
 `DO UPDATE ... WHERE` expired).
 
