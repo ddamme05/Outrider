@@ -40,7 +40,7 @@ import strings; the prior `candidate_path` framing was renamed in lockstep.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -49,6 +49,7 @@ from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
     FindingType,
 )
+from outrider.policy.canonical import canonicalize_for_hash, compute_identity_hash
 
 # ---------------------------------------------------------------------------
 # Raw layer — what the LLM provider returns. Bounded but non-canonical.
@@ -214,3 +215,82 @@ class AnalyzeFindingProposal(BaseModel):
             msg = f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
             raise ValueError(msg)
         return self
+
+
+# ---------------------------------------------------------------------------
+# Constrained-decoding schema (specs/2026-06-12-constrained-decoding.md,
+# FUP-096). The PINNED, hand-trimmed JSON Schema the provider sends as
+# `output_config.format` — NOT `AnalyzeResponseRaw.model_json_schema()`,
+# because the API's supported subset excludes constructs Pydantic emits
+# (`maxLength`, numeric bounds, `maxItems`>1) and requires
+# `additionalProperties: false` on every object. The stripped constraints
+# still enforce at parse time via the Pydantic models above — constrained
+# decoding guarantees SYNTAX and shape; the raw/admitted layers stay the
+# semantic gate. A drift test asserts structural agreement (property names,
+# required sets, types) with the generated model schema, so a model change
+# forces this constant to be revisited; byte equality is deliberately NOT
+# the assertion.
+# ---------------------------------------------------------------------------
+
+ANALYZE_RESPONSE_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "finding_type": {"type": "string"},
+                    "evidence_tier": {"type": "string"},
+                    "query_match_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "trace_path": {
+                        "anyOf": [
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "null"},
+                        ]
+                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "line_start": {"type": "integer"},
+                    "line_end": {"type": "integer"},
+                    "trace_candidates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "import_string_raw": {"type": "string"},
+                                "reason": {"type": "string"},
+                            },
+                            "required": ["import_string_raw", "reason"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": [
+                    "finding_type",
+                    "evidence_tier",
+                    "title",
+                    "description",
+                    "evidence",
+                    "line_start",
+                    "line_end",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["findings"],
+    "additionalProperties": False,
+}
+
+# Canonical-JSON form (sorted keys, stable separators — the
+# `policy/canonical.py` chokepoint recipe) and its digest. The digest is
+# sha256 over exactly these canonical bytes, so
+# `LLMRequest.response_format_digest` (recomputed from the string) and
+# this constant can never disagree:
+# `compute_identity_hash(d) == sha256(canonicalize_for_hash(d))`.
+ANALYZE_RESPONSE_SCHEMA_JSON: Final[str] = canonicalize_for_hash(ANALYZE_RESPONSE_SCHEMA).decode(
+    "utf-8"
+)
+ANALYZE_RESPONSE_FORMAT_DIGEST: Final[str] = compute_identity_hash(ANALYZE_RESPONSE_SCHEMA)
