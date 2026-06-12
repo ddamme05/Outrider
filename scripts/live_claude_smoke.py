@@ -653,6 +653,13 @@ def main() -> int:
         _say("  ANTHROPIC_API_KEY is not set — this runner needs a real Claude key.")
         _say("  export ANTHROPIC_API_KEY=sk-ant-...  then re-run.")
         return 2
+    if api_key.startswith("op://"):
+        # Sourcing .env does NOT resolve 1Password references — the literal
+        # op:// string passes an is-set check, then fails auth deep in triage.
+        _say("  ANTHROPIC_API_KEY is a 1Password reference (op://...), not a key.")
+        _say("  Run through op so the reference resolves:")
+        _say("    op run --env-file=.env -- uv run python scripts/live_claude_smoke.py")
+        return 2
 
     admin_url = _load_test_db_url()
     _assert_isolated(admin_url)
@@ -684,6 +691,9 @@ def _main_with_log() -> int:
     print(f"  Full trace ........... {_TRACE.path}", flush=True)
     try:
         return main()
+    except Exception:
+        _TRACE.write_current_exception()
+        raise
     finally:
         print(f"  Full trace ........... {_TRACE.path}", flush=True)
         _TRACE.close()

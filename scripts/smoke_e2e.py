@@ -580,6 +580,9 @@ def _main_with_log() -> int:
     print(f"  Full trace ........... {_TRACE.path}", flush=True)
     try:
         code = main()
+    except Exception:
+        _TRACE.write_current_exception()
+        raise
     finally:
         print(f"  Full trace ........... {_TRACE.path}", flush=True)
         _TRACE.close()
