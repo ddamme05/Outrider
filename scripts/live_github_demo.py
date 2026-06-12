@@ -49,6 +49,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+# Bare import: running `python scripts/live_github_demo.py` puts scripts/ at
+# sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _trace_log import TraceTee
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -103,8 +106,14 @@ class _ReviewAlreadyExistsError(Exception):
         self.status = status
 
 
+# Full trace tees to scripts/generated/ — shared recipe, scripts/_trace_log.py.
+_TRACE: TraceTee | None = None
+
+
 def _say(msg: str = "") -> None:
     print(msg, flush=True)
+    if _TRACE is not None:
+        _TRACE.write_line(msg)
 
 
 async def _fetch_pr_seed(
@@ -584,5 +593,18 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _main_with_log() -> int:
+    """Tee the run to scripts/generated/ and name the file on both ends."""
+    global _TRACE  # noqa: PLW0603 — single assignment per process, set before any _say
+    _TRACE = TraceTee("live_github_demo")
+    print(f"  Full trace ........... {_TRACE.path}", flush=True)
+    try:
+        return asyncio.run(_run(_parse_args()))
+    finally:
+        print(f"  Full trace ........... {_TRACE.path}", flush=True)
+        _TRACE.close()
+        _TRACE = None
+
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(_run(_parse_args())))
+    sys.exit(_main_with_log())
