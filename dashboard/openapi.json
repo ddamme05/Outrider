@@ -1731,6 +1731,7 @@
               "span_outside_scope_unit",
               "span_outside_file",
               "span_outside_degraded_context",
+              "sql_injection_on_parameterized_call",
               "schema_construction_failed"
             ],
             "title": "Rejection Reason"

@@ -2336,6 +2336,11 @@ class FindingProposalRejectedEvent(AuditEventBase):
         "span_outside_scope_unit",
         "span_outside_file",
         "span_outside_degraded_context",
+        # FUP-162 deterministic veto: a JUDGED sql_injection whose claimed
+        # lines land on a provably-parameterized execute call
+        # (specs/2026-06-12-sqli-parameterized-call-veto.md). Mirrors the
+        # parser's _ProposalRejectionReason in lockstep.
+        "sql_injection_on_parameterized_call",
         "schema_construction_failed",
     ]
     rejection_detail: Annotated[str, Field(max_length=500)]

@@ -5,8 +5,8 @@ Pins:
 - `AnalyzeCompletedEvent`: counter cross-field validators
   (`_enforce_proposal_accounting`, `_enforce_response_accounting`).
 - `FindingProposalRejectedEvent`: bidirectional
-  `claimed_evidence_tier`/`rejection_reason` coupling; all 7 rejection
-  reasons accepted; pattern guards on hash fields.
+  `claimed_evidence_tier`/`rejection_reason` coupling; every rejection
+  reason accepted; pattern guards on hash fields.
 - `AnalyzeResponseRejectedEvent`: `response_hash` pattern; Literal
   `rejection_reason`.
 - All three: frozen + extra="forbid", discriminator routing through
@@ -184,11 +184,13 @@ def test_analyze_completed_extra_forbid() -> None:
         "finding_type_not_in_enum",
         "span_outside_scope_unit",
         "span_outside_file",
+        # FUP-162: the parameterized-call veto's deterministic rejection.
+        "sql_injection_on_parameterized_call",
         "schema_construction_failed",
     ],
 )
 def test_finding_proposal_rejected_admits_all_non_tier_reasons(reason: str) -> None:
-    """All 6 non-tier rejection reasons accept a non-None claimed_evidence_tier."""
+    """Non-tier rejection reasons accept a non-None claimed_evidence_tier."""
     event = FindingProposalRejectedEvent(**_rejected_proposal_kwargs(rejection_reason=reason))
     assert event.rejection_reason == reason
     assert event.claimed_evidence_tier == EvidenceTier.JUDGED
