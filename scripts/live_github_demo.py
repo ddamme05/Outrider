@@ -51,6 +51,11 @@ from typing import TYPE_CHECKING, Any
 
 # Bare import: running `python scripts/live_github_demo.py` puts scripts/ at
 # sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _narrate import (
+    narrate_audit_stream,
+    narrate_db_state,
+    narrate_llm_exchanges_from_db,
+)
 from _trace_log import TraceTee
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import text
@@ -334,6 +339,12 @@ async def _run(args: argparse.Namespace) -> int:
     await provider.aclose()
 
     interrupted = "__interrupt__" in result
+    # Full-granularity dumps (same recipe as scripts/smoke_e2e.py). This script
+    # targets the REAL DATABASE_URL, so the DB dump is review-scoped — never a
+    # whole-table dump of a shared database.
+    await narrate_audit_stream(_say, engine, review_id)
+    await narrate_llm_exchanges_from_db(_say, engine, review_id)
+    await narrate_db_state(_say, engine, review_id=review_id)
     rc = await _report_and_verify(
         engine,
         session_factory,

@@ -60,6 +60,12 @@ if TYPE_CHECKING:
 
 # Bare import: running `python scripts/live_claude_smoke.py` puts scripts/ at
 # sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _narrate import (
+    narrate_audit_stream,
+    narrate_db_state,
+    narrate_llm_exchanges_from_db,
+    narrate_recorded_publisher,
+)
 from _trace_log import TraceTee
 
 # Repo root on sys.path so `tests.integration.*` imports resolve when run as a
@@ -423,6 +429,13 @@ async def _drive(engine: AsyncEngine, api_key: str, scenario: _Scenario | None) 
 
     interrupted = "__interrupt__" in result
     await _report(engine, review_id, result, publisher, interrupted=interrupted)
+    # Full-granularity dumps (same recipe as scripts/smoke_e2e.py): the real
+    # provider persists every exchange, so the prompts Claude actually saw and
+    # its REAL responses come from llm_call_content — better than a spy.
+    await narrate_audit_stream(_say, engine, review_id)
+    await narrate_llm_exchanges_from_db(_say, engine, review_id)
+    narrate_recorded_publisher(_say, publisher)
+    await narrate_db_state(_say, engine)
     return await _verify(engine, session_factory, review_id, interrupted=interrupted)
 
 

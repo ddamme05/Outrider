@@ -37,7 +37,6 @@ code 0 = every check passed, 1 = something broke (or setup failed).
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -45,6 +44,13 @@ from uuid import UUID, uuid4
 
 # Bare import: running `python scripts/smoke_e2e.py` puts scripts/ at
 # sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _narrate import (
+    narrate_audit_stream,
+    narrate_db_state,
+    narrate_llm_exchanges_from_db,
+    narrate_recorded_publisher,
+    say_block,
+)
 from _trace_log import TraceTee
 
 # Repo root on sys.path so `tests.integration.*` imports resolve when run as a
@@ -127,15 +133,8 @@ def _say(msg: str = "") -> None:
         _TRACE.write_line(msg)
 
 
-def _dump_json(obj: object) -> str:
-    """Pretty JSON with non-JSON types (UUID/datetime/Decimal) stringified."""
-    return json.dumps(obj, indent=2, sort_keys=True, default=str)
-
-
 def _say_block(prefix: str, body: str) -> None:
-    """Print a multi-line body with a per-line prefix so sections stay scannable."""
-    for line in body.splitlines() or [""]:
-        _say(f"{prefix}{line}")
+    say_block(_say, prefix, body)
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +266,7 @@ async def _drive(engine: AsyncEngine) -> bool:
     pre = await replayer.reconstruct(review_id)
 
     await _narrate_nodes(engine, review_id, publisher)
-    await _narrate_audit_stream(engine, review_id)
+    await narrate_audit_stream(_say, engine, review_id)
 
     # ---- hard checks (mirror tests/integration/test_e2e_smoke.py asserts) ----
     posted = len(publisher.create_review_calls)
@@ -344,7 +343,7 @@ async def _drive(engine: AsyncEngine) -> bool:
         config={"configurable": {"thread_id": str(review_id_2)}},
     )
 
-    await _narrate_audit_stream(engine, review_id_2)
+    await narrate_audit_stream(_say, engine, review_id_2)
 
     run2 = await replayer.reconstruct(review_id_2)
     run2_lookups = [e for e in run2.events if isinstance(e, CacheLookupEvent)]
@@ -378,10 +377,13 @@ async def _drive(engine: AsyncEngine) -> bool:
     # publish calls 1 and 2 likewise) — dumping earlier would silently omit
     # run 2's traffic from the "prints everything" contract.
     _narrate_llm_exchanges(provider)
-    _narrate_publisher(publisher)
+    # DB-side view too: zero rows here (scripted provider persists no content)
+    # — also exercises the shared persisted-exchange query at runtime.
+    await narrate_llm_exchanges_from_db(_say, engine, review_id)
+    narrate_recorded_publisher(_say, publisher)
     # Final full-DB dump — both runs' rows, the cache row's complete JSON
     # payload included, so any silent write failure is visible in the output.
-    await _narrate_db_state(engine)
+    await narrate_db_state(_say, engine)
 
     return checks.print_and_verdict()
 
@@ -425,35 +427,6 @@ async def _narrate_nodes(
     _say()
 
 
-async def _narrate_audit_stream(engine: AsyncEngine, review_id: UUID) -> None:
-    async with engine.begin() as conn:
-        rows = (
-            await conn.execute(
-                text(
-                    "SELECT sequence_number, event_type, payload FROM audit_events "
-                    "WHERE review_id = :id ORDER BY sequence_number"
-                ),
-                {"id": review_id},
-            )
-        ).all()
-    _say(f"  Audit stream ......... {len(rows)} events (append-only), FULL payloads:")
-    for seq, et, payload in rows:
-        detail = ""
-        if et == "review_phase":
-            detail = f"{payload.get('node_id')}/{payload.get('marker')}"
-        elif et == "finding":
-            detail = f"{payload.get('finding_type')} ({payload.get('severity')})"
-        elif et == "publish":
-            detail = (
-                f"status={payload.get('review_status')} posted={payload.get('comments_posted')}"
-            )
-        elif et == "publish_routing":
-            detail = f"-> {payload.get('destination')}"
-        _say(f"    {seq:>3}  {et:<20} {detail}")
-        _say_block("         ", _dump_json(payload))
-    _say()
-
-
 def _narrate_llm_exchanges(provider: _ScriptedLLMProvider) -> None:
     """Every request the graph sent to the provider, in full — prompts are the
     exact bytes the production AnthropicProvider would send to Claude (the
@@ -477,46 +450,6 @@ def _narrate_llm_exchanges(provider: _ScriptedLLMProvider) -> None:
         }.get(req.node_id, "Smoke test: one input-validation finding on the new function.")
         _say("    SCRIPTED RESPONSE (returned to the graph):")
         _say_block("      | ", scripted)
-    _say()
-
-
-def _narrate_publisher(publisher: _RecordingPublisher) -> None:
-    """The exact payload(s) that would have been POSTed to GitHub."""
-    _say(
-        f"  GitHub publish ....... {len(publisher.create_review_calls)} call(s) "
-        "across BOTH runs, FULL payloads:"
-    )
-    for i, call in enumerate(publisher.create_review_calls, 1):
-        _say(f"    --- create_review call {i}:")
-        _say_block("      ", _dump_json(call))
-    _say()
-
-
-# Every content/forensic table in the scratch DB — fixed allowlist, dumped
-# whole so silent-write failures (a row that should exist and doesn't, a
-# column silently NULL, an is_eval flag gone wrong) are visible in the output.
-_DB_DUMP_TABLES = (
-    "reviews",
-    "findings",
-    "analyze_file_cache",
-    "llm_call_content",
-    "anomalies",
-    "purge_audit",
-)
-
-
-async def _narrate_db_state(engine: AsyncEngine) -> None:
-    _say("  Database state ....... full dump, every content table (scratch DB):")
-    async with engine.begin() as conn:
-        for table in _DB_DUMP_TABLES:
-            rows = (
-                (await conn.execute(text(f"SELECT * FROM {table}")))  # noqa: S608 — fixed allowlist above
-                .mappings()
-                .all()
-            )
-            _say(f"    {table}: {len(rows)} row(s)")
-            for row in rows:
-                _say_block("      ", _dump_json(dict(row)))
     _say()
 
 
