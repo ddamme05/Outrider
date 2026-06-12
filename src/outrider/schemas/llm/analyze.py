@@ -250,8 +250,31 @@ ANALYZE_RESPONSE_SCHEMA: Final[dict[str, Any]] = {
                         ]
                     },
                     "title": {"type": "string"},
-                    "description": {"type": "string"},
-                    "evidence": {"type": "string"},
+                    # Schema-level `description` annotations are API-enforced
+                    # guidance the constrained decoder reads (FUP-169: two
+                    # consecutive live runs returned these fields EMPTY under
+                    # the grammar while the same prompt's instructions were
+                    # obeyed free-form — under constrained decoding the
+                    # schema, not the prompt, is where field guidance must
+                    # live). The grammar cannot express minLength, so "never
+                    # empty" is instruction, not enforcement; the admitted
+                    # layer deliberately does not reject empty prose.
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Non-empty explanation of why this is a problem and "
+                            "what to change, specific to the code under review. "
+                            "Never empty. At most 1000 characters."
+                        ),
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": (
+                            "Non-empty verbatim quote of the offending line(s) "
+                            "from the code under review. Never empty. At most "
+                            "2000 characters."
+                        ),
+                    },
                     "line_start": {"type": "integer"},
                     "line_end": {"type": "integer"},
                     "trace_candidates": {

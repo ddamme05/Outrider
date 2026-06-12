@@ -148,3 +148,15 @@ def test_optional_fields_admit_null() -> None:
     for field_name in ("query_match_id", "trace_path"):
         variants = _FINDING_SCHEMA["properties"][field_name]["anyOf"]
         assert {"type": "null"} in variants, field_name
+
+
+def test_prose_fields_carry_nonempty_guidance_annotations() -> None:
+    """FUP-169: two consecutive constrained live runs returned
+    `description`/`evidence` as empty strings while the same prompt
+    filled them free-form — under the grammar, the schema is where
+    field guidance must live. The `description` annotations are
+    API-enforced (sent on the wire) and must demand non-empty content;
+    this tripwire fails if a future schema edit strips them."""
+    for field_name in ("description", "evidence"):
+        annotation = _FINDING_SCHEMA["properties"][field_name].get("description", "")
+        assert "Non-empty" in annotation, field_name
