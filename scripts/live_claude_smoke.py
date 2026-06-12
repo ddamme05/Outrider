@@ -58,6 +58,10 @@ from uuid import UUID, uuid4
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+# Bare import: running `python scripts/live_claude_smoke.py` puts scripts/ at
+# sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _trace_log import TraceTee
+
 # Repo root on sys.path so `tests.integration.*` imports resolve when run as a
 # plain script (tests/ is a namespace package; `outrider` is an editable install).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -245,8 +249,14 @@ def _seed_state_for_scenario(review_id: UUID, scenario: _Scenario) -> object:
     )
 
 
+# Full trace tees to scripts/generated/ — shared recipe, scripts/_trace_log.py.
+_TRACE: TraceTee | None = None
+
+
 def _say(msg: str = "") -> None:
     print(msg, flush=True)
+    if _TRACE is not None:
+        _TRACE.write_line(msg)
 
 
 def _redact(url: str) -> str:
@@ -667,5 +677,18 @@ def main() -> int:
     return 0 if ok else 1
 
 
+def _main_with_log() -> int:
+    """Tee the run to scripts/generated/ and name the file on both ends."""
+    global _TRACE  # noqa: PLW0603 — single assignment per process, set before any _say
+    _TRACE = TraceTee("live_claude_smoke")
+    print(f"  Full trace ........... {_TRACE.path}", flush=True)
+    try:
+        return main()
+    finally:
+        print(f"  Full trace ........... {_TRACE.path}", flush=True)
+        _TRACE.close()
+        _TRACE = None
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_main_with_log())

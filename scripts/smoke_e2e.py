@@ -40,10 +40,12 @@ import asyncio
 import json
 import os
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
 from uuid import UUID, uuid4
+
+# Bare import: running `python scripts/smoke_e2e.py` puts scripts/ at
+# sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _trace_log import TraceTee
 
 # Repo root on sys.path so `tests.integration.*` imports resolve when run as a
 # plain script (tests/ is a namespace package; `outrider` is an editable install
@@ -113,18 +115,16 @@ _EXPECTED_NODES = frozenset({"intake", "triage", "analyze", "synthesize", "hitl"
 _RUN2_HEAD_SHA = "c" * 40
 
 
-# The full trace also tees to a file here — the ~2,200-line dump truncates in
-# most terminals, and the file is the diagnosable artifact. Gitignored
-# (`generated/` in .gitignore); created on demand; one timestamped file per run.
-_GENERATED_DIR = _REPO_ROOT / "scripts" / "generated"
-_LOG_FILE: TextIO | None = None
+# The full trace also tees to a timestamped file under scripts/generated/
+# (the ~2,300-line dump truncates in terminals) — shared recipe, see
+# scripts/_trace_log.py.
+_TRACE: TraceTee | None = None
 
 
 def _say(msg: str = "") -> None:
     print(msg, flush=True)
-    if _LOG_FILE is not None:
-        _LOG_FILE.write(msg + "\n")
-        _LOG_FILE.flush()
+    if _TRACE is not None:
+        _TRACE.write_line(msg)
 
 
 def _dump_json(obj: object) -> str:
@@ -575,18 +575,15 @@ def main() -> int:
 def _main_with_log() -> int:
     """Open the per-run log file, run, and name the file on both ends so the
     full untruncated trace is always one `less` away."""
-    global _LOG_FILE  # noqa: PLW0603 — single assignment per process, set before any _say
-    _GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    log_path = _GENERATED_DIR / f"smoke_e2e_{stamp}.txt"
-    with log_path.open("w", encoding="utf-8") as log_file:
-        _LOG_FILE = log_file
-        print(f"  Full trace ........... {log_path}", flush=True)
-        try:
-            code = main()
-        finally:
-            _LOG_FILE = None
-        print(f"  Full trace ........... {log_path}", flush=True)
+    global _TRACE  # noqa: PLW0603 — single assignment per process, set before any _say
+    _TRACE = TraceTee("smoke_e2e")
+    print(f"  Full trace ........... {_TRACE.path}", flush=True)
+    try:
+        code = main()
+    finally:
+        print(f"  Full trace ........... {_TRACE.path}", flush=True)
+        _TRACE.close()
+        _TRACE = None
     return code
 
 
