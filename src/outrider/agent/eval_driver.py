@@ -526,6 +526,10 @@ class _FixtureScriptedProvider:
             system_prompt_hash=_canonical_system_prompt_hash(request.system_prompt),
             degraded_mode=request.degraded_mode,
             degradation_reason=request.degradation_reason,
+            # FUP-096: mirror the real provider's provenance pass-through, or
+            # the persister's event-request cross-check rejects every scripted
+            # analyze call (the request carries the pinned schema).
+            response_format_digest=request.response_format_digest,
         )
         await self._persister.persist(event, request, response)
         return response
