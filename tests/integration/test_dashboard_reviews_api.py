@@ -475,42 +475,35 @@ async def _seed_repo_membership(
         )
 
 
-async def _policy_version(conn: Any) -> str:
-    return str(
-        (await conn.execute(text("SELECT version FROM severity_policies LIMIT 1"))).scalar_one()
-    )
-
-
-async def _insert_finding(
+async def _insert_finding_event(
     conn: Any,
     *,
     review_id: UUID,
-    policy_version: str,
     severity: str,
     content_hash: str,
     is_eval: bool = False,
 ) -> None:
+    """Insert a permanent `FindingEvent` (audit_events, `event_type='finding'`)
+    — the source the severity tally reads. NOT the purgeable `findings` content
+    row: per `DECISIONS.md#014` a FindingEvent outlives its findings row at
+    retention, so the tally must survive the purge."""
     await conn.execute(
         text(
-            "INSERT INTO findings ("
-            "  finding_id, review_id, installation_id, policy_version, finding_type, "
-            "  dimension, severity, evidence_tier, file_path, line_start, line_end, "
-            "  title, description, evidence, suggested_fix, query_match_id, trace_path, "
-            "  content_hash, is_eval, retention_expires_at"
-            ") VALUES ("
-            "  :fid, :rid, :iid, :pv, 'sql_injection', 'security', :sev, 'judged', "
-            "  'app/db.py', 10, 12, 'finding', 'desc', 'ev', NULL, NULL, NULL, "
-            "  :ch, :ie, NOW() + INTERVAL '90 days'"
-            ")"
+            "INSERT INTO audit_events "
+            "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+            "VALUES (:eid, :rid, 'finding', NOW(), :ie, CAST(:payload AS jsonb))"
         ),
         {
-            "fid": uuid4(),
+            "eid": uuid4(),
             "rid": review_id,
-            "iid": _INSTALLATION_ID,
-            "pv": policy_version,
-            "sev": severity,
-            "ch": content_hash,
             "ie": is_eval,
+            "payload": json.dumps(
+                {
+                    "finding_id": str(uuid4()),
+                    "severity": severity,
+                    "finding_content_hash": content_hash,
+                }
+            ),
         },
     )
 
@@ -568,27 +561,20 @@ async def test_list_pr_title_with_null_fallback(
 async def test_severity_counts_are_report_equivalent_deduped(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
-    """Counts are COUNT(DISTINCT content_hash) per severity — the synthesize-
-    deduplicated set, NOT raw admitted findings rows. Two HIGH findings sharing
-    one content_hash collapse to 1."""
+    """Counts are COUNT(DISTINCT finding_content_hash) per severity over the
+    permanent FindingEvent rows — the synthesize-deduplicated set, NOT raw
+    admitted findings. Two HIGH FindingEvents sharing one hash collapse to 1."""
     client, _, engine = dashboard_client
     async with engine.begin() as conn:
-        pv = await _policy_version(conn)
         rid = await _seed_review(
             conn, status="completed", is_eval=False, repo_id=720, llm_events=[], synth=_SYNTH
         )
-        await _insert_finding(
-            conn, review_id=rid, policy_version=pv, severity="high", content_hash=_HASH_A
-        )
-        await _insert_finding(
-            conn, review_id=rid, policy_version=pv, severity="high", content_hash=_HASH_A
-        )
-        await _insert_finding(
-            conn, review_id=rid, policy_version=pv, severity="critical", content_hash=_HASH_B
-        )
+        await _insert_finding_event(conn, review_id=rid, severity="high", content_hash=_HASH_A)
+        await _insert_finding_event(conn, review_id=rid, severity="high", content_hash=_HASH_A)
+        await _insert_finding_event(conn, review_id=rid, severity="critical", content_hash=_HASH_B)
     body = client.get("/api/reviews", headers=_AUTH).json()
     sc = next(r for r in body["reviews"] if r["id"] == str(rid))["severity_counts"]
-    # high=1 (deduped from 2 raw rows), critical=1.
+    # high=1 (deduped from 2 events), critical=1.
     assert sc == {"critical": 1, "high": 1, "medium": 0, "low": 0, "info": 0}
 
 
@@ -600,13 +586,10 @@ async def test_severity_counts_null_before_synthesize(
     has no report-equivalent set yet -> severity_counts is null, not a raw tally."""
     client, _, engine = dashboard_client
     async with engine.begin() as conn:
-        pv = await _policy_version(conn)
         rid = await _seed_review(
             conn, status="running", is_eval=False, repo_id=730, llm_events=[], synth=None
         )
-        await _insert_finding(
-            conn, review_id=rid, policy_version=pv, severity="high", content_hash=_HASH_A
-        )
+        await _insert_finding_event(conn, review_id=rid, severity="high", content_hash=_HASH_A)
     body = client.get("/api/reviews", headers=_AUTH).json()
     sc = next(r for r in body["reviews"] if r["id"] == str(rid))["severity_counts"]
     assert sc is None
@@ -616,34 +599,49 @@ async def test_severity_counts_null_before_synthesize(
 async def test_severity_counts_respect_per_row_is_eval(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
-    """The tally matches each review's OWN is_eval (Finding.is_eval ==
-    Review.is_eval), never a global predicate: a divergent eval finding on a
+    """The tally matches each review's OWN is_eval (event is_eval == review
+    is_eval), never a global predicate: a divergent eval FindingEvent on a
     production review does not leak into its tally."""
     client, _, engine = dashboard_client
     async with engine.begin() as conn:
-        pv = await _policy_version(conn)
         prod = await _seed_review(
             conn, status="completed", is_eval=False, repo_id=740, llm_events=[], synth=_SYNTH
         )
-        await _insert_finding(
-            conn,
-            review_id=prod,
-            policy_version=pv,
-            severity="high",
-            content_hash=_HASH_A,
-            is_eval=False,
+        await _insert_finding_event(
+            conn, review_id=prod, severity="high", content_hash=_HASH_A, is_eval=False
         )
-        # Divergent eval finding on the production review — must be excluded.
-        await _insert_finding(
-            conn,
-            review_id=prod,
-            policy_version=pv,
-            severity="critical",
-            content_hash=_HASH_B,
-            is_eval=True,
+        # Divergent eval FindingEvent on the production review — must be excluded.
+        await _insert_finding_event(
+            conn, review_id=prod, severity="critical", content_hash=_HASH_B, is_eval=True
         )
     body = client.get("/api/reviews", headers=_AUTH).json()
     sc = next(r for r in body["reviews"] if r["id"] == str(prod))["severity_counts"]
+    assert sc == {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0}
+
+
+@pytest.mark.asyncio
+async def test_severity_counts_survive_findings_retention_purge(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """The tally reads the PERMANENT FindingEvent audit rows, NOT the purgeable
+    `findings` content table — so a review whose `findings` rows were purged at
+    retention (DECISIONS.md#014) but whose FindingEvents survive still tallies
+    correctly. Seeds a FindingEvent with NO findings row (the post-purge state)
+    and asserts a non-zero tally rather than all-zeros."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        rid = await _seed_review(
+            conn, status="completed", is_eval=False, repo_id=760, llm_events=[], synth=_SYNTH
+        )
+        await _insert_finding_event(conn, review_id=rid, severity="high", content_hash=_HASH_A)
+        # Precondition: no `findings` content row exists (the purged state).
+        n_findings = await conn.scalar(
+            text("SELECT count(*) FROM findings WHERE review_id = :id"), {"id": str(rid)}
+        )
+    assert n_findings == 0
+    body = client.get("/api/reviews", headers=_AUTH).json()
+    sc = next(r for r in body["reviews"] if r["id"] == str(rid))["severity_counts"]
+    # Computed from the surviving FindingEvent, not the absent findings row.
     assert sc == {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0}
 
 
