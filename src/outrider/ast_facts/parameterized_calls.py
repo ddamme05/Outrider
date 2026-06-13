@@ -234,9 +234,13 @@ def scan_digest(scan: ParameterizedCallScan) -> str:
     analyze cache key (FUP-171).
 
     The veto outcome is a pure function of two line-range multisets — the
-    safe-parameterized calls and all execute-like calls — so the digest is
-    those two sets, each SORTED (call order in the file never changes it),
-    length-framed, and hashed. The empty scan (no execute-like calls, OR a
+    safe-parameterized calls and all execute-like calls — so the digest hashes
+    those two sets, each SORTED (call order in the file never changes it), as a
+    `{label}:{count}:` header per set then `{line_start},{line_end};` per site.
+    Collision-safe via the count header (delimiting each set) plus integer-only
+    fields (line numbers contain neither `,` nor `;`) — no per-element
+    length-prefix needed, unlike the `{len(bytes)}:`-framed string components in
+    `cache/key.py`. The empty scan (no execute-like calls, OR a
     syntax error anywhere disabling the scan) digests distinctly from any
     populated scan — exactly the collision FUP-171 closes: two reviews with
     byte-identical prompts but a syntax error in an out-of-scope region admit
