@@ -60,7 +60,7 @@ from outrider.audit.replay import (
 )
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
-from outrider.db.models.installations import InstallationRepository
+from outrider.db.models.installations import InstallationRepository, active_repo_membership
 from outrider.db.models.purge_audit import PurgeAudit
 from outrider.db.models.reviews import Review
 
@@ -608,9 +608,7 @@ async def list_reviews(
                 select(Review, InstallationRepository.repo_full_name)
                 .outerjoin(
                     InstallationRepository,
-                    (InstallationRepository.installation_id == Review.installation_id)
-                    & (InstallationRepository.repo_id == Review.repo_id)
-                    & (InstallationRepository.removed_at.is_(None)),
+                    active_repo_membership(Review.installation_id, Review.repo_id),
                 )
                 .where(*list_conditions)
                 .order_by(Review.created_at.desc())
@@ -668,9 +666,7 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
                 select(Review, InstallationRepository.repo_full_name)
                 .outerjoin(
                     InstallationRepository,
-                    (InstallationRepository.installation_id == Review.installation_id)
-                    & (InstallationRepository.repo_id == Review.repo_id)
-                    & (InstallationRepository.removed_at.is_(None)),
+                    active_repo_membership(Review.installation_id, Review.repo_id),
                 )
                 .where(Review.id == review_id)
             )

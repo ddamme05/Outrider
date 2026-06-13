@@ -35,7 +35,7 @@ from sqlalchemy import select
 from outrider.api.dashboard.auth import require_agent_api_key
 from outrider.api.dashboard.reviews import _assemble_finding_views
 from outrider.db.models.audit_events import AuditEvent
-from outrider.db.models.installations import InstallationRepository
+from outrider.db.models.installations import InstallationRepository, active_repo_membership
 from outrider.db.models.reviews import Review
 
 if TYPE_CHECKING:
@@ -131,9 +131,7 @@ async def _pr_url(
     repo_full_name = (
         await session.execute(
             select(InstallationRepository.repo_full_name).where(
-                InstallationRepository.installation_id == installation_id,
-                InstallationRepository.repo_id == repo_id,
-                InstallationRepository.removed_at.is_(None),
+                active_repo_membership(installation_id, repo_id)
             )
         )
     ).scalar_one_or_none()

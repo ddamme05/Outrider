@@ -18,7 +18,16 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    ColumnElement,
+    ColumnExpressionArgument,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime, Uuid
@@ -67,3 +76,27 @@ class InstallationRepository(Base):
     repo_full_name: Mapped[str] = mapped_column(Text, nullable=False)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+def active_repo_membership(
+    installation_id: ColumnExpressionArgument[int] | int,
+    repo_id: ColumnExpressionArgument[int] | int,
+    repo: type[InstallationRepository] = InstallationRepository,
+) -> ColumnElement[bool]:
+    """Predicate for the *active* installation_repositories membership of a given
+    `(installation_id, repo_id)`: matching coordinates, not soft-removed. The pair
+    is unique (`uq_installation_repo`), so at most one row matches; an absent or
+    removed membership yields no match — on an outer join the joined
+    `repo_full_name` is NULL and the caller falls back to `repo {repo_id}`.
+
+    Single-sources the condition shared by the reviews list/detail repo-name outer
+    joins (operands are `Review` columns) and agent_view's scalar repo-name lookup
+    (operands are literal ints); `==` is identical for a column or literal RHS.
+    `repo` is a parameter, not a global, so an aliased entity can be passed if a
+    future query joins the table more than once.
+    """
+    return (
+        (repo.installation_id == installation_id)
+        & (repo.repo_id == repo_id)
+        & (repo.removed_at.is_(None))
+    )
