@@ -37,7 +37,13 @@ from outrider.policy.canonical import compute_served_finding_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.prompts import analyze as analyze_prompt
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST
-from outrider.schemas import ChangedFile, PRContext, ReviewFinding, ReviewState
+from outrider.schemas import (
+    ChangedFile,
+    PRContext,
+    PublishDestination,
+    ReviewFinding,
+    ReviewState,
+)
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -571,3 +577,26 @@ async def test_serve_lookup_error_degrades_to_model() -> None:
     assert len(provider.calls) == 1
     assert sink.cache_serves == []
     assert sink.cache_lookups == []
+
+
+@pytest.mark.asyncio
+async def test_serve_clears_analyze_time_lifecycle_fields() -> None:
+    """The serve boundary forces analyze-time lifecycle state: a cached dump
+    carrying a downstream-set publish_destination is reconstructed with it back
+    to None — publish routes per review and HITL re-gates, so those fields are
+    never served as-is (defense-in-depth; today's writer caches pre-HITL findings
+    where they are already None)."""
+    dump = _build_cached_finding().model_dump(mode="json")
+    dump["publish_destination"] = PublishDestination.INLINE_COMMENT.value  # stale value
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload={"findings": [dump], "trace_candidates": []},
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=_SCOPE, entry=entry)
+    _provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+    [(served_finding, _is_eval)] = sink.findings
+    assert served_finding.publish_destination is None  # cleared by the serve boundary
+    assert served_finding.original_severity is None

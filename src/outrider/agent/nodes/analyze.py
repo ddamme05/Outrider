@@ -533,7 +533,11 @@ async def analyze(
                 served = file_outcome.served_result
                 n_findings_emitted += len(served.admitted_findings)
                 n_findings_served += len(served.admitted_findings)
-                n_trace_candidates_emitted += len(served.trace_candidates)
+                # n_trace_candidates_emitted stays parser/model-emitted (pre-dedup);
+                # served candidates were NOT emitted this pass and fire no per-item
+                # event (unlike served FINDINGS, which re-emit FindingEvents) — their
+                # audit trace is CacheServeEvent.served_trace_candidates. They still
+                # extend into state below for the trace loop.
                 for f in served.admitted_findings:
                     key = (f.content_hash, f.proposal_hash)
                     if key in admitted_keys_seen:
@@ -855,6 +859,15 @@ async def _serve_cache_hit(
                         proposal_hash=dump["proposal_hash"],
                     )
                 ),
+                # Force analyze-time lifecycle state regardless of the cached
+                # dump: the HITL override triplet + publish_destination are set
+                # DOWNSTREAM per review (HITL re-gates, publish re-routes), never
+                # served. Today's writer caches pre-HITL findings (all None), but
+                # the serve boundary enforces it locally (defense-in-depth).
+                "publish_destination": None,
+                "original_severity": None,
+                "override_reason": None,
+                "overrider_id": None,
             }
         )
         for dump in entry.payload["findings"]

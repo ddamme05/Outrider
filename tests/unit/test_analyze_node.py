@@ -123,7 +123,7 @@ def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEven
 
 
 class _RecordingAnalyzeEventSink:
-    """Captures every emission of the six analyze-specific event
+    """Captures every emission of the seven analyze-specific event
     types into per-type lists for assertion. The aggregate `events`
     list preserves emission order across types so tests can pin
     event-ordering invariants."""
