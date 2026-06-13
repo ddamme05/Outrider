@@ -18,12 +18,16 @@ node.md` Phase 4:
      `severity-set-by-policy` invariant + `compute_finding_content_hash`
      recipe + `ReviewFinding._verify_baseline_severity`).
 
-The `AnomalyPersister.emit_anomaly` dispatch refactor at
-`src/outrider/anomaly/persister.py` reads `index_where=(Anomaly.rule_name
-== rule_name.value)` dynamically — without this paired partial unique
-index, Postgres' conflict-arbiter would fail to match a partial index for
-the new rule_name and the `on_conflict_do_nothing` falls through SILENTLY:
-every retry would land a NEW row. The integration test
+The `AnomalyPersister.emit_anomaly` dispatch looks up a LITERAL-SQL
+predicate `index_where=_RULE_NAME_INDEX_WHERE[rule_name]`
+(→ `sa_text("rule_name = 'cross_round_severity_divergence'")`) keyed by
+the runtime rule_name — without this paired partial unique index,
+Postgres' conflict-arbiter would fail to match a partial index for the
+new rule_name and the `on_conflict_do_nothing` falls through SILENTLY:
+every retry would land a NEW row. (The predicate must be literal SQL, not
+an ORM expression — a bind parameter fails arbiter inference under
+psycopg3 generic plans; see `_RULE_NAME_INDEX_WHERE` in the persister.)
+The integration test
 `tests/integration/test_anomaly_rule_name_index_paired.py` enumerates
 every `AnomalyRuleName` value and asserts a matching partial unique
 index exists in `pg_index`, catching the enum-vs-migration drift class
