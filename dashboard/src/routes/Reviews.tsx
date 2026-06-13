@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { StatusPill } from "../components/StatusPill";
+import { SEVERITY_ORDER } from "../lib/metrics";
 import { type ReviewStatus, useFilters } from "../state/filters";
 
 type ReviewListItem = components["schemas"]["ReviewListItem"];
@@ -19,14 +20,17 @@ const STATUS_CHIPS: { label: string; status: ReviewStatus }[] = [
   { label: "failed", status: "failed" },
 ];
 
-// Severity tiers in display order, mapped to the mockup's tally classes.
-const SEV_TIERS = [
-  { key: "critical", cls: "c" },
-  { key: "high", cls: "h" },
-  { key: "medium", cls: "m" },
-  { key: "low", cls: "l" },
-  { key: "info", cls: "i" },
-] as const;
+// The mockup's tally class per severity tier (.t.c/.h/.m/.l/.i). Keyed by the
+// canonical SEVERITY_ORDER member type, so adding a tier to SEVERITY_ORDER
+// without a class here is a compile error (the tally can't drift from the rest
+// of the dashboard's severity ordering).
+const SEV_CLASS: Record<(typeof SEVERITY_ORDER)[number], string> = {
+  critical: "c",
+  high: "h",
+  medium: "m",
+  low: "l",
+  info: "i",
+};
 
 function formatLatency(seconds: number | null): string {
   if (seconds == null) {
@@ -48,14 +52,14 @@ function SeverityTally({ counts }: { counts: SeverityCounts | null }) {
   if (counts == null) {
     return <span className="row-repo">—</span>;
   }
-  const tiers = SEV_TIERS.filter(({ key }) => counts[key] > 0);
+  const tiers = SEVERITY_ORDER.filter((key) => counts[key] > 0);
   if (tiers.length === 0) {
     return <span className="row-repo">—</span>;
   }
   return (
     <span className="tally">
-      {tiers.map(({ key, cls }) => (
-        <span key={key} className={`t ${cls}`} title={`${counts[key]} ${key}`}>
+      {tiers.map((key) => (
+        <span key={key} className={`t ${SEV_CLASS[key]}`} title={`${counts[key]} ${key}`}>
           {counts[key]}
         </span>
       ))}

@@ -17,9 +17,12 @@ from outrider.api.dashboard.reviews import (
     ReviewDetail,
     ReviewListItem,
     ReviewMetricsView,
+    SeverityCounts,
+    StatusCounts,
     _hitl_decisions_from_events,
 )
 from outrider.audit.events import HITLDecisionEvent
+from outrider.db.models._base import review_status_enum
 from outrider.policy.canonical import compute_hitl_decision_content_hash
 from outrider.policy.severity import FindingSeverity
 from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
@@ -84,6 +87,23 @@ def test_list_item_rejects_naive_datetime() -> None:
     # Naive datetime is rejected by AwareDatetime.
     with pytest.raises(ValidationError):
         ReviewListItem(created_at=naive, updated_at=naive, **common)  # type: ignore[arg-type]
+
+
+def test_severity_counts_fields_match_finding_severity() -> None:
+    """`SeverityCounts` is built from a `GROUP BY severity` via a whitelist
+    comprehension (`{sev: n for ... if sev in model_fields}`), which SILENTLY
+    drops any severity not present as a field. Couple the closed key set to the
+    canonical `FindingSeverity` so a new tier can't be silently under-counted
+    (Class-10: centrally-pinned contract requires call-side registration)."""
+    assert set(SeverityCounts.model_fields) == {s.value for s in FindingSeverity}
+
+
+def test_status_counts_fields_match_review_status_enum() -> None:
+    """`StatusCounts` is built from a `GROUP BY status` via the same whitelist
+    comprehension, and the dashboard sums it for the "All N" headline — so a
+    dropped status under-counts the queue, not just a chip. Couple the closed
+    key set to `review_status_enum` so a new status can't be silently dropped."""
+    assert set(StatusCounts.model_fields) == set(review_status_enum.enums)
 
 
 def test_detail_forbids_extra_fields() -> None:
