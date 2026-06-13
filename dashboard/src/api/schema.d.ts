@@ -1972,8 +1972,12 @@ export interface components {
             installation_id: number;
             /** Repo Id */
             repo_id: number;
+            /** Repo Full Name */
+            repo_full_name: string | null;
             /** Pr Number */
             pr_number: number;
+            /** Pr Title */
+            pr_title: string | null;
             /** Head Sha */
             head_sha: string;
             /** Status */
@@ -1993,6 +1997,7 @@ export interface components {
             /** Completed At */
             completed_at: string | null;
             metrics: components["schemas"]["ReviewMetricsView"];
+            severity_counts: components["schemas"]["SeverityCounts"] | null;
         };
         /** ReviewListResponse */
         ReviewListResponse: {
@@ -2004,6 +2009,7 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+            status_counts: components["schemas"]["StatusCounts"];
         };
         /**
          * ReviewMetricsView
@@ -2186,6 +2192,43 @@ export interface components {
             entries: components["schemas"]["ScopeExclusionEntry"][];
         };
         /**
+         * SeverityCounts
+         * @description Per-severity counts of a review's REPORT-EQUIVALENT findings — the
+         *     synthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),
+         *     NOT raw admitted `findings` rows. Closed key set (the five
+         *     `FindingSeverity` tiers). On `ReviewListItem` this is `None` until a
+         *     `SynthesizeCompletedEvent` exists, because before synthesize there is no
+         *     deduplicated report set to count. Severity is policy-set baseline; a HITL
+         *     override is a review-detail concern, not the list tally.
+         */
+        SeverityCounts: {
+            /**
+             * Critical
+             * @default 0
+             */
+            critical: number;
+            /**
+             * High
+             * @default 0
+             */
+            high: number;
+            /**
+             * Medium
+             * @default 0
+             */
+            medium: number;
+            /**
+             * Low
+             * @default 0
+             */
+            low: number;
+            /**
+             * Info
+             * @default 0
+             */
+            info: number;
+        };
+        /**
          * SkipReason
          * @description Skip-reason taxonomy across parser AND analyze-node decisions.
          *
@@ -2211,6 +2254,44 @@ export interface components {
          * @enum {string}
          */
         SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL";
+        /**
+         * StatusCounts
+         * @description Per-status review counts over the list's BASE filters (`include_eval`
+         *     + `repo_id`), independent of the active `status` filter — so the queue's
+         *     filter chips stay stable while a status is selected. "All N" = the sum.
+         */
+        StatusCounts: {
+            /**
+             * Running
+             * @default 0
+             */
+            running: number;
+            /**
+             * Awaiting Approval
+             * @default 0
+             */
+            awaiting_approval: number;
+            /**
+             * Awaiting Approval Expired
+             * @default 0
+             */
+            awaiting_approval_expired: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+        };
         /**
          * SynthesizeCompletedEvent
          * @description Per-review aggregate emitted at the end of the synthesize node.

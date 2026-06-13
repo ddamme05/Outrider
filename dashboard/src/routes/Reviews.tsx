@@ -3,22 +3,65 @@ import { Link } from "react-router";
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { StatusPill } from "../components/StatusPill";
-import { REVIEW_STATUSES, type ReviewStatus, useFilters } from "../state/filters";
+import { type ReviewStatus, useFilters } from "../state/filters";
 
 type ReviewListItem = components["schemas"]["ReviewListItem"];
+type SeverityCounts = components["schemas"]["SeverityCounts"];
 
-// Display grouping (the mockup's status sections), in render order.
-const GROUP_ORDER = ["Awaiting", "Running", "Completed", "Failed", "Skipped"] as const;
-type Group = (typeof GROUP_ORDER)[number];
+// The filter chips (mockup order). "expired" is the human label for the
+// `awaiting_approval_expired` status; "All" is the null filter. `skipped`
+// has no chip (matches the mockup) — those reviews surface only under "All".
+const STATUS_CHIPS: { label: string; status: ReviewStatus }[] = [
+  { label: "running", status: "running" },
+  { label: "awaiting_approval", status: "awaiting_approval" },
+  { label: "expired", status: "awaiting_approval_expired" },
+  { label: "completed", status: "completed" },
+  { label: "failed", status: "failed" },
+];
 
-const STATUS_GROUP: Record<string, Group> = {
-  awaiting_approval: "Awaiting",
-  awaiting_approval_expired: "Awaiting",
-  running: "Running",
-  completed: "Completed",
-  failed: "Failed",
-  skipped: "Skipped",
-};
+// Severity tiers in display order, mapped to the mockup's tally classes.
+const SEV_TIERS = [
+  { key: "critical", cls: "c" },
+  { key: "high", cls: "h" },
+  { key: "medium", cls: "m" },
+  { key: "low", cls: "l" },
+  { key: "info", cls: "i" },
+] as const;
+
+function formatLatency(seconds: number | null): string {
+  if (seconds == null) {
+    return "—";
+  }
+  const total = Math.round(seconds);
+  if (total < 60) {
+    return `${total}s`;
+  }
+  const minutes = Math.floor(total / 60);
+  const rem = total % 60;
+  return `${minutes}m${rem.toString().padStart(2, "0")}s`;
+}
+
+function SeverityTally({ counts }: { counts: SeverityCounts | null }) {
+  // `null` = the review hasn't reached synthesize, so there is no
+  // report-equivalent set to count (rendered as an em-dash, like cost/latency
+  // pending). A present-but-all-zero tally also renders as "—".
+  if (counts == null) {
+    return <span className="row-repo">—</span>;
+  }
+  const tiers = SEV_TIERS.filter(({ key }) => counts[key] > 0);
+  if (tiers.length === 0) {
+    return <span className="row-repo">—</span>;
+  }
+  return (
+    <span className="tally">
+      {tiers.map(({ key, cls }) => (
+        <span key={key} className={`t ${cls}`} title={`${counts[key]} ${key}`}>
+          {counts[key]}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export function Reviews() {
   const includeEval = useFilters((s) => s.includeEval);
@@ -26,12 +69,10 @@ export function Reviews() {
   const search = useFilters((s) => s.search);
   const setStatus = useFilters((s) => s.setStatus);
 
-  // Request the backend max in one call (limit≤200). The mockup is a single
-  // scrolling list with no pager, and there is no server-side text search — so
-  // client search must run over the loaded set. Past 200 we don't silently
-  // truncate; we surface an honest notice (below) and lean on the status filter
-  // to narrow. True offset/limit pagination is a follow-up if a deployment
-  // outgrows this.
+  // Request the backend max in one call (limit≤200). The page is a single
+  // scrolling table with no pager, and there is no server-side text search —
+  // so client search runs over the loaded set. Past 200 we surface an honest
+  // notice (below) rather than silently truncating.
   const { data, error, isLoading } = $api.useQuery(
     "get",
     "/api/reviews",
@@ -47,9 +88,14 @@ export function Reviews() {
   }
 
   const loaded = data?.reviews ?? [];
-  // The queue holds more reviews than this page loaded — search/grouping below
-  // only see `loaded`, so we say so rather than implying the page is the whole.
   const truncated = (data?.total ?? 0) > loaded.length;
+
+  // Chip counts come from the response's status_counts (computed server-side
+  // over the base filters, independent of the active status). "All" = the sum.
+  const statusCounts = data?.status_counts;
+  const allCount = statusCounts
+    ? Object.values(statusCounts).reduce((sum, n) => sum + n, 0)
+    : null;
 
   const term = search.trim().toLowerCase();
   const rows = loaded.filter((review) => {
@@ -57,44 +103,42 @@ export function Reviews() {
       return true;
     }
     const haystack =
-      `${review.repo_id} ${review.pr_number} ${review.status} ${review.head_sha} ${review.id}`.toLowerCase();
+      `${review.repo_full_name ?? review.repo_id} ${review.pr_title ?? ""} ${review.pr_number} ${review.status} ${review.head_sha} ${review.id}`.toLowerCase();
     return haystack.includes(term);
   });
 
-  const groups = new Map<Group, ReviewListItem[]>();
-  for (const review of rows) {
-    const group = STATUS_GROUP[review.status] ?? "Completed";
-    const bucket = groups.get(group) ?? [];
-    bucket.push(review);
-    groups.set(group, bucket);
-  }
-
   return (
     <section>
-      <div className="filterbar">
-        <select
-          className="filter-select"
-          aria-label="Filter by status"
-          value={status ?? ""}
-          onChange={(event) =>
-            setStatus(event.target.value === "" ? null : (event.target.value as ReviewStatus))
-          }
-        >
-          <option value="">All statuses</option>
-          {REVIEW_STATUSES.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
+      <div className="panel-h">
+        <h2>Reviews</h2>
+        <div className="right filter-row" role="group" aria-label="Filter by status">
+          <button
+            type="button"
+            className="fbtn"
+            aria-pressed={status === null}
+            onClick={() => setStatus(null)}
+          >
+            All{allCount === null ? null : <span className="num"> {allCount}</span>}
+          </button>
+          {STATUS_CHIPS.map((chip) => (
+            <button
+              type="button"
+              key={chip.status}
+              className="fbtn"
+              aria-pressed={status === chip.status}
+              onClick={() => setStatus(status === chip.status ? null : chip.status)}
+            >
+              {chip.label}
+              {statusCounts ? <span className="num"> {statusCounts[chip.status]}</span> : null}
+            </button>
           ))}
-        </select>
-        <span className="spacer" />
+        </div>
       </div>
 
       {truncated ? (
         <p className="queue-notice">
-          Showing {loaded.length} of {data?.total} reviews. Search and grouping
-          cover only the loaded set — narrow with the status filter to reach the
-          rest.
+          Showing {loaded.length} of {data?.total} reviews. Search covers only
+          the loaded set — narrow with the status filter to reach the rest.
         </p>
       ) : null}
 
@@ -105,38 +149,53 @@ export function Reviews() {
             : "No reviews."}
         </p>
       ) : (
-        GROUP_ORDER.filter((group) => groups.has(group)).map((group) => {
-          const bucket = groups.get(group) ?? [];
-          return (
-            <div key={group}>
-              <div className="group-label">
-                {group}
-                <span className="badge">{bucket.length}</span>
-              </div>
-              <div className="rlist">
-                {bucket.map((review) => (
-                  <div className="rrow" key={review.id}>
-                    <div className="r-status">
-                      <StatusPill status={review.status} />
-                    </div>
-                    <div className="r-main">
-                      <div className="r-title">
-                        <Link to={`/reviews/${review.id}`}>repo {review.repo_id}</Link>
-                        <span className="prnum">#{review.pr_number}</span>
-                        {review.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
-                      </div>
-                      <div className="r-sub">
-                        <span className="mono">{review.head_sha.slice(0, 9)}</span>
-                        <span>{review.metrics.llm_calls_made} calls</span>
-                      </div>
-                    </div>
-                    <div className="r-cost">${review.metrics.total_cost_usd.toFixed(2)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr>
+                <th>PR</th>
+                <th>Repo</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Severity</th>
+                <th>Cost</th>
+                <th>Latency</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((review: ReviewListItem) => (
+                <tr key={review.id}>
+                  <td className="row-id">
+                    <Link to={`/reviews/${review.id}`}>#{review.pr_number}</Link>
+                  </td>
+                  <td className="row-repo">{review.repo_full_name ?? `repo ${review.repo_id}`}</td>
+                  <td>
+                    {review.pr_title ?? <span className="row-repo">—</span>}
+                    {review.is_eval ? <span className="eval-tag mono"> is_eval</span> : null}
+                  </td>
+                  <td>
+                    <StatusPill status={review.status} />
+                    {review.status === "completed" ? (
+                      <Link
+                        to={`/reviews/${review.id}/replay`}
+                        className="abtn"
+                        style={{ marginLeft: 8 }}
+                        aria-label={`Open the replay reconstruction for review ${review.id}`}
+                      >
+                        ↻ replay
+                      </Link>
+                    ) : null}
+                  </td>
+                  <td>
+                    <SeverityTally counts={review.severity_counts} />
+                  </td>
+                  <td className="row-cost">${review.metrics.total_cost_usd.toFixed(2)}</td>
+                  <td className="row-lat">{formatLatency(review.metrics.wall_clock_seconds)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

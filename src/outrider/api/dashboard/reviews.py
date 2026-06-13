@@ -60,6 +60,7 @@ from outrider.audit.replay import (
 )
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
+from outrider.db.models.installations import InstallationRepository
 from outrider.db.models.purge_audit import PurgeAudit
 from outrider.db.models.reviews import Review
 
@@ -110,13 +111,55 @@ class ReviewMetricsView(BaseModel):
     wall_clock_seconds: float | None
 
 
+class SeverityCounts(BaseModel):
+    """Per-severity counts of a review's REPORT-EQUIVALENT findings — the
+    synthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),
+    NOT raw admitted `findings` rows. Closed key set (the five
+    `FindingSeverity` tiers). On `ReviewListItem` this is `None` until a
+    `SynthesizeCompletedEvent` exists, because before synthesize there is no
+    deduplicated report set to count. Severity is policy-set baseline; a HITL
+    override is a review-detail concern, not the list tally.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    info: int = 0
+
+
+class StatusCounts(BaseModel):
+    """Per-status review counts over the list's BASE filters (`include_eval`
+    + `repo_id`), independent of the active `status` filter — so the queue's
+    filter chips stay stable while a status is selected. "All N" = the sum.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    running: int = 0
+    awaiting_approval: int = 0
+    awaiting_approval_expired: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
 class ReviewListItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID
     installation_id: int
     repo_id: int
+    # Joined from `installation_repositories` (active membership); `None` when
+    # no membership row exists for `(installation_id, repo_id)` — the client
+    # falls back to `repo {repo_id}`.
+    repo_full_name: str | None
     pr_number: int
+    # Persisted at review creation from the webhook payload; `None` for rows
+    # created before the `pr_title` column landed (no backfill).
+    pr_title: str | None
     head_sha: str
     status: str
     is_eval: bool
@@ -124,6 +167,9 @@ class ReviewListItem(BaseModel):
     updated_at: AwareDatetime
     completed_at: AwareDatetime | None
     metrics: ReviewMetricsView
+    # Report-equivalent per-severity tally; `None` until the review reaches
+    # synthesize (see `SeverityCounts`).
+    severity_counts: SeverityCounts | None
 
 
 class ReviewListResponse(BaseModel):
@@ -133,6 +179,9 @@ class ReviewListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    # Per-status counts over the base filters (eval + repo), independent of
+    # the active status filter — backs the queue's filter chips.
+    status_counts: StatusCounts
 
 
 class ReviewDetail(BaseModel):
@@ -445,6 +494,50 @@ async def _aggregate_metrics(
     )
 
 
+async def _aggregate_severity_counts(
+    session: AsyncSession, review_id: UUID, review_is_eval: bool
+) -> SeverityCounts | None:
+    """Report-equivalent per-severity tally for one review, or `None` when the
+    review has not reached synthesize (no `SynthesizeCompletedEvent`) — before
+    synthesize there is no deduplicated report set to count, so a raw
+    `findings` aggregate would not be report-equivalent.
+
+    When populated: `COUNT(DISTINCT content_hash)` per severity over the
+    review's `findings` rows. Synthesize deduplicates in-memory by
+    `content_hash` (and `findings` carries `content_hash`), so distinct-hash
+    count reproduces the final reported set; severity is constant within a
+    `content_hash` because it is policy-set from `finding_type`. `is_eval` is
+    matched to the review's OWN value (FUP-130 per-row defense, mirroring
+    `_aggregate_metrics`), never a global predicate — so a mixed
+    `include_eval=true` page never leaks an eval review's findings into a
+    production tally. Severity is the policy-set baseline (`severity-set-by-
+    policy`); a HITL override is a review-detail concern, not the list tally.
+    """
+    reached_synthesize = (
+        await session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.review_id == review_id,
+                AuditEvent.is_eval == review_is_eval,
+                AuditEvent.event_type == "synthesize_completed",
+            )
+        )
+    ).scalar_one()
+    if not reached_synthesize:
+        return None
+
+    rows = (
+        await session.execute(
+            select(Finding.severity, func.count(func.distinct(Finding.content_hash)))
+            .where(Finding.review_id == review_id, Finding.is_eval == review_is_eval)
+            .group_by(Finding.severity)
+        )
+    ).all()
+    valid = SeverityCounts.model_fields
+    return SeverityCounts(**{severity: n for severity, n in rows if severity in valid})
+
+
 @router.get("", response_model=ReviewListResponse)
 async def list_reviews(
     request: Request,
@@ -459,41 +552,64 @@ async def list_reviews(
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        conditions: list[ColumnElement[bool]] = []
+        # Base filters (eval + repo) scope BOTH the list and the status-count
+        # chips; the active `status` filter narrows ONLY the list + total, so
+        # the chips stay stable across status selection.
+        base_conditions: list[ColumnElement[bool]] = []
         if not include_eval:
-            conditions.append(Review.is_eval.is_(False))
-        if status_filter is not None:
-            conditions.append(Review.status == status_filter)
+            base_conditions.append(Review.is_eval.is_(False))
         if repo_id is not None:
-            conditions.append(Review.repo_id == repo_id)
+            base_conditions.append(Review.repo_id == repo_id)
+        list_conditions = list(base_conditions)
+        if status_filter is not None:
+            list_conditions.append(Review.status == status_filter)
 
         total = (
-            await session.execute(select(func.count()).select_from(Review).where(*conditions))
+            await session.execute(select(func.count()).select_from(Review).where(*list_conditions))
         ).scalar_one()
 
-        rows = (
-            (
-                await session.execute(
-                    select(Review)
-                    .where(*conditions)
-                    .order_by(Review.created_at.desc())
-                    .limit(limit)
-                    .offset(offset)
-                )
+        # Status-count chips: GROUP BY status over the BASE filters only
+        # (independent of the active status filter). "All N" = sum.
+        status_rows = (
+            await session.execute(
+                select(Review.status, func.count()).where(*base_conditions).group_by(Review.status)
             )
-            .scalars()
-            .all()
+        ).all()
+        valid_statuses = StatusCounts.model_fields
+        status_counts = StatusCounts(
+            **{status: n for status, n in status_rows if status in valid_statuses}
         )
 
-        # Per-review metric aggregation. N+1 over a page bounded by `limit`
-        # is an accepted V1 simplification (read-through-at-query-time per
-        # the spec); batch later if a page's latency warrants it.
+        # Repo name via LEFT JOIN to active installation_repositories membership
+        # (`(installation_id, repo_id)` is unique, so at most one row; removed
+        # rows yield NULL → client falls back to `repo {repo_id}`).
+        rows = (
+            await session.execute(
+                select(Review, InstallationRepository.repo_full_name)
+                .outerjoin(
+                    InstallationRepository,
+                    (InstallationRepository.installation_id == Review.installation_id)
+                    & (InstallationRepository.repo_id == Review.repo_id)
+                    & (InstallationRepository.removed_at.is_(None)),
+                )
+                .where(*list_conditions)
+                .order_by(Review.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+
+        # Per-review metric + severity aggregation. N+1 over a page bounded by
+        # `limit` is an accepted V1 simplification (read-through-at-query-time
+        # per the spec); batch later if a page's latency warrants it.
         items = [
             ReviewListItem(
                 id=r.id,
                 installation_id=r.installation_id,
                 repo_id=r.repo_id,
+                repo_full_name=repo_full_name,
                 pr_number=r.pr_number,
+                pr_title=r.pr_title,
                 head_sha=r.head_sha,
                 status=r.status,
                 is_eval=r.is_eval,
@@ -501,11 +617,18 @@ async def list_reviews(
                 updated_at=r.updated_at,
                 completed_at=r.completed_at,
                 metrics=await _aggregate_metrics(session, r.id, r.is_eval),
+                severity_counts=await _aggregate_severity_counts(session, r.id, r.is_eval),
             )
-            for r in rows
+            for (r, repo_full_name) in rows
         ]
 
-    return ReviewListResponse(reviews=items, total=total, limit=limit, offset=offset)
+    return ReviewListResponse(
+        reviews=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+        status_counts=status_counts,
+    )
 
 
 @router.get("/{review_id}", response_model=ReviewDetail)

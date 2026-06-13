@@ -69,12 +69,15 @@ def test_list_item_rejects_naive_datetime() -> None:
         "id": uuid4(),
         "installation_id": 1,
         "repo_id": 1,
+        "repo_full_name": None,
         "pr_number": 1,
+        "pr_title": None,
         "head_sha": "sha1",
         "status": "running",
         "is_eval": False,
         "completed_at": None,
         "metrics": _metrics(),
+        "severity_counts": None,
     }
     # Aware datetimes construct cleanly.
     ReviewListItem(created_at=aware, updated_at=aware, **common)  # type: ignore[arg-type]
