@@ -24,8 +24,7 @@ per-installation cost rate-limit) is V2 scope — the Celery worker count
 is the natural ceiling there. See DECISIONS.md#045.
 
 Mirrors `PatchConfig` (bare `OUTRIDER_` env prefix, `frozen`, `extra="forbid"`):
-a frozen `BaseSettings` read once at lifespan startup. Unlike `CacheConfig`, which
-uses the narrower `OUTRIDER_CACHE_` prefix + `env_file=None`.
+a frozen `BaseSettings` read once at lifespan startup.
 """
 
 from __future__ import annotations

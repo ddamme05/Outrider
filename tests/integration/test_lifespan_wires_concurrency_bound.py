@@ -61,12 +61,14 @@ async def test_lifespan_installs_concurrency_bound_on_run_graph(
 
     running = 0
     peak = 0
+    entered = asyncio.Event()  # set once a task has entered ainvoke
     release = asyncio.Event()  # held; ainvoke bodies block until set
 
     async def blocking_ainvoke(_state: Any, *, config: Any = None) -> dict[str, bool]:  # noqa: ARG001
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
+        entered.set()
         await release.wait()
         running -= 1
         return {"ok": True}
@@ -93,9 +95,11 @@ async def test_lifespan_installs_concurrency_bound_on_run_graph(
         t1 = asyncio.create_task(run_graph(SimpleNamespace(review_id=UUID(int=1))))
         t2 = asyncio.create_task(run_graph(SimpleNamespace(review_id=UUID(int=2))))
 
-        # Spin the loop: with the ceiling at 1, exactly one call may enter
-        # ainvoke; the other must park on the semaphore.
-        for _ in range(10):
+        # Gate on the first task actually entering ainvoke (no fixed-spin race —
+        # matches the unit test's event-gate). Then drain a few loop turns: with
+        # the ceiling at 1, the second task must still be parked on the semaphore.
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        for _ in range(5):
             await asyncio.sleep(0)
         assert running == 1, (
             "both run_graph calls entered ainvoke concurrently — app.state.run_graph "
