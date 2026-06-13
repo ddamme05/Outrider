@@ -532,6 +532,9 @@ async def test_serve_hit_short_circuits_and_reemits_finding() -> None:
 
     [(served_finding, _is_eval)] = sink.findings
     assert served_finding.review_id == _REVIEW_ID  # re-stamped onto this review
+    # installation_id re-stamped to THIS review (42), not the cached source's 999 —
+    # guards the tenant re-stamp the persister cross-check depends on.
+    assert served_finding.installation_id == 42
     assert served_finding.finding_id == compute_served_finding_id(
         review_id=_REVIEW_ID,
         content_hash=source_finding.content_hash,
