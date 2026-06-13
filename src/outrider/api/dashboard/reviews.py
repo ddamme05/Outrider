@@ -190,7 +190,12 @@ class ReviewDetail(BaseModel):
     id: UUID
     installation_id: int
     repo_id: int
+    # Joined from active installation_repositories membership; null fallback to
+    # `repo {repo_id}` client-side (same contract as ReviewListItem).
+    repo_full_name: str | None
     pr_number: int
+    # Persisted at creation from the webhook payload; null for pre-migration rows.
+    pr_title: str | None
     head_sha: str
     status: str
     is_eval: bool
@@ -655,11 +660,24 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        review = (
-            await session.execute(select(Review).where(Review.id == review_id))
-        ).scalar_one_or_none()
-        if review is None:
+        # LEFT JOIN active installation_repositories membership for the repo
+        # name (null → client falls back to `repo {repo_id}`); same contract as
+        # the list. `(installation_id, repo_id)` is unique, so at most one row.
+        detail_row = (
+            await session.execute(
+                select(Review, InstallationRepository.repo_full_name)
+                .outerjoin(
+                    InstallationRepository,
+                    (InstallationRepository.installation_id == Review.installation_id)
+                    & (InstallationRepository.repo_id == Review.repo_id)
+                    & (InstallationRepository.removed_at.is_(None)),
+                )
+                .where(Review.id == review_id)
+            )
+        ).first()
+        if detail_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
+        review, repo_full_name = detail_row
         metrics = await _aggregate_metrics(session, review.id, review.is_eval)
         # The per-review policy-version snapshot lives on the review's audit
         # events, not the `reviews` row. Take the earliest event carrying one
@@ -692,7 +710,9 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
             id=review.id,
             installation_id=review.installation_id,
             repo_id=review.repo_id,
+            repo_full_name=repo_full_name,
             pr_number=review.pr_number,
+            pr_title=review.pr_title,
             head_sha=review.head_sha,
             status=review.status,
             is_eval=review.is_eval,

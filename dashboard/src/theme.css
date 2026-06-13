@@ -820,6 +820,29 @@ h1 {
   gap: 8px;
   align-items: center;
 }
+/* Title line: repo name + PR# with the replay verdict pill beside it. */
+.rd-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rd-title-row .rd-title {
+  margin: 0;
+}
+.rd-subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 2px 0 6px;
+}
+/* The verdict pill is a button (click -> ReplayInfoModal), like the policy chip. */
+button.verdict-pill {
+  cursor: pointer;
+  font: inherit;
+}
+button.verdict-pill:hover {
+  border-color: var(--hair);
+}
 
 /* this-review metrics strip — 4 cards */
 .metrics-strip {
