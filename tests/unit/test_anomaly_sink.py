@@ -115,3 +115,86 @@ def test_anomaly_sink_declares_one_method() -> None:
         f"extra={actual_public_methods - {'emit_anomaly'}}. Update this test AND verify "
         f"every AnomalySink consumer + test fixture carries the new method."
     )
+
+
+def test_rule_name_index_where_covers_every_rule_with_literal_sql() -> None:
+    """Completeness + literalness of the per-rule predicate map: every
+    AnomalyRuleName has an entry, and each compiles to literal SQL
+    (`rule_name = '<value>'`) with no bind params. The completeness arm
+    guards against a new rule shipping without its literal predicate."""
+    from sqlalchemy.dialects import postgresql
+
+    from outrider.anomaly.persister import _RULE_NAME_INDEX_WHERE
+
+    assert set(_RULE_NAME_INDEX_WHERE) == set(AnomalyRuleName), (
+        "every AnomalyRuleName must have a literal partial-index predicate; "
+        f"missing={set(AnomalyRuleName) - set(_RULE_NAME_INDEX_WHERE)}"
+    )
+    for rule, clause in _RULE_NAME_INDEX_WHERE.items():
+        compiled = clause.compile(dialect=postgresql.dialect())
+        assert not compiled.params, (
+            f"{rule.value}: index_where must be literal SQL; got bind params "
+            f"{dict(compiled.params)} — arbiter inference will fail under generic plans"
+        )
+        assert f"rule_name = '{rule.value}'" in str(compiled)
+
+
+class _NullAsyncCtx:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _CapturingSession:
+    """Fake AsyncSession recording statements passed to `execute`, so the
+    real `emit_anomaly`'s rendered SQL is inspectable without a DB."""
+
+    def __init__(self) -> None:
+        self.statements: list[Any] = []
+
+    async def __aenter__(self) -> _CapturingSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    def begin(self) -> _NullAsyncCtx:
+        return _NullAsyncCtx()
+
+    async def execute(self, stmt: Any) -> None:
+        self.statements.append(stmt)
+
+
+@pytest.mark.parametrize("rule_name", list(AnomalyRuleName))
+async def test_emit_anomaly_renders_literal_on_conflict_where(rule_name: AnomalyRuleName) -> None:
+    """The REAL `emit_anomaly` must render its ON CONFLICT partial-index
+    predicate as literal SQL (`WHERE rule_name = '<value>'`), never a bind
+    parameter, for every rule. An ORM expression
+    (`Anomaly.rule_name == rule_name.value`) renders `WHERE rule_name = $1`,
+    which psycopg3 generic plans can't prove implies a rule's partial unique
+    index predicate — arbiter inference then fails (42P10) once the statement
+    is server-prepared, silently defeating the idempotent no-op the HITL sweep
+    depends on. Integration tests use NullPool (no prepared statements), so
+    this is only catchable here. Invokes the method (not just the map) so a
+    revert of the method body to an ORM expression fails this test. Twin of
+    the audit replay-verdict check.
+    """
+    from uuid import uuid4
+
+    from sqlalchemy.dialects import postgresql
+
+    session = _CapturingSession()
+    persister = AnomalyPersister(session_factory=lambda: session)  # type: ignore[arg-type, return-value]
+    await persister.emit_anomaly(
+        review_id=uuid4(),
+        rule_name=rule_name,
+        severity=AnomalySeverity.MEDIUM,
+        details={},
+        is_eval=False,
+    )
+    assert len(session.statements) == 1
+    sql = str(session.statements[0].compile(dialect=postgresql.dialect()))
+    assert f"WHERE rule_name = '{rule_name.value}'" in sql, sql
+    assert "%(rule_name_1)s" not in sql, f"predicate rendered as bind param: {sql}"

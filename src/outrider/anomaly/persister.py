@@ -4,10 +4,11 @@ Per-emit fresh `AsyncSession`; uses `postgresql_insert(...).
 on_conflict_do_nothing(...)` against per-rule partial unique indexes
 (e.g. `uq_anomalies_hitl_timeout_natural_key`,
 `uq_anomalies_cross_round_severity_divergence_natural_key`). The
-`index_where` predicate is computed from the runtime `rule_name`
-value — each rule's partial index has the form
-`WHERE rule_name='<rule_value>'`, and PostgreSQL's conflict-arbiter
-needs the exact `index_where` form to match a partial index.
+`index_where` predicate is a LITERAL SQL clause looked up from
+`_RULE_NAME_INDEX_WHERE` by the runtime `rule_name` — each rule's
+partial index has the form `WHERE rule_name='<rule_value>'`, and
+PostgreSQL's conflict-arbiter needs the `index_where` as literal
+text (not an ORM-expression bind parameter) to match a partial index.
 
 Idempotency contract: same `(review_id, rule_name)` pair is admitted
 by the partial unique index AT MOST ONCE; retries collapse to a
@@ -39,14 +40,47 @@ land with `is_eval=True` and are filtered out of the production
 anomaly queue + pass the eval-DB teardown integrity gate.
 """
 
-from typing import Any
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any, Final
 from uuid import UUID
 
+from sqlalchemy import TextClause
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.db.models.anomalies import Anomaly
+
+# Per-rule partial-index predicates as LITERAL SQL, never ORM expressions.
+# The ON CONFLICT arbiter only matches a rule's partial unique index when
+# `index_where` is literal text identical to the migration's `CREATE UNIQUE
+# INDEX ... WHERE rule_name = '<value>'`. An ORM expression
+# (`Anomaly.rule_name == rule_name.value`) renders a bind parameter, which
+# psycopg3 generic plans can't prove implies the index's constant predicate,
+# so arbiter inference fails (42P10) once the statement is server-prepared —
+# silently defeating the idempotent no-op the HITL sweep depends on. Mirrors
+# the literal `sa_text(...)` form the audit natural-key path uses. Every
+# AnomalyRuleName MUST have an entry (enforced at import below); a new rule
+# without its literal predicate fails loud rather than shipping the bug.
+_RULE_NAME_INDEX_WHERE: Final[Mapping[AnomalyRuleName, TextClause]] = MappingProxyType(
+    {
+        AnomalyRuleName.HITL_TIMEOUT: sa_text("rule_name = 'hitl_timeout'"),
+        AnomalyRuleName.CROSS_ROUND_SEVERITY_DIVERGENCE: sa_text(
+            "rule_name = 'cross_round_severity_divergence'"
+        ),
+    }
+)
+
+_UNMAPPED_RULES = set(AnomalyRuleName) - set(_RULE_NAME_INDEX_WHERE)
+if _UNMAPPED_RULES:  # pragma: no cover - import-time guard against a new rule
+    raise RuntimeError(
+        "AnomalyRuleName members missing a literal partial-index predicate in "
+        f"_RULE_NAME_INDEX_WHERE: {sorted(r.value for r in _UNMAPPED_RULES)}. "
+        "Add one matching the rule's `CREATE UNIQUE INDEX ... WHERE rule_name "
+        "= '<value>'` migration."
+    )
 
 
 class AnomalyPersisterConfigError(ValueError):
@@ -75,8 +109,9 @@ class AnomalyPersister:
 
     Serves both sweep callers (HITL_TIMEOUT) and graph callers
     (CROSS_ROUND_SEVERITY_DIVERGENCE). The dispatch is implicit in
-    the `index_where=(Anomaly.rule_name == rule_name.value)` clause
-    — each rule's partial unique index has a matching predicate.
+    the literal `index_where` looked up from `_RULE_NAME_INDEX_WHERE`
+    by the runtime rule_name — each rule's partial unique index has a
+    matching literal predicate.
     """
 
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -98,13 +133,14 @@ class AnomalyPersister:
         runtime `rule_name`.
 
         The on-conflict target — `index_elements=["review_id"]` +
-        `index_where=(Anomaly.rule_name == rule_name.value)` —
-        dispatches on the runtime rule_name. PostgreSQL's
-        conflict-arbiter requires the `index_where` predicate to
-        match the partial unique index exactly; without it the
-        inference may fall through to a non-partial unique index or
-        treat a same-review_id retry as a new insert — defeating the
-        idempotency contract.
+        `index_where=_RULE_NAME_INDEX_WHERE[rule_name]` (LITERAL SQL,
+        not an ORM expression) — dispatches on the runtime rule_name.
+        PostgreSQL's conflict-arbiter requires the `index_where`
+        predicate to match the partial unique index exactly, as
+        literal text; a bind-parameter predicate (which an ORM
+        expression renders) fails arbiter inference under psycopg3
+        generic plans — defeating the idempotency contract. See
+        `_RULE_NAME_INDEX_WHERE` for the full rationale.
 
         Every AnomalyRuleName value must have a matching partial
         unique index in the DB (created by a Group 3-or-later
@@ -128,11 +164,12 @@ class AnomalyPersister:
                 )
                 .on_conflict_do_nothing(
                     index_elements=["review_id"],
-                    # `.value` extracts the `Text` form the DB column
-                    # stores; the partial-index predicate is matched
-                    # by the runtime rule_name (each rule_name has its
-                    # own partial unique index).
-                    index_where=(Anomaly.rule_name == rule_name.value),
+                    # LITERAL partial-index predicate keyed by the runtime
+                    # rule_name (each rule_name has its own partial unique
+                    # index). MUST be literal SQL, not an ORM expression —
+                    # see `_RULE_NAME_INDEX_WHERE` above for why a bind
+                    # parameter breaks arbiter inference under generic plans.
+                    index_where=_RULE_NAME_INDEX_WHERE[rule_name],
                 )
             )
             await session.execute(stmt)

@@ -194,6 +194,17 @@ __all__ = [
 # writes NULL there.
 _NO_PHASE_KEY: Final[None] = None
 
+# The `replay_verdict` partial-index predicate as LITERAL SQL, never an
+# ORM expression. The ON CONFLICT arbiter only matches the partial unique
+# index `uq_audit_events_replay_verdict_natural_key` when `index_where` is
+# literal text identical to the migration's `... WHERE event_type =
+# 'replay_verdict'`. An ORM expression (`AuditEventRow.event_type == "..."`)
+# renders a bind parameter (`event_type = $1`), which psycopg3 generic plans
+# can't prove implies the index's constant predicate, so arbiter inference
+# fails (42P10) once the statement is server-prepared. Mirrors the literal
+# `sa_text(...)` form the natural-key path uses for the same reason.
+_REPLAY_VERDICT_INDEX_WHERE: Final = sa_text("event_type = 'replay_verdict'")
+
 # Pydantic's `model_dump(exclude=...)` expects an IncEx-compatible type;
 # IncEx accepts `set[str]` but not `frozenset[str]`. Plain set; never mutated.
 _EXCLUDE_FROM_PAYLOAD: Final[set[str]] = {"sequence_number"}
@@ -2629,7 +2640,7 @@ class AuditPersister:
                 )
                 .on_conflict_do_nothing(
                     index_elements=[AuditEventRow.review_id],
-                    index_where=AuditEventRow.event_type == "replay_verdict",
+                    index_where=_REPLAY_VERDICT_INDEX_WHERE,
                 )
                 .returning(AuditEventRow.event_id)
             )
