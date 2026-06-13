@@ -348,19 +348,33 @@ async def _seed_installation(engine: AsyncEngine) -> None:
         )
 
 
-async def _seed_review(engine: AsyncEngine, review_id: UUID, *, head_sha: str = _HEAD_SHA) -> None:
+async def _seed_review(
+    engine: AsyncEngine,
+    review_id: UUID,
+    *,
+    head_sha: str = _HEAD_SHA,
+    pr_title: str = "Add vulnerable handler",
+) -> None:
     # `head_sha` is parameterizable so a caller can seed a SECOND review of the
     # same PR (the re-push shape) without tripping the
     # `(repo_id, pr_number, head_sha)` natural-key UNIQUE — the smoke script's
-    # two-run cache proof needs exactly that.
+    # two-run cache proof needs exactly that. `pr_title` mirrors what the webhook
+    # persists at creation (default matches `_seed_state`'s PRContext title), so
+    # the dashboard shows a real title for direct-invoke smoke/demo reviews.
     async with engine.begin() as conn:
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, retention_expires_at) VALUES (:id, :iid, 100, :pr, :sha, 'running', "
-                "NOW() + INTERVAL '180 days')"
+                "pr_title, status, retention_expires_at) VALUES (:id, :iid, 100, :pr, :sha, "
+                ":pr_title, 'running', NOW() + INTERVAL '180 days')"
             ),
-            {"id": review_id, "iid": _INSTALLATION_ID, "pr": _PULL_NUMBER, "sha": head_sha},
+            {
+                "id": review_id,
+                "iid": _INSTALLATION_ID,
+                "pr": _PULL_NUMBER,
+                "sha": head_sha,
+                "pr_title": pr_title,
+            },
         )
 
 

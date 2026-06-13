@@ -369,7 +369,10 @@ async def _drive(
 ) -> bool:
     review_id = uuid4()
     await _seed_installation(engine)
-    await _seed_review(engine, review_id)
+    # Persist the same PR title the agent state carries, so the dashboard shows
+    # it (the direct-invoke path bypasses the webhook that normally sets it).
+    pr_title = f"Add {scenario.path}" if scenario is not None else "Add vulnerable handler"
+    await _seed_review(engine, review_id, pr_title=pr_title)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     persister = AuditPersister(
