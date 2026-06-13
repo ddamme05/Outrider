@@ -26,6 +26,7 @@ import pytest
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
+from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
 from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
 from outrider.llm.base import LLMRequest, LLMResponse, _canonical_prompt_hash
@@ -276,7 +277,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
     # The written key is exactly the recomputed full key (prompt digest
-    # + nine explicit components) over the request actually sent.
+    # + ten explicit components) over the request actually sent.
     [request] = provider.calls
     # FUP-096: the request that produced the cached payload rode with the
     # pinned schema — the key's response_format_digest describes it truly.
@@ -293,6 +294,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         active_policy_version=ACTIVE_POLICY_VERSION,
         analyze_parser_version=ANALYZE_PARSER_VERSION,
         response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
+        parameterized_call_scan_digest=scan_digest(scan_parameterized_calls(_HEAD.encode("utf-8"))),
     )
     assert write["cache_key"] == expected_key == event.cache_key == looked_up_key
     assert write["source_review_id"] == _REVIEW_ID
