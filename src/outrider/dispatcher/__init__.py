@@ -9,6 +9,11 @@ composition seam differs — per the intake-and-webhook spec, V1 is
 `BackgroundTasks`), V2 will be **lifespan-singleton** (one instance
 constructed at startup).
 
+The package also exports the dispatch-concurrency surface: `DispatchConfig`
+(the `OUTRIDER_MAX_CONCURRENT_REVIEWS` ceiling) and `concurrency_limited`
+(the semaphore wrapper the lifespan composes around `run_graph` to bound
+concurrently-executing reviews — FUP-164 / `DECISIONS.md#045`).
+
 Why state, not review_id, per `DECISIONS.md#020` (Amended 2026-05-08):
 the seed `ReviewState` carries the seed `PRContext` required at graph
 start; the alternative (loading state from durable storage at run_graph
