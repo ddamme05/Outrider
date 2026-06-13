@@ -426,8 +426,9 @@ async def _seed_review_row(
         await conn.execute(
             text(
                 "INSERT INTO reviews (id, installation_id, repo_id, pr_number, head_sha, "
-                "status, retention_expires_at) "
-                "VALUES (:id, :iid, :repo_id, :pr, :sha, 'running', :retention_expires_at)"
+                "pr_title, status, retention_expires_at) "
+                "VALUES (:id, :iid, :repo_id, :pr, :sha, :pr_title, 'running', "
+                ":retention_expires_at)"
             ),
             {
                 "id": review_id,
@@ -435,6 +436,9 @@ async def _seed_review_row(
                 "repo_id": repo_id,
                 "pr": pr_context.pr_number,
                 "sha": pr_context.head_sha,
+                # Mirror the webhook's persist (direct-invoke bypasses it) so the
+                # dashboard shows the real PR title.
+                "pr_title": pr_context.pr_title,
                 "retention_expires_at": retention_expires_at,
             },
         )
