@@ -15,10 +15,10 @@ provider boundary, not by the audit-events surface): `PhaseEventSink`
 for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
-`AnalyzeEventSink` bundling the six analyze-emitted event types
+`AnalyzeEventSink` bundling the seven analyze-emitted event types
 (`FindingEvent`, `FindingProposalRejectedEvent`,
 `AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`,
-`ScopeExclusionEvent`, `CacheLookupEvent`),
+`ScopeExclusionEvent`, `CacheLookupEvent`, `CacheServeEvent`),
 `PublishEventSink` bundling the four publish-emitted event types
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
 `PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
