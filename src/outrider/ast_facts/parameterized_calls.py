@@ -25,6 +25,10 @@ Versioning: any change to the matcher rules or the method-name set
 below changes per-file analyze outcomes and MUST ride an
 `ANALYZE_PARSER_VERSION` bump (the FUP-166 principle; the veto is part
 of the admission flow that constant versions).
+
+See DECISIONS.md#041 (Amended 2026-06-12): this detection is the
+deterministic half of the over-flag remediation that the #041 fix
+previously carried entirely in the analyze prompt.
 """
 
 from __future__ import annotations

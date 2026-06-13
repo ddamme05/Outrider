@@ -598,9 +598,11 @@ def parse_analyze_response(
             continue
 
         # FUP-162 parameterized-call veto (specs/2026-06-12-sqli-parameterized-
-        # call-veto.md): a JUDGED sql_injection whose claimed lines land on a
-        # provably-parameterized execute call is structurally impossible at
-        # that site — reject deterministically, independent of prompt wording.
+        # call-veto.md; See DECISIONS.md#041 Amended 2026-06-12 — the
+        # deterministic half of the over-flag remediation): a JUDGED
+        # sql_injection whose claimed lines land on a provably-parameterized
+        # execute call is structurally impossible at that site — reject
+        # deterministically, independent of prompt wording.
         # Runs LAST among the gates so its reason fires only on proposals that
         # would otherwise admit. Clean-mode only: degraded callers pass
         # scan=None (`parse-errors-degrade-to-judged` — no trustworthy tree).
