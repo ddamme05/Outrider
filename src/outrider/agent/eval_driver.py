@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from outrider.agent.graph import build_graph
+from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.patch_config import PatchConfig
 from outrider.anomaly.persister import AnomalyPersister
@@ -806,6 +807,7 @@ def _build_eval_graph(
     checkpointer: Any,
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -848,6 +850,9 @@ def _build_eval_graph(
         # store fixtures through this seam — the same opt-in shape as
         # `trivial_scope_filter_enabled` above.
         analyze_cache_store=analyze_cache_store,
+        # Default shadow; the serve eval scenario injects CacheMode.SERVE with a
+        # pre-seeded store through this seam.
+        cache_mode=cache_mode,
     )
 
 

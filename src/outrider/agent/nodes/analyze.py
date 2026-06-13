@@ -105,6 +105,7 @@ from outrider.agent.nodes.analyze_parser import (
     ResponseRejection,
     parse_analyze_response,
 )
+from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.degradation import (
     _DegradationReason,
     _ParseStatus,
@@ -122,12 +123,14 @@ from outrider.audit.events import (
     AnalyzeCompletedEvent,
     AnalyzeResponseRejectedEvent,
     CacheLookupEvent,
+    CacheServeEvent,
     ContextManifestEntry,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
     ReviewPhaseEvent,
     ScopeExclusionEntry,
     ScopeExclusionEvent,
+    ServedTraceCandidateRef,
 )
 from outrider.cache import CacheStoreError, compute_analyze_cache_key
 from outrider.coordinates import (
@@ -140,13 +143,17 @@ from outrider.coordinates import (
 )
 from outrider.llm.base import LLMRequest, _canonical_prompt_hash
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
-from outrider.policy.canonical import compute_phase_id, compute_round_id
+from outrider.policy.canonical import (
+    compute_phase_id,
+    compute_round_id,
+    compute_served_finding_id,
+)
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
 from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST
-from outrider.schemas import AnalysisRound
+from outrider.schemas import AnalysisRound, ReviewFinding, TraceCandidate
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -165,12 +172,10 @@ if TYPE_CHECKING:
         FileExaminationSink,
         PhaseEventSink,
     )
-    from outrider.cache import AnalyzeCacheStore, CacheScope
+    from outrider.cache import AnalyzeCacheStore, CacheEntry, CacheScope
     from outrider.llm.base import LLMProvider, LLMResponse
     from outrider.schemas import (
-        ReviewFinding,
         ReviewState,
-        TraceCandidate,
         TraceFetchedFile,
     )
     from outrider.schemas.pr_context import ChangedFile
@@ -287,6 +292,7 @@ async def analyze(
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> dict[str, object]:
     """Run one analyze pass over the triage-classified PR.
 
@@ -401,6 +407,7 @@ async def analyze(
     files_skipped: list[str] = []
     n_proposals_seen = 0
     n_findings_emitted = 0
+    n_findings_served = 0
     n_proposals_rejected = 0
     n_responses_rejected = 0
     n_trace_candidates_emitted = 0
@@ -482,6 +489,7 @@ async def analyze(
                 trivial_scope_filter_enabled=trivial_scope_filter_enabled,
                 analyze_cache_store=analyze_cache_store,
                 cache_scope=cache_scope,
+                cache_mode=cache_mode,
             )
 
             if file_outcome.parser_result is not None:
@@ -516,6 +524,23 @@ async def analyze(
                 # `AnalyzeCompletedEvent` reflects the same pre-dedup
                 # set the state-side reducer ingests.
                 trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+            elif file_outcome.served_result is not None:
+                # Cache-served hit (Stage B): findings reconstructed from the
+                # cache, NO LLM call. They ride n_findings_emitted (real
+                # FindingEvents fired) AND n_findings_served (so the proposal-
+                # accounting equation subtracts them — served findings have no
+                # proposal lifecycle). n_llm_calls is untouched.
+                served = file_outcome.served_result
+                n_findings_emitted += len(served.admitted_findings)
+                n_findings_served += len(served.admitted_findings)
+                n_trace_candidates_emitted += len(served.trace_candidates)
+                for f in served.admitted_findings:
+                    key = (f.content_hash, f.proposal_hash)
+                    if key in admitted_keys_seen:
+                        continue
+                    admitted_keys_seen.add(key)
+                    admitted_findings.append(f)
+                trace_candidates.extend(served.trace_candidates)
 
             total_input_tokens += file_outcome.input_tokens
             total_output_tokens += file_outcome.output_tokens
@@ -706,6 +731,7 @@ async def analyze(
             n_llm_calls=n_llm_calls,
             n_proposals_seen=n_proposals_seen,
             n_findings_emitted=n_findings_emitted,
+            n_findings_served=n_findings_served,
             n_proposals_rejected=n_proposals_rejected,
             n_responses_rejected=n_responses_rejected,
             n_trace_candidates_emitted=n_trace_candidates_emitted,
@@ -747,6 +773,19 @@ async def analyze(
 
 
 @dataclass(frozen=True, slots=True)
+class _ServedResult:
+    """Cache-served findings + trace candidates for one file (Stage B serve
+    flip). A served hit populates this on `_FileOutcome` INSTEAD of
+    `parser_result` (which stays None — no LLM call), so the main loop
+    accumulates the findings WITHOUT counting an LLM call: they ride
+    `n_findings_served` (subtracted from the proposal-accounting equation) and
+    `n_findings_emitted` (real `FindingEvent`s fired)."""
+
+    admitted_findings: tuple[ReviewFinding, ...]
+    trace_candidates: tuple[TraceCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _FileOutcome:
     """Per-file processing result. Populated by `_process_one_file` and
     consumed by the main loop's accumulators.
@@ -767,6 +806,131 @@ class _FileOutcome:
     cache_write_tokens: int
     cost_decimal: Decimal
     estimated_tokens: int
+    # Stage B serve flip: non-None ONLY on a cache-served hit (parser_result is
+    # then None — no LLM call). The main loop's served branch consumes it.
+    served_result: _ServedResult | None = None
+
+
+async def _serve_cache_hit(
+    *,
+    entry: CacheEntry,
+    cache_key: str,
+    review_id: UUID,
+    installation_id: int,
+    repo_id: int,
+    is_eval: bool,
+    file_path: str,
+    included_scope_units: tuple[ScopeUnit, ...],
+    analyze_event_sink: AnalyzeEventSink,
+    file_examination_sink: FileExaminationSink,
+) -> _FileOutcome:
+    """Serve a live analyze-cache hit (Stage B): reconstruct the cached findings
+    + trace candidates onto THIS review, emit the audit trail, and return a
+    served `_FileOutcome` — NO LLM call.
+
+    Findings re-mint `finding_id` DETERMINISTICALLY (`compute_served_finding_id`)
+    and re-stamp `review_id` / `installation_id` onto the new review, preserving
+    all content. The rebuild routes through `ReviewFinding.model_validate` (NOT
+    `model_copy`), so every validator re-runs — content_hash re-verified,
+    severity re-checked against LIVE policy, proof boundary re-enforced: cache
+    content is never trusted past the schema floor. Trace candidates need no
+    re-mint (`candidate_id` is content-derived, review-independent).
+
+    Served findings re-emit `FindingEvent`s (per-review self-containment for
+    replay); served trace candidates emit no per-item event — their identity
+    rides the `CacheServeEvent`, their full content (incl. `reason`) rides the
+    returned `_ServedResult` into state and purges with the cache row. The file
+    emits ONE `FileExaminationEvent(parse_status="clean")` and NO `LLMCallEvent`.
+    """
+    served_findings = tuple(
+        ReviewFinding.model_validate(
+            {
+                **dump,
+                "review_id": str(review_id),
+                "installation_id": installation_id,
+                "finding_id": str(
+                    compute_served_finding_id(
+                        review_id=review_id,
+                        content_hash=dump["content_hash"],
+                        proposal_hash=dump["proposal_hash"],
+                    )
+                ),
+            }
+        )
+        for dump in entry.payload["findings"]
+    )
+    served_candidates = tuple(
+        TraceCandidate.model_validate(dump) for dump in entry.payload["trace_candidates"]
+    )
+
+    await analyze_event_sink.emit_cache_serve(
+        CacheServeEvent(
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=file_path,
+            cache_key=cache_key,
+            installation_id=installation_id,
+            repo_id=repo_id,
+            served_finding_count=len(served_findings),
+            context_summary=tuple(
+                ContextManifestEntry(
+                    file_path=file_path,
+                    scope_unit_name=su.qualified_name or su.name,
+                    line_start=su.line_start,
+                    line_end=su.line_end,
+                    inclusion_reason="changed_scope",
+                )
+                for su in included_scope_units
+            ),
+            served_trace_candidates=tuple(
+                ServedTraceCandidateRef(
+                    candidate_id=c.candidate_id,
+                    source_proposal_hash=c.source_proposal_hash,
+                    import_string=c.import_string,
+                )
+                for c in served_candidates
+            ),
+            source_review_id=entry.source_review_id,
+            source_cache_created_at=entry.created_at,
+        )
+    )
+
+    # SINGLE FileExaminationEvent (clean — parse + prompt assembly genuinely ran;
+    # only the provider call didn't). The serve short-circuit returns before the
+    # normal-path step-3e emission, so it emits here itself.
+    await file_examination_sink.emit_file_examination(
+        FileExaminationEvent(
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=file_path,
+            examination_type="analyze",
+            node_id="analyze",
+            parse_status="clean",
+            skip_reason=None,
+        )
+    )
+
+    # Re-emit one FindingEvent per served finding so this review's audit/findings
+    # tables are self-contained for replay (the cache stores content; audit rows
+    # are per-review). The deterministic finding_id keeps the persister's
+    # no-resurrection content-row guard correct under checkpoint replay.
+    for finding in served_findings:
+        await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
+
+    return _FileOutcome(
+        parse_status="clean",
+        parser_result=None,
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        cost_decimal=Decimal("0"),
+        estimated_tokens=0,
+        served_result=_ServedResult(
+            admitted_findings=served_findings,
+            trace_candidates=served_candidates,
+        ),
+    )
 
 
 def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
@@ -978,6 +1142,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_scope: CacheScope | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> _FileOutcome:
     """Process one triage-kept file through parse → outcome → cost
     gate → trivial-scope classification → LLM call → parser → audit
@@ -1279,16 +1444,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # Self-hit exclusion: a crash/retry re-execution of this node
             # must not read its own first attempt's writes as hits — that
             # would inflate the would-hit rate (the serve flip's evidence)
-            # and, post-flip, serve a review its own partial output.
-            cache_would_hit = (
-                await analyze_cache_store.lookup(cache_key, exclude_source_review_id=review_id)
-                is not None
+            # and, under serve, serve a review its own partial output.
+            cache_entry = await analyze_cache_store.lookup(
+                cache_key, exclude_source_review_id=review_id
             )
         except CacheStoreError:
-            # Contained: the shadow cache must never abort a review. No
-            # CacheLookupEvent either — the lookup didn't complete, and a
-            # fabricated "miss" would be false audit history. cache_key is
-            # cleared so step 3g's write gate skips this file too.
+            # Contained: a failed lookup degrades to a real LLM call (shadow OR
+            # serve) — NEVER a silent skip of findings. No CacheLookupEvent (the
+            # lookup didn't complete; a fabricated "miss" would be false audit
+            # history). cache_key cleared so step 3g's write gate skips too.
             logger.warning(
                 "analyze-cache lookup failed; cache skipped for %s",
                 changed_file.path,
@@ -1296,6 +1460,28 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             )
             cache_key = None
         else:
+            if cache_mode is CacheMode.SERVE and cache_entry is not None:
+                # SERVE: reconstruct the cached findings onto this review and
+                # short-circuit the LLM call + parser block entirely. Every
+                # deterministic downstream gate still runs on the served
+                # findings (reducers → synthesize → HITL → publish); the cache
+                # replaces exactly the analyze LLM call.
+                return await _serve_cache_hit(
+                    entry=cache_entry,
+                    cache_key=cache_key,
+                    review_id=review_id,
+                    installation_id=installation_id,
+                    repo_id=cache_scope.repo_id,
+                    is_eval=is_eval,
+                    file_path=changed_file.path,
+                    included_scope_units=included_scope_units,
+                    analyze_event_sink=analyze_event_sink,
+                    file_examination_sink=file_examination_sink,
+                )
+            # SHADOW (any outcome) or SERVE-miss: record would-hit/miss
+            # telemetry and fall through to the model call. A serve-miss is a
+            # real miss → the model runs and step 3g writes the new outcome.
+            cache_would_hit = cache_entry is not None
             await analyze_event_sink.emit_cache_lookup(
                 CacheLookupEvent(
                     review_id=review_id,

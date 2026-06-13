@@ -24,6 +24,7 @@ from collections.abc import (
     Sequence,  # noqa: TC003  (runtime: function-signature annotation in non-TYPE_CHECKING-only path)
 )
 from typing import Any, Final
+from uuid import UUID, uuid5
 
 __all__ = [
     "SHA256_HEX_PATTERN",
@@ -36,6 +37,7 @@ __all__ = [
     "compute_proposal_hash",
     "compute_response_hash",
     "compute_round_id",
+    "compute_served_finding_id",
 ]
 
 
@@ -438,6 +440,29 @@ def compute_candidate_id(
             "reason": reason,
         }
     )
+
+
+# Namespace for deterministic served-finding ids (Stage B serve flip,
+# specs/2026-06-13-analyze-cache-serve-flip.md). A fixed UUID literal, never
+# regenerated: changing it re-mints every served finding and breaks the
+# no-resurrection content-row guard across an upgrade.
+_SERVED_FINDING_ID_NAMESPACE: Final = UUID("a3f1c7e2-5b94-4d6a-8e0f-1c2d3b4a5e6f")
+
+
+def compute_served_finding_id(*, review_id: UUID, content_hash: str, proposal_hash: str) -> UUID:
+    """Deterministic `finding_id` for a cache-served finding (Stage B serve flip).
+
+    A served finding re-mints its `finding_id` onto the NEW review, but the mint
+    MUST be a pure function of (new review + content identity) so a checkpoint
+    replay of analyze reproduces the SAME id: the `findings` content row PK and
+    the persister no-resurrection guard both key on `finding_id`, so a random
+    re-mint would double-write / resurrect purged content. `content_hash` alone is
+    insufficient — it collides for two findings of the same file/span/type with
+    different proposals — so `proposal_hash` disambiguates, matching the
+    `(content_hash, proposal_hash)` admit-dedup tuple. `uuid5` over the canonical
+    triple; the namespace is a fixed constant, never injectable.
+    """
+    return uuid5(_SERVED_FINDING_ID_NAMESPACE, f"{review_id}:{content_hash}:{proposal_hash}")
 
 
 def compute_hitl_decision_content_hash(

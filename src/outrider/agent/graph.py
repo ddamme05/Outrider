@@ -132,6 +132,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.intake import intake
@@ -208,6 +209,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -421,6 +423,11 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # AnalyzeCacheStore. Store-or-None IS the enable switch —
         # nodes-receive-deps-via-closure, no separate flag to drift.
         analyze_cache_store=analyze_cache_store,
+        # Shadow default: a wired store records would-hit/miss telemetry but
+        # never serves. The flip to CacheMode.SERVE is a later telemetry-gated
+        # config change (analyze-cache-serve-flip spec); cache_mode is orthogonal
+        # to the store-or-None enable switch.
+        cache_mode=cache_mode,
     )
     publish_callable = functools.partial(
         publish,
