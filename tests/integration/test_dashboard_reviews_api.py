@@ -558,6 +558,31 @@ async def test_list_pr_title_with_null_fallback(
 
 
 @pytest.mark.asyncio
+async def test_detail_includes_repo_full_name_and_pr_title(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """The DETAIL endpoint carries repo_full_name (joined) + pr_title, with the
+    same null fallback as the list (review A has neither)."""
+    client, ids, engine = dashboard_client
+    async with engine.begin() as conn:
+        rid = await _seed_review(
+            conn, status="completed", is_eval=False, repo_id=770, llm_events=[], synth=None
+        )
+        await _seed_repo_membership(conn, repo_id=770, repo_full_name="acme/api")
+        await conn.execute(
+            text("UPDATE reviews SET pr_title = :t WHERE id = :id"),
+            {"t": "Add session token storage", "id": str(rid)},
+        )
+    detail = client.get(f"/api/reviews/{rid}", headers=_AUTH).json()
+    assert detail["repo_full_name"] == "acme/api"
+    assert detail["pr_title"] == "Add session token storage"
+    # Fallback: the fixture's review A has no membership row and no title.
+    a = client.get(f"/api/reviews/{ids['a']}", headers=_AUTH).json()
+    assert a["repo_full_name"] is None
+    assert a["pr_title"] is None
+
+
+@pytest.mark.asyncio
 async def test_severity_counts_are_report_equivalent_deduped(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:

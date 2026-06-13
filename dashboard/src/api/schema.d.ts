@@ -1904,8 +1904,12 @@ export interface components {
             installation_id: number;
             /** Repo Id */
             repo_id: number;
+            /** Repo Full Name */
+            repo_full_name: string | null;
             /** Pr Number */
             pr_number: number;
+            /** Pr Title */
+            pr_title: string | null;
             /** Head Sha */
             head_sha: string;
             /** Status */

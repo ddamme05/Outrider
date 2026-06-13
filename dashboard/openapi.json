@@ -3786,9 +3786,31 @@
             "type": "integer",
             "title": "Repo Id"
           },
+          "repo_full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Full Name"
+          },
           "pr_number": {
             "type": "integer",
             "title": "Pr Number"
+          },
+          "pr_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Title"
           },
           "head_sha": {
             "type": "string",
@@ -3871,7 +3893,9 @@
           "id",
           "installation_id",
           "repo_id",
+          "repo_full_name",
           "pr_number",
+          "pr_title",
           "head_sha",
           "status",
           "is_eval",

@@ -7,6 +7,7 @@ import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
 import { ReplayFeed } from "../components/ReplayFeed";
+import { ReplayInfoModal } from "../components/ReplayInfoModal";
 import { StatusPill } from "../components/StatusPill";
 import { expiresLabel } from "../lib/format";
 import {
@@ -63,6 +64,7 @@ export function ReviewDetail() {
   // Hooks must run unconditionally, before the early returns below.
   const queryClient = useQueryClient();
   const [showPolicy, setShowPolicy] = useState(false);
+  const [showReplayInfo, setShowReplayInfo] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [submitted, setSubmitted] = useState(false);
   const decide = $api.useMutation("post", "/reviews/{review_id}/decide");
@@ -198,9 +200,43 @@ export function ReviewDetail() {
         <div className="panel-b">
           <div className="rd-head">
             <div className="rd-title-block">
-              <h1 className="rd-title">
-                repo {d.repo_id} <span className="prnum">#{d.pr_number}</span>
-              </h1>
+              <div className="rd-title-row">
+                <h1 className="rd-title">
+                  {d.repo_full_name ?? `repo ${d.repo_id}`}{" "}
+                  <span className="prnum">#{d.pr_number}</span>
+                </h1>
+                {/* The replay verdict sits by the title and is clickable (like the
+                    policy chip) to explain what replay-equivalence means. */}
+                {timeline.data ? (
+                  <button
+                    type="button"
+                    className={`pill verdict-pill${
+                      timeline.data.replay_equivalent ? "" : " status-expired"
+                    }`}
+                    aria-haspopup="dialog"
+                    aria-expanded={showReplayInfo}
+                    onClick={() => setShowReplayInfo(true)}
+                    aria-label="What replay-equivalent means"
+                  >
+                    {timeline.data.replay_equivalent ? (
+                      <>
+                        replay-equivalent <b style={{ color: "var(--pos)" }}>✓</b>
+                      </>
+                    ) : (
+                      <>
+                        not replay-equivalent <b style={{ color: "var(--neg)" }}>✗</b>
+                      </>
+                    )}
+                  </button>
+                ) : timeline.error ? (
+                  // Fail loud, never silently omit: a failed verdict load reads as an
+                  // explicit "unavailable", not an absent (and so implicitly-fine) badge.
+                  <span className="pill status-expired" aria-label="replay verdict">
+                    replay verdict unavailable
+                  </span>
+                ) : null}
+              </div>
+              {d.pr_title ? <div className="rd-subtitle">{d.pr_title}</div> : null}
               <div className="rd-meta">
                 <span>
                   head <span className="mono">{d.head_sha.slice(0, 9)}</span>
@@ -229,7 +265,7 @@ export function ReviewDetail() {
             <div className="rd-actions">
               <Link
                 to={`/reviews/${reviewId}/replay`}
-                className="btn"
+                className="btn primary"
                 aria-label="Open the real-time replay reconstruction for this review"
               >
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -249,25 +285,6 @@ export function ReviewDetail() {
                 </svg>
                 Replay · reconstruct
               </Link>
-              {timeline.data ? (
-                <span className="pill" aria-label="replay verdict">
-                  {timeline.data.replay_equivalent ? (
-                    <>
-                      replay-equivalent <b style={{ color: "var(--pos)" }}>✓</b>
-                    </>
-                  ) : (
-                    <>
-                      not replay-equivalent <b style={{ color: "var(--neg)" }}>✗</b>
-                    </>
-                  )}
-                </span>
-              ) : timeline.error ? (
-                // Fail loud, never silently omit: a failed verdict load reads as an
-                // explicit "unavailable", not an absent (and so implicitly-fine) badge.
-                <span className="pill status-expired" aria-label="replay verdict">
-                  replay verdict unavailable
-                </span>
-              ) : null}
             </div>
           </div>
         </div>
@@ -276,6 +293,8 @@ export function ReviewDetail() {
       {showPolicy && d.policy_version ? (
         <PolicyModal version={d.policy_version} onClose={() => setShowPolicy(false)} />
       ) : null}
+
+      {showReplayInfo ? <ReplayInfoModal onClose={() => setShowReplayInfo(false)} /> : null}
 
       {/* this-review metrics strip — 4 cards, all server-backed */}
       <div className="metrics-strip">

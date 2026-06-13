@@ -137,10 +137,21 @@ test("renders header, aggregate metrics, and the replay verdict", async () => {
   expect(screen.getByText("#7")).toBeInTheDocument();
   // Aggregate metric backed by the contract (72s → "1m12s").
   expect(screen.getByText("1m12s")).toBeInTheDocument();
-  // Replay verdict — the hero badge reads off the timeline DTO's replay_equivalent.
-  const verdict = await screen.findByLabelText("replay verdict");
+  // Replay verdict — the hero pill reads off the timeline DTO's replay_equivalent
+  // and is a clickable button (opens the explainer).
+  const verdict = await screen.findByRole("button", { name: /what replay-equivalent means/i });
   expect(verdict).toHaveTextContent("replay-equivalent");
   expect(verdict).not.toHaveTextContent("not replay-equivalent");
+});
+
+test("clicking the replay verdict opens the explainer modal", async () => {
+  const user = userEvent.setup();
+  mount();
+  await user.click(await screen.findByRole("button", { name: /what replay-equivalent means/i }));
+  expect(await screen.findByText("Replay equivalence")).toBeInTheDocument();
+  expect(
+    screen.getByText("Every review is reconstructable from its append-only audit log."),
+  ).toBeInTheDocument();
 });
 
 test("metrics strip surfaces files_examined + files_traced_beyond_diff", async () => {
