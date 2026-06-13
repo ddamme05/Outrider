@@ -111,7 +111,7 @@ from outrider.agent.nodes.degradation import (
     decide_degradation,
 )
 from outrider.ast_facts.models import SkipReason, TrivialityReason
-from outrider.ast_facts.parameterized_calls import scan_parameterized_calls
+from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
 from outrider.ast_facts.python_adapter import parse_python
 from outrider.ast_facts.triviality import (
     TRIVIAL_FILTER_VERSION,
@@ -1237,6 +1237,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 pass_index=pass_index,
             )
 
+    # FUP-162 parameterized-call veto facts, hoisted above the cache key
+    # (FUP-171): ONE scan object feeds BOTH the cache-key digest below AND the
+    # admission veto in parse_analyze_response, so the keyed input and the
+    # admitted input can never fork. `None` in degraded mode (no trustworthy
+    # parse tree → veto disabled), which is also exactly when the file is not
+    # cacheable — so `parameterized_call_scan is not None` IS the clean-mode
+    # cache gate. Reuses content_bytes (computed once above), no re-encode.
+    parameterized_call_scan = None if degraded_mode else scan_parameterized_calls(content_bytes)
+
     # Step 3d-ter: analyze-cache shadow lookup (pass-0 clean mode only;
     # specs/2026-06-11-file-hash-analyze-cache.md). The key is computed
     # over the FINAL rendered parts — post trivial-filter re-render under
@@ -1247,7 +1256,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # rate accumulated here is the serve flip's evidence.
     cache_key: str | None = None
     cache_would_hit = False
-    if analyze_cache_store is not None and cache_scope is not None and not degraded_mode:
+    if (
+        analyze_cache_store is not None
+        and cache_scope is not None
+        and parameterized_call_scan is not None
+    ):
         cache_key = compute_analyze_cache_key(
             system_prompt=parts.system_prompt,
             user_prompt=parts.user_prompt,
@@ -1260,6 +1273,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             active_policy_version=active_policy_version,
             analyze_parser_version=ANALYZE_PARSER_VERSION,
             response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
+            parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
         )
         try:
             # Self-hit exclusion: a crash/retry re-execution of this node
@@ -1382,11 +1396,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         degraded_context_byte_ranges=degraded_context_byte_ranges,
         pass_index=pass_index,
         finish_reason=response.finish_reason,
-        # FUP-162 veto facts: clean outcomes only — degraded files have no
-        # trustworthy parse tree, so the veto stays disabled for them.
-        parameterized_call_scan=(
-            None if degraded_mode else scan_parameterized_calls(content.encode("utf-8"))
-        ),
+        # FUP-162 veto facts, hoisted above the cache key (FUP-171): the SAME
+        # scan object keyed the cache entry, so admission and key never fork.
+        parameterized_call_scan=parameterized_call_scan,
     )
 
     # Lift parser rejection payloads into audit events.

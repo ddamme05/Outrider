@@ -14,7 +14,12 @@ generalizes across `%s`, `%(k)s`, `:name`, `?`, and `$1` alike.
 
 from __future__ import annotations
 
-from outrider.ast_facts.parameterized_calls import scan_parameterized_calls
+from outrider.ast_facts.parameterized_calls import (
+    ExecuteCallSite,
+    ParameterizedCallScan,
+    scan_digest,
+    scan_parameterized_calls,
+)
 
 
 def _ranges(sites: tuple) -> list[tuple[int, int]]:  # type: ignore[type-arg]
@@ -179,3 +184,76 @@ def test_empty_source_returns_empty_scan() -> None:
     scan = _scan("")
     assert scan.safe_parameterized_calls == ()
     assert scan.all_execute_like_calls == ()
+
+
+# ---------------------------------------------------------------------------
+# scan_digest — the analyze cache-key veto-input component (FUP-171).
+# ---------------------------------------------------------------------------
+
+
+def test_scan_digest_is_deterministic_64_hex() -> None:
+    import re
+
+    scan = ParameterizedCallScan(
+        all_execute_like_calls=(ExecuteCallSite(line_start=3, line_end=3),)
+    )
+    assert scan_digest(scan) == scan_digest(scan)
+    assert re.fullmatch(r"[0-9a-f]{64}", scan_digest(scan))
+
+
+def test_scan_digest_empty_differs_from_populated() -> None:
+    """The FUP-171 collision: an empty scan (no execute-like calls, OR a
+    syntax error anywhere disabling the veto) must digest differently from
+    any populated scan, so two reviews whose veto outcome differs never share
+    a cache key."""
+    empty = scan_digest(ParameterizedCallScan())
+    populated = scan_digest(
+        ParameterizedCallScan(
+            safe_parameterized_calls=(ExecuteCallSite(line_start=3, line_end=3),),
+            all_execute_like_calls=(ExecuteCallSite(line_start=3, line_end=3),),
+        )
+    )
+    assert empty != populated
+
+
+def test_scan_digest_is_order_independent() -> None:
+    """Discovery order in the file must not change the digest — the veto reads
+    multisets of line ranges, not ordered sequences."""
+    a = ExecuteCallSite(line_start=3, line_end=3)
+    b = ExecuteCallSite(line_start=9, line_end=11)
+    forward = scan_digest(ParameterizedCallScan(all_execute_like_calls=(a, b)))
+    reverse = scan_digest(ParameterizedCallScan(all_execute_like_calls=(b, a)))
+    assert forward == reverse
+
+
+def test_scan_digest_reflects_unsafe_set_not_only_safe() -> None:
+    """`all_execute_like_calls` changes the veto outcome (the multiset unsafe
+    budget), so two scans with identical `safe` but different `all` must digest
+    differently — keying only the safe set would be insufficient."""
+    safe = (ExecuteCallSite(line_start=3, line_end=3),)
+    only_safe = scan_digest(
+        ParameterizedCallScan(safe_parameterized_calls=safe, all_execute_like_calls=safe)
+    )
+    plus_unsafe = scan_digest(
+        ParameterizedCallScan(
+            safe_parameterized_calls=safe,
+            all_execute_like_calls=(*safe, ExecuteCallSite(line_start=20, line_end=20)),
+        )
+    )
+    assert only_safe != plus_unsafe
+
+
+def test_scan_digest_syntax_error_elsewhere_changes_digest() -> None:
+    """End-to-end FUP-171 over the real scanner: the same execute call digests
+    differently once a syntax error in an out-of-scope region empties the scan
+    (has_error → veto disabled), even though the call itself is unchanged."""
+    clean = _scan(
+        'def find(cursor, q):\n    cursor.execute("SELECT * FROM t WHERE x = %s", (q,))\n'
+    )
+    with_error_elsewhere = _scan(
+        "def broken(:\n"  # out-of-scope syntax error → whole-tree has_error
+        "def find(cursor, q):\n"
+        '    cursor.execute("SELECT * FROM t WHERE x = %s", (q,))\n'
+    )
+    assert clean.all_execute_like_calls != ()  # guard: clean really is populated
+    assert scan_digest(clean) != scan_digest(with_error_elsewhere)

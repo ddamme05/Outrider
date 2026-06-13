@@ -12,6 +12,11 @@ import re
 import pytest
 
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
+from outrider.ast_facts.parameterized_calls import (
+    ExecuteCallSite,
+    ParameterizedCallScan,
+    scan_digest,
+)
 from outrider.cache import compute_analyze_cache_key
 from outrider.llm.base import _canonical_prompt_hash
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST, _registry_digest
@@ -29,6 +34,7 @@ _BASE_KWARGS = {
     "active_policy_version": "policy-v1",
     "analyze_parser_version": ANALYZE_PARSER_VERSION,
     "response_format_digest": ANALYZE_RESPONSE_FORMAT_DIGEST,
+    "parameterized_call_scan_digest": "d" * 64,
 }
 
 
@@ -53,10 +59,11 @@ def test_key_is_deterministic_64_hex() -> None:
         ("active_policy_version", "policy-v2"),
         ("analyze_parser_version", "analyze-parser-v3"),
         ("response_format_digest", "c" * 64),
+        ("parameterized_call_scan_digest", "e" * 64),
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the eleven inputs is load-bearing: changing any one of
+    """Each of the twelve inputs is load-bearing: changing any one of
     them alone produces a different key (the correct-by-construction
     invalidation property the spec pins)."""
     base = compute_analyze_cache_key(**_BASE_KWARGS)
@@ -80,11 +87,11 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_prompt_digest_plus_nine_framed_components() -> None:
+def test_golden_recipe_prompt_digest_plus_ten_framed_components() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: ten length-prefixed fields — `_canonical_prompt_hash` output
+    test: eleven length-prefixed fields — `_canonical_prompt_hash` output
     first (one recipe, two consumers; never forks from
-    `LLMCallEvent.prompt_hash`), then the nine explicit scope/version
+    `LLMCallEvent.prompt_hash`), then the ten explicit scope/version
     components in declaration order, each framed `{len(bytes)}:` on
     UTF-8 bytes. Any change to the framing, the component order, or the
     prompt component's recipe fails this test — deliberately: that
@@ -106,12 +113,37 @@ def test_golden_recipe_prompt_digest_plus_nine_framed_components() -> None:
         _BASE_KWARGS["active_policy_version"],
         _BASE_KWARGS["analyze_parser_version"],
         _BASE_KWARGS["response_format_digest"],
+        _BASE_KWARGS["parameterized_call_scan_digest"],
     ):
         component_bytes = component.encode("utf-8")
         expected.update(f"{len(component_bytes)}:".encode())
         expected.update(component_bytes)
 
     assert compute_analyze_cache_key(**_BASE_KWARGS) == expected.hexdigest()
+
+
+def test_parameterized_call_scan_digest_closes_fup_171() -> None:
+    """FUP-171 end-to-end: the veto's per-file outcome is now keyed. Two
+    reviews with byte-identical prompts (and every other component equal)
+    but a different parameterized-call scan — e.g. a syntax error in an
+    out-of-scope region empties the scan and disables the veto, while a
+    clean parse populates it — produce different scan digests and therefore
+    different cache keys, so they can never share an entry."""
+    veto_off = scan_digest(ParameterizedCallScan())  # empty: veto disabled
+    veto_on = scan_digest(
+        ParameterizedCallScan(
+            safe_parameterized_calls=(ExecuteCallSite(line_start=10, line_end=12),),
+            all_execute_like_calls=(ExecuteCallSite(line_start=10, line_end=12),),
+        )
+    )
+    assert veto_off != veto_on
+    key_off = compute_analyze_cache_key(
+        **{**_BASE_KWARGS, "parameterized_call_scan_digest": veto_off}
+    )
+    key_on = compute_analyze_cache_key(
+        **{**_BASE_KWARGS, "parameterized_call_scan_digest": veto_on}
+    )
+    assert key_off != key_on
 
 
 # ---------------------------------------------------------------------------

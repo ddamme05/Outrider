@@ -33,6 +33,7 @@ previously carried entirely in the analyze prompt.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Final
 
 import tree_sitter_python
@@ -226,3 +227,31 @@ def scan_parameterized_calls(source: bytes) -> ParameterizedCallScan:
         safe_parameterized_calls=tuple(safe),
         all_execute_like_calls=tuple(all_sites),
     )
+
+
+def scan_digest(scan: ParameterizedCallScan) -> str:
+    """Order-independent SHA-256 of the veto's consumed facts, for the
+    analyze cache key (FUP-171).
+
+    The veto outcome is a pure function of two line-range multisets — the
+    safe-parameterized calls and all execute-like calls — so the digest is
+    those two sets, each SORTED (call order in the file never changes it),
+    length-framed, and hashed. The empty scan (no execute-like calls, OR a
+    syntax error anywhere disabling the scan) digests distinctly from any
+    populated scan — exactly the collision FUP-171 closes: two reviews with
+    byte-identical prompts but a syntax error in an out-of-scope region admit
+    different finding sets and must not share a cache entry.
+
+    Firewall-safe: consumes only the `ParameterizedCallScan` / `ExecuteCallSite`
+    domain models (line ranges), never a raw `tree_sitter.Node`.
+    """
+    h = hashlib.sha256()
+    for label, sites in (
+        ("safe", scan.safe_parameterized_calls),
+        ("all", scan.all_execute_like_calls),
+    ):
+        ordered = sorted(sites, key=lambda s: (s.line_start, s.line_end))
+        h.update(f"{label}:{len(ordered)}:".encode())
+        for site in ordered:
+            h.update(f"{site.line_start},{site.line_end};".encode())
+    return h.hexdigest()
