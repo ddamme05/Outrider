@@ -77,6 +77,9 @@ class _NullSink:
     async def emit_cache_lookup(self, event: Any) -> None:  # noqa: ARG002
         return None
 
+    async def emit_cache_serve(self, event: object) -> None:  # noqa: ARG002
+        return None
+
 
 class _NoOpImportPathResolver:
     """Resolves nothing (returns `[]`) — the comparison runs pass-0 analyze only, which

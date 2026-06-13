@@ -1054,6 +1054,12 @@
             "minimum": 0.0,
             "title": "N Findings Emitted"
           },
+          "n_findings_served": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Findings Served",
+            "default": 0
+          },
           "n_proposals_rejected": {
             "type": "integer",
             "minimum": 0.0,
@@ -1304,6 +1310,116 @@
         ],
         "title": "CacheLookupEvent",
         "description": "Per-file analyze-cache lookup record \u2014 the lever-8 shadow-stage\ntelemetry (specs/2026-06-11-file-hash-analyze-cache.md).\n\nOne event per pass-0 clean-mode candidate file when the cache is\nenabled: `outcome=\"would_hit\"` means a live entry existed for the\ncomposed key (shadow mode still calls the model \u2014 nothing is\nserved); `outcome=\"miss\"` means none did \u2014 a store write is then\nATTEMPTED, but a miss does not guarantee a row: the write is\nadditionally gated on response acceptance (no response-level\nrejection, no max_tokens truncation), a concurrent live row wins\nthe insert, and a store failure is contained, not retried.\nThe accumulated would-hit rate is the evidence the serve\nflip is gated on. `cache_key` is the eleven-field digest (prompt\ndigest + ten explicit scope/version components) from\n`cache/key.py::compute_analyze_cache_key`; the serve-stage\n`CacheServeEvent` (flip arc) carries the full self-contained replay\npayload \u2014 this shadow event deliberately stays thin.\n\nCarries `node_id` so replay's node-containment binds it to analyze's\nphase window without an owner-map exemption (`ScopeExclusionEvent`\nprecedent). Idempotency mode: event_id-PK per `DECISIONS.md#026` \u2014\nresume re-emission appends; consumer-side dedup collapses."
+      },
+      "CacheServeEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "cache_serve",
+            "title": "Event Type",
+            "default": "cache_serve"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "cache_key": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Cache Key"
+          },
+          "installation_id": {
+            "type": "integer",
+            "title": "Installation Id"
+          },
+          "repo_id": {
+            "type": "integer",
+            "title": "Repo Id"
+          },
+          "served_finding_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Served Finding Count"
+          },
+          "context_summary": {
+            "items": {
+              "$ref": "#/components/schemas/ContextManifestEntry"
+            },
+            "type": "array",
+            "title": "Context Summary",
+            "default": []
+          },
+          "served_trace_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ServedTraceCandidateRef"
+            },
+            "type": "array",
+            "title": "Served Trace Candidates",
+            "default": []
+          },
+          "source_review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Review Id"
+          },
+          "source_cache_created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Source Cache Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "cache_key",
+          "installation_id",
+          "repo_id",
+          "served_finding_count",
+          "source_review_id",
+          "source_cache_created_at"
+        ],
+        "title": "CacheServeEvent",
+        "description": "Per-file analyze-cache SERVE record \u2014 the serve-flip counterpart to\n`CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).\n\nEmitted (in place of `CacheLookupEvent`) when `cache_mode=\"serve\"` and a live\ncache entry is served: the LLM call is skipped and the cached findings are\nreconstructed onto this review. Carries the serve DECISION + identity;\nserved-finding CONTENT rides the re-emitted `FindingEvent` stream (the\ncontent/metadata split \u2014 replay equivalence is verified through those\nFindingEvents, not this event, so it survives the source review / cache row\nbeing purged, per `DECISIONS.md#014` point 4).\n\n`cache_key` is the composed eleven-field digest \u2014 the canonical fingerprint of\nevery key component (`compute_analyze_cache_key`) and the join to the prior\n`CacheLookupEvent` telemetry; carrying the digest carries the components'\nidentity, and replay never recomputes the analyze key, so the individual\ncomponents are not re-listed. `(installation_id, repo_id)` is the tenant scope\n(load-bearing, never dropped). `served_trace_candidates` carries the\nmetadata-only identity of each served trace candidate (their only audit\ntrace; `reason` excluded \u2014 content tier). `source_review_id` /\n`source_cache_created_at` are non-load-bearing provenance pointers.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the analyze\nphase (CacheLookupEvent precedent). A served file emits this event, one\n`FileExaminationEvent(parse_status=\"clean\")`, and one `FindingEvent` per served\nfinding \u2014 and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`."
       },
       "ContextManifestEntry": {
         "properties": {
@@ -3190,6 +3306,9 @@
                   "$ref": "#/components/schemas/CacheLookupEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheServeEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3236,6 +3355,7 @@
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
+                  "cache_serve": "#/components/schemas/CacheServeEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -3446,6 +3566,9 @@
                   "$ref": "#/components/schemas/CacheLookupEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheServeEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3492,6 +3615,7 @@
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
+                  "cache_serve": "#/components/schemas/CacheServeEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -3549,6 +3673,9 @@
                   "$ref": "#/components/schemas/CacheLookupEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheServeEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3595,6 +3722,7 @@
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
+                  "cache_serve": "#/components/schemas/CacheServeEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -3950,6 +4078,9 @@
                   "$ref": "#/components/schemas/CacheLookupEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/CacheServeEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3996,6 +4127,7 @@
                   "analyze_completed": "#/components/schemas/AnalyzeCompletedEvent",
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
+                  "cache_serve": "#/components/schemas/CacheServeEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
@@ -4492,6 +4624,34 @@
         ],
         "title": "ScopeExclusionEvent",
         "description": "Per-file trivial-scope classification record \u2014 one event per\nexamined pass-0 file the filter classified (\u22651 admitted scope).\n\n`applied=False` is shadow mode: the classifier ran and these are\nwould-exclude verdicts, but NOTHING was removed from the prompt \u2014\nthe production telemetry the eval-backed default flip requires.\n`applied=True` records enforcing mode (trivial scopes excluded from\nthe prompt; all-trivial files skipped with\n`SkipReason.ALL_SCOPES_TRIVIAL`). This event is deliberately\nSEPARATE from `LLMCallEvent.context_summary`, which stays exactly\n\"what the LLM actually saw\" (spec \u00a78.3) \u2014 and the all-trivial skip\nhas no LLM call to carry a manifest at all.\n\nCarries `node_id` so replay's node-containment machinery binds it to\nanalyze's phase window without an owner-map exemption. Idempotency\nmode: event_id-PK per `DECISIONS.md#026` \u2014 retry/resume re-emission\nappends a fresh row; consumer-side dedup collapses."
+      },
+      "ServedTraceCandidateRef": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id"
+          },
+          "source_proposal_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Proposal Hash"
+          },
+          "import_string": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "Import String"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "source_proposal_hash",
+          "import_string"
+        ],
+        "title": "ServedTraceCandidateRef",
+        "description": "Metadata-only identity of a trace candidate served from cache.\n\nA served trace candidate emits NO per-item audit event (unlike a served\nFINDING, which re-emits a `FindingEvent`), so this ref on `CacheServeEvent`\nis its only audit trace. Carries the canonical identifiers but NOT\n`TraceCandidate.reason` \u2014 free-text model/PR-derived content stays in the\nretention-bound cache row (`DECISIONS.md#014` content/metadata split);\n`candidate_id` folds `reason`, so identity is pinned without exposing prose.\nFrozen + extra=forbid (the outer event's frozen-ness does not propagate)."
       },
       "SeverityCounts": {
         "properties": {

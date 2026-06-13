@@ -126,7 +126,8 @@ def test_analyze_completed_rejects_proposal_accounting_mismatch() -> None:
 
 
 def test_analyze_completed_rejects_findings_without_proposals() -> None:
-    """0+0 != 1: a finding emitted without a counted proposal is incoherent."""
+    """0 != (1-0)+0: a NON-served finding emitted without a counted proposal is
+    incoherent (n_findings_served defaults 0, so it does not subtract)."""
     with pytest.raises(ValidationError, match="Proposal accounting mismatch"):
         AnalyzeCompletedEvent(
             **_completed_kwargs(
@@ -134,6 +135,55 @@ def test_analyze_completed_rejects_findings_without_proposals() -> None:
                 n_findings_emitted=1,
                 n_proposals_rejected=0,
             )
+        )
+
+
+def test_analyze_completed_admits_served_findings() -> None:
+    """Stage B serve flip: cache-served findings ride n_findings_emitted but are
+    subtracted from the proposal lifecycle via n_findings_served. A served-only
+    pass (2 served findings, 0 proposals, 0 LLM calls) is coherent:
+    0 == (2 - 2) + 0."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            n_proposals_seen=0,
+            n_findings_emitted=2,
+            n_findings_served=2,
+            n_proposals_rejected=0,
+            n_llm_calls=0,
+        )
+    )
+    assert event.n_findings_served == 2
+
+
+def test_analyze_completed_admits_mixed_served_and_proposed() -> None:
+    """A pass mixing model-proposed and cache-served findings: 3 proposals → 2
+    findings + 1 rejected, plus 2 served → n_findings_emitted=4. The equation
+    excludes the served pair: 3 == (4 - 2) + 1."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            n_proposals_seen=3,
+            n_findings_emitted=4,
+            n_findings_served=2,
+            n_proposals_rejected=1,
+            n_llm_calls=1,
+        )
+    )
+    assert event.n_findings_emitted == 4
+    assert event.n_findings_served == 2
+
+
+def test_analyze_completed_served_findings_revert_the_fold() -> None:
+    """Revert-the-fold proof: the SAME served-only counters that pass WITH the
+    n_findings_served subtraction would FAIL the pre-amendment equation
+    (n_proposals_seen == n_findings_emitted + n_proposals_rejected). Guards a
+    future revert from silently re-admitting the FUP-flagged incoherence."""
+    AnalyzeCompletedEvent(  # passes with the subtraction
+        **_completed_kwargs(n_proposals_seen=0, n_findings_emitted=2, n_findings_served=2)
+    )
+    with pytest.raises(ValidationError, match="Proposal accounting mismatch"):
+        # The pre-amendment shape (no served subtraction): 0 != 2 + 0.
+        AnalyzeCompletedEvent(
+            **_completed_kwargs(n_proposals_seen=0, n_findings_emitted=2, n_findings_served=0)
         )
 
 

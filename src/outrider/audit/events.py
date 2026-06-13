@@ -2,7 +2,7 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has nineteen
+`AuditEventBase` is the shared base. The hierarchy has twenty
 concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
@@ -12,8 +12,9 @@ analyze-foundation additions (`AnalyzeCompletedEvent`,
 `FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), the
 synthesize-node addition (`SynthesizeCompletedEvent`), the
 replay-verdict-projection addition (`ReplayVerdictEvent`), the
-trivial-scope-filter addition (`ScopeExclusionEvent`), and the
-analyze-cache lookup addition (`CacheLookupEvent`). Each
+trivial-scope-filter addition (`ScopeExclusionEvent`), the
+analyze-cache lookup addition (`CacheLookupEvent`), and the analyze-cache
+serve addition (`CacheServeEvent`). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
@@ -29,7 +30,7 @@ reassignment, not in-place container mutation. Nested Pydantic payload
 classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
 because the outer model's frozen-ness does not propagate.
 
-Nine event types carry validators (plus `PerFindingDecision` inherited
+Ten event types carry validators (plus `PerFindingDecision` inherited
 by `HITLDecisionEvent.decisions`):
 
   - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
@@ -42,6 +43,9 @@ by `HITLDecisionEvent.decisions`):
     trivial ↔ reason pairing model validator.
   - `CacheLookupEvent` runs the same `validate_diff_path` audit-shadow
     on `file_path`.
+  - `CacheServeEvent` runs the same `validate_diff_path` audit-shadow on
+    `file_path` (its nested `ServedTraceCandidateRef` carries pattern-validated
+    `candidate_id` / `source_proposal_hash`).
   - `FindingEvent` carries three validators — proof-boundary
     (`policy/findings.enforce_proof_boundary`, backs
     `evidence-tier-schema-enforced`), the line constraint
@@ -59,8 +63,10 @@ by `HITLDecisionEvent.decisions`):
     Plus per-element `is_valid_import_string` on `proposed_import_strings`
     and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
   - `AnalyzeCompletedEvent` enforces two accounting equations per
-    foundation §5: `n_proposals_seen == n_findings_emitted +
-    n_proposals_rejected`, and `n_responses_rejected <= n_llm_calls`.
+    foundation §5: `n_proposals_seen == (n_findings_emitted -
+    n_findings_served) + n_proposals_rejected` (cache-served findings ride in
+    n_findings_emitted but sit outside the proposal lifecycle, so they
+    subtract), and `n_responses_rejected <= n_llm_calls`.
   - `FindingProposalRejectedEvent` enforces the bidirectional
     `claimed_evidence_tier` ↔ `rejection_reason ==
     "evidence_tier_not_in_enum"` coupling.
@@ -605,6 +611,73 @@ class CacheLookupEvent(AuditEventBase):
     node_id: Literal["analyze"] = "analyze"
     outcome: Literal["would_hit", "miss"]
     cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use` — same as
+        every sibling path-bearing event."""
+        return validate_diff_path(path)
+
+
+class ServedTraceCandidateRef(BaseModel):
+    """Metadata-only identity of a trace candidate served from cache.
+
+    A served trace candidate emits NO per-item audit event (unlike a served
+    FINDING, which re-emits a `FindingEvent`), so this ref on `CacheServeEvent`
+    is its only audit trace. Carries the canonical identifiers but NOT
+    `TraceCandidate.reason` — free-text model/PR-derived content stays in the
+    retention-bound cache row (`DECISIONS.md#014` content/metadata split);
+    `candidate_id` folds `reason`, so identity is pinned without exposing prose.
+    Frozen + extra=forbid (the outer event's frozen-ness does not propagate).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_id: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    source_proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    import_string: str = Field(max_length=1024)
+
+
+class CacheServeEvent(AuditEventBase):
+    """Per-file analyze-cache SERVE record — the serve-flip counterpart to
+    `CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).
+
+    Emitted (in place of `CacheLookupEvent`) when `cache_mode="serve"` and a live
+    cache entry is served: the LLM call is skipped and the cached findings are
+    reconstructed onto this review. Carries the serve DECISION + identity;
+    served-finding CONTENT rides the re-emitted `FindingEvent` stream (the
+    content/metadata split — replay equivalence is verified through those
+    FindingEvents, not this event, so it survives the source review / cache row
+    being purged, per `DECISIONS.md#014` point 4).
+
+    `cache_key` is the composed eleven-field digest — the canonical fingerprint of
+    every key component (`compute_analyze_cache_key`) and the join to the prior
+    `CacheLookupEvent` telemetry; carrying the digest carries the components'
+    identity, and replay never recomputes the analyze key, so the individual
+    components are not re-listed. `(installation_id, repo_id)` is the tenant scope
+    (load-bearing, never dropped). `served_trace_candidates` carries the
+    metadata-only identity of each served trace candidate (their only audit
+    trace; `reason` excluded — content tier). `source_review_id` /
+    `source_cache_created_at` are non-load-bearing provenance pointers.
+
+    Carries `node_id="analyze"` so replay node-containment binds it to the analyze
+    phase (CacheLookupEvent precedent). A served file emits this event, one
+    `FileExaminationEvent(parse_status="clean")`, and one `FindingEvent` per served
+    finding — and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`.
+    """
+
+    event_type: Literal["cache_serve"] = "cache_serve"
+    file_path: Annotated[str, Field(max_length=1024)]
+    node_id: Literal["analyze"] = "analyze"
+    cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    installation_id: int
+    repo_id: int
+    served_finding_count: int = Field(ge=0)
+    context_summary: tuple[ContextManifestEntry, ...] = ()
+    served_trace_candidates: tuple[ServedTraceCandidateRef, ...] = ()
+    source_review_id: UUID
+    source_cache_created_at: AwareDatetime
 
     @field_validator("file_path")
     @classmethod
@@ -2199,6 +2272,14 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_llm_calls: int = Field(ge=0)
     n_proposals_seen: int = Field(ge=0)
     n_findings_emitted: int = Field(ge=0)
+    n_findings_served: int = Field(ge=0, default=0)
+    """Count of cache-SERVED findings this pass (Stage B serve flip). Served
+    findings increment `n_findings_emitted` too (they fire real `FindingEvent`s,
+    keeping that counter equal to the actual event count) but carry no LLM
+    proposal, so `_enforce_proposal_accounting` subtracts them — the proposal
+    lifecycle equation counts only model-proposed findings. Default 0 (no served
+    findings under `cache_mode=shadow`, the default; analyze hasn't shipped so no
+    historical payloads exist — the default is a forward-compat hedge)."""
     n_proposals_rejected: int = Field(ge=0)
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
@@ -2268,23 +2349,26 @@ class AnalyzeCompletedEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
-        """`n_proposals_seen == n_findings_emitted + n_proposals_rejected`.
+        """`n_proposals_seen == (n_findings_emitted - n_findings_served) + n_proposals_rejected`.
 
-        Every raw proposal either becomes a finding or gets rejected; total
-        accounting must hold. Response-level rejections (`n_responses_rejected`)
-        are separate — those don't have a proposal to count, so they don't
-        enter this equation.
+        Every raw LLM proposal either becomes a finding or gets rejected; total
+        accounting must hold. Cache-SERVED findings (Stage B serve flip) ride in
+        `n_findings_emitted` — they fire real `FindingEvent`s — but have no
+        proposal in this pass, so they subtract via `n_findings_served`.
+        Response-level rejections (`n_responses_rejected`) are separate — those
+        don't have a proposal to count, so they don't enter this equation.
         """
-        expected = self.n_findings_emitted + self.n_proposals_rejected
+        expected = (self.n_findings_emitted - self.n_findings_served) + self.n_proposals_rejected
         if self.n_proposals_seen != expected:
             raise ValueError(
                 f"Proposal accounting mismatch: n_proposals_seen={self.n_proposals_seen} "
-                f"!= n_findings_emitted({self.n_findings_emitted}) + "
+                f"!= (n_findings_emitted({self.n_findings_emitted}) - "
+                f"n_findings_served({self.n_findings_served})) + "
                 f"n_proposals_rejected({self.n_proposals_rejected}) = {expected}. "
+                f"Cache-served findings ride in n_findings_emitted but outside the "
+                f"proposal lifecycle, so they subtract via n_findings_served. "
                 f"Response-level rejections (n_responses_rejected={self.n_responses_rejected}) "
-                f"do NOT enter this equation — only proposal-level rejections do. "
-                f"If counting raw-response-unparseable cases, those increment "
-                f"n_responses_rejected (separate)."
+                f"do NOT enter this equation — only proposal-level rejections do."
             )
         return self
 
@@ -2634,6 +2718,7 @@ AuditEvent = Annotated[
     | FileExaminationEvent
     | ScopeExclusionEvent
     | CacheLookupEvent
+    | CacheServeEvent
     | FindingEvent
     | TraceDecisionEvent
     | HITLRequestEvent
@@ -2661,6 +2746,7 @@ AuditEventAdapter: Final[
         | FileExaminationEvent
         | ScopeExclusionEvent
         | CacheLookupEvent
+        | CacheServeEvent
         | FindingEvent
         | TraceDecisionEvent
         | HITLRequestEvent
@@ -2686,6 +2772,7 @@ __all__ = [
     "AuditEventAdapter",
     "AuditEventBase",
     "CacheLookupEvent",
+    "CacheServeEvent",
     "ContextManifestEntry",
     "FileExaminationEvent",
     "FindingEvent",
@@ -2705,6 +2792,7 @@ __all__ = [
     "ReviewPhaseEvent",
     "ScopeExclusionEntry",
     "ScopeExclusionEvent",
+    "ServedTraceCandidateRef",
     "SynthesizeCompletedEvent",
     "TraceDecisionEvent",
     "compute_publish_attempt_content_hash",

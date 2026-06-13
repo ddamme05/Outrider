@@ -23,6 +23,8 @@ export function summarizeEvent(e: AuditEvent): string {
       return `${e.from_node} → ${e.to_node}`;
     case "cache_lookup":
       return `${e.outcome} · ${e.file_path}`;
+    case "cache_serve":
+      return `served · ${e.served_finding_count} finding(s) · ${e.file_path}`;
     case "scope_exclusion":
       return `${e.applied ? "applied" : "shadow"} · ${e.entries.length} scope(s) · ${e.file_path}`;
     default:
@@ -44,6 +46,7 @@ export const EV_FAMILY: Record<string, string> = {
   finding_proposal_rejected: "rejected",
   file_examination: "file",
   cache_lookup: "file",
+  cache_serve: "file",
   scope_exclusion: "file",
   trace_decision: "trace",
   hitl_request: "human",

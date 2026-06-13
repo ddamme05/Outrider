@@ -96,6 +96,9 @@ class _StubAnalyzeEventSink:
     async def emit_cache_lookup(self, event: CacheLookupEvent) -> None:  # noqa: ARG002
         return None
 
+    async def emit_cache_serve(self, event: object) -> None:  # noqa: ARG002
+        return None
+
 
 class _StubImportPathResolver:
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:  # noqa: ARG002

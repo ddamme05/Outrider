@@ -507,6 +507,7 @@ def build_lifespan(
             # OUTRIDER_HITL_TIMEOUT_ACTION). Startup raises ValueError
             # if timeout_action is set to anything other than
             # `expire_only` — V1's hitl-gates-high-severity guarantee.
+            from outrider.agent.nodes.cache_config import CacheConfig  # noqa: PLC0415
             from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
             from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
             from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: PLC0415
@@ -516,6 +517,10 @@ def build_lifespan(
             # Suggested patches (DECISIONS.md#040): reads OUTRIDER_PATCHES_ENABLED
             # (default on) + the per-review cap. Patch model is ModelConfig.patch_model.
             patch_config = PatchConfig()
+            # Analyze-cache read mode (Stage B serve flip): reads
+            # OUTRIDER_CACHE_MODE (default `shadow` — behavior-neutral; the flip
+            # to `serve` is a deliberate, telemetry-gated config change).
+            cache_config = CacheConfig()
 
             # Step 7b: durable LangGraph checkpointer. HITL `interrupt(...)`
             # writes the suspended state to this checkpointer; the
@@ -580,6 +585,7 @@ def build_lifespan(
                 db_factory=session_factory,
                 github_factory=github_factory,
                 analyze_cache_store=analyze_cache_store,
+                cache_mode=cache_config.mode,
             )
 
             # Step 9: `run_graph` closure for the V1 dispatcher to call

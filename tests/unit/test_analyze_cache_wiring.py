@@ -26,14 +26,18 @@ import pytest
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
+from outrider.agent.nodes.cache_config import CacheMode
 from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
+from outrider.audit.events import compute_finding_content_hash
 from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
 from outrider.llm.base import LLMRequest, LLMResponse, _canonical_prompt_hash
-from outrider.policy.severity import ACTIVE_POLICY_VERSION
+from outrider.policy import EvidenceTier, FindingType
+from outrider.policy.canonical import compute_served_finding_id
+from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.prompts import analyze as analyze_prompt
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST
-from outrider.schemas import ChangedFile, PRContext, ReviewState
+from outrider.schemas import ChangedFile, PRContext, ReviewFinding, ReviewState
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -133,6 +137,7 @@ class _RecordingAnalyzeEventSink:
         self.completed: list[Any] = []
         self.scope_exclusions: list[Any] = []
         self.cache_lookups: list[Any] = []
+        self.cache_serves: list[Any] = []
 
     async def emit_finding(self, finding: Any, *, is_eval: bool) -> None:
         self.findings.append((finding, is_eval))
@@ -151,6 +156,9 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_cache_lookup(self, event: Any) -> None:
         self.cache_lookups.append(event)
+
+    async def emit_cache_serve(self, event: Any) -> None:
+        self.cache_serves.append(event)
 
 
 _HEAD = """\
@@ -235,6 +243,7 @@ async def _run(
     response_text: str | None = None,
     finish_reason: str = "end_turn",
     state_is_eval: bool = False,
+    cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> tuple[_StubLLMProvider, _RecordingAnalyzeEventSink]:
     provider = _StubLLMProvider(response_text, finish_reason=finish_reason)
     sink = _RecordingAnalyzeEventSink()
@@ -250,6 +259,7 @@ async def _run(
         active_policy_version=ACTIVE_POLICY_VERSION,
         total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,
         analyze_cache_store=store,  # type: ignore[arg-type]
+        cache_mode=cache_mode,
     )
     return provider, sink
 
@@ -435,3 +445,126 @@ async def test_response_rejection_caches_nothing() -> None:
     assert event.outcome == "miss"
     assert len(provider.calls) == 1
     assert store.write_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Stage B serve flip (cache_mode=serve).
+# ---------------------------------------------------------------------------
+
+
+def _build_cached_finding() -> ReviewFinding:
+    """A valid JUDGED-tier finding for a cache payload. Severity is the live
+    policy baseline so the served reconstruction's `_enforce_severity_matches_policy`
+    passes; review_id/installation_id are the SOURCE review's (serve re-stamps)."""
+    return ReviewFinding(
+        review_id=uuid4(),
+        installation_id=999,
+        policy_version=ACTIVE_POLICY_VERSION,
+        finding_type=FindingType.SQL_INJECTION,
+        dimension=ReviewDimension.SECURITY,
+        severity=SEVERITY_POLICY[FindingType.SQL_INJECTION],
+        evidence_tier=EvidenceTier.JUDGED,
+        file_path="src/cached.py",
+        line_start=4,
+        line_end=6,
+        title="SQL injection",
+        description="User input concatenated into the SQL string.",
+        evidence="cursor.execute('SELECT ... ' + user_id)",
+        query_match_id=None,
+        trace_path=None,
+        proposal_hash="a" * 64,
+        content_hash=compute_finding_content_hash(
+            file_path="src/cached.py",
+            line_start=4,
+            line_end=6,
+            finding_type=FindingType.SQL_INJECTION,
+        ),
+    )
+
+
+def test_served_finding_id_is_deterministic() -> None:
+    """The re-mint keystone: finding_id is a pure function of (new review,
+    content_hash, proposal_hash) so a checkpoint replay reproduces it, keeping
+    the persister's no-resurrection content-row guard correct."""
+    a = compute_served_finding_id(
+        review_id=_REVIEW_ID, content_hash="x" * 64, proposal_hash="y" * 64
+    )
+    b = compute_served_finding_id(
+        review_id=_REVIEW_ID, content_hash="x" * 64, proposal_hash="y" * 64
+    )
+    assert a == b
+    # A different review, content, or proposal yields a different id.
+    assert a != compute_served_finding_id(
+        review_id=uuid4(), content_hash="x" * 64, proposal_hash="y" * 64
+    )
+    assert a != compute_served_finding_id(
+        review_id=_REVIEW_ID, content_hash="z" * 64, proposal_hash="y" * 64
+    )
+    assert a != compute_served_finding_id(
+        review_id=_REVIEW_ID, content_hash="x" * 64, proposal_hash="z" * 64
+    )
+
+
+@pytest.mark.asyncio
+async def test_serve_hit_short_circuits_and_reemits_finding() -> None:
+    """A live hit under cache_mode=serve: NO LLM call; a CacheServeEvent (not a
+    CacheLookupEvent); the cached finding re-emitted on THIS review with a
+    deterministic re-mint; no write; accounting rides n_findings_served."""
+    source_finding = _build_cached_finding()
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload={"findings": [source_finding.model_dump(mode="json")], "trace_candidates": []},
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=_SCOPE, entry=entry)
+    provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+
+    assert provider.calls == []  # served — the model was never called
+    assert sink.cache_lookups == []
+    [serve] = sink.cache_serves
+    assert serve.served_finding_count == 1
+    # The serve event records the key the node COMPOSED + looked up (the fake
+    # store returns the entry regardless of key), not the seeded entry's field.
+    [(looked_up_key, _excluded)] = store.lookup_calls
+    assert serve.cache_key == looked_up_key
+
+    [(served_finding, _is_eval)] = sink.findings
+    assert served_finding.review_id == _REVIEW_ID  # re-stamped onto this review
+    assert served_finding.finding_id == compute_served_finding_id(
+        review_id=_REVIEW_ID,
+        content_hash=source_finding.content_hash,
+        proposal_hash=source_finding.proposal_hash,
+    )
+    assert served_finding.content_hash == source_finding.content_hash  # content preserved
+    assert store.write_calls == []  # a serve hit writes nothing
+
+    [completed] = sink.completed
+    assert completed.n_llm_calls == 0
+    assert completed.n_findings_emitted == 1
+    assert completed.n_findings_served == 1
+
+
+@pytest.mark.asyncio
+async def test_serve_miss_calls_model_and_writes() -> None:
+    """A serve-miss is a real miss: the model runs, miss telemetry fires, and
+    step 3g writes the new outcome (same as shadow-miss)."""
+    store = _FakeCacheStore(scope=_SCOPE, entry=None)
+    provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+    assert len(provider.calls) == 1
+    assert sink.cache_serves == []
+    [event] = sink.cache_lookups
+    assert event.outcome == "miss"
+    assert len(store.write_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_serve_lookup_error_degrades_to_model() -> None:
+    """A contained CacheStoreError on a SERVE lookup degrades to a real LLM
+    call — NEVER a silent skip of findings. No serve, no lookup event."""
+    store = _FakeCacheStore(scope=_SCOPE, entry=None, raise_on="lookup")
+    provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+    assert len(provider.calls) == 1
+    assert sink.cache_serves == []
+    assert sink.cache_lookups == []

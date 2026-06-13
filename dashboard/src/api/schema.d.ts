@@ -543,6 +543,11 @@ export interface components {
             n_proposals_seen: number;
             /** N Findings Emitted */
             n_findings_emitted: number;
+            /**
+             * N Findings Served
+             * @default 0
+             */
+            n_findings_served: number;
             /** N Proposals Rejected */
             n_proposals_rejected: number;
             /** N Responses Rejected */
@@ -697,6 +702,99 @@ export interface components {
             outcome: "would_hit" | "miss";
             /** Cache Key */
             cache_key: string;
+        };
+        /**
+         * CacheServeEvent
+         * @description Per-file analyze-cache SERVE record — the serve-flip counterpart to
+         *     `CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).
+         *
+         *     Emitted (in place of `CacheLookupEvent`) when `cache_mode="serve"` and a live
+         *     cache entry is served: the LLM call is skipped and the cached findings are
+         *     reconstructed onto this review. Carries the serve DECISION + identity;
+         *     served-finding CONTENT rides the re-emitted `FindingEvent` stream (the
+         *     content/metadata split — replay equivalence is verified through those
+         *     FindingEvents, not this event, so it survives the source review / cache row
+         *     being purged, per `DECISIONS.md#014` point 4).
+         *
+         *     `cache_key` is the composed eleven-field digest — the canonical fingerprint of
+         *     every key component (`compute_analyze_cache_key`) and the join to the prior
+         *     `CacheLookupEvent` telemetry; carrying the digest carries the components'
+         *     identity, and replay never recomputes the analyze key, so the individual
+         *     components are not re-listed. `(installation_id, repo_id)` is the tenant scope
+         *     (load-bearing, never dropped). `served_trace_candidates` carries the
+         *     metadata-only identity of each served trace candidate (their only audit
+         *     trace; `reason` excluded — content tier). `source_review_id` /
+         *     `source_cache_created_at` are non-load-bearing provenance pointers.
+         *
+         *     Carries `node_id="analyze"` so replay node-containment binds it to the analyze
+         *     phase (CacheLookupEvent precedent). A served file emits this event, one
+         *     `FileExaminationEvent(parse_status="clean")`, and one `FindingEvent` per served
+         *     finding — and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`.
+         */
+        CacheServeEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "cache_serve";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** File Path */
+            file_path: string;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** Cache Key */
+            cache_key: string;
+            /** Installation Id */
+            installation_id: number;
+            /** Repo Id */
+            repo_id: number;
+            /** Served Finding Count */
+            served_finding_count: number;
+            /**
+             * Context Summary
+             * @default []
+             */
+            context_summary: components["schemas"]["ContextManifestEntry"][];
+            /**
+             * Served Trace Candidates
+             * @default []
+             */
+            served_trace_candidates: components["schemas"]["ServedTraceCandidateRef"][];
+            /**
+             * Source Review Id
+             * Format: uuid
+             */
+            source_review_id: string;
+            /**
+             * Source Cache Created At
+             * Format: date-time
+             */
+            source_cache_created_at: string;
         };
         /**
          * ContextManifestEntry
@@ -1732,7 +1830,7 @@ export interface components {
             start: components["schemas"]["ReviewPhaseEvent"] | null;
             end: components["schemas"]["ReviewPhaseEvent"] | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
         };
         /**
          * ReplayBucket
@@ -1825,11 +1923,11 @@ export interface components {
             /** Status */
             status: string | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Phases */
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
-            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Findings */
             findings: components["schemas"]["TimelineFindingContentView"][];
             /** Llm Exchanges */
@@ -1961,7 +2059,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Total */
             total: number;
         };
@@ -2194,6 +2292,26 @@ export interface components {
             filter_version: string;
             /** Entries */
             entries: components["schemas"]["ScopeExclusionEntry"][];
+        };
+        /**
+         * ServedTraceCandidateRef
+         * @description Metadata-only identity of a trace candidate served from cache.
+         *
+         *     A served trace candidate emits NO per-item audit event (unlike a served
+         *     FINDING, which re-emits a `FindingEvent`), so this ref on `CacheServeEvent`
+         *     is its only audit trace. Carries the canonical identifiers but NOT
+         *     `TraceCandidate.reason` — free-text model/PR-derived content stays in the
+         *     retention-bound cache row (`DECISIONS.md#014` content/metadata split);
+         *     `candidate_id` folds `reason`, so identity is pinned without exposing prose.
+         *     Frozen + extra=forbid (the outer event's frozen-ness does not propagate).
+         */
+        ServedTraceCandidateRef: {
+            /** Candidate Id */
+            candidate_id: string;
+            /** Source Proposal Hash */
+            source_proposal_hash: string;
+            /** Import String */
+            import_string: string;
         };
         /**
          * SeverityCounts
