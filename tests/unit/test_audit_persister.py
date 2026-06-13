@@ -13,6 +13,7 @@ import pytest
 
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import (
+    _REPLAY_VERDICT_INDEX_WHERE,
     METADATA_ONLY_EXCEPTION_TYPES,
     AuditPersister,
     AuditPersisterConfigError,
@@ -1088,3 +1089,86 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
                 f"Test setup invariant: field-name sentinel should be in "
                 f"mismatched_fields for {exc_cls.__name__}"
             )
+
+
+class _NullAsyncCtx:
+    """Async context manager that yields nothing (stands in for
+    `session.begin()`)."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _CapturingSession:
+    """Fake AsyncSession that records the statements passed to
+    `scalar`/`execute` without touching a DB, so a persister method's
+    rendered SQL is inspectable at the unit tier. Returns None from
+    `scalar` (the conflict-no-op path)."""
+
+    def __init__(self) -> None:
+        self.statements: list[object] = []
+
+    async def __aenter__(self) -> _CapturingSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    def begin(self) -> _NullAsyncCtx:
+        return _NullAsyncCtx()
+
+    async def scalar(self, stmt: object) -> None:
+        self.statements.append(stmt)
+        return None
+
+    async def execute(self, stmt: object) -> None:
+        self.statements.append(stmt)
+        return None
+
+
+async def test_emit_replay_verdict_renders_literal_on_conflict_where() -> None:
+    """The REAL `emit_replay_verdict` must render its ON CONFLICT partial-
+    index predicate as literal SQL (`WHERE event_type = 'replay_verdict'`),
+    never a bind parameter. An ORM expression (`AuditEventRow.event_type ==
+    "..."`) renders `WHERE event_type = $1`, which psycopg3 generic plans
+    can't prove implies the partial unique index's constant predicate —
+    arbiter inference then fails (42P10) once the statement is server-
+    prepared, breaking replay-verdict projection in steady state. Integration
+    tests use NullPool (no prepared statements), so this regression is only
+    catchable here. Invokes the method (not just the constant) so a revert of
+    the method body to an ORM expression fails this test. Twin of the
+    anomaly-persister check.
+    """
+    from uuid import uuid4
+
+    from sqlalchemy.dialects import postgresql
+
+    from outrider.audit.events import ReplayVerdictEvent
+
+    # The constant itself is literal (and is what the method uses).
+    constant_sql = str(_REPLAY_VERDICT_INDEX_WHERE.compile(dialect=postgresql.dialect()))
+    assert constant_sql == "event_type = 'replay_verdict'"
+
+    session = _CapturingSession()
+    persister = AuditPersister(
+        session_factory=lambda: session,  # type: ignore[arg-type, return-value]
+        retention_settings=RetentionSettings(),
+    )
+    await persister.emit_replay_verdict(
+        ReplayVerdictEvent(
+            review_id=uuid4(),
+            replay_equivalent=True,
+            mode="full",
+            event_count=4,
+            finding_count=0,
+            orphan_finding_count=0,
+            target_max_sequence_number=4,
+        )
+    )
+    assert len(session.statements) == 1
+    sql = str(session.statements[0].compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
+    assert "WHERE event_type = 'replay_verdict'" in sql, sql
+    assert "%(event_type_1)s" not in sql, f"predicate rendered as bind param: {sql}"
