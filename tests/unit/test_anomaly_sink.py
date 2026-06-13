@@ -139,6 +139,46 @@ def test_rule_name_index_where_covers_every_rule_with_literal_sql() -> None:
         assert f"rule_name = '{rule.value}'" in str(compiled)
 
 
+def test_rule_name_index_where_matches_orm_model_partial_index_predicate() -> None:
+    """Drift guard: each `_RULE_NAME_INDEX_WHERE[rule]` predicate must byte-match
+    the `postgresql_where` of that rule's partial unique index on the ORM model
+    (`Anomaly.__table__`), which in turn mirrors the migration's `CREATE UNIQUE
+    INDEX ... WHERE`. The predicate literal lives in THREE places that must stay
+    identical (migration, ORM model, this map); map-vs-model is the only pair no
+    other test compares. Without this, tightening an index predicate (e.g. adding
+    `AND status = 'open'`) on the model + migration but missing the map silently
+    desyncs `index_where` from the partial index — arbiter inference falls
+    through and duplicate rows return, the exact idempotency break this map
+    exists to prevent. (The completeness test only checks the map contains
+    `rule_name = '<enum.value>'`; the integration test only checks the live DB
+    index — neither catches predicate drift between the map and the model.)
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from outrider.anomaly.persister import _RULE_NAME_INDEX_WHERE
+    from outrider.db.models.anomalies import Anomaly
+
+    pg = postgresql.dialect()
+    model_predicate_by_index = {
+        ix.name: ix.dialect_options["postgresql"].get("where") for ix in Anomaly.__table__.indexes
+    }
+    for rule in AnomalyRuleName:
+        index_name = f"uq_anomalies_{rule.value}_natural_key"
+        model_where = model_predicate_by_index.get(index_name)
+        assert model_where is not None, (
+            f"{rule.value}: no partial index {index_name!r} with a postgresql_where "
+            f"predicate on Anomaly.__table__ — the map predicate has nothing to mirror"
+        )
+        model_sql = str(model_where.compile(dialect=pg))
+        map_sql = str(_RULE_NAME_INDEX_WHERE[rule].compile(dialect=pg))
+        assert map_sql == model_sql, (
+            f"{rule.value}: _RULE_NAME_INDEX_WHERE predicate {map_sql!r} drifted from "
+            f"the ORM model's partial-index predicate {model_sql!r} ({index_name}). "
+            f"The ON CONFLICT index_where must byte-match the partial index, or "
+            f"on_conflict_do_nothing falls through and idempotency breaks."
+        )
+
+
 class _NullAsyncCtx:
     async def __aenter__(self) -> None:
         return None
