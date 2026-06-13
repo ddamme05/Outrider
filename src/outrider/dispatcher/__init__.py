@@ -19,8 +19,12 @@ round-trips the same payload through the broker without code changes.
 
 from outrider.dispatcher.background_tasks import BackgroundTasksDispatcher
 from outrider.dispatcher.base import ReviewDispatcher
+from outrider.dispatcher.concurrency import concurrency_limited
+from outrider.dispatcher.config import DispatchConfig
 
 __all__ = [
     "BackgroundTasksDispatcher",
+    "DispatchConfig",
     "ReviewDispatcher",
+    "concurrency_limited",
 ]
