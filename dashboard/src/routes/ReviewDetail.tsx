@@ -229,7 +229,7 @@ export function ReviewDetail() {
             <div className="rd-actions">
               <Link
                 to={`/reviews/${reviewId}/replay`}
-                className="btn primary"
+                className="btn"
                 aria-label="Open the real-time replay reconstruction for this review"
               >
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
