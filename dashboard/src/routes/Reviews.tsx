@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
@@ -72,6 +72,7 @@ export function Reviews() {
   const status = useFilters((s) => s.status);
   const search = useFilters((s) => s.search);
   const setStatus = useFilters((s) => s.setStatus);
+  const navigate = useNavigate();
 
   // Request the backend max in one call (limit≤200). The page is a single
   // scrolling table with no pager, and there is no server-side text search —
@@ -168,9 +169,18 @@ export function Reviews() {
             </thead>
             <tbody>
               {rows.map((review: ReviewListItem) => (
-                <tr key={review.id}>
+                // The whole row navigates to the review (mockup parity). Inner
+                // links stopPropagation so they reach their own targets; the PR#
+                // stays a real anchor for keyboard / open-in-new-tab.
+                <tr
+                  key={review.id}
+                  className="review-row"
+                  onClick={() => navigate(`/reviews/${review.id}`)}
+                >
                   <td className="row-id">
-                    <Link to={`/reviews/${review.id}`}>#{review.pr_number}</Link>
+                    <Link to={`/reviews/${review.id}`} onClick={(e) => e.stopPropagation()}>
+                      #{review.pr_number}
+                    </Link>
                   </td>
                   <td className="row-repo">{review.repo_full_name ?? `repo ${review.repo_id}`}</td>
                   <td>
@@ -184,6 +194,7 @@ export function Reviews() {
                         to={`/reviews/${review.id}/replay`}
                         className="abtn"
                         style={{ marginLeft: 8 }}
+                        onClick={(e) => e.stopPropagation()}
                         aria-label={`Open the replay reconstruction for review ${review.id}`}
                       >
                         ↻ replay

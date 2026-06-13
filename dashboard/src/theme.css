@@ -2710,6 +2710,14 @@ table.policy tbody tr:hover {
   color: var(--muted);
 }
 
+/* Whole reviews-table row is a click target into the review (mockup parity). */
+tr.review-row {
+  cursor: pointer;
+}
+tr.review-row:hover {
+  background: var(--panel2);
+}
+
 .abtn {
   display: inline-block;
   background: var(--panel);

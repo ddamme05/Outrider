@@ -1,14 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import type { ReactElement } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { beforeEach, expect, test } from "vitest";
 
 import { useTokenStore } from "../auth/token";
 import { useFilters } from "../state/filters";
 import { server } from "../test/server";
 import { Reviews } from "./Reviews";
+
+// Probe that surfaces the current router location for navigation assertions.
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{loc.pathname}</div>;
+}
 
 function renderWithProviders(ui: ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -179,4 +185,32 @@ test("tells the truth when the queue is larger than the loaded page", async () =
   renderWithProviders(<Reviews />);
 
   expect(await screen.findByText(/Showing 1 of 80 reviews/)).toBeInTheDocument();
+});
+
+test("clicking anywhere on a row navigates to the review detail", async () => {
+  server.use(
+    http.get("http://localhost/api/reviews", () =>
+      HttpResponse.json({
+        reviews: [review({ id: "r1", repo_full_name: "acme/api", pr_number: 7 })],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        status_counts: statusCounts({ running: 1 }),
+      }),
+    ),
+  );
+
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/reviews"]}>
+        <LocationProbe />
+        <Reviews />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  // Click a NON-link cell (the repo name) — the row-level handler navigates.
+  fireEvent.click(await screen.findByText("acme/api"));
+  expect(screen.getByTestId("loc").textContent).toBe("/reviews/r1");
 });
