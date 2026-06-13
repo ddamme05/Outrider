@@ -32,7 +32,10 @@ Constructs at startup, in dependency order:
      Protocols + one anomaly sink, `publisher`, and
      `import_path_resolver`).
   9. `run_graph` async closure that the V1 `BackgroundTasksDispatcher`
-     invokes per request to call `compiled_graph.ainvoke(state)`.
+     invokes per request to call `compiled_graph.ainvoke(state)`, wrapped
+     by a process-level `asyncio.Semaphore` (`OUTRIDER_MAX_CONCURRENT_REVIEWS`,
+     default 8) so a webhook flood can't saturate the Anthropic pool
+     (FUP-164 / DECISIONS.md#045).
   10. `register_filter_on_all_handlers()` — re-applies the log-content
       filter to any handler uvicorn registered between `import outrider`
       and lifespan entry. Idempotent (see `llm/logging.py`).
@@ -511,6 +514,10 @@ def build_lifespan(
             from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
             from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
             from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: PLC0415
+            from outrider.dispatcher import (  # noqa: PLC0415
+                DispatchConfig,
+                concurrency_limited,
+            )
 
             review_status_persister = ReviewStatusPersister(session_factory=session_factory)
             hitl_config = HITLConfig()  # reads env vars; fails loud on AUTO_POST
@@ -521,6 +528,14 @@ def build_lifespan(
             # OUTRIDER_CACHE_MODE (default `shadow` — behavior-neutral; the flip
             # to `serve` is a deliberate, telemetry-gated config change).
             cache_config = CacheConfig()
+            # Concurrent-review ceiling (FUP-164 / DECISIONS.md#045): reads
+            # OUTRIDER_MAX_CONCURRENT_REVIEWS (default 8). The semaphore is
+            # created HERE (inside the running event loop, so it binds to the
+            # right loop) and wraps `run_graph` below so a webhook flood can't
+            # saturate the shared Anthropic connection pool. Per-process bound
+            # (real ceiling under N workers is N x the limit) — see #045.
+            dispatch_config = DispatchConfig()
+            review_semaphore = asyncio.Semaphore(dispatch_config.max_concurrent_reviews)
 
             # Step 7b: durable LangGraph checkpointer. HITL `interrupt(...)`
             # writes the suspended state to this checkpointer; the
@@ -606,6 +621,15 @@ def build_lifespan(
                 config: RunnableConfig = {"configurable": {"thread_id": str(state.review_id)}}
                 return await compiled_graph.ainvoke(state, config=config)
 
+            # FUP-164 / DECISIONS.md#045: bound concurrent graph executions at
+            # the process level so an unbounded webhook flood can't saturate the
+            # Anthropic connection pool. The semaphore wraps run_graph HERE (the
+            # lifespan-bound closure), NOT in `BackgroundTasksDispatcher` — the
+            # dispatcher is request-scoped (one per webhook), so a semaphore held
+            # there could not bound across requests. Excess reviews await a free
+            # slot as parked coroutines instead of all entering analyze at once.
+            bounded_run_graph = concurrency_limited(run_graph, review_semaphore)
+
             # Step 10: re-apply log filter post-handler-registration.
             # uvicorn registers its handlers before the lifespan body
             # runs, so by here all handler chains exist; idempotent
@@ -623,7 +647,10 @@ def build_lifespan(
             app.state.github_app_settings = github_app_settings
             app.state.github_factory = github_factory
             app.state.compiled_graph = compiled_graph
-            app.state.run_graph = run_graph
+            # The dispatcher invokes the semaphore-bounded wrapper, not the bare
+            # closure, so the FUP-164 concurrency ceiling applies to every
+            # webhook-triggered review.
+            app.state.run_graph = bounded_run_graph
             # Stash the checkpointer so the HITL-expiry sweep
             # (Group 8) can call `checkpointer.aget(config)` to detect
             # rows in `awaiting_approval` with no pending interrupt
