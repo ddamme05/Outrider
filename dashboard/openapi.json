@@ -4023,9 +4023,31 @@
             "type": "integer",
             "title": "Repo Id"
           },
+          "repo_full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Full Name"
+          },
           "pr_number": {
             "type": "integer",
             "title": "Pr Number"
+          },
+          "pr_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Title"
           },
           "head_sha": {
             "type": "string",
@@ -4063,6 +4085,16 @@
           },
           "metrics": {
             "$ref": "#/components/schemas/ReviewMetricsView"
+          },
+          "severity_counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeverityCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -4071,14 +4103,17 @@
           "id",
           "installation_id",
           "repo_id",
+          "repo_full_name",
           "pr_number",
+          "pr_title",
           "head_sha",
           "status",
           "is_eval",
           "created_at",
           "updated_at",
           "completed_at",
-          "metrics"
+          "metrics",
+          "severity_counts"
         ],
         "title": "ReviewListItem"
       },
@@ -4102,6 +4137,9 @@
           "offset": {
             "type": "integer",
             "title": "Offset"
+          },
+          "status_counts": {
+            "$ref": "#/components/schemas/StatusCounts"
           }
         },
         "additionalProperties": false,
@@ -4110,7 +4148,8 @@
           "reviews",
           "total",
           "limit",
-          "offset"
+          "offset",
+          "status_counts"
         ],
         "title": "ReviewListResponse"
       },
@@ -4430,6 +4469,39 @@
         "title": "ScopeExclusionEvent",
         "description": "Per-file trivial-scope classification record \u2014 one event per\nexamined pass-0 file the filter classified (\u22651 admitted scope).\n\n`applied=False` is shadow mode: the classifier ran and these are\nwould-exclude verdicts, but NOTHING was removed from the prompt \u2014\nthe production telemetry the eval-backed default flip requires.\n`applied=True` records enforcing mode (trivial scopes excluded from\nthe prompt; all-trivial files skipped with\n`SkipReason.ALL_SCOPES_TRIVIAL`). This event is deliberately\nSEPARATE from `LLMCallEvent.context_summary`, which stays exactly\n\"what the LLM actually saw\" (spec \u00a78.3) \u2014 and the all-trivial skip\nhas no LLM call to carry a manifest at all.\n\nCarries `node_id` so replay's node-containment machinery binds it to\nanalyze's phase window without an owner-map exemption. Idempotency\nmode: event_id-PK per `DECISIONS.md#026` \u2014 retry/resume re-emission\nappends a fresh row; consumer-side dedup collapses."
       },
+      "SeverityCounts": {
+        "properties": {
+          "critical": {
+            "type": "integer",
+            "title": "Critical",
+            "default": 0
+          },
+          "high": {
+            "type": "integer",
+            "title": "High",
+            "default": 0
+          },
+          "medium": {
+            "type": "integer",
+            "title": "Medium",
+            "default": 0
+          },
+          "low": {
+            "type": "integer",
+            "title": "Low",
+            "default": 0
+          },
+          "info": {
+            "type": "integer",
+            "title": "Info",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SeverityCounts",
+        "description": "Per-severity counts of a review's REPORT-EQUIVALENT findings \u2014 the\nsynthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),\nNOT raw admitted `findings` rows. Closed key set (the five\n`FindingSeverity` tiers). On `ReviewListItem` this is `None` until a\n`SynthesizeCompletedEvent` exists, because before synthesize there is no\ndeduplicated report set to count. Severity is policy-set baseline; a HITL\noverride is a review-detail concern, not the list tally."
+      },
       "SkipReason": {
         "type": "string",
         "enum": [
@@ -4447,6 +4519,44 @@
         ],
         "title": "SkipReason",
         "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,\n  `ALL_SCOPES_TRIVIAL`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze\n  adapter only handles Python; the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
+      },
+      "StatusCounts": {
+        "properties": {
+          "running": {
+            "type": "integer",
+            "title": "Running",
+            "default": 0
+          },
+          "awaiting_approval": {
+            "type": "integer",
+            "title": "Awaiting Approval",
+            "default": 0
+          },
+          "awaiting_approval_expired": {
+            "type": "integer",
+            "title": "Awaiting Approval Expired",
+            "default": 0
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StatusCounts",
+        "description": "Per-status review counts over the list's BASE filters (`include_eval`\n+ `repo_id`), independent of the active `status` filter \u2014 so the queue's\nfilter chips stay stable while a status is selected. \"All N\" = the sum."
       },
       "SynthesizeCompletedEvent": {
         "properties": {

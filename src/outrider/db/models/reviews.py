@@ -83,6 +83,12 @@ class Review(Base):
     )
     repo_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # PR title captured at review creation from the webhook payload
+    # (`pull_request.title`). Nullable: pre-`f4c8a1d2b9e3` rows have no
+    # value, and the value is attacker-controlled webhook data persisted as
+    # a parameterized column (never SQL-interpolated) + rendered escaped.
+    # Immutable after creation — see the migration docstring.
+    pr_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     head_sha: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(review_status_enum, nullable=False)
     hitl_request: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

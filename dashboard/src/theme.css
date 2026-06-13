@@ -2630,3 +2630,102 @@ table.policy tbody tr:hover {
 .ae[class*="ev-c-"] .ae-type::before {
   background: var(--evc);
 }
+
+/* Reviews queue table — Signal mockup (22-signal-analytics.html): filter
+   chips, per-severity tally badges, row-cell typography, the ↻ replay action.
+   Reuses the existing --sev-* / --panel / --line2 / --mono theme vars. */
+.panel-h .right {
+  margin-left: auto;
+}
+
+.filter-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.fbtn {
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fbtn[aria-pressed="true"] {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--hair);
+}
+.fbtn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.fbtn .num {
+  font-family: var(--mono);
+  opacity: 0.7;
+}
+
+.tally {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.tally .t {
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line2);
+}
+.t.c {
+  color: color-mix(in srgb, var(--sev-critical) 62%, var(--text));
+}
+.t.h {
+  color: color-mix(in srgb, var(--sev-high) 62%, var(--text));
+}
+.t.m {
+  color: color-mix(in srgb, var(--sev-medium) 62%, var(--text));
+}
+.t.l {
+  color: color-mix(in srgb, var(--sev-low) 62%, var(--text));
+}
+.t.i {
+  color: color-mix(in srgb, var(--sev-info) 62%, var(--text));
+}
+
+.row-id {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.row-repo {
+  color: var(--muted);
+  font-size: 12px;
+}
+.row-cost,
+.row-lat {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.abtn {
+  display: inline-block;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.abtn:hover {
+  color: var(--text);
+  background: var(--panel2);
+}
+.abtn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

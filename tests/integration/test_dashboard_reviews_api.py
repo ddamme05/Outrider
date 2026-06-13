@@ -40,11 +40,13 @@ async def _seed_review(
     repo_id: int,
     llm_events: list[dict[str, Any]],
     synth: dict[str, Any] | None,
+    head_sha: str = "sha1",
 ) -> UUID:
     """Insert one review + its audit events. The `reviews.*` aggregate-metric
     columns no longer exist (dropped per DECISIONS.md#037); the API computes
     every metric read-through from the audit stream, so there is nothing on the
-    row to read.
+    row to read. `head_sha` varies the `(repo_id, pr_number, head_sha)` natural
+    key so multiple reviews can share one `repo_id`.
     """
     result = await conn.execute(
         text(
@@ -52,11 +54,17 @@ async def _seed_review(
             "  installation_id, repo_id, pr_number, head_sha, status, is_eval, "
             "  retention_expires_at"
             ") VALUES ("
-            "  :iid, :repo, 1, 'sha1', :status, :is_eval, "
+            "  :iid, :repo, 1, :sha, :status, :is_eval, "
             "  NOW() + INTERVAL '90 days'"
             ") RETURNING id"
         ),
-        {"iid": _INSTALLATION_ID, "repo": repo_id, "status": status, "is_eval": is_eval},
+        {
+            "iid": _INSTALLATION_ID,
+            "repo": repo_id,
+            "sha": head_sha,
+            "status": status,
+            "is_eval": is_eval,
+        },
     )
     review_id = UUID(str(result.scalar_one()))
 
@@ -436,3 +444,249 @@ async def test_duplicate_synthesize_completed_latest_wins(
     assert m["files_examined"] == 99
     assert m["files_traced_beyond_diff"] == 88
     assert m["wall_clock_seconds"] == pytest.approx(77.7)
+
+
+# --- reviews-page-mockup-restyle: repo name, pr_title, severity tally, status_counts -------
+
+_HASH_A = "a" * 64
+_HASH_B = "b" * 64
+_SYNTH = {"files_examined": 1, "files_traced_beyond_diff": 0, "wall_clock_seconds": 1.0}
+
+
+async def _seed_repo_membership(
+    conn: Any, *, repo_id: int, repo_full_name: str, removed: bool = False
+) -> None:
+    # `removed_at` defaults to NULL (active membership); set it for the removed case.
+    await conn.execute(
+        text(
+            "INSERT INTO installation_repositories "
+            "(installation_id, repo_id, repo_full_name, added_at) "
+            "VALUES (:iid, :repo, :name, NOW())"
+        ),
+        {"iid": _INSTALLATION_ID, "repo": repo_id, "name": repo_full_name},
+    )
+    if removed:
+        await conn.execute(
+            text(
+                "UPDATE installation_repositories SET removed_at = NOW() "
+                "WHERE installation_id = :iid AND repo_id = :repo"
+            ),
+            {"iid": _INSTALLATION_ID, "repo": repo_id},
+        )
+
+
+async def _policy_version(conn: Any) -> str:
+    return str(
+        (await conn.execute(text("SELECT version FROM severity_policies LIMIT 1"))).scalar_one()
+    )
+
+
+async def _insert_finding(
+    conn: Any,
+    *,
+    review_id: UUID,
+    policy_version: str,
+    severity: str,
+    content_hash: str,
+    is_eval: bool = False,
+) -> None:
+    await conn.execute(
+        text(
+            "INSERT INTO findings ("
+            "  finding_id, review_id, installation_id, policy_version, finding_type, "
+            "  dimension, severity, evidence_tier, file_path, line_start, line_end, "
+            "  title, description, evidence, suggested_fix, query_match_id, trace_path, "
+            "  content_hash, is_eval, retention_expires_at"
+            ") VALUES ("
+            "  :fid, :rid, :iid, :pv, 'sql_injection', 'security', :sev, 'judged', "
+            "  'app/db.py', 10, 12, 'finding', 'desc', 'ev', NULL, NULL, NULL, "
+            "  :ch, :ie, NOW() + INTERVAL '90 days'"
+            ")"
+        ),
+        {
+            "fid": uuid4(),
+            "rid": review_id,
+            "iid": _INSTALLATION_ID,
+            "pv": policy_version,
+            "sev": severity,
+            "ch": content_hash,
+            "ie": is_eval,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_repo_full_name_join_with_fallback(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """repo_full_name comes from the active installation_repositories membership;
+    no row (or a removed row) falls back to null (client renders `repo {id}`)."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        active = await _seed_review(
+            conn, status="running", is_eval=False, repo_id=700, llm_events=[], synth=None
+        )
+        await _seed_repo_membership(conn, repo_id=700, repo_full_name="acme/api")
+        no_member = await _seed_review(
+            conn, status="running", is_eval=False, repo_id=701, llm_events=[], synth=None
+        )
+        removed = await _seed_review(
+            conn, status="running", is_eval=False, repo_id=702, llm_events=[], synth=None
+        )
+        await _seed_repo_membership(conn, repo_id=702, repo_full_name="acme/old", removed=True)
+
+    by_id = {r["id"]: r for r in client.get("/api/reviews", headers=_AUTH).json()["reviews"]}
+    assert by_id[str(active)]["repo_full_name"] == "acme/api"
+    assert by_id[str(no_member)]["repo_full_name"] is None
+    assert by_id[str(removed)]["repo_full_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_pr_title_with_null_fallback(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """pr_title is returned when persisted; a row without it (the pre-migration
+    / no-backfill case, like the fixture's review A) returns null."""
+    client, ids, engine = dashboard_client
+    async with engine.begin() as conn:
+        titled = await _seed_review(
+            conn, status="running", is_eval=False, repo_id=710, llm_events=[], synth=None
+        )
+        await conn.execute(
+            text("UPDATE reviews SET pr_title = :t WHERE id = :id"),
+            {"t": "Add session token storage", "id": str(titled)},
+        )
+    by_id = {r["id"]: r for r in client.get("/api/reviews", headers=_AUTH).json()["reviews"]}
+    assert by_id[str(titled)]["pr_title"] == "Add session token storage"
+    assert by_id[str(ids["a"])]["pr_title"] is None
+
+
+@pytest.mark.asyncio
+async def test_severity_counts_are_report_equivalent_deduped(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """Counts are COUNT(DISTINCT content_hash) per severity — the synthesize-
+    deduplicated set, NOT raw admitted findings rows. Two HIGH findings sharing
+    one content_hash collapse to 1."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        pv = await _policy_version(conn)
+        rid = await _seed_review(
+            conn, status="completed", is_eval=False, repo_id=720, llm_events=[], synth=_SYNTH
+        )
+        await _insert_finding(
+            conn, review_id=rid, policy_version=pv, severity="high", content_hash=_HASH_A
+        )
+        await _insert_finding(
+            conn, review_id=rid, policy_version=pv, severity="high", content_hash=_HASH_A
+        )
+        await _insert_finding(
+            conn, review_id=rid, policy_version=pv, severity="critical", content_hash=_HASH_B
+        )
+    body = client.get("/api/reviews", headers=_AUTH).json()
+    sc = next(r for r in body["reviews"] if r["id"] == str(rid))["severity_counts"]
+    # high=1 (deduped from 2 raw rows), critical=1.
+    assert sc == {"critical": 1, "high": 1, "medium": 0, "low": 0, "info": 0}
+
+
+@pytest.mark.asyncio
+async def test_severity_counts_null_before_synthesize(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A running review with analyze-emitted findings but NO synthesize_completed
+    has no report-equivalent set yet -> severity_counts is null, not a raw tally."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        pv = await _policy_version(conn)
+        rid = await _seed_review(
+            conn, status="running", is_eval=False, repo_id=730, llm_events=[], synth=None
+        )
+        await _insert_finding(
+            conn, review_id=rid, policy_version=pv, severity="high", content_hash=_HASH_A
+        )
+    body = client.get("/api/reviews", headers=_AUTH).json()
+    sc = next(r for r in body["reviews"] if r["id"] == str(rid))["severity_counts"]
+    assert sc is None
+
+
+@pytest.mark.asyncio
+async def test_severity_counts_respect_per_row_is_eval(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """The tally matches each review's OWN is_eval (Finding.is_eval ==
+    Review.is_eval), never a global predicate: a divergent eval finding on a
+    production review does not leak into its tally."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        pv = await _policy_version(conn)
+        prod = await _seed_review(
+            conn, status="completed", is_eval=False, repo_id=740, llm_events=[], synth=_SYNTH
+        )
+        await _insert_finding(
+            conn,
+            review_id=prod,
+            policy_version=pv,
+            severity="high",
+            content_hash=_HASH_A,
+            is_eval=False,
+        )
+        # Divergent eval finding on the production review — must be excluded.
+        await _insert_finding(
+            conn,
+            review_id=prod,
+            policy_version=pv,
+            severity="critical",
+            content_hash=_HASH_B,
+            is_eval=True,
+        )
+    body = client.get("/api/reviews", headers=_AUTH).json()
+    sc = next(r for r in body["reviews"] if r["id"] == str(prod))["severity_counts"]
+    assert sc == {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0}
+
+
+@pytest.mark.asyncio
+async def test_status_counts_real_filter_independent_and_scoped(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """status_counts is a per-status GROUP BY over the BASE filters (include_eval
+    + repo_id), independent of the active status filter; sum == "All N"."""
+    client, _, engine = dashboard_client
+    async with engine.begin() as conn:
+        for i, st in enumerate(("running", "running", "completed", "awaiting_approval", "failed")):
+            await _seed_review(
+                conn,
+                status=st,
+                is_eval=False,
+                repo_id=750,
+                llm_events=[],
+                synth=None,
+                head_sha=f"sha-prod-{i}",
+            )
+        await _seed_review(
+            conn,
+            status="completed",
+            is_eval=True,
+            repo_id=750,
+            llm_events=[],
+            synth=None,
+            head_sha="sha-eval",
+        )
+
+    # Scoped to repo 750 + status=running active: the LIST is running-only, but
+    # status_counts still reflects every status (filter-independent).
+    resp = client.get(
+        "/api/reviews", params={"repo_id": 750, "status": "running"}, headers=_AUTH
+    ).json()
+    sc = resp["status_counts"]
+    assert sc["running"] == 2
+    assert sc["completed"] == 1
+    assert sc["awaiting_approval"] == 1
+    assert sc["failed"] == 1
+    assert sum(sc.values()) == 5  # "All N" for repo 750, eval excluded
+    assert [r["status"] for r in resp["reviews"]] == ["running", "running"]  # list IS filtered
+
+    # include_eval scoping: the eval completed review joins the counts (sum 6).
+    sc_eval = client.get(
+        "/api/reviews", params={"repo_id": 750, "include_eval": "true"}, headers=_AUTH
+    ).json()["status_counts"]
+    assert sum(sc_eval.values()) == 6

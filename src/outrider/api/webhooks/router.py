@@ -355,6 +355,11 @@ async def receive_pull_request_webhook(
                     installation_id=installation_id,
                     repo_id=repo_id,
                     pr_number=payload.pull_request.number,
+                    # Attacker-controlled webhook data (bounded 4096 at the input
+                    # boundary), persisted as a parameterized column value. Captured
+                    # once at creation; idempotency on (repo_id, pr_number, head_sha)
+                    # makes a new head SHA a new row, so the title is never mutated.
+                    pr_title=payload.pull_request.title,
                     head_sha=head_sha,
                     status="running",
                     retention_expires_at=(

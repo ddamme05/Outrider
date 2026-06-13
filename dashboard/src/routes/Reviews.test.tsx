@@ -24,7 +24,9 @@ function review(overrides: Record<string, unknown>) {
     id: "00000000-0000-0000-0000-000000000000",
     installation_id: 1,
     repo_id: 100,
+    repo_full_name: "acme/api",
     pr_number: 7,
+    pr_title: "Add session token storage",
     head_sha: "abc1234def",
     status: "running",
     is_eval: false,
@@ -40,28 +42,42 @@ function review(overrides: Record<string, unknown>) {
       files_traced_beyond_diff: null,
       wall_clock_seconds: null,
     },
+    severity_counts: null,
     ...overrides,
   };
 }
+
+function statusCounts(overrides: Record<string, number> = {}) {
+  return {
+    running: 0,
+    awaiting_approval: 0,
+    awaiting_approval_expired: 0,
+    completed: 0,
+    failed: 0,
+    skipped: 0,
+    ...overrides,
+  };
+}
+
+const isPill = (el: HTMLElement) => el.classList.contains("pill");
 
 beforeEach(() => {
   useTokenStore.setState({ token: "test-key" });
   useFilters.setState({ includeEval: false, status: null, search: "" });
 });
 
-test("renders reviews grouped by status, with pills + cost", async () => {
-  // Absolute URL matching the test base (VITE_API_BASE_URL=http://localhost) —
-  // a relative handler would resolve against jsdom's location origin/port and
-  // miss the port-80 fetch.
+test("renders the table with repo, title, status, severity tally, cost, latency", async () => {
+  // Absolute URL matching the test base (VITE_API_BASE_URL=http://localhost).
   server.use(
     http.get("http://localhost/api/reviews", () =>
       HttpResponse.json({
         reviews: [
-          review({ id: "r1", repo_id: 100, pr_number: 7, status: "running" }),
+          review({ id: "r1", repo_full_name: "acme/api", pr_number: 7, status: "running" }),
           review({
             id: "r2",
-            repo_id: 200,
+            repo_full_name: "acme/web",
             pr_number: 9,
+            pr_title: "Add session token storage",
             status: "completed",
             metrics: {
               llm_calls_made: 4,
@@ -70,43 +86,92 @@ test("renders reviews grouped by status, with pills + cost", async () => {
               total_cost_usd: 0.2,
               files_examined: 5,
               files_traced_beyond_diff: 2,
-              wall_clock_seconds: 42.5,
+              wall_clock_seconds: 72,
             },
+            severity_counts: { critical: 1, high: 2, medium: 1, low: 1, info: 0 },
           }),
         ],
         total: 2,
         limit: 50,
         offset: 0,
+        status_counts: statusCounts({ running: 1, completed: 1 }),
       }),
     ),
   );
 
   renderWithProviders(<Reviews />);
 
-  // Status group headers (capitalized) appear once the query resolves.
-  expect(await screen.findByText("Running")).toBeInTheDocument();
-  expect(screen.getByText("Completed")).toBeInTheDocument();
-  // Rows render real fields: repo, cost, and the status pill (raw status text).
-  expect(screen.getByText("repo 100")).toBeInTheDocument();
-  expect(screen.getByText("repo 200")).toBeInTheDocument();
+  // Real repo names + titles + PR numbers — not "repo <id>".
+  expect(await screen.findByText("acme/api")).toBeInTheDocument();
+  expect(screen.getByText("acme/web")).toBeInTheDocument();
+  expect(screen.getByText("#9")).toBeInTheDocument();
+  expect(screen.getAllByText("Add session token storage").length).toBeGreaterThan(0);
+  // Cost + latency render real, formatted values.
   expect(screen.getByText("$0.05")).toBeInTheDocument();
   expect(screen.getByText("$0.20")).toBeInTheDocument();
-  // Status text also appears in the filter <option>s, so target the pill span.
-  const isPill = (el: HTMLElement) => el.classList.contains("pill");
+  expect(screen.getByText("1m12s")).toBeInTheDocument();
+  // Status pills (not the same text in the filter chips).
   expect(screen.getAllByText("running").some(isPill)).toBe(true);
   expect(screen.getAllByText("completed").some(isPill)).toBe(true);
+  // Severity tally for the completed review (non-zero tiers: 1,2,1,1; info=0 omitted).
+  const tally = document.querySelector(".tally");
+  expect(tally?.textContent).toBe("1211");
+  // "All N" chip shows the summed status_counts.
+  expect(screen.getByText(/^All/).textContent).toContain("2");
+  // The ↻ replay control on the completed row routes to the surviving replay surface.
+  const replay = screen.getByRole("link", { name: /replay reconstruction for review r2/i });
+  expect(replay.getAttribute("href")).toBe("/reviews/r2/replay");
 });
 
-test("tells the truth when the queue is larger than the loaded page", async () => {
-  // One review loaded, but `total` says there are 80 — the UI must not imply
-  // the page is the whole queue.
+test("repo name and title fall back gracefully when null", async () => {
   server.use(
     http.get("http://localhost/api/reviews", () =>
       HttpResponse.json({
-        reviews: [review({ id: "r1", repo_id: 100, status: "running" })],
+        reviews: [
+          review({ id: "r1", repo_id: 555, repo_full_name: null, pr_title: null, status: "running" }),
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        status_counts: statusCounts({ running: 1 }),
+      }),
+    ),
+  );
+
+  renderWithProviders(<Reviews />);
+
+  // No membership row → fall back to `repo <id>`; no title → em-dash.
+  expect(await screen.findByText("repo 555")).toBeInTheDocument();
+});
+
+test("severity tally renders an em-dash before the review reaches synthesize", async () => {
+  server.use(
+    http.get("http://localhost/api/reviews", () =>
+      HttpResponse.json({
+        reviews: [review({ id: "r1", status: "running", severity_counts: null })],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        status_counts: statusCounts({ running: 1 }),
+      }),
+    ),
+  );
+
+  renderWithProviders(<Reviews />);
+  await screen.findByText("acme/api");
+  // No `.tally` rendered when severity_counts is null.
+  expect(document.querySelector(".tally")).toBeNull();
+});
+
+test("tells the truth when the queue is larger than the loaded page", async () => {
+  server.use(
+    http.get("http://localhost/api/reviews", () =>
+      HttpResponse.json({
+        reviews: [review({ id: "r1", status: "running" })],
         total: 80,
         limit: 200,
         offset: 0,
+        status_counts: statusCounts({ running: 1 }),
       }),
     ),
   );
