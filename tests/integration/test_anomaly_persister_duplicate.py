@@ -4,8 +4,9 @@ Per CR-1 (CodeRabbit, F8 round): `AnomalyPersister.emit_anomaly` must
 collapse duplicate `(review_id, rule_name='hitl_timeout')` emissions to
 exactly one row via the partial unique index
 `uq_anomalies_hitl_timeout_natural_key`. Without explicit
-`index_elements=["review_id"]` + `index_where=(Anomaly.rule_name ==
-"hitl_timeout")` on `on_conflict_do_nothing()`, PostgreSQL's
+`index_elements=["review_id"]` + a LITERAL `index_where`
+(`_RULE_NAME_INDEX_WHERE[rule_name]` → `sa_text("rule_name =
+'hitl_timeout'")`) on `on_conflict_do_nothing()`, PostgreSQL's
 conflict-arbiter inference is unreliable when a `WHERE`-clause index
 is involved — silent INSERT-duplicate is the failure mode this test
 exists to catch.
@@ -187,8 +188,8 @@ async def test_distinct_review_ids_admit_separate_rows(
         await engine.dispose()
 
 
-# Forward-compat: the AnomalyPersister now dispatches on rule_name —
-# `index_where=(Anomaly.rule_name == rule_name.value)` picks the
+# Forward-compat: the AnomalyPersister dispatches on rule_name —
+# `index_where=_RULE_NAME_INDEX_WHERE[rule_name]` (literal SQL) picks the
 # matching partial unique index at INSERT time. Every new
 # AnomalyRuleName MUST ship with a paired Alembic migration creating
 # its own partial unique index (`uq_anomalies_<rule>_natural_key` ON
