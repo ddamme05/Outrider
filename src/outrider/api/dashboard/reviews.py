@@ -499,19 +499,26 @@ async def _aggregate_severity_counts(
 ) -> SeverityCounts | None:
     """Report-equivalent per-severity tally for one review, or `None` when the
     review has not reached synthesize (no `SynthesizeCompletedEvent`) — before
-    synthesize there is no deduplicated report set to count, so a raw
-    `findings` aggregate would not be report-equivalent.
+    synthesize there is no deduplicated report set to count.
 
-    When populated: `COUNT(DISTINCT content_hash)` per severity over the
-    review's `findings` rows. Synthesize deduplicates in-memory by
-    `content_hash` (and `findings` carries `content_hash`), so distinct-hash
-    count reproduces the final reported set; severity is constant within a
-    `content_hash` because it is policy-set from `finding_type`. `is_eval` is
-    matched to the review's OWN value (FUP-130 per-row defense, mirroring
-    `_aggregate_metrics`), never a global predicate — so a mixed
-    `include_eval=true` page never leaks an eval review's findings into a
-    production tally. Severity is the policy-set baseline (`severity-set-by-
-    policy`); a HITL override is a review-detail concern, not the list tally.
+    Computed from the PERMANENT `FindingEvent` audit rows (`event_type=
+    'finding'`), NOT the purgeable `findings` content table: per
+    `DECISIONS.md#014` a `FindingEvent` survives after its `findings` row is
+    purged at retention, so a `findings`-table aggregate would silently zero
+    out a still-extant review's tally post-purge. This mirrors the module's
+    audit-stream-source metric contract (`_aggregate_metrics` reads `llm_call`
+    / `synthesize_completed`, never `reviews.*`). `severity` and
+    `finding_content_hash` both live on the permanent event payload.
+
+    `COUNT(DISTINCT finding_content_hash)` per severity reproduces synthesize's
+    in-memory `content_hash` dedup (analyze emits one `FindingEvent` per
+    admitted finding), so distinct-hash count is the final reported set;
+    severity is constant within a hash because it is policy-set from
+    `finding_type`. `is_eval` is matched to the review's OWN value (FUP-130
+    per-row defense), never a global predicate — so a mixed `include_eval=true`
+    page never leaks an eval review's findings into a production tally. Severity
+    is the policy-set baseline (`severity-set-by-policy`); a HITL override is a
+    review-detail concern, not the list tally.
     """
     reached_synthesize = (
         await session.execute(
@@ -527,11 +534,19 @@ async def _aggregate_severity_counts(
     if not reached_synthesize:
         return None
 
+    severity_key = AuditEvent.payload["severity"].astext
     rows = (
         await session.execute(
-            select(Finding.severity, func.count(func.distinct(Finding.content_hash)))
-            .where(Finding.review_id == review_id, Finding.is_eval == review_is_eval)
-            .group_by(Finding.severity)
+            select(
+                severity_key,
+                func.count(func.distinct(AuditEvent.payload["finding_content_hash"].astext)),
+            )
+            .where(
+                AuditEvent.review_id == review_id,
+                AuditEvent.is_eval == review_is_eval,
+                AuditEvent.event_type == "finding",
+            )
+            .group_by(severity_key)
         )
     ).all()
     valid = SeverityCounts.model_fields
