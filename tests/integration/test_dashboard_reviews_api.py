@@ -545,8 +545,11 @@ async def test_list_repo_full_name_join_with_fallback(
 async def test_list_pr_title_with_null_fallback(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
-    """pr_title is returned when persisted; a row without it (the pre-migration
-    / no-backfill case, like the fixture's review A) returns null."""
+    """READ-side contract: pr_title is returned when present; a row without it
+    (the pre-migration / no-backfill case, like the fixture's review A) returns
+    null. The WEBHOOK persist + immutability path is covered by
+    test_webhook_router_integration.py::test_webhook_persists_pr_title_immutable_on_redelivery
+    (this test populates the column directly to isolate the read)."""
     client, ids, engine = dashboard_client
     async with engine.begin() as conn:
         titled = await _seed_review(

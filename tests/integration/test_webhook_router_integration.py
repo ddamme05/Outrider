@@ -68,12 +68,13 @@ def _valid_payload(
     repo_id: int = _REPO_ID,
     pr_number: int = 42,
     head_sha: str = "a" * 40,
+    title: str = "Test PR",
 ) -> dict[str, Any]:
     return {
         "action": "opened",
         "pull_request": {
             "number": pr_number,
-            "title": "Test PR",
+            "title": title,
             "body": None,
             "user": {"login": "alice", "id": 1},
             "head": {"sha": head_sha, "ref": "feat/x"},
@@ -380,6 +381,54 @@ async def test_webhook_idempotency_fast_path_returns_200(
         n_audit = await conn.scalar(text("SELECT COUNT(*) FROM audit_events"))
     assert n_reviews == 1
     assert n_audit == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_persists_pr_title_immutable_on_redelivery(
+    webhook_app: tuple[FastAPI, AsyncEngine],
+) -> None:
+    """The webhook persists `pull_request.title` to `reviews.pr_title` at
+    creation, and a duplicate delivery (same `(repo_id, pr_number, head_sha)`
+    natural key) with a DIFFERENT title does NOT mutate the captured value —
+    the title is immutable-at-creation, riding the idempotency fast-path.
+    Exercises the real persist path (router.py), not a direct column UPDATE.
+    """
+    app, engine = webhook_app
+    await _seed_installation_and_membership(engine)
+    client = TestClient(app)
+
+    # First delivery — captures the title at creation.
+    body = json.dumps(_valid_payload(title="Add session token storage")).encode()
+    first = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(_SECRET, body), "X-GitHub-Event": "pull_request"},
+    )
+    assert first.status_code == 202
+    review_id = first.json()["review_id"]
+
+    async with engine.connect() as conn:
+        persisted = await conn.scalar(
+            text("SELECT pr_title FROM reviews WHERE id = :id"), {"id": review_id}
+        )
+    assert persisted == "Add session token storage"
+
+    # Re-delivery with the SAME natural key but an EDITED title → idempotent
+    # 200, same review, title unchanged (immutable at creation).
+    edited = json.dumps(_valid_payload(title="EDITED after the fact")).encode()
+    second = client.post(
+        "/webhooks/github",
+        content=edited,
+        headers={"X-Hub-Signature-256": _sign(_SECRET, edited), "X-GitHub-Event": "pull_request"},
+    )
+    assert second.status_code == 200
+    assert second.json()["review_id"] == review_id
+
+    async with engine.connect() as conn:
+        after = await conn.scalar(
+            text("SELECT pr_title FROM reviews WHERE id = :id"), {"id": review_id}
+        )
+    assert after == "Add session token storage"  # not mutated by the re-delivery
 
 
 @pytest.mark.asyncio
