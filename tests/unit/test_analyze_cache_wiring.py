@@ -76,7 +76,7 @@ class _FakeCacheStore:
         self._entry = entry
         self._raise_on = raise_on
         self.resolve_calls: list[UUID] = []
-        self.lookup_calls: list[tuple[str, UUID | None]] = []
+        self.lookup_calls: list[tuple[str, bool, UUID | None]] = []
         self.write_calls: list[dict[str, Any]] = []
 
     async def resolve_scope(self, review_id: UUID) -> CacheScope | None:
@@ -86,9 +86,9 @@ class _FakeCacheStore:
         return self._scope
 
     async def lookup(
-        self, cache_key: str, *, exclude_source_review_id: UUID | None = None
+        self, cache_key: str, *, is_eval: bool, exclude_source_review_id: UUID | None = None
     ) -> CacheEntry | None:
-        self.lookup_calls.append((cache_key, exclude_source_review_id))
+        self.lookup_calls.append((cache_key, is_eval, exclude_source_review_id))
         if self._raise_on == "lookup":
             raise CacheStoreError("scripted lookup failure")
         return self._entry
@@ -250,7 +250,6 @@ async def _run(
     finish_reason: str = "end_turn",
     state_is_eval: bool = False,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    allow_eval_analyze_cache: bool = False,
 ) -> tuple[_StubLLMProvider, _RecordingAnalyzeEventSink]:
     provider = _StubLLMProvider(response_text, finish_reason=finish_reason)
     sink = _RecordingAnalyzeEventSink()
@@ -267,7 +266,6 @@ async def _run(
         total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,
         analyze_cache_store=store,  # type: ignore[arg-type]
         cache_mode=cache_mode,
-        allow_eval_analyze_cache=allow_eval_analyze_cache,
     )
     return provider, sink
 
@@ -287,7 +285,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert store.resolve_calls == [_REVIEW_ID]
     # Self-hit exclusion: the lookup names the current review so a
     # crash-resume re-run can't count its own writes as hits.
-    [(looked_up_key, excluded)] = store.lookup_calls
+    [(looked_up_key, _is_eval, excluded)] = store.lookup_calls
     assert excluded == _REVIEW_ID
     [event] = sink.cache_lookups
     assert event.outcome == "miss"
@@ -352,75 +350,39 @@ async def test_would_hit_emits_event_still_calls_model_writes_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_is_eval_review_never_touches_a_wired_store() -> None:
-    """Belt-and-suspenders for the eval-bypass rule: a wired store with
-    an is_eval scope is disabled for the whole pass."""
+async def test_is_eval_review_looks_up_scoped_to_eval_rows() -> None:
+    """No bypass (DECISIONS.md#046): an is_eval review USES the cache, scoped to
+    is_eval rows by the lookup's REQUIRED is_eval predicate. The lookup runs with
+    is_eval=True — so it can never read a production row — and a miss writes an
+    is_eval row + still calls the model."""
     eval_scope = CacheScope(
         installation_id=42,
         repo_id=7,
         is_eval=True,
         retention_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
     )
-    store = _FakeCacheStore(scope=eval_scope)
-    provider, sink = await _run(store)
-
-    assert store.resolve_calls == [_REVIEW_ID]  # scope was resolved...
-    assert store.lookup_calls == []  # ...then the cache disabled
-    assert store.write_calls == []
-    assert sink.cache_lookups == []
-    assert len(provider.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_state_is_eval_also_disables_a_wired_store() -> None:
-    """The veto consults EITHER flag: state.is_eval=True disables the
-    cache even when the resolved scope says is_eval=False — a divergence
-    between the two sources can never write production cache rows."""
-    store = _FakeCacheStore(scope=_SCOPE)  # scope says is_eval=False
-    provider, sink = await _run(store, state_is_eval=True)
+    store = _FakeCacheStore(scope=eval_scope)  # miss (no entry)
+    provider, _sink = await _run(store)
 
     assert store.resolve_calls == [_REVIEW_ID]
-    assert store.lookup_calls == []
-    assert store.write_calls == []
-    assert sink.cache_lookups == []
-    assert len(provider.calls) == 1
+    [(_key, looked_up_is_eval, _excluded)] = store.lookup_calls
+    assert looked_up_is_eval is True  # read scoped to eval rows, never production
+    assert len(store.write_calls) == 1  # miss → write an is_eval row
+    assert len(provider.calls) == 1  # miss → the model still ran
 
 
 @pytest.mark.asyncio
-async def test_allow_eval_cache_override_lets_is_eval_review_serve() -> None:
-    """The TEST-ONLY `allow_eval_analyze_cache` override (DECISIONS.md#046) lifts
-    the is_eval bypass so the dedicated serve eval scenario can exercise the cache:
-    an is_eval review with a wired store + live entry SERVES instead of bypassing.
-    The positive converse of the two veto tests above (which run flag-default
-    False). NEVER set in production — the override is safe only in the eval
-    scenario's isolated ephemeral DB (only is_eval rows, no production row to read)."""
-    eval_scope = CacheScope(
-        installation_id=42,
-        repo_id=7,
-        is_eval=True,
-        retention_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
-    )
-    entry = CacheEntry(
-        cache_key="c" * 64,
-        payload={
-            "findings": [_build_cached_finding().model_dump(mode="json")],
-            "trace_candidates": [],
-        },
-        source_review_id=uuid4(),
-        file_path="src/cached.py",
-        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
-    )
-    store = _FakeCacheStore(scope=eval_scope, entry=entry)
-    provider, sink = await _run(
-        store,
-        cache_mode=CacheMode.SERVE,
-        state_is_eval=True,
-        allow_eval_analyze_cache=True,
-    )
+async def test_lookup_is_eval_comes_from_the_scope_not_state() -> None:
+    """The lookup's is_eval predicate is the resolved SCOPE's value (the reviews
+    row — the authoritative source the write also stamps), NOT state.is_eval. A
+    prod-scope review keeps reading the prod partition even if state.is_eval
+    diverges; the row, not state, decides the partition (DECISIONS.md#046)."""
+    store = _FakeCacheStore(scope=_SCOPE)  # scope (row) says is_eval=False
+    provider, _sink = await _run(store, state_is_eval=True)
 
-    assert store.lookup_calls != []  # cache NOT bypassed — the lookup ran
-    assert len(provider.calls) == 0  # served the cached finding → no LLM call
-    assert len(sink.cache_serves) == 1  # a CacheServeEvent was emitted
+    [(_key, looked_up_is_eval, _excluded)] = store.lookup_calls
+    assert looked_up_is_eval is False  # the scope/row wins over state.is_eval
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -562,7 +524,7 @@ async def test_serve_hit_short_circuits_and_reemits_finding() -> None:
     assert serve.served_finding_count == 1
     # The serve event records the key the node COMPOSED + looked up (the fake
     # store returns the entry regardless of key), not the seeded entry's field.
-    [(looked_up_key, _excluded)] = store.lookup_calls
+    [(looked_up_key, _is_eval, _excluded)] = store.lookup_calls
     assert serve.cache_key == looked_up_key
 
     [(served_finding, _is_eval)] = sink.findings

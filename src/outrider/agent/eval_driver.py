@@ -808,7 +808,6 @@ def _build_eval_graph(
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    allow_eval_analyze_cache: bool = False,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -845,18 +844,15 @@ def _build_eval_graph(
         # enforce-mode scenario opts in through this seam
         # (specs/2026-06-10-trivial-scope-filter.md).
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
-        # Eval bypass per specs/2026-06-11-file-hash-analyze-cache.md:
-        # eval runs neither read nor write the production analyze cache
-        # (default None). Dedicated cache eval scenarios inject their own
-        # store fixtures through this seam — the same opt-in shape as
-        # `trivial_scope_filter_enabled` above.
+        # Eval reviews use the cache like production, kept isolated by the lookup's
+        # required is_eval read-isolation predicate (DECISIONS.md#046) — no bypass.
+        # Default None still disables it; a cache eval scenario injects its own
+        # store fixture through this seam (the same opt-in shape as
+        # `trivial_scope_filter_enabled` above).
         analyze_cache_store=analyze_cache_store,
         # Default shadow; the serve eval scenario injects CacheMode.SERVE with a
         # pre-seeded store through this seam.
         cache_mode=cache_mode,
-        # TEST-ONLY: the serve eval scenario opts past the is_eval cache bypass
-        # (its ephemeral DB holds only is_eval rows). Default False. DECISIONS.md#046.
-        allow_eval_analyze_cache=allow_eval_analyze_cache,
     )
 
 
@@ -867,7 +863,6 @@ async def _drive(
     probe: CostProbe | None = None,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    allow_eval_analyze_cache: bool = False,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -896,7 +891,6 @@ async def _drive(
             checkpointer=InMemorySaver(),
             analyze_cache_store=analyze_cache_store,
             cache_mode=cache_mode,
-            allow_eval_analyze_cache=allow_eval_analyze_cache,
         )
 
         result = await graph.ainvoke(
@@ -1057,8 +1051,9 @@ def _validate_eval_db_url(db_url: str) -> None:
     if parsed.port != EXPECTED_TEST_PORT or not db_name.startswith(EVAL_DB_NAME_PREFIX):
         raise EvalDriverError(
             f"db_url must be a per-test eval database (port {EXPECTED_TEST_PORT}, name "
-            f"{EVAL_DB_NAME_PREFIX!r}*); got {redact_url_password(db_url)!r}. The resume "
-            "driver runs against a fixture-owned ephemeral DB, not the shared base."
+            f"{EVAL_DB_NAME_PREFIX!r}*); got {redact_url_password(db_url)!r}. A "
+            "caller-supplied-db_url eval driver (resume or serve) runs against a "
+            "fixture-owned ephemeral DB, not the shared base."
         )
 
 
@@ -1189,7 +1184,6 @@ async def run_review_persisting(
     db_url: str,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    allow_eval_analyze_cache: bool = False,
 ) -> EvalRunResult:
     """Drive the graph ONCE against a caller-supplied, already-migrated `db_url`.
 
@@ -1203,9 +1197,9 @@ async def run_review_persisting(
     the cross-review hit).
 
     `analyze_cache_store` must be bound to the SAME `db_url` (the scenario builds
-    it from `eval_db`). `allow_eval_analyze_cache=True` lifts the production is_eval
-    cache bypass for the serve scenario (DECISIONS.md#046) — safe only because this
-    runs against an isolated ephemeral eval DB; production never sets it.
+    it from `eval_db`). Eval reviews use the cache like production, isolated by the
+    lookup's required is_eval read-isolation predicate (DECISIONS.md#046) — so the
+    serve scenario needs no special bypass override, just a store + CacheMode.SERVE.
     Fail-closed: `require_eval_mode()` + `_validate_eval_db_url` (a per-test eval
     DB, not the shared base) run before any DB work.
     """
@@ -1220,5 +1214,4 @@ async def run_review_persisting(
         db_url,
         analyze_cache_store=analyze_cache_store,
         cache_mode=cache_mode,
-        allow_eval_analyze_cache=allow_eval_analyze_cache,
     )

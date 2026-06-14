@@ -101,11 +101,11 @@ async def test_write_lookup_roundtrip_and_conflict_noop(migrated_db: str) -> Non
         racing["payload"] = {"findings": [{"title": "RACING"}], "trace_candidates": []}
         await store.write(**racing)
 
-        entry = await store.lookup(key)
+        entry = await store.lookup(key, is_eval=False)
         assert entry is not None
         assert entry.payload["findings"][0]["title"] == "t"  # first writer won
         assert entry.source_review_id == review_id
-        assert await store.lookup("f" * 64) is None  # unknown key → miss
+        assert await store.lookup("f" * 64, is_eval=False) is None  # unknown key → miss
     finally:
         await engine.dispose()
 
@@ -136,7 +136,7 @@ async def test_expired_row_is_a_miss(migrated_db: str) -> None:
                 {"key": key},
             )
             assert exists.scalar_one() == 1  # physically present
-        assert await store.lookup(key) is None  # but never served
+        assert await store.lookup(key, is_eval=False) is None  # but never served
     finally:
         await engine.dispose()
 
@@ -156,8 +156,8 @@ async def test_lookup_excludes_own_review_writes(migrated_db: str) -> None:
         key = "1" * 64
         await store.write(**_write_kwargs(key, scope, review_id))
 
-        assert await store.lookup(key, exclude_source_review_id=review_id) is None
-        other = await store.lookup(key, exclude_source_review_id=uuid4())
+        assert await store.lookup(key, is_eval=False, exclude_source_review_id=review_id) is None
+        other = await store.lookup(key, is_eval=False, exclude_source_review_id=uuid4())
         assert other is not None and other.source_review_id == review_id
     finally:
         await engine.dispose()
@@ -186,14 +186,14 @@ async def test_expired_row_is_refreshed_by_a_new_write(migrated_db: str) -> None
                 ),
                 {"key": key},
             )
-        assert await store.lookup(key) is None  # expired = MISS
+        assert await store.lookup(key, is_eval=False) is None  # expired = MISS
 
         fresh_review_id = await _seed_review(engine)
         fresh = _write_kwargs(key, scope, fresh_review_id)
         fresh["payload"] = {"findings": [{"title": "REFRESHED"}], "trace_candidates": []}
         await store.write(**fresh)
 
-        entry = await store.lookup(key)
+        entry = await store.lookup(key, is_eval=False)
         assert entry is not None  # the key is live again
         assert entry.payload["findings"][0]["title"] == "REFRESHED"
         assert entry.source_review_id == fresh_review_id
@@ -215,7 +215,7 @@ async def test_review_purge_cascades_cache_rows(migrated_db: str) -> None:
         await store.write(**_write_kwargs(key, scope, review_id))
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM reviews WHERE id = :id"), {"id": review_id})
-        assert await store.lookup(key) is None
+        assert await store.lookup(key, is_eval=False) is None
         async with engine.begin() as conn:
             remaining = await conn.execute(
                 text("SELECT count(*) FROM analyze_file_cache WHERE cache_key = :key"),
@@ -247,5 +247,29 @@ async def test_retention_bound_never_outlives_source_review(migrated_db: str) ->
                 {"key": key},
             )
             assert row.scalar_one() is True  # min() took the review's 3 days, not TTL 30
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lookup_is_eval_predicate_isolates_reads(migrated_db: str) -> None:
+    """Read isolation (DECISIONS.md#046): the lookup's required is_eval predicate
+    keeps eval reads from seeing production rows. A prod (is_eval=False) row is
+    found by an is_eval=False lookup but is INVISIBLE to an is_eval=True lookup —
+    the only thing stopping an eval review in a shared DB from reading a production
+    row, since the cache_key folds installation/repo but NOT is_eval. The same key
+    holds only one partition's row (the write arbiter is ON CONFLICT(cache_key)),
+    so this is read isolation, not population coexistence."""
+    engine = create_async_engine(migrated_db)
+    try:
+        review_id = await _seed_review(engine)
+        store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
+        scope = await store.resolve_scope(review_id)
+        assert scope is not None and scope.is_eval is False
+        key = "a1" * 32  # 64 hex chars
+        await store.write(**_write_kwargs(key, scope, review_id))
+
+        assert await store.lookup(key, is_eval=False) is not None  # prod sees prod row
+        assert await store.lookup(key, is_eval=True) is None  # eval cannot read it
     finally:
         await engine.dispose()

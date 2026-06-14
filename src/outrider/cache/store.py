@@ -121,17 +121,28 @@ class AnalyzeCacheStore:
         self,
         cache_key: str,
         *,
+        is_eval: bool,
         exclude_source_review_id: UUID | None = None,
     ) -> CacheEntry | None:
-        """Live entry or None. Expired rows are a MISS by query shape —
-        the row may physically exist until the sweep prunes it, but it
-        is never served (no-resurrection, lookup-time layer; expiry is
-        evaluated on the DB clock, matching the sweep). Rows written by
-        `exclude_source_review_id` are also a MISS: a review re-run
-        must not count its own prior writes as hits. DB errors raise
-        `CacheStoreError`."""
+        """Live entry or None, scoped to the caller's `is_eval` partition. Expired
+        rows are a MISS by query shape — the row may physically exist until the
+        sweep prunes it, but it is never served (no-resurrection, lookup-time
+        layer; expiry is evaluated on the DB clock, matching the sweep). Rows
+        written by `exclude_source_review_id` are also a MISS: a review re-run must
+        not count its own prior writes as hits. DB errors raise `CacheStoreError`.
+
+        `is_eval` is a REQUIRED read-isolation predicate (DECISIONS.md#046): the
+        `cache_key` folds (installation_id, repo_id) but NOT is_eval, so without
+        this filter an eval review in a shared prod+eval DB could read a production
+        row. The caller passes the scope's is_eval (the reviews-row value the write
+        stamped), so reads and writes share one partition. This is READ isolation
+        only — the write arbiter is still `ON CONFLICT (cache_key)`, so eval/prod
+        rows with the same key cannot co-exist; in a shared DB a live prod row
+        blocks an eval write of that key (the eval review then misses until expiry,
+        and never reads the prod content)."""
         conditions = [
             AnalyzeFileCache.cache_key == cache_key,
+            AnalyzeFileCache.is_eval == is_eval,
             AnalyzeFileCache.retention_expires_at > func.now(),
         ]
         if exclude_source_review_id is not None:

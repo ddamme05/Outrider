@@ -294,7 +294,6 @@ async def analyze(
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    allow_eval_analyze_cache: bool = False,
 ) -> dict[str, object]:
     """Run one analyze pass over the triage-classified PR.
 
@@ -385,18 +384,10 @@ async def analyze(
                 exc_info=True,
             )
             cache_scope = None
-        # Eval-cache bypass (spec eval-isolation rule): an is_eval review neither
-        # reads nor writes the cache, because lookup is keyed on cache_key alone
-        # (NOT is_eval), so in a SHARED DB an eval review could read a production
-        # row. `allow_eval_analyze_cache` is a TEST-ONLY override (default False,
-        # NEVER set in production) for the dedicated serve eval scenario, which runs
-        # in an isolated ephemeral DB holding only is_eval rows. See DECISIONS.md#046.
-        if (
-            cache_scope is not None
-            and (cache_scope.is_eval or state.is_eval)
-            and not allow_eval_analyze_cache
-        ):
-            cache_scope = None
+        # No is_eval bypass (DECISIONS.md#046): eval and production reviews BOTH
+        # use the cache, kept mutually invisible by the lookup's REQUIRED is_eval
+        # read-isolation predicate (the scope's is_eval, passed at the lookup
+        # below) plus the is_eval-stamped write.
 
     # Local accumulators — single source of truth for AnalyzeCompletedEvent
     # counters. Re-reading from the audit stream would couple counter
@@ -1526,7 +1517,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # would inflate the would-hit rate (the serve flip's evidence)
             # and, under serve, serve a review its own partial output.
             cache_entry = await analyze_cache_store.lookup(
-                cache_key, exclude_source_review_id=review_id
+                cache_key, is_eval=cache_scope.is_eval, exclude_source_review_id=review_id
             )
         except CacheStoreError:
             # Contained: a failed lookup degrades to a real LLM call (shadow OR
