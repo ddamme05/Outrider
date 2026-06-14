@@ -459,10 +459,13 @@ def compute_served_finding_id(*, review_id: UUID, content_hash: str) -> UUID:
     re-mint would double-write / resurrect purged content.
 
     Keyed on `(review_id, content_hash)` ONLY — `proposal_hash` is deliberately
-    excluded (FUP-177 edge 1). The served set is pass-0 only, where
-    `AnalysisRound._enforce_findings_unique` guarantees `content_hash` is unique
-    per round, so `(review_id, content_hash)` is already collision-free for served
-    findings. Folding `proposal_hash` would only MOVE the id when a cache row is
+    excluded (FUP-177 edge 1). The served set is pass-0 only; its `content_hash`
+    set is collision-free by construction (the V1 writer) and re-checked at serve
+    time by `_serve_cache_hit`'s pre-emit uniqueness gate BEFORE any re-mint emits
+    — `AnalysisRound._enforce_findings_unique` is the round-construction backstop,
+    which runs only AFTER serve. So `(review_id, content_hash)` is already
+    collision-free for served findings. Folding `proposal_hash` would only MOVE
+    the id when a cache row is
     refreshed-in-place with different LLM free-text between the original serve and
     a re-execution (same `content_hash`, new `proposal_hash`) — re-minting a
     different id and double-writing the row. Dropping it keeps the id stable

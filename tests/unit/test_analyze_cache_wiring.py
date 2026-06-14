@@ -593,6 +593,29 @@ async def test_serve_clears_analyze_time_lifecycle_fields() -> None:
 
 _DUP_FINDING_DUMP = _build_cached_finding().model_dump(mode="json")
 
+# A VALID finding with a DISTINCT content_hash (distinct file_path → distinct
+# finding_id under the (review_id, content_hash) re-mint) but the SAME
+# proposal_hash as `_DUP_FINDING_DUMP` ("a" * 64). Pairing the two exercises the
+# gate's proposal_hash arm specifically — the duplicate-content-hash case fires
+# only the finding_id arm. The proposal_hash arm is load-bearing: absent it a
+# proposal_hash collision reaches AnalysisRound._enforce_findings_proposal_hash_unique
+# AFTER emit → abort, not degrade.
+_DISTINCT_CONTENT_SHARED_PROPOSAL_DUMP = (
+    _build_cached_finding()
+    .model_copy(
+        update={
+            "file_path": "src/other.py",
+            "content_hash": compute_finding_content_hash(
+                file_path="src/other.py",
+                line_start=4,
+                line_end=6,
+                finding_type=FindingType.SQL_INJECTION,
+            ),
+        }
+    )
+    .model_dump(mode="json")
+)
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -605,10 +628,20 @@ _DUP_FINDING_DUMP = _build_cached_finding().model_dump(mode="json")
             id="invalid-finding-model",
         ),
         # Two findings sharing a content_hash → the (review_id, content_hash)
-        # re-mint collides their finding_ids → the pre-emit uniqueness gate fires.
+        # re-mint collides their finding_ids → the gate's finding_id arm fires.
         pytest.param(
             {"findings": [_DUP_FINDING_DUMP, _DUP_FINDING_DUMP], "trace_candidates": []},
             id="duplicate-content-hash",
+        ),
+        # Distinct content_hash (→ distinct finding_id) but a SHARED
+        # proposal_hash → the gate's proposal_hash arm fires (the finding_id arm
+        # does not). Exercises the load-bearing arm independently.
+        pytest.param(
+            {
+                "findings": [_DUP_FINDING_DUMP, _DISTINCT_CONTENT_SHARED_PROPOSAL_DUMP],
+                "trace_candidates": [],
+            },
+            id="duplicate-proposal-hash",
         ),
     ],
 )
@@ -616,11 +649,13 @@ async def test_serve_reconstruction_failure_degrades_to_llm(bad_payload: dict[st
     """FUP-177 edge 2: a malformed-but-LIVE cached payload degrades to a real LLM
     call instead of aborting the review (degrade-not-lose-findings). Covers the
     full reconstruction-failure set: missing key (KeyError), null/non-iterable
-    container (TypeError), invalid finding dict (ValidationError), and a
-    duplicate-finding set caught by the pre-emit uniqueness gate. The raise lands
-    BEFORE any serve emit, so no partial events leak; the file falls through to a
-    real model call and emits NO fabricated CacheLookupEvent (the lookup found a
-    live row — a "miss" would be false history)."""
+    container (TypeError), invalid finding dict (ValidationError), and the two
+    pre-emit uniqueness-gate arms (duplicate finding_id via shared content_hash;
+    duplicate proposal_hash via distinct content_hash). The raise lands BEFORE any
+    serve emit, so no partial events leak; the file falls through to a real model
+    call and emits NO fabricated CacheLookupEvent (the lookup found a live row — a
+    "miss" would be false history). The degrade also clears cache_key, so the
+    fresh model outcome is NOT written back (step-3g gates on cache_key)."""
     entry = CacheEntry(
         cache_key="c" * 64,
         payload=bad_payload,
@@ -634,3 +669,4 @@ async def test_serve_reconstruction_failure_degrades_to_llm(bad_payload: dict[st
     assert len(provider.calls) == 1  # degraded to the real model call, not aborted
     assert sink.cache_serves == []  # no serve event (raise landed pre-emit)
     assert sink.cache_lookups == []  # no fabricated miss/would_hit for a found-but-unservable row
+    assert store.write_calls == []  # cache_key cleared on degrade → step-3g write skipped
