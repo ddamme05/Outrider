@@ -490,25 +490,15 @@ def _build_cached_finding() -> ReviewFinding:
 
 def test_served_finding_id_is_deterministic() -> None:
     """The re-mint keystone: finding_id is a pure function of (new review,
-    content_hash, proposal_hash) so a checkpoint replay reproduces it, keeping
-    the persister's no-resurrection content-row guard correct."""
-    a = compute_served_finding_id(
-        review_id=_REVIEW_ID, content_hash="x" * 64, proposal_hash="y" * 64
-    )
-    b = compute_served_finding_id(
-        review_id=_REVIEW_ID, content_hash="x" * 64, proposal_hash="y" * 64
-    )
+    content_hash) — `proposal_hash` is excluded (FUP-177 edge 1) so a refresh that
+    changes only LLM free-text under the same content_hash re-mints the SAME id,
+    keeping the persister's no-resurrection content-row guard correct on replay."""
+    a = compute_served_finding_id(review_id=_REVIEW_ID, content_hash="x" * 64)
+    b = compute_served_finding_id(review_id=_REVIEW_ID, content_hash="x" * 64)
     assert a == b
-    # A different review, content, or proposal yields a different id.
-    assert a != compute_served_finding_id(
-        review_id=uuid4(), content_hash="x" * 64, proposal_hash="y" * 64
-    )
-    assert a != compute_served_finding_id(
-        review_id=_REVIEW_ID, content_hash="z" * 64, proposal_hash="y" * 64
-    )
-    assert a != compute_served_finding_id(
-        review_id=_REVIEW_ID, content_hash="x" * 64, proposal_hash="z" * 64
-    )
+    # A different review or content yields a different id.
+    assert a != compute_served_finding_id(review_id=uuid4(), content_hash="x" * 64)
+    assert a != compute_served_finding_id(review_id=_REVIEW_ID, content_hash="z" * 64)
 
 
 @pytest.mark.asyncio
@@ -544,7 +534,6 @@ async def test_serve_hit_short_circuits_and_reemits_finding() -> None:
     assert served_finding.finding_id == compute_served_finding_id(
         review_id=_REVIEW_ID,
         content_hash=source_finding.content_hash,
-        proposal_hash=source_finding.proposal_hash,
     )
     assert served_finding.content_hash == source_finding.content_hash  # content preserved
     assert store.write_calls == []  # a serve hit writes nothing
@@ -600,3 +589,48 @@ async def test_serve_clears_analyze_time_lifecycle_fields() -> None:
     [(served_finding, _is_eval)] = sink.findings
     assert served_finding.publish_destination is None  # cleared by the serve boundary
     assert served_finding.original_severity is None
+
+
+_DUP_FINDING_DUMP = _build_cached_finding().model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_payload",
+    [
+        pytest.param({"trace_candidates": []}, id="missing-findings-key"),
+        pytest.param({"findings": None, "trace_candidates": []}, id="findings-null"),
+        pytest.param(
+            {"findings": [{"content_hash": "a" * 64}], "trace_candidates": []},
+            id="invalid-finding-model",
+        ),
+        # Two findings sharing a content_hash → the (review_id, content_hash)
+        # re-mint collides their finding_ids → the pre-emit uniqueness gate fires.
+        pytest.param(
+            {"findings": [_DUP_FINDING_DUMP, _DUP_FINDING_DUMP], "trace_candidates": []},
+            id="duplicate-content-hash",
+        ),
+    ],
+)
+async def test_serve_reconstruction_failure_degrades_to_llm(bad_payload: dict[str, Any]) -> None:
+    """FUP-177 edge 2: a malformed-but-LIVE cached payload degrades to a real LLM
+    call instead of aborting the review (degrade-not-lose-findings). Covers the
+    full reconstruction-failure set: missing key (KeyError), null/non-iterable
+    container (TypeError), invalid finding dict (ValidationError), and a
+    duplicate-finding set caught by the pre-emit uniqueness gate. The raise lands
+    BEFORE any serve emit, so no partial events leak; the file falls through to a
+    real model call and emits NO fabricated CacheLookupEvent (the lookup found a
+    live row — a "miss" would be false history)."""
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload=bad_payload,
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=_SCOPE, entry=entry)
+    provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+
+    assert len(provider.calls) == 1  # degraded to the real model call, not aborted
+    assert sink.cache_serves == []  # no serve event (raise landed pre-emit)
+    assert sink.cache_lookups == []  # no fabricated miss/would_hit for a found-but-unservable row
