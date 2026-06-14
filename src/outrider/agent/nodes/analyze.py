@@ -904,14 +904,18 @@ async def _serve_cache_hit(
     # persister conflicts BEFORE the `AnalysisRound` validators (which run only
     # AFTER this returns) reject the round. Enforce the round's uniqueness
     # invariants HERE, before any emit; a violation raises into the degrade guard.
-    if (
-        len({f.finding_id for f in served_findings}) != len(served_findings)
-        or len({f.content_hash for f in served_findings}) != len(served_findings)
-        or len({f.proposal_hash for f in served_findings}) != len(served_findings)
-    ):
+    # Two arms suffice: finding_id is uuid5(review_id, content_hash), so
+    # finding_id-uniqueness IS content_hash-uniqueness for the served set (a
+    # separate content_hash arm would be redundant) — finding_id is the
+    # emit-collision key. proposal_hash is the independent second invariant
+    # (`AnalysisRound._enforce_findings_proposal_hash_unique`): two findings with
+    # distinct content can still share a proposal_hash.
+    if len({f.finding_id for f in served_findings}) != len(served_findings) or len(
+        {f.proposal_hash for f in served_findings}
+    ) != len(served_findings):
         raise _ServeReconstructionError(
             f"served set for {file_path} violates per-round uniqueness "
-            "(duplicate finding_id / content_hash / proposal_hash)"
+            "(duplicate finding_id / proposal_hash)"
         )
 
     await analyze_event_sink.emit_cache_serve(
