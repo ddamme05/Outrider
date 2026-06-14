@@ -37,12 +37,14 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-# Two PRs touching profile/client.py IDENTICALLY: the analyze cache key keys on
-# file content + scope (installation_id, repo_id, is_eval), NOT PR identity, so
-# the second PR's analyze hits the first PR's cache row. Two fixtures (not two
-# drives of one) because `reviews` is UNIQUE on (repo_id, pr_number, head_sha) —
-# the same PR head cannot be reviewed twice, which is exactly why the cache
-# targets DISTINCT PRs that share a file.
+# Two PRs touching profile/client.py IDENTICALLY: the analyze cache key folds
+# the prompt digest + (installation_id, repo_id) and version components — NOT
+# is_eval and NOT PR identity — so the second PR's analyze computes the same key
+# and hits the first PR's cache row. Eval reviews use the cache like production,
+# isolated by the lookup's is_eval read-isolation predicate (DECISIONS.md#046).
+# Two fixtures (not two drives of one) because `reviews` is UNIQUE on
+# (repo_id, pr_number, head_sha) — the same PR head cannot be reviewed twice,
+# which is exactly why the cache targets DISTINCT PRs that share a file.
 _FIXTURE_COLD = "tests/eval/fixtures/mock_github/missing_error_handling.json"
 _FIXTURE_RESUBMIT = "tests/eval/fixtures/mock_github/missing_error_handling_resubmitted.json"
 
@@ -73,16 +75,15 @@ async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
     equivalent — alongside drive 1, the cold miss that seeded the cache."""
     store = AnalyzeCacheStore(session_factory=eval_db_session_factory)
 
-    # `allow_eval_analyze_cache=True` opts past the production is_eval cache bypass
-    # (DECISIONS.md#046) — safe here because eval_db is an isolated ephemeral DB
-    # holding only is_eval rows, so there is no production row to read by mistake.
-    # Drive 1 (PR #22): cache empty → analyze runs the model and writes the row.
+    # Eval reviews use the cache (scoped to is_eval rows by the lookup predicate,
+    # DECISIONS.md#046); eval_db is an isolated ephemeral DB so the only rows are
+    # this scenario's. Drive 1 (PR #22): cache empty → analyze runs the model and
+    # writes the row.
     first = await run_review_persisting(
         _FIXTURE_COLD,
         db_url=eval_db,
         analyze_cache_store=store,
         cache_mode=CacheMode.SERVE,
-        allow_eval_analyze_cache=True,
     )
     # Drive 2 (PR #23, same file, fresh review_id): analyze SERVES from drive 1's
     # row (the lookup's self-hit exclusion keys on the CURRENT review, so the
@@ -92,7 +93,6 @@ async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
         db_url=eval_db,
         analyze_cache_store=store,
         cache_mode=CacheMode.SERVE,
-        allow_eval_analyze_cache=True,
     )
 
     assert first.review_id != second.review_id

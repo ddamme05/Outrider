@@ -210,7 +210,6 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    allow_eval_analyze_cache: bool = False,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -429,10 +428,6 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # config change (analyze-cache-serve-flip spec); cache_mode is orthogonal
         # to the store-or-None enable switch.
         cache_mode=cache_mode,
-        # TEST-ONLY override of the is_eval cache bypass (default False, never set
-        # in production) — lets the dedicated serve eval scenario exercise the cache
-        # in its isolated ephemeral DB. See DECISIONS.md#046.
-        allow_eval_analyze_cache=allow_eval_analyze_cache,
     )
     publish_callable = functools.partial(
         publish,
