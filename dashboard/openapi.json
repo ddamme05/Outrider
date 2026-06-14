@@ -2611,6 +2611,159 @@
         "title": "MetricDeltas",
         "description": "Current vs the immediately-prior equal-length window (frontend computes the %)."
       },
+      "ObservedSkipChangedRegion": {
+        "properties": {
+          "side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Side"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "side",
+          "line_start",
+          "line_end"
+        ],
+        "title": "ObservedSkipChangedRegion",
+        "description": "One per-side changed line range the OBSERVED skip-coverage check\nevaluated \u2014 both the full changed-region set and the `blockers` subset use\nthis shape. Frozen + extra=forbid (the outer event's frozen-ness does not\npropagate). Carries source LINE coordinates (not bytes, not raw model\noutput), keeping the event within the metadata-only audit contract\n(`DECISIONS.md#014`)."
+      },
+      "ObservedSkipCoveringMatch": {
+        "properties": {
+          "query_match_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query Match Id"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "query_match_id",
+          "line_start",
+          "line_end"
+        ],
+        "title": "ObservedSkipCoveringMatch",
+        "description": "A `skip_safe` OBSERVED match that covered (part of) the changed region:\nits `query_match_id` plus the source line range its envelope spans. The\nunion of these spans IS the coverage envelope \u2014 reconstructable without\nre-parsing. Frozen + extra=forbid."
+      },
+      "ObservedSkipShadowEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "observed_skip_shadow",
+            "title": "Event Type",
+            "default": "observed_skip_shadow"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "would_skip",
+              "not_eligible"
+            ],
+            "title": "Outcome"
+          },
+          "changed_regions": {
+            "items": {
+              "$ref": "#/components/schemas/ObservedSkipChangedRegion"
+            },
+            "type": "array",
+            "title": "Changed Regions"
+          },
+          "covering_matches": {
+            "items": {
+              "$ref": "#/components/schemas/ObservedSkipCoveringMatch"
+            },
+            "type": "array",
+            "title": "Covering Matches",
+            "default": []
+          },
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/ObservedSkipChangedRegion"
+            },
+            "type": "array",
+            "title": "Blockers",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "file_path",
+          "outcome",
+          "changed_regions"
+        ],
+        "title": "ObservedSkipShadowEvent",
+        "description": "Per-file OBSERVED-tier skip-routing SHADOW record (Cost Lever 3,\nspecs/2026-06-14-observed-query-library-v1.md).\n\nOne event per pass-0 clean-mode file the default-deny skip routing\nevaluates. `outcome=\"would_skip\"` means every changed region in the file\nwas covered by a `skip_safe` OBSERVED match (so the LLM call COULD be\nskipped); `outcome=\"not_eligible\"` means at least one changed region fell\noutside every `skip_safe` envelope. V1 records the decision only \u2014 it is\nshadow telemetry; the LLM still runs (no skip is enforced) until the\nevidence-gated flip. V1 also seeds zero `skip_safe` queries (default-deny),\nso every emission is `not_eligible` until a query is promoted.\n\nSelf-contained enough to reconstruct a promotion proof AFTER content\nretention purges the findings (`DECISIONS.md#014`): it carries the\n`changed_regions` evaluated (the per-side changed line spans \u2014 the union of\n`coordinates.changed_line_spans` across the file's included scopes), the\n`covering_matches` (each `skip_safe` match's `query_match_id` + line span;\ntheir union is the coverage envelope), and the `blockers` (the changed\nregions outside every `skip_safe` envelope \u2014 the concrete reason a\n`not_eligible` was not eligible). Spans/ranges only, never raw model output,\nso it stays within the metadata-only audit contract.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the\nanalyze phase window (`CacheLookupEvent` precedent). Idempotency mode:\nevent_id-PK per `DECISIONS.md#026` \u2014 resume re-emission appends;\nconsumer-side dedup collapses."
+      },
       "PerFindingDecision": {
         "properties": {
           "finding_id": {
@@ -3318,6 +3471,9 @@
                   "$ref": "#/components/schemas/CacheServeEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ObservedSkipShadowEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3371,6 +3527,7 @@
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
@@ -3578,6 +3735,9 @@
                   "$ref": "#/components/schemas/CacheServeEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ObservedSkipShadowEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3631,6 +3791,7 @@
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
@@ -3685,6 +3846,9 @@
                   "$ref": "#/components/schemas/CacheServeEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ObservedSkipShadowEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -3738,6 +3902,7 @@
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
@@ -4090,6 +4255,9 @@
                   "$ref": "#/components/schemas/CacheServeEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ObservedSkipShadowEvent"
+                },
+                {
                   "$ref": "#/components/schemas/FindingEvent"
                 },
                 {
@@ -4143,6 +4311,7 @@
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",

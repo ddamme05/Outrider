@@ -15,10 +15,11 @@ provider boundary, not by the audit-events surface): `PhaseEventSink`
 for
 `ReviewPhaseEvent` (per `phase-events-bound-work`), `FileExaminationSink`
 for `FileExaminationEvent` (per intake + analyze per-file outcomes),
-`AnalyzeEventSink` bundling the seven analyze-emitted event types
+`AnalyzeEventSink` bundling the eight analyze-emitted event types
 (`FindingEvent`, `FindingProposalRejectedEvent`,
 `AnalyzeResponseRejectedEvent`, `AnalyzeCompletedEvent`,
-`ScopeExclusionEvent`, `CacheLookupEvent`, `CacheServeEvent`),
+`ScopeExclusionEvent`, `CacheLookupEvent`, `CacheServeEvent`,
+`ObservedSkipShadowEvent`),
 `PublishEventSink` bundling the four publish-emitted event types
 (`PublishRoutingEvent`, `PublishEligibilityEvent`, `PublishAttemptEvent`,
 `PublishEvent`) per DECISIONS.md #023 routing-vs-eligibility decoupling,
@@ -58,6 +59,7 @@ from outrider.audit.events import (
     FindingProposalRejectedEvent,
     HITLDecisionEvent,
     HITLRequestEvent,
+    ObservedSkipShadowEvent,
     PublishAttemptEvent,
     PublishEligibilityEvent,
     PublishEvent,
@@ -174,16 +176,17 @@ class FileExaminationSink(Protocol):
 
 @runtime_checkable
 class AnalyzeEventSink(Protocol):
-    """Sink for the seven audit event types the analyze node emits.
+    """Sink for the eight audit event types the analyze node emits.
 
     The analyze-node spec (`specs/2026-05-19-analyze-node.md` §7) bundled
     the original four event types under one Protocol rather than separate
     sinks (the trivial-scope-filter spec added the fifth,
     `ScopeExclusionEvent`; the file-hash-analyze-cache spec added the
     sixth, `CacheLookupEvent`; the analyze-cache-serve spec added the
-    seventh, `CacheServeEvent`) because:
+    seventh, `CacheServeEvent`; the OBSERVED-query-library spec added the
+    eighth, `ObservedSkipShadowEvent`) because:
 
-    - All seven are emitted by ONE node body in one transaction window;
+    - All eight are emitted by ONE node body in one transaction window;
       the durable `AuditPersister` implements them under one session
       lifecycle.
     - The node body's local-bookkeeping counter discipline (per
@@ -198,7 +201,10 @@ class AnalyzeEventSink(Protocol):
       `CacheLookupEvent` likewise: at-most-one per pass-0 clean-mode
       candidate file when the analyze cache is enabled (shadow-stage
       would-hit/miss telemetry); `CacheServeEvent` replaces it on a
-      served hit under `cache_mode=serve`.
+      served hit under `cache_mode=serve`. `ObservedSkipShadowEvent` is the
+      OBSERVED skip-routing shadow record — at-most-one per pass-0 clean-mode
+      file, recording the default-deny coverage decision (V1 shadow-only,
+      outside the proposal accounting).
     - Separate kwargs on the analyze function signature would
       crowd the deps surface and invite test-time mock proliferation;
       one sink keeps the test setup focused.
@@ -221,9 +227,10 @@ class AnalyzeEventSink(Protocol):
           (`specs/2026-05-30-findings-content-writer.md`). So a single
           finding may have N append-only `FindingEvent` rows but exactly
           one (or zero, post-purge) `findings` content row.
-        - The other six methods (`emit_finding_proposal_rejected`,
+        - The other seven methods (`emit_finding_proposal_rejected`,
           `emit_analyze_response_rejected`, `emit_analyze_completed`,
-          `emit_scope_exclusion`, `emit_cache_lookup`, `emit_cache_serve`)
+          `emit_scope_exclusion`, `emit_cache_lookup`, `emit_cache_serve`,
+          `emit_observed_skip_shadow`)
           are `event_id`-PK idempotent per `DECISIONS.md#026`: retry /
           replay minting a fresh `event_id` is acceptable, and
           consumer-side dedup handles read-time collapse.
@@ -234,7 +241,7 @@ class AnalyzeEventSink(Protocol):
     tests rather than being silently deduped).
 
     `@runtime_checkable` matches the sibling-Protocol precedent —
-    `build_graph` can reject sinks lacking any of the seven `emit_*`
+    `build_graph` can reject sinks lacking any of the eight `emit_*`
     members at construction time. PEP 544 caveat: member-presence
     only, not signature shape; mypy strict is the write-time gate.
     """
@@ -282,6 +289,13 @@ class AnalyzeEventSink(Protocol):
         a live hit was served and the LLM call skipped; event_id-PK per
         `DECISIONS.md#026`). Served-finding content rides re-emitted
         `FindingEvent`s via `emit_finding`, not this event.
+        """
+        ...
+
+    async def emit_observed_skip_shadow(self, event: ObservedSkipShadowEvent) -> None:
+        """Persist the per-file OBSERVED skip-routing SHADOW record (Cost Lever
+        3: the default-deny coverage decision; V1 shadow-only, the LLM still
+        runs). event_id-PK idempotent per `DECISIONS.md#026`.
         """
         ...
 
