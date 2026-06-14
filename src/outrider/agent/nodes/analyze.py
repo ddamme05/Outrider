@@ -816,6 +816,16 @@ class _FileOutcome:
     served_result: _ServedResult | None = None
 
 
+class _ServeReconstructionError(Exception):
+    """A live cache payload could not be reconstructed into served findings.
+
+    Raised by `_serve_cache_hit` BEFORE any emit when the cached payload is
+    malformed (missing key, null/non-iterable container, or a finding/candidate
+    dict that fails validation). The serve short-circuit catches it and degrades
+    to a real LLM call (FUP-177 edge 2) — degrade, never abort the review.
+    """
+
+
 async def _serve_cache_hit(
     *,
     entry: CacheEntry,
@@ -847,35 +857,62 @@ async def _serve_cache_hit(
     returned `_ServedResult` into state and purges with the cache row. The file
     emits ONE `FileExaminationEvent(parse_status="clean")` and NO `LLMCallEvent`.
     """
-    served_findings = tuple(
-        ReviewFinding.model_validate(
-            {
-                **dump,
-                "review_id": str(review_id),
-                "installation_id": installation_id,
-                "finding_id": str(
-                    compute_served_finding_id(
-                        review_id=review_id,
-                        content_hash=dump["content_hash"],
-                        proposal_hash=dump["proposal_hash"],
-                    )
-                ),
-                # Force analyze-time lifecycle state regardless of the cached
-                # dump: the HITL override triplet + publish_destination are set
-                # DOWNSTREAM per review (HITL re-gates, publish re-routes), never
-                # served. Today's writer caches pre-HITL findings (all None), but
-                # the serve boundary enforces it locally (defense-in-depth).
-                "publish_destination": None,
-                "original_severity": None,
-                "override_reason": None,
-                "overrider_id": None,
-            }
+    # Reconstruct from the cached payload INSIDE a degrade guard (FUP-177 edge 2):
+    # a malformed-but-live payload (missing key, null/non-iterable container, or a
+    # dict that fails validation) raises `_ServeReconstructionError`, which the
+    # serve short-circuit catches and degrades to a real LLM call rather than
+    # aborting the review. Raised BEFORE any emit, so no partial serve events
+    # land. `ValueError` covers pydantic's `ValidationError` (a ValueError
+    # subclass); the message carries only the exception type + path, never content.
+    try:
+        served_findings = tuple(
+            ReviewFinding.model_validate(
+                {
+                    **dump,
+                    "review_id": str(review_id),
+                    "installation_id": installation_id,
+                    "finding_id": str(
+                        compute_served_finding_id(
+                            review_id=review_id,
+                            content_hash=dump["content_hash"],
+                        )
+                    ),
+                    # Force analyze-time lifecycle state regardless of the cached
+                    # dump: the HITL override triplet + publish_destination are set
+                    # DOWNSTREAM per review (HITL re-gates, publish re-routes), never
+                    # served. Today's writer caches pre-HITL findings (all None), but
+                    # the serve boundary enforces it locally (defense-in-depth).
+                    "publish_destination": None,
+                    "original_severity": None,
+                    "override_reason": None,
+                    "overrider_id": None,
+                }
+            )
+            for dump in entry.payload["findings"]
         )
-        for dump in entry.payload["findings"]
-    )
-    served_candidates = tuple(
-        TraceCandidate.model_validate(dump) for dump in entry.payload["trace_candidates"]
-    )
+        served_candidates = tuple(
+            TraceCandidate.model_validate(dump) for dump in entry.payload["trace_candidates"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _ServeReconstructionError(
+            f"serve reconstruction failed for {file_path}: {type(exc).__name__}"
+        ) from exc
+
+    # Pre-emit uniqueness gate (FUP-177): a malformed-but-live payload with a
+    # duplicate-finding set would, under the (review_id, content_hash) re-mint,
+    # produce duplicate finding_ids — appending duplicate FindingEvents / hitting
+    # persister conflicts BEFORE the `AnalysisRound` validators (which run only
+    # AFTER this returns) reject the round. Enforce the round's uniqueness
+    # invariants HERE, before any emit; a violation raises into the degrade guard.
+    if (
+        len({f.finding_id for f in served_findings}) != len(served_findings)
+        or len({f.content_hash for f in served_findings}) != len(served_findings)
+        or len({f.proposal_hash for f in served_findings}) != len(served_findings)
+    ):
+        raise _ServeReconstructionError(
+            f"served set for {file_path} violates per-round uniqueness "
+            "(duplicate finding_id / content_hash / proposal_hash)"
+        )
 
     await analyze_event_sink.emit_cache_serve(
         CacheServeEvent(
@@ -1494,31 +1531,54 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 # deterministic downstream gate still runs on the served
                 # findings (reducers → synthesize → HITL → publish); the cache
                 # replaces exactly the analyze LLM call.
-                return await _serve_cache_hit(
-                    entry=cache_entry,
-                    cache_key=cache_key,
-                    review_id=review_id,
-                    installation_id=installation_id,
-                    repo_id=cache_scope.repo_id,
-                    is_eval=is_eval,
-                    file_path=changed_file.path,
-                    included_scope_units=included_scope_units,
-                    analyze_event_sink=analyze_event_sink,
-                    file_examination_sink=file_examination_sink,
+                try:
+                    return await _serve_cache_hit(
+                        entry=cache_entry,
+                        cache_key=cache_key,
+                        review_id=review_id,
+                        installation_id=installation_id,
+                        repo_id=cache_scope.repo_id,
+                        is_eval=is_eval,
+                        file_path=changed_file.path,
+                        included_scope_units=included_scope_units,
+                        analyze_event_sink=analyze_event_sink,
+                        file_examination_sink=file_examination_sink,
+                    )
+                except _ServeReconstructionError:
+                    # Malformed-but-LIVE cached payload (incl. a duplicate-finding
+                    # set): degrade to a real LLM call instead of aborting the
+                    # review — degrade-not-lose-findings (FUP-177 edge 2). The raise
+                    # lands BEFORE any serve emit, so no partial events leaked. Do
+                    # NOT fabricate a CacheLookupEvent: the lookup DID find a row,
+                    # so a "miss" is false history and a "would_hit" implies serve
+                    # worked. Clear cache_key — the telemetry emit AND the step-3g
+                    # write both gate on it — so this degrades silently (the log is
+                    # the signal), like the lookup-error path. The live poisoned row
+                    # persists until expiry (write refreshes only EXPIRED rows);
+                    # re-serving it just degrades again, safely. Unreachable via the
+                    # V1 writer (valid payloads; the key pins policy/registry).
+                    logger.warning(
+                        "analyze-cache serve reconstruction failed; degrading to LLM for %s",
+                        changed_file.path,
+                        exc_info=True,
+                    )
+                    cache_key = None
+            # SHADOW (any outcome) or SERVE-miss: record would-hit/miss telemetry
+            # and fall through to the model call. A serve-miss is a real miss → the
+            # model runs and step 3g writes. Skipped when a serve reconstruction
+            # degraded above (cache_key cleared): no fabricated miss/would_hit for a
+            # row that WAS found but could not be served.
+            if cache_key is not None:
+                cache_would_hit = cache_entry is not None
+                await analyze_event_sink.emit_cache_lookup(
+                    CacheLookupEvent(
+                        review_id=review_id,
+                        is_eval=is_eval,
+                        file_path=changed_file.path,
+                        outcome="would_hit" if cache_would_hit else "miss",
+                        cache_key=cache_key,
+                    )
                 )
-            # SHADOW (any outcome) or SERVE-miss: record would-hit/miss
-            # telemetry and fall through to the model call. A serve-miss is a
-            # real miss → the model runs and step 3g writes the new outcome.
-            cache_would_hit = cache_entry is not None
-            await analyze_event_sink.emit_cache_lookup(
-                CacheLookupEvent(
-                    review_id=review_id,
-                    is_eval=is_eval,
-                    file_path=changed_file.path,
-                    outcome="would_hit" if cache_would_hit else "miss",
-                    cache_key=cache_key,
-                )
-            )
 
     # Step 3e: SINGLE FileExaminationEvent emission point.
     await file_examination_sink.emit_file_examination(

@@ -449,20 +449,29 @@ def compute_candidate_id(
 _SERVED_FINDING_ID_NAMESPACE: Final = UUID("a3f1c7e2-5b94-4d6a-8e0f-1c2d3b4a5e6f")
 
 
-def compute_served_finding_id(*, review_id: UUID, content_hash: str, proposal_hash: str) -> UUID:
+def compute_served_finding_id(*, review_id: UUID, content_hash: str) -> UUID:
     """Deterministic `finding_id` for a cache-served finding (Stage B serve flip).
 
-    A served finding re-mints its `finding_id` onto the NEW review, but the mint
+    A served finding re-mints its `finding_id` onto the NEW review, and the mint
     MUST be a pure function of (new review + content identity) so a checkpoint
-    replay of analyze reproduces the SAME id: the `findings` content row PK and
-    the persister no-resurrection guard both key on `finding_id`, so a random
-    re-mint would double-write / resurrect purged content. `content_hash` alone is
-    insufficient — it collides for two findings of the same file/span/type with
-    different proposals — so `proposal_hash` disambiguates, matching the
-    `(content_hash, proposal_hash)` admit-dedup tuple. `uuid5` over the canonical
-    triple; the namespace is a fixed constant, never injectable.
+    re-execution of analyze reproduces the SAME id: the `findings` content row PK
+    and the persister no-resurrection guard both key on `finding_id`, so a moving
+    re-mint would double-write / resurrect purged content.
+
+    Keyed on `(review_id, content_hash)` ONLY — `proposal_hash` is deliberately
+    excluded (FUP-177 edge 1). The served set is pass-0 only, where
+    `AnalysisRound._enforce_findings_unique` guarantees `content_hash` is unique
+    per round, so `(review_id, content_hash)` is already collision-free for served
+    findings. Folding `proposal_hash` would only MOVE the id when a cache row is
+    refreshed-in-place with different LLM free-text between the original serve and
+    a re-execution (same `content_hash`, new `proposal_hash`) — re-minting a
+    different id and double-writing the row. Dropping it keeps the id stable
+    across a same-content refresh; a refresh that changes finding CONTENT under
+    the same `content_hash` surfaces as the persister's loud re-emit conflict, not
+    a silent duplicate. `uuid5` over the canonical pair; the namespace is a fixed
+    constant, never injectable.
     """
-    return uuid5(_SERVED_FINDING_ID_NAMESPACE, f"{review_id}:{content_hash}:{proposal_hash}")
+    return uuid5(_SERVED_FINDING_ID_NAMESPACE, f"{review_id}:{content_hash}")
 
 
 def compute_hitl_decision_content_hash(
