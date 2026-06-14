@@ -98,7 +98,10 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, Literal
 
-from outrider.agent.nodes.analyze_observed import produce_observed_findings
+from outrider.agent.nodes.analyze_observed import (
+    OBSERVED_PRODUCER_VERSION,
+    produce_observed_findings,
+)
 from outrider.agent.nodes.analyze_parser import (
     ANALYZE_PARSER_VERSION,
     ParserResult,
@@ -427,6 +430,7 @@ async def analyze(
     n_proposals_seen = 0
     n_findings_emitted = 0
     n_findings_served = 0
+    n_findings_observed = 0
     n_proposals_rejected = 0
     n_responses_rejected = 0
     n_trace_candidates_emitted = 0
@@ -517,7 +521,14 @@ async def analyze(
                 if tier is ReviewTier.STANDARD:
                     standard_model_used = standard_analyze_model
                 n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
-                n_findings_emitted += file_outcome.parser_result.counters.n_findings_emitted
+                # OBSERVED findings fire real FindingEvents, so they ride
+                # n_findings_emitted; n_findings_observed tracks them for the
+                # accounting equation's subtraction (they are not proposals).
+                n_findings_emitted += (
+                    file_outcome.parser_result.counters.n_findings_emitted
+                    + file_outcome.parser_result.counters.n_findings_observed
+                )
+                n_findings_observed += file_outcome.parser_result.counters.n_findings_observed
                 n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
                 n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
                 n_trace_candidates_emitted += (
@@ -652,7 +663,14 @@ async def analyze(
             if file_outcome.parser_result is not None:
                 n_llm_calls += 1
                 n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
-                n_findings_emitted += file_outcome.parser_result.counters.n_findings_emitted
+                # Trace-fetched files don't run the OBSERVED producer today, so
+                # n_findings_observed is 0 here; aggregated symmetrically with the
+                # main path so accounting stays correct if that ever changes.
+                n_findings_emitted += (
+                    file_outcome.parser_result.counters.n_findings_emitted
+                    + file_outcome.parser_result.counters.n_findings_observed
+                )
+                n_findings_observed += file_outcome.parser_result.counters.n_findings_observed
                 n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
                 n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
                 n_trace_candidates_emitted += (
@@ -748,6 +766,7 @@ async def analyze(
             n_proposals_seen=n_proposals_seen,
             n_findings_emitted=n_findings_emitted,
             n_findings_served=n_findings_served,
+            n_findings_observed=n_findings_observed,
             n_proposals_rejected=n_proposals_rejected,
             n_responses_rejected=n_responses_rejected,
             n_trace_candidates_emitted=n_trace_candidates_emitted,
@@ -1574,6 +1593,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             analyze_parser_version=ANALYZE_PARSER_VERSION,
             response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
             parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
+            observed_producer_version=OBSERVED_PRODUCER_VERSION,
         )
         try:
             # Self-hit exclusion: a crash/retry re-execution of this node
@@ -1760,9 +1780,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     seen_hashes.add(observed_finding.content_hash)
                     fresh.append(observed_finding)
             if fresh:
+                # Bump the OBSERVED counter alongside the merge: these fire real
+                # FindingEvents (emit loop below) and must show up in the
+                # aggregate n_findings_emitted, but they are NOT proposals — the
+                # AnalyzeCompletedEvent accounting equation subtracts
+                # n_findings_observed (like n_findings_served).
                 parser_result = replace(
                     parser_result,
                     admitted_findings=parser_result.admitted_findings + tuple(fresh),
+                    counters=replace(parser_result.counters, n_findings_observed=len(fresh)),
                 )
 
     # Lift parser rejection payloads into audit events.

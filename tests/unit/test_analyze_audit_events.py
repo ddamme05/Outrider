@@ -187,6 +187,52 @@ def test_analyze_completed_served_findings_revert_the_fold() -> None:
         )
 
 
+def test_analyze_completed_admits_observed_findings_subtract() -> None:
+    """Cost Lever 3: deterministic OBSERVED findings ride n_findings_emitted but
+    are subtracted via n_findings_observed. An OBSERVED-only pass (2 OBSERVED
+    findings, 0 model proposals, but the LLM ran) is coherent: 0 == (2 - 0 - 2) + 0."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            n_proposals_seen=0,
+            n_findings_emitted=2,
+            n_findings_observed=2,
+            n_proposals_rejected=0,
+            n_llm_calls=1,
+        )
+    )
+    assert event.n_findings_observed == 2
+
+
+def test_analyze_completed_admits_mixed_proposed_and_observed() -> None:
+    """A pass mixing model-proposed and deterministic OBSERVED findings: 3
+    proposals → 2 findings + 1 rejected, plus 2 OBSERVED → n_findings_emitted=4.
+    The equation excludes the OBSERVED pair: 3 == (4 - 0 - 2) + 1."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            n_proposals_seen=3,
+            n_findings_emitted=4,
+            n_findings_observed=2,
+            n_proposals_rejected=1,
+            n_llm_calls=1,
+        )
+    )
+    assert event.n_findings_emitted == 4
+    assert event.n_findings_observed == 2
+
+
+def test_analyze_completed_observed_findings_revert_the_fold() -> None:
+    """Revert-the-fold proof: the SAME OBSERVED-only counters that pass WITH the
+    n_findings_observed subtraction would FAIL without it (0 != 2 + 0). Guards a
+    future revert from silently re-admitting the accounting incoherence."""
+    AnalyzeCompletedEvent(  # passes with the subtraction
+        **_completed_kwargs(n_proposals_seen=0, n_findings_emitted=2, n_findings_observed=2)
+    )
+    with pytest.raises(ValidationError, match="Proposal accounting mismatch"):
+        AnalyzeCompletedEvent(
+            **_completed_kwargs(n_proposals_seen=0, n_findings_emitted=2, n_findings_observed=0)
+        )
+
+
 def test_analyze_completed_admits_response_accounting_subset() -> None:
     """`n_responses_rejected <= n_llm_calls`."""
     event = AnalyzeCompletedEvent(**_completed_kwargs(n_responses_rejected=2, n_llm_calls=3))

@@ -40,10 +40,16 @@ def compute_analyze_cache_key(
     analyze_parser_version: str,
     response_format_digest: str,
     parameterized_call_scan_digest: str,
+    observed_producer_version: str,
 ) -> str:
-    """The analyze-cache key: eleven length-prefixed fields — the canonical
-    prompt digest plus ten explicit scope/version components — as one
-    SHA-256 hex digest. `response_format_digest` (FUP-096) pins the
+    """The analyze-cache key: twelve length-prefixed fields — the canonical
+    prompt digest plus eleven explicit scope/version components — as one
+    SHA-256 hex digest. `observed_producer_version` (Cost Lever 3) pins the
+    deterministic OBSERVED producer's ADMISSION logic (scope-containment,
+    test-file suppression, zero-width skip, byte→line mapping) — a change there
+    alters the cached finding set without touching the prompt, the registry
+    digest, or the parser version, so it must invalidate entries.
+    `response_format_digest` (FUP-096) pins the
     request format: constrained-decoding and free-form calls are
     different output populations for identical prompt bytes, so they
     must never share an entry (pass a fixed sentinel such as
@@ -73,6 +79,7 @@ def compute_analyze_cache_key(
         analyze_parser_version,
         response_format_digest,
         parameterized_call_scan_digest,
+        observed_producer_version,
     ):
         component_bytes = component.encode("utf-8")
         h.update(f"{len(component_bytes)}:".encode())

@@ -157,6 +157,14 @@ class ParserCounters:
     F1 audit-fold; sister field on AnalyzeCompletedEvent has the full
     rationale). Default=0 so existing fixture-driven constructions
     don't break; the parser sets it explicitly when emitting."""
+    n_findings_observed: int = 0
+    """Deterministic OBSERVED-tier findings the analyze NODE merged into
+    `admitted_findings` after parsing (Cost Lever 3). The parser never sets
+    this (always 0 from `parse_analyze_response`); the node sets it via
+    `dataclasses.replace` when it merges the producer's output. These fire
+    real `FindingEvent`s (so they ride the aggregate `n_findings_emitted`)
+    but have NO proposal in this pass, so the AnalyzeCompletedEvent
+    accounting equation subtracts them, exactly like `n_findings_served`."""
 
 
 @dataclass(frozen=True, slots=True)

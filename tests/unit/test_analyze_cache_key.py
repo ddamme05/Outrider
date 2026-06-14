@@ -11,6 +11,7 @@ import re
 
 import pytest
 
+from outrider.agent.nodes.analyze_observed import OBSERVED_PRODUCER_VERSION
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
 from outrider.ast_facts.parameterized_calls import (
     ExecuteCallSite,
@@ -35,6 +36,7 @@ _BASE_KWARGS = {
     "analyze_parser_version": ANALYZE_PARSER_VERSION,
     "response_format_digest": ANALYZE_RESPONSE_FORMAT_DIGEST,
     "parameterized_call_scan_digest": "d" * 64,
+    "observed_producer_version": OBSERVED_PRODUCER_VERSION,
 }
 
 
@@ -60,12 +62,15 @@ def test_key_is_deterministic_64_hex() -> None:
         ("analyze_parser_version", "analyze-parser-v3"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
+        ("observed_producer_version", "observed-producer-v2"),
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the twelve inputs is load-bearing: changing any one of
+    """Each of the thirteen inputs is load-bearing: changing any one of
     them alone produces a different key (the correct-by-construction
-    invalidation property the spec pins)."""
+    invalidation property the spec pins). `observed_producer_version`
+    (Cost Lever 3) pins the deterministic OBSERVED producer's admission
+    logic so a rule change invalidates cached outcomes."""
     base = compute_analyze_cache_key(**_BASE_KWARGS)
     varied = compute_analyze_cache_key(**{**_BASE_KWARGS, field: changed})
     assert varied != base, field
@@ -87,11 +92,11 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_prompt_digest_plus_ten_framed_components() -> None:
+def test_golden_recipe_prompt_digest_plus_eleven_framed_components() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: eleven length-prefixed fields — `_canonical_prompt_hash` output
+    test: twelve length-prefixed fields — `_canonical_prompt_hash` output
     first (one recipe, two consumers; never forks from
-    `LLMCallEvent.prompt_hash`), then the ten explicit scope/version
+    `LLMCallEvent.prompt_hash`), then the eleven explicit scope/version
     components in declaration order, each framed `{len(bytes)}:` on
     UTF-8 bytes. Any change to the framing, the component order, or the
     prompt component's recipe fails this test — deliberately: that
@@ -114,6 +119,7 @@ def test_golden_recipe_prompt_digest_plus_ten_framed_components() -> None:
         _BASE_KWARGS["analyze_parser_version"],
         _BASE_KWARGS["response_format_digest"],
         _BASE_KWARGS["parameterized_call_scan_digest"],
+        _BASE_KWARGS["observed_producer_version"],
     ):
         component_bytes = component.encode("utf-8")
         expected.update(f"{len(component_bytes)}:".encode())

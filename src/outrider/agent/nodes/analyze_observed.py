@@ -19,7 +19,7 @@ pass and never skip it; the skip routing is a later, evidence-gated increment.
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from outrider.audit.events import compute_finding_content_hash
 from outrider.coordinates import CoordinateError, query_span_to_source_lines
@@ -34,6 +34,18 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from outrider.ast_facts.models import ScopeUnit
+
+
+# Version of the OBSERVED producer's ADMISSION logic — the rules below that
+# decide which matches become findings: the scope-CONTAINMENT predicate,
+# test-file suppression (`_is_test_file`), the zero-width-span skip, and the
+# byte->line mapping. Folded into the analyze cache key
+# (`cache.key.compute_analyze_cache_key`) so a change to these rules invalidates
+# cached analyze outcomes written under the old rules — the same staleness guard
+# `ANALYZE_PARSER_VERSION` gives the LLM parser. The query `.scm` bodies + their
+# registry metadata are pinned SEPARATELY by `QUERY_REGISTRY_DIGEST`; this
+# constant covers only the producer's admission logic. BUMP on any rule change.
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v1"
 
 
 def _is_test_file(file_path: str) -> bool:

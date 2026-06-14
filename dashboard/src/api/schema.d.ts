@@ -548,6 +548,11 @@ export interface components {
              * @default 0
              */
             n_findings_served: number;
+            /**
+             * N Findings Observed
+             * @default 0
+             */
+            n_findings_observed: number;
             /** N Proposals Rejected */
             n_proposals_rejected: number;
             /** N Responses Rejected */
@@ -1069,7 +1074,7 @@ export interface components {
          *     untrusted model output to it.
          * @enum {string}
          */
-        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api";
+        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api" | "command_injection" | "unsafe_deserialization" | "tls_verify_disabled";
         /**
          * FindingView
          * @description One finding, assembled from the permanent audit record + content.

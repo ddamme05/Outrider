@@ -230,6 +230,7 @@ def test_parser_counters_field_set() -> None:
         "n_responses_rejected",
         "n_trace_candidates_emitted",
         "n_trace_candidates_dropped_malformed",
+        "n_findings_observed",
     }
     assert fields == expected
 
