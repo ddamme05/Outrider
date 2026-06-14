@@ -1457,13 +1457,28 @@ export interface components {
         /**
          * ObservedSkipCoveringMatch
          * @description A `skip_safe` OBSERVED match that covered (part of) the changed region:
-         *     its `query_match_id` plus the source line range its envelope spans. The
+         *     its `query_match_id` plus the head-source line range its envelope spans. The
          *     union of these spans IS the coverage envelope — reconstructable without
          *     re-parsing. Frozen + extra=forbid.
+         *
+         *     `side` is pinned to `"head"`: OBSERVED queries run on head content
+         *     (`produce_observed_findings(head_content=…)`), so every covering envelope is
+         *     in head-source lines, and base/removed changed regions are structurally
+         *     un-coverable by a head-content match — they are therefore always blockers.
+         *     The side is carried in the row (not left to a prose convention) so a
+         *     metadata-only reader can interpret the envelope after content retention
+         *     purges the findings (`DECISIONS.md#014`); a future base-side structural
+         *     query would widen the Literal deliberately rather than silently changing
+         *     what an un-sided range means.
          */
         ObservedSkipCoveringMatch: {
             /** Query Match Id */
             query_match_id: string;
+            /**
+             * Side
+             * @constant
+             */
+            side: "head";
             /** Line Start */
             line_start: number;
             /** Line End */
@@ -1487,8 +1502,8 @@ export interface components {
          *     retention purges the findings (`DECISIONS.md#014`): it carries the
          *     `changed_regions` evaluated (the per-side changed line spans — the union of
          *     `coordinates.changed_line_spans` across the file's included scopes), the
-         *     `covering_matches` (each `skip_safe` match's `query_match_id` + line span;
-         *     their union is the coverage envelope), and the `blockers` (the changed
+         *     `covering_matches` (each `skip_safe` match's `query_match_id` + head-source
+         *     line span; their union is the coverage envelope), and the `blockers` (the changed
          *     regions outside every `skip_safe` envelope — the concrete reason a
          *     `not_eligible` was not eligible). Spans/ranges only, never raw model output,
          *     so it stays within the metadata-only audit contract.

@@ -476,7 +476,7 @@ def test_observed_skip_shadow_admits_would_skip_fully_covered() -> None:
     """Post-promotion case: a `skip_safe` match covers the changed region, so
     there are no blockers → would_skip."""
     match = ObservedSkipCoveringMatch(
-        query_match_id="py-observed-eval-call-1", line_start=10, line_end=14
+        query_match_id="py-observed-eval-call-1", side="head", line_start=10, line_end=14
     )
     event = ObservedSkipShadowEvent(
         **_skip_shadow_kwargs(outcome="would_skip", covering_matches=(match,), blockers=())
@@ -506,14 +506,22 @@ def test_observed_skip_changed_region_rejects_inverted_lines() -> None:
 
 def test_observed_skip_covering_match_rejects_inverted_lines() -> None:
     with pytest.raises(ValidationError, match="must be >= line_start"):
-        ObservedSkipCoveringMatch(query_match_id="q-1", line_start=14, line_end=10)
+        ObservedSkipCoveringMatch(query_match_id="q-1", side="head", line_start=14, line_end=10)
 
 
 def test_observed_skip_covering_match_rejects_empty_query_match_id() -> None:
     """`query_match_id` is the registry pointer — an empty id can't reference a
     real query (min_length=1)."""
     with pytest.raises(ValidationError, match="query_match_id"):
-        ObservedSkipCoveringMatch(query_match_id="", line_start=10, line_end=14)
+        ObservedSkipCoveringMatch(query_match_id="", side="head", line_start=10, line_end=14)
+
+
+def test_observed_skip_covering_match_rejects_non_head_side() -> None:
+    """`side` is pinned to Literal["head"] — OBSERVED queries run on head content,
+    so a base-side covering match is impossible in V1 and rejected at construction.
+    A future base-side structural query widens the Literal deliberately."""
+    with pytest.raises(ValidationError):
+        ObservedSkipCoveringMatch(query_match_id="q-1", side="base", line_start=10, line_end=14)
 
 
 def test_observed_skip_shadow_canonicalizes_file_path() -> None:
@@ -571,11 +579,13 @@ def test_observed_skip_changed_region_frozen_and_extra_forbid() -> None:
 
 
 def test_observed_skip_covering_match_frozen_and_extra_forbid() -> None:
-    match = ObservedSkipCoveringMatch(query_match_id="q-1", line_start=10, line_end=14)
+    match = ObservedSkipCoveringMatch(query_match_id="q-1", side="head", line_start=10, line_end=14)
     with pytest.raises(ValidationError, match="Instance is frozen"):
         match.line_start = 1  # type: ignore[misc]
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        ObservedSkipCoveringMatch(query_match_id="q-1", line_start=10, line_end=14, extra="bad")
+        ObservedSkipCoveringMatch(
+            query_match_id="q-1", side="head", line_start=10, line_end=14, extra="bad"
+        )
 
 
 def test_audit_event_adapter_routes_observed_skip_shadow() -> None:

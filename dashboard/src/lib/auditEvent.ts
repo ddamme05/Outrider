@@ -27,6 +27,8 @@ export function summarizeEvent(e: AuditEvent): string {
       return `served · ${e.served_finding_count} finding(s) · ${e.file_path}`;
     case "scope_exclusion":
       return `${e.applied ? "applied" : "shadow"} · ${e.entries.length} scope(s) · ${e.file_path}`;
+    case "observed_skip_shadow":
+      return `${e.outcome} · ${e.blockers.length}/${e.changed_regions.length} blocked · ${e.file_path}`;
     default:
       return "";
   }
@@ -48,6 +50,7 @@ export const EV_FAMILY: Record<string, string> = {
   cache_lookup: "file",
   cache_serve: "file",
   scope_exclusion: "file",
+  observed_skip_shadow: "file",
   trace_decision: "trace",
   hitl_request: "human",
   hitl_decision: "human",
