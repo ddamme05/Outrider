@@ -294,6 +294,7 @@ async def analyze(
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    allow_eval_analyze_cache: bool = False,
 ) -> dict[str, object]:
     """Run one analyze pass over the triage-classified PR.
 
@@ -384,7 +385,17 @@ async def analyze(
                 exc_info=True,
             )
             cache_scope = None
-        if cache_scope is not None and (cache_scope.is_eval or state.is_eval):
+        # Eval-cache bypass (spec eval-isolation rule): an is_eval review neither
+        # reads nor writes the cache, because lookup is keyed on cache_key alone
+        # (NOT is_eval), so in a SHARED DB an eval review could read a production
+        # row. `allow_eval_analyze_cache` is a TEST-ONLY override (default False,
+        # NEVER set in production) for the dedicated serve eval scenario, which runs
+        # in an isolated ephemeral DB holding only is_eval rows. See DECISIONS.md#046.
+        if (
+            cache_scope is not None
+            and (cache_scope.is_eval or state.is_eval)
+            and not allow_eval_analyze_cache
+        ):
             cache_scope = None
 
     # Local accumulators — single source of truth for AnalyzeCompletedEvent
