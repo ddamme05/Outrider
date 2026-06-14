@@ -96,7 +96,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 from outrider.agent.nodes.analyze_parser import (
     ANALYZE_PARSER_VERSION,
@@ -162,6 +162,7 @@ from outrider.schemas.llm.analyze import (
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from uuid import UUID
 
     from unidiff import PatchedFile
@@ -524,12 +525,11 @@ async def analyze(
                 n_trace_candidates_dropped_malformed += (
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
-                for f in file_outcome.parser_result.admitted_findings:
-                    key = (f.content_hash, f.proposal_hash)
-                    if key in admitted_keys_seen:
-                        continue
-                    admitted_keys_seen.add(key)
-                    admitted_findings.append(f)
+                _admit_with_dedup(
+                    file_outcome.parser_result.admitted_findings,
+                    admitted_findings,
+                    admitted_keys_seen,
+                )
                 # Per DECISIONS.md#025 point 6: trace_candidates from
                 # rejected-parent proposals stay in state for replay
                 # ("Unjoined candidates remain forensic-only"). Trace's
@@ -555,12 +555,7 @@ async def analyze(
                 # event (unlike served FINDINGS, which re-emit FindingEvents) — their
                 # audit trace is CacheServeEvent.served_trace_candidates. They still
                 # extend into state below for the trace loop.
-                for f in served.admitted_findings:
-                    key = (f.content_hash, f.proposal_hash)
-                    if key in admitted_keys_seen:
-                        continue
-                    admitted_keys_seen.add(key)
-                    admitted_findings.append(f)
+                _admit_with_dedup(served.admitted_findings, admitted_findings, admitted_keys_seen)
                 trace_candidates.extend(served.trace_candidates)
 
             total_input_tokens += file_outcome.input_tokens
@@ -665,12 +660,11 @@ async def analyze(
                 n_trace_candidates_dropped_malformed += (
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
-                for f in file_outcome.parser_result.admitted_findings:
-                    key = (f.content_hash, f.proposal_hash)
-                    if key in admitted_keys_seen:
-                        continue
-                    admitted_keys_seen.add(key)
-                    admitted_findings.append(f)
+                _admit_with_dedup(
+                    file_outcome.parser_result.admitted_findings,
+                    admitted_findings,
+                    admitted_keys_seen,
+                )
                 # Per DECISIONS.md#025 point 6: trace_candidates from
                 # rejected-parent proposals stay in state for replay
                 # ("Unjoined candidates remain forensic-only"). Trace's
@@ -943,15 +937,8 @@ async def _serve_cache_hit(
             installation_id=installation_id,
             repo_id=repo_id,
             served_finding_count=len(served_findings),
-            context_summary=tuple(
-                ContextManifestEntry(
-                    file_path=file_path,
-                    scope_unit_name=su.qualified_name or su.name,
-                    line_start=su.line_start,
-                    line_end=su.line_end,
-                    inclusion_reason="changed_scope",
-                )
-                for su in included_scope_units
+            context_summary=_build_context_manifest(
+                file_path, included_scope_units, inclusion_reason="changed_scope"
             ),
             served_trace_candidates=tuple(
                 ServedTraceCandidateRef(
@@ -969,16 +956,11 @@ async def _serve_cache_hit(
     # SINGLE FileExaminationEvent (clean — parse + prompt assembly genuinely ran;
     # only the provider call didn't). The serve short-circuit returns before the
     # normal-path step-3e emission, so it emits here itself.
-    await file_examination_sink.emit_file_examination(
-        FileExaminationEvent(
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=file_path,
-            examination_type="analyze",
-            node_id="analyze",
-            parse_status="clean",
-            skip_reason=None,
-        )
+    await _emit_examination(
+        file_examination_sink=file_examination_sink,
+        review_id=review_id,
+        is_eval=is_eval,
+        file_path=file_path,
     )
 
     # Re-emit one FindingEvent per served finding so this review's audit/findings
@@ -1189,6 +1171,73 @@ async def _emit_skip(
         cost_decimal=Decimal("0"),
         estimated_tokens=0,
     )
+
+
+def _build_context_manifest(
+    file_path: str,
+    scope_units: Iterable[ScopeUnit],
+    *,
+    inclusion_reason: Literal["changed_scope", "same_file_context", "trace_expansion"],
+) -> tuple[ContextManifestEntry, ...]:
+    """One `ContextManifestEntry` per scope unit — the `context_summary` that rides
+    every analyze emit (LLMCallEvent on the clean + trace paths, CacheServeEvent on
+    the serve path). Extracted (FUP-178) so the three paths cannot drift on the
+    manifest shape; the clean path keeps its own `degraded_mode` empty-manifest
+    guard at the call site."""
+    return tuple(
+        ContextManifestEntry(
+            file_path=file_path,
+            scope_unit_name=su.qualified_name or su.name,
+            line_start=su.line_start,
+            line_end=su.line_end,
+            inclusion_reason=inclusion_reason,
+        )
+        for su in scope_units
+    )
+
+
+async def _emit_examination(
+    *,
+    file_examination_sink: FileExaminationSink,
+    review_id: UUID,
+    is_eval: bool,
+    file_path: str,
+    parse_status: _ParseStatus = "clean",
+) -> None:
+    """Emit the single `FileExaminationEvent` for a KEPT (non-skipped) file —
+    sibling to `_emit_skip` (FUP-178). The clean, trace, and serve paths share this
+    one emission shape; `parse_status` defaults to "clean" (serve + trace), and the
+    clean path passes its own `parse_status_for_event`."""
+    await file_examination_sink.emit_file_examination(
+        FileExaminationEvent(
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=file_path,
+            examination_type="analyze",
+            node_id="analyze",
+            parse_status=parse_status,
+            skip_reason=None,
+        )
+    )
+
+
+def _admit_with_dedup(
+    findings: Iterable[ReviewFinding],
+    admitted_findings: list[ReviewFinding],
+    admitted_keys_seen: set[tuple[str, str]],
+) -> None:
+    """Append each finding to `admitted_findings` unless its
+    `(content_hash, proposal_hash)` key was already admitted this round (FUP-178).
+    The round-build merges findings from several source contexts (cold parse,
+    served payload, trace-fetched files); `AnalysisRound` enforces uniqueness on
+    both keys, so this dedup stops a logically-identical finding from being
+    double-admitted before the round validators run."""
+    for f in findings:
+        key = (f.content_hash, f.proposal_hash)
+        if key in admitted_keys_seen:
+            continue
+        admitted_keys_seen.add(key)
+        admitted_findings.append(f)
 
 
 async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orchestration boundary; outcome branches resist further extraction without losing audit clarity
@@ -1601,16 +1650,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 )
 
     # Step 3e: SINGLE FileExaminationEvent emission point.
-    await file_examination_sink.emit_file_examination(
-        FileExaminationEvent(
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=changed_file.path,
-            examination_type="analyze",
-            node_id="analyze",
-            parse_status=parse_status_for_event,
-            skip_reason=None,
-        )
+    await _emit_examination(
+        file_examination_sink=file_examination_sink,
+        review_id=review_id,
+        is_eval=is_eval,
+        file_path=changed_file.path,
+        parse_status=parse_status_for_event,
     )
 
     # Step 3f: LLM call + response parse.
@@ -1620,15 +1665,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     context_summary: tuple[ContextManifestEntry, ...] = (
         ()
         if degraded_mode
-        else tuple(
-            ContextManifestEntry(
-                file_path=changed_file.path,
-                scope_unit_name=su.qualified_name or su.name,
-                line_start=su.line_start,
-                line_end=su.line_end,
-                inclusion_reason="changed_scope",
-            )
-            for su in included_scope_units
+        else _build_context_manifest(
+            changed_file.path, included_scope_units, inclusion_reason="changed_scope"
         )
     )
     request = LLMRequest(
@@ -1956,16 +1994,11 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
         )
 
-    await file_examination_sink.emit_file_examination(
-        FileExaminationEvent(
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=fetched_file.path,
-            examination_type="analyze",
-            node_id="analyze",
-            parse_status="clean",
-            skip_reason=None,
-        )
+    await _emit_examination(
+        file_examination_sink=file_examination_sink,
+        review_id=review_id,
+        is_eval=is_eval,
+        file_path=fetched_file.path,
     )
 
     # `inclusion_reason="trace_expansion"` per the ContextManifestEntry
@@ -1973,15 +2006,8 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # (scope units from a trace-fetched file). The Literal predates the
     # trace-node arc; using it here closes the loop without a schema
     # change.
-    context_summary: tuple[ContextManifestEntry, ...] = tuple(
-        ContextManifestEntry(
-            file_path=fetched_file.path,
-            scope_unit_name=su.qualified_name or su.name,
-            line_start=su.line_start,
-            line_end=su.line_end,
-            inclusion_reason="trace_expansion",
-        )
-        for su in included_scope_units
+    context_summary: tuple[ContextManifestEntry, ...] = _build_context_manifest(
+        fetched_file.path, included_scope_units, inclusion_reason="trace_expansion"
     )
     request = LLMRequest(
         model=analyze_model,
