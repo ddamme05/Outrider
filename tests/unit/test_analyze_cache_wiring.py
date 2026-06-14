@@ -296,7 +296,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
     # The written key is exactly the recomputed full key (prompt digest
-    # + ten explicit components) over the request actually sent.
+    # + eleven explicit components) over the request actually sent.
     [request] = provider.calls
     # FUP-096: the request that produced the cached payload rode with the
     # pinned schema — the key's response_format_digest describes it truly.
