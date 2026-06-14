@@ -93,11 +93,12 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, Literal
 
+from outrider.agent.nodes.analyze_observed import produce_observed_findings
 from outrider.agent.nodes.analyze_parser import (
     ANALYZE_PARSER_VERSION,
     ParserResult,
@@ -1732,6 +1733,37 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # scan object keyed the cache entry, so admission and key never fork.
         parameterized_call_scan=parameterized_call_scan,
     )
+
+    # Deterministic OBSERVED-tier findings (Cost Lever 3): augment the LLM's
+    # JUDGED findings with structural security-query matches. Clean-parse only
+    # (the producer never runs in degraded mode); merged into
+    # `parser_result.admitted_findings` BEFORE the emit/cache/return below, so
+    # they ride the audit stream, the cache payload (serve reconstructs them),
+    # and the round identically to LLM findings. Deduped by content_hash —
+    # `AnalysisRound` requires unique content_hashes, and an OBSERVED match the
+    # model ALSO flagged (same file/lines/type) is redundant. signal_only: the
+    # LLM still ran; OBSERVED augments it, never skips it.
+    if not degraded_mode:
+        observed_findings = produce_observed_findings(
+            file_path=changed_file.path,
+            head_content=content,
+            included_scope_units=included_scope_units,
+            review_id=review_id,
+            installation_id=installation_id,
+            active_policy_version=active_policy_version,
+        )
+        if observed_findings:
+            seen_hashes = {f.content_hash for f in parser_result.admitted_findings}
+            fresh: list[ReviewFinding] = []
+            for observed_finding in observed_findings:
+                if observed_finding.content_hash not in seen_hashes:
+                    seen_hashes.add(observed_finding.content_hash)
+                    fresh.append(observed_finding)
+            if fresh:
+                parser_result = replace(
+                    parser_result,
+                    admitted_findings=parser_result.admitted_findings + tuple(fresh),
+                )
 
     # Lift parser rejection payloads into audit events.
     for proposal_rej in parser_result.proposal_rejections:

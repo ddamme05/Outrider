@@ -113,6 +113,16 @@ _SQLI_HOLDOUT_FORMAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_for
 _SQLI_HOLDOUT_CONCAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_concat.json"
 _SQLI_HOLDOUT_ORM_FSTRING_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json"
 
+# These SQLi hold-out forms are ALSO caught by the deterministic OBSERVED
+# `python.sql_injection_string_concat` query (f-string interpolation +
+# `str.format()`), so a model that misses them still yields PRODUCT recall 1.0 —
+# the structural OBSERVED tier backstops the model (Cost Lever 3 / DECISIONS.md#048).
+# The concat (variable-on-left) and ORM `.raw()` forms are NOT covered by the
+# query, so they still exercise true model-recall regression through the pipeline.
+_OBSERVED_BACKSTOPPED_SQLI: frozenset[str] = frozenset(
+    {_SQLI_HOLDOUT_FSTRING_FIXTURE, _SQLI_HOLDOUT_FORMAT_FIXTURE}
+)
+
 _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
     _PYGOAT_SQL_FIXTURE: (
         ExpectedFinding(
@@ -761,8 +771,19 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
         candidate_model="claude-haiku-4-5",
     )
     assert cmp.baseline.recall.value == 1.0  # found the known finding in real code
-    assert cmp.candidate.recall.value == 0.0  # missed it
-    assert cmp.passes is False  # the gate catches the recall regression
+    if fixture_path in _OBSERVED_BACKSTOPPED_SQLI:
+        # Cost Lever 3: the OBSERVED sql_injection query catches these SQLi
+        # forms deterministically, so the candidate's PRODUCT recall is 1.0
+        # even though the model returned nothing — the structural tier backstops
+        # the model. The recall-regression gate is intentionally blind to model
+        # regressions on OBSERVED-covered findings (the query masks the miss);
+        # a model-only recall would still be 0.0 (the diagnostic split the eval
+        # harness should keep). DECISIONS.md#048 + the observed-query-library spec.
+        assert cmp.candidate.recall.value == 1.0
+        assert cmp.passes is True
+    else:
+        assert cmp.candidate.recall.value == 0.0  # model missed it; no OBSERVED backstop
+        assert cmp.passes is False  # the gate catches the recall regression
 
 
 # ---------------------------------------------------------------------------
