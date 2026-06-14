@@ -35,7 +35,7 @@ from outrider.ast_facts.models import TrivialityReason
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from tree_sitter import Node
+    from tree_sitter import Node, Tree
 
     from outrider.coordinates.spans import ScopeChangedLineSpans
 
@@ -172,7 +172,18 @@ def _comment_spans(root: Node) -> list[tuple[int, int]]:
 
 
 def _build_side_table(source: bytes) -> SideTable:
-    tree = _PARSER.parse(source)
+    return _build_side_table_from_tree(_PARSER.parse(source), source)
+
+
+def _build_side_table_from_tree(tree: Tree, source: bytes) -> SideTable:
+    """Build a `SideTable` from an ALREADY-PARSED tree + its source bytes.
+
+    The tree-accepting core shared by `_build_side_table` (parse → delegate) and
+    the analyze post-cost-gate bundle (FUP-170), which parses the head ONCE and
+    reuses the tree for both this side table and the parameterized-call scan. The
+    tree stays inside `ast_facts/` (only the `SideTable` domain model crosses the
+    firewall).
+    """
     parse_ok = not tree.root_node.has_error
 
     # Line table: line_starts[k-1] = byte offset where 1-indexed line k begins.

@@ -111,12 +111,13 @@ from outrider.agent.nodes.degradation import (
     _ParseStatus,
     decide_degradation,
 )
+from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
 from outrider.ast_facts.python_adapter import parse_python
 from outrider.ast_facts.triviality import (
     TRIVIAL_FILTER_VERSION,
-    build_triviality_context,
+    FileTrivialityContext,
     classify_scope_triviality,
 )
 from outrider.audit.events import (
@@ -994,7 +995,7 @@ def _classify_included_scopes(
     *,
     changed_file: ChangedFile,
     content: str,
-    content_bytes: bytes,
+    triviality_context: FileTrivialityContext,
     patched_file: PatchedFile,
     included_scope_units: tuple[ScopeUnit, ...],
 ) -> tuple[ScopeExclusionEntry, ...]:
@@ -1021,13 +1022,10 @@ def _classify_included_scopes(
             for su in included_scope_units
         )
 
-    context = build_triviality_context(
-        content_bytes, base_text.encode("utf-8") if base_text is not None else None
-    )
     entries: list[ScopeExclusionEntry] = []
     for su in included_scope_units:
         changed = changed_line_spans(su, patched_file, head_source=content, base_source=base_text)
-        verdict = classify_scope_triviality(changed, context)
+        verdict = classify_scope_triviality(changed, triviality_context)
         entries.append(
             ScopeExclusionEntry(
                 scope_qualified_name=su.qualified_name or su.name,
@@ -1049,7 +1047,7 @@ def _classify_included_scopes(
 def _assemble_scope_unit_context(
     *,
     included_scope_units: tuple[ScopeUnit, ...],
-    file_content: str,
+    source_bytes: bytes,
 ) -> str:
     """Render the included scope units as the prompt's `scope_unit_context` block.
 
@@ -1065,7 +1063,6 @@ def _assemble_scope_unit_context(
     `_DEGRADED_HUNK_CHAR_CAP` for the degraded path is tracked as
     FUP-052.
     """
-    source_bytes = file_content.encode("utf-8")
     blocks: list[str] = []
     for su in included_scope_units:
         body = extract_scope_unit_body(su, source_bytes)
@@ -1320,7 +1317,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         parts = analyze_prompt.render(
             file_path=changed_file.path,
             scope_unit_context=_assemble_scope_unit_context(
-                included_scope_units=included_scope_units, file_content=content
+                included_scope_units=included_scope_units, source_bytes=content_bytes
             ),
             query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
             diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
@@ -1358,11 +1355,35 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # prompt and skips all-trivial files. Runs BEFORE step 3e so the
     # all-trivial skip routes through `_emit_skip` and the single
     # FileExaminationEvent emission point holds.
-    if not degraded_mode and patched_file is not None and included_scope_units:
+    # FUP-170: one post-cost-gate head parse feeds BOTH the trivial-scope
+    # classification (below) and the FUP-162 parameterized-call scan.
+    # `parse_python` stays a separate PRE-gate parse (it fed degradation + the
+    # token estimate); this runs strictly AFTER the cost gate, so a cost-skipped
+    # file never reaches it (COST_BUDGET_EXHAUSTED-before-classification holds).
+    # The scan rides every clean file (None in degraded mode — also exactly when
+    # the file is not cacheable, so `parameterized_call_scan is not None` IS the
+    # clean-mode cache gate below). The SAME scan object feeds BOTH the cache-key
+    # digest AND the admission veto in parse_analyze_response, so the keyed and
+    # admitted inputs can never fork (FUP-171 anti-fork). `compute_triviality`
+    # mirrors the classification gate so triviality (+ its base parse) builds
+    # only when there's a patch and included scopes.
+    want_triviality = not degraded_mode and patched_file is not None and bool(included_scope_units)
+    triviality_context, parameterized_call_scan = extract_triviality_and_scan(
+        content_bytes,
+        changed_file.content_base.encode("utf-8")
+        if (want_triviality and changed_file.content_base is not None)
+        else None,
+        compute_triviality=want_triviality,
+        degraded=degraded_mode,
+    )
+
+    # triviality_context is non-None iff want_triviality (which already implies a
+    # patch + non-empty scopes); the patched_file re-check narrows the type.
+    if triviality_context is not None and patched_file is not None:
         entries = _classify_included_scopes(
             changed_file=changed_file,
             content=content,
-            content_bytes=content_bytes,
+            triviality_context=triviality_context,
             patched_file=patched_file,
             included_scope_units=included_scope_units,
         )
@@ -1408,21 +1429,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             parts = analyze_prompt.render(
                 file_path=changed_file.path,
                 scope_unit_context=_assemble_scope_unit_context(
-                    included_scope_units=included_scope_units, file_content=content
+                    included_scope_units=included_scope_units, source_bytes=content_bytes
                 ),
                 query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
                 diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
                 pass_index=pass_index,
             )
 
-    # FUP-162 parameterized-call veto facts, hoisted above the cache key
-    # (FUP-171): ONE scan object feeds BOTH the cache-key digest below AND the
-    # admission veto in parse_analyze_response, so the keyed input and the
-    # admitted input can never fork. `None` in degraded mode (no trustworthy
-    # parse tree → veto disabled), which is also exactly when the file is not
-    # cacheable — so `parameterized_call_scan is not None` IS the clean-mode
-    # cache gate. Reuses content_bytes (computed once above), no re-encode.
-    parameterized_call_scan = None if degraded_mode else scan_parameterized_calls(content_bytes)
+    # `parameterized_call_scan` was produced by the FUP-170 bundle above (None in
+    # degraded mode); the clean-mode cache lookup below gates on it being non-None.
 
     # Step 3d-ter: analyze-cache shadow lookup (pass-0 clean mode only;
     # specs/2026-06-11-file-hash-analyze-cache.md). The key is computed
@@ -1828,7 +1843,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     parts = analyze_prompt.render_post_trace(
         file_path=fetched_file.path,
         scope_unit_context=_assemble_scope_unit_context(
-            included_scope_units=included_scope_units, file_content=content
+            included_scope_units=included_scope_units, source_bytes=content_bytes
         ),
         query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
         # Pass the ACTIVE source finding's id (matches the
@@ -1953,7 +1968,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         # units filtered out, not a whole-file degraded mode; the scan
         # itself returns empty for any error-bearing tree, so a partially
         # erroring file disables the veto rather than trusting recovery.
-        parameterized_call_scan=scan_parameterized_calls(content.encode("utf-8")),
+        parameterized_call_scan=scan_parameterized_calls(content_bytes),
     )
 
     for proposal_rej in parser_result.proposal_rejections:
