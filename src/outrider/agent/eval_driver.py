@@ -1193,8 +1193,9 @@ async def run_review_persisting(
     this runs against the caller's `eval_db` so the audit stream AND the
     `analyze_file_cache` rows SURVIVE the call — the serve cache scenario needs
     both: an `AuditReplayer` reads the stream AFTER this returns, and a SECOND
-    `run_review_persisting` against the same DB re-reviews the same PR, so the
-    first drive's cache write becomes the second drive's serve hit (each call
+    `run_review_persisting` against the same DB re-reviews the SAME FILE in a
+    DISTINCT PR (the `reviews` natural key forbids reviewing one PR head twice), so
+    the first drive's cache write becomes the second drive's serve hit (each call
     mints a fresh `review_id`, so the lookup's self-hit exclusion never suppresses
     the cross-review hit).
 

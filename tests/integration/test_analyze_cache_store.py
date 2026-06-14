@@ -20,8 +20,9 @@ from outrider.cache import AnalyzeCacheStore, CacheScope
 _INSTALLATION_ID = 5151
 
 
-async def _seed_review(engine, *, retention_days: int = 180):
-    """Installation + review row; returns the review id."""
+async def _seed_review(engine, *, retention_days: int = 180, is_eval: bool = False):
+    """Installation + review row; returns the review id. `is_eval` stamps the
+    reviews row so `resolve_scope` yields the matching cache partition."""
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -36,14 +37,19 @@ async def _seed_review(engine, *, retention_days: int = 180):
         result = await conn.execute(
             text(
                 "INSERT INTO reviews ("
-                "  installation_id, repo_id, pr_number, head_sha, status, "
+                "  installation_id, repo_id, pr_number, head_sha, status, is_eval, "
                 "  retention_expires_at"
                 ") VALUES ("
-                "  :id, 100, 1, :sha, 'running', "
+                "  :id, 100, 1, :sha, 'running', :is_eval, "
                 "  NOW() + make_interval(days => :retention_days)"
                 ") RETURNING id"
             ),
-            {"id": _INSTALLATION_ID, "sha": uuid4().hex, "retention_days": retention_days},
+            {
+                "id": _INSTALLATION_ID,
+                "sha": uuid4().hex,
+                "retention_days": retention_days,
+                "is_eval": is_eval,
+            },
         )
         return result.scalar_one()
 
@@ -290,13 +296,11 @@ async def test_cross_partition_write_arbiter(migrated_db: str) -> None:
         store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
         prod_scope = await store.resolve_scope(prod_review)
         assert prod_scope is not None and prod_scope.is_eval is False
-        eval_scope = CacheScope(
-            installation_id=prod_scope.installation_id,
-            repo_id=prod_scope.repo_id,
-            is_eval=True,  # same tenant, eval partition
-            retention_expires_at=prod_scope.retention_expires_at,
-        )
-        eval_review = await _seed_review(engine)
+        # The eval scope comes from a REAL is_eval=True review (same tenant), matching
+        # the production shape where scope + source_review_id share one reviews row.
+        eval_review = await _seed_review(engine, is_eval=True)
+        eval_scope = await store.resolve_scope(eval_review)
+        assert eval_scope is not None and eval_scope.is_eval is True
         key = "b2" * 32  # 64 hex chars
 
         # A LIVE prod row blocks an eval write of the same key (first-writer-wins).
