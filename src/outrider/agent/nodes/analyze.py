@@ -368,12 +368,11 @@ async def analyze(
     # `phase-events-bound-work` requires node work inside the phase
     # envelope. None disables the cache for this pass: store not
     # injected (the eval driver's default), review row missing
-    # (fail-open to UNCACHED, never to cross-scope), an eval review by
-    # EITHER flag — the resolved row's is_eval or state.is_eval, so a
-    # divergence between the two can never write production rows
-    # (belt-and-suspenders for the spec's eval-bypass rule) — or a
-    # store DB failure: the shadow cache is optional telemetry and must
-    # never abort a review (`CacheStoreError` is contained, not raised).
+    # (fail-open to UNCACHED, never to cross-scope), or a store DB
+    # failure: the shadow cache is optional telemetry and must never
+    # abort a review (`CacheStoreError` is contained, not raised). An
+    # eval review does NOT disable the cache — it reads/writes scoped to
+    # is_eval rows via the lookup's is_eval predicate (DECISIONS.md#046).
     cache_scope: CacheScope | None = None
     if analyze_cache_store is not None and pass_index == 0:
         try:

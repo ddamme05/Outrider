@@ -418,9 +418,9 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # is a later evidence-backed change per the trivial-scope-filter
         # spec's #041-style lifecycle.
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
-        # None disables the analyze cache (the eval driver's default per
-        # the spec's eval-bypass rule); production wiring injects a real
-        # AnalyzeCacheStore. Store-or-None IS the enable switch —
+        # None disables the analyze cache (the eval driver's default for
+        # scenarios that don't exercise it); production wiring injects a
+        # real AnalyzeCacheStore. Store-or-None IS the enable switch —
         # nodes-receive-deps-via-closure, no separate flag to drift.
         analyze_cache_store=analyze_cache_store,
         # Shadow default: a wired store records would-hit/miss telemetry but

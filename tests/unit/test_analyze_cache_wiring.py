@@ -6,9 +6,10 @@ zero cache behavior); a miss emits `CacheLookupEvent(outcome="miss")`,
 calls the model, and writes the store with the composed key + content
 payload + the full version-component set; a would-hit emits
 `outcome="would_hit"`, STILL calls the model (shadow — nothing served),
-and writes nothing; an eval review never touches a wired store (by
-EITHER the resolved scope's flag or state.is_eval); the lookup excludes
-the review's own prior writes (crash-resume self-hits); a
+and writes nothing; an eval review USES a wired store, scoped to is_eval
+rows by the lookup's is_eval predicate (the resolved scope's is_eval is
+authoritative, not state.is_eval); the lookup excludes the review's own
+prior writes (crash-resume self-hits); a
 response-level rejection and a `max_tokens`-truncated response cache
 nothing; and a `CacheStoreError` from any store call is contained — the
 shadow cache must never abort a review.
