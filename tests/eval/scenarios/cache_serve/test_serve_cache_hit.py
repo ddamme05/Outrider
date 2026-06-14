@@ -1,0 +1,134 @@
+"""Serve-mode eval scenario (FUP-176): re-review the same PR; the second pass
+serves the analyze finding from cache and flows it through to publish.
+
+Two `CacheMode.SERVE` drives of the same fixture against ONE eval DB:
+
+- **Drive 1** (cache empty): analyze MISSES → calls the model → writes the
+  `analyze_file_cache` row (the write-on-miss happens in any cache mode).
+- **Drive 2** (cache populated by drive 1, a FRESH `review_id`): analyze HITS →
+  reconstructs + re-stamps the cached finding (zero analyze LLM call) → the served
+  finding flows through synthesize → HITL (LOW finding, no gate) → publish.
+
+This drives the serve path end-to-end through the real seven-node graph — the
+coverage FUP-177's unit tests (re-mint determinism, degrade guard) could not give:
+the served finding crossing every downstream deterministic gate, AND the full
+audit stream replaying equivalent. The fixture is the proven LOW-severity
+`missing_error_handling` PR (single file, non-gating, reaches publish).
+
+`run_review_persisting` runs against the caller-owned `eval_db` so the audit
+stream + the cache row survive BOTH drives (and the post-run replay). Asserting
+drive 2 serves and replays is exactly the readiness signal the `cache_mode=serve`
+flip waits on (the production flip itself is telemetry-gated — out of scope here).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from sqlalchemy import text
+
+from outrider.agent import run_review_persisting
+from outrider.agent.nodes.cache_config import CacheMode
+from outrider.audit.replay import AuditReplayer
+from outrider.cache import AnalyzeCacheStore
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+# Two PRs touching profile/client.py IDENTICALLY: the analyze cache key keys on
+# file content + scope (installation_id, repo_id, is_eval), NOT PR identity, so
+# the second PR's analyze hits the first PR's cache row. Two fixtures (not two
+# drives of one) because `reviews` is UNIQUE on (repo_id, pr_number, head_sha) —
+# the same PR head cannot be reviewed twice, which is exactly why the cache
+# targets DISTINCT PRs that share a file.
+_FIXTURE_COLD = "tests/eval/fixtures/mock_github/missing_error_handling.json"
+_FIXTURE_RESUBMIT = "tests/eval/fixtures/mock_github/missing_error_handling_resubmitted.json"
+
+
+async def _count_events(
+    session_factory: async_sessionmaker[AsyncSession],
+    review_id: UUID,
+    *,
+    event_type: str,
+    node_id: str | None = None,
+) -> int:
+    sql = "SELECT COUNT(*) FROM audit_events WHERE review_id = :rid AND event_type = :etype"
+    params: dict[str, object] = {"rid": review_id, "etype": event_type}
+    if node_id is not None:
+        sql += " AND payload->>'node_id' = :node"
+        params["node"] = node_id
+    async with session_factory() as session:
+        result = await session.execute(text(sql), params)
+        return result.scalar_one()
+
+
+async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
+    eval_db: str,
+    eval_db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Re-reviewing the same PR under SERVE: drive 2 serves the analyze finding
+    (zero analyze LLM call), flows it to the report through publish, and replays
+    equivalent — alongside drive 1, the cold miss that seeded the cache."""
+    store = AnalyzeCacheStore(session_factory=eval_db_session_factory)
+
+    # `allow_eval_analyze_cache=True` opts past the production is_eval cache bypass
+    # (DECISIONS.md#046) — safe here because eval_db is an isolated ephemeral DB
+    # holding only is_eval rows, so there is no production row to read by mistake.
+    # Drive 1 (PR #22): cache empty → analyze runs the model and writes the row.
+    first = await run_review_persisting(
+        _FIXTURE_COLD,
+        db_url=eval_db,
+        analyze_cache_store=store,
+        cache_mode=CacheMode.SERVE,
+        allow_eval_analyze_cache=True,
+    )
+    # Drive 2 (PR #23, same file, fresh review_id): analyze SERVES from drive 1's
+    # row (the lookup's self-hit exclusion keys on the CURRENT review, so the
+    # cross-review hit is not suppressed).
+    second = await run_review_persisting(
+        _FIXTURE_RESUBMIT,
+        db_url=eval_db,
+        analyze_cache_store=store,
+        cache_mode=CacheMode.SERVE,
+        allow_eval_analyze_cache=True,
+    )
+
+    assert first.review_id != second.review_id
+
+    # Drive 1 was a cold miss: the model ran for analyze; nothing was served.
+    assert (
+        await _count_events(
+            eval_db_session_factory, first.review_id, event_type="llm_call", node_id="analyze"
+        )
+        >= 1
+    )
+    assert (
+        await _count_events(eval_db_session_factory, first.review_id, event_type="cache_serve") == 0
+    )
+
+    # Drive 2 served: ZERO analyze LLM calls, and a CacheServeEvent recorded.
+    assert (
+        await _count_events(
+            eval_db_session_factory, second.review_id, event_type="llm_call", node_id="analyze"
+        )
+        == 0
+    )
+    assert (
+        await _count_events(eval_db_session_factory, second.review_id, event_type="cache_serve")
+        >= 1
+    )
+
+    # The served finding flowed through every downstream gate to publish: the LOW
+    # finding never trips HITL, and it reaches the report with the same type as the
+    # cold drive produced (proof the served finding is the cached one, re-stamped).
+    assert second.hitl_gated is False
+    assert len(second.findings) >= 1
+    assert {f.finding_type for f in second.findings} == {f.finding_type for f in first.findings}
+
+    # Both reviews replay equivalent from the persisted audit stream — the serve
+    # path is reconstructable end-to-end, not just unit-correct.
+    replayer = AuditReplayer(session_factory=eval_db_session_factory)
+    await replayer.assert_replay_equivalent(first.review_id)
+    await replayer.assert_replay_equivalent(second.review_id)

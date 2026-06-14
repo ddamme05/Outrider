@@ -808,6 +808,7 @@ def _build_eval_graph(
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    allow_eval_analyze_cache: bool = False,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -853,11 +854,20 @@ def _build_eval_graph(
         # Default shadow; the serve eval scenario injects CacheMode.SERVE with a
         # pre-seeded store through this seam.
         cache_mode=cache_mode,
+        # TEST-ONLY: the serve eval scenario opts past the is_eval cache bypass
+        # (its ephemeral DB holds only is_eval rows). Default False. DECISIONS.md#046.
+        allow_eval_analyze_cache=allow_eval_analyze_cache,
     )
 
 
 async def _drive(
-    fixture: EvalFixture, db_url: str, *, probe: CostProbe | None = None
+    fixture: EvalFixture,
+    db_url: str,
+    *,
+    probe: CostProbe | None = None,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
+    allow_eval_analyze_cache: bool = False,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -884,6 +894,9 @@ async def _drive(
             provider=provider,
             publisher=publisher,
             checkpointer=InMemorySaver(),
+            analyze_cache_store=analyze_cache_store,
+            cache_mode=cache_mode,
+            allow_eval_analyze_cache=allow_eval_analyze_cache,
         )
 
         result = await graph.ainvoke(
@@ -1023,15 +1036,16 @@ async def _read_review_status(engine: AsyncEngine, review_id: UUID) -> str:
     return str(status)
 
 
-def _validate_resume_db_url(db_url: str) -> None:
-    """Fail-closed guard on a caller-supplied resume DB URL.
+def _validate_eval_db_url(db_url: str) -> None:
+    """Fail-closed guard on a caller-supplied eval DB URL.
 
     Refuses anything but a per-test ephemeral eval DB: it must be on the
     postgres-test container (port 5433, never prod's 5432) AND carry the
     `EVAL_DB_NAME_PREFIX` name that `ephemeral_database` / the eval_db fixture mint.
     The port alone would accept the shared base `outrider_test` (also 5433); the
-    prefix is what proves "a fixture-owned per-test DB" — the resume driver creates
-    checkpoint tables + seeds rows and must never touch the shared base.
+    prefix is what proves "a fixture-owned per-test DB" — a caller-supplied-db_url
+    driver (resume or serve) creates checkpoint/cache tables + seeds rows and must
+    never touch the shared base.
     """
     try:
         parsed = make_url(db_url)
@@ -1070,11 +1084,11 @@ async def run_review_with_resume(
     approval is supplied explicitly through `Command(resume=...)`, and publish runs
     only after it (boundary #6 preserved).
 
-    Fail-closed: `require_eval_mode()` + `_validate_resume_db_url` (a per-test eval
+    Fail-closed: `require_eval_mode()` + `_validate_eval_db_url` (a per-test eval
     DB, not the shared base) run before any DB or checkpointer work.
     """
     require_eval_mode()
-    _validate_resume_db_url(db_url)
+    _validate_eval_db_url(db_url)
 
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
@@ -1167,3 +1181,44 @@ async def run_review_with_resume(
         raise
     finally:
         await engine.dispose()
+
+
+async def run_review_persisting(
+    fixture_path: str | os.PathLike[str],
+    *,
+    db_url: str,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
+    allow_eval_analyze_cache: bool = False,
+) -> EvalRunResult:
+    """Drive the graph ONCE against a caller-supplied, already-migrated `db_url`.
+
+    Unlike the self-contained `run_review` (which owns + drops an ephemeral DB),
+    this runs against the caller's `eval_db` so the audit stream AND the
+    `analyze_file_cache` rows SURVIVE the call — the serve cache scenario needs
+    both: an `AuditReplayer` reads the stream AFTER this returns, and a SECOND
+    `run_review_persisting` against the same DB re-reviews the same PR, so the
+    first drive's cache write becomes the second drive's serve hit (each call
+    mints a fresh `review_id`, so the lookup's self-hit exclusion never suppresses
+    the cross-review hit).
+
+    `analyze_cache_store` must be bound to the SAME `db_url` (the scenario builds
+    it from `eval_db`). `allow_eval_analyze_cache=True` lifts the production is_eval
+    cache bypass for the serve scenario (DECISIONS.md#046) — safe only because this
+    runs against an isolated ephemeral eval DB; production never sets it.
+    Fail-closed: `require_eval_mode()` + `_validate_eval_db_url` (a per-test eval
+    DB, not the shared base) run before any DB work.
+    """
+    require_eval_mode()
+    _validate_eval_db_url(db_url)
+
+    with open(fixture_path, encoding="utf-8") as fh:
+        fixture = EvalFixture.model_validate(json.load(fh))
+
+    return await _drive(
+        fixture,
+        db_url,
+        analyze_cache_store=analyze_cache_store,
+        cache_mode=cache_mode,
+        allow_eval_analyze_cache=allow_eval_analyze_cache,
+    )

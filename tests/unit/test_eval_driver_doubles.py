@@ -28,7 +28,7 @@ from outrider.agent.eval_driver import (
     _FixtureContentNotFoundError,
     _FixtureScriptedProvider,
     _github_factory_for,
-    _validate_resume_db_url,
+    _validate_eval_db_url,
 )
 from outrider.llm.base import LLMRequest
 from outrider.schemas.hitl import HITLRequest, PerFindingOutcome
@@ -514,31 +514,31 @@ def test_build_approve_all_decision_empty_gate_yields_no_decisions() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _validate_resume_db_url (resume driver's fail-closed DB-isolation guard)
+# _validate_eval_db_url (caller-supplied-db_url driver's fail-closed DB-isolation guard)
 # ---------------------------------------------------------------------------
 
 
-def test_validate_resume_db_url_accepts_per_test_eval_db() -> None:
+def test_validate_eval_db_url_accepts_per_test_eval_db() -> None:
     # A per-test ephemeral eval DB (port 5433, outrider_eval_* name) passes.
-    _validate_resume_db_url("postgresql+psycopg://u:p@localhost:5433/outrider_eval_abc12345")
+    _validate_eval_db_url("postgresql+psycopg://u:p@localhost:5433/outrider_eval_abc12345")
 
 
-def test_validate_resume_db_url_rejects_shared_base_db() -> None:
-    # The base `outrider_test` is ALSO on 5433 but is NOT a per-test DB — the
-    # resume driver would create checkpoint tables + seed rows into the shared
+def test_validate_eval_db_url_rejects_shared_base_db() -> None:
+    # The base `outrider_test` is ALSO on 5433 but is NOT a per-test DB — a
+    # caller-supplied-db_url driver would create tables + seed rows into the shared
     # base. The prefix check (not port alone) is what catches this.
     with pytest.raises(EvalDriverError, match="per-test eval database"):
-        _validate_resume_db_url("postgresql+psycopg://u:p@localhost:5433/outrider_test")
+        _validate_eval_db_url("postgresql+psycopg://u:p@localhost:5433/outrider_test")
 
 
-def test_validate_resume_db_url_rejects_non_test_port() -> None:
+def test_validate_eval_db_url_rejects_non_test_port() -> None:
     # Port 5432 is the dev/prod container — refuse it even with the eval name.
     with pytest.raises(EvalDriverError, match="per-test eval database"):
-        _validate_resume_db_url("postgresql+psycopg://u:p@localhost:5432/outrider_eval_abc12345")
+        _validate_eval_db_url("postgresql+psycopg://u:p@localhost:5432/outrider_eval_abc12345")
 
 
-def test_validate_resume_db_url_rejects_unparseable_url() -> None:
+def test_validate_eval_db_url_rejects_unparseable_url() -> None:
     # A non-numeric port makes make_url raise — surfaced as a typed EvalDriverError,
     # not a raw SQLAlchemy error (the file's fail-loud-with-clear-cause discipline).
     with pytest.raises(EvalDriverError, match="not a parseable database URL"):
-        _validate_resume_db_url("postgresql+psycopg://u:p@localhost:NOTAPORT/outrider_eval_x")
+        _validate_eval_db_url("postgresql+psycopg://u:p@localhost:NOTAPORT/outrider_eval_x")
