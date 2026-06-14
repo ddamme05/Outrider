@@ -18,8 +18,9 @@ from outrider.policy import (
 )
 from outrider.policy import severity as severity_module
 
-# The canonical v1.0.0 mapping from spec §7.4, inlined.
-EXPECTED_V1_POLICY: dict[FindingType, FindingSeverity] = {
+# The active v1.1.0 mapping, inlined. DECISIONS.md#048 extended the v1.0.0
+# spec §7.4 mapping with three OBSERVED-tier security types (Cost Lever 3).
+EXPECTED_ACTIVE_POLICY: dict[FindingType, FindingSeverity] = {
     FindingType.SQL_INJECTION: FindingSeverity.CRITICAL,
     FindingType.AUTH_BYPASS: FindingSeverity.CRITICAL,
     FindingType.HARDCODED_SECRET: FindingSeverity.HIGH,
@@ -32,6 +33,9 @@ EXPECTED_V1_POLICY: dict[FindingType, FindingSeverity] = {
     FindingType.MISSING_TEST: FindingSeverity.LOW,
     FindingType.UNUSED_IMPORT: FindingSeverity.INFO,
     FindingType.DEPRECATED_API: FindingSeverity.INFO,
+    FindingType.COMMAND_INJECTION: FindingSeverity.CRITICAL,
+    FindingType.UNSAFE_DESERIALIZATION: FindingSeverity.HIGH,
+    FindingType.TLS_VERIFY_DISABLED: FindingSeverity.HIGH,
 }
 
 
@@ -53,9 +57,9 @@ def test_severity_policy_has_no_extra_keys() -> None:
     assert extras == set(), f"SEVERITY_POLICY keys that aren't FindingType: {extras}"
 
 
-def test_severity_policy_matches_canonical_v1_mapping() -> None:
-    """In-memory SEVERITY_POLICY equals the spec §7.4 mapping verbatim."""
-    assert SEVERITY_POLICY == EXPECTED_V1_POLICY
+def test_severity_policy_matches_active_mapping() -> None:
+    """In-memory SEVERITY_POLICY equals the active v1.1.0 mapping verbatim."""
+    assert SEVERITY_POLICY == EXPECTED_ACTIVE_POLICY
 
 
 @pytest.mark.parametrize(
@@ -66,6 +70,9 @@ def test_severity_policy_matches_canonical_v1_mapping() -> None:
         (FindingType.HARDCODED_SECRET, FindingSeverity.HIGH),
         (FindingType.MISSING_TEST, FindingSeverity.LOW),
         (FindingType.UNUSED_IMPORT, FindingSeverity.INFO),
+        (FindingType.COMMAND_INJECTION, FindingSeverity.CRITICAL),
+        (FindingType.UNSAFE_DESERIALIZATION, FindingSeverity.HIGH),
+        (FindingType.TLS_VERIFY_DISABLED, FindingSeverity.HIGH),
     ],
 )
 def test_lookup_severity_returns_canonical_value(

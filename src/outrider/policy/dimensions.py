@@ -49,6 +49,10 @@ FINDING_TYPE_TO_DIMENSION: Final[Mapping[FindingType, ReviewDimension]] = Mappin
         FindingType.MISSING_ERROR_HANDLING: ReviewDimension.CODE_QUALITY,
         FindingType.MISSING_TEST: ReviewDimension.TEST_COVERAGE,
         FindingType.DEPRECATED_API: ReviewDimension.BEST_PRACTICES,
+        # OBSERVED-tier security types (policy 1.1.0, DECISIONS.md#048 + #021).
+        FindingType.COMMAND_INJECTION: ReviewDimension.SECURITY,
+        FindingType.UNSAFE_DESERIALIZATION: ReviewDimension.SECURITY,
+        FindingType.TLS_VERIFY_DISABLED: ReviewDimension.SECURITY,
     }
 )
 

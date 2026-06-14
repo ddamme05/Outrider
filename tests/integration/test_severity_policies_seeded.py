@@ -72,3 +72,38 @@ async def test_v1_0_0_seeded_with_canonical_mapping(migrated_db: str) -> None:
             )
     finally:
         await engine.dispose()
+
+
+# v1.1.0 extends v1.0.0 with three OBSERVED-tier security types
+# (DECISIONS.md#048). The lifespan fingerprint binds the live SEVERITY_POLICY
+# to this row at ACTIVE_POLICY_VERSION=1.1.0.
+EXPECTED_V1_1_POLICY = {
+    **EXPECTED_V1_POLICY,
+    "command_injection": "critical",
+    "unsafe_deserialization": "high",
+    "tls_verify_disabled": "high",
+}
+
+
+async def test_v1_1_0_seeded_with_active_mapping(migrated_db: str) -> None:
+    """v1.1.0 exists with the 15-entry active mapping (DECISIONS.md#048).
+
+    Additive over v1.0.0: the three new keys are appended; the original
+    twelve are unchanged. Mirrors the v1.0.0 content check above so an
+    accidental in-place edit (or a divergence from the live mapping that
+    would fail the lifespan fingerprint) is caught before CI.
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.connect() as conn:
+            policy_result = await conn.execute(
+                text("SELECT policy FROM severity_policies WHERE version = '1.1.0'")
+            )
+            policy = policy_result.scalar_one()
+            assert policy == EXPECTED_V1_1_POLICY, (
+                "v1.1.0 policy diverges from DECISIONS.md#048 / the live "
+                "SEVERITY_POLICY. A change ships as a new version row, never an "
+                "UPDATE to v1.1.0 (severity-policy-versioned-for-replay)."
+            )
+    finally:
+        await engine.dispose()

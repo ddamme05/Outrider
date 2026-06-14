@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from outrider.audit.events import FindingEvent, compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewDimension
 
 
@@ -49,7 +50,7 @@ def _build_event(**overrides: Any) -> FindingEvent:
         "dimension": ReviewDimension.SECURITY,
         "finding_content_hash": content_hash,
         "evidence_tier": EvidenceTier.JUDGED,
-        "policy_version": "1.0.0",
+        "policy_version": ACTIVE_POLICY_VERSION,
         # Per DECISIONS.md#025 admitted FindingEvent mirrors proposal_hash.
         "proposal_hash": "a" * 64,
     }
@@ -74,7 +75,7 @@ def test_finding_event_carries_evidence_tier() -> None:
             line_end=12,
             finding_type=FindingType.SQL_INJECTION,
         ),
-        "policy_version": "1.0.0",
+        "policy_version": ACTIVE_POLICY_VERSION,
     }
     with pytest.raises(ValidationError, match="evidence_tier"):
         FindingEvent(**fields)
@@ -288,10 +289,11 @@ def test_finding_event_rejects_severity_drifted_from_policy() -> None:
     """`FindingEvent.severity` must equal SEVERITY_POLICY[finding_type]
     under live policy. Backs `severity-set-by-policy`.
 
-    pre-fold a row like
-    `(SQL_INJECTION, LOW, policy_version="1.0.0")` admitted even though
-    SEVERITY_POLICY[SQL_INJECTION] == CRITICAL under policy_version 1.0.0,
-    so a policy-invalid event could enter the append-only audit stream.
+    Regression: a row like `(SQL_INJECTION, LOW)` at the ACTIVE policy
+    version was admitted even though SEVERITY_POLICY[SQL_INJECTION] ==
+    CRITICAL, so a policy-invalid event could enter the append-only audit
+    stream. The helper defaults `policy_version` to ACTIVE_POLICY_VERSION
+    so the drift check fires (it is skipped for historical versions).
     """
     with pytest.raises(ValidationError, match="severity-set-by-policy"):
         _build_event(

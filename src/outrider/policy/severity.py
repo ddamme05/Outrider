@@ -53,6 +53,9 @@ class FindingType(StrEnum):
     MISSING_ERROR_HANDLING = "missing_error_handling"
     MISSING_TEST = "missing_test"
     DEPRECATED_API = "deprecated_api"
+    COMMAND_INJECTION = "command_injection"
+    UNSAFE_DESERIALIZATION = "unsafe_deserialization"
+    TLS_VERIFY_DISABLED = "tls_verify_disabled"
 
 
 class FindingSeverity(StrEnum):
@@ -88,6 +91,10 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
         FindingType.MISSING_TEST: FindingSeverity.LOW,
         FindingType.UNUSED_IMPORT: FindingSeverity.INFO,
         FindingType.DEPRECATED_API: FindingSeverity.INFO,
+        # OBSERVED-tier security types (policy 1.1.0, DECISIONS.md#048).
+        FindingType.COMMAND_INJECTION: FindingSeverity.CRITICAL,
+        FindingType.UNSAFE_DESERIALIZATION: FindingSeverity.HIGH,
+        FindingType.TLS_VERIFY_DISABLED: FindingSeverity.HIGH,
     }
 )
 
@@ -112,7 +119,7 @@ from re-emerging the way it did pre-PR-review-
 
 _SEMVER_RE: Final[re.Pattern[str]] = re.compile(BARE_SEMVER_PATTERN, re.ASCII)
 
-ACTIVE_POLICY_VERSION: Final[str] = "1.0.0"
+ACTIVE_POLICY_VERSION: Final[str] = "1.1.0"
 if not _SEMVER_RE.fullmatch(ACTIVE_POLICY_VERSION):
     raise RuntimeError(
         f"ACTIVE_POLICY_VERSION must be bare ASCII semver (no v prefix, no "

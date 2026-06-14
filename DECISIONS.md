@@ -1407,3 +1407,21 @@ V1 ships the nullable shape. When FUP-093 lands (audit-query helper wired into `
 **Consequences.** §5.6's surface inventory becomes "five translation functions plus three supporting surfaces; all eight live inside `coordinates/`", and `docs/trust-boundaries.md` boundary #3's enumeration matches — this entry is the paired source for both edits per the `enforce-decisions` gate. The OBSERVED producer consumes this surface instead of inlining span→line math (the same boundary the `source_line_to_github` publisher bridge preserves in the other direction). Anything needing a different span→line translation extends `coordinates/` rather than re-deriving it.
 
 **Referenced from.** `docs/spec.md` §5.6, `docs/trust-boundaries.md` #3, `src/outrider/coordinates/translator.py`, `src/outrider/coordinates/__init__.py`.
+
+## 048. OBSERVED-tier security FindingTypes (severity policy 1.1.0)
+
+**Status:** Accepted, 2026-06-14.
+
+**Context.** Cost Lever 3's OBSERVED query library (`specs/2026-06-14-observed-query-library-v1.md`) emits deterministic security findings from tree-sitter matches. Several seed patterns map to existing `FindingType`s (`SQL_INJECTION`, `HARDCODED_SECRET`, `PATH_TRAVERSAL`, `BLOCKING_CALL_IN_ASYNC`); three RCE/transport patterns have none: shell/eval command execution (`subprocess(shell=True)`, `os.system`/`os.popen`, `eval`/`exec` on non-literals), unsafe deserialization (`pickle.load`, `yaml.load` without `SafeLoader`), and disabled TLS verification (`verify=False`).
+
+**Decision.** Add three `FindingType` values, each landing in the SAME commit with BOTH its `SEVERITY_POLICY` severity AND its `FINDING_TYPE_TO_DIMENSION` dimension — the lockstep trio `verify_lockstep` enforces at module load per `#021`:
+
+- `command_injection` → severity **CRITICAL** (RCE; the `SQL_INJECTION`/`AUTH_BYPASS` tier), dimension **SECURITY**.
+- `unsafe_deserialization` → severity **HIGH** (RCE-class but requires attacker-controlled input; CRITICAL kept narrow to injection/bypass), dimension **SECURITY**.
+- `tls_verify_disabled` → severity **HIGH** (MITM exposure), dimension **SECURITY**.
+
+The severities ship as a NEW policy version `1.1.0` (additive — no existing mapping changes, so `1.0.0` reviews replay untouched) via a seed migration inserting the full 15-entry `1.1.0` mapping per `severity-policy-versioned-for-replay`; `ACTIVE_POLICY_VERSION` bumps `1.0.0 → 1.1.0` in the same commit, and the `api/lifespan.py` fingerprint binds live↔DB. Dimensions are append-only per `#021` (new types add freely; existing mappings stay immutable), so no dimension-version infrastructure is needed.
+
+**Consequences.** Severity stays policy-set, never model-set (`#001`) — the OBSERVED producer reads `SEVERITY_POLICY[finding_type]`. `verify_lockstep` (module load) and `ReviewFinding._enforce_dimension_lockstep` (construction + replay `model_validate`) both require the three sets (`FindingType`, `SEVERITY_POLICY` keys, `FINDING_TYPE_TO_DIMENSION` keys) to stay identical; the new types satisfy all three. A finding's OBSERVED evidence tier reflects detection certainty; the type's severity is independent of it. Future seed patterns reuse these types or add new ones under a further version bump.
+
+**Referenced from.** `src/outrider/policy/severity.py`, `src/outrider/policy/dimensions.py` (`FINDING_TYPE_TO_DIMENSION`), the severity-policy `1.1.0` seed migration, `tests/unit/test_severity_policy_dict.py`, `tests/unit/test_policy_dimensions.py`, `tests/integration/test_severity_policies_seeded.py`, `docs/spec.md` §7.4.
