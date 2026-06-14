@@ -160,22 +160,25 @@ def test_analyze_parser_version_pinned() -> None:
 
 def test_query_registry_digest_is_stable_64_hex() -> None:
     assert re.fullmatch(r"[0-9a-f]{64}", QUERY_REGISTRY_DIGEST)
-    # Module-load pinned: recomputing over the same bodies is identical.
-    from outrider.queries.registry import _QUERY_BODIES
+    # Module-load pinned: recomputing over the same bodies + OBSERVED
+    # metadata is identical (the second arg folds class/finding_type/title/
+    # description per the Cost Lever 3 round-3 review).
+    from outrider.queries.registry import _OBSERVED_QUERIES, _QUERY_BODIES
 
-    assert _registry_digest(_QUERY_BODIES) == QUERY_REGISTRY_DIGEST
+    assert _registry_digest(_QUERY_BODIES, _OBSERVED_QUERIES) == QUERY_REGISTRY_DIGEST
 
 
 def test_query_registry_digest_changes_with_body_semantics() -> None:
     """A pattern edit that keeps its id changes the digest — the
-    FUP-166 property that makes cached OBSERVED findings safe."""
-    base = _registry_digest({"python.x": "(call) @c"})
-    edited = _registry_digest({"python.x": "(call function: (identifier)) @c"})
-    renamed = _registry_digest({"python.y": "(call) @c"})
+    FUP-166 property that makes cached OBSERVED findings safe. (Synthetic
+    bodies with no OBSERVED metadata, so the second arg is empty.)"""
+    base = _registry_digest({"python.x": "(call) @c"}, {})
+    edited = _registry_digest({"python.x": "(call function: (identifier)) @c"}, {})
+    renamed = _registry_digest({"python.y": "(call) @c"}, {})
     assert base != edited
     assert base != renamed
 
 
 def test_query_registry_digest_pair_boundaries_unambiguous() -> None:
     """Length-prefixing: ({'ab': 'c'}) must differ from ({'a': 'bc'})."""
-    assert _registry_digest({"ab": "c"}) != _registry_digest({"a": "bc"})
+    assert _registry_digest({"ab": "c"}, {}) != _registry_digest({"a": "bc"}, {})
