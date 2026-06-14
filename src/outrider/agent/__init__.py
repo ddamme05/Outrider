@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         EvalRunResult,
         ResumedRunResult,
         run_review,
+        run_review_persisting,
         run_review_with_resume,
     )
 
@@ -36,6 +37,7 @@ __all__ = [
     "EvalRunResult",
     "ResumedRunResult",
     "run_review",
+    "run_review_persisting",
     "run_review_with_resume",
 ]
 
