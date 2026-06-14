@@ -79,6 +79,7 @@ class _RecordingAnalyzeEventSink:
         self.scope_exclusions: list[Any] = []
         self.cache_lookups: list[Any] = []
         self.cache_serves: list[Any] = []
+        self.observed_skip_shadows: list[Any] = []
 
     async def emit_finding(self, finding: Any, *, is_eval: bool) -> None:
         self.findings.append((finding, is_eval))
@@ -100,6 +101,9 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_cache_serve(self, event: Any) -> None:
         self.cache_serves.append(event)
+
+    async def emit_observed_skip_shadow(self, event: Any) -> None:
+        self.observed_skip_shadows.append(event)
 
 
 # Head: module import (query-bearing, outside every scope), alpha with a

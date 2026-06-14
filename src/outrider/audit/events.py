@@ -2,7 +2,7 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has twenty
+`AuditEventBase` is the shared base. The hierarchy has twenty-one
 concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
@@ -13,8 +13,9 @@ analyze-foundation additions (`AnalyzeCompletedEvent`,
 synthesize-node addition (`SynthesizeCompletedEvent`), the
 replay-verdict-projection addition (`ReplayVerdictEvent`), the
 trivial-scope-filter addition (`ScopeExclusionEvent`), the
-analyze-cache lookup addition (`CacheLookupEvent`), and the analyze-cache
-serve addition (`CacheServeEvent`). Each
+analyze-cache lookup addition (`CacheLookupEvent`), the analyze-cache
+serve addition (`CacheServeEvent`), and the OBSERVED-tier skip-shadow
+addition (`ObservedSkipShadowEvent`, Cost Lever 3). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
@@ -686,6 +687,116 @@ class CacheServeEvent(AuditEventBase):
         """Audit-shadow mirror of `paths-validated-before-use` — same as
         every sibling path-bearing event."""
         return validate_diff_path(path)
+
+
+class ObservedSkipChangedRegion(BaseModel):
+    """One per-side changed line range the OBSERVED skip-coverage check
+    evaluated — both the full changed-region set and the `blockers` subset use
+    this shape. Frozen + extra=forbid (the outer event's frozen-ness does not
+    propagate). Carries source LINE coordinates (not bytes, not raw model
+    output), keeping the event within the metadata-only audit contract
+    (`DECISIONS.md#014`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    side: Literal["head", "base"]
+    line_start: Annotated[int, Field(ge=1)]
+    line_end: Annotated[int, Field(ge=1)]
+
+    @model_validator(mode="after")
+    def _enforce_line_order(self) -> Self:
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+
+class ObservedSkipCoveringMatch(BaseModel):
+    """A `skip_safe` OBSERVED match that covered (part of) the changed region:
+    its `query_match_id` plus the source line range its envelope spans. The
+    union of these spans IS the coverage envelope — reconstructable without
+    re-parsing. Frozen + extra=forbid.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query_match_id: Annotated[str, Field(max_length=200, min_length=1)]
+    line_start: Annotated[int, Field(ge=1)]
+    line_end: Annotated[int, Field(ge=1)]
+
+    @model_validator(mode="after")
+    def _enforce_line_order(self) -> Self:
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+
+class ObservedSkipShadowEvent(AuditEventBase):
+    """Per-file OBSERVED-tier skip-routing SHADOW record (Cost Lever 3,
+    specs/2026-06-14-observed-query-library-v1.md).
+
+    One event per pass-0 clean-mode file the default-deny skip routing
+    evaluates. `outcome="would_skip"` means every changed region in the file
+    was covered by a `skip_safe` OBSERVED match (so the LLM call COULD be
+    skipped); `outcome="not_eligible"` means at least one changed region fell
+    outside every `skip_safe` envelope. V1 records the decision only — it is
+    shadow telemetry; the LLM still runs (no skip is enforced) until the
+    evidence-gated flip. V1 also seeds zero `skip_safe` queries (default-deny),
+    so every emission is `not_eligible` until a query is promoted.
+
+    Self-contained enough to reconstruct a promotion proof AFTER content
+    retention purges the findings (`DECISIONS.md#014`): it carries the
+    `changed_regions` evaluated (the per-side changed line spans — the union of
+    `coordinates.changed_line_spans` across the file's included scopes), the
+    `covering_matches` (each `skip_safe` match's `query_match_id` + line span;
+    their union is the coverage envelope), and the `blockers` (the changed
+    regions outside every `skip_safe` envelope — the concrete reason a
+    `not_eligible` was not eligible). Spans/ranges only, never raw model output,
+    so it stays within the metadata-only audit contract.
+
+    Carries `node_id="analyze"` so replay node-containment binds it to the
+    analyze phase window (`CacheLookupEvent` precedent). Idempotency mode:
+    event_id-PK per `DECISIONS.md#026` — resume re-emission appends;
+    consumer-side dedup collapses.
+    """
+
+    event_type: Literal["observed_skip_shadow"] = "observed_skip_shadow"
+    node_id: Literal["analyze"] = "analyze"
+    file_path: Annotated[str, Field(max_length=1024)]
+    outcome: Literal["would_skip", "not_eligible"]
+    changed_regions: tuple[ObservedSkipChangedRegion, ...]
+    covering_matches: tuple[ObservedSkipCoveringMatch, ...] = ()
+    blockers: tuple[ObservedSkipChangedRegion, ...] = ()
+
+    @field_validator("file_path")
+    @classmethod
+    def _enforce_canonical_file_path(cls, path: str) -> str:
+        """Audit-shadow mirror of `paths-validated-before-use` — same as
+        every sibling path-bearing event."""
+        return validate_diff_path(path)
+
+    @model_validator(mode="after")
+    def _enforce_outcome_blocker_consistency(self) -> Self:
+        """`would_skip` iff there are no blockers; `not_eligible` iff at least
+        one blocker. The outcome is a deterministic function of the coverage
+        check, so the recorded outcome and the blocker set must never disagree.
+        """
+        has_blockers = bool(self.blockers)
+        if self.outcome == "would_skip" and has_blockers:
+            raise ValueError(
+                "ObservedSkipShadowEvent: outcome='would_skip' requires empty "
+                f"blockers, got {len(self.blockers)}"
+            )
+        if self.outcome == "not_eligible" and not has_blockers:
+            raise ValueError(
+                "ObservedSkipShadowEvent: outcome='not_eligible' requires at least "
+                "one blocker (the uncovered changed region), got none"
+            )
+        return self
 
 
 class FileExaminationEvent(AuditEventBase):
@@ -2733,6 +2844,7 @@ AuditEvent = Annotated[
     | ScopeExclusionEvent
     | CacheLookupEvent
     | CacheServeEvent
+    | ObservedSkipShadowEvent
     | FindingEvent
     | TraceDecisionEvent
     | HITLRequestEvent
@@ -2761,6 +2873,7 @@ AuditEventAdapter: Final[
         | ScopeExclusionEvent
         | CacheLookupEvent
         | CacheServeEvent
+        | ObservedSkipShadowEvent
         | FindingEvent
         | TraceDecisionEvent
         | HITLRequestEvent
@@ -2794,6 +2907,9 @@ __all__ = [
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
+    "ObservedSkipChangedRegion",
+    "ObservedSkipCoveringMatch",
+    "ObservedSkipShadowEvent",
     "PublishAttemptEvent",
     "PublishAttemptOutcome",
     "PublishEligibility",

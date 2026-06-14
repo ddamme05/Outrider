@@ -136,6 +136,7 @@ class _RecordingAnalyzeEventSink:
         self.scope_exclusions: list[ScopeExclusionEvent] = []
         self.cache_lookups: list[CacheLookupEvent] = []
         self.cache_serves: list[object] = []
+        self.observed_skip_shadows: list[object] = []
         self.events: list[Any] = []
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
@@ -165,6 +166,10 @@ class _RecordingAnalyzeEventSink:
 
     async def emit_cache_serve(self, event: object) -> None:
         self.cache_serves.append(event)
+        self.events.append(event)
+
+    async def emit_observed_skip_shadow(self, event: object) -> None:
+        self.observed_skip_shadows.append(event)
         self.events.append(event)
 
 

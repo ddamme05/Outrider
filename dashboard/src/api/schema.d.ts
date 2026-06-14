@@ -1435,6 +1435,124 @@ export interface components {
             previous: components["schemas"]["PeriodTotals"];
         };
         /**
+         * ObservedSkipChangedRegion
+         * @description One per-side changed line range the OBSERVED skip-coverage check
+         *     evaluated — both the full changed-region set and the `blockers` subset use
+         *     this shape. Frozen + extra=forbid (the outer event's frozen-ness does not
+         *     propagate). Carries source LINE coordinates (not bytes, not raw model
+         *     output), keeping the event within the metadata-only audit contract
+         *     (`DECISIONS.md#014`).
+         */
+        ObservedSkipChangedRegion: {
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "head" | "base";
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+        };
+        /**
+         * ObservedSkipCoveringMatch
+         * @description A `skip_safe` OBSERVED match that covered (part of) the changed region:
+         *     its `query_match_id` plus the source line range its envelope spans. The
+         *     union of these spans IS the coverage envelope — reconstructable without
+         *     re-parsing. Frozen + extra=forbid.
+         */
+        ObservedSkipCoveringMatch: {
+            /** Query Match Id */
+            query_match_id: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+        };
+        /**
+         * ObservedSkipShadowEvent
+         * @description Per-file OBSERVED-tier skip-routing SHADOW record (Cost Lever 3,
+         *     specs/2026-06-14-observed-query-library-v1.md).
+         *
+         *     One event per pass-0 clean-mode file the default-deny skip routing
+         *     evaluates. `outcome="would_skip"` means every changed region in the file
+         *     was covered by a `skip_safe` OBSERVED match (so the LLM call COULD be
+         *     skipped); `outcome="not_eligible"` means at least one changed region fell
+         *     outside every `skip_safe` envelope. V1 records the decision only — it is
+         *     shadow telemetry; the LLM still runs (no skip is enforced) until the
+         *     evidence-gated flip. V1 also seeds zero `skip_safe` queries (default-deny),
+         *     so every emission is `not_eligible` until a query is promoted.
+         *
+         *     Self-contained enough to reconstruct a promotion proof AFTER content
+         *     retention purges the findings (`DECISIONS.md#014`): it carries the
+         *     `changed_regions` evaluated (the per-side changed line spans — the union of
+         *     `coordinates.changed_line_spans` across the file's included scopes), the
+         *     `covering_matches` (each `skip_safe` match's `query_match_id` + line span;
+         *     their union is the coverage envelope), and the `blockers` (the changed
+         *     regions outside every `skip_safe` envelope — the concrete reason a
+         *     `not_eligible` was not eligible). Spans/ranges only, never raw model output,
+         *     so it stays within the metadata-only audit contract.
+         *
+         *     Carries `node_id="analyze"` so replay node-containment binds it to the
+         *     analyze phase window (`CacheLookupEvent` precedent). Idempotency mode:
+         *     event_id-PK per `DECISIONS.md#026` — resume re-emission appends;
+         *     consumer-side dedup collapses.
+         */
+        ObservedSkipShadowEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "observed_skip_shadow";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** File Path */
+            file_path: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "would_skip" | "not_eligible";
+            /** Changed Regions */
+            changed_regions: components["schemas"]["ObservedSkipChangedRegion"][];
+            /**
+             * Covering Matches
+             * @default []
+             */
+            covering_matches: components["schemas"]["ObservedSkipCoveringMatch"][];
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: components["schemas"]["ObservedSkipChangedRegion"][];
+        };
+        /**
          * PerFindingDecision
          * @description One reviewer's decision on one finding.
          *
@@ -1835,7 +1953,7 @@ export interface components {
             start: components["schemas"]["ReviewPhaseEvent"] | null;
             end: components["schemas"]["ReviewPhaseEvent"] | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
         };
         /**
          * ReplayBucket
@@ -1928,11 +2046,11 @@ export interface components {
             /** Status */
             status: string | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Phases */
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
-            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Findings */
             findings: components["schemas"]["TimelineFindingContentView"][];
             /** Llm Exchanges */
@@ -2064,7 +2182,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
             /** Total */
             total: number;
         };

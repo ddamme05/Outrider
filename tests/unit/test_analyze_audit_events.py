@@ -1,5 +1,6 @@
-# See specs/2026-05-19-analyze-foundation.md §5.
-"""Three new analyze-event subclasses: shape + validator + discriminator tests.
+# See specs/2026-05-19-analyze-foundation.md §5 and
+# specs/2026-06-14-observed-query-library-v1.md (ObservedSkipShadowEvent).
+"""Analyze-event subclasses: shape + validator + discriminator tests.
 
 Pins:
 - `AnalyzeCompletedEvent`: counter cross-field validators
@@ -9,7 +10,9 @@ Pins:
   reason accepted; pattern guards on hash fields.
 - `AnalyzeResponseRejectedEvent`: `response_hash` pattern; Literal
   `rejection_reason`.
-- All three: frozen + extra="forbid", discriminator routing through
+- `ObservedSkipShadowEvent` (Cost Lever 3): outcome/blocker consistency,
+  sub-model line-order, file_path canonicalization, node_id pinning.
+- All four: frozen + extra="forbid", discriminator routing through
   `AuditEventAdapter`.
 """
 
@@ -26,6 +29,9 @@ from outrider.audit.events import (
     AnalyzeResponseRejectedEvent,
     AuditEventAdapter,
     FindingProposalRejectedEvent,
+    ObservedSkipChangedRegion,
+    ObservedSkipCoveringMatch,
+    ObservedSkipShadowEvent,
 )
 from outrider.policy import EvidenceTier
 from outrider.policy.canonical import compute_identity_hash, compute_response_hash
@@ -428,3 +434,154 @@ def test_audit_event_adapter_routes_analyze_response_rejected() -> None:
     payload["review_id"] = str(payload["review_id"])
     event = AuditEventAdapter.validate_python(payload)
     assert isinstance(event, AnalyzeResponseRejectedEvent)
+
+
+# ---------------------------------------------------------------------------
+# ObservedSkipShadowEvent (Cost Lever 3,
+# specs/2026-06-14-observed-query-library-v1.md). Shadow telemetry: per-file
+# OBSERVED-tier skip-routing decision, never raw model output (spans + ids
+# only, metadata-only audit contract DECISIONS.md#014).
+# ---------------------------------------------------------------------------
+
+
+def _skip_shadow_kwargs(**overrides: Any) -> dict[str, Any]:
+    """Fixture for ObservedSkipShadowEvent. Default is the V1-realistic
+    `not_eligible` shape: default-deny seeds zero `skip_safe` queries, so every
+    changed region is a blocker. One head-side changed region, no covering
+    matches, the same region echoed as the single blocker — satisfies the
+    outcome/blocker-consistency validator."""
+    region = ObservedSkipChangedRegion(side="head", line_start=10, line_end=14)
+    base: dict[str, Any] = {
+        "review_id": uuid4(),
+        "file_path": "src/foo.py",
+        "outcome": "not_eligible",
+        "changed_regions": (region,),
+        "covering_matches": (),
+        "blockers": (region,),
+    }
+    base.update(overrides)
+    return base
+
+
+def test_observed_skip_shadow_admits_not_eligible() -> None:
+    """Default-deny V1 case: one uncovered changed region → not_eligible."""
+    event = ObservedSkipShadowEvent(**_skip_shadow_kwargs())
+    assert event.event_type == "observed_skip_shadow"
+    assert event.node_id == "analyze"
+    assert event.outcome == "not_eligible"
+    assert len(event.blockers) == 1
+
+
+def test_observed_skip_shadow_admits_would_skip_fully_covered() -> None:
+    """Post-promotion case: a `skip_safe` match covers the changed region, so
+    there are no blockers → would_skip."""
+    match = ObservedSkipCoveringMatch(
+        query_match_id="py-observed-eval-call-1", line_start=10, line_end=14
+    )
+    event = ObservedSkipShadowEvent(
+        **_skip_shadow_kwargs(outcome="would_skip", covering_matches=(match,), blockers=())
+    )
+    assert event.outcome == "would_skip"
+    assert event.blockers == ()
+    assert event.covering_matches[0].query_match_id == "py-observed-eval-call-1"
+
+
+def test_observed_skip_shadow_rejects_would_skip_with_blockers() -> None:
+    """outcome/blocker consistency: would_skip with a non-empty blocker set is
+    incoherent (the outcome is a deterministic function of coverage)."""
+    with pytest.raises(ValidationError, match="would_skip' requires empty"):
+        ObservedSkipShadowEvent(**_skip_shadow_kwargs(outcome="would_skip"))
+
+
+def test_observed_skip_shadow_rejects_not_eligible_without_blockers() -> None:
+    """The inverse: not_eligible with no blocker has no recorded reason."""
+    with pytest.raises(ValidationError, match="not_eligible' requires at least"):
+        ObservedSkipShadowEvent(**_skip_shadow_kwargs(blockers=()))
+
+
+def test_observed_skip_changed_region_rejects_inverted_lines() -> None:
+    with pytest.raises(ValidationError, match="must be >= line_start"):
+        ObservedSkipChangedRegion(side="base", line_start=14, line_end=10)
+
+
+def test_observed_skip_covering_match_rejects_inverted_lines() -> None:
+    with pytest.raises(ValidationError, match="must be >= line_start"):
+        ObservedSkipCoveringMatch(query_match_id="q-1", line_start=14, line_end=10)
+
+
+def test_observed_skip_covering_match_rejects_empty_query_match_id() -> None:
+    """`query_match_id` is the registry pointer — an empty id can't reference a
+    real query (min_length=1)."""
+    with pytest.raises(ValidationError, match="query_match_id"):
+        ObservedSkipCoveringMatch(query_match_id="", line_start=10, line_end=14)
+
+
+def test_observed_skip_shadow_canonicalizes_file_path() -> None:
+    """file_path rides the same `validate_diff_path` canonicalization as every
+    sibling path-bearing event — `./src/foo.py` normalizes to `src/foo.py`."""
+    event = ObservedSkipShadowEvent(**_skip_shadow_kwargs(file_path="./src/foo.py"))
+    assert event.file_path == "src/foo.py"
+
+
+def test_observed_skip_shadow_rejects_traversal_file_path() -> None:
+    """`..` traversal is rejected at construction (CoordinateError is not a
+    ValueError subclass, so it propagates unwrapped — same as sibling events)."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((CoordinateError, ValueError)):
+        ObservedSkipShadowEvent(**_skip_shadow_kwargs(file_path="../secrets.txt"))
+
+
+def test_observed_skip_shadow_rejects_non_analyze_node_id() -> None:
+    """node_id is pinned to the analyze phase (Literal['analyze'])."""
+    with pytest.raises(ValidationError):
+        ObservedSkipShadowEvent(**_skip_shadow_kwargs(node_id="triage"))
+
+
+def test_observed_skip_shadow_frozen() -> None:
+    event = ObservedSkipShadowEvent(**_skip_shadow_kwargs())
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        event.file_path = "other.py"  # type: ignore[misc]
+
+
+def test_observed_skip_shadow_extra_forbid() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ObservedSkipShadowEvent(**_skip_shadow_kwargs(unexpected="bad"))
+
+
+def test_observed_skip_shadow_covering_and_blockers_default_empty() -> None:
+    """Both tuple fields default to () — a would_skip with neither kwarg is the
+    minimal admissible shape (no blockers, so consistent)."""
+    region = ObservedSkipChangedRegion(side="head", line_start=10, line_end=14)
+    event = ObservedSkipShadowEvent(
+        review_id=uuid4(), file_path="src/foo.py", outcome="would_skip", changed_regions=(region,)
+    )
+    assert event.covering_matches == ()
+    assert event.blockers == ()
+
+
+def test_observed_skip_changed_region_frozen_and_extra_forbid() -> None:
+    """The sub-model's frozen-ness does not inherit from the outer event — it is
+    declared on the sub-model itself, so pin both here."""
+    region = ObservedSkipChangedRegion(side="head", line_start=10, line_end=14)
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        region.line_start = 1  # type: ignore[misc]
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ObservedSkipChangedRegion(side="head", line_start=10, line_end=14, extra="bad")
+
+
+def test_observed_skip_covering_match_frozen_and_extra_forbid() -> None:
+    match = ObservedSkipCoveringMatch(query_match_id="q-1", line_start=10, line_end=14)
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        match.line_start = 1  # type: ignore[misc]
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ObservedSkipCoveringMatch(query_match_id="q-1", line_start=10, line_end=14, extra="bad")
+
+
+def test_audit_event_adapter_routes_observed_skip_shadow() -> None:
+    """The discriminated union routes the tag to the right subtype and the
+    round-trip preserves every field (sub-model tuples included)."""
+    event = ObservedSkipShadowEvent(**_skip_shadow_kwargs())
+    routed = AuditEventAdapter.validate_python(event.model_dump(mode="json"))
+    assert isinstance(routed, ObservedSkipShadowEvent)
+    assert routed == event
