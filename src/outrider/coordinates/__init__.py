@@ -9,13 +9,19 @@
 # =============================================================================
 """Coordinates module — translation surface per docs/spec.md §5.6.
 
-V1 §5.6 public surface — four translation functions + three supporting
+V1 §5.6 public surface — five translation functions + three supporting
 surfaces, all inside `coordinates/` per `coordinates-module-is-sole-translator`:
 
-Four translation functions:
+Five translation functions:
 
 - `tree_sitter_to_github(...)` — byte-span → GitHub comment location (§5.6).
   Canonical analyze→publish path; consumers with byte spans use this directly.
+- `query_span_to_source_lines(...)` — `QueryMatchSpan` byte envelope →
+  1-indexed inclusive source line range `(line_start, line_end)`. The
+  OBSERVED-tier producer's bridge to `ReviewFinding.line_start`/`line_end`,
+  built on the private `_byte_offset_to_line` so byte→line math stays in
+  `coordinates/`. Requires a non-empty span (`byte_start < byte_end`);
+  `byte_end` is exclusive. See `DECISIONS.md#047` (Cost Lever 3).
 - `diff_line_to_scope(...)` — diff line → owning ScopeUnit or None (§5.6).
 - `source_line_to_github(...)` — source-line → GitHub comment location.
   Line-coord publisher entry that bridges `ReviewFinding.line_start` /
@@ -135,6 +141,7 @@ from outrider.coordinates.spans import (
 )
 from outrider.coordinates.translator import (
     GitHubCommentLocation,
+    query_span_to_source_lines,
     source_line_to_github,
     tree_sitter_to_github,
 )
@@ -159,6 +166,7 @@ __all__ = [
     "lookup_patched_file",
     "patched_file_has_added_lines",
     "patched_file_has_removed_lines",
+    "query_span_to_source_lines",
     "resolve_candidate_paths",
     "scope_unit_diff_hunks",
     "scope_unit_has_added_lines",
