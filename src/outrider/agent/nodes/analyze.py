@@ -387,6 +387,21 @@ async def analyze(
         # use the cache, kept mutually invisible by the lookup's REQUIRED is_eval
         # read-isolation predicate (the scope's is_eval, passed at the lookup
         # below) plus the is_eval-stamped write.
+        #
+        # Defense-in-depth: the lookup partitions on cache_scope.is_eval (the
+        # reviews row) while CacheLookupEvent + the serve emits are tagged
+        # state.is_eval. The two are set together at review creation and cannot
+        # diverge in production; but if a producer bug ever split them, reading one
+        # partition while emitting the other's telemetry would be incoherent — so a
+        # divergence disables the cache for this pass (fail-safe; the protection the
+        # pre-#046 either-flag bypass gave, kept without the eval-wide veto).
+        if cache_scope is not None and cache_scope.is_eval != state.is_eval:
+            logger.warning(
+                "analyze-cache is_eval divergence (scope=%s, state=%s); cache disabled",
+                cache_scope.is_eval,
+                state.is_eval,
+            )
+            cache_scope = None
 
     # Local accumulators — single source of truth for AnalyzeCompletedEvent
     # counters. Re-reading from the audit stream would couple counter

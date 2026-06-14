@@ -364,7 +364,9 @@ async def test_is_eval_review_looks_up_scoped_to_eval_rows() -> None:
         retention_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
     )
     store = _FakeCacheStore(scope=eval_scope)  # miss (no entry)
-    provider, _sink = await _run(store)
+    # Consistent eval review: scope is_eval AND state.is_eval both True (as set
+    # together at review creation) — no divergence, so the cache is used.
+    provider, _sink = await _run(store, state_is_eval=True)
 
     assert store.resolve_calls == [_REVIEW_ID]
     [(_key, looked_up_is_eval, _excluded)] = store.lookup_calls
@@ -374,16 +376,21 @@ async def test_is_eval_review_looks_up_scoped_to_eval_rows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lookup_is_eval_comes_from_the_scope_not_state() -> None:
-    """The lookup's is_eval predicate is the resolved SCOPE's value (the reviews
-    row — the authoritative source the write also stamps), NOT state.is_eval. A
-    prod-scope review keeps reading the prod partition even if state.is_eval
-    diverges; the row, not state, decides the partition (DECISIONS.md#046)."""
+async def test_divergent_is_eval_disables_the_cache() -> None:
+    """Defense-in-depth (DECISIONS.md#046): the lookup partitions on the resolved
+    SCOPE's is_eval while CacheLookupEvent + the serve emits are tagged
+    state.is_eval. The two are set together at review creation and cannot diverge in
+    production; if a producer bug ever split them, reading one partition while
+    emitting the other's telemetry would be incoherent — so a divergence DISABLES
+    the cache for the pass (fail-safe; the pre-#046 either-flag bypass's protection,
+    kept without the eval-wide veto)."""
     store = _FakeCacheStore(scope=_SCOPE)  # scope (row) says is_eval=False
-    provider, _sink = await _run(store, state_is_eval=True)
+    provider, sink = await _run(store, state_is_eval=True)  # state says True → divergence
 
-    [(_key, looked_up_is_eval, _excluded)] = store.lookup_calls
-    assert looked_up_is_eval is False  # the scope/row wins over state.is_eval
+    assert store.resolve_calls == [_REVIEW_ID]  # scope was resolved...
+    assert store.lookup_calls == []  # ...then the cache disabled on divergence
+    assert store.write_calls == []
+    assert sink.cache_lookups == []
     assert len(provider.calls) == 1
 
 
