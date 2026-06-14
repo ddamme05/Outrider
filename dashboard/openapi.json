@@ -1060,6 +1060,12 @@
             "title": "N Findings Served",
             "default": 0
           },
+          "n_findings_observed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Findings Observed",
+            "default": 0
+          },
           "n_proposals_rejected": {
             "type": "integer",
             "minimum": 0.0,
@@ -1898,7 +1904,10 @@
           "unused_import",
           "missing_error_handling",
           "missing_test",
-          "deprecated_api"
+          "deprecated_api",
+          "command_injection",
+          "unsafe_deserialization",
+          "tls_verify_disabled"
         ],
         "title": "FindingType",
         "description": "The constrained enum the LLM classifies findings under.\n\nThe retry/normalize/anomaly path that turns a model-produced string\ninto a FindingType enum value (or anomalies if no safe match) is the\nanalyze node's responsibility per `finding-type-enum-constrained`.\nThis enum is the type system; the analyze node is what bridges from\nuntrusted model output to it."

@@ -26,6 +26,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.analyze_observed import OBSERVED_PRODUCER_VERSION
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
@@ -313,6 +314,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         analyze_parser_version=ANALYZE_PARSER_VERSION,
         response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
         parameterized_call_scan_digest=scan_digest(scan_parameterized_calls(_HEAD.encode("utf-8"))),
+        observed_producer_version=OBSERVED_PRODUCER_VERSION,
     )
     assert write["cache_key"] == expected_key == event.cache_key == looked_up_key
     assert write["source_review_id"] == _REVIEW_ID

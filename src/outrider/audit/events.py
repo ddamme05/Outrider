@@ -64,7 +64,8 @@ by `HITLDecisionEvent.decisions`):
     and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
   - `AnalyzeCompletedEvent` enforces two accounting equations per
     foundation §5: `n_proposals_seen == (n_findings_emitted -
-    n_findings_served) + n_proposals_rejected` (cache-served findings ride in
+    n_findings_served - n_findings_observed) + n_proposals_rejected`
+    (cache-served AND deterministic OBSERVED findings ride in
     n_findings_emitted but sit outside the proposal lifecycle, so they
     subtract), and `n_responses_rejected <= n_llm_calls`.
   - `FindingProposalRejectedEvent` enforces the bidirectional
@@ -2280,6 +2281,12 @@ class AnalyzeCompletedEvent(AuditEventBase):
     lifecycle equation counts only model-proposed findings. Default 0 (no served
     findings under `cache_mode=shadow`, the default; analyze hasn't shipped so no
     historical payloads exist — the default is a forward-compat hedge)."""
+    n_findings_observed: int = Field(ge=0, default=0)
+    """Count of deterministic OBSERVED-tier findings the analyze node produced and
+    merged this pass (Cost Lever 3). Like served findings, they increment
+    `n_findings_emitted` (real `FindingEvent`s fire) but carry no LLM proposal,
+    so `_enforce_proposal_accounting` subtracts them. Default 0 (degraded passes
+    and pre-Lever-3 payloads produce none)."""
     n_proposals_rejected: int = Field(ge=0)
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
@@ -2349,24 +2356,31 @@ class AnalyzeCompletedEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
-        """`n_proposals_seen == (n_findings_emitted - n_findings_served) + n_proposals_rejected`.
+        """Proposal accounting: `n_proposals_seen == (n_findings_emitted
+        - n_findings_served - n_findings_observed) + n_proposals_rejected`.
 
         Every raw LLM proposal either becomes a finding or gets rejected; total
-        accounting must hold. Cache-SERVED findings (Stage B serve flip) ride in
-        `n_findings_emitted` — they fire real `FindingEvent`s — but have no
-        proposal in this pass, so they subtract via `n_findings_served`.
-        Response-level rejections (`n_responses_rejected`) are separate — those
-        don't have a proposal to count, so they don't enter this equation.
+        accounting must hold. Two finding classes ride in `n_findings_emitted`
+        (they fire real `FindingEvent`s) but have no proposal in this pass, so
+        they subtract out: cache-SERVED findings (Stage B serve flip) via
+        `n_findings_served`, and deterministic OBSERVED-tier findings (Cost
+        Lever 3) via `n_findings_observed`. Response-level rejections
+        (`n_responses_rejected`) are separate — those don't have a proposal to
+        count, so they don't enter this equation.
         """
-        expected = (self.n_findings_emitted - self.n_findings_served) + self.n_proposals_rejected
+        expected = (
+            self.n_findings_emitted - self.n_findings_served - self.n_findings_observed
+        ) + self.n_proposals_rejected
         if self.n_proposals_seen != expected:
             raise ValueError(
                 f"Proposal accounting mismatch: n_proposals_seen={self.n_proposals_seen} "
                 f"!= (n_findings_emitted({self.n_findings_emitted}) - "
-                f"n_findings_served({self.n_findings_served})) + "
+                f"n_findings_served({self.n_findings_served}) - "
+                f"n_findings_observed({self.n_findings_observed})) + "
                 f"n_proposals_rejected({self.n_proposals_rejected}) = {expected}. "
-                f"Cache-served findings ride in n_findings_emitted but outside the "
-                f"proposal lifecycle, so they subtract via n_findings_served. "
+                f"Cache-served AND deterministic OBSERVED findings ride in "
+                f"n_findings_emitted but outside the proposal lifecycle, so they "
+                f"subtract via n_findings_served / n_findings_observed. "
                 f"Response-level rejections (n_responses_rejected={self.n_responses_rejected}) "
                 f"do NOT enter this equation — only proposal-level rejections do."
             )
