@@ -213,7 +213,11 @@ class AnalyzeCacheStore:
         # the sweep). A live row wins over every later writer; an expired
         # row would otherwise block re-population for the whole
         # expiry-to-sweep window because lookup treats it as a MISS while
-        # its physical PK still swallows inserts.
+        # its physical PK still swallows inserts. Cross-scope (DECISIONS.md#046):
+        # the conflict key is cache_key alone, so a refresh adopts the writer's
+        # is_eval (the set_ below) — an EXPIRED prod row refreshed by an eval write
+        # flips to is_eval=True; a LIVE row of either partition blocks the write.
+        # This is the write-arbiter half of read isolation (not coexistence).
         statement = statement.on_conflict_do_update(
             index_elements=["cache_key"],
             set_={

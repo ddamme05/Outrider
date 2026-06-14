@@ -1,13 +1,15 @@
-"""Serve-mode eval scenario (FUP-176): re-review the same PR; the second pass
-serves the analyze finding from cache and flows it through to publish.
+"""Serve-mode eval scenario (FUP-176): re-review a file across TWO PRs; the second
+PR's analyze serves the finding from the first PR's cache row and flows it to publish.
 
-Two `CacheMode.SERVE` drives of the same fixture against ONE eval DB:
+Two `CacheMode.SERVE` drives of TWO DISTINCT fixtures (two PRs that touch one file
+IDENTICALLY — NOT one fixture twice; `reviews` is UNIQUE on (repo_id, pr_number,
+head_sha), so the same PR head cannot be reviewed twice) against ONE eval DB:
 
-- **Drive 1** (cache empty): analyze MISSES → calls the model → writes the
+- **Drive 1** (PR #22, cache empty): analyze MISSES → calls the model → writes the
   `analyze_file_cache` row (the write-on-miss happens in any cache mode).
-- **Drive 2** (cache populated by drive 1, a FRESH `review_id`): analyze HITS →
-  reconstructs + re-stamps the cached finding (zero analyze LLM call) → the served
-  finding flows through synthesize → HITL (LOW finding, no gate) → publish.
+- **Drive 2** (PR #23, same file, cache populated by drive 1, a FRESH `review_id`):
+  analyze HITS → reconstructs + re-stamps the cached finding (zero analyze LLM call)
+  → the served finding flows through synthesize → HITL (LOW finding, no gate) → publish.
 
 This drives the serve path end-to-end through the real seven-node graph — the
 coverage FUP-177's unit tests (re-mint determinism, degrade guard) could not give:
@@ -70,9 +72,10 @@ async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
     eval_db: str,
     eval_db_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Re-reviewing the same PR under SERVE: drive 2 serves the analyze finding
-    (zero analyze LLM call), flows it to the report through publish, and replays
-    equivalent — alongside drive 1, the cold miss that seeded the cache."""
+    """Re-reviewing a shared file across two PRs under SERVE: drive 2 (PR #23)
+    serves the analyze finding from drive 1's (PR #22) cache row (zero analyze LLM
+    call), flows it to the report through publish, and replays equivalent — alongside
+    drive 1, the cold miss that seeded the cache."""
     store = AnalyzeCacheStore(session_factory=eval_db_session_factory)
 
     # Eval reviews use the cache (scoped to is_eval rows by the lookup predicate,
@@ -121,11 +124,29 @@ async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
     )
 
     # The served finding flowed through every downstream gate to publish: the LOW
-    # finding never trips HITL, and it reaches the report with the same type as the
-    # cold drive produced (proof the served finding is the cached one, re-stamped).
+    # finding never trips HITL, and it reaches the report.
     assert second.hitl_gated is False
-    assert len(second.findings) >= 1
-    assert {f.finding_type for f in second.findings} == {f.finding_type for f in first.findings}
+    assert len(first.findings) == 1 and len(second.findings) == 1
+
+    # It is the cached finding RE-STAMPED: assert the full CONTENT matches the cold
+    # drive's finding, not just finding_type — a one-element-set equality would pass
+    # even if the re-stamp corrupted title/evidence/span/severity. review_id +
+    # finding_id legitimately differ (re-minted per review); content must not.
+    cold, served = first.findings[0], second.findings[0]
+    for field in (
+        "finding_type",
+        "severity",
+        "dimension",
+        "evidence_tier",
+        "file_path",
+        "line_start",
+        "line_end",
+        "title",
+        "description",
+        "evidence",
+        "content_hash",
+    ):
+        assert getattr(served, field) == getattr(cold, field), field
 
     # Both reviews replay equivalent from the persisted audit stream — the serve
     # path is reconstructable end-to-end, not just unit-correct.

@@ -234,7 +234,8 @@ def _state(*, is_eval: bool = False) -> ReviewState:
         reasoning="test",
     )
     # Default is the production-real combination: state.is_eval matches
-    # the reviews row both False. The eval-veto tests override one side.
+    # the reviews row, both False. The is_eval scoping tests override
+    # state_is_eval and/or the fake store's scope to flex the partition.
     return ReviewState(
         review_id=_REVIEW_ID,
         received_at=datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC),

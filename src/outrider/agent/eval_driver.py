@@ -867,8 +867,10 @@ async def _drive(
     """Run the graph once against `db_url` (already migrated) and collect results.
 
     The is_eval integrity gate runs on BOTH the success and failure paths before
-    the ephemeral DB is dropped: on success a violation fails the run; on failure
-    it is best-effort (suppressed) so it never masks the root-cause exception.
+    `_drive` disposes the engine (and, for the `_arun_review` caller, before its
+    `ephemeral_database` drops the DB — the `run_review_persisting` caller owns the
+    DB and keeps it): on success a violation fails the run; on failure it is
+    best-effort (suppressed) so it never masks the root-cause exception.
     """
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:

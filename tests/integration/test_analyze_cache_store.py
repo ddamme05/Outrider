@@ -273,3 +273,50 @@ async def test_lookup_is_eval_predicate_isolates_reads(migrated_db: str) -> None
         assert await store.lookup(key, is_eval=True) is None  # eval cannot read it
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cross_partition_write_arbiter(migrated_db: str) -> None:
+    """Write-arbiter cross-scope behavior (DECISIONS.md#046 — the load-bearing half
+    of read isolation, distinct from the read predicate above). The conflict key is
+    cache_key alone (is_eval is a plain column), so eval/prod rows with the same key
+    cannot co-exist: a LIVE prod row BLOCKS an eval write of that key (eval misses,
+    never reads prod), while an EXPIRED prod row is REFRESHED in place by an eval
+    write, flipping is_eval to the writer's partition (the `is_eval` set_ clause in
+    the ON CONFLICT DO UPDATE) so the eval review then hits its own refresh."""
+    engine = create_async_engine(migrated_db)
+    try:
+        prod_review = await _seed_review(engine)
+        store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
+        prod_scope = await store.resolve_scope(prod_review)
+        assert prod_scope is not None and prod_scope.is_eval is False
+        eval_scope = CacheScope(
+            installation_id=prod_scope.installation_id,
+            repo_id=prod_scope.repo_id,
+            is_eval=True,  # same tenant, eval partition
+            retention_expires_at=prod_scope.retention_expires_at,
+        )
+        eval_review = await _seed_review(engine)
+        key = "b2" * 32  # 64 hex chars
+
+        # A LIVE prod row blocks an eval write of the same key (first-writer-wins).
+        await store.write(**_write_kwargs(key, prod_scope, prod_review))
+        await store.write(**_write_kwargs(key, eval_scope, eval_review))  # no-op: prod row live
+        assert await store.lookup(key, is_eval=True) is None  # eval can't read the live prod row
+        assert await store.lookup(key, is_eval=False) is not None  # prod row intact
+
+        # Expire the prod row; an eval write now REFRESHES it in place, flipping is_eval.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE analyze_file_cache "
+                    "SET retention_expires_at = NOW() - INTERVAL '1 second' "
+                    "WHERE cache_key = :key"
+                ),
+                {"key": key},
+            )
+        await store.write(**_write_kwargs(key, eval_scope, eval_review))
+        assert await store.lookup(key, is_eval=True) is not None  # eval hits its own refresh
+        assert await store.lookup(key, is_eval=False) is None  # prod can no longer see it (flipped)
+    finally:
+        await engine.dispose()
