@@ -124,6 +124,46 @@ def tree_sitter_to_github(
     )
 
 
+def query_span_to_source_lines(
+    *,
+    byte_start: int,
+    byte_end: int,
+    head_content: str,
+) -> tuple[int, int]:
+    """Convert a `QueryMatchSpan` byte envelope to a 1-indexed INCLUSIVE source
+    line range `(line_start, line_end)`.
+
+    The OBSERVED-tier producer's bridge from `ast_facts.QueryMatchSpan` (byte
+    offsets) to `ReviewFinding.line_start`/`line_end` (source lines), so byte→line
+    math never inlines at the analyze call site (trust boundary #3).
+
+    Half-open input: `byte_end` is EXCLUSIVE (one-past-the-last byte, matching
+    tree-sitter and `QueryMatchSpan`), so `line_end` is the line of the last
+    CONTENT byte (`byte_end - 1`); deriving it from `byte_end` directly would
+    spill onto the next line when a span ends exactly at a `\\n`.
+
+    Requires a NON-EMPTY span (`byte_start < byte_end`). `QueryMatchSpan` admits
+    `byte_start == byte_end` (its validator rejects only `byte_end < byte_start`),
+    but a zero-width match has no reviewable line range and would underflow
+    `byte_end - 1`; it raises `CoordinateError(kind=BYTE_OFFSET_INVALID)`.
+    Out-of-bounds offsets raise the same kind via `_validate_byte_span`.
+
+    See `DECISIONS.md#047`.
+    """
+    if byte_end <= byte_start:
+        raise CoordinateError(
+            f"query span must be non-empty: byte_end {byte_end} must be > "
+            f"byte_start {byte_start} (a zero-width OBSERVED match span has no "
+            f"reviewable source-line range)",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+        )
+    head_bytes = head_content.encode("utf-8")
+    _validate_byte_span(byte_start, byte_end, len(head_bytes))
+    line_start = _byte_offset_to_line(head_bytes, byte_start)
+    line_end = _byte_offset_to_line(head_bytes, byte_end - 1)
+    return (line_start, line_end)
+
+
 # ----------------------------------------------------------------------------
 # Internal helpers — package-private, no boundary surface
 # ----------------------------------------------------------------------------
