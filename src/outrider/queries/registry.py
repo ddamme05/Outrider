@@ -31,13 +31,19 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Final, cast
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final, cast
 
 import tree_sitter_python
 from tree_sitter import Language, Parser, Query, QueryCursor
 
 from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.ast_facts.models import QueryCaptureSpan, QueryMatchSpan
+from outrider.policy.severity import FindingType
+from outrider.queries.observed import ObservedQuery, QueryClass
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # ---------------------------------------------------------------------------
 # Compiled language and parser (module-level singletons)
@@ -73,6 +79,119 @@ _DEPRECATED_QUERY_ID_TO_BODY: Final[dict[str, str]] = {}
 
 
 # ---------------------------------------------------------------------------
+# OBSERVED-tier security query library (Cost Lever 3,
+# specs/2026-06-14-observed-query-library-v1.md). These carry routing/output
+# metadata (finding_type, class, title/description) the deterministic OBSERVED
+# producer consumes; structural queries above do not. All are SIGNAL_ONLY in
+# V1 (default-deny — they augment the LLM, never skip it). Their .scm bodies
+# are loaded + compiled alongside the structural queries, so match() and
+# get_query_source() resolve them; their metadata folds into the cache-key
+# digest (DECISIONS.md#048 for the FindingTypes).
+# ---------------------------------------------------------------------------
+_OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
+    oq.query_match_id: oq
+    for oq in (
+        ObservedQuery(
+            query_match_id="python.command_injection_subprocess_shell",
+            filename="command_injection_subprocess_shell.scm",
+            finding_type=FindingType.COMMAND_INJECTION,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="subprocess invoked with shell=True",
+            description=(
+                "A subprocess is run with shell=True; untrusted input in the "
+                "command string enables shell command injection. Pass an "
+                "argument list with shell=False, or sanitize the input."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.command_injection_os_system",
+            filename="command_injection_os_system.scm",
+            finding_type=FindingType.COMMAND_INJECTION,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="os.system / os.popen command execution",
+            description=(
+                "os.system and os.popen pass a string to the shell; untrusted "
+                "input enables command injection. Prefer subprocess with an "
+                "argument list."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.command_injection_eval_exec",
+            filename="command_injection_eval_exec.scm",
+            finding_type=FindingType.COMMAND_INJECTION,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="eval / exec on a dynamic expression",
+            description=(
+                "eval/exec runs a non-literal expression as code; untrusted "
+                "input enables arbitrary code execution. Avoid dynamic eval/exec "
+                "or constrain the input to a vetted set."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.unsafe_deserialization_pickle",
+            filename="unsafe_deserialization_pickle.scm",
+            finding_type=FindingType.UNSAFE_DESERIALIZATION,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="pickle deserialization of untrusted data",
+            description=(
+                "pickle.load/loads executes arbitrary code embedded in the "
+                "payload; never unpickle attacker-controlled data. Use a safe "
+                "format such as JSON."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.unsafe_deserialization_yaml",
+            filename="unsafe_deserialization_yaml.scm",
+            finding_type=FindingType.UNSAFE_DESERIALIZATION,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="yaml.load without a safe Loader",
+            description=(
+                "yaml.load without a safe Loader can construct arbitrary Python "
+                "objects from the document; use yaml.safe_load or pass "
+                "Loader=SafeLoader."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.sql_injection_string_concat",
+            filename="sql_injection_string_concat.scm",
+            finding_type=FindingType.SQL_INJECTION,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="SQL built by string formatting / concatenation",
+            description=(
+                "A SQL statement passed to execute is assembled with an "
+                "f-string, concatenation, or .format(); untrusted input enables "
+                "SQL injection. Use parameterized queries."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.tls_verify_disabled",
+            filename="tls_verify_disabled.scm",
+            finding_type=FindingType.TLS_VERIFY_DISABLED,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="TLS certificate verification disabled (verify=False)",
+            description=(
+                "verify=False disables certificate validation, exposing the "
+                "request to man-in-the-middle attacks. Keep verification enabled "
+                "against a proper CA."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.blocking_call_in_async",
+            filename="blocking_call_in_async.scm",
+            finding_type=FindingType.BLOCKING_CALL_IN_ASYNC,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Blocking call inside an async function",
+            description=(
+                "A blocking call (time.sleep, requests, open) inside async code "
+                "stalls the event loop; use an async equivalent or run it in a "
+                "thread executor."
+            ),
+        ),
+    )
+}
+
+
+# ---------------------------------------------------------------------------
 # Module-load: read .scm files, compile queries, run mandatory-capture
 # rejection per Internal contracts (every pattern must have at least one
 # capture quantified `''` or `'+'`; optional-only `?`/`*` patterns reject).
@@ -86,6 +205,13 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, Query]]:
         body = (_QUERIES_DIR / filename).read_text(encoding="utf-8")
         bodies[query_id] = body
         compiled[query_id] = _compile_and_validate(query_id, body, filename)
+    # OBSERVED-tier security queries: same load + compile + mandatory-capture
+    # validation. Their .scm bodies join _QUERY_BODIES/_COMPILED_QUERIES so
+    # match()/get_query_source() resolve them like any other registered id.
+    for query_id, observed in _OBSERVED_QUERIES.items():
+        body = (_QUERIES_DIR / observed.filename).read_text(encoding="utf-8")
+        bodies[query_id] = body
+        compiled[query_id] = _compile_and_validate(query_id, body, observed.filename)
     # Deprecated bodies also compile and validate.
     for query_id, body in _DEPRECATED_QUERY_ID_TO_BODY.items():
         bodies[query_id] = body
@@ -162,14 +288,19 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
 _QUERY_BODIES, _COMPILED_QUERIES = _load_and_compile()
 
 
-def _registry_digest(bodies: dict[str, str]) -> str:
-    """Length-prefixed SHA-256 over the sorted (id, body) pairs.
+def _registry_digest(bodies: dict[str, str], observed: Mapping[str, ObservedQuery]) -> str:
+    """Length-prefixed SHA-256 over the sorted (id, body) pairs PLUS the
+    routing-and-output metadata of OBSERVED queries.
 
-    The analyze-cache key component that pins query SEMANTICS: a pattern
-    edit that keeps its id changes this digest, so cached OBSERVED
-    findings can never be served under rules that no longer produced
-    them (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166).
-    Length-prefixing makes the pair boundaries unambiguous — the
+    The analyze-cache key component that pins query SEMANTICS AND emitted
+    output. A pattern edit that keeps its id changes this digest — AND so
+    does a change to an OBSERVED query's class / finding_type / title /
+    description, each of which alters routing or the emitted finding (and
+    the cached payload) while living OUTSIDE the `.scm` body. Folding them
+    here keeps cached OBSERVED findings from being served under metadata
+    that no longer produced them (specs/2026-06-11-file-hash-analyze-cache.md
+    + FUP-166; the Cost Lever 3 round-3 review; `DECISIONS.md#048`).
+    Length-prefixing makes the field boundaries unambiguous — the
     `llm/base.py::_canonical_prompt_hash` precedent. Covers deprecated
     ledger bodies too: strictly safer, and ledger changes are rare.
     """
@@ -181,17 +312,26 @@ def _registry_digest(bodies: dict[str, str]) -> str:
         h.update(qid_bytes)
         h.update(f"{len(body_bytes)}:".encode())
         h.update(body_bytes)
+        # OBSERVED queries fold their routing-and-output metadata: a change
+        # to any of these alters emitted findings / routing without touching
+        # the .scm body, so it must move the digest (invalidate stale cache).
+        oq = observed.get(query_id)
+        if oq is not None:
+            for field in (oq.query_class.value, oq.finding_type.value, oq.title, oq.description):
+                field_bytes = field.encode("utf-8")
+                h.update(f"{len(field_bytes)}:".encode())
+                h.update(field_bytes)
     return h.hexdigest()
 
 
 # Code-pinned at module load from the actual compiled sources — never
 # injectable, so the recorded digest cannot drift from the queries that
 # actually ran (the TRIVIAL_FILTER_VERSION adjacency precedent).
-QUERY_REGISTRY_DIGEST: Final[str] = _registry_digest(_QUERY_BODIES)
+QUERY_REGISTRY_DIGEST: Final[str] = _registry_digest(_QUERY_BODIES, _OBSERVED_QUERIES)
 
 
 def _all_known_ids() -> set[str]:
-    return set(_QUERY_ID_TO_FILENAME) | set(_DEPRECATED_QUERY_ID_TO_BODY)
+    return set(_QUERY_ID_TO_FILENAME) | set(_OBSERVED_QUERIES) | set(_DEPRECATED_QUERY_ID_TO_BODY)
 
 
 # Public surface: the set of `query_match_id` strings the analyze node
@@ -202,6 +342,17 @@ def _all_known_ids() -> set[str]:
 # `_DEPRECATED_QUERY_ID_TO_BODY` and removes it from this surface in the
 # same commit, mirroring the registry's Internal-contracts split.
 REGISTERED_QUERY_IDS: Final[frozenset[str]] = frozenset(_QUERY_ID_TO_FILENAME)
+
+
+# Public surface: the OBSERVED-tier security queries + their routing/output
+# metadata, consumed by the deterministic OBSERVED producer (analyze). This is
+# a SEPARATE surface from `REGISTERED_QUERY_IDS` (the structural LLM-citation
+# admission set per analyze `_build_query_match_id_set`) — the two query KINDS
+# stay distinct. `match()`/`get_query_source()` still resolve OBSERVED ids
+# (their bodies are in `_QUERY_BODIES`). `MappingProxyType` blocks runtime
+# mutation, the same defense-in-depth as `SEVERITY_POLICY`.
+OBSERVED_QUERIES: Final[Mapping[str, ObservedQuery]] = MappingProxyType(dict(_OBSERVED_QUERIES))
+OBSERVED_QUERY_IDS: Final[frozenset[str]] = frozenset(_OBSERVED_QUERIES)
 
 
 # ---------------------------------------------------------------------------
