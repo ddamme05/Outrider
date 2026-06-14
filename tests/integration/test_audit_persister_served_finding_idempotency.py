@@ -35,9 +35,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from outrider.audit.events import compute_finding_content_hash
+from outrider.audit.events import ReviewPhaseEvent, compute_finding_content_hash
 from outrider.audit.persister import AuditPersisterIdempotencyConflict
+from outrider.audit.replay import AuditReplayer
 from outrider.policy.canonical import compute_served_finding_id
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
@@ -100,6 +102,31 @@ async def _count_findings(setup: PersisterTestSetup, finding_id: UUID) -> int:
         return result.scalar_one()
 
 
+def _analyze_phase(review_id: UUID, marker: str) -> ReviewPhaseEvent:
+    """An analyze phase marker so the FindingEvents below are phase-bounded —
+    replay requires node work to sit inside a ReviewPhaseEvent start/end pair
+    (`phase-events-bound-work`)."""
+    return ReviewPhaseEvent(
+        review_id=review_id,
+        phase_id="analyze:0",
+        node_id="analyze",
+        marker=marker,  # type: ignore[arg-type]  # validated against the Literal at construction
+        phase_key=None,
+    )
+
+
+async def _count_finding_events(setup: PersisterTestSetup, finding_id: UUID) -> int:
+    async with setup.engine.connect() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'finding' "
+                "AND payload->>'finding_id' = :fid"
+            ),
+            {"fid": str(finding_id)},
+        )
+        return result.scalar_one()
+
+
 async def test_reemit_with_drifted_proposal_hash_is_idempotent(
     persister_setup: PersisterTestSetup,
 ) -> None:
@@ -118,10 +145,21 @@ async def test_reemit_with_drifted_proposal_hash_is_idempotent(
     assert first.finding_id == refreshed.finding_id
     assert first.proposal_hash != refreshed.proposal_hash
 
+    await setup.persister.emit_phase(_analyze_phase(setup.review_id, "start"))
     await setup.persister.emit_finding(first, is_eval=False)
     await setup.persister.emit_finding(refreshed, is_eval=False)  # must NOT raise
+    await setup.persister.emit_phase(_analyze_phase(setup.review_id, "end"))
 
     assert await _count_findings(setup, first.finding_id) == 1
+    # Duplicate-live-event semantics, made explicit (spec sign-off, not implicit):
+    # the append-only stream keeps BOTH FindingEvents (event_id is random per emit,
+    # so the second is not a same-event_id no-op), and replay is equivalent because
+    # `proposal_hash` is excluded from finding content-equality (DECISIONS.md#025).
+    assert await _count_finding_events(setup, first.finding_id) == 2
+    replayer = AuditReplayer(
+        session_factory=async_sessionmaker(setup.engine, expire_on_commit=False)
+    )
+    await replayer.assert_replay_equivalent(setup.review_id)
 
 
 async def test_reemit_with_drifted_content_raises(
