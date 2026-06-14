@@ -250,6 +250,7 @@ async def _run(
     finish_reason: str = "end_turn",
     state_is_eval: bool = False,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    allow_eval_analyze_cache: bool = False,
 ) -> tuple[_StubLLMProvider, _RecordingAnalyzeEventSink]:
     provider = _StubLLMProvider(response_text, finish_reason=finish_reason)
     sink = _RecordingAnalyzeEventSink()
@@ -266,6 +267,7 @@ async def _run(
         total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,
         analyze_cache_store=store,  # type: ignore[arg-type]
         cache_mode=cache_mode,
+        allow_eval_analyze_cache=allow_eval_analyze_cache,
     )
     return provider, sink
 
@@ -382,6 +384,43 @@ async def test_state_is_eval_also_disables_a_wired_store() -> None:
     assert store.write_calls == []
     assert sink.cache_lookups == []
     assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_allow_eval_cache_override_lets_is_eval_review_serve() -> None:
+    """The TEST-ONLY `allow_eval_analyze_cache` override (DECISIONS.md#046) lifts
+    the is_eval bypass so the dedicated serve eval scenario can exercise the cache:
+    an is_eval review with a wired store + live entry SERVES instead of bypassing.
+    The positive converse of the two veto tests above (which run flag-default
+    False). NEVER set in production — the override is safe only in the eval
+    scenario's isolated ephemeral DB (only is_eval rows, no production row to read)."""
+    eval_scope = CacheScope(
+        installation_id=42,
+        repo_id=7,
+        is_eval=True,
+        retention_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+    )
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload={
+            "findings": [_build_cached_finding().model_dump(mode="json")],
+            "trace_candidates": [],
+        },
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=eval_scope, entry=entry)
+    provider, sink = await _run(
+        store,
+        cache_mode=CacheMode.SERVE,
+        state_is_eval=True,
+        allow_eval_analyze_cache=True,
+    )
+
+    assert store.lookup_calls != []  # cache NOT bypassed — the lookup ran
+    assert len(provider.calls) == 0  # served the cached finding → no LLM call
+    assert len(sink.cache_serves) == 1  # a CacheServeEvent was emitted
 
 
 @pytest.mark.asyncio
