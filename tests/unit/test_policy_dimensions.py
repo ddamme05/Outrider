@@ -62,6 +62,14 @@ def test_lookup_dimension_returns_mapped_value() -> None:
     assert lookup_dimension(FindingType.UNUSED_IMPORT) == ReviewDimension.CODE_QUALITY
 
 
+def test_observed_tier_security_types_map_to_security() -> None:
+    """The three OBSERVED-tier types added in policy 1.1.0 (DECISIONS.md#048)
+    all classify as SECURITY."""
+    assert lookup_dimension(FindingType.COMMAND_INJECTION) == ReviewDimension.SECURITY
+    assert lookup_dimension(FindingType.UNSAFE_DESERIALIZATION) == ReviewDimension.SECURITY
+    assert lookup_dimension(FindingType.TLS_VERIFY_DISABLED) == ReviewDimension.SECURITY
+
+
 def test_verify_lockstep_passes_in_canonical_state() -> None:
     """`verify_lockstep()` is a no-op when the three sets match."""
     verify_lockstep()  # raises AssertionError on drift; canonical state should pass

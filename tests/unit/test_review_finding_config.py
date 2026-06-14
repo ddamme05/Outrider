@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import PublishDestination, ReviewDimension, ReviewFinding
 
 
@@ -37,7 +38,7 @@ def _build_finding(**overrides: Any) -> ReviewFinding:
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "installation_id": 12345,
-        "policy_version": "1.0.0",
+        "policy_version": ACTIVE_POLICY_VERSION,
         "finding_type": FindingType.SQL_INJECTION,
         "dimension": ReviewDimension.SECURITY,
         "severity": FindingSeverity.CRITICAL,
@@ -348,9 +349,10 @@ def test_review_finding_rejects_severity_drifted_from_policy() -> None:
     """A finding constructed with severity != SEVERITY_POLICY[finding_type]
     under the LIVE policy must fail.
 
-    pre-fold a row like
-    `(SQL_INJECTION, LOW, policy_version="1.0.0")` admitted even though
-    SEVERITY_POLICY[SQL_INJECTION] == CRITICAL under policy_version 1.0.0.
+    Regression: a row like `(SQL_INJECTION, LOW)` at the ACTIVE policy
+    version was admitted even though SEVERITY_POLICY[SQL_INJECTION] ==
+    CRITICAL. The helper defaults `policy_version` to ACTIVE_POLICY_VERSION
+    so the drift check fires (it is skipped for historical versions).
     """
     with pytest.raises(ValidationError, match="severity-set-by-policy"):
         _build_finding(
@@ -583,7 +585,7 @@ def test_review_finding_rejects_missing_proposal_hash() -> None:
     fields: dict[str, Any] = {
         "review_id": uuid4(),
         "installation_id": 12345,
-        "policy_version": "1.0.0",
+        "policy_version": ACTIVE_POLICY_VERSION,
         "finding_type": FindingType.SQL_INJECTION,
         "dimension": ReviewDimension.SECURITY,
         "severity": FindingSeverity.CRITICAL,
