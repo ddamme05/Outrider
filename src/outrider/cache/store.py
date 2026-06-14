@@ -7,7 +7,10 @@ Three operations, all async (I/O path):
   `(installation_id, repo_id, is_eval, retention_expires_at)` from the
   `reviews` row. The key's scope components come from HERE, never from
   `PRContext`'s mutable `owner`/`repo` strings.
-- `lookup(cache_key)` — entry or None. An expired row
+- `lookup(cache_key, *, is_eval)` — entry or None, scoped to the
+  caller's `is_eval` partition (READ isolation, `DECISIONS.md#046`: the
+  key folds installation/repo but NOT is_eval, so an eval review must
+  never read a production row). An expired row
   (`retention_expires_at <= now()` on the DATABASE clock — the same
   clock the retention sweep deletes with, so the lookup-time and
   sweep-time layers of the no-resurrection rule can never disagree
@@ -29,8 +32,9 @@ keep the shadow cache non-fatal without blind `except Exception`.
 
 The store is injected at `build_graph(...)` and closed over
 (`nodes-receive-deps-via-closure`); `None` in its place disables the
-cache entirely — the eval driver's default, per the spec's
-eval-bypass rule.
+cache entirely — the eval driver's default for scenarios that don't
+exercise it. Eval reviews that DO wire a store use the cache scoped to
+is_eval rows (the `lookup` predicate, `DECISIONS.md#046`), not a bypass.
 """
 
 from __future__ import annotations

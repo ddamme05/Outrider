@@ -572,10 +572,11 @@ def build_lifespan(
             # Analyze-cache store (lever #8, Stage B shadow). Store-or-None
             # IS the enable switch per the spec — production wires the
             # store so shadow telemetry (CacheLookupEvent + cache writes)
-            # accrues; the eval driver defaults to None (eval bypass), and
-            # the analyze node additionally disables a wired store for any
-            # eval review (either the resolved scope's is_eval or
-            # state.is_eval).
+            # accrues; the eval driver defaults to None unless a cache eval
+            # scenario wires its own store. An eval review with a wired store
+            # reads/writes scoped to is_eval rows via the lookup's is_eval
+            # predicate (DECISIONS.md#046) — isolated from production rows, not
+            # bypassed.
             from outrider.cache import AnalyzeCacheStore  # noqa: PLC0415
 
             analyze_cache_store = AnalyzeCacheStore(session_factory=session_factory)
