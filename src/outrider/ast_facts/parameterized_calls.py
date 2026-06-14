@@ -34,6 +34,7 @@ previously carried entirely in the analyze prompt.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from typing import TYPE_CHECKING, Final
 
 import tree_sitter_python
@@ -41,7 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tree_sitter import Language, Parser
 
 if TYPE_CHECKING:
-    from tree_sitter import Node
+    from tree_sitter import Node, Tree
 
 _PY_LANGUAGE: Final = Language(tree_sitter_python.language())
 _PARSER: Final = Parser(_PY_LANGUAGE)
@@ -81,19 +82,41 @@ class ExecuteCallSite(BaseModel):
 
 
 class ParameterizedCallScan(BaseModel):
-    """The two detection sets the veto consumes.
+    """The execute-like call sets the veto consumes.
 
-    `safe_parameterized_calls` ⊆ `all_execute_like_calls` by
-    construction. The veto requires a proposal's line range to be
-    contained in a safe call AND to intersect no execute-like site
-    outside the safe set — so a range spanning a safe and an unsafe
-    call passes through to HITL untouched.
+    Two STORED sets — `safe_parameterized_calls` ⊆ `all_execute_like_calls` by
+    construction — plus the DERIVED `unsafe_parameterized_calls` property
+    (multiset `all − safe`). The veto requires a proposal's line range to be
+    contained in a safe call AND to intersect no unsafe site — so a range
+    spanning a safe and an unsafe call passes through to HITL untouched. Only the
+    two stored sets feed `scan_digest` (the cache key, FUP-171); the derived
+    property is a plain `@property` (not a `@computed_field`), so it never enters
+    serialization or the digest.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     safe_parameterized_calls: tuple[ExecuteCallSite, ...] = ()
     all_execute_like_calls: tuple[ExecuteCallSite, ...] = ()
+
+    @property
+    def unsafe_parameterized_calls(self) -> tuple[ExecuteCallSite, ...]:
+        """Execute-like sites NOT provably safe (multiset `all − safe`).
+
+        Materializes the veto's unsafe set so `coordinates.spans` consumes it
+        with a direct `any()` instead of recomputing the multiset subtraction at
+        admission time (FUP-170 — the multiset discipline moves to the producer).
+        Multiset, not set difference: two calls on one line (one safe, one not)
+        share a line range, and a set would absorb the unsafe twin into the safe
+        one — each safe site cancels exactly ONE all-sites occurrence of its range.
+        """
+        remaining = Counter((s.line_start, s.line_end) for s in self.all_execute_like_calls)
+        remaining.subtract((s.line_start, s.line_end) for s in self.safe_parameterized_calls)
+        return tuple(
+            ExecuteCallSite(line_start=ls, line_end=le)
+            for (ls, le), count in remaining.items()
+            for _ in range(max(count, 0))
+        )
 
 
 def _identifier_text(node: Node | None) -> str | None:
@@ -204,7 +227,19 @@ def scan_parameterized_calls(source: bytes) -> ParameterizedCallScan:
     untrustworthy parse (`parse-errors-degrade-to-judged`; degraded-mode
     callers additionally pass `None` to the parser instead of a scan).
     """
-    tree = _PARSER.parse(source)
+    return _scan_from_tree(_PARSER.parse(source))
+
+
+def _scan_from_tree(tree: Tree) -> ParameterizedCallScan:
+    """Classify execute-like calls in an ALREADY-PARSED tree.
+
+    The tree-accepting core shared by `scan_parameterized_calls` (parse →
+    delegate) and the analyze post-cost-gate bundle (FUP-170), which parses the
+    head ONCE and reuses the tree for both the triviality side-table and this
+    scan. Same fail-open + error-disables-the-scan contract as the public
+    wrapper; the tree stays inside `ast_facts/` (only the `ParameterizedCallScan`
+    domain model crosses the firewall).
+    """
     if tree.root_node.has_error:
         return ParameterizedCallScan()
     safe: list[ExecuteCallSite] = []

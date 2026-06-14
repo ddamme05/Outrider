@@ -241,12 +241,14 @@ def parse_analyze_response(
     - `active_policy_version` — closure-captured per
       `nodes-receive-deps-via-closure`; goes into
       `ReviewFinding.policy_version` on admitted proposals.
-    - `parameterized_call_scan` — the FUP-162 veto's structural facts
-      (`ast_facts.parameterized_calls.scan_parameterized_calls` over the
-      head content), supplied by the node for CLEAN outcomes only; `None`
-      (the default) disables the veto — degraded files have no
-      trustworthy parse tree (`parse-errors-degrade-to-judged`), so the
-      node must not pass a scan for them.
+    - `parameterized_call_scan` — the FUP-162 veto's structural facts (the
+      parameterized-call scan over the head content — derived via the FUP-170
+      analyze bundle on pass 0 and the public `scan_parameterized_calls` on
+      pass 1; both produce the same `ParameterizedCallScan`), supplied by the
+      node for CLEAN outcomes only; `None` (the default) disables the veto —
+      degraded files have no trustworthy parse tree
+      (`parse-errors-degrade-to-judged`), so the node must not pass a scan for
+      them.
 
     The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
     and threads it here for INFERRED admission: pass 0 (the original

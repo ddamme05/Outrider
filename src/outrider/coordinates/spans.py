@@ -18,7 +18,6 @@ convention applies to `addable_diff_byte_ranges` tuples consumed by
 
 from __future__ import annotations
 
-from collections import Counter
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -154,8 +153,9 @@ def line_range_vetoed_by_parameterized_call(
     Vetoed iff BOTH: (a) the range is contained in some
     `safe_parameterized_calls` site (inclusive both ends, the
     `line_range_within_scope_unit` semantics), AND (b) it intersects no
-    `all_execute_like_calls` site outside the safe set — a range spanning
-    a safe and an unsafe call is NOT vetoed and flows through to HITL.
+    `unsafe_parameterized_calls` site (the materialized multiset `all − safe`,
+    FUP-170) — a range spanning a safe and an unsafe call is NOT vetoed and
+    flows through to HITL.
 
     Line space — not byte space — is the comparison frame, for the same
     reason as `line_range_within_scope_unit` above: a whole-line byte span
@@ -169,21 +169,15 @@ def line_range_vetoed_by_parameterized_call(
     )
     if not contained_in_safe:
         return False
-    # Multiset subtraction, not set membership: two calls on one line (one
-    # safe, one not) share a line range, and a set would silently absorb
-    # the unsafe twin into the safe one — vetoing a valid finding. Each
-    # safe site cancels exactly ONE all-sites occurrence of its range; any
-    # remainder is an unsafe site the range must not intersect.
-    unsafe_budget = Counter(
-        (site.line_start, site.line_end) for site in scan.all_execute_like_calls
-    )
-    unsafe_budget.subtract(
-        (site.line_start, site.line_end) for site in scan.safe_parameterized_calls
-    )
+    # The unsafe set (multiset `all − safe`) is materialized at scan time as
+    # `ParameterizedCallScan.unsafe_parameterized_calls` (FUP-170 — the multiset
+    # discipline that handles two-calls-on-one-line now lives in the producer).
+    # A range spanning a safe and an unsafe call is NOT vetoed, so it must
+    # intersect no unsafe site.
     return not any(
-        # Inclusive interval intersection with each remaining unsafe site.
-        count > 0 and not (line_end < site_start or site_end < line_start)
-        for (site_start, site_end), count in unsafe_budget.items()
+        # Inclusive interval intersection with each unsafe site.
+        not (line_end < site.line_start or site.line_end < line_start)
+        for site in scan.unsafe_parameterized_calls
     )
 
 
