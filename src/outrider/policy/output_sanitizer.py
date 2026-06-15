@@ -379,6 +379,8 @@ def apply_size_cap(
     """
     if reserve_bytes < 0:
         raise ValueError(f"reserve_bytes must be >= 0; got {reserve_bytes}")
+    if max_bytes <= 0:
+        raise ValueError(f"max_bytes must be > 0; got {max_bytes}")
     effective_max = max_bytes - reserve_bytes
 
     encoded = body.encode("utf-8")

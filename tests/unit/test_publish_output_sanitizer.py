@@ -314,6 +314,15 @@ def test_github_review_body_max_is_a_distinct_constant() -> None:
     assert GITHUB_REVIEW_BODY_MAX > 0
 
 
+def test_apply_size_cap_nonpositive_max_bytes_raises() -> None:
+    """A non-positive caller-provided max_bytes is a caller bug — fail loud directly
+    with ValueError, not via the indirect marker-budget RuntimeError."""
+    with pytest.raises(ValueError, match="max_bytes must be > 0"):
+        apply_size_cap("body", max_bytes=0)
+    with pytest.raises(ValueError, match="max_bytes must be > 0"):
+        apply_size_cap("body", max_bytes=-5)
+
+
 def test_apply_size_cap_negative_reserve_raises() -> None:
     """A negative reserve is a caller bug — fail loud."""
     with pytest.raises(ValueError, match="reserve_bytes must be >= 0"):
