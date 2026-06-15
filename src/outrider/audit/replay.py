@@ -479,8 +479,8 @@ _NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxy
 # transition BETWEEN phases (it carries from_node/to_node, not a single node_id);
 # `ReplayVerdictEvent` is post-completion replay metadata appended by the verdict
 # projector AFTER all phases have closed (it is bounded by nothing).
-# `SlackNotificationEvent` is a fire-and-forget notification side effect emitted off the
-# hot path (around hitl or publish depending on `kind`), enclosed by no single node's
+# `SlackNotificationEvent` is a best-effort notification side effect emitted around
+# hitl or publish (depending on `kind`), so it belongs to no single node's
 # phase window. `ReviewPhaseEvent` is the phase marker itself, handled before this check. Keyed by
 # `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]` wants a class).
 # The runtime `continue` in `_verify_phase_wellformed` consults THIS tuple, so adding
@@ -523,7 +523,7 @@ def _verify_phase_wellformed(
       `ReplayVerdictEvent`, `SlackNotificationEvent`) and the phase markers
       themselves are exempt — transitions occur before/between phases, the verdict
       is post-completion replay metadata, the Slack notification is a
-      fire-and-forget side effect.
+      best-effort side effect with no single owning node.
     - **Node containment.** A work event must occur inside a phase for the
       node that owns it — its own `node_id` when it carries one (`LLMCallEvent`,
       `FileExaminationEvent`, the analyze/synthesize aggregates), else the

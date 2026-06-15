@@ -88,7 +88,7 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `slack_orchestrator: SlackNotificationOrchestrator | None` +
     `slack_channel_id: str | None` — optional, all-or-nothing. When both are
     set, the hitl node posts a best-effort HITL-pending Slack notification
-    (fire-and-forget, off the hot path) on entry to `awaiting_approval`; None
+    (awaited inline, never gate-breaking) on entry to `awaiting_approval`; None
     (the default) disables Slack. Injected here and closed over in the hitl
     node per `nodes-receive-deps-via-closure`.
   - `patch_config: PatchConfig` — required for synthesize's suggested-patch
