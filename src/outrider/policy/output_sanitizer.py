@@ -84,6 +84,10 @@ from typing import Final
 # non-ASCII content (CJK identifiers, emoji, RTL text in evidence)
 # is the edge case that motivates byte-measurement.
 GITHUB_COMMENT_BODY_MAX: Final[int] = 65_536
+# Distinct GitHub surface from inline comments (the PR review BODY), kept separate
+# per DECISIONS.md#050 so the two caps can diverge without re-introducing the
+# conflation the publish-review-body spec calls out — equal today, not aliased.
+GITHUB_REVIEW_BODY_MAX: Final[int] = 65_536
 
 # Env var name for the truncation-marker HMAC secret. Deploy-time
 # configuration; the sanitizer reads it on first use and caches the
@@ -348,20 +352,26 @@ def is_safe_suggestion_replacement(replacement: str) -> bool:
     )
 
 
-def apply_size_cap(body: str, *, reserve_bytes: int = 0) -> str:
-    """Truncate `body` to fit `GITHUB_COMMENT_BODY_MAX - reserve_bytes` UTF-8 bytes.
+def apply_size_cap(
+    body: str, *, reserve_bytes: int = 0, max_bytes: int = GITHUB_COMMENT_BODY_MAX
+) -> str:
+    """Truncate `body` to fit `max_bytes - reserve_bytes` UTF-8 bytes.
+
+    `max_bytes` defaults to `GITHUB_COMMENT_BODY_MAX` (inline comments); the PR
+    review-body surface passes `GITHUB_REVIEW_BODY_MAX` (DECISIONS.md#050). Every
+    existing caller omits it, so behaviour is unchanged.
 
     `reserve_bytes` holds back room for content the caller appends AFTER the
     cap and that must NOT itself be truncated — the S1 agent-marker block is the
     motivating case (an agent must be able to parse every `<!-- outrider:... -->`
-    line intact). The effective budget is `GITHUB_COMMENT_BODY_MAX -
-    reserve_bytes`, so `prose + appended-block` still fits GitHub's hard byte
-    limit. Default `0` preserves the original behaviour for every existing caller.
+    line intact). The effective budget is `max_bytes - reserve_bytes`, so
+    `prose + appended-block` still fits GitHub's hard byte limit. Default
+    `reserve_bytes=0` preserves the original behaviour for every existing caller.
 
     The truncation marker is INCLUDED in the (reduced) cap — if the assembled
-    body is already within `GITHUB_COMMENT_BODY_MAX - reserve_bytes`, it is
-    returned unchanged; otherwise truncated such that
-    `len((truncated + marker).encode("utf-8")) <= GITHUB_COMMENT_BODY_MAX - reserve_bytes`.
+    body is already within `max_bytes - reserve_bytes`, it is returned unchanged;
+    otherwise truncated such that
+    `len((truncated + marker).encode("utf-8")) <= max_bytes - reserve_bytes`.
 
     Care taken NOT to truncate mid-codepoint for non-ASCII content:
     the loop trims bytes from the end and decodes with `errors="ignore"`
@@ -369,7 +379,7 @@ def apply_size_cap(body: str, *, reserve_bytes: int = 0) -> str:
     """
     if reserve_bytes < 0:
         raise ValueError(f"reserve_bytes must be >= 0; got {reserve_bytes}")
-    effective_max = GITHUB_COMMENT_BODY_MAX - reserve_bytes
+    effective_max = max_bytes - reserve_bytes
 
     encoded = body.encode("utf-8")
     if len(encoded) <= effective_max:
@@ -389,8 +399,8 @@ def apply_size_cap(body: str, *, reserve_bytes: int = 0) -> str:
         # to fit; fail loud so the misconfiguration surfaces in monitoring
         # rather than silently dropping all finding content.
         raise RuntimeError(
-            f"effective cap ({effective_max} = GITHUB_COMMENT_BODY_MAX="
-            f"{GITHUB_COMMENT_BODY_MAX} - reserve_bytes={reserve_bytes}) is "
+            f"effective cap ({effective_max} = max_bytes="
+            f"{max_bytes} - reserve_bytes={reserve_bytes}) is "
             f"smaller than the truncation marker budget ({marker_budget}); "
             f"cannot truncate without dropping ALL content. Increase the cap, "
             f"shrink the reserved/appended block, or revisit the marker shape."
@@ -414,8 +424,8 @@ def apply_size_cap(body: str, *, reserve_bytes: int = 0) -> str:
                 # See the early-return rationale above: total content
                 # loss is a deploy/caller bug, not a runtime case.
                 raise RuntimeError(
-                    f"effective cap ({effective_max} = GITHUB_COMMENT_BODY_MAX="
-                    f"{GITHUB_COMMENT_BODY_MAX} - reserve_bytes={reserve_bytes}) "
+                    f"effective cap ({effective_max} = max_bytes="
+                    f"{max_bytes} - reserve_bytes={reserve_bytes}) "
                     f"too small to fit marker after defensive truncation loop. "
                     f"This is a deploy-time or caller misconfiguration."
                 )
@@ -428,8 +438,8 @@ def apply_size_cap(body: str, *, reserve_bytes: int = 0) -> str:
         # reason the early-return raises above.
         raise RuntimeError(
             f"apply_size_cap could not fit the truncation marker within the "
-            f"effective cap ({effective_max} = GITHUB_COMMENT_BODY_MAX="
-            f"{GITHUB_COMMENT_BODY_MAX} - reserve_bytes={reserve_bytes}) after "
+            f"effective cap ({effective_max} = max_bytes="
+            f"{max_bytes} - reserve_bytes={reserve_bytes}) after "
             f"3 defensive iterations. Marker template or budget needs revision."
         )
     return result
