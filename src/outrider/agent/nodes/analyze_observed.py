@@ -1,23 +1,33 @@
 # Deterministic OBSERVED-tier finding producer per
 # specs/2026-06-14-observed-query-library-v1.md (Cost Lever 3).
-"""Turn tree-sitter security-query matches into `ReviewFinding`s with NO model
-text.
+"""Run the OBSERVED security queries once, then turn the matches into
+`ReviewFinding`s with NO model text.
 
-A match from `queries.registry.match(observed_id, ...)` becomes a finding by a
-fixed mapping: `finding_type` / `severity` / `dimension` are policy-set (never
-model-set), `title` / `description` are the registry's static text, the byte
-envelope maps to source lines through `coordinates.query_span_to_source_lines`,
-and `evidence` is the matched source text. Construction goes through
-`ReviewFinding(...)` so `enforce_proof_boundary` (OBSERVED ⇒ non-empty
-`query_match_id`) and `_verify_content_hash` validate at the schema floor.
+`run_observed_matches` is the single deterministic query pass for a file: it
+runs every registered OBSERVED query (via `queries.registry.match`, which owns
+the tree-sitter execution), applies the admission rules (test-file suppression,
+scope containment, zero-width skip, byte->line mapping), and returns plain
+`ObservedMatch` domain records — `query_class` included. Every consumer reads
+the SAME records, so there is one definition of "the OBSERVED query facts for
+this file": `produce_observed_findings` builds findings from them, and the skip
+routing (the routing increment) computes coverage from the `skip_safe` subset.
+
+A match becomes a finding by a fixed mapping: `finding_type` / `severity` /
+`dimension` are policy-set (never model-set), `title` / `description` are the
+registry's static text, the byte envelope maps to source lines through
+`coordinates.query_span_to_source_lines`, and `evidence` is the matched source
+text. Construction goes through `ReviewFinding(...)` so `enforce_proof_boundary`
+(OBSERVED ⇒ non-empty `query_match_id`) and `_verify_content_hash` validate at
+the schema floor.
 
 CLEAN-parse only: the caller gates on `degraded_mode` (no OBSERVED findings on a
-degraded/failed parse). These are `signal_only` findings — they AUGMENT the LLM
-pass and never skip it; the skip routing is a later, evidence-gated increment.
+degraded/failed parse). OBSERVED findings AUGMENT the LLM pass and never skip it
+in V1; the skip routing is a later, evidence-gated increment.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Final
 
@@ -34,18 +44,43 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from outrider.ast_facts.models import ScopeUnit
+    from outrider.policy.severity import FindingType
+    from outrider.queries.observed import QueryClass
 
 
-# Version of the OBSERVED producer's ADMISSION logic — the rules below that
-# decide which matches become findings: the scope-CONTAINMENT predicate,
-# test-file suppression (`_is_test_file`), the zero-width-span skip, and the
-# byte->line mapping. Folded into the analyze cache key
-# (`cache.key.compute_analyze_cache_key`) so a change to these rules invalidates
-# cached analyze outcomes written under the old rules — the same staleness guard
-# `ANALYZE_PARSER_VERSION` gives the LLM parser. The query `.scm` bodies + their
-# registry metadata are pinned SEPARATELY by `QUERY_REGISTRY_DIGEST`; this
-# constant covers only the producer's admission logic. BUMP on any rule change.
+# Version of the OBSERVED producer's ADMISSION logic — the rules in
+# `run_observed_matches` that decide which matches are admitted: the
+# scope-CONTAINMENT predicate, test-file suppression (`_is_test_file`), the
+# zero-width-span skip, and the byte->line mapping. Folded into the analyze cache
+# key (`cache.key.compute_analyze_cache_key`) so a change to these rules
+# invalidates cached analyze outcomes written under the old rules — the same
+# staleness guard `ANALYZE_PARSER_VERSION` gives the LLM parser. The query `.scm`
+# bodies + their registry metadata are pinned SEPARATELY by
+# `QUERY_REGISTRY_DIGEST`; this constant covers only the producer's admission
+# logic. BUMP on any rule change.
 OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedMatch:
+    """One admitted OBSERVED query match for a file — plain domain data shared by
+    every consumer of the single query pass (`run_observed_matches`).
+
+    Carries the registry facts (`query_match_id`, `query_class`, `finding_type`,
+    static `title` / `description`), the matched `evidence` text, and the
+    1-indexed inclusive HEAD source-line envelope. No tree-sitter object crosses
+    this boundary — raw nodes stay in `queries/`; this is the domain record the
+    agent layer consumes.
+    """
+
+    query_match_id: str
+    query_class: QueryClass
+    finding_type: FindingType
+    title: str
+    description: str
+    evidence: str
+    line_start: int
+    line_end: int
 
 
 def _is_test_file(file_path: str) -> bool:
@@ -64,32 +99,31 @@ def _is_test_file(file_path: str) -> bool:
     return name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py")
 
 
-def produce_observed_findings(
+def run_observed_matches(
     *,
     file_path: str,
     head_content: str,
     included_scope_units: tuple[ScopeUnit, ...],
-    review_id: UUID,
-    installation_id: int,
-    active_policy_version: str,
-) -> tuple[ReviewFinding, ...]:
-    """Build deterministic OBSERVED findings for every registered OBSERVED
-    query whose match falls inside an INCLUDED scope unit.
+) -> tuple[ObservedMatch, ...]:
+    """Run every registered OBSERVED query over `head_content` and return the
+    admitted matches as `ObservedMatch` records — the single deterministic query
+    pass every downstream consumer reads.
 
     A match is admitted only when it is CONTAINED in an included scope unit (the
     same scope discipline the LLM-citation admission uses) — a deterministic
-    OBSERVED finding must anchor fully inside code the review is examining, never
+    OBSERVED match must anchor fully inside code the review is examining, never
     straddling a scope boundary or landing in unchanged code outside the diff.
-    Test files produce nothing (spec §11.2). Returns a deterministically ordered
-    tuple (by query id, then the registry's match sort) so the round's
-    content-derived id stays stable across replays.
+    Test files admit nothing (spec §11.2). Zero-width envelopes and spans that
+    fail the byte->line mapping are dropped. Returns a deterministically ordered
+    tuple (by query id, then the registry's match sort) so any content-derived id
+    downstream stays stable across replays.
     """
     # Test code is not a production security finding (spec §11.2).
     if _is_test_file(file_path):
         return ()
     content_bytes = head_content.encode("utf-8")
     scope_ranges = tuple((su.byte_start, su.byte_end) for su in included_scope_units)
-    findings: list[ReviewFinding] = []
+    matches: list[ObservedMatch] = []
 
     for query_id, observed in query_registry.OBSERVED_QUERIES.items():
         for span in query_registry.match(query_id, content_bytes):
@@ -108,49 +142,81 @@ def produce_observed_findings(
                     head_content=head_content,
                 )
             except CoordinateError:
-                # Out-of-bounds / unlocatable span — cannot anchor a finding.
+                # Out-of-bounds / unlocatable span — cannot anchor a match.
                 continue
 
             evidence = content_bytes[span.byte_start : span.byte_end].decode(
                 "utf-8", errors="replace"
             )
-            finding_type = observed.finding_type
-            proposal_hash = compute_proposal_hash(
-                source_file_path=file_path,
-                finding_type=finding_type.value,
-                evidence_tier=EvidenceTier.OBSERVED.value,
-                query_match_id=observed.query_match_id,
-                trace_path=None,
-                title=observed.title,
-                description=observed.description,
-                evidence=evidence,
-                line_start=line_start,
-                line_end=line_end,
-            )
-            findings.append(
-                ReviewFinding(
-                    review_id=review_id,
-                    installation_id=installation_id,
-                    policy_version=active_policy_version,
-                    finding_type=finding_type,
-                    dimension=lookup_dimension(finding_type),
-                    severity=lookup_severity(finding_type),
-                    evidence_tier=EvidenceTier.OBSERVED,
-                    file_path=file_path,
-                    line_start=line_start,
-                    line_end=line_end,
+            matches.append(
+                ObservedMatch(
+                    query_match_id=observed.query_match_id,
+                    query_class=observed.query_class,
+                    finding_type=observed.finding_type,
                     title=observed.title,
                     description=observed.description,
                     evidence=evidence,
-                    query_match_id=observed.query_match_id,
-                    trace_path=None,
-                    proposal_hash=proposal_hash,
-                    content_hash=compute_finding_content_hash(
-                        file_path=file_path,
-                        line_start=line_start,
-                        line_end=line_end,
-                        finding_type=finding_type,
-                    ),
+                    line_start=line_start,
+                    line_end=line_end,
                 )
             )
+    return tuple(matches)
+
+
+def produce_observed_findings(
+    matches: tuple[ObservedMatch, ...],
+    *,
+    file_path: str,
+    review_id: UUID,
+    installation_id: int,
+    active_policy_version: str,
+) -> tuple[ReviewFinding, ...]:
+    """Build deterministic OBSERVED `ReviewFinding`s from the matches of
+    `run_observed_matches`.
+
+    EVERY OBSERVED match becomes a finding — both `signal_only` and `skip_safe`;
+    the class affects skip ROUTING, not whether a finding is emitted. Findings
+    preserve the matches' deterministic order so the round's content-derived id
+    stays stable across replays.
+    """
+    findings: list[ReviewFinding] = []
+    for m in matches:
+        proposal_hash = compute_proposal_hash(
+            source_file_path=file_path,
+            finding_type=m.finding_type.value,
+            evidence_tier=EvidenceTier.OBSERVED.value,
+            query_match_id=m.query_match_id,
+            trace_path=None,
+            title=m.title,
+            description=m.description,
+            evidence=m.evidence,
+            line_start=m.line_start,
+            line_end=m.line_end,
+        )
+        findings.append(
+            ReviewFinding(
+                review_id=review_id,
+                installation_id=installation_id,
+                policy_version=active_policy_version,
+                finding_type=m.finding_type,
+                dimension=lookup_dimension(m.finding_type),
+                severity=lookup_severity(m.finding_type),
+                evidence_tier=EvidenceTier.OBSERVED,
+                file_path=file_path,
+                line_start=m.line_start,
+                line_end=m.line_end,
+                title=m.title,
+                description=m.description,
+                evidence=m.evidence,
+                query_match_id=m.query_match_id,
+                trace_path=None,
+                proposal_hash=proposal_hash,
+                content_hash=compute_finding_content_hash(
+                    file_path=file_path,
+                    line_start=m.line_start,
+                    line_end=m.line_end,
+                    finding_type=m.finding_type,
+                ),
+            )
+        )
     return tuple(findings)
