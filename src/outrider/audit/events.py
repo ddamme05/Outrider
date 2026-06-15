@@ -1497,7 +1497,13 @@ class PublishEvent(AuditEventBase):
 
     event_type: Literal["publish"] = "publish"
     github_review_id: int = Field(ge=1)  # GitHub review IDs are positive integers
+    # Three publish-accounting channels per DECISIONS.md#050 — "posted" (inline +
+    # review-body) vs "surfaced" (dashboard-only). `comments_posted` is the INLINE
+    # count. The two added fields default 0 so historical rows (predating #050)
+    # reconstruct under `AuditEventAdapter` (replay historical-tolerance).
     comments_posted: int = Field(ge=0)
+    review_body_findings_posted: int = Field(ge=0, default=0)
+    dashboard_only_findings_surfaced: int = Field(ge=0, default=0)
     # The three GitHub PR review states — `event` param values on the
     # GitHub `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`
     # endpoint. Bounded so an emission-site typo or a stale snake_case
