@@ -619,6 +619,13 @@ def test_build_graph_signature_is_keyword_only() -> None:
 # ---------------------------------------------------------------------------
 
 
+class _StubSlackOrchestrator:
+    """Satisfies the build_graph member-presence guard (has notify_hitl_pending)."""
+
+    async def notify_hitl_pending(self, **_kwargs: Any) -> None:
+        return None
+
+
 def test_build_graph_rejects_slack_orchestrator_without_channel() -> None:
     """An orchestrator with no channel can never post — fail closed."""
     args = _valid_args()
@@ -645,11 +652,20 @@ def test_build_graph_rejects_slack_empty_channel() -> None:
         build_graph(**args)
 
 
-def test_build_graph_accepts_slack_orchestrator_with_channel() -> None:
-    """Both set → Slack enabled; the graph builds (the guard fires only on a
-    half-wired pair)."""
+def test_build_graph_rejects_slack_orchestrator_bad_shape() -> None:
+    """An orchestrator missing notify_hitl_pending would AttributeError on the HITL
+    gate path mid-review — fail closed at construction instead."""
     args = _valid_args()
     args["slack_orchestrator"] = object()
+    args["slack_channel_id"] = "C0123ABC"
+    with pytest.raises(BuildGraphError, match="notify_hitl_pending"):
+        build_graph(**args)
+
+
+def test_build_graph_accepts_slack_orchestrator_with_channel() -> None:
+    """Both set + a conforming orchestrator → Slack enabled; the graph builds."""
+    args = _valid_args()
+    args["slack_orchestrator"] = _StubSlackOrchestrator()
     args["slack_channel_id"] = "C0123ABC"
     graph = build_graph(**args)
     assert callable(graph.ainvoke)

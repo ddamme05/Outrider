@@ -311,6 +311,19 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             "slack_channel_id must be a non-empty channel id when slack_orchestrator "
             "is provided (an empty channel would silently drop every notification)"
         )
+    # Member-presence guard for the orchestrator. It has no Protocol type, so the
+    # isinstance gates above don't cover it; without this, a wrong-shaped
+    # orchestrator from a miswired composition root would surface as an
+    # AttributeError on the HITL gate path (`notify_hitl_pending`) mid-review
+    # rather than as a construction-time failure. (`notify_review_posted` joins
+    # this check when the publish hook lands.)
+    if slack_orchestrator is not None and not callable(
+        getattr(slack_orchestrator, "notify_hitl_pending", None)
+    ):
+        raise BuildGraphError(
+            "slack_orchestrator does not satisfy the notifier interface "
+            "(missing callable member: notify_hitl_pending)"
+        )
 
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
