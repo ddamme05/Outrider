@@ -498,7 +498,8 @@ def _required_phase_node(event: AuditEvent) -> str | None:
     Prefers the event's own `node_id` (LLMCallEvent, FileExaminationEvent, the
     analyze/synthesize aggregates); falls back to the node-less owner map
     (FindingEvent → analyze, etc.). Returns None for phase-unbounded events
-    (`AgentTransitionEvent`, `ReplayVerdictEvent`) — they are bounded by nothing.
+    (`AgentTransitionEvent`, `ReplayVerdictEvent`, `SlackNotificationEvent`) — they
+    are bounded by nothing.
     """
     own = getattr(event, "node_id", None)
     if own is not None:
@@ -519,9 +520,10 @@ def _verify_phase_wellformed(
 
     - **Boundedness.** Every work event occurs while a phase is open. The
       `_PHASE_UNBOUNDED_EVENTS` types (`AgentTransitionEvent`,
-      `ReplayVerdictEvent`) and the phase markers themselves are exempt —
-      transitions occur before/between phases, the verdict is post-completion
-      replay metadata.
+      `ReplayVerdictEvent`, `SlackNotificationEvent`) and the phase markers
+      themselves are exempt — transitions occur before/between phases, the verdict
+      is post-completion replay metadata, the Slack notification is a
+      fire-and-forget side effect.
     - **Node containment.** A work event must occur inside a phase for the
       node that owns it — its own `node_id` when it carries one (`LLMCallEvent`,
       `FileExaminationEvent`, the analyze/synthesize aggregates), else the
@@ -530,8 +532,9 @@ def _verify_phase_wellformed(
       `analyze` LLM call belongs in an `analyze` phase, not a `triage` one; an
       analyze-owned `FindingEvent` likewise. This makes the stream
       graph-faithful, not merely phase-bounded. The `_PHASE_UNBOUNDED_EVENTS`
-      types (`AgentTransitionEvent`, `ReplayVerdictEvent`) are unbounded; the
-      completeness guard test asserts every other node-less type has an owner.
+      types (`AgentTransitionEvent`, `ReplayVerdictEvent`, `SlackNotificationEvent`)
+      are unbounded; the completeness guard test asserts every other node-less type
+      has an owner.
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).
