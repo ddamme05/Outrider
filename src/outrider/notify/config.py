@@ -1,15 +1,21 @@
-"""`SlackSettings` — env-backed Slack bot identity for V1 notifications.
+"""`SlackSettings` — DEV/LOCAL env bootstrap for the Slack notifier.
 
-Mirrors `GitHubAppSettings`: secret material (`bot_token`) routed through
-`pydantic.SecretStr`, `.get_secret_value()` called only at the wrapper call site
-(`notify/slack.py`), never at log/audit construction. V1 is single-workspace
-env config; per-installation Slack config (the `installations` table) + OAuth
-land with a later commit.
+**Not the production V1 config authority.** The spec pins V1 Slack config to
+**per-installation** storage (the `installations` table, populated by the OAuth
+`oauth.v2.access` exchange) — see specs/2026-06-15-slack-dashboard-in-slack.md.
+This single-workspace env config exists only to wire + test the notifier locally
+before that OAuth/per-install path lands; the composition root must prefer
+per-install config and never let this env path become the production posting
+authority.
+
+Mirrors `GitHubAppSettings`: `bot_token` routed through `pydantic.SecretStr`,
+`.get_secret_value()` called only at the wrapper call site (`notify/slack.py`),
+never at log/audit construction.
 
 Env vars (prefix `OUTRIDER_SLACK_`):
   - `OUTRIDER_SLACK_BOT_TOKEN` (SecretStr) — the bot token (`xoxb-…`, `chat:write`).
   - `OUTRIDER_SLACK_CHANNEL_ID` (str) — the channel the bot posts to (e.g. `C0…`);
-    the bot must be a member of it (the V1 install precondition).
+    the bot must be a member of it (the install precondition).
 """
 
 from pydantic import SecretStr, field_validator
