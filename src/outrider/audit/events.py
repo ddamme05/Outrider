@@ -47,11 +47,13 @@ by `HITLDecisionEvent.decisions`):
   - `CacheServeEvent` runs the same `validate_diff_path` audit-shadow on
     `file_path` (its nested `ServedTraceCandidateRef` carries pattern-validated
     `candidate_id` / `source_proposal_hash`).
-  - `ObservedSkipShadowEvent` runs the `validate_diff_path` audit-shadow on
-    `file_path` and enforces the outcome↔blockers biconditional
-    (`would_skip` iff no blockers, `not_eligible` iff ≥1 blocker); its nested
-    `ObservedSkipChangedRegion` / `ObservedSkipCoveringMatch` each carry a
-    `line_end >= line_start` validator.
+  - `ObservedSkipShadowEvent` carries three validators: the `validate_diff_path`
+    audit-shadow on `file_path`, the outcome↔blockers biconditional
+    (`would_skip` iff no blockers, `not_eligible` iff ≥1 blocker), and the
+    `would_skip` coverage-coherence rule (a `would_skip` with changed regions
+    requires `covering_matches` and forbids base-side regions, so the row stays a
+    reconstructable promotion proof); its nested `ObservedSkipChangedRegion` /
+    `ObservedSkipCoveringMatch` each carry a `line_end >= line_start` validator.
   - `FindingEvent` carries three validators — proof-boundary
     (`policy/findings.enforce_proof_boundary`, backs
     `evidence-tier-schema-enforced`), the line constraint
@@ -753,7 +755,7 @@ class ObservedSkipCoveringMatch(BaseModel):
 
 class ObservedSkipShadowEvent(AuditEventBase):
     """Per-file OBSERVED-tier skip-routing SHADOW record (Cost Lever 3,
-    specs/2026-06-14-observed-query-library-v1.md).
+    specs/2026-06-14-observed-query-library-v1.md; `DECISIONS.md#049`).
 
     One event per pass-0 clean-mode file the default-deny skip routing
     evaluates. `outcome="would_skip"` means every changed region in the file
