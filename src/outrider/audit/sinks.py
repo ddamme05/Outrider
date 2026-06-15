@@ -595,7 +595,7 @@ class SynthesizeEventSink(Protocol):
     Synthesize emits exactly one audit event per review:
     `SynthesizeCompletedEvent` at end-of-work (after the summary
     call returns, after deduplication + sort, before returning the state
-    delta). One Protocol with one method matches the analyze-completed
+    delta). One emit method (plus a read query below) matches the analyze-completed
     pattern conceptually but with simpler shape (no per-pass
     multiplicity, no per-finding sub-events — every finding in the
     deduplicated `ReviewReport.findings` was already emitted as its own
@@ -619,42 +619,13 @@ class SynthesizeEventSink(Protocol):
     tests rather than being silently deduped).
 
     `@runtime_checkable` matches the sibling-Protocol precedent —
-    `build_graph` can reject sinks lacking `emit_synthesize_completed`
-    at construction time. PEP 544 caveat: member-presence only, not
-    signature shape; mypy strict is the write-time gate.
+    `build_graph` can reject sinks lacking `emit_synthesize_completed` or
+    `query_review_llm_aggregates` at construction time. PEP 544 caveat:
+    member-presence only, not signature shape; mypy strict is the write-time gate.
     """
 
     async def emit_synthesize_completed(self, event: SynthesizeCompletedEvent) -> None:
         """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
-        ...
-
-
-@runtime_checkable
-class SlackEventSink(Protocol):
-    """Sink for the Slack notifier's one audit event type.
-
-    `notify/slack.py` emits exactly one `SlackNotificationEvent` per Slack
-    post — the rich HITL-pending card or the compact review-posted FYI. One
-    Protocol with one method, mirroring `SynthesizeEventSink`.
-
-    Production / durable implementations MUST:
-      - Be idempotent on `event.event_id` (event_id-PK per `DECISIONS.md#026`,
-        the `CacheLookupEvent` / `SynthesizeCompletedEvent` precedent) — retry
-        / checkpoint replay must not duplicate rows.
-      - Persist before returning, OR raise. Silent drop is never acceptable.
-
-    The `(review_id, channel_id, kind)` de-duplication the spec describes is a
-    best-effort PRE-POST check in the notifier (query before posting), NOT a
-    persister natural-key constraint — see
-    `specs/2026-06-15-slack-dashboard-in-slack.md` (Audit append-only). The
-    persist path here is the plain event_id-PK append.
-
-    `@runtime_checkable` matches the sibling-Protocol precedent — `build_graph`
-    can reject sinks lacking `emit_slack_notification` at construction time.
-    """
-
-    async def emit_slack_notification(self, event: SlackNotificationEvent) -> None:
-        """Persist a `SlackNotificationEvent` row (one per Slack post)."""
         ...
 
     async def query_review_llm_aggregates(
@@ -672,12 +643,56 @@ class SlackEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class SlackEventSink(Protocol):
+    """Sink for the Slack notifier's one audit event type.
+
+    `notify/slack.py` emits exactly one `SlackNotificationEvent` per Slack
+    post — the rich HITL-pending card or the compact review-posted FYI. An emit
+    method + a read query (`query_slack_notification`), mirroring `SynthesizeEventSink`.
+
+    Production / durable implementations MUST:
+      - Be idempotent on `event.event_id` (event_id-PK per `DECISIONS.md#026`,
+        the `CacheLookupEvent` / `SynthesizeCompletedEvent` precedent) — retry
+        / checkpoint replay must not duplicate rows.
+      - Persist before returning, OR raise. Silent drop is never acceptable.
+
+    The `(review_id, channel_id, kind)` de-duplication the spec describes is a
+    best-effort PRE-POST check in the notifier (query before posting), NOT a
+    persister natural-key constraint — see
+    `specs/2026-06-15-slack-dashboard-in-slack.md` (Audit append-only). The
+    persist path here is the plain event_id-PK append.
+
+    `@runtime_checkable` matches the sibling-Protocol precedent — `build_graph`
+    can reject sinks lacking `emit_slack_notification` or `query_slack_notification`
+    at construction time.
+    """
+
+    async def emit_slack_notification(self, event: SlackNotificationEvent) -> None:
+        """Persist a `SlackNotificationEvent` row (one per Slack post)."""
+        ...
+
+    async def query_slack_notification(
+        self, *, review_id: UUID, channel_id: str, kind: str
+    ) -> SlackNotificationEvent | None:
+        """Most-recent `SlackNotificationEvent` for `(review_id, channel_id, kind)`, or None.
+
+        The notifier's read surface: backs the best-effort pre-post dedup (None →
+        safe to post) and the status-mirror target (the returned event's
+        `message_ts`). Read-only; the durable `AuditPersister` implements it
+        alongside `emit_slack_notification` (mirrors `PublishEventSink`'s
+        emit + `query_prior_publish_event` shape).
+        """
+        ...
+
+
 __all__ = [
     "AnalyzeEventSink",
     "FileExaminationSink",
     "HITLEventSink",
     "PhaseEventSink",
     "PublishEventSink",
+    "SlackEventSink",
     "SynthesizeEventSink",
     "TraceEventSink",
 ]

@@ -348,7 +348,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError(
             f"synthesize_event_sink does not satisfy SynthesizeEventSink Protocol "
             f"(passed type: {type(synthesize_event_sink).__name__}; "
-            f"missing `emit_synthesize_completed` member; "
+            f"missing one of `emit_synthesize_completed` / `query_review_llm_aggregates`; "
             f"see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(anomaly_sink, AnomalySink):
