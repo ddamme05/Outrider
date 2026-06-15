@@ -1,8 +1,8 @@
 """Slack notification subsystem.
 
 Public surface: the `SlackNotifier` Protocol + result + typed exceptions from
-`notify/base.py`. The concrete `slack_sdk`-backed provider lives in
-`notify/slack.py` (a later commit); consumers import from here, never the SDK.
+`notify/base.py`. The concrete `slack_sdk`-backed provider (`SlackWebClientNotifier`)
+lives in `notify/slack.py`; consumers import the Protocol from here, never the SDK.
 """
 
 from outrider.notify.base import (
