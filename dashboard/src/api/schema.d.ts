@@ -1968,7 +1968,7 @@ export interface components {
             start: components["schemas"]["ReviewPhaseEvent"] | null;
             end: components["schemas"]["ReviewPhaseEvent"] | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
         };
         /**
          * ReplayBucket
@@ -2061,11 +2061,11 @@ export interface components {
             /** Status */
             status: string | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
             /** Phases */
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
-            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
             /** Findings */
             findings: components["schemas"]["TimelineFindingContentView"][];
             /** Llm Exchanges */
@@ -2197,7 +2197,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
             /** Total */
             total: number;
         };
@@ -2514,6 +2514,66 @@ export interface components {
          * @enum {string}
          */
         SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL";
+        /**
+         * SlackNotificationEvent
+         * @description A Slack notification posted for a review (dashboard-in-Slack, V1).
+         *
+         *     `kind` is the message class — `"hitl_pending"` (the rich HITL-pending
+         *     card, posted when the review enters `awaiting_approval`) or
+         *     `"review_posted"` (the compact one-line FYI for a review that published
+         *     without gating). The two are mutually exclusive per review. `message_ts`
+         *     is the Slack message timestamp returned by `chat.postMessage`, the key the
+         *     status-mirror `chat.update` targets.
+         *
+         *     Best-effort dedup is on the natural key `(review_id, channel_id, kind)`,
+         *     not `event_id`: because `message_ts` exists only after the Slack post, the
+         *     audit row is written after the side effect, so a crash in that window can
+         *     re-post once on replay (V1 accepts this; a durable pre-post reservation /
+         *     outbox is the upgrade). Metadata only — no message body, no finding text.
+         */
+        SlackNotificationEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "slack_notification";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /** Channel Id */
+            channel_id: string;
+            /** Message Ts */
+            message_ts: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "hitl_pending" | "review_posted";
+            /**
+             * Posted At
+             * Format: date-time
+             */
+            posted_at: string;
+        };
         /**
          * StatusCounts
          * @description Per-status review counts over the list's BASE filters (`include_eval`

@@ -3517,6 +3517,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
               "discriminator": {
@@ -3541,6 +3544,7 @@
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
+                  "slack_notification": "#/components/schemas/SlackNotificationEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -3781,6 +3785,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
               "discriminator": {
@@ -3805,6 +3812,7 @@
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
+                  "slack_notification": "#/components/schemas/SlackNotificationEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -3892,6 +3900,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
               "discriminator": {
@@ -3916,6 +3927,7 @@
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
+                  "slack_notification": "#/components/schemas/SlackNotificationEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -4301,6 +4313,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
               "discriminator": {
@@ -4325,6 +4340,7 @@
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
+                  "slack_notification": "#/components/schemas/SlackNotificationEvent",
                   "synthesize_completed": "#/components/schemas/SynthesizeCompletedEvent",
                   "trace_decision": "#/components/schemas/TraceDecisionEvent"
                 }
@@ -4887,6 +4903,83 @@
         ],
         "title": "SkipReason",
         "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,\n  `ALL_SCOPES_TRIVIAL`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze\n  adapter only handles Python; the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
+      },
+      "SlackNotificationEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "slack_notification",
+            "title": "Event Type",
+            "default": "slack_notification"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "channel_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Channel Id"
+          },
+          "message_ts": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Message Ts"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "hitl_pending",
+              "review_posted"
+            ],
+            "title": "Kind"
+          },
+          "posted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Posted At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "channel_id",
+          "message_ts",
+          "kind",
+          "posted_at"
+        ],
+        "title": "SlackNotificationEvent",
+        "description": "A Slack notification posted for a review (dashboard-in-Slack, V1).\n\n`kind` is the message class \u2014 `\"hitl_pending\"` (the rich HITL-pending\ncard, posted when the review enters `awaiting_approval`) or\n`\"review_posted\"` (the compact one-line FYI for a review that published\nwithout gating). The two are mutually exclusive per review. `message_ts`\nis the Slack message timestamp returned by `chat.postMessage`, the key the\nstatus-mirror `chat.update` targets.\n\nBest-effort dedup is on the natural key `(review_id, channel_id, kind)`,\nnot `event_id`: because `message_ts` exists only after the Slack post, the\naudit row is written after the side effect, so a crash in that window can\nre-post once on replay (V1 accepts this; a durable pre-post reservation /\noutbox is the upgrade). Metadata only \u2014 no message body, no finding text."
       },
       "StatusCounts": {
         "properties": {
