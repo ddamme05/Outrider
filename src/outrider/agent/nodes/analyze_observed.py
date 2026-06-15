@@ -22,7 +22,9 @@ the schema floor.
 
 CLEAN-parse only: the caller gates on `degraded_mode` (no OBSERVED findings on a
 degraded/failed parse). OBSERVED findings AUGMENT the LLM pass and never skip it
-in V1; the skip routing is a later, evidence-gated increment.
+in V1. Skip-routing TELEMETRY landed (`compute_observed_skip_shadow` records the
+per-file `would_skip` / `not_eligible` decision); only ENFORCED skipping (the
+pre-LLM skip) is a later, evidence-gated flip (`DECISIONS.md#049`).
 """
 
 from __future__ import annotations
