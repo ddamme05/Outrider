@@ -1765,7 +1765,17 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # `AnalysisRound` requires unique content_hashes, and an OBSERVED match the
     # model ALSO flagged (same file/lines/type) is redundant. signal_only: the
     # LLM still ran; OBSERVED augments it, never skips it.
-    if not degraded_mode:
+    #
+    # HEAD-CONTENT ONLY (defense-in-depth): the OBSERVED producer is head-content
+    # proof — its queries run on head, and `evidence` + the shadow event's
+    # `side="head"` are head-derived. A normal `removed` file already skips upstream
+    # at NO_CHANGED_SCOPE_UNITS (no added lines; `decide_degradation`) and never
+    # reaches here. This gate makes the head-content dependency explicit AT the
+    # block and guards the one residual path it would NOT catch: a `content_head is
+    # None` file that still carries added lines (a ChangedFile-invariant violation)
+    # would otherwise run OBSERVED on the `content_base` fallback and flag deleted
+    # code with base lines treated as head.
+    if not degraded_mode and changed_file.content_head is not None:
         # Single deterministic OBSERVED query pass; the findings producer and
         # (the routing increment's) skip-coverage check both read these matches.
         observed_matches = run_observed_matches(
