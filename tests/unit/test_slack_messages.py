@@ -28,9 +28,11 @@ _BY_SEVERITY = {
 }
 
 
-def _finding(severity: FindingSeverity, *, title: str, line: int = 10) -> ReviewFinding:
+def _finding(
+    severity: FindingSeverity, *, title: str, line: int = 10, file_path: str = "src/x.py"
+) -> ReviewFinding:
     ft = _BY_SEVERITY[severity]
-    fp = "src/x.py"
+    fp = file_path
     return ReviewFinding(
         finding_id=uuid4(),
         review_id=uuid4(),
@@ -139,3 +141,34 @@ def test_review_posted_no_findings() -> None:
         repo="r", pr_number=1, posted_count=0, dashboard_only_count=0, deep_link="https://d/x"
     )
     assert "no findings" in (json.dumps(msg.blocks) + msg.text)
+
+
+def test_escape_mrkdwn_neutralizes_control_chars() -> None:
+    from outrider.notify.messages import _escape_mrkdwn
+
+    assert _escape_mrkdwn("a & b < c > d") == "a &amp; b &lt; c &gt; d"
+    assert _escape_mrkdwn("<!here> <@U1>") == "&lt;!here&gt; &lt;@U1&gt;"
+    # `&` escaped first, so the entity ampersands are not double-escaped.
+    assert _escape_mrkdwn("<x>") == "&lt;x&gt;"
+
+
+def test_attacker_metadata_does_not_become_live_formatting() -> None:
+    # repo / pr_title / finding title are free text (file_path is path-validated upstream,
+    # so it can't carry control chars — escaping it is defense-in-depth, covered by the
+    # _escape_mrkdwn unit test above).
+    findings = [_finding(FindingSeverity.CRITICAL, title="pwn <@U123> & <!here>")]
+    msg = build_hitl_pending_message(
+        repo="evil/<!here>",
+        pr_number=1,
+        pr_title="title <@U999> & <https://x|x>",
+        findings=findings,
+        deep_link="https://dash/r/1?finding=2",
+    )
+    blob = json.dumps(msg.blocks, ensure_ascii=False) + msg.text
+    # No raw control sequence survives (no live mentions / channel pings / links).
+    for raw in ("<!here>", "<@U123>", "<@U999>", "<https://x|x>"):
+        assert raw not in blob
+    # They are present only as inert HTML entities.
+    assert "&lt;!here&gt;" in blob and "&amp;" in blob
+    # The builder-owned deep-link button is still a real, unescaped URL.
+    assert _actions_button_url(msg.blocks) == "https://dash/r/1?finding=2"

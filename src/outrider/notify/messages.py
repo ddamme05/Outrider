@@ -48,6 +48,16 @@ class RenderedSlackMessage(NamedTuple):
     blocks: list[dict[str, Any]]
 
 
+def _escape_mrkdwn(text: str) -> str:
+    """Neutralize Slack mrkdwn control chars in attacker-controlled values (PR/finding
+    titles, repo, file paths) so `<!here>` / `<@U…>` / `<url|text>` / `&<>` render as inert
+    text — not live mentions, channel pings, or links. Slack decodes only these three;
+    `&` is escaped first (per slack-sdk messaging/formatting-message-text). Builder-owned
+    link syntax (`<{deep_link}|…>`) is composed from trusted values and is NOT escaped.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _section(markdown: str) -> dict[str, Any]:
     return {"type": "section", "text": {"type": "mrkdwn", "text": markdown}}
 
@@ -71,7 +81,7 @@ def _finding_line(f: ReviewFinding) -> str:
     type_label = f.finding_type.value.replace("_", " ")
     return (
         f"{emoji} *{f.severity.value.upper()}* · {type_label} — "
-        f"`{f.file_path}:{f.line_start}`\n{f.title}"
+        f"`{_escape_mrkdwn(f.file_path)}:{f.line_start}`\n{_escape_mrkdwn(f.title)}"
     )
 
 
@@ -86,13 +96,14 @@ def build_hitl_pending_message(
 ) -> RenderedSlackMessage:
     """The rich HITL-pending card: PR identity, severity counts, top-N findings by
     severity, an overflow line for the rest, and a deep-link button."""
+    repo_s, pr_title_s = _escape_mrkdwn(repo), _escape_mrkdwn(pr_title)
     ordered = sorted(findings, key=lambda f: _SEVERITY_RANK[f.severity])
     counts = _severity_counts(ordered)
     total = len(ordered)
     shown = ordered[:top_n]
 
     blocks: list[dict[str, Any]] = [
-        _section(f":warning: *Review needs approval* — `{repo}` #{pr_number}\n{pr_title}"),
+        _section(f":warning: *Review needs approval* — `{repo_s}` #{pr_number}\n{pr_title_s}"),
     ]
     if counts:
         blocks.append(_context(_counts_phrase(counts)))
@@ -121,7 +132,9 @@ def build_hitl_pending_message(
     )
 
     counts_text = _counts_phrase(counts) if counts else "no findings"
-    text = f"Review needs approval: {repo} #{pr_number} — {pr_title} ({counts_text}). {deep_link}"
+    text = (
+        f"Review needs approval: {repo_s} #{pr_number} — {pr_title_s} ({counts_text}). {deep_link}"
+    )
     return RenderedSlackMessage(text=text, blocks=blocks)
 
 
@@ -136,6 +149,7 @@ def build_review_posted_message(
     """The compact one-line review-posted FYI (non-gated reviews). Counts come from
     publish routing: `posted_count` = inline + review-body (on the PR);
     `dashboard_only_count` = findings not posted to GitHub."""
+    repo_s = _escape_mrkdwn(repo)
     total = posted_count + dashboard_only_count
     if total == 0:
         summary = "no findings"
@@ -146,10 +160,10 @@ def build_review_posted_message(
             f"{total} findings ({posted_count} posted · {dashboard_only_count} dashboard-only)"
         )
 
-    text = f"Reviewed {repo} #{pr_number} — {summary}, no approval needed. {deep_link}"
+    text = f"Reviewed {repo_s} #{pr_number} — {summary}, no approval needed. {deep_link}"
     blocks = [
         _section(
-            f":white_check_mark: Reviewed `{repo}` #{pr_number} — {summary}, "
+            f":white_check_mark: Reviewed `{repo_s}` #{pr_number} — {summary}, "
             f"no approval needed · <{deep_link}|view>"
         )
     ]
