@@ -8,12 +8,10 @@ dependencies = [
     "fastapi==0.135.3",
     "uvicorn[standard]==0.47.0",
     "httpx==0.28.1",
-
     # Agent / LLM
     "langgraph==1.1.6",
     "langgraph-checkpoint-postgres==3.0.5",
     "anthropic==0.100.0",
-
     # Observability — LangSmith (opt-in via LANGSMITH_TRACING=true env var).
     # LangGraph 1.1.6 emits node spans natively when the env var is set; the
     # provider-agnostic `TracingLLMProvider` decorator in `llm/tracing.py`
@@ -21,35 +19,30 @@ dependencies = [
     # traces on top. Both are no-ops when the env var is unset, so the dep
     # doesn't activate in CI / eval / prod by default.
     "langsmith==0.8.5",
-
     # Schema / validation / settings
     "pydantic==2.12.5",
     "pydantic-settings==2.13.1",
-
     # Database — single driver (psycopg3) for both SQLAlchemy and LangGraph
     # See DECISIONS.md #001 (supersedes spec §14.1 two-driver pattern)
     "sqlalchemy[asyncio]==2.0.49",
     "alembic==1.18.4",
     "psycopg[binary]==3.3.3",
-
     # GitHub
     "githubkit==0.15.3",
     "pyjwt[crypto]==2.12.1",
-
     # Tree-sitter
     "tree-sitter==0.25.2",
     "tree-sitter-python==0.25.0",
-
     # Diff parsing
     "unidiff==0.7.5",
-
     # Logging
     "structlog==25.5.0",
-
     # ── V2 (Celery task queue + Redis broker — not active in V1) ────────────
     # "celery==5.6.3",
     # "redis==7.4.0",
     # ────────────────────────────────────────────────────────────────────────
+    "slack-sdk==3.42.0",
+    "aiohttp==3.14.1",  # slack_sdk AsyncWebClient's async HTTP backend (not auto-installed)
 ]
 
 [dependency-groups]

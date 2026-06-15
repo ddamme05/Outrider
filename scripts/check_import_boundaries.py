@@ -9,6 +9,7 @@ Enforces the HARD-STOP vendor-SDK + shell-exec boundaries from
   - `anthropic` / `openai` — only in `llm/`; `langsmith` — only in `llm/tracing.py`
     (the tracing decorator's single home, DECISIONS.md#035). LLM provider boundary (§8).
   - `githubkit` — only in `github/` + `api/webhooks/`. GitHub SDK boundary (§5 + §8).
+  - `slack_sdk` — only in `notify/`. Slack notification boundary (vendor-sdks-only-in-wrappers).
   - no `subprocess` import / `os.system` / `os.popen` anywhere in `src/outrider/`.
     Input boundary, shell (§5 sub-rule 1).
 
@@ -91,6 +92,16 @@ VENDOR_RULES: tuple[_VendorRule, ...] = (
         modules=("githubkit",),
         scan_globs=("src/outrider/**/*.py",),
         allowed_prefixes=("src/outrider/github/", "src/outrider/api/webhooks/"),
+    ),
+    _VendorRule(
+        # Slack notifications: the slack_sdk AsyncWebClient is confined to the
+        # notify/ wrapper (notify/slack.py) per the dashboard-in-Slack spec; the
+        # general vendor-sdks-only-in-wrappers boundary, same shape as the others.
+        name="Slack SDK boundary",
+        doc_ref="docs/trust-boundaries.md §8 (vendor-sdks-only-in-wrappers)",
+        modules=("slack_sdk",),
+        scan_globs=("src/outrider/**/*.py",),
+        allowed_prefixes=("src/outrider/notify/",),
     ),
 )
 
