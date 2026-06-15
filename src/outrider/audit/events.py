@@ -725,7 +725,7 @@ class ObservedSkipCoveringMatch(BaseModel):
     re-parsing. Frozen + extra=forbid.
 
     `side` is pinned to `"head"`: OBSERVED queries run on head content
-    (`produce_observed_findings(head_content=…)`), so every covering envelope is
+    (`run_observed_matches(head_content=…)`), so every covering envelope is
     in head-source lines, and base/removed changed regions are structurally
     un-coverable by a head-content match — they are therefore always blockers.
     The side is carried in the row (not left to a prose convention) so a

@@ -101,6 +101,7 @@ from typing import TYPE_CHECKING, Final, Literal
 from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     produce_observed_findings,
+    run_observed_matches,
 )
 from outrider.agent.nodes.analyze_parser import (
     ANALYZE_PARSER_VERSION,
@@ -1764,10 +1765,16 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # model ALSO flagged (same file/lines/type) is redundant. signal_only: the
     # LLM still ran; OBSERVED augments it, never skips it.
     if not degraded_mode:
-        observed_findings = produce_observed_findings(
+        # Single deterministic OBSERVED query pass; the findings producer and
+        # (the routing increment's) skip-coverage check both read these matches.
+        observed_matches = run_observed_matches(
             file_path=changed_file.path,
             head_content=content,
             included_scope_units=included_scope_units,
+        )
+        observed_findings = produce_observed_findings(
+            observed_matches,
+            file_path=changed_file.path,
             review_id=review_id,
             installation_id=installation_id,
             active_policy_version=active_policy_version,

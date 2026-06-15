@@ -12,7 +12,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 from uuid import uuid4
 
-from outrider.agent.nodes.analyze_observed import produce_observed_findings
+from outrider.agent.nodes.analyze_observed import produce_observed_findings, run_observed_matches
 from outrider.ast_facts import parse_python
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import (
@@ -20,6 +20,7 @@ from outrider.policy.severity import (
     FindingSeverity,
     FindingType,
 )
+from outrider.queries.observed import QueryClass
 from outrider.schemas import ReviewDimension
 
 
@@ -29,10 +30,14 @@ def _scopes(source: str):
 
 
 def _produce(source: str, scopes=None, file_path: str = "src/x.py"):
-    return produce_observed_findings(
+    matches = run_observed_matches(
         file_path=file_path,
         head_content=source,
         included_scope_units=scopes if scopes is not None else _scopes(source),
+    )
+    return produce_observed_findings(
+        matches,
+        file_path=file_path,
         review_id=uuid4(),
         installation_id=12345,
         active_policy_version=ACTIVE_POLICY_VERSION,
@@ -123,3 +128,22 @@ def test_producer_is_deterministic() -> None:
     assert [(x.content_hash, x.proposal_hash) for x in a] == [
         (y.content_hash, y.proposal_hash) for y in b
     ]
+
+
+def test_run_observed_matches_surfaces_query_class_and_record_fields() -> None:
+    """The shared query pass returns `ObservedMatch` records carrying
+    `query_class` (which the skip-routing increment filters on) alongside the
+    finding-construction fields — one definition of the OBSERVED query facts for
+    the file. Every V1 query is `signal_only` (default-deny)."""
+    source = "import subprocess\n\n\ndef run_it(cmd):\n    subprocess.run(cmd, shell=True)\n"
+    matches = run_observed_matches(
+        file_path="src/x.py", head_content=source, included_scope_units=_scopes(source)
+    )
+    assert len(matches) == 1
+    m = matches[0]
+    assert m.query_match_id == "python.command_injection_subprocess_shell"
+    assert m.query_class == QueryClass.SIGNAL_ONLY  # default-deny: all V1 queries signal_only
+    assert m.finding_type == FindingType.COMMAND_INJECTION
+    assert "shell=True" in m.evidence
+    assert m.line_start == m.line_end == 5
+    assert m.title and m.description
