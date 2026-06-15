@@ -1,5 +1,5 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of eight sink Protocols.
+"""AuditPersister — durable single-class implementation of nine sink Protocols.
 
 Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
 `FileExaminationSink`, `AnalyzeEventSink`, `PublishEventSink`,
@@ -140,6 +140,7 @@ if TYPE_CHECKING:
         PublishRoutingEvent,
         ReviewPhaseEvent,
         ScopeExclusionEvent,
+        SlackNotificationEvent,
         SynthesizeCompletedEvent,
     )
     from outrider.llm.base import LLMRequest, LLMResponse
@@ -1488,6 +1489,7 @@ def _serialize_event_payload(
         | CacheLookupEvent
         | CacheServeEvent
         | ObservedSkipShadowEvent
+        | SlackNotificationEvent
         | TraceDecisionEvent
         | HITLRequestEvent
         | HITLDecisionEvent
@@ -2254,6 +2256,7 @@ class AuditPersister:
             | CacheLookupEvent
             | CacheServeEvent
             | ObservedSkipShadowEvent
+            | SlackNotificationEvent
             | SynthesizeCompletedEvent
         ),
     ) -> None:
@@ -2623,6 +2626,17 @@ class AuditPersister:
 
     async def emit_synthesize_completed(self, event: SynthesizeCompletedEvent) -> None:
         """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
+        await self._persist_non_phase_event(event)
+
+    # -- SlackEventSink surface ---------------------------------------------
+    # event_id-PK idempotency (CacheLookupEvent / SynthesizeCompletedEvent
+    # precedent, `_persist_non_phase_event` body). The (review_id, channel_id,
+    # kind) de-dup is the notifier's best-effort pre-post check, NOT a
+    # natural-key DB constraint — so no migration and no partial unique index.
+
+    async def emit_slack_notification(self, event: SlackNotificationEvent) -> None:
+        """Persist a `SlackNotificationEvent` row (one per Slack post;
+        event_id-PK idempotent per `DECISIONS.md#026`)."""
         await self._persist_non_phase_event(event)
 
     async def emit_replay_verdict(self, event: ReplayVerdictEvent) -> bool:
