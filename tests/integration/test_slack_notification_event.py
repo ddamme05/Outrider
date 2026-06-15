@@ -122,3 +122,49 @@ async def test_emit_slack_notification_is_eval_propagation(
             )
         ).one()
     assert row.is_eval is True
+
+
+async def test_query_slack_notification_finds_emitted_by_natural_key(
+    persister_setup: PersisterTestSetup,
+) -> None:
+    """The pre-post lookup returns the emitted event (matched on review_id +
+    channel_id + kind), exposing its message_ts for the status mirror."""
+    event = _event(persister_setup.review_id, kind="hitl_pending")
+    await persister_setup.persister.emit_slack_notification(event)
+
+    found = await persister_setup.persister.query_slack_notification(
+        review_id=persister_setup.review_id, channel_id="C0123ABC", kind="hitl_pending"
+    )
+    assert found is not None
+    assert found.message_ts == "1718500000.123456"
+    assert found.kind == "hitl_pending"
+
+
+async def test_query_slack_notification_none_when_absent_or_mismatched(
+    persister_setup: PersisterTestSetup,
+) -> None:
+    """None (safe-to-post) when nothing matches: no event at all, and — after a
+    hitl_pending post — a different kind/channel still misses."""
+    # Nothing emitted yet.
+    assert (
+        await persister_setup.persister.query_slack_notification(
+            review_id=persister_setup.review_id, channel_id="C0123ABC", kind="hitl_pending"
+        )
+        is None
+    )
+    await persister_setup.persister.emit_slack_notification(
+        _event(persister_setup.review_id, kind="hitl_pending")
+    )
+    # Different kind / channel → no match (the natural key includes both).
+    assert (
+        await persister_setup.persister.query_slack_notification(
+            review_id=persister_setup.review_id, channel_id="C0123ABC", kind="review_posted"
+        )
+        is None
+    )
+    assert (
+        await persister_setup.persister.query_slack_notification(
+            review_id=persister_setup.review_id, channel_id="COTHER", kind="hitl_pending"
+        )
+        is None
+    )
