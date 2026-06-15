@@ -60,6 +60,7 @@ from outrider.audit.events import (
     PublishRoutingEvent,
     ReplayVerdictEvent,
     ReviewPhaseEvent,
+    SlackNotificationEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
@@ -477,14 +478,17 @@ _NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxy
 # and so are exempt from node-containment. `AgentTransitionEvent` records a
 # transition BETWEEN phases (it carries from_node/to_node, not a single node_id);
 # `ReplayVerdictEvent` is post-completion replay metadata appended by the verdict
-# projector AFTER all phases have closed (it is bounded by nothing). `ReviewPhaseEvent`
-# is the phase marker itself, handled before this check. Keyed by
+# projector AFTER all phases have closed (it is bounded by nothing).
+# `SlackNotificationEvent` is a fire-and-forget notification side effect emitted off the
+# hot path (around hitl or publish depending on `kind`), enclosed by no single node's
+# phase window. `ReviewPhaseEvent` is the phase marker itself, handled before this check. Keyed by
 # `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]` wants a class).
 # The runtime `continue` in `_verify_phase_wellformed` consults THIS tuple, so adding
 # a member here both registers it (for the completeness guard test) and exempts it.
 _PHASE_UNBOUNDED_EVENTS: Final[tuple[type[AuditEventBase], ...]] = (
     AgentTransitionEvent,
     ReplayVerdictEvent,
+    SlackNotificationEvent,
 )
 
 
