@@ -147,3 +147,17 @@ def test_run_observed_matches_surfaces_query_class_and_record_fields() -> None:
     assert "shell=True" in m.evidence
     assert m.line_start == m.line_end == 5
     assert m.title and m.description
+
+
+def test_long_match_evidence_truncated_not_crash() -> None:
+    """A match envelope spans the whole call, so a long construct (e.g. a big SQL
+    f-string) produces evidence exceeding ReviewFinding.evidence's 2000-char cap.
+    The producer truncates so a long but legitimate match yields a finding rather
+    than a ValidationError that would crash analyze for the file (code-review fold)."""
+    long_tail = "A" * 2500
+    source = f'def q(c, v):\n    c.execute(f"SELECT {{v}} {long_tail}")\n'
+    findings = _produce(source)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.finding_type == FindingType.SQL_INJECTION
+    assert len(finding.evidence) == 2000  # truncated to the field cap, not a crash
