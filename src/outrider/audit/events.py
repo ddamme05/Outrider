@@ -814,6 +814,32 @@ class ObservedSkipShadowEvent(AuditEventBase):
             )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_would_skip_coverage_coherence(self) -> Self:
+        """A `would_skip` claims every changed region was covered, so the row must
+        stay a reconstructable promotion proof: non-empty `changed_regions`
+        require the `covering_matches` whose union is the coverage envelope, and
+        no changed region may be base-side (base/removed regions are un-coverable
+        by head-content OBSERVED matches — always blockers, hence never part of a
+        skip). `not_eligible` carries its reason in `blockers` and needs neither.
+        """
+        if self.outcome != "would_skip":
+            return self
+        if self.changed_regions and not self.covering_matches:
+            raise ValueError(
+                "ObservedSkipShadowEvent: outcome='would_skip' with non-empty "
+                "changed_regions requires non-empty covering_matches (the coverage "
+                "envelope) — an uncovered would_skip is not a reconstructable proof"
+            )
+        n_base = sum(1 for r in self.changed_regions if r.side == "base")
+        if n_base:
+            raise ValueError(
+                "ObservedSkipShadowEvent: outcome='would_skip' cannot carry "
+                f"base-side changed regions (un-coverable by head-content matches; "
+                f"always blockers), got {n_base}"
+            )
+        return self
+
 
 class FileExaminationEvent(AuditEventBase):
     """Records that a file was examined (parse status + node).

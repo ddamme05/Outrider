@@ -557,15 +557,59 @@ def test_observed_skip_shadow_extra_forbid() -> None:
         ObservedSkipShadowEvent(**_skip_shadow_kwargs(unexpected="bad"))
 
 
-def test_observed_skip_shadow_covering_and_blockers_default_empty() -> None:
-    """Both tuple fields default to () — a would_skip with neither kwarg is the
-    minimal admissible shape (no blockers, so consistent)."""
+def test_observed_skip_shadow_tuple_fields_default_empty() -> None:
+    """`covering_matches` and `blockers` each default to () — exercised on
+    COHERENT shapes: a `not_eligible` omits covering_matches (the region is a
+    blocker, nothing covered); a `would_skip` with a covering match omits blockers
+    (the region is covered). The would_skip-with-no-covering shape this test used
+    to bless is now rejected by the coverage-coherence validator."""
     region = ObservedSkipChangedRegion(side="head", line_start=10, line_end=14)
-    event = ObservedSkipShadowEvent(
-        review_id=uuid4(), file_path="src/foo.py", outcome="would_skip", changed_regions=(region,)
+    not_eligible = ObservedSkipShadowEvent(
+        review_id=uuid4(),
+        file_path="src/foo.py",
+        outcome="not_eligible",
+        changed_regions=(region,),
+        blockers=(region,),
     )
-    assert event.covering_matches == ()
-    assert event.blockers == ()
+    assert not_eligible.covering_matches == ()
+    match = ObservedSkipCoveringMatch(query_match_id="q-1", side="head", line_start=10, line_end=14)
+    would_skip = ObservedSkipShadowEvent(
+        review_id=uuid4(),
+        file_path="src/foo.py",
+        outcome="would_skip",
+        changed_regions=(region,),
+        covering_matches=(match,),
+    )
+    assert would_skip.blockers == ()
+
+
+def test_observed_skip_shadow_rejects_would_skip_without_covering_matches() -> None:
+    """Reviewer-flagged incoherence: a would_skip with covered changed regions but
+    no covering matches is not a reconstructable promotion proof after content
+    purge — the covering matches whose union is the envelope must be present."""
+    region = ObservedSkipChangedRegion(side="head", line_start=10, line_end=14)
+    with pytest.raises(ValidationError, match="would_skip.*covering_matches"):
+        ObservedSkipShadowEvent(
+            review_id=uuid4(),
+            file_path="src/foo.py",
+            outcome="would_skip",
+            changed_regions=(region,),
+        )
+
+
+def test_observed_skip_shadow_rejects_would_skip_with_base_changed_region() -> None:
+    """Base/removed regions are un-coverable by head-content matches → always
+    blockers; a would_skip cannot carry one even with a covering match present."""
+    base_region = ObservedSkipChangedRegion(side="base", line_start=10, line_end=14)
+    match = ObservedSkipCoveringMatch(query_match_id="q-1", side="head", line_start=10, line_end=14)
+    with pytest.raises(ValidationError, match="would_skip.*base-side"):
+        ObservedSkipShadowEvent(
+            review_id=uuid4(),
+            file_path="src/foo.py",
+            outcome="would_skip",
+            changed_regions=(base_region,),
+            covering_matches=(match,),
+        )
 
 
 def test_observed_skip_changed_region_frozen_and_extra_forbid() -> None:
