@@ -73,6 +73,15 @@ if TYPE_CHECKING:
 # logic. BUMP on any rule change.
 OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v1"
 
+# A query match envelope spans the whole matched construct (e.g. an entire
+# `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
+# `ReviewFinding.evidence`'s `max_length=2000`. Truncate to that cap so a long but
+# legitimate match yields a (truncated-evidence) finding rather than a
+# ValidationError that would crash analyze for the file. Truncation only affects
+# >2000-char matches (which previously crashed, so never reached the cache), so it
+# needs no OBSERVED_PRODUCER_VERSION bump.
+_EVIDENCE_MAX_CHARS: Final[int] = 2000
+
 
 @dataclass(frozen=True, slots=True)
 class ObservedMatch:
@@ -160,7 +169,7 @@ def run_observed_matches(
 
             evidence = content_bytes[span.byte_start : span.byte_end].decode(
                 "utf-8", errors="replace"
-            )
+            )[:_EVIDENCE_MAX_CHARS]
             matches.append(
                 ObservedMatch(
                     query_match_id=observed.query_match_id,
