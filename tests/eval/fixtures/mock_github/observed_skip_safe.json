@@ -1,0 +1,37 @@
+{
+  "installation_id": 4242,
+  "owner": "acme",
+  "repo": "vulnrepo",
+  "pr_number": 1,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "Run the command",
+  "pr_body": null,
+  "author": "contributor",
+  "total_additions": 1,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "src/vuln.py",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 0,
+      "patch": "@@ -5 +5,2 @@\n     return cmd\n+    subprocess.run(cmd, shell=True)\n",
+      "previous_path": null,
+      "content_base": "import subprocess\n\n\ndef run_it(cmd):\n    return cmd\n",
+      "content_head": "import subprocess\n\n\ndef run_it(cmd):\n    return cmd\n    subprocess.run(cmd, shell=True)\n"
+    }
+  ],
+  "repository_contents_head": {},
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"src/vuln.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Changed line calls subprocess with shell=True on a parameter.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"command_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Command injection via subprocess shell=True\", \"description\": \"The cmd parameter flows into subprocess.run with shell=True, allowing shell metacharacter injection.\", \"evidence\": \"subprocess.run(cmd, shell=True)\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "One finding: command injection via subprocess shell=True on line 6."
+    ]
+  }
+}
