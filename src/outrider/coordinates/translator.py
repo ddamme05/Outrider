@@ -1,6 +1,6 @@
 """tree_sitter_to_github translator + GitHubCommentLocation + CoordinateError.
 
-Per docs/spec.md §5.6 (the two §5.6 functions and the failure-mode contract)
+Per docs/spec.md §5.6 (the §5.6 translation functions and the failure-mode contract)
 and docs/spec.md §7.2 (the GitHubCommentLocation canonical shape).
 
 See DECISIONS.md#006-two-month-0-spikes-not-five for the off-by-one test
