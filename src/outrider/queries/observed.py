@@ -28,11 +28,13 @@ from outrider.policy.severity import FindingType  # noqa: TC001
 class QueryClass(StrEnum):
     """Routing class for an OBSERVED query.
 
-    Default-deny per the spec: every query is `SIGNAL_ONLY` (it emits
-    OBSERVED evidence that AUGMENTS the LLM pass, never skips it) unless
-    explicitly promoted to `SKIP_SAFE` by a shadow comparison proving the
-    skip loses no JUDGED finding. V1 seeds zero or a tiny fixture-proven
-    `SKIP_SAFE` set.
+    Default-deny per `DECISIONS.md#049`: every query is `SIGNAL_ONLY` (it
+    emits OBSERVED evidence that AUGMENTS the LLM pass, never skips it)
+    unless explicitly promoted to `SKIP_SAFE` by a shadow comparison
+    proving the skip loses no JUDGED finding. V1 seeds ZERO `SKIP_SAFE`
+    queries — the class exists so the skip-routing telemetry can record
+    eligibility; a `SKIP_SAFE` query is exercised only by the
+    `observed_skip_safe` eval scenario or a later evidence-gated promotion.
     """
 
     SIGNAL_ONLY = "signal_only"

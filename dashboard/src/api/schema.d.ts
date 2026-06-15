@@ -1487,7 +1487,7 @@ export interface components {
         /**
          * ObservedSkipShadowEvent
          * @description Per-file OBSERVED-tier skip-routing SHADOW record (Cost Lever 3,
-         *     specs/2026-06-14-observed-query-library-v1.md).
+         *     specs/2026-06-14-observed-query-library-v1.md; `DECISIONS.md#049`).
          *
          *     One event per pass-0 clean-mode file the default-deny skip routing
          *     evaluates. `outcome="would_skip"` means every changed region in the file

@@ -100,6 +100,7 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
+    compute_observed_skip_shadow,
     produce_observed_findings,
     run_observed_matches,
 )
@@ -1797,6 +1798,25 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     admitted_findings=parser_result.admitted_findings + tuple(fresh),
                     counters=replace(parser_result.counters, n_findings_observed=len(fresh)),
                 )
+
+        # Skip-routing SHADOW telemetry (Cost Lever 3, DECISIONS.md#049): record
+        # the per-file skip-eligibility decision from the SAME OBSERVED matches.
+        # V1 RECORDS ONLY — it never skips the LLM (which already ran above);
+        # enforcement is the later evidence-gated flip. Needs the diff, so it is
+        # gated on patched_file (None for binary / oversized / absent patches).
+        if patched_file is not None:
+            shadow_event = compute_observed_skip_shadow(
+                observed_matches,
+                file_path=changed_file.path,
+                included_scope_units=included_scope_units,
+                patched_file=patched_file,
+                head_source=content,
+                base_source=changed_file.content_base,
+                review_id=review_id,
+                is_eval=is_eval,
+            )
+            if shadow_event is not None:
+                await analyze_event_sink.emit_observed_skip_shadow(shadow_event)
 
     # Lift parser rejection payloads into audit events.
     for proposal_rej in parser_result.proposal_rejections:

@@ -29,23 +29,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
-from outrider.audit.events import compute_finding_content_hash
-from outrider.coordinates import CoordinateError, query_span_to_source_lines
+from outrider.audit.events import (
+    ObservedSkipChangedRegion,
+    ObservedSkipCoveringMatch,
+    ObservedSkipShadowEvent,
+    compute_finding_content_hash,
+)
+from outrider.coordinates import (
+    CoordinateError,
+    changed_line_spans,
+    query_span_to_source_lines,
+)
 from outrider.policy.canonical import compute_proposal_hash
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import lookup_severity
 from outrider.queries import registry as query_registry
+from outrider.queries.observed import QueryClass
 from outrider.schemas import ReviewFinding
 
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from unidiff import PatchedFile
+
     from outrider.ast_facts.models import ScopeUnit
     from outrider.policy.severity import FindingType
-    from outrider.queries.observed import QueryClass
 
 
 # Version of the OBSERVED producer's ADMISSION logic — the rules in
@@ -220,3 +231,111 @@ def produce_observed_findings(
             )
         )
     return tuple(findings)
+
+
+def compute_observed_skip_shadow(
+    matches: tuple[ObservedMatch, ...],
+    *,
+    file_path: str,
+    included_scope_units: tuple[ScopeUnit, ...],
+    patched_file: PatchedFile,
+    head_source: str,
+    base_source: str | None,
+    review_id: UUID,
+    is_eval: bool,
+) -> ObservedSkipShadowEvent | None:
+    """Compute the per-file OBSERVED skip-eligibility decision (Cost Lever 3,
+    `DECISIONS.md#049`) from the shared `run_observed_matches` records, returning
+    it as an `ObservedSkipShadowEvent` — or `None` when there is nothing to
+    evaluate (no included scopes, or no changed regions in them).
+
+    Default-deny + shadow-only: a file is skip-eligible (`would_skip`) iff EVERY
+    changed region across the included scopes lies within the coverage envelope of
+    at least one `skip_safe` match. `signal_only` matches never count toward
+    coverage. Base/removed regions are un-coverable by head-content matches → they
+    are always blockers. Because V1 seeds zero `skip_safe` queries, every emitted
+    event with changed regions is `not_eligible`. The caller RECORDS this event; it
+    never skips the LLM — enforcement is the later evidence-gated flip.
+
+    The returned event is coherent by construction (it satisfies
+    `ObservedSkipShadowEvent`'s coverage-coherence validator): a `would_skip` has
+    no blockers, so every changed region is a covered head region → non-empty
+    `covering_matches` and no base-side regions. Changed regions and blockers are
+    deduped by (side, line) so overlapping included scopes don't double-count.
+    """
+    if not included_scope_units:
+        return None
+
+    def _region(side: Literal["head", "base"], line_no: int) -> ObservedSkipChangedRegion:
+        return ObservedSkipChangedRegion(side=side, line_start=line_no, line_end=line_no)
+
+    skip_safe_envelopes = tuple(
+        (m.line_start, m.line_end) for m in matches if m.query_class == QueryClass.SKIP_SAFE
+    )
+
+    changed: list[ObservedSkipChangedRegion] = []
+    blockers: list[ObservedSkipChangedRegion] = []
+    seen_changed: set[tuple[str, int]] = set()
+    seen_blocker: set[tuple[str, int]] = set()
+    covered_head_lines: set[int] = set()
+
+    for su in included_scope_units:
+        try:
+            spans = changed_line_spans(
+                su, patched_file, head_source=head_source, base_source=base_source
+            )
+        except CoordinateError:
+            # base_source=None with kept-removed lines is unreachable under the V1
+            # intake contract (added files have no removed lines; modified/renamed
+            # carry content_base) — the sibling trivial-scope filter pre-checks it.
+            # But the shadow event is OPTIONAL telemetry, so a coordinate edge must
+            # never abort the review: fail-safe to no event.
+            return None
+        for ls in spans.head_added:
+            key = ("head", ls.line_no)
+            covered = any(lo <= ls.line_no <= hi for lo, hi in skip_safe_envelopes)
+            if key not in seen_changed:
+                seen_changed.add(key)
+                changed.append(_region("head", ls.line_no))
+            if covered:
+                covered_head_lines.add(ls.line_no)
+            elif key not in seen_blocker:
+                seen_blocker.add(key)
+                blockers.append(_region("head", ls.line_no))
+        for ls in spans.base_removed:
+            key = ("base", ls.line_no)
+            if key not in seen_changed:
+                seen_changed.add(key)
+                changed.append(_region("base", ls.line_no))
+            # Base/removed lines are un-coverable by head-content OBSERVED matches.
+            if key not in seen_blocker:
+                seen_blocker.add(key)
+                blockers.append(_region("base", ls.line_no))
+
+    if not changed:
+        return None
+
+    covering = tuple(
+        ObservedSkipCoveringMatch(
+            query_match_id=m.query_match_id,
+            side="head",
+            line_start=m.line_start,
+            line_end=m.line_end,
+        )
+        for m in matches
+        if m.query_class == QueryClass.SKIP_SAFE
+        and any(m.line_start <= n <= m.line_end for n in covered_head_lines)
+    )
+
+    outcome: Literal["would_skip", "not_eligible"] = (
+        "would_skip" if not blockers else "not_eligible"
+    )
+    return ObservedSkipShadowEvent(
+        review_id=review_id,
+        is_eval=is_eval,
+        file_path=file_path,
+        outcome=outcome,
+        changed_regions=tuple(changed),
+        covering_matches=covering,
+        blockers=tuple(blockers),
+    )
