@@ -177,11 +177,20 @@ class PublishResult(BaseModel):
     # Populated on `success` and `skipped_external`; None on `empty` and `skipped`.
     github_review_id: int | None = Field(default=None, ge=1)
 
-    # Count of comments the publisher MATERIALIZED (passed to GitHub).
-    # Distinct from `comments_attempted` on `PublishAttemptEvent`, which
-    # counts only the publisher's outgoing payload — both track the same
-    # number for `success` outcomes. Zero on `empty`/`skipped` paths.
+    # Publish accounting splits into three channels (see DECISIONS.md#050):
+    # "posted" (inline + review-body) is distinct from "surfaced" (dashboard-only).
+    # `comments_posted` is the INLINE count — comments materialized as inline review
+    # comments (passed to GitHub). Distinct from `comments_attempted` on
+    # `PublishAttemptEvent` (the publisher's outgoing payload; same number for
+    # `success`). Zero on `empty`/`skipped` paths.
     comments_posted: int = Field(ge=0, default=0)
+    # Eligible REVIEW_BODY findings materialized into the "Related concerns" body
+    # section (eligibility-gated like inline). Defaulted (replay-tolerant for rows
+    # predating DECISIONS.md#050; the real count is threaded by the routing loop).
+    review_body_findings_posted: int = Field(ge=0, default=0)
+    # DASHBOARD_ONLY findings surfaced in the aggregate body note (count + link,
+    # never per-finding) — "surfaced", not "posted". Defaulted (replay-tolerant).
+    dashboard_only_findings_surfaced: int = Field(ge=0, default=0)
 
     @classmethod
     def success(cls, *, github_review_id: int, comments_posted: int) -> Self:
