@@ -612,3 +612,44 @@ def test_build_graph_signature_is_keyword_only() -> None:
             ModelConfig(),
             _StubPhaseSink(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Slack notification wiring — orchestrator + channel are all-or-nothing
+# ---------------------------------------------------------------------------
+
+
+def test_build_graph_rejects_slack_orchestrator_without_channel() -> None:
+    """An orchestrator with no channel can never post — fail closed."""
+    args = _valid_args()
+    args["slack_orchestrator"] = object()
+    with pytest.raises(BuildGraphError, match="must be provided together"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_slack_channel_without_orchestrator() -> None:
+    """A channel with no orchestrator can never post — fail closed."""
+    args = _valid_args()
+    args["slack_channel_id"] = "C0123ABC"
+    with pytest.raises(BuildGraphError, match="must be provided together"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_slack_empty_channel() -> None:
+    """An empty/whitespace channel with an orchestrator passes the both-or-neither
+    check but would silently drop every notification — fail closed."""
+    args = _valid_args()
+    args["slack_orchestrator"] = object()
+    args["slack_channel_id"] = "   "
+    with pytest.raises(BuildGraphError, match="non-empty channel"):
+        build_graph(**args)
+
+
+def test_build_graph_accepts_slack_orchestrator_with_channel() -> None:
+    """Both set → Slack enabled; the graph builds (the guard fires only on a
+    half-wired pair)."""
+    args = _valid_args()
+    args["slack_orchestrator"] = object()
+    args["slack_channel_id"] = "C0123ABC"
+    graph = build_graph(**args)
+    assert callable(graph.ainvoke)

@@ -85,6 +85,12 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     derivation. Per `nodes-receive-deps-via-closure`, config travels
     through the dependency-injection seam at `build_graph(...)` —
     the node body does not read env vars.
+  - `slack_orchestrator: SlackNotificationOrchestrator | None` +
+    `slack_channel_id: str | None` — optional, all-or-nothing. When both are
+    set, the hitl node posts a best-effort HITL-pending Slack notification
+    (fire-and-forget, off the hot path) on entry to `awaiting_approval`; None
+    (the default) disables Slack. Injected here and closed over in the hitl
+    node per `nodes-receive-deps-via-closure`.
   - `patch_config: PatchConfig` — required for synthesize's suggested-patch
     pass (`patches_enabled` + the per-review cap; the patch model is
     `model_config.patch_model`). Same closure-injection rule — synthesize
@@ -166,6 +172,7 @@ if TYPE_CHECKING:
     from outrider.cache import AnalyzeCacheStore
     from outrider.github import InstallationGitHubClient
     from outrider.llm.config import ModelConfig
+    from outrider.notify.orchestrator import SlackNotificationOrchestrator
 
 # LangGraph's CompiledStateGraph is generic over [StateT, ContextT, InputT,
 # OutputT]. V1 uses ReviewState for state — pin it as the first param so the
@@ -210,6 +217,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    slack_orchestrator: SlackNotificationOrchestrator | None = None,
+    slack_channel_id: str | None = None,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -286,6 +295,21 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     if not callable(github_factory):
         raise BuildGraphError(
             f"github_factory must be callable (got type: {type(github_factory).__name__})"
+        )
+
+    # Slack notifications are optional but all-or-nothing: the orchestrator needs
+    # a non-empty channel to post to, and a channel without an orchestrator can
+    # never post. A half-wired composition root fails closed here rather than
+    # silently dropping notifications.
+    if (slack_orchestrator is None) != (slack_channel_id is None):
+        raise BuildGraphError(
+            "slack_orchestrator and slack_channel_id must be provided together "
+            "(both to enable Slack notifications, or neither to disable)"
+        )
+    if slack_orchestrator is not None and not (slack_channel_id or "").strip():
+        raise BuildGraphError(
+            "slack_channel_id must be a non-empty channel id when slack_orchestrator "
+            "is provided (an empty channel would silently drop every notification)"
         )
 
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
@@ -451,6 +475,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         hitl_event_sink=hitl_event_sink,
         review_status_sink=review_status_sink,
         hitl_config=hitl_config,
+        slack_orchestrator=slack_orchestrator,
+        slack_channel_id=slack_channel_id,
     )
     synthesize_callable = functools.partial(
         synthesize,

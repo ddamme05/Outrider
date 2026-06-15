@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from outrider.agent.nodes.hitl_config import HITLConfig
     from outrider.audit.sinks import HITLEventSink, PhaseEventSink
     from outrider.db.sinks import ReviewStatusSink
+    from outrider.notify.orchestrator import SlackNotificationOrchestrator
     from outrider.schemas import ReviewState
 
 
@@ -268,6 +269,8 @@ async def hitl(
     hitl_event_sink: HITLEventSink,
     review_status_sink: ReviewStatusSink,
     hitl_config: HITLConfig,
+    slack_orchestrator: SlackNotificationOrchestrator | None = None,
+    slack_channel_id: str | None = None,
 ) -> dict[str, object]:
     """Run the HITL gate node. See module docstring for the 13-step
     contract.
@@ -342,6 +345,30 @@ async def hitl(
         expires_at=canonical_request.expires_at,
         hitl_request_payload=canonical_request.model_dump(mode="json"),
     )
+
+    # Step 6b: best-effort Slack HITL-pending notification. Awaited inline but
+    # never gate-breaking — the orchestrator swallows every transport/audit
+    # failure (degrades-gracefully), so the gate always proceeds. Placed before
+    # interrupt so it fires on entry to awaiting_approval; the body re-runs on
+    # resume and the orchestrator's pre-post dedup makes the re-post a no-op.
+    # (A degraded Slack endpoint can add up to the notifier's timeout to the
+    # pre-interrupt checkpoint; a bounded per-call timeout lands with the
+    # production composition-root wiring.)
+    report = state.review_report
+    if slack_orchestrator is not None and slack_channel_id and report is not None:
+        # `report is not None` narrows the Optional for mypy across the await; it
+        # is a guaranteed invariant here — Step 2 (_partition_findings) raises if
+        # review_report is None, so this branch is always taken on the gated path.
+        gated_ids = set(findings_requiring_approval)
+        await slack_orchestrator.notify_hitl_pending(
+            review_id=state.review_id,
+            is_eval=state.is_eval,
+            channel_id=slack_channel_id,
+            repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
+            pr_number=state.pr_context.pr_number,
+            pr_title=state.pr_context.pr_title,
+            findings=[f for f in report.findings if f.finding_id in gated_ids],
+        )
 
     # Step 7: interrupt. LangGraph checkpoints state to Postgres + the
     # call yields control back to the resume endpoint.

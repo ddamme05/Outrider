@@ -153,6 +153,12 @@ def _make_state(
         def __init__(self, findings_: tuple[_FindingStub, ...]) -> None:
             self.findings = findings_
 
+    class _PRCtx:
+        owner = "acme"
+        repo = "api"
+        pr_number = 7
+        pr_title = "Add login"
+
     rounds_findings: tuple[_FindingStub, ...] = (
         tuple(analysis_round_findings) if analysis_round_findings is not None else tuple(findings)
     )
@@ -164,6 +170,7 @@ def _make_state(
             self.received_at = received_at
             self.analysis_rounds = (_Round(rounds_findings),)
             self.review_report = _ReviewReport(tuple(findings)) if use_review_report else None
+            self.pr_context = _PRCtx()
 
     return _State()
 
@@ -492,3 +499,87 @@ def test_compute_hitl_decision_content_hash_rejects_non_basemodel() -> None:
             decisions=({"finding_id": str(uuid4()), "outcome": "approve"},),  # type: ignore[arg-type]
             annotation=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# Slack HITL-pending notification hook
+# ---------------------------------------------------------------------------
+
+
+class _FakeSlackOrchestrator:
+    """Records notify_hitl_pending calls; the hitl node calls only this method."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def notify_hitl_pending(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_hitl_notifies_slack_on_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gated path: the node posts a HITL-pending notification (before interrupt)
+    carrying ONLY the gated findings + the PR identity. interrupt is patched to
+    halt the body right after the notify so the call is observable in isolation."""
+    review_id = uuid4()
+    crit = _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+    high = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    low = _make_finding(review_id=review_id, severity=FindingSeverity.LOW)
+    state = _make_state(
+        findings=[crit, high, low], review_id=review_id, received_at=datetime.now(UTC)
+    )
+    fake = _FakeSlackOrchestrator()
+
+    class _StopInterruptError(Exception):
+        pass
+
+    def _raise(*_a: Any, **_k: Any) -> None:
+        raise _StopInterruptError
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", _raise)
+
+    with pytest.raises(_StopInterruptError):
+        await hitl(
+            state,  # type: ignore[arg-type]
+            phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+            hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+            review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+            hitl_config=HITLConfig(),
+            slack_orchestrator=fake,  # type: ignore[arg-type]
+            slack_channel_id="C0123ABC",
+        )
+
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["channel_id"] == "C0123ABC"
+    assert call["review_id"] == review_id
+    assert call["repo"] == "acme/api"
+    assert call["pr_number"] == 7
+    assert call["pr_title"] == "Add login"
+    assert call["is_eval"] is False  # threaded from state.is_eval (eval isolation)
+    # Only the gated (CRITICAL/HIGH) findings reach the card, not the LOW one.
+    assert {f.finding_id for f in call["findings"]} == {crit.finding_id, high.finding_id}
+
+
+@pytest.mark.asyncio
+async def test_hitl_no_slack_on_passthrough() -> None:
+    """No gated findings → pass-through → no Slack notification, even with Slack
+    fully configured."""
+    review_id = uuid4()
+    state = _make_state(
+        findings=[_make_finding(review_id=review_id, severity=FindingSeverity.LOW)],
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+    )
+    fake = _FakeSlackOrchestrator()
+    delta = await hitl(
+        state,  # type: ignore[arg-type]
+        phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+        hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+        review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+        hitl_config=HITLConfig(),
+        slack_orchestrator=fake,  # type: ignore[arg-type]
+        slack_channel_id="C0123ABC",
+    )
+    assert delta == {}
+    assert fake.calls == []
