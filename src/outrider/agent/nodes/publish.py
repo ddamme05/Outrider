@@ -1489,8 +1489,8 @@ def _render_review_body(
             else f"View {pronoun} in the Outrider dashboard."
         )
         sections.append(
-            f"Outrider examined {n} related file{'s' if n != 1 else ''} outside this PR "
-            f"and found {m} additional concern{'s' if m != 1 else ''}. {where}"
+            f"Outrider found {m} additional concern{'s' if m != 1 else ''} in "
+            f"{n} file{'s' if n != 1 else ''} it couldn't comment on inline. {where}"
         )
 
     return apply_size_cap("\n\n".join(sections), max_bytes=GITHUB_REVIEW_BODY_MAX)

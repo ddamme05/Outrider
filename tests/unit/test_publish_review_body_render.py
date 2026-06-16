@@ -223,8 +223,8 @@ def test_body_includes_related_concerns_section() -> None:
 
 
 def test_body_aggregate_note_plural_counts_distinct_files() -> None:
-    # 3 dashboard-only findings across 2 distinct files -> "2 related files" /
-    # "3 additional concerns".
+    # 3 dashboard-only findings across 2 distinct files -> "3 additional concerns
+    # in 2 files".
     findings = (
         _make_finding(file_path="src/a.py", line_start=1),
         _make_finding(file_path="src/a.py", line_start=9),
@@ -238,8 +238,8 @@ def test_body_aggregate_note_plural_counts_distinct_files() -> None:
         review_id=rid,
         dashboard_base_url="https://dash.example",
     )
-    assert "2 related files" in body
-    assert "3 additional concerns" in body
+    assert "3 additional concerns in 2 files" in body
+    assert "couldn't comment on inline" in body
     assert f"https://dash.example/reviews/{rid}" in body
     # aggregate note is count-only — no per-finding file paths
     assert "src/a.py" not in body
@@ -255,8 +255,8 @@ def test_body_aggregate_note_singular_and_no_link_fallback() -> None:
         review_id=uuid4(),
         dashboard_base_url=None,
     )
-    assert "1 related file " in body  # singular, trailing space (not "files")
-    assert "1 additional concern." in body  # singular
+    assert "1 additional concern in 1 file " in body  # both singular (concern + file)
+    assert "couldn't comment on inline" in body
     assert "View it in the Outrider dashboard." in body  # pronoun agrees with m==1
     assert "them" not in body  # no plural pronoun for the singular case
     assert "http" not in body
@@ -277,10 +277,10 @@ def test_body_includes_both_sections_in_order() -> None:
     assert body.startswith(_MARKER)
     assert "## Related concerns" in body
     assert "in-diff concern" in body
-    assert "1 related file " in body  # the aggregate note is present too
-    assert "1 additional concern." in body
+    assert "in 1 file" in body  # the aggregate note is present too
+    assert "1 additional concern in 1 file" in body
     # ordering: related-concerns section precedes the aggregate note
-    assert body.index("## Related concerns") < body.index("Outrider examined")
+    assert body.index("## Related concerns") < body.index("Outrider found")
 
 
 def test_body_marker_survives_size_cap() -> None:
