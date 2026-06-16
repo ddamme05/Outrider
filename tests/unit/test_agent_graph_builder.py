@@ -232,6 +232,7 @@ class _StubGitHubPublisher:
         head_sha: str,
         review_status: str,
         body_marker: str,
+        body: str | None = None,
         comments: tuple[InlineComment, ...],
     ) -> GitHubReviewCreated:
         raise NotImplementedError("test stub")
