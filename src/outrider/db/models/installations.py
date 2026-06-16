@@ -27,9 +27,12 @@ from sqlalchemy import (
     LargeBinary,
     Text,
     UniqueConstraint,
+    func,
     text,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime, Uuid
 
@@ -116,3 +119,43 @@ def active_repo_membership(
         & (repo.repo_id == repo_id)
         & (repo.removed_at.is_(None))
     )
+
+
+async def set_slack_config(
+    session: AsyncSession,
+    *,
+    installation_id: int,
+    team_id: str,
+    bot_token_ciphertext: bytes,
+    channel_id: str,
+    configured_by: str,
+) -> bool:
+    """Persist per-install Slack config from a completed OAuth exchange (commit 6.3c).
+
+    Updates the five `slack_*` columns on the matching ACTIVE (non-tombstoned)
+    `installations` row and returns True; returns False if no active install matched
+    — a tombstoned-in-grace or absent install can't be connected (the OAuth callback
+    404s). The bot token is stored as Fernet ciphertext (see
+    DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest); this helper never sees
+    or persists plaintext. `slack_configured_at` is set server-side (`func.now()`,
+    timestamptz). The caller owns the transaction (wrap in `session.begin()` / commit).
+    """
+    result = await session.execute(
+        update(Installation)
+        .where(
+            Installation.installation_id == installation_id,
+            Installation.tombstoned_at.is_(None),
+        )
+        .values(
+            slack_team_id=team_id,
+            slack_bot_token_ciphertext=bot_token_ciphertext,
+            slack_channel_id=channel_id,
+            slack_configured_at=func.now(),
+            slack_configured_by=configured_by,
+        )
+    )
+    # `AsyncSession.execute` is typed `Result` (no `rowcount`); the runtime type for an
+    # UPDATE is `CursorResult`, which carries it. `getattr` dodges the base-class typing
+    # the same way the webhook/sweep UPDATE paths do.
+    rowcount: int = getattr(result, "rowcount", 0) or 0
+    return rowcount > 0
