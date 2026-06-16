@@ -317,16 +317,20 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     # Member-presence guard for the orchestrator. It has no Protocol type, so the
     # isinstance gates above don't cover it; without this, a wrong-shaped
     # orchestrator from a miswired composition root would surface as an
-    # AttributeError on the HITL gate path (`notify_hitl_pending`) mid-review
-    # rather than as a construction-time failure. (`notify_review_posted` joins
-    # this check when the publish hook lands.)
-    if slack_orchestrator is not None and not callable(
-        getattr(slack_orchestrator, "notify_hitl_pending", None)
-    ):
-        raise BuildGraphError(
-            "slack_orchestrator does not satisfy the notifier interface "
-            "(missing callable member: notify_hitl_pending)"
-        )
+    # AttributeError on the HITL gate path (`notify_hitl_pending`) or the publish
+    # FYI path (`notify_review_posted`) mid-review rather than as a
+    # construction-time failure.
+    if slack_orchestrator is not None:
+        _missing_notifier_members = [
+            member
+            for member in ("notify_hitl_pending", "notify_review_posted")
+            if not callable(getattr(slack_orchestrator, member, None))
+        ]
+        if _missing_notifier_members:
+            raise BuildGraphError(
+                "slack_orchestrator does not satisfy the notifier interface "
+                f"(missing callable member(s): {', '.join(_missing_notifier_members)})"
+            )
 
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
@@ -477,6 +481,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         review_status_sink=review_status_sink,
         github_factory=github_factory,
         dashboard_base_url=dashboard_base_url,
+        slack_orchestrator=slack_orchestrator,
+        slack_channel_id=slack_channel_id,
     )
     trace_callable = functools.partial(
         trace,

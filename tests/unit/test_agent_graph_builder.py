@@ -621,9 +621,12 @@ def test_build_graph_signature_is_keyword_only() -> None:
 
 
 class _StubSlackOrchestrator:
-    """Satisfies the build_graph member-presence guard (has notify_hitl_pending)."""
+    """Satisfies the build_graph member-presence guard (both notifier members)."""
 
     async def notify_hitl_pending(self, **_kwargs: Any) -> None:
+        return None
+
+    async def notify_review_posted(self, **_kwargs: Any) -> None:
         return None
 
 
@@ -660,6 +663,22 @@ def test_build_graph_rejects_slack_orchestrator_bad_shape() -> None:
     args["slack_orchestrator"] = object()
     args["slack_channel_id"] = "C0123ABC"
     with pytest.raises(BuildGraphError, match="notify_hitl_pending"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_slack_orchestrator_missing_review_posted() -> None:
+    """An orchestrator with notify_hitl_pending but missing notify_review_posted
+    would AttributeError on the publish FYI path mid-review — fail closed at
+    construction (FUP-187: the guard covers both notifier members)."""
+
+    class _HitlOnly:
+        async def notify_hitl_pending(self, **_kwargs: Any) -> None:
+            return None
+
+    args = _valid_args()
+    args["slack_orchestrator"] = _HitlOnly()
+    args["slack_channel_id"] = "C0123ABC"
+    with pytest.raises(BuildGraphError, match="notify_review_posted"):
         build_graph(**args)
 
 

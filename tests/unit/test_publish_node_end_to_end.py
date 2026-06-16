@@ -2024,3 +2024,105 @@ async def test_mixed_review_body_and_dashboard_only_both_materialize(
     assert pr.review_body_findings_posted == 1
     assert pr.dashboard_only_findings_surfaced == 1
     assert pr.comments_posted == 0
+
+
+# ---------------------------------------------------------------------------
+# Slack 5c-d — review-posted FYI hook (publish success path)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSlackOrchestrator:
+    """Records `notify_review_posted` calls. `notify_hitl_pending` is a no-op stub
+    (publish never calls it) so the build_graph member-presence guard is satisfied."""
+
+    def __init__(self) -> None:
+        self.review_posted_calls: list[dict[str, Any]] = []
+
+    async def notify_hitl_pending(self, **_kwargs: Any) -> None:
+        return None
+
+    async def notify_review_posted(self, **kwargs: Any) -> None:
+        self.review_posted_calls.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_publish_posts_slack_review_posted_fyi_on_success() -> None:
+    """On a successful publish the node calls `notify_review_posted` with
+    posted_count = inline + review-body and dashboard_only_count = surfaced,
+    plus the review/channel/repo/PR identity (Slack 5c-d)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        slack_orchestrator=orch,
+        slack_channel_id="C0123ABC",
+    )
+
+    assert len(orch.review_posted_calls) == 1
+    call = orch.review_posted_calls[0]
+    assert call["review_id"] == state.review_id
+    assert call["channel_id"] == "C0123ABC"
+    assert call["repo"] == state.pr_context.repo
+    assert call["pr_number"] == state.pr_context.pr_number
+    assert call["posted_count"] == 1  # one inline comment, zero review-body
+    assert call["dashboard_only_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_slack_fyi_sums_inline_review_body_and_counts_dashboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """posted_count sums inline + review-body (DECISIONS.md#050); dashboard-only is
+    surfaced separately. Here: 0 inline + 1 review-body = posted_count 1; 1 surfaced."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    rb = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)  # -> REVIEW_BODY
+    do = _make_finding(
+        severity=FindingSeverity.MEDIUM, file_path="src/other.py"
+    )  # -> DASHBOARD_ONLY
+    state = _make_state(
+        findings=(rb, do),
+        changed_files=(_make_changed_file(path="src/foo.py"),),
+        analysis_round_findings=(),
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        slack_orchestrator=orch,
+        slack_channel_id="C0123ABC",
+    )
+
+    assert len(orch.review_posted_calls) == 1
+    call = orch.review_posted_calls[0]
+    assert call["posted_count"] == 1  # 0 inline + 1 review-body
+    assert call["dashboard_only_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_no_slack_fyi_when_orchestrator_absent() -> None:
+    """slack_orchestrator unset (default) → no FYI, no crash; publish still succeeds."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    result = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "success"
