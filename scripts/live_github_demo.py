@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 import uuid
@@ -55,6 +56,7 @@ from _narrate import (
     narrate_audit_stream,
     narrate_db_state,
     narrate_llm_exchanges_from_db,
+    narrate_slack_notifications,
 )
 from _trace_log import TraceTee
 from pydantic import SecretStr, ValidationError
@@ -78,12 +80,16 @@ from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer, ReplayMode  # noqa: E402
 from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER  # noqa: E402
+from outrider.db.models.installations import set_slack_config  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.github.auth import make_installation_client_factory  # noqa: E402
 from outrider.github.config import GitHubAppSettings  # noqa: E402
 from outrider.github.publisher import GitHubKitPublisher  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
+from outrider.notify.config import SlackSettings  # noqa: E402
+from outrider.notify.resolver import PerInstallSlackResolver  # noqa: E402
+from outrider.notify.token_crypto import TOKEN_ENC_KEY_ENV, encrypt_token  # noqa: E402
 from outrider.schemas.pr_context import PRContext  # noqa: E402
 
 if TYPE_CHECKING:
@@ -119,6 +125,18 @@ def _say(msg: str = "") -> None:
     print(msg, flush=True)
     if _TRACE is not None:
         _TRACE.write_line(msg)
+
+
+class _SayLogHandler(logging.Handler):
+    """Route `outrider.*` WARNING+ logs into the trace tee so SWALLOWED failures —
+    notably best-effort Slack errors the orchestrator/nodes log-and-ignore — show in
+    the terminal AND the scripts/generated/ trace file, not just on stderr. This is
+    the "catch every silent failure" hook: a Slack post that fails is never fatal, so
+    its only signal is the log line, and this makes that signal impossible to miss."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        for line in self.format(record).splitlines():
+            _say(f"  [log:{record.levelname}] {line}")
 
 
 async def _fetch_pr_seed(
@@ -165,6 +183,56 @@ async def _fetch_pr_seed(
         changed_files=(),
     )
     return pr_context, pr.base.repo.id
+
+
+async def _maybe_wire_slack(
+    session_factory: async_sessionmaker[Any],
+    persister: AuditPersister,
+    pr_context: PRContext,
+) -> PerInstallSlackResolver | None:
+    """Full-smoke Slack wiring (no OAuth dance needed).
+
+    If the dev-bootstrap Slack creds (`OUTRIDER_SLACK_BOT_TOKEN` +
+    `OUTRIDER_SLACK_CHANNEL_ID`, via `SlackSettings`) AND the token-encryption key
+    (`OUTRIDER_TOKEN_ENC_KEY`) are present, seed THIS install's per-install Slack
+    config — encrypt the bot token + set the channel via `set_slack_config` — and
+    return a `PerInstallSlackResolver`. The graph then posts a real Slack message
+    exactly as production would (decrypt → per-install orchestrator). Absent creds →
+    None (no Slack); a swallowed Slack failure is surfaced via the log handler, never
+    fatal. Mirrors what the OAuth callback persists, so the posting path is identical.
+    """
+    try:
+        slack_dev = SlackSettings()
+    except ValidationError:
+        _say(
+            "  Slack ................ NOT wired (set OUTRIDER_SLACK_BOT_TOKEN + "
+            "OUTRIDER_SLACK_CHANNEL_ID + OUTRIDER_TOKEN_ENC_KEY to post a real Slack message)"
+        )
+        return None
+    if TOKEN_ENC_KEY_ENV not in os.environ:
+        _say("  Slack ................ NOT wired (OUTRIDER_TOKEN_ENC_KEY missing — can't encrypt)")
+        return None
+    async with session_factory() as session, session.begin():
+        seeded = await set_slack_config(
+            session,
+            installation_id=pr_context.installation_id,
+            team_id="(live-demo)",
+            bot_token_ciphertext=encrypt_token(slack_dev.bot_token),
+            channel_id=slack_dev.channel_id,
+            configured_by="live-github-demo",
+        )
+    if not seeded:
+        _say("  Slack ................ NOT wired (set_slack_config found no active install row)")
+        return None
+    _say(
+        f"  Slack ................ wired → channel {slack_dev.channel_id} (per-install config "
+        "seeded from OUTRIDER_SLACK_* + token enc key; a real message will post)"
+    )
+    return PerInstallSlackResolver(
+        session_factory=session_factory,
+        sink=persister,
+        dashboard_base_url=os.environ.get("OUTRIDER_DASHBOARD_BASE_URL", ""),
+    )
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -296,6 +364,8 @@ async def _run(args: argparse.Namespace) -> int:
         await engine.dispose()
         return 2
 
+    slack_resolver = await _maybe_wire_slack(session_factory, persister, pr_context)
+
     graph = build_graph(
         db_factory=session_factory,
         github_factory=github_factory,
@@ -323,6 +393,7 @@ async def _run(args: argparse.Namespace) -> int:
         # that database's analyze_file_cache, exactly as a production review
         # would; they age out under the same 30-day/retention bounds.
         analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
+        resolve_slack_target=slack_resolver,
     )
 
     from outrider.agent.state import ReviewState  # noqa: PLC0415
@@ -344,6 +415,7 @@ async def _run(args: argparse.Namespace) -> int:
     # whole-table dump of a shared database.
     await narrate_audit_stream(_say, engine, review_id)
     await narrate_llm_exchanges_from_db(_say, engine, review_id)
+    await narrate_slack_notifications(_say, engine, review_id)
     await narrate_db_state(_say, engine, review_id=review_id)
     rc = await _report_and_verify(
         engine,
@@ -621,12 +693,20 @@ def _main_with_log() -> int:
     global _TRACE  # noqa: PLW0603 — single assignment per process, set before any _say
     _TRACE = TraceTee("live_github_demo")
     print(f"  Full trace ........... {_TRACE.path}", flush=True)
+    # Route outrider WARNING+ logs (incl. SWALLOWED best-effort Slack failures) into
+    # the tee, so a non-fatal Slack error isn't a silent failure — it lands in the
+    # terminal + the trace file alongside everything else.
+    outrider_logger = logging.getLogger("outrider")
+    outrider_logger.setLevel(logging.WARNING)
+    log_handler = _SayLogHandler(level=logging.WARNING)
+    outrider_logger.addHandler(log_handler)
     try:
         return asyncio.run(_run(_parse_args()))
     except Exception:
         _TRACE.write_current_exception()
         raise
     finally:
+        outrider_logger.removeHandler(log_handler)
         print(f"  Full trace ........... {_TRACE.path}", flush=True)
         _TRACE.close()
         _TRACE = None
