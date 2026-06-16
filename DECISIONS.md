@@ -1469,4 +1469,4 @@ The severities ship as a NEW policy version `1.1.0` (additive — no existing ma
 
 **Consequences.** Adds `cryptography` as a direct dependency + the `OUTRIDER_TOKEN_ENC_KEY` deploy config (fail-closed when Slack persistent config is enabled). Confining decryption to the Slack notification boundary keeps the credential's blast radius to one module. Key rotation is supported (`MultiFernet`: prepend a new key, re-encrypt, drop the old). The dev-bootstrap `SlackSettings` env token (single workspace, for testing the notifier) is unaffected — it is not the production posting authority and is not stored.
 
-**Referenced from.** `src/outrider/notify/token_crypto.py`, `scripts/check_import_boundaries.py` (the `cryptography`-confinement rule).
+**Referenced from.** `src/outrider/notify/token_crypto.py`, `scripts/check_import_boundaries.py` (the `cryptography`-confinement rule), `src/outrider/db/models/installations.py` (the `slack_bot_token_ciphertext` column).

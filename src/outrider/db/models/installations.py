@@ -24,6 +24,7 @@ from sqlalchemy import (
     ColumnExpressionArgument,
     ForeignKey,
     Index,
+    LargeBinary,
     Text,
     UniqueConstraint,
     text,
@@ -58,6 +59,21 @@ class Installation(Base):
     )
     tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     purge_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Per-installation Slack config (dashboard-in-Slack, commit 6). All nullable —
+    # Slack is opt-in per install; an install that never connects Slack leaves them
+    # NULL. The bot token is stored ENCRYPTED at rest, never plaintext (see
+    # DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest; Fernet ciphertext via
+    # notify/token_crypto.py); decryption is confined to the Slack notifier boundary.
+    # The columns live here (not a side table) so #012's tombstone/purge carries the
+    # encrypted token with the install on hard-delete.
+    slack_team_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slack_bot_token_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    slack_channel_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slack_configured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    slack_configured_by: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InstallationRepository(Base):
