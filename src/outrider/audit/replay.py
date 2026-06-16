@@ -481,7 +481,9 @@ _NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxy
 # projector AFTER all phases have closed (it is bounded by nothing).
 # `SlackNotificationEvent` is a best-effort notification side effect emitted around
 # hitl or publish (depending on `kind`), so it belongs to no single node's
-# phase window. `ReviewPhaseEvent` is the phase marker itself, handled before this check. Keyed by
+# phase window — see DECISIONS.md#052-slacknotificationevent-is-phase-unbounded-in-replay
+# (the exemption narrows phase-events-bound-work for this event type ONLY).
+# `ReviewPhaseEvent` is the phase marker itself, handled before this check. Keyed by
 # `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]` wants a class).
 # The runtime `continue` in `_verify_phase_wellformed` consults THIS tuple, so adding
 # a member here both registers it (for the completeness guard test) and exempts it.

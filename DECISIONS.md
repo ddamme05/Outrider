@@ -1470,3 +1470,15 @@ The severities ship as a NEW policy version `1.1.0` (additive — no existing ma
 **Consequences.** Adds `cryptography` as a direct dependency + the `OUTRIDER_TOKEN_ENC_KEY` deploy config (fail-closed when Slack persistent config is enabled). Confining decryption to the Slack notification boundary keeps the credential's blast radius to one module. Key rotation is supported (`MultiFernet`: prepend a new key, re-encrypt, drop the old). The dev-bootstrap `SlackSettings` env token (single workspace, for testing the notifier) is unaffected — it is not the production posting authority and is not stored.
 
 **Referenced from.** `src/outrider/notify/token_crypto.py`, `scripts/check_import_boundaries.py` (the `cryptography`-confinement rule), `src/outrider/db/models/installations.py` (the `slack_bot_token_ciphertext` column).
+
+## 052. SlackNotificationEvent is phase-unbounded in replay
+
+**Status:** Accepted, 2026-06-16.
+
+**Context.** `phase-events-bound-work` (invariant; spec §8.4) requires each audit event to fall within the start/end phase markers of the node that emitted it, so replay can reconstruct the owning node and use the markers as causal barriers. The Slack notification is emitted from node code — the hitl node posts `hitl_pending` before `interrupt()`, the publish node posts `review_posted` AFTER its phase-end marker — but it is an **awaited-inline, bounded-timeout, no-raise, best-effort metadata side effect**, not graph-state reconstruction input. Two further facts make a single phase owner ill-fitting: the SAME event type is emitted by two different nodes depending on `kind`, and publish deliberately emits after phase-end so a bounded-timeout (and swallowed) Slack call never sits inside or delays the publish bracket.
+
+**Decision.** Narrow `phase-events-bound-work` for `SlackNotificationEvent` **only**: it joins replay's `_PHASE_UNBOUNDED_EVENTS` exemption alongside `AgentTransitionEvent` (a between-phase transition) and `ReplayVerdictEvent` (post-completion metadata). The exemption loses no ownership information — the emitting flow is reconstructable from the event's own `kind` field (`hitl_pending` → hitl, `review_posted` → publish). No other event type is exempted, and the invariant is unchanged for every node-owned event. Phase-binding Slack instead was rejected: it would add per-instance ownership machinery (the event carries no `node_id`, and a type→node map can't express `kind`-dependent ownership) for a notification that is not replay reconstruction input.
+
+**Consequences.** Replay's well-formedness check skips phase-containment for `slack_notification` rows only; the metadata-only audit guarantee (no message body, no token) plus the `kind` field preserve auditability. The narrowing is event-type-scoped and does not weaken `phase-events-bound-work` for any other event. A future Slack event (or a status-mirror `chat.update`) that needs strict per-node ownership must revisit this exemption.
+
+**Referenced from.** `src/outrider/audit/replay.py` (`_PHASE_UNBOUNDED_EVENTS`).
