@@ -590,6 +590,27 @@ def build_lifespan(
 
             analyze_cache_store = AnalyzeCacheStore(session_factory=session_factory)
 
+            # Step 8b: per-install Slack resolver (commit 6.4c). Wired only when token
+            # decryption is possible (OUTRIDER_TOKEN_ENC_KEY present) — without it no
+            # stored bot token can be decrypted, so Slack posting is impossible and the
+            # graph runs with resolve_slack_target=None (no per-review config lookup).
+            # The resolver reads each install's Slack config, decrypts the token, and
+            # builds a per-install orchestrator on `persister` (the SlackEventSink),
+            # caching by (installation_id, ciphertext); registered for LIFO teardown so
+            # its notifiers close on shutdown. Keeps cryptography/slack_sdk out of
+            # agent/ (the graph holds only the resolver callable, FUP-186).
+            from outrider.notify.resolver import PerInstallSlackResolver  # noqa: PLC0415
+            from outrider.notify.token_crypto import TOKEN_ENC_KEY_ENV  # noqa: PLC0415
+
+            slack_resolver: PerInstallSlackResolver | None = None
+            if TOKEN_ENC_KEY_ENV in os.environ:
+                slack_resolver = PerInstallSlackResolver(
+                    session_factory=session_factory,
+                    sink=persister,
+                    dashboard_base_url=_dashboard_settings.dashboard_base_url or "",
+                )
+                stack.push_async_callback(slack_resolver.aclose)
+
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -612,6 +633,7 @@ def build_lifespan(
                 analyze_cache_store=analyze_cache_store,
                 cache_mode=cache_config.mode,
                 dashboard_base_url=_dashboard_settings.dashboard_base_url,
+                resolve_slack_target=slack_resolver,
             )
 
             # Step 9: `run_graph` closure for the V1 dispatcher to call

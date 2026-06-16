@@ -14,6 +14,7 @@ This is the only join-style cascade in the schema; content tables use RESTRICT
 to force the sweep job to delete content explicitly first.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -28,6 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    select,
     text,
     update,
 )
@@ -159,3 +161,41 @@ async def set_slack_config(
     # the same way the webhook/sweep UPDATE paths do.
     rowcount: int = getattr(result, "rowcount", 0) or 0
     return rowcount > 0
+
+
+@dataclass(frozen=True)
+class InstallSlackConfig:
+    """The per-install Slack config needed to post: the channel + the encrypted bot
+    token. Decryption stays at the composition-root resolver (notify/resolver.py),
+    not here — this struct carries ciphertext only (DECISIONS.md#051)."""
+
+    channel_id: str
+    bot_token_ciphertext: bytes
+
+
+async def get_slack_config(
+    session: AsyncSession, installation_id: int
+) -> InstallSlackConfig | None:
+    """Read the Slack config for an ACTIVE (non-tombstoned) install, or None.
+
+    Returns None when the install is absent, tombstoned-in-grace (#012 — Slack must
+    not post for an install pending purge), or has no Slack config (channel /
+    ciphertext NULL — never connected, or opted out). The bot token is returned as
+    ciphertext; the resolver decrypts it at the notify boundary, never here."""
+    row = (
+        await session.execute(
+            select(
+                Installation.slack_channel_id,
+                Installation.slack_bot_token_ciphertext,
+            ).where(
+                Installation.installation_id == installation_id,
+                Installation.tombstoned_at.is_(None),
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    channel_id, ciphertext = row
+    if not channel_id or ciphertext is None:
+        return None
+    return InstallSlackConfig(channel_id=channel_id, bot_token_ciphertext=bytes(ciphertext))
