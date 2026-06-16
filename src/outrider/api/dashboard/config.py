@@ -62,6 +62,15 @@ class DashboardSettings(BaseSettings):
     # deployment that doesn't expose `/agent-view` simply omits the env var.
     agent_api_key: SecretStr | None = None
 
+    # Public base URL of the Outrider dashboard (e.g. "https://outrider.example.com"),
+    # read from `OUTRIDER_DASHBOARD_BASE_URL`. Optional: when set, the publish node
+    # embeds per-finding + aggregate deep-links in the review body (DECISIONS.md#050);
+    # when None (unset) the body renders the no-link fallback. Plain `str` (not
+    # SecretStr — it is a public URL, not a credential); the publish-side
+    # `_is_markdown_link_safe_url` validates it at render time and degrades to no-link
+    # on a malformed value, so a misconfigured URL never produces a broken link.
+    dashboard_base_url: str | None = None
+
     @field_validator("admin_api_key", mode="after")
     @classmethod
     def _reject_empty_or_whitespace(cls, v: SecretStr) -> SecretStr:

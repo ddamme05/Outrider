@@ -536,6 +536,14 @@ def build_lifespan(
             # (real ceiling under N workers is N x the limit) — see #045.
             dispatch_config = DispatchConfig()
             review_semaphore = asyncio.Semaphore(dispatch_config.max_concurrent_reviews)
+            # Dashboard settings (bearer keys + the public base URL), instantiated
+            # ONCE here so the publish-node `dashboard_base_url` injection (build_graph
+            # below) and the app.state auth setup (later) share one validated read —
+            # the "validated once, reused" discipline (cf. ModelConfig). Fail-loud on a
+            # missing OUTRIDER_ADMIN_API_KEY surfaces here at startup, just earlier.
+            from outrider.api.dashboard.config import DashboardSettings  # noqa: PLC0415
+
+            _dashboard_settings = DashboardSettings()
 
             # Step 7b: durable LangGraph checkpointer. HITL `interrupt(...)`
             # writes the suspended state to this checkpointer; the
@@ -602,6 +610,7 @@ def build_lifespan(
                 github_factory=github_factory,
                 analyze_cache_store=analyze_cache_store,
                 cache_mode=cache_config.mode,
+                dashboard_base_url=_dashboard_settings.dashboard_base_url,
             )
 
             # Step 9: `run_graph` closure for the V1 dispatcher to call
@@ -668,18 +677,10 @@ def build_lifespan(
             # Protocols.
             app.state.review_status_reader = review_status_persister
 
-            # Dashboard auth credential. Read at startup; FastAPI
-            # `Authorization: Bearer ...` HMAC-compared in
-            # `api/dashboard/auth.py::require_admin_api_key`.
-            # Construction is fail-loud per `extra="forbid"` so a
-            # missing `OUTRIDER_ADMIN_API_KEY` env var surfaces as a
-            # ValidationError at lifespan startup, NOT at the first
-            # `/decide` request.
-            from outrider.api.dashboard.config import (  # noqa: PLC0415
-                DashboardSettings,
-            )
-
-            _dashboard_settings = DashboardSettings()
+            # Dashboard auth credentials, from the `_dashboard_settings` read above
+            # (FastAPI `Authorization: Bearer ...` HMAC-compared in
+            # `api/dashboard/auth.py::require_admin_api_key`; fail-loud on a missing
+            # OUTRIDER_ADMIN_API_KEY already fired at the earlier instantiation).
             app.state.admin_api_key = _dashboard_settings.admin_api_key
             # Optional read-only agent token (feature 3 / S2). `None` when
             # `OUTRIDER_AGENT_API_KEY` is unset → the agent-view surface is

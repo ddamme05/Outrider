@@ -83,6 +83,22 @@ def test_dashboard_accepts_distinct_admin_and_agent_keys() -> None:
     assert settings.admin_api_key.get_secret_value() != settings.agent_api_key.get_secret_value()
 
 
+def test_dashboard_base_url_optional_defaults_none() -> None:
+    """`dashboard_base_url` is optional; unset => None (publish renders no-link)."""
+    settings = DashboardSettings(admin_api_key=SecretStr(_REAL_SECRET))
+    assert settings.dashboard_base_url is None
+
+
+def test_dashboard_base_url_accepts_a_url() -> None:
+    """A configured base URL round-trips as a plain string (validated at render time
+    by publish.py::_is_markdown_link_safe_url, not here)."""
+    settings = DashboardSettings(
+        admin_api_key=SecretStr(_REAL_SECRET),
+        dashboard_base_url="https://outrider.example.com",
+    )
+    assert settings.dashboard_base_url == "https://outrider.example.com"
+
+
 @pytest.mark.parametrize("bad", _BAD_SECRETS)
 def test_github_webhook_secret_rejects_empty_and_placeholders(bad: str) -> None:
     with pytest.raises(ValidationError):
