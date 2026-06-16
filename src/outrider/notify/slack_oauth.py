@@ -45,6 +45,15 @@ class SlackOAuthResult:
     bot_user_id: str
 
 
+def _required_str(value: object, field: str) -> str:
+    """A required OAuth response field must be a non-empty `str`. Reject None, "",
+    or a malformed non-string (dict/list/number) — `str(...)` would otherwise coerce
+    a bogus value into a trusted token/identity. Fail closed."""
+    if not isinstance(value, str) or not value:
+        raise SlackOAuthError(f"Slack oauth.v2.access field {field!r} must be a non-empty string")
+    return value
+
+
 async def exchange_code(
     *,
     client_id: str,
@@ -73,19 +82,18 @@ async def exchange_code(
         raise SlackOAuthError(f"Slack oauth.v2.access request failed: {exc}") from exc
     try:
         team = resp["team"]
-        team_id = team["id"]
-        access_token = resp["access_token"]
-        bot_user_id = resp["bot_user_id"]
+        team_id = _required_str(team["id"], "team.id")
+        access_token = _required_str(resp["access_token"], "access_token")
+        bot_user_id = _required_str(resp["bot_user_id"], "bot_user_id")
     except (KeyError, TypeError) as exc:
+        # Missing key or non-subscriptable team; _required_str's own SlackOAuthError
+        # (None/empty/non-string) is a RuntimeError and propagates past this except.
         raise SlackOAuthError("Slack oauth.v2.access response missing expected fields") from exc
-    # Reject present-but-null/empty required fields: `str(None)` would otherwise
-    # become the trusted string "None" (a bogus team/token/user persisted). Fail
-    # closed. `team.name` is optional and may legitimately be empty.
-    if not (team_id and access_token and bot_user_id):
-        raise SlackOAuthError("Slack oauth.v2.access response has empty/null required fields")
+    # `team.name` is optional and may legitimately be absent / non-string.
+    team_name = team.get("name")
     return SlackOAuthResult(
-        team_id=str(team_id),
-        team_name=str(team.get("name") or ""),
-        bot_token=SecretStr(str(access_token)),
-        bot_user_id=str(bot_user_id),
+        team_id=team_id,
+        team_name=team_name if isinstance(team_name, str) else "",
+        bot_token=SecretStr(access_token),
+        bot_user_id=bot_user_id,
     )

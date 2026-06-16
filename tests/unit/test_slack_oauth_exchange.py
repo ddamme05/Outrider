@@ -92,16 +92,29 @@ async def test_exchange_code_malformed_response_rejected() -> None:
 @pytest.mark.parametrize(
     "resp",
     [
-        {"ok": True, "access_token": None, "team": {"id": "T0X"}, "bot_user_id": "U0BOT"},
-        {"ok": True, "access_token": "xoxb", "team": {"id": None}, "bot_user_id": "U0BOT"},
-        {"ok": True, "access_token": "xoxb", "team": {"id": "T0X"}, "bot_user_id": ""},
+        {"ok": True, "access_token": None, "team": {"id": "T0X"}, "bot_user_id": "U0BOT"},  # null
+        {"ok": True, "access_token": "xoxb", "team": {"id": None}, "bot_user_id": "U0BOT"},  # null
+        {"ok": True, "access_token": "xoxb", "team": {"id": "T0X"}, "bot_user_id": ""},  # empty
+        {
+            "ok": True,
+            "access_token": {"x": 1},
+            "team": {"id": "T0X"},
+            "bot_user_id": "U0BOT",
+        },  # non-str
+        {
+            "ok": True,
+            "access_token": "xoxb",
+            "team": {"id": ["T0X"]},
+            "bot_user_id": "U0BOT",
+        },  # non-str
     ],
 )
-async def test_exchange_code_rejects_present_but_null_or_empty_fields(resp: dict[str, Any]) -> None:
-    """A present-but-null/empty required field fails closed — never coerces a `null`
-    into the trusted string "None" (no bogus team/token/user persisted)."""
+async def test_exchange_code_rejects_invalid_required_fields(resp: dict[str, Any]) -> None:
+    """A present-but-null/empty/non-string required field fails closed — never coerces
+    a malformed value (`str(None)`=="None", `str({...})`=="{...}") into a trusted
+    token/identity (no bogus team/token/user persisted)."""
     client = _FakeOAuthClient(response=resp)
-    with pytest.raises(SlackOAuthError, match="empty/null required fields"):
+    with pytest.raises(SlackOAuthError, match="non-empty string"):
         await exchange_code(
             client_id="cid",
             client_secret=SecretStr("csecret"),
