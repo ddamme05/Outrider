@@ -30,6 +30,10 @@ dependencies = [
     # GitHub
     "githubkit==0.15.3",
     "pyjwt[crypto]==2.12.1",
+    # Crypto — Slack bot-token encryption at rest (DECISIONS.md#051). Present
+    # transitively via pyjwt[crypto]; pinned explicit because notify/token_crypto.py
+    # imports it directly (Fernet) — don't rely on a transitive for a direct import.
+    "cryptography==46.0.7",
     # Tree-sitter
     "tree-sitter==0.25.2",
     "tree-sitter-python==0.25.0",

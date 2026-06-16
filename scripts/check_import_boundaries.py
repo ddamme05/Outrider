@@ -103,6 +103,18 @@ VENDOR_RULES: tuple[_VendorRule, ...] = (
         scan_globs=("src/outrider/**/*.py",),
         allowed_prefixes=("src/outrider/notify/",),
     ),
+    _VendorRule(
+        # Slack bot-token encryption at rest (DECISIONS.md#051): all `cryptography`
+        # (Fernet) use is confined to the one boundary module so the crypto surface —
+        # and the decryption path for a long-lived bearer credential — stays auditable
+        # in a single file. pyjwt[crypto]'s internal cryptography use is githubkit's,
+        # not ours; this scans only our src/ direct imports.
+        name="Token-encryption boundary",
+        doc_ref="DECISIONS.md#051 (vendor-sdks-only-in-wrappers)",
+        modules=("cryptography",),
+        scan_globs=("src/outrider/**/*.py",),
+        allowed_prefixes=("src/outrider/notify/token_crypto.py",),
+    ),
 )
 
 # Shell-exec hard-stop: never in src/outrider/. (tests get the sys.executable
