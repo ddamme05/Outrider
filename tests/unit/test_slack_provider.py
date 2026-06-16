@@ -9,6 +9,7 @@ See specs/2026-06-15-slack-dashboard-in-slack.md.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -134,6 +135,45 @@ async def test_rate_limit_carries_retry_after() -> None:
     with pytest.raises(SlackRateLimitError) as exc_info:
         await _notifier(client).post_message(channel="C0123", text="hi")
     assert exc_info.value.retry_after == 12.0
+
+
+class _SlowClient:
+    """Fake AsyncWebClient whose calls hang longer than the notifier timeout."""
+
+    def __init__(self, *, delay: float = 5.0) -> None:
+        self._delay = delay
+        self.calls: list[str] = []
+
+    async def chat_postMessage(self, **kwargs: Any) -> _FakeResp:  # noqa: N802 (SDK method name)
+        self.calls.append("chat_postMessage")
+        await asyncio.sleep(self._delay)
+        return _FakeResp({"ok": True, "ts": "1.0"})
+
+    async def chat_update(self, **kwargs: Any) -> None:  # noqa: N802 (SDK method name)
+        self.calls.append("chat_update")
+        await asyncio.sleep(self._delay)
+
+
+async def test_post_message_bounded_timeout() -> None:
+    # A hung Slack endpoint must not exceed the bounded per-call timeout (FUP-188);
+    # the wait_for cancellation surfaces as a swallow-able SlackTransientError.
+    notifier = SlackWebClientNotifier(
+        token="xoxb-test",  # noqa: S106 (test fixture)
+        client=_SlowClient(delay=5.0),  # type: ignore[arg-type]
+        timeout_seconds=0.05,
+    )
+    with pytest.raises(SlackTransientError, match="timed out"):
+        await notifier.post_message(channel="C0123", text="hi")
+
+
+async def test_update_message_bounded_timeout() -> None:
+    notifier = SlackWebClientNotifier(
+        token="xoxb-test",  # noqa: S106 (test fixture)
+        client=_SlowClient(delay=5.0),  # type: ignore[arg-type]
+        timeout_seconds=0.05,
+    )
+    with pytest.raises(SlackTransientError, match="timed out"):
+        await notifier.update_message(channel="C0123", ts="1.2", text="done")
 
 
 async def test_transient_on_network_error() -> None:

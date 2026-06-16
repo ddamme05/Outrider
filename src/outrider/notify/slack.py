@@ -11,6 +11,7 @@ and degrades to the dashboard fallback.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from slack_sdk.errors import SlackApiError
@@ -38,6 +39,12 @@ _AUTH_ERROR_CODES = frozenset(
 # Codes meaning the bot can't reach the configured channel (the V1 membership precondition).
 _CHANNEL_ERROR_CODES = frozenset({"channel_not_found", "not_in_channel", "is_archived"})
 
+# Bounded per-call timeout (FUP-188). slack_sdk's default is ~30s; the HITL hook awaits
+# the post inline before interrupt()/checkpoint, so a degraded Slack endpoint must not add
+# 30s of latency to the gate path. A few seconds caps it; a timeout degrades like any other
+# transient failure (SlackTransientError → orchestrator swallows → dashboard fallback).
+_DEFAULT_SLACK_CALL_TIMEOUT_SECONDS = 5.0
+
 
 class SlackWebClientNotifier:
     """`SlackNotifier` backed by slack_sdk's `AsyncWebClient`.
@@ -46,10 +53,17 @@ class SlackWebClientNotifier:
     (or any object exposing `chat_postMessage` / `chat_update`) may be injected.
     """
 
-    def __init__(self, *, token: str, client: AsyncWebClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        token: str,
+        client: AsyncWebClient | None = None,
+        timeout_seconds: float = _DEFAULT_SLACK_CALL_TIMEOUT_SECONDS,
+    ) -> None:
         if not token:
             raise SlackAuthError("Slack bot token is empty")
         self._client = client if client is not None else AsyncWebClient(token=token)
+        self._timeout_seconds = timeout_seconds
 
     async def post_message(
         self, *, channel: str, text: str, blocks: SlackBlocks | None = None
@@ -57,14 +71,22 @@ class SlackWebClientNotifier:
         try:
             # blocks bridges the project's SlackBlocks (Sequence[Mapping]) to the SDK's
             # stricter dict|Block type — the wrapper is the one place this mismatch lives.
-            response = await self._client.chat_postMessage(
-                channel=channel,
-                text=text,
-                blocks=blocks,  # type: ignore[arg-type]
+            # asyncio.wait_for bounds the call (FUP-188) regardless of the SDK's own timeout.
+            response = await asyncio.wait_for(
+                self._client.chat_postMessage(
+                    channel=channel,
+                    text=text,
+                    blocks=blocks,  # type: ignore[arg-type]
+                ),
+                timeout=self._timeout_seconds,
             )
         except SlackApiError as exc:
             raise self._translate(exc) from exc
-        except (TimeoutError, OSError) as exc:  # aiohttp ClientError subclasses OSError
+        except TimeoutError as exc:  # asyncio.TimeoutError is builtins.TimeoutError (3.11+)
+            raise SlackTransientError(
+                f"Slack chat.postMessage timed out after {self._timeout_seconds}s"
+            ) from exc
+        except OSError as exc:  # aiohttp ClientError subclasses OSError
             raise SlackTransientError(f"Slack request failed: {exc}") from exc
         ts = response.get("ts")
         if not ts:
@@ -75,10 +97,17 @@ class SlackWebClientNotifier:
         self, *, channel: str, ts: str, text: str, blocks: SlackBlocks | None = None
     ) -> None:
         try:
-            await self._client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks)  # type: ignore[arg-type]
+            await asyncio.wait_for(
+                self._client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks),  # type: ignore[arg-type]
+                timeout=self._timeout_seconds,
+            )
         except SlackApiError as exc:
             raise self._translate(exc) from exc
-        except (TimeoutError, OSError) as exc:
+        except TimeoutError as exc:
+            raise SlackTransientError(
+                f"Slack chat.update timed out after {self._timeout_seconds}s"
+            ) from exc
+        except OSError as exc:
             raise SlackTransientError(f"Slack request failed: {exc}") from exc
 
     async def aclose(self) -> None:
