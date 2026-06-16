@@ -38,6 +38,7 @@ Pre-flight order (intra-Outrider + external):
 
 from __future__ import annotations
 
+import logging
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -95,6 +96,8 @@ __all__ = ["publish"]
 # query GitHub for an existing review carrying this exact marker on
 # the same head_sha. Per Q6 + 4d sandbox verification, GitHub preserves
 # the body text verbatim under apiVersion 2026-03-10.
+logger = logging.getLogger(__name__)
+
 _BODY_MARKER_TEMPLATE = "<!-- outrider-review-id:{review_id} -->"
 
 # Agent-readable marker template per ROADMAP.md section 3 / S1. Each marker is a
@@ -590,25 +593,36 @@ async def publish(
 
         # Slack review-posted FYI (best-effort). Resolve the install's target
         # (channel + token-bound orchestrator) per FUP-186; a None resolver or a
-        # None target → no FYI. The orchestrator is no-raise and self-skips for
-        # gated reviews (a `hitl_pending` row exists → the HITL status mirror owns
-        # the Slack surface) and on replay (a `review_posted` row exists).
-        # `posted_count` is the two POSTED channels — inline + review-body
-        # (DECISIONS.md#050); dashboard-only is counted "surfaced".
+        # None target → no FYI. The orchestrator's notify_* is itself no-raise and
+        # self-skips for gated reviews (a `hitl_pending` row exists → the HITL status
+        # mirror owns the Slack surface) and on replay (a `review_posted` row exists).
+        # The whole resolve+notify is wrapped: Slack is optional and NEVER
+        # gate-breaking, so a resolver failure (DB read / decrypt / notifier build)
+        # degrades to no FYI rather than failing the node AFTER the review already
+        # posted to GitHub. `posted_count` is the two POSTED channels — inline +
+        # review-body (DECISIONS.md#050); dashboard-only is counted "surfaced".
         if resolve_slack_target is not None:
-            slack_target = await resolve_slack_target(state.pr_context.installation_id)
-            if slack_target is not None:
-                await slack_target.orchestrator.notify_review_posted(
-                    review_id=state.review_id,
-                    is_eval=state.is_eval,
-                    channel_id=slack_target.channel_id,
-                    # owner/repo slug (matches the hitl-pending FYI; org-disambiguated).
-                    repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
-                    pr_number=state.pr_context.pr_number,
-                    posted_count=(
-                        review_created.comments_posted + len(eligible_review_body_findings)
-                    ),
-                    dashboard_only_count=len(surfaced_dashboard_only_findings),
+            try:
+                slack_target = await resolve_slack_target(state.pr_context.installation_id)
+                if slack_target is not None:
+                    await slack_target.orchestrator.notify_review_posted(
+                        review_id=state.review_id,
+                        is_eval=state.is_eval,
+                        channel_id=slack_target.channel_id,
+                        # owner/repo slug (matches hitl-pending FYI; org-disambiguated).
+                        repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
+                        pr_number=state.pr_context.pr_number,
+                        posted_count=(
+                            review_created.comments_posted + len(eligible_review_body_findings)
+                        ),
+                        dashboard_only_count=len(surfaced_dashboard_only_findings),
+                    )
+            except Exception:
+                # Never gate-breaking: the review is already posted; a Slack-path
+                # failure must not lose the PublishResult.
+                logger.exception(
+                    "slack review-posted FYI failed; publish result unaffected",
+                    extra={"review_id": str(state.review_id)},
                 )
 
         # Started_at is not part of the result shape — kept as a local

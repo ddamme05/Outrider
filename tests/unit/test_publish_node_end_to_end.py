@@ -2156,3 +2156,26 @@ async def test_publish_no_slack_fyi_when_target_unresolved() -> None:
 
     assert result["publish_result"].outcome == "success"
     assert orch.review_posted_calls == []
+
+
+@pytest.mark.asyncio
+async def test_publish_slack_resolver_failure_is_not_publish_breaking() -> None:
+    """A resolver that raises (DB read / decrypt / notifier build) must NOT fail the
+    node after the review already posted to GitHub — Slack is never gate-breaking."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    async def _boom(_installation_id: int) -> SlackNotifyTarget:
+        raise RuntimeError("resolver exploded")
+
+    result = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_boom,
+    )
+
+    assert result["publish_result"].outcome == "success"

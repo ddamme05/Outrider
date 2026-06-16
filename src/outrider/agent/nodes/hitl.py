@@ -357,18 +357,31 @@ async def hitl(
         # `report is not None` narrows the Optional for mypy across the await; it
         # is a guaranteed invariant here — Step 2 (_partition_findings) raises if
         # review_report is None, so this branch is always taken on the gated path.
-        # Resolve the install's target per FUP-186; a None target → no notification.
-        slack_target = await resolve_slack_target(state.pr_context.installation_id)
-        if slack_target is not None:
-            gated_ids = set(findings_requiring_approval)
-            await slack_target.orchestrator.notify_hitl_pending(
-                review_id=state.review_id,
-                is_eval=state.is_eval,
-                channel_id=slack_target.channel_id,
-                repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
-                pr_number=state.pr_context.pr_number,
-                pr_title=state.pr_context.pr_title,
-                findings=[f for f in report.findings if f.finding_id in gated_ids],
+        # The whole resolve+notify is wrapped: Slack is optional and NEVER
+        # gate-breaking, so a resolver failure (DB read / decrypt / notifier build)
+        # degrades to no notification rather than propagating between
+        # mark_awaiting_approval and interrupt() — which would leave an `awaiting`
+        # row with no checkpoint handoff. The orchestrator's notify_* is itself
+        # no-raise; this wrapper extends that envelope to cover the resolver.
+        try:
+            slack_target = await resolve_slack_target(state.pr_context.installation_id)
+            if slack_target is not None:
+                gated_ids = set(findings_requiring_approval)
+                await slack_target.orchestrator.notify_hitl_pending(
+                    review_id=state.review_id,
+                    is_eval=state.is_eval,
+                    channel_id=slack_target.channel_id,
+                    repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
+                    pr_number=state.pr_context.pr_number,
+                    pr_title=state.pr_context.pr_title,
+                    findings=[f for f in report.findings if f.finding_id in gated_ids],
+                )
+        except Exception:
+            # Never gate-breaking: the gate must reach interrupt() + checkpoint
+            # regardless of any Slack-path failure.
+            logger.exception(
+                "slack hitl-pending notification failed; gate proceeds",
+                extra={"review_id": str(state.review_id)},
             )
 
     # Step 7: interrupt. LangGraph checkpoints state to Postgres + the

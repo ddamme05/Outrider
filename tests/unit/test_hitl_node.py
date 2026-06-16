@@ -593,3 +593,37 @@ async def test_hitl_no_slack_on_passthrough() -> None:
     )
     assert delta == {}
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_hitl_slack_resolver_failure_is_not_gate_breaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolver that raises (DB read / decrypt / notifier build) must NOT break the
+    gate: the body still reaches interrupt(). Slack is optional, never gate-breaking."""
+    review_id = uuid4()
+    crit = _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+    state = _make_state(findings=[crit], review_id=review_id, received_at=datetime.now(UTC))
+
+    class _StopInterruptError(Exception):
+        pass
+
+    def _raise(*_a: Any, **_k: Any) -> None:
+        raise _StopInterruptError
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", _raise)
+
+    async def _boom(_installation_id: int) -> SlackNotifyTarget:
+        raise RuntimeError("resolver exploded")
+
+    # If the resolver exception propagated, we'd see RuntimeError; instead the body
+    # swallows it and reaches the patched interrupt -> _StopInterruptError.
+    with pytest.raises(_StopInterruptError):
+        await hitl(
+            state,  # type: ignore[arg-type]
+            phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+            hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+            review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+            hitl_config=HITLConfig(),
+            resolve_slack_target=_boom,
+        )
