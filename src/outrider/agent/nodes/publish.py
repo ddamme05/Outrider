@@ -840,12 +840,9 @@ async def _route_and_gate_one_finding(
         eligibility=eligibility,
         reason=eligibility_reason,
     )
-    finding_content_hash_for_eligibility = compute_finding_content_hash(
-        file_path=finding.file_path,
-        line_start=finding.line_start,
-        line_end=finding.line_end,
-        finding_type=finding.finding_type,
-    )
+    # Reuse `finding_content_hash` (computed once above for the routing event): the
+    # eligibility event binds the SAME (file_path, line_start, line_end, finding_type)
+    # identity tuple, so a second identical hash computation is wasted work.
 
     # Look up the matching HITL decision (if any) to honor a
     # SEVERITY_OVERRIDE outcome. Per the post-HITL audit convention
@@ -870,7 +867,7 @@ async def _route_and_gate_one_finding(
             finding_type=finding.finding_type,
             severity=effective_severity,
             original_severity=original_severity_for_audit,
-            finding_content_hash=finding_content_hash_for_eligibility,
+            finding_content_hash=finding_content_hash,
             decision_content_hash=eligibility_decision_hash,
             eligibility=eligibility,
             reason=eligibility_reason,
@@ -1374,7 +1371,7 @@ def _build_finding_comment_body(
 # `_build_finding_comment_body`: same "node renders + sanitizes + caps, publisher
 # posts raw" contract. PURE + PRE-GATED — the caller (the routing loop) passes
 # only ELIGIBLE findings, so a WITHHELD CRITICAL/HIGH never reaches the body
-# (trust boundary #6). Wired into the publish node in a later commit.
+# (trust boundary #6). Wired into the publish node's Step-7 body composition.
 # ---------------------------------------------------------------------------
 
 
@@ -1382,16 +1379,21 @@ def _is_markdown_link_safe_url(value: str) -> bool:
     """True if `value` is safe to embed in markdown — as a link target `(...)` AND
     raw in prose.
 
-    Requires an http(s) scheme and rejects whitespace, C0/C1 control chars + DEL,
-    and markdown/HTML-significant chars `()<>[]`. The URL is used both inside a
-    markdown link target (per-finding entries, where `)` breaks the target) AND raw
-    in the aggregate-note prose (where `<...>` would inject HTML), so all of these
-    are unsafe. The dashboard base URL is operator/per-install config, so the threat
-    is misconfiguration, not attacker input; a malformed URL degrades to the no-link
-    fallback.
+    Requires an http(s) scheme (case-insensitive) WITH a host, and rejects
+    whitespace, C0/C1 control chars + DEL, and markdown/HTML-significant chars
+    `()<>[]`. The URL is used both inside a markdown link target (per-finding
+    entries, where `)` breaks the target) AND raw in the aggregate-note prose
+    (where `<...>` would inject HTML), so all of these are unsafe. The host check
+    rejects a scheme-only URL like `https://` — `_review_deep_link`'s `rstrip('/')`
+    would otherwise strip the scheme's slashes and yield a malformed
+    `https:/reviews/...`. The dashboard base URL is operator/per-install config, so
+    the threat is misconfiguration, not attacker input; a malformed URL degrades to
+    the no-link fallback.
     """
-    if not value.startswith(("http://", "https://")):
+    if not value.lower().startswith(("http://", "https://")):
         return False
+    if not value.partition("://")[2].strip("/"):
+        return False  # scheme-only / host-less
     return not any(
         ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in "()<>[]" for ch in value
     )
@@ -1424,7 +1426,12 @@ def _render_related_concern_entry(
     from outrider.policy.output_sanitizer import sanitize_display_string  # noqa: PLC0415
 
     location = sanitize_display_string(f"{finding.file_path}:{finding.line_start}")
-    title = sanitize_display_string(finding.title)
+    # Collapse CR/LF: each entry is a single markdown list item (the renderer joins
+    # entries with "\n"), and `sanitize_display_string` escapes metachars but does
+    # NOT strip newlines. `title` is model-authored with only a max_length cap (no
+    # newline validator, unlike `file_path`), so an embedded newline would splinter
+    # the bullet across lines and detach the dashboard link.
+    title = sanitize_display_string(finding.title).replace("\r", " ").replace("\n", " ")
     # deep_link is operator-config (dashboard_base_url) + UUIDs (review/finding
     # ids): no `)`/whitespace, so the markdown link target needs no escaping. If
     # the base URL ever becomes less trusted, wrap it in <...> here.

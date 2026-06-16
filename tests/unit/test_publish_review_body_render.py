@@ -395,6 +395,7 @@ async def test_create_review_body_not_marker_first_raises_before_post() -> None:
         "http://localhost:5173",
         "https://dash.example/base/path",
         "https://dash.example:8443/x?a=b#frag",
+        "HTTPS://dash.example",  # uppercase scheme (RFC-3986 case-insensitive)
     ],
 )
 def test_is_markdown_link_safe_url_accepts_well_formed(url: str) -> None:
@@ -416,6 +417,8 @@ def test_is_markdown_link_safe_url_accepts_well_formed(url: str) -> None:
         "https://dash.example/a\nb",  # newline
         "https://dash.example/a\x00b",  # NUL control char
         "https://dash.example/a\x7fb",  # DEL control char
+        "https://",  # scheme-only / host-less (rstrip would strip scheme slashes)
+        "https:///",  # only slashes after the scheme
     ],
 )
 def test_is_markdown_link_safe_url_rejects_malformed(url: str) -> None:
@@ -428,6 +431,18 @@ def test_review_deep_link_malformed_base_url_falls_back_to_none() -> None:
     assert _review_deep_link("https://dash.example/x)y", uuid4(), uuid4()) is None
     assert _review_deep_link("ftp://dash.example", uuid4(), None) is None
     assert _review_deep_link("not a url", uuid4(), None) is None
+
+
+def test_entry_collapses_title_newlines() -> None:
+    # Each entry is a single markdown list item (joined by "\n"); a newline in the
+    # model-authored title must collapse to a space, not splinter the bullet.
+    finding = _make_finding(title="line one\nline two\r\nline three")
+    entry = _render_related_concern_entry(
+        finding, effective_severity=FindingSeverity.MEDIUM, deep_link=None
+    )
+    assert "\n" not in entry
+    assert "\r" not in entry
+    assert "line one line two" in entry  # collapsed to spaces
 
 
 def test_render_review_body_malformed_base_url_uses_no_link_fallback() -> None:
