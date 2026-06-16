@@ -82,8 +82,20 @@ def test_verify_fails_closed_without_secret(monkeypatch: pytest.MonkeyPatch) -> 
         verify_state("a.b")
 
 
+@pytest.mark.parametrize("placeholder", ["changeme", "replace-me", "secret", "CHANGEME"])
+def test_secret_placeholder_rejected(monkeypatch: pytest.MonkeyPatch, placeholder: str) -> None:
+    """The state secret is the CSRF root — a known placeholder fails closed (matches
+    the auth-secret discipline), not just empty."""
+    monkeypatch.setenv(STATE_SECRET_ENV, placeholder)
+    with pytest.raises(SlackStateError, match="placeholder"):
+        sign_state(installation_id=42, admin_id="admin", channel_id="C0ABCDE")
+
+
 @pytest.mark.usefixtures("state_secret")
-@pytest.mark.parametrize("bad", ["", "   ", "lower", "C 0DEF", "C@1DEF", "ab"])
+@pytest.mark.parametrize(
+    "bad",
+    ["", "   ", "lower", "C 0DEF", "C@1DEF", "ab", "X0ABCDE", "ABCDEF"],  # last two: non-C/G prefix
+)
 def test_invalid_channel_rejected_at_sign(bad: str) -> None:
     with pytest.raises(SlackStateError, match="invalid Slack channel_id"):
         sign_state(installation_id=42, admin_id="admin", channel_id=bad)

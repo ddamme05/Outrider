@@ -36,8 +36,11 @@ __all__ = [
 # Env var NAME (not a secret value) — the HMAC key for OAuth state.
 STATE_SECRET_ENV = "OUTRIDER_SLACK_STATE_SECRET"  # noqa: S105
 _DEFAULT_TTL_SECONDS = 600  # 10 minutes — ample for the OAuth round-trip
-# Slack channel id shape: C… (public) / G… (private) — uppercase alphanumerics.
-_CHANNEL_ID_RE = re.compile(r"\A[A-Z0-9]{6,}\Z")
+# Slack channel id shape: C… (public) / G… (private) prefix, then uppercase
+# alphanumerics (≥6 total). A sanity gate before signing — Slack itself is the
+# authority at post time (a bad channel fails with channel_not_found /
+# not_in_channel). DMs (D…) are out of V1 channel scope.
+_CHANNEL_ID_RE = re.compile(r"\A[CG][A-Z0-9]{5,}\Z")
 
 
 class SlackStateError(ValueError):
@@ -56,14 +59,39 @@ class SlackInstallState:
     exp: int
 
 
+# Known placeholders (mirrors github/config.py / dashboard/config.py /
+# notify/config.py — keep in sync). The state secret is the CSRF unforgeability
+# root, so a verbatim .env.example / weak default is rejected, same discipline as
+# the auth secrets (unlike the lower-stakes truncation-marker secret, which only
+# rejects empty).
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
+    {
+        "replace-me",
+        "replace-me-with-a-long-random-secret",
+        "change-me",
+        "changeme",
+        "secret",
+        "password",
+        "your-secret-here",
+    }
+)
+
+
 def _state_secret() -> bytes:
-    """Read the HMAC key from env, fail-closed if absent. Read fresh per call (test
-    monkeypatch + restart-free rotation), like the truncation-marker secret."""
-    raw = os.environ.get(STATE_SECRET_ENV, "")
+    """Read the HMAC key from env, fail-closed if absent OR a known placeholder. Read
+    fresh per call (test monkeypatch + restart-free rotation). Placeholder rejection
+    matches the auth-secret discipline — this key is the CSRF unforgeability root, so
+    a weak/default value is a real forgery risk."""
+    raw = os.environ.get(STATE_SECRET_ENV, "").strip()
     if not raw:
         raise SlackStateError(
             f"{STATE_SECRET_ENV} must be set (non-empty) to sign/verify Slack OAuth state. "
             "The Slack install flow fails closed without it."
+        )
+    if raw.lower() in _PLACEHOLDER_SECRETS:
+        raise SlackStateError(
+            f"{STATE_SECRET_ENV} is a known placeholder ({raw!r}); it is the CSRF "
+            "unforgeability root for the OAuth state — set a real random secret."
         )
     return raw.encode("utf-8")
 
