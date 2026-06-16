@@ -172,3 +172,31 @@ def test_attacker_metadata_does_not_become_live_formatting() -> None:
     assert "&lt;!here&gt;" in blob and "&amp;" in blob
     # The builder-owned deep-link button is still a real, unescaped URL.
     assert _actions_button_url(msg.blocks) == "https://dash/r/1?finding=2"
+
+
+# ---------------------------------------------------------------------------
+# No-link fallback — deep_link=None (malformed/unconfigured base URL; FUP-190)
+# ---------------------------------------------------------------------------
+
+
+def test_hitl_card_no_link_fallback_when_deep_link_none() -> None:
+    """deep_link=None (build_review_deeplink rejected a malformed base URL) → no
+    deep-link button and no URL anywhere, rather than a broken mrkdwn link."""
+    findings = [_finding(FindingSeverity.HIGH, title="t")]
+    msg = build_hitl_pending_message(
+        repo="o/r", pr_number=1, pr_title="t", findings=findings, deep_link=None
+    )
+    assert not any(b["type"] == "actions" for b in msg.blocks)  # no deep-link button
+    assert "http" not in json.dumps(msg.blocks)
+    assert "http" not in msg.text
+
+
+def test_review_posted_no_link_fallback_when_deep_link_none() -> None:
+    """deep_link=None → the compact FYI renders without the `<url|view>` mrkdwn link
+    and without a URL in the fallback text."""
+    msg = build_review_posted_message(
+        repo="o/r", pr_number=1, posted_count=2, dashboard_only_count=1, deep_link=None
+    )
+    assert "http" not in json.dumps(msg.blocks)
+    assert "http" not in msg.text
+    assert "|view>" not in json.dumps(msg.blocks)  # no mrkdwn link

@@ -70,3 +70,12 @@ def test_deeplink_tolerates_trailing_slash() -> None:
     assert build_review_deeplink("https://o.example.com/", rid) == (
         f"https://o.example.com/reviews/{rid}"
     )
+
+
+def test_deeplink_rejects_malformed_base_url() -> None:
+    # A malformed base URL (per the shared is_safe_link_url gate) -> None, so the
+    # caller renders a no-link Slack message instead of a broken mrkdwn link.
+    rid = uuid4()
+    assert build_review_deeplink("not-a-url", rid) is None
+    assert build_review_deeplink("https://", rid) is None  # host-less
+    assert build_review_deeplink("https://dash.example/a|b", rid) is None  # pipe breaks <url|text>

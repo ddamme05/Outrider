@@ -91,7 +91,7 @@ def build_hitl_pending_message(
     pr_number: int,
     pr_title: str,
     findings: Sequence[ReviewFinding],
-    deep_link: str,
+    deep_link: str | None,
     top_n: int = 3,
 ) -> RenderedSlackMessage:
     """The rich HITL-pending card: PR identity, severity counts, top-N findings by
@@ -111,30 +111,35 @@ def build_hitl_pending_message(
         blocks.append(_section(_finding_line(f)))
     if total > len(shown):
         remaining = _severity_counts(ordered[top_n:])
-        blocks.append(
-            _context(
-                f"+{total - len(shown)} more ({_counts_phrase(remaining)}) · "
-                f"<{deep_link}|view all {total} in the dashboard>"
-            )
+        more = f"+{total - len(shown)} more ({_counts_phrase(remaining)})"
+        more += (
+            f" · <{deep_link}|view all {total} in the dashboard>"
+            if deep_link is not None
+            else f" · view all {total} in the Outrider dashboard"
         )
-    blocks.append({"type": "divider"})
-    blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Review in dashboard"},
-                    "url": deep_link,
-                }
-            ],
-        }
-    )
+        blocks.append(_context(more))
+    # No-link fallback: when no valid base URL is configured
+    # (build_review_deeplink returned None), drop the divider + deep-link button
+    # rather than emit a broken-link button.
+    if deep_link is not None:
+        blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Review in dashboard"},
+                        "url": deep_link,
+                    }
+                ],
+            }
+        )
 
     counts_text = _counts_phrase(counts) if counts else "no findings"
-    text = (
-        f"Review needs approval: {repo_s} #{pr_number} — {pr_title_s} ({counts_text}). {deep_link}"
-    )
+    text = f"Review needs approval: {repo_s} #{pr_number} — {pr_title_s} ({counts_text})."
+    if deep_link is not None:
+        text += f" {deep_link}"
     return RenderedSlackMessage(text=text, blocks=blocks)
 
 
@@ -144,7 +149,7 @@ def build_review_posted_message(
     pr_number: int,
     posted_count: int,
     dashboard_only_count: int,
-    deep_link: str,
+    deep_link: str | None,
 ) -> RenderedSlackMessage:
     """The compact one-line review-posted FYI (non-gated reviews). Counts come from
     publish routing: `posted_count` = inline + review-body (on the PR);
@@ -160,11 +165,12 @@ def build_review_posted_message(
             f"{total} findings ({posted_count} posted · {dashboard_only_count} dashboard-only)"
         )
 
-    text = f"Reviewed {repo_s} #{pr_number} — {summary}, no approval needed. {deep_link}"
-    blocks = [
-        _section(
-            f":white_check_mark: Reviewed `{repo_s}` #{pr_number} — {summary}, "
-            f"no approval needed · <{deep_link}|view>"
-        )
-    ]
+    section_text = (
+        f":white_check_mark: Reviewed `{repo_s}` #{pr_number} — {summary}, no approval needed"
+    )
+    text = f"Reviewed {repo_s} #{pr_number} — {summary}, no approval needed."
+    if deep_link is not None:
+        section_text += f" · <{deep_link}|view>"
+        text += f" {deep_link}"
+    blocks = [_section(section_text)]
     return RenderedSlackMessage(text=text, blocks=blocks)
