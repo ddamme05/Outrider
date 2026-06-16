@@ -689,15 +689,24 @@ def build_lifespan(
             # fail-loud above; the agent key tolerates absence.
             app.state.agent_api_key = _dashboard_settings.agent_api_key
 
-            # Slack OAuth install-flow config (commit 6.3c/6.3e). Opt-in: an
-            # OUTRIDER_SLACK_CLIENT_ID in env means OAuth is intended, so construct
-            # the settings (a PARTIAL config raises ValidationError → fail-loud
-            # startup, better than silently disabling a typo'd deploy). Absent →
-            # None → the /slack/* endpoints return a uniform 503 (disabled). The
-            # state secret + token-encryption key are read from env at the call
-            # sites (notify/oauth_state.py, notify/token_crypto.py), not here.
+            # Slack OAuth install-flow config (commit 6.3c/6.3e). Opt-in: if ANY of
+            # the three OAuth env vars is present, OAuth is intended → construct the
+            # settings, so a PARTIAL config (e.g. secret + redirect set but client_id
+            # missing/typoed) raises ValidationError and fails startup loudly rather
+            # than silently disabling. Gating on client_id alone would let exactly that
+            # partial config slip through to None. ALL three absent → None → the
+            # /slack/* endpoints return a uniform 503 (disabled). The state secret +
+            # token-encryption key are read from env at the call sites
+            # (notify/oauth_state.py, notify/token_crypto.py), not here.
+            _slack_oauth_vars = (
+                "OUTRIDER_SLACK_CLIENT_ID",
+                "OUTRIDER_SLACK_CLIENT_SECRET",
+                "OUTRIDER_SLACK_REDIRECT_URI",
+            )
             app.state.slack_oauth_settings = (
-                SlackOAuthSettings() if os.environ.get("OUTRIDER_SLACK_CLIENT_ID") else None
+                SlackOAuthSettings()
+                if any(os.environ.get(_v) for _v in _slack_oauth_vars)
+                else None
             )
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
