@@ -41,6 +41,7 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 from uuid import UUID
 
 from outrider.audit.events import (
@@ -1379,21 +1380,23 @@ def _is_markdown_link_safe_url(value: str) -> bool:
     """True if `value` is safe to embed in markdown — as a link target `(...)` AND
     raw in prose.
 
-    Requires an http(s) scheme (case-insensitive) WITH a host, and rejects
-    whitespace, C0/C1 control chars + DEL, and markdown/HTML-significant chars
-    `()<>[]`. The URL is used both inside a markdown link target (per-finding
-    entries, where `)` breaks the target) AND raw in the aggregate-note prose
-    (where `<...>` would inject HTML), so all of these are unsafe. The host check
-    rejects a scheme-only URL like `https://` — `_review_deep_link`'s `rstrip('/')`
-    would otherwise strip the scheme's slashes and yield a malformed
-    `https:/reviews/...`. The dashboard base URL is operator/per-install config, so
-    the threat is misconfiguration, not attacker input; a malformed URL degrades to
-    the no-link fallback.
+    Requires an http(s) scheme (case-insensitive) WITH a non-empty parsed host
+    (`urlparse().netloc`), and rejects whitespace, C0/C1 control chars + DEL, and
+    markdown/HTML-significant chars `()<>[]`. The URL is used both inside a markdown
+    link target (per-finding entries, where `)` breaks the target) AND raw in the
+    aggregate-note prose (where `<...>` would inject HTML), so all of these are
+    unsafe. The host check rejects scheme-only / empty-host URLs (`https://`,
+    `https:///foo`) — `_review_deep_link`'s `rstrip('/')` would otherwise yield a
+    malformed `https:/reviews/...`. The dashboard base URL is operator/per-install
+    config, so the threat is misconfiguration, not attacker input; a malformed URL
+    degrades to the no-link fallback.
     """
-    if not value.lower().startswith(("http://", "https://")):
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False  # e.g. malformed IPv6 literal — degrade to no-link
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
         return False
-    if not value.partition("://")[2].strip("/"):
-        return False  # scheme-only / host-less
     return not any(
         ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in "()<>[]" for ch in value
     )
