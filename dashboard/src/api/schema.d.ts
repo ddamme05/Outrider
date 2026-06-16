@@ -1863,6 +1863,16 @@ export interface components {
             /** Comments Posted */
             comments_posted: number;
             /**
+             * Review Body Findings Posted
+             * @default 0
+             */
+            review_body_findings_posted: number;
+            /**
+             * Dashboard Only Findings Surfaced
+             * @default 0
+             */
+            dashboard_only_findings_surfaced: number;
+            /**
              * Review Status
              * @enum {string}
              */

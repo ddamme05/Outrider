@@ -3272,6 +3272,18 @@
             "minimum": 0.0,
             "title": "Comments Posted"
           },
+          "review_body_findings_posted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Review Body Findings Posted",
+            "default": 0
+          },
+          "dashboard_only_findings_surfaced": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Dashboard Only Findings Surfaced",
+            "default": 0
+          },
           "review_status": {
             "type": "string",
             "enum": [
