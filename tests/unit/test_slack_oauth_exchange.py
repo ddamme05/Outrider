@@ -86,3 +86,26 @@ async def test_exchange_code_malformed_response_rejected() -> None:
             redirect_uri="https://dash.example/slack/oauth/callback",
             client=client,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resp",
+    [
+        {"ok": True, "access_token": None, "team": {"id": "T0X"}, "bot_user_id": "U0BOT"},
+        {"ok": True, "access_token": "xoxb", "team": {"id": None}, "bot_user_id": "U0BOT"},
+        {"ok": True, "access_token": "xoxb", "team": {"id": "T0X"}, "bot_user_id": ""},
+    ],
+)
+async def test_exchange_code_rejects_present_but_null_or_empty_fields(resp: dict[str, Any]) -> None:
+    """A present-but-null/empty required field fails closed — never coerces a `null`
+    into the trusted string "None" (no bogus team/token/user persisted)."""
+    client = _FakeOAuthClient(response=resp)
+    with pytest.raises(SlackOAuthError, match="empty/null required fields"):
+        await exchange_code(
+            client_id="cid",
+            client_secret=SecretStr("csecret"),
+            code="x",
+            redirect_uri="https://dash.example/slack/oauth/callback",
+            client=client,  # type: ignore[arg-type]
+        )

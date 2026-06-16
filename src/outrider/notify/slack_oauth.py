@@ -73,11 +73,19 @@ async def exchange_code(
         raise SlackOAuthError(f"Slack oauth.v2.access request failed: {exc}") from exc
     try:
         team = resp["team"]
-        return SlackOAuthResult(
-            team_id=str(team["id"]),
-            team_name=str(team.get("name") or ""),
-            bot_token=SecretStr(str(resp["access_token"])),
-            bot_user_id=str(resp["bot_user_id"]),
-        )
+        team_id = team["id"]
+        access_token = resp["access_token"]
+        bot_user_id = resp["bot_user_id"]
     except (KeyError, TypeError) as exc:
         raise SlackOAuthError("Slack oauth.v2.access response missing expected fields") from exc
+    # Reject present-but-null/empty required fields: `str(None)` would otherwise
+    # become the trusted string "None" (a bogus team/token/user persisted). Fail
+    # closed. `team.name` is optional and may legitimately be empty.
+    if not (team_id and access_token and bot_user_id):
+        raise SlackOAuthError("Slack oauth.v2.access response has empty/null required fields")
+    return SlackOAuthResult(
+        team_id=str(team_id),
+        team_name=str(team.get("name") or ""),
+        bot_token=SecretStr(str(access_token)),
+        bot_user_id=str(bot_user_id),
+    )
