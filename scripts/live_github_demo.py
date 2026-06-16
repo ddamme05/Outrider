@@ -92,7 +92,11 @@ from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
 from outrider.notify.config import SlackSettings  # noqa: E402
 from outrider.notify.resolver import PerInstallSlackResolver  # noqa: E402
-from outrider.notify.token_crypto import TOKEN_ENC_KEY_ENV, encrypt_token  # noqa: E402
+from outrider.notify.token_crypto import (  # noqa: E402
+    TOKEN_ENC_KEY_ENV,
+    TokenCryptoError,
+    encrypt_token,
+)
 from outrider.schemas.pr_context import PRContext  # noqa: E402
 
 if TYPE_CHECKING:
@@ -193,34 +197,28 @@ async def _maybe_wire_slack(
     persister: AuditPersister,
     pr_context: PRContext,
     *,
-    overwrite: bool,
+    seed_dev_token: bool,
 ) -> PerInstallSlackResolver | None:
-    """Full-smoke Slack wiring (no OAuth dance needed).
+    """Wire the per-install Slack resolver for the smoke (None → no Slack).
 
-    If the dev-bootstrap Slack creds (`OUTRIDER_SLACK_BOT_TOKEN` +
-    `OUTRIDER_SLACK_CHANNEL_ID`, via `SlackSettings`) AND the token-encryption key
-    (`OUTRIDER_TOKEN_ENC_KEY`) are present, returns a `PerInstallSlackResolver` so the
-    graph posts a real Slack message exactly as production would (decrypt → per-install
-    orchestrator). Absent creds → None (no Slack); a swallowed Slack failure is
-    surfaced via the log handler, never fatal.
+    DEFAULT (respecting DECISIONS.md#051): use the install's EXISTING per-install
+    Slack config — the one the OAuth flow stored. The dev-bootstrap env token
+    (`SlackSettings`/`OUTRIDER_SLACK_BOT_TOKEN`) is explicitly NOT the production
+    posting authority, so we do not persist it into the real installations row by
+    default. An unconnected install → no Slack (connect it via `/slack/install` first).
 
-    DOES NOT CLOBBER an already-connected install: this script targets the REAL
-    DATABASE_URL, so if the install already has Slack config (e.g. from the OAuth
-    flow), the resolver USES that existing config rather than overwriting its
-    team/token/channel with dev-bootstrap values. Only an install with NO config is
-    seeded — unless `--overwrite-slack-config` (`overwrite=True`) is passed, the
-    explicit, visible escape hatch to replace it with the OUTRIDER_SLACK_* dev creds.
+    `--seed-dev-slack-token` (`seed_dev_token=True`) is the EXPLICIT dev override: it
+    encrypts + stores the dev env token as the install's Slack config so the smoke can
+    post without the OAuth dance. It's a knowing deviation from #051 (a dev token
+    becoming stored posting authority) — labeled loudly, off by default, and only for
+    a sandbox install you control. Decryption-time failures (bad enc key) are caught
+    and degrade to no-Slack rather than crashing the run mid-flight.
+
+    Either way the encryption key must be present (the resolver decrypts at post time);
+    without it no stored token is usable, so Slack is off.
     """
-    try:
-        slack_dev = SlackSettings()
-    except ValidationError:
-        _say(
-            "  Slack ................ NOT wired (set OUTRIDER_SLACK_BOT_TOKEN + "
-            "OUTRIDER_SLACK_CHANNEL_ID + OUTRIDER_TOKEN_ENC_KEY to post a real Slack message)"
-        )
-        return None
     if TOKEN_ENC_KEY_ENV not in os.environ:
-        _say("  Slack ................ NOT wired (OUTRIDER_TOKEN_ENC_KEY missing — can't encrypt)")
+        _say("  Slack ................ NOT wired (OUTRIDER_TOKEN_ENC_KEY missing — can't decrypt)")
         return None
 
     resolver = PerInstallSlackResolver(
@@ -231,31 +229,48 @@ async def _maybe_wire_slack(
 
     async with session_factory() as session:
         existing = await get_slack_config(session, pr_context.installation_id)
-    if existing is not None and not overwrite:
-        # Already connected (OAuth or a prior run) — use it, don't clobber.
+    if existing is not None:
         _say(
             f"  Slack ................ wired → using EXISTING per-install config "
-            f"(channel {existing.channel_id}; pass --overwrite-slack-config to replace it "
-            "with OUTRIDER_SLACK_* dev creds)"
+            f"(channel {existing.channel_id})"
         )
         return resolver
+    if not seed_dev_token:
+        _say(
+            "  Slack ................ NOT wired (install not connected; run /slack/install, or "
+            "pass --seed-dev-slack-token to seed the dev env token — dev-only, see #051)"
+        )
+        return None
 
+    # Explicit dev override: persist the env token as this install's Slack config.
+    try:
+        slack_dev = SlackSettings()
+    except ValidationError:
+        _say(
+            "  Slack ................ NOT wired (--seed-dev-slack-token set but "
+            "OUTRIDER_SLACK_BOT_TOKEN / OUTRIDER_SLACK_CHANNEL_ID missing/invalid)"
+        )
+        return None
+    try:
+        ciphertext = encrypt_token(slack_dev.bot_token)
+    except TokenCryptoError as exc:
+        _say(f"  Slack ................ NOT wired (token encryption failed — bad enc key?): {exc}")
+        return None
     async with session_factory() as session, session.begin():
         seeded = await set_slack_config(
             session,
             installation_id=pr_context.installation_id,
             team_id="(live-demo)",
-            bot_token_ciphertext=encrypt_token(slack_dev.bot_token),
+            bot_token_ciphertext=ciphertext,
             channel_id=slack_dev.channel_id,
             configured_by="live-github-demo",
         )
     if not seeded:
         _say("  Slack ................ NOT wired (set_slack_config found no active install row)")
         return None
-    verb = "OVERWROTE" if existing is not None else "seeded"
     _say(
-        f"  Slack ................ wired → channel {slack_dev.channel_id} ({verb} per-install "
-        "config from OUTRIDER_SLACK_* + token enc key; a real message will post)"
+        f"  Slack ................ wired → channel {slack_dev.channel_id} (SEEDED the dev env "
+        "token as per-install config — dev-only deviation from #051; clear it after)"
     )
     return resolver
 
@@ -390,7 +405,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     slack_resolver = await _maybe_wire_slack(
-        session_factory, persister, pr_context, overwrite=args.overwrite_slack_config
+        session_factory, persister, pr_context, seed_dev_token=args.seed_dev_slack_token
     )
 
     graph = build_graph(
@@ -451,6 +466,7 @@ async def _run(args: argparse.Namespace) -> int:
         result=result,
         interrupted=interrupted,
         allow_empty_publish=args.allow_empty_publish,
+        slack_wired=slack_resolver is not None,
     )
     await engine.dispose()
     return rc
@@ -551,6 +567,7 @@ async def _report_and_verify(
     result: dict[str, Any],
     interrupted: bool,
     allow_empty_publish: bool,
+    slack_wired: bool,
 ) -> int:
     _say()
     async with engine.begin() as conn:
@@ -674,6 +691,40 @@ async def _report_and_verify(
     except Exception as exc:  # noqa: BLE001 — surface any replay failure
         checks.append(("replay", False, f"{type(exc).__name__}: {exc}"))
 
+    # Slack write proof (only when Slack was wired). A gated review posts hitl_pending
+    # then pauses (interrupted); a clean review posts review_posted after a successful
+    # publish. In either case a slack_notification audit row MUST exist — a swallowed
+    # post (Slack never gate-breaks) would otherwise let the smoke pass with no message,
+    # the exact silent-failure this gate catches. Outcomes that never reach a posting
+    # point (empty/skipped publish, graph ended early) are reported, not gated.
+    if slack_wired:
+        async with engine.begin() as conn:
+            n_slack = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM audit_events "
+                        "WHERE review_id = :id AND event_type = 'slack_notification'"
+                    ),
+                    {"id": review_id},
+                )
+            ).scalar_one()
+        published_ok = (
+            publish_result is not None and getattr(publish_result, "outcome", None) == "success"
+        )
+        if interrupted or published_ok:
+            checks.append(
+                (
+                    "Slack notification posted (wired + reached a posting point)",
+                    n_slack >= 1,
+                    f"{n_slack} slack_notification row(s)",
+                )
+            )
+        else:
+            _say(
+                f"  Slack notify check ... skipped ({n_slack} row(s); review reached no Slack "
+                "posting point — gated→hitl or successful publish)"
+            )
+
     _say("  Structural checks (exit verdict = all must pass):")
     all_ok = True
     for label, ok, detail in checks:
@@ -713,12 +764,14 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--overwrite-slack-config",
+        "--seed-dev-slack-token",
         action="store_true",
         help=(
-            "replace an install's EXISTING per-install Slack config with the "
-            "OUTRIDER_SLACK_* dev creds. Default: use existing config, never clobber an "
-            "OAuth-connected install (this script runs against the real DATABASE_URL)"
+            "DEV-ONLY: persist the OUTRIDER_SLACK_* env token as this install's per-install "
+            "Slack config so the smoke can post without the OAuth dance. Off by default — a "
+            "knowing deviation from DECISIONS.md#051 (the env token is not production posting "
+            "authority); only for a sandbox install, and clear it afterward. Default behavior "
+            "uses the install's existing OAuth-stored config, or skips Slack if unconnected"
         ),
     )
     return parser.parse_args()
