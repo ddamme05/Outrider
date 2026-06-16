@@ -75,7 +75,7 @@ from outrider.schemas import (
 from outrider.schemas.hitl import PerFindingOutcome
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from outrider.audit.sinks import PhaseEventSink, PublishEventSink
     from outrider.db.sinks import ReviewStatusSink
@@ -1295,6 +1295,114 @@ def _build_finding_comment_body(
     suffix = "\n\n" + "\n\n".join(tail_blocks)
     capped_prose = apply_size_cap(body, reserve_bytes=len(suffix.encode("utf-8")))
     return f"{capped_prose}{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# Review-body renderers (DECISIONS.md#050) — the "Related concerns" section for
+# eligible REVIEW_BODY findings + the aggregate DASHBOARD_ONLY note. Siblings to
+# `_build_finding_comment_body`: same "node renders + sanitizes + caps, publisher
+# posts raw" contract. PURE + PRE-GATED — the caller (the routing loop) passes
+# only ELIGIBLE findings, so a WITHHELD CRITICAL/HIGH never reaches the body
+# (trust boundary #6). Wired into the publish node in a later commit.
+# ---------------------------------------------------------------------------
+
+
+def _review_deep_link(base_url: str | None, review_id: UUID, finding_id: UUID | None) -> str | None:
+    """Dashboard deep-link for the review body, or None (no-link fallback) when no
+    base URL is configured. Duplicates `notify/deeplink.py::build_review_deeplink`
+    on the Slack branch — consolidate to one shared builder post-merge."""
+    if not base_url:
+        return None
+    url = f"{base_url.rstrip('/')}/reviews/{review_id}"
+    return f"{url}?finding={finding_id}" if finding_id is not None else url
+
+
+def _render_related_concern_entry(
+    finding: ReviewFinding, *, effective_severity: FindingSeverity, deep_link: str | None
+) -> str:
+    """One "Related concerns" entry for an ELIGIBLE REVIEW_BODY finding.
+
+    Per `docs/spec.md` §4.1.7: a `file:line` reference + a dashboard link for full
+    context — NOT the full description (that lives in the dashboard). Severity is
+    policy/HITL-resolved (`effective_severity`), never model-set (boundary #2). The
+    model-authored `title` AND the displayed `file_path` both pass through
+    `sanitize_display_string`: the path is rendered as TEXT here (unlike inline
+    comments, where it is the GitHub API anchor), so `@`/`#`/backtick in a path
+    (e.g. `@scope/pkg`, `@types/`) would otherwise spawn a mention/ref/code-span.
+    """
+    from outrider.policy.output_sanitizer import sanitize_display_string  # noqa: PLC0415
+
+    location = sanitize_display_string(f"{finding.file_path}:{finding.line_start}")
+    title = sanitize_display_string(finding.title)
+    # deep_link is operator-config (dashboard_base_url) + UUIDs (review/finding
+    # ids): no `)`/whitespace, so the markdown link target needs no escaping. If
+    # the base URL ever becomes less trusted, wrap it in <...> here.
+    link = f" — [view in dashboard]({deep_link})" if deep_link else " (see the Outrider dashboard)"
+    return (
+        f"- **{effective_severity.value.upper()}** · "
+        f"**{finding.finding_type.value}** — {location} — {title}{link}"
+    )
+
+
+def _render_review_body(
+    *,
+    body_marker: str,
+    review_body_findings: Sequence[tuple[ReviewFinding, FindingSeverity]],
+    dashboard_only_findings: Sequence[ReviewFinding],
+    review_id: UUID,
+    dashboard_base_url: str | None,
+) -> str:
+    """Compose the marker-FIRST GitHub review body (DECISIONS.md#050).
+
+    Layout: `body_marker` at offset 0 (load-bearing — crash-recovery's
+    `find_existing_review_on_head_sha` matches `startswith(body_marker)`), then an
+    optional "Related concerns" section (one entry per eligible review-body
+    finding), then an optional aggregate dashboard-only note (count + link only,
+    never per-finding). The assembled body is `apply_size_cap`-ed against
+    `GITHUB_REVIEW_BODY_MAX`; the cap tail-truncates, so the offset-0 marker
+    survives — preserving the startswith recovery contract on an over-cap body.
+
+    PURE + PRE-GATED: the caller passes only ELIGIBLE review-body findings and
+    surfaced=eligible dashboard-only findings, so a WITHHELD CRITICAL/HIGH finding
+    never reaches the body — the gate lives in the routing loop, the renderer
+    trusts its inputs (mirroring `_build_finding_comment_body`).
+    """
+    from outrider.policy.output_sanitizer import (  # noqa: PLC0415
+        GITHUB_REVIEW_BODY_MAX,
+        apply_size_cap,
+    )
+
+    sections: list[str] = [body_marker]
+
+    if review_body_findings:
+        entries = [
+            _render_related_concern_entry(
+                finding,
+                effective_severity=severity,
+                deep_link=_review_deep_link(dashboard_base_url, review_id, finding.finding_id),
+            )
+            for finding, severity in review_body_findings
+        ]
+        sections.append("## Related concerns\n\n" + "\n".join(entries))
+
+    if dashboard_only_findings:
+        m = len(dashboard_only_findings)
+        n = len({f.file_path for f in dashboard_only_findings})
+        aggregate_link = _review_deep_link(dashboard_base_url, review_id, None)
+        # Pronoun agrees with the finding count (m==1 -> "it", else "them") so the
+        # singular case reads "found 1 additional concern. View it at ...".
+        pronoun = "them" if m != 1 else "it"
+        where = (
+            f"View {pronoun} at {aggregate_link}."
+            if aggregate_link
+            else f"View {pronoun} in the Outrider dashboard."
+        )
+        sections.append(
+            f"Outrider examined {n} related file{'s' if n != 1 else ''} outside this PR "
+            f"and found {m} additional concern{'s' if m != 1 else ''}. {where}"
+        )
+
+    return apply_size_cap("\n\n".join(sections), max_bytes=GITHUB_REVIEW_BODY_MAX)
 
 
 # ---------------------------------------------------------------------------

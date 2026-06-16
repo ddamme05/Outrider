@@ -641,10 +641,11 @@ class _CapturingPublisher:
         head_sha: str,
         review_status: str,
         body_marker: str,
+        body: str | None = None,
         comments: tuple[InlineComment, ...],
     ) -> GitHubReviewCreated:
         self.create_review_calls.append(
-            {"review_status": review_status, "comments": tuple(comments)}
+            {"review_status": review_status, "comments": tuple(comments), "body": body}
         )
         return GitHubReviewCreated(github_review_id=999, comments_posted=len(comments))
 
