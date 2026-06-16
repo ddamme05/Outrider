@@ -29,7 +29,6 @@ from uuid import UUID, uuid4
 import pytest
 
 from outrider.agent.nodes.publish import (
-    _is_markdown_link_safe_url,
     _render_related_concern_entry,
     _render_review_body,
     _review_deep_link,
@@ -384,46 +383,9 @@ async def test_create_review_body_not_marker_first_raises_before_post() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _is_markdown_link_safe_url + _review_deep_link malformed-URL fallback
+# _review_deep_link malformed-URL fallback (the validator itself,
+# is_safe_link_url, is tested in test_publish_output_sanitizer.py)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://dash.example",
-        "http://localhost:5173",
-        "https://dash.example/base/path",
-        "https://dash.example:8443/x?a=b#frag",
-        "HTTPS://dash.example",  # uppercase scheme (RFC-3986 case-insensitive)
-    ],
-)
-def test_is_markdown_link_safe_url_accepts_well_formed(url: str) -> None:
-    assert _is_markdown_link_safe_url(url) is True
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "ftp://dash.example",  # non-http scheme
-        "javascript:alert(1)",  # non-http scheme
-        "dash.example",  # no scheme
-        "https://dash.example/a)b",  # close paren breaks markdown target
-        "https://dash.example/a(b",  # open paren
-        "https://dash.example/<b>",  # angle brackets -> HTML injection in prose
-        "https://dash.example/[x]",  # square brackets -> markdown link syntax
-        "https://dash.example/a b",  # whitespace
-        "https://dash.example/a\tb",  # tab
-        "https://dash.example/a\nb",  # newline
-        "https://dash.example/a\x00b",  # NUL control char
-        "https://dash.example/a\x7fb",  # DEL control char
-        "https://",  # scheme-only / host-less (rstrip would strip scheme slashes)
-        "https:///",  # only slashes after the scheme
-        "https:///foo",  # empty host with a path (urlparse netloc == "")
-    ],
-)
-def test_is_markdown_link_safe_url_rejects_malformed(url: str) -> None:
-    assert _is_markdown_link_safe_url(url) is False
 
 
 def test_review_deep_link_malformed_base_url_falls_back_to_none() -> None:
