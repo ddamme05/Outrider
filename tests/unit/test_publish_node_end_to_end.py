@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from outrider.agent.nodes import publish as publish_module
 from outrider.agent.nodes.publish import publish
 from outrider.audit.events import (
     PublishAttemptEvent,
@@ -39,6 +40,7 @@ from outrider.audit.events import (
     ReviewPhaseEvent,
     compute_finding_content_hash,
 )
+from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -469,7 +471,7 @@ async def test_critical_finding_withheld_publisher_not_called() -> None:
     assert publish_sink.eligibility[0].eligibility is PublishEligibility.WITHHELD
     # Publisher was NOT called for the withheld finding.
     assert len(publisher.create_calls) == 0
-    # Attempt event = no_op_empty (zero eligible+INLINE findings).
+    # Attempt event = no_op_empty (zero eligible/surfaced across all three tiers).
     assert len(publish_sink.attempts) == 1
     assert publish_sink.attempts[0].outcome is PublishAttemptOutcome.NO_OP_EMPTY
     assert result["publish_result"].outcome == "empty"
@@ -597,7 +599,11 @@ async def test_removed_file_routes_dashboard_only_with_head_content_unavailable(
     assert routing.destination is PublishDestination.DASHBOARD_ONLY
     assert routing.reason is PublishRoutingReason.COORDINATE_ERROR
     assert routing.coordinate_error_kind == "head_content_unavailable"
-    assert len(publisher.create_calls) == 0
+    # DECISIONS.md#050: an eligible dashboard-only finding now POSTS the aggregate
+    # note (no-op pre-#050). Routing classification above is unchanged.
+    assert len(publisher.create_calls) == 1
+    assert publisher.create_calls[0]["comments"] == ()  # no inline comments
+    assert "additional concern" in publisher.create_calls[0]["body"]
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +639,11 @@ async def test_non_diffed_file_routes_dashboard_only_registry_miss() -> None:
     assert publish_sink.routing[0].destination is PublishDestination.DASHBOARD_ONLY
     assert publish_sink.routing[0].reason is PublishRoutingReason.NON_DIFFED_FILE
     assert publish_sink.routing[0].coordinate_error_kind is None  # registry miss
-    assert len(publisher.create_calls) == 0
+    # DECISIONS.md#050: an eligible dashboard-only finding now POSTS the aggregate
+    # note (no-op pre-#050). Routing classification above is unchanged.
+    assert len(publisher.create_calls) == 1
+    assert publisher.create_calls[0]["comments"] == ()  # no inline comments
+    assert "additional concern" in publisher.create_calls[0]["body"]
 
 
 # ---------------------------------------------------------------------------
@@ -1715,3 +1725,302 @@ async def test_publish_suppresses_backtick_suggestion_without_mutating_finding()
     assert "```suggestion" not in body, "backtick-bearing fix must be suppressed at render"
     # The finding's stored patch is untouched — suppression is read-only.
     assert finding.suggested_fix == backtick_fix
+
+
+# ---------------------------------------------------------------------------
+# DECISIONS.md#050 — review-body + dashboard-only materialization (commit 3)
+# ---------------------------------------------------------------------------
+
+
+def _raise_unchanged_region(**_kwargs: object) -> object:
+    raise CoordinateError("span in unchanged code", kind=CoordinateErrorKind.UNCHANGED_REGION)
+
+
+@pytest.mark.asyncio
+async def test_eligible_review_body_finding_posts_related_concerns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ELIGIBLE REVIEW_BODY finding (MEDIUM, unchanged-region) materializes into
+    the "Related concerns" body section; the review posts with zero inline comments
+    and success.review_body_findings_posted == 1 (DECISIONS.md#050)."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    publisher = _StubPublisher()
+    sink = _RecordingPublishEventSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert sink.routing[0].destination is PublishDestination.REVIEW_BODY
+    assert len(publisher.create_calls) == 1
+    posted = publisher.create_calls[0]
+    assert posted["comments"] == ()  # zero inline comments
+    assert posted["body"].startswith("<!-- outrider-review-id:")  # marker first
+    assert "## Related concerns" in posted["body"]
+    assert finding.finding_type.value in posted["body"]
+    pr = result["publish_result"]
+    assert pr.outcome == "success"
+    assert pr.review_body_findings_posted == 1
+    assert pr.comments_posted == 0
+    assert pr.dashboard_only_findings_surfaced == 0
+
+
+@pytest.mark.asyncio
+async def test_withheld_critical_review_body_finding_not_materialized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[trust boundary] A WITHHELD CRITICAL REVIEW_BODY finding does NOT reach the
+    body — the eligibility gate is the same across all three tiers. As the only
+    finding, the review is no_op_empty (no GitHub call) (DECISIONS.md#050)."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=2, line_end=2)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    publisher = _StubPublisher()
+    sink = _RecordingPublishEventSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert sink.routing[0].destination is PublishDestination.REVIEW_BODY
+    assert sink.eligibility[0].eligibility is PublishEligibility.WITHHELD
+    assert len(publisher.create_calls) == 0  # withheld -> not materialized -> no post
+    assert result["publish_result"].outcome == "empty"
+
+
+@pytest.mark.asyncio
+async def test_eligible_dashboard_only_finding_posts_aggregate_note() -> None:
+    """An ELIGIBLE DASHBOARD_ONLY finding (non-diffed file) posts the aggregate
+    note; success.dashboard_only_findings_surfaced == 1, zero inline, no
+    per-finding "Related concerns" section (DECISIONS.md#050)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, file_path="src/other.py")
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(path="src/foo.py"),))
+    publisher = _StubPublisher()
+    sink = _RecordingPublishEventSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert sink.routing[0].destination is PublishDestination.DASHBOARD_ONLY
+    assert len(publisher.create_calls) == 1
+    posted = publisher.create_calls[0]
+    assert posted["comments"] == ()
+    assert "1 additional concern" in posted["body"]
+    assert "## Related concerns" not in posted["body"]  # dashboard-only: aggregate only
+    pr = result["publish_result"]
+    assert pr.outcome == "success"
+    assert pr.dashboard_only_findings_surfaced == 1
+    assert pr.review_body_findings_posted == 0
+    assert pr.comments_posted == 0
+
+
+@pytest.mark.asyncio
+async def test_withheld_critical_dashboard_only_finding_not_surfaced() -> None:
+    """[trust boundary] A WITHHELD CRITICAL DASHBOARD_ONLY finding is NOT surfaced
+    in the aggregate note; as the only finding the review is no_op_empty."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, file_path="src/other.py")
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(path="src/foo.py"),))
+    publisher = _StubPublisher()
+    sink = _RecordingPublishEventSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert sink.routing[0].destination is PublishDestination.DASHBOARD_ONLY
+    assert sink.eligibility[0].eligibility is PublishEligibility.WITHHELD
+    assert len(publisher.create_calls) == 0
+    assert result["publish_result"].outcome == "empty"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_base_url_threads_into_review_body_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured dashboard_base_url produces a real deep-link in the body; None
+    falls back to no-link prose (DECISIONS.md#050)."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    publisher = _StubPublisher()
+    await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        dashboard_base_url="https://dash.example",
+    )
+    assert "](https://dash.example/reviews/" in publisher.create_calls[0]["body"]  # markdown link
+
+    publisher_none = _StubPublisher()
+    await publish(
+        state,
+        publisher=publisher_none,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        dashboard_base_url=None,
+    )
+    assert "http" not in publisher_none.create_calls[0]["body"]
+    assert "see the Outrider dashboard" in publisher_none.create_calls[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_skipped_reports_prior_publish_event_counts() -> None:
+    """Step-4 idempotency skip reports the PRIOR PublishEvent's three counts, not
+    zero, so the dashboard / FYI reflects the original publish (DECISIONS.md#050)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    sink = _RecordingPublishEventSink()
+    sink.prior_publish_event = PublishEvent(
+        review_id=state.review_id,
+        is_eval=state.is_eval,
+        github_review_id=777,
+        comments_posted=3,
+        review_body_findings_posted=2,
+        dashboard_only_findings_surfaced=5,
+        review_status="COMMENT",
+    )
+    publisher = _StubPublisher()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert len(publisher.create_calls) == 0  # idempotent skip — no GitHub call
+    pr = result["publish_result"]
+    assert pr.outcome == "idempotently_skipped"
+    assert pr.comments_posted == 3
+    assert pr.review_body_findings_posted == 2
+    assert pr.dashboard_only_findings_surfaced == 5
+
+
+@pytest.mark.asyncio
+async def test_skipped_external_reports_current_routing_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step-6 external-record skip has no prior PublishEvent, so it reports the
+    CURRENT routing pass's counts (DECISIONS.md#050)."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    publisher = _StubPublisher(existing_review_id=909)  # find_existing matches
+    sink = _RecordingPublishEventSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert len(publisher.create_calls) == 0  # recovery: existing review found, no POST
+    pr = result["publish_result"]
+    assert pr.outcome == "idempotently_skipped_external_record"
+    assert pr.github_review_id == 909
+    assert pr.review_body_findings_posted == 1  # current routing pass
+    assert pr.comments_posted == 0
+
+
+@pytest.mark.asyncio
+async def test_review_body_tier_filters_withheld_keeps_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[trust boundary] With an ELIGIBLE (MEDIUM) and a WITHHELD (CRITICAL) finding
+    both routing REVIEW_BODY, only the eligible one materializes into the body — the
+    gate filters WITHIN a tier, not just all-or-nothing (DECISIONS.md#050)."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    eligible = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    withheld = _make_finding(severity=FindingSeverity.CRITICAL, line_start=3, line_end=3)
+    # analysis_round_findings=() avoids the AnalysisRound proposal_hash-uniqueness
+    # validator (the e2e _make_finding uses a constant hash); publish reads from
+    # review_report.findings, which dedups on content_hash (distinct here).
+    state = _make_state(
+        findings=(eligible, withheld),
+        changed_files=(_make_changed_file(),),
+        analysis_round_findings=(),
+    )
+    publisher = _StubPublisher()
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    body = publisher.create_calls[0]["body"]
+    assert eligible.finding_type.value in body  # missing_input_validation (eligible)
+    assert withheld.finding_type.value not in body  # sql_injection (withheld) excluded
+    assert result["publish_result"].review_body_findings_posted == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_review_body_and_dashboard_only_both_materialize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One eligible REVIEW_BODY finding (diffed file, unchanged region) AND one
+    eligible DASHBOARD_ONLY finding (non-diffed file) → one review body carrying
+    BOTH the "Related concerns" section and the aggregate note, both count channels
+    set (DECISIONS.md#050)."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    review_body_finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    dashboard_finding = _make_finding(severity=FindingSeverity.MEDIUM, file_path="src/other.py")
+    state = _make_state(
+        findings=(review_body_finding, dashboard_finding),
+        changed_files=(_make_changed_file(path="src/foo.py"),),
+        analysis_round_findings=(),
+    )
+    publisher = _StubPublisher()
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    body = publisher.create_calls[0]["body"]
+    assert body.startswith("<!-- outrider-review-id:")
+    assert "## Related concerns" in body
+    assert "additional concern" in body  # aggregate dashboard-only note
+    pr = result["publish_result"]
+    assert pr.review_body_findings_posted == 1
+    assert pr.dashboard_only_findings_surfaced == 1
+    assert pr.comments_posted == 0

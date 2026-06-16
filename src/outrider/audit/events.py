@@ -1641,7 +1641,8 @@ class PublishAttemptOutcome(StrEnum):
     # crash-after-success path. No second GitHub call, no second PublishEvent.
     IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD = "idempotently_skipped_external_record"
 
-    # Zero eligible+INLINE_COMMENT-routed findings; no GitHub call.
+    # Zero eligible/surfaced findings across all three publish tiers (inline /
+    # review-body / dashboard-only); no GitHub call (DECISIONS.md#050).
     NO_OP_EMPTY = "no_op_empty"
 
 
