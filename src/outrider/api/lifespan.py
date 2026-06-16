@@ -71,7 +71,7 @@ from contextlib import (
 )
 from typing import TYPE_CHECKING, Any
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -104,6 +104,39 @@ __all__ = ["StartupError", "build_lifespan", "lifespan"]
 
 
 _LOGGER = logging.getLogger("outrider.api.lifespan")
+
+
+# OAuth env vars whose PRESENCE (even empty) signals "Slack OAuth intended".
+_SLACK_OAUTH_VARS = (
+    "OUTRIDER_SLACK_CLIENT_ID",
+    "OUTRIDER_SLACK_CLIENT_SECRET",
+    "OUTRIDER_SLACK_REDIRECT_URI",
+)
+
+
+def _load_slack_oauth_settings() -> SlackOAuthSettings | None:
+    """Construct `SlackOAuthSettings` when any OAuth env var is present, else None.
+
+    Slack is OPTIONAL, so a present-but-invalid OAuth config (partial / empty / short)
+    is logged and DISABLED — never fatal. A misconfigured optional integration must not
+    block app startup or the core PR-review pipeline; only the `/slack/*` routes go
+    dark (their uniform 503). The loud ERROR log (not a silent None) preserves the
+    original "don't hide a typo" intent while scoping the failure to Slack. ALL OAuth
+    vars unset → None (Slack simply not configured, no log). The state secret +
+    token-encryption key are read at their call sites, not here.
+    """
+    if not any(var in os.environ for var in _SLACK_OAUTH_VARS):
+        return None
+    try:
+        return SlackOAuthSettings()
+    except ValidationError as exc:
+        _LOGGER.error(
+            "Slack OAuth config is present but invalid — the Slack install flow is "
+            "DISABLED; the rest of Outrider is unaffected. Fix or unset the "
+            "OUTRIDER_SLACK_* OAuth vars. Details: %s",
+            exc,
+        )
+        return None
 
 
 class StartupError(RuntimeError):
@@ -711,25 +744,11 @@ def build_lifespan(
             # fail-loud above; the agent key tolerates absence.
             app.state.agent_api_key = _dashboard_settings.agent_api_key
 
-            # Slack OAuth install-flow config (commit 6.3c/6.3e). Opt-in: if ANY of
-            # the three OAuth env vars is present, OAuth is intended → construct the
-            # settings, so a PARTIAL config (e.g. secret + redirect set but client_id
-            # missing/typoed) raises ValidationError and fails startup loudly rather
-            # than silently disabling. Gating on client_id alone would let exactly that
-            # partial config slip through to None. Presence is keyed on `in os.environ`,
-            # NOT truthiness, so a present-but-empty var (`OUTRIDER_SLACK_CLIENT_ID=`)
-            # also counts as intent → hits the validators → fails loud, rather than
-            # reading as absent. ALL three unset → None → the /slack/* endpoints return a
-            # uniform 503 (disabled). The state secret + token-encryption key are read
-            # from env at the call sites (notify/oauth_state.py, notify/token_crypto.py).
-            _slack_oauth_vars = (
-                "OUTRIDER_SLACK_CLIENT_ID",
-                "OUTRIDER_SLACK_CLIENT_SECRET",
-                "OUTRIDER_SLACK_REDIRECT_URI",
-            )
-            app.state.slack_oauth_settings = (
-                SlackOAuthSettings() if any(_v in os.environ for _v in _slack_oauth_vars) else None
-            )
+            # Slack OAuth install-flow config (commit 6.3c/6.3e). Opt-in + non-fatal:
+            # present-but-invalid config disables Slack with a loud log, it does NOT
+            # crash startup — Slack is optional, so it can never block the core app.
+            # See `_load_slack_oauth_settings`.
+            app.state.slack_oauth_settings = _load_slack_oauth_settings()
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
             # and start the periodic background task. Per
