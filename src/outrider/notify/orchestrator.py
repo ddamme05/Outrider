@@ -23,6 +23,8 @@ constructs the orchestrator and closes over it in the hitl / publish nodes
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -40,7 +42,7 @@ if TYPE_CHECKING:
     from outrider.notify.base import SlackNotifier, SlackPostResult
     from outrider.schemas.review_finding import ReviewFinding
 
-__all__ = ["SlackNotificationOrchestrator"]
+__all__ = ["SlackNotificationOrchestrator", "SlackNotifyTarget", "SlackTargetResolver"]
 
 logger = logging.getLogger(__name__)
 
@@ -200,3 +202,25 @@ class SlackNotificationOrchestrator:
                 "Slack notification posted but audit record failed; replay may re-post once",
                 extra={"review_id": str(review_id), "channel_id": channel_id, "kind": kind},
             )
+
+
+@dataclass(frozen=True)
+class SlackNotifyTarget:
+    """A resolved per-install Slack destination: the channel + an orchestrator bound
+    to that install's bot token.
+
+    Produced by the composition-root resolver (lifespan), consumed by the hitl /
+    publish nodes — which call `orchestrator.notify_*(channel_id=channel_id, ...)`
+    and hold NO token / install-config logic (FUP-186). The orchestrator is a real
+    `SlackNotificationOrchestrator`, so its notifier-method presence is structurally
+    guaranteed (no build_graph member-presence guard needed)."""
+
+    channel_id: str
+    orchestrator: SlackNotificationOrchestrator
+
+
+# installation_id -> resolved Slack target, or None when the install has no ACTIVE
+# Slack config. The graph sees only this callable; the implementation (installations
+# read + token decrypt + notifier construction) lives in the lifespan composition
+# root, keeping `cryptography` / `slack_sdk` out of `agent/` (import-lint enforced).
+SlackTargetResolver = Callable[[int], Awaitable["SlackNotifyTarget | None"]]

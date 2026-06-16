@@ -26,6 +26,7 @@ from outrider.audit.events import (  # noqa: TC001  (used in test-double type an
     HITLDecisionEvent,
     HITLRequestEvent,
 )
+from outrider.notify.orchestrator import SlackNotifyTarget
 from outrider.policy import FindingSeverity
 from outrider.policy.canonical import compute_hitl_decision_content_hash
 from outrider.policy.publish_eligibility import is_hitl_gated_severity
@@ -158,6 +159,7 @@ def _make_state(
         repo = "api"
         pr_number = 7
         pr_title = "Add login"
+        installation_id = 12345  # read by the Slack resolver hook
 
     rounds_findings: tuple[_FindingStub, ...] = (
         tuple(analysis_round_findings) if analysis_round_findings is not None else tuple(findings)
@@ -516,6 +518,16 @@ class _FakeSlackOrchestrator:
         self.calls.append(kwargs)
 
 
+def _resolver_for(orch: _FakeSlackOrchestrator, channel_id: str = "C0123ABC") -> Any:
+    """A per-install resolver that always resolves to `orch` on `channel_id` — the
+    test seam replacing the retired slack_orchestrator/slack_channel_id params."""
+
+    async def _resolve(_installation_id: int) -> SlackNotifyTarget:
+        return SlackNotifyTarget(channel_id=channel_id, orchestrator=orch)  # type: ignore[arg-type]
+
+    return _resolve
+
+
 @pytest.mark.asyncio
 async def test_hitl_notifies_slack_on_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Gated path: the node posts a HITL-pending notification (before interrupt)
@@ -545,8 +557,7 @@ async def test_hitl_notifies_slack_on_gate(monkeypatch: pytest.MonkeyPatch) -> N
             hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
             review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
             hitl_config=HITLConfig(),
-            slack_orchestrator=fake,  # type: ignore[arg-type]
-            slack_channel_id="C0123ABC",
+            resolve_slack_target=_resolver_for(fake),
         )
 
     assert len(fake.calls) == 1
@@ -578,8 +589,7 @@ async def test_hitl_no_slack_on_passthrough() -> None:
         hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
         review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
         hitl_config=HITLConfig(),
-        slack_orchestrator=fake,  # type: ignore[arg-type]
-        slack_channel_id="C0123ABC",
+        resolve_slack_target=_resolver_for(fake),
     )
     assert delta == {}
     assert fake.calls == []

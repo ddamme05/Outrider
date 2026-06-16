@@ -620,72 +620,30 @@ def test_build_graph_signature_is_keyword_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _StubSlackOrchestrator:
-    """Satisfies the build_graph member-presence guard (both notifier members)."""
-
-    async def notify_hitl_pending(self, **_kwargs: Any) -> None:
-        return None
-
-    async def notify_review_posted(self, **_kwargs: Any) -> None:
-        return None
+async def _stub_resolver(_installation_id: int) -> None:
+    """A valid (callable) per-install resolver returning no target — enough to pass
+    the build_graph callable guard. Real resolution lives in the lifespan (FUP-186)."""
+    return None
 
 
-def test_build_graph_rejects_slack_orchestrator_without_channel() -> None:
-    """An orchestrator with no channel can never post — fail closed."""
+def test_build_graph_rejects_non_callable_resolver() -> None:
+    """resolve_slack_target must be an async callable; a non-callable is a miswired
+    composition root — fail closed at construction, not as a mid-review TypeError."""
     args = _valid_args()
-    args["slack_orchestrator"] = object()
-    with pytest.raises(BuildGraphError, match="must be provided together"):
+    args["resolve_slack_target"] = object()
+    with pytest.raises(BuildGraphError, match="callable"):
         build_graph(**args)
 
 
-def test_build_graph_rejects_slack_channel_without_orchestrator() -> None:
-    """A channel with no orchestrator can never post — fail closed."""
+def test_build_graph_accepts_callable_resolver() -> None:
+    """A callable per-install resolver → Slack enabled; the graph builds."""
     args = _valid_args()
-    args["slack_channel_id"] = "C0123ABC"
-    with pytest.raises(BuildGraphError, match="must be provided together"):
-        build_graph(**args)
-
-
-def test_build_graph_rejects_slack_empty_channel() -> None:
-    """An empty/whitespace channel with an orchestrator passes the both-or-neither
-    check but would silently drop every notification — fail closed."""
-    args = _valid_args()
-    args["slack_orchestrator"] = object()
-    args["slack_channel_id"] = "   "
-    with pytest.raises(BuildGraphError, match="non-empty channel"):
-        build_graph(**args)
-
-
-def test_build_graph_rejects_slack_orchestrator_bad_shape() -> None:
-    """An orchestrator missing notify_hitl_pending would AttributeError on the HITL
-    gate path mid-review — fail closed at construction instead."""
-    args = _valid_args()
-    args["slack_orchestrator"] = object()
-    args["slack_channel_id"] = "C0123ABC"
-    with pytest.raises(BuildGraphError, match="notify_hitl_pending"):
-        build_graph(**args)
-
-
-def test_build_graph_rejects_slack_orchestrator_missing_review_posted() -> None:
-    """An orchestrator with notify_hitl_pending but missing notify_review_posted
-    would AttributeError on the publish FYI path mid-review — fail closed at
-    construction (FUP-187: the guard covers both notifier members)."""
-
-    class _HitlOnly:
-        async def notify_hitl_pending(self, **_kwargs: Any) -> None:
-            return None
-
-    args = _valid_args()
-    args["slack_orchestrator"] = _HitlOnly()
-    args["slack_channel_id"] = "C0123ABC"
-    with pytest.raises(BuildGraphError, match="notify_review_posted"):
-        build_graph(**args)
-
-
-def test_build_graph_accepts_slack_orchestrator_with_channel() -> None:
-    """Both set + a conforming orchestrator → Slack enabled; the graph builds."""
-    args = _valid_args()
-    args["slack_orchestrator"] = _StubSlackOrchestrator()
-    args["slack_channel_id"] = "C0123ABC"
+    args["resolve_slack_target"] = _stub_resolver
     graph = build_graph(**args)
+    assert callable(graph.ainvoke)
+
+
+def test_build_graph_accepts_no_slack_resolver() -> None:
+    """resolve_slack_target unset (default None) → Slack disabled; the graph builds."""
+    graph = build_graph(**_valid_args())
     assert callable(graph.ainvoke)

@@ -82,7 +82,7 @@ if TYPE_CHECKING:
     from outrider.db.sinks import ReviewStatusSink
     from outrider.github import InstallationGitHubClient
     from outrider.github.publisher import GitHubPublisher
-    from outrider.notify.orchestrator import SlackNotificationOrchestrator
+    from outrider.notify.orchestrator import SlackTargetResolver
     from outrider.policy import FindingSeverity
     from outrider.schemas import ReviewFinding, ReviewState
     from outrider.schemas.hitl import HITLDecision, PerFindingDecision
@@ -123,8 +123,7 @@ async def publish(
     # factory and passes the result to the publisher).
     github_factory: Callable[[int], InstallationGitHubClient],
     dashboard_base_url: str | None = None,
-    slack_orchestrator: SlackNotificationOrchestrator | None = None,
-    slack_channel_id: str | None = None,
+    resolve_slack_target: SlackTargetResolver | None = None,
 ) -> dict[str, object]:
     """Run the V1 publish flow over admitted findings.
 
@@ -149,13 +148,12 @@ async def publish(
             `build_graph`; the review-body "Related concerns" links + the
             aggregate dashboard-only note link use it. None (unconfigured)
             or malformed → graceful no-link fallback (DECISIONS.md#050).
-        slack_orchestrator: optional Slack notification orchestrator injected
-            via `build_graph`. On a successful publish the node posts a compact
-            "review-posted" FYI (best-effort, no-raise); the orchestrator
-            self-skips for gated reviews (a `hitl_pending` row exists) and on
-            replay. None → Slack disabled.
-        slack_channel_id: dev-bootstrap channel for the FYI (production
-            per-install resolution is FUP-186). None → no FYI.
+        resolve_slack_target: optional per-install Slack resolver injected via
+            `build_graph` (`async (installation_id) -> SlackNotifyTarget | None`).
+            On a successful publish the node resolves the install's target and, if
+            present, posts a compact "review-posted" FYI (best-effort, no-raise);
+            the orchestrator self-skips for gated reviews (a `hitl_pending` row
+            exists) and on replay. None (or a None target) → no FYI (FUP-186).
 
     Returns:
         `{"publish_result": PublishResult}` for LangGraph's default
@@ -590,23 +588,28 @@ async def publish(
             is_eval=state.is_eval,
         )
 
-        # Slack review-posted FYI (best-effort). The orchestrator is no-raise and
-        # self-skips for gated reviews (a `hitl_pending` row exists → the HITL
-        # status mirror owns the Slack surface) and on replay (a `review_posted`
-        # row exists). `posted_count` is the two POSTED channels — inline +
-        # review-body (DECISIONS.md#050); dashboard-only is counted "surfaced".
-        # Mirrors the hitl-pending wiring; member-presence-guarded at build_graph.
-        if slack_orchestrator is not None and slack_channel_id:
-            await slack_orchestrator.notify_review_posted(
-                review_id=state.review_id,
-                is_eval=state.is_eval,
-                channel_id=slack_channel_id,
-                # owner/repo slug (matches the hitl-pending FYI; org-disambiguated).
-                repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
-                pr_number=state.pr_context.pr_number,
-                posted_count=review_created.comments_posted + len(eligible_review_body_findings),
-                dashboard_only_count=len(surfaced_dashboard_only_findings),
-            )
+        # Slack review-posted FYI (best-effort). Resolve the install's target
+        # (channel + token-bound orchestrator) per FUP-186; a None resolver or a
+        # None target → no FYI. The orchestrator is no-raise and self-skips for
+        # gated reviews (a `hitl_pending` row exists → the HITL status mirror owns
+        # the Slack surface) and on replay (a `review_posted` row exists).
+        # `posted_count` is the two POSTED channels — inline + review-body
+        # (DECISIONS.md#050); dashboard-only is counted "surfaced".
+        if resolve_slack_target is not None:
+            slack_target = await resolve_slack_target(state.pr_context.installation_id)
+            if slack_target is not None:
+                await slack_target.orchestrator.notify_review_posted(
+                    review_id=state.review_id,
+                    is_eval=state.is_eval,
+                    channel_id=slack_target.channel_id,
+                    # owner/repo slug (matches the hitl-pending FYI; org-disambiguated).
+                    repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
+                    pr_number=state.pr_context.pr_number,
+                    posted_count=(
+                        review_created.comments_posted + len(eligible_review_body_findings)
+                    ),
+                    dashboard_only_count=len(surfaced_dashboard_only_findings),
+                )
 
         # Started_at is not part of the result shape — kept as a local
         # marker for future eval-timing metrics; PublishEvent doesn't

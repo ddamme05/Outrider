@@ -87,12 +87,15 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     derivation. Per `nodes-receive-deps-via-closure`, config travels
     through the dependency-injection seam at `build_graph(...)` —
     the node body does not read env vars.
-  - `slack_orchestrator: SlackNotificationOrchestrator | None` +
-    `slack_channel_id: str | None` — optional, all-or-nothing. When both are
-    set, the hitl node posts a best-effort HITL-pending Slack notification
-    (awaited inline, never gate-breaking) on entry to `awaiting_approval`; None
-    (the default) disables Slack. Injected here and closed over in the hitl
-    node per `nodes-receive-deps-via-closure`.
+  - `resolve_slack_target: SlackTargetResolver | None` — optional per-install
+    Slack resolver, `async (installation_id) -> SlackNotifyTarget | None`. When
+    set, the hitl + publish nodes resolve the install's channel + token-bound
+    orchestrator at runtime and post a best-effort notification (awaited inline,
+    never gate-breaking); None (the default) disables Slack. Injected here and
+    closed over in the nodes per `nodes-receive-deps-via-closure`. The resolver
+    body (installations read + token decrypt + notifier construction) lives in
+    the lifespan composition root, so `agent/` never imports `cryptography` /
+    `slack_sdk` (FUP-186).
   - `patch_config: PatchConfig` — required for synthesize's suggested-patch
     pass (`patches_enabled` + the per-review cap; the patch model is
     `model_config.patch_model`). Same closure-injection rule — synthesize
@@ -174,7 +177,7 @@ if TYPE_CHECKING:
     from outrider.cache import AnalyzeCacheStore
     from outrider.github import InstallationGitHubClient
     from outrider.llm.config import ModelConfig
-    from outrider.notify.orchestrator import SlackNotificationOrchestrator
+    from outrider.notify.orchestrator import SlackTargetResolver
 
 # LangGraph's CompiledStateGraph is generic over [StateT, ContextT, InputT,
 # OutputT]. V1 uses ReviewState for state — pin it as the first param so the
@@ -219,8 +222,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
-    slack_orchestrator: SlackNotificationOrchestrator | None = None,
-    slack_channel_id: str | None = None,
+    resolve_slack_target: SlackTargetResolver | None = None,
     dashboard_base_url: str | None = None,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
@@ -300,37 +302,18 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             f"github_factory must be callable (got type: {type(github_factory).__name__})"
         )
 
-    # Slack notifications are optional but all-or-nothing: the orchestrator needs
-    # a non-empty channel to post to, and a channel without an orchestrator can
-    # never post. A half-wired composition root fails closed here rather than
-    # silently dropping notifications.
-    if (slack_orchestrator is None) != (slack_channel_id is None):
+    # Slack is optional: a per-install resolver, or None to disable. The resolver
+    # yields a real SlackNotificationOrchestrator per install, so the prior
+    # member-presence + all-or-nothing channel guards are no longer needed (the
+    # channel + notifier-method presence are guaranteed by the target it returns).
+    # A non-callable here is a miswired composition root — fail closed at build time
+    # rather than as a mid-review TypeError on the gate/publish path.
+    if resolve_slack_target is not None and not callable(resolve_slack_target):
         raise BuildGraphError(
-            "slack_orchestrator and slack_channel_id must be provided together "
-            "(both to enable Slack notifications, or neither to disable)"
+            "resolve_slack_target must be an async callable "
+            f"(installation_id) -> SlackNotifyTarget | None (got type: "
+            f"{type(resolve_slack_target).__name__})"
         )
-    if slack_orchestrator is not None and not (slack_channel_id or "").strip():
-        raise BuildGraphError(
-            "slack_channel_id must be a non-empty channel id when slack_orchestrator "
-            "is provided (an empty channel would silently drop every notification)"
-        )
-    # Member-presence guard for the orchestrator. It has no Protocol type, so the
-    # isinstance gates above don't cover it; without this, a wrong-shaped
-    # orchestrator from a miswired composition root would surface as an
-    # AttributeError on the HITL gate path (`notify_hitl_pending`) or the publish
-    # FYI path (`notify_review_posted`) mid-review rather than as a
-    # construction-time failure.
-    if slack_orchestrator is not None:
-        _missing_notifier_members = [
-            member
-            for member in ("notify_hitl_pending", "notify_review_posted")
-            if not callable(getattr(slack_orchestrator, member, None))
-        ]
-        if _missing_notifier_members:
-            raise BuildGraphError(
-                "slack_orchestrator does not satisfy the notifier interface "
-                f"(missing callable member(s): {', '.join(_missing_notifier_members)})"
-            )
 
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
@@ -481,8 +464,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         review_status_sink=review_status_sink,
         github_factory=github_factory,
         dashboard_base_url=dashboard_base_url,
-        slack_orchestrator=slack_orchestrator,
-        slack_channel_id=slack_channel_id,
+        resolve_slack_target=resolve_slack_target,
     )
     trace_callable = functools.partial(
         trace,
@@ -498,8 +480,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         hitl_event_sink=hitl_event_sink,
         review_status_sink=review_status_sink,
         hitl_config=hitl_config,
-        slack_orchestrator=slack_orchestrator,
-        slack_channel_id=slack_channel_id,
+        resolve_slack_target=resolve_slack_target,
     )
     synthesize_callable = functools.partial(
         synthesize,

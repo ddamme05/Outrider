@@ -41,6 +41,7 @@ from outrider.audit.events import (
     compute_finding_content_hash,
 )
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
+from outrider.notify.orchestrator import SlackNotifyTarget
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -2032,17 +2033,23 @@ async def test_mixed_review_body_and_dashboard_only_both_materialize(
 
 
 class _RecordingSlackOrchestrator:
-    """Records `notify_review_posted` calls. `notify_hitl_pending` is a no-op stub
-    (publish never calls it) so the build_graph member-presence guard is satisfied."""
+    """Records `notify_review_posted` calls (publish never calls notify_hitl_pending)."""
 
     def __init__(self) -> None:
         self.review_posted_calls: list[dict[str, Any]] = []
 
-    async def notify_hitl_pending(self, **_kwargs: Any) -> None:
-        return None
-
     async def notify_review_posted(self, **kwargs: Any) -> None:
         self.review_posted_calls.append(kwargs)
+
+
+def _resolver_for(orch: _RecordingSlackOrchestrator, channel_id: str = "C0123ABC") -> Any:
+    """A per-install resolver that always resolves to `orch` on `channel_id` — the
+    test seam replacing the retired slack_orchestrator/slack_channel_id params."""
+
+    async def _resolve(_installation_id: int) -> SlackNotifyTarget:
+        return SlackNotifyTarget(channel_id=channel_id, orchestrator=orch)  # type: ignore[arg-type]
+
+    return _resolve
 
 
 @pytest.mark.asyncio
@@ -2061,8 +2068,7 @@ async def test_publish_posts_slack_review_posted_fyi_on_success() -> None:
         phase_event_sink=_RecordingPhaseEventSink(),
         review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
-        slack_orchestrator=orch,
-        slack_channel_id="C0123ABC",
+        resolve_slack_target=_resolver_for(orch),
     )
 
     assert len(orch.review_posted_calls) == 1
@@ -2100,8 +2106,7 @@ async def test_publish_slack_fyi_sums_inline_review_body_and_counts_dashboard(
         phase_event_sink=_RecordingPhaseEventSink(),
         review_status_sink=_RecordingReviewStatusSink(),
         github_factory=_stub_github_factory,
-        slack_orchestrator=orch,
-        slack_channel_id="C0123ABC",
+        resolve_slack_target=_resolver_for(orch),
     )
 
     assert len(orch.review_posted_calls) == 1
@@ -2111,8 +2116,8 @@ async def test_publish_slack_fyi_sums_inline_review_body_and_counts_dashboard(
 
 
 @pytest.mark.asyncio
-async def test_publish_no_slack_fyi_when_orchestrator_absent() -> None:
-    """slack_orchestrator unset (default) → no FYI, no crash; publish still succeeds."""
+async def test_publish_no_slack_fyi_when_resolver_absent() -> None:
+    """resolve_slack_target unset (default) → no FYI, no crash; publish still succeeds."""
     finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
     state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
 
@@ -2126,3 +2131,28 @@ async def test_publish_no_slack_fyi_when_orchestrator_absent() -> None:
     )
 
     assert result["publish_result"].outcome == "success"
+
+
+@pytest.mark.asyncio
+async def test_publish_no_slack_fyi_when_target_unresolved() -> None:
+    """Resolver present but returns None (the install has no active Slack config) →
+    no FYI, no crash; publish still succeeds (per-install opt-out path, FUP-186)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    async def _resolve_none(_installation_id: int) -> None:
+        return None
+
+    result = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolve_none,
+    )
+
+    assert result["publish_result"].outcome == "success"
+    assert orch.review_posted_calls == []

@@ -81,7 +81,7 @@ if TYPE_CHECKING:
     from outrider.agent.nodes.hitl_config import HITLConfig
     from outrider.audit.sinks import HITLEventSink, PhaseEventSink
     from outrider.db.sinks import ReviewStatusSink
-    from outrider.notify.orchestrator import SlackNotificationOrchestrator
+    from outrider.notify.orchestrator import SlackTargetResolver
     from outrider.schemas import ReviewState
 
 
@@ -269,8 +269,7 @@ async def hitl(
     hitl_event_sink: HITLEventSink,
     review_status_sink: ReviewStatusSink,
     hitl_config: HITLConfig,
-    slack_orchestrator: SlackNotificationOrchestrator | None = None,
-    slack_channel_id: str | None = None,
+    resolve_slack_target: SlackTargetResolver | None = None,
 ) -> dict[str, object]:
     """Run the HITL gate node. See module docstring for the 13-step
     contract.
@@ -351,24 +350,26 @@ async def hitl(
     # failure (degrades-gracefully), so the gate always proceeds. Placed before
     # interrupt so it fires on entry to awaiting_approval; the body re-runs on
     # resume and the orchestrator's pre-post dedup makes the re-post a no-op.
-    # (A degraded Slack endpoint can add up to the notifier's timeout to the
-    # pre-interrupt checkpoint; a bounded per-call timeout lands with the
-    # production composition-root wiring.)
+    # A degraded Slack endpoint adds at most the notifier's bounded per-call
+    # timeout (FUP-188) to the pre-interrupt checkpoint, not slack_sdk's ~30s.
     report = state.review_report
-    if slack_orchestrator is not None and slack_channel_id and report is not None:
+    if resolve_slack_target is not None and report is not None:
         # `report is not None` narrows the Optional for mypy across the await; it
         # is a guaranteed invariant here — Step 2 (_partition_findings) raises if
         # review_report is None, so this branch is always taken on the gated path.
-        gated_ids = set(findings_requiring_approval)
-        await slack_orchestrator.notify_hitl_pending(
-            review_id=state.review_id,
-            is_eval=state.is_eval,
-            channel_id=slack_channel_id,
-            repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
-            pr_number=state.pr_context.pr_number,
-            pr_title=state.pr_context.pr_title,
-            findings=[f for f in report.findings if f.finding_id in gated_ids],
-        )
+        # Resolve the install's target per FUP-186; a None target → no notification.
+        slack_target = await resolve_slack_target(state.pr_context.installation_id)
+        if slack_target is not None:
+            gated_ids = set(findings_requiring_approval)
+            await slack_target.orchestrator.notify_hitl_pending(
+                review_id=state.review_id,
+                is_eval=state.is_eval,
+                channel_id=slack_target.channel_id,
+                repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
+                pr_number=state.pr_context.pr_number,
+                pr_title=state.pr_context.pr_title,
+                findings=[f for f in report.findings if f.finding_id in gated_ids],
+            )
 
     # Step 7: interrupt. LangGraph checkpoints state to Postgres + the
     # call yields control back to the resume endpoint.
