@@ -1,4 +1,4 @@
-# See DECISIONS.md#051-slack-bot-tokens-encrypted-at-rest
+# See DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest
 """Slack bot-token encryption boundary (DECISIONS.md#051).
 
 A Slack bot token is a long-lived bearer credential. Unlike the GitHub
