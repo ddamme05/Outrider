@@ -2069,7 +2069,7 @@ async def test_publish_posts_slack_review_posted_fyi_on_success() -> None:
     call = orch.review_posted_calls[0]
     assert call["review_id"] == state.review_id
     assert call["channel_id"] == "C0123ABC"
-    assert call["repo"] == state.pr_context.repo
+    assert call["repo"] == f"{state.pr_context.owner}/{state.pr_context.repo}"  # matches hitl FYI
     assert call["pr_number"] == state.pr_context.pr_number
     assert call["posted_count"] == 1  # one inline comment, zero review-body
     assert call["dashboard_only_count"] == 0

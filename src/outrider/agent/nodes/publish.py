@@ -602,7 +602,8 @@ async def publish(
                 review_id=state.review_id,
                 is_eval=state.is_eval,
                 channel_id=slack_channel_id,
-                repo=state.pr_context.repo,
+                # owner/repo slug (matches the hitl-pending FYI; org-disambiguated).
+                repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
                 pr_number=state.pr_context.pr_number,
                 posted_count=review_created.comments_posted + len(eligible_review_body_findings),
                 dashboard_only_count=len(surfaced_dashboard_only_findings),
