@@ -419,6 +419,7 @@ def test_is_markdown_link_safe_url_accepts_well_formed(url: str) -> None:
         "https://dash.example/a\x7fb",  # DEL control char
         "https://",  # scheme-only / host-less (rstrip would strip scheme slashes)
         "https:///",  # only slashes after the scheme
+        "https:///foo",  # empty host with a path (urlparse netloc == "")
     ],
 )
 def test_is_markdown_link_safe_url_rejects_malformed(url: str) -> None:
