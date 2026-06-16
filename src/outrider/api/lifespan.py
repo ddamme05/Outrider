@@ -90,6 +90,7 @@ from outrider.llm.base import LLMProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.logging import register_filter_on_all_handlers
 from outrider.llm.tracing import wrap_provider_if_tracing
+from outrider.notify.config import SlackOAuthSettings
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.policy.versions import (
     UnknownPolicyVersionError,
@@ -687,6 +688,17 @@ def build_lifespan(
             # disabled (require_agent_api_key returns a uniform 401). Admin stays
             # fail-loud above; the agent key tolerates absence.
             app.state.agent_api_key = _dashboard_settings.agent_api_key
+
+            # Slack OAuth install-flow config (commit 6.3c/6.3e). Opt-in: an
+            # OUTRIDER_SLACK_CLIENT_ID in env means OAuth is intended, so construct
+            # the settings (a PARTIAL config raises ValidationError → fail-loud
+            # startup, better than silently disabling a typo'd deploy). Absent →
+            # None → the /slack/* endpoints return a uniform 503 (disabled). The
+            # state secret + token-encryption key are read from env at the call
+            # sites (notify/oauth_state.py, notify/token_crypto.py), not here.
+            app.state.slack_oauth_settings = (
+                SlackOAuthSettings() if os.environ.get("OUTRIDER_SLACK_CLIENT_ID") else None
+            )
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
             # and start the periodic background task. Per
