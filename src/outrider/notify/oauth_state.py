@@ -75,13 +75,18 @@ _PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
         "your-secret-here",
     }
 )
+# Minimum length (chars) for the state secret. A short, non-placeholder secret
+# (e.g. "hunter2") slips past the placeholder set but still has too little entropy
+# to be a credible HMAC/CSRF root. 32 is the floor a `secrets.token_urlsafe(32)`
+# value (≈43 chars) clears comfortably; rejecting shorter values forces a real key.
+_MIN_STATE_SECRET_LEN = 32
 
 
 def _state_secret() -> bytes:
-    """Read the HMAC key from env, fail-closed if absent OR a known placeholder. Read
-    fresh per call (test monkeypatch + restart-free rotation). Placeholder rejection
-    matches the auth-secret discipline — this key is the CSRF unforgeability root, so
-    a weak/default value is a real forgery risk."""
+    """Read the HMAC key from env, fail-closed if absent, a known placeholder, OR too
+    short. Read fresh per call (test monkeypatch + restart-free rotation). The checks
+    match the auth-secret discipline — this key is the CSRF unforgeability root, so a
+    weak/default/low-entropy value is a real forgery risk."""
     raw = os.environ.get(STATE_SECRET_ENV, "").strip()
     if not raw:
         raise SlackStateError(
@@ -92,6 +97,12 @@ def _state_secret() -> bytes:
         raise SlackStateError(
             f"{STATE_SECRET_ENV} is a known placeholder ({raw!r}); it is the CSRF "
             "unforgeability root for the OAuth state — set a real random secret."
+        )
+    if len(raw) < _MIN_STATE_SECRET_LEN:
+        raise SlackStateError(
+            f"{STATE_SECRET_ENV} is too short ({len(raw)} chars); it signs the OAuth state "
+            f"CSRF token, so use at least {_MIN_STATE_SECRET_LEN} chars — e.g. "
+            '`python -c "import secrets; print(secrets.token_urlsafe(32))"`.'
         )
     return raw.encode("utf-8")
 

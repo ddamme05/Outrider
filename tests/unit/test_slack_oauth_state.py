@@ -22,7 +22,7 @@ from outrider.notify.oauth_state import (
 
 @pytest.fixture
 def state_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(STATE_SECRET_ENV, "test-slack-state-secret-value")
+    monkeypatch.setenv(STATE_SECRET_ENV, "test-slack-state-secret-value-0123456789")
 
 
 @pytest.mark.usefixtures("state_secret")
@@ -88,6 +88,15 @@ def test_secret_placeholder_rejected(monkeypatch: pytest.MonkeyPatch, placeholde
     the auth-secret discipline), not just empty."""
     monkeypatch.setenv(STATE_SECRET_ENV, placeholder)
     with pytest.raises(SlackStateError, match="placeholder"):
+        sign_state(installation_id=42, admin_id="admin", channel_id="C0ABCDE")
+
+
+@pytest.mark.parametrize("weak", ["hunter2", "short", "x" * 31])  # non-placeholder but < 32 chars
+def test_secret_too_short_rejected(monkeypatch: pytest.MonkeyPatch, weak: str) -> None:
+    """A short, non-placeholder secret slips past the placeholder set but has too little
+    entropy to be a credible HMAC/CSRF root — fail closed below the 32-char floor."""
+    monkeypatch.setenv(STATE_SECRET_ENV, weak)
+    with pytest.raises(SlackStateError, match="too short"):
         sign_state(installation_id=42, admin_id="admin", channel_id="C0ABCDE")
 
 

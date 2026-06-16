@@ -30,7 +30,7 @@ from outrider.notify.token_crypto import TOKEN_ENC_KEY_ENV, decrypt_token
 # A real (throwaway) Fernet key + state secret so encrypt_token / sign_state run for
 # real in these tests. Not live credentials.
 _TEST_FERNET_KEY = "5deJqws1Xhk7vjpx0_pKr7GebqDXYiXLSshLmkI5jy0="  # noqa: S105 (test fixture)
-_STATE_SECRET = "test-slack-state-secret-value"  # noqa: S105 (test fixture)
+_STATE_SECRET = "test-slack-state-secret-value-0123456789"  # noqa: S105 (test fixture, ≥32 chars)
 _AUTH = {"Authorization": "Bearer admin-key"}
 
 
