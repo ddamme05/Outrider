@@ -694,19 +694,19 @@ def build_lifespan(
             # settings, so a PARTIAL config (e.g. secret + redirect set but client_id
             # missing/typoed) raises ValidationError and fails startup loudly rather
             # than silently disabling. Gating on client_id alone would let exactly that
-            # partial config slip through to None. ALL three absent → None → the
-            # /slack/* endpoints return a uniform 503 (disabled). The state secret +
-            # token-encryption key are read from env at the call sites
-            # (notify/oauth_state.py, notify/token_crypto.py), not here.
+            # partial config slip through to None. Presence is keyed on `in os.environ`,
+            # NOT truthiness, so a present-but-empty var (`OUTRIDER_SLACK_CLIENT_ID=`)
+            # also counts as intent → hits the validators → fails loud, rather than
+            # reading as absent. ALL three unset → None → the /slack/* endpoints return a
+            # uniform 503 (disabled). The state secret + token-encryption key are read
+            # from env at the call sites (notify/oauth_state.py, notify/token_crypto.py).
             _slack_oauth_vars = (
                 "OUTRIDER_SLACK_CLIENT_ID",
                 "OUTRIDER_SLACK_CLIENT_SECRET",
                 "OUTRIDER_SLACK_REDIRECT_URI",
             )
             app.state.slack_oauth_settings = (
-                SlackOAuthSettings()
-                if any(os.environ.get(_v) for _v in _slack_oauth_vars)
-                else None
+                SlackOAuthSettings() if any(_v in os.environ for _v in _slack_oauth_vars) else None
             )
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
