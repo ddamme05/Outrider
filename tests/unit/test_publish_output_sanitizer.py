@@ -15,6 +15,7 @@ import pytest
 
 from outrider.policy.output_sanitizer import (
     GITHUB_COMMENT_BODY_MAX,
+    GITHUB_REVIEW_BODY_MAX,
     TRUNCATION_HMAC_SECRET_ENV,
     apply_size_cap,
     compute_truncation_hmac,
@@ -287,6 +288,39 @@ def test_apply_size_cap_reserve_bytes_zero_matches_default() -> None:
     """reserve_bytes=0 (the default) caps identically to the no-arg form."""
     body = "x" * (GITHUB_COMMENT_BODY_MAX + 10_000)
     assert apply_size_cap(body, reserve_bytes=0) == apply_size_cap(body)
+
+
+def test_apply_size_cap_default_max_bytes_matches_comment_cap() -> None:
+    """Omitting max_bytes caps at GITHUB_COMMENT_BODY_MAX — every existing caller
+    is byte-identical (DECISIONS.md#050 parameterization is default-preserving)."""
+    body = "x" * (GITHUB_COMMENT_BODY_MAX + 5_000)
+    assert apply_size_cap(body) == apply_size_cap(body, max_bytes=GITHUB_COMMENT_BODY_MAX)
+
+
+def test_apply_size_cap_custom_max_bytes_caps_to_that_limit() -> None:
+    """A smaller max_bytes truncates a body that would pass under the default cap —
+    the review-body surface passes GITHUB_REVIEW_BODY_MAX this way."""
+    body = "x" * 2_000  # well under GITHUB_COMMENT_BODY_MAX → unchanged by default
+    assert apply_size_cap(body) == body
+    capped = apply_size_cap(body, max_bytes=500)
+    assert len(capped.encode("utf-8")) <= 500
+    assert capped != body  # actually truncated under the smaller cap
+
+
+def test_github_review_body_max_is_a_distinct_constant() -> None:
+    """GITHUB_REVIEW_BODY_MAX is its own named cap for the PR review-body surface
+    (DECISIONS.md#050) — separate name from the comment cap, even if equal today."""
+    assert isinstance(GITHUB_REVIEW_BODY_MAX, int)
+    assert GITHUB_REVIEW_BODY_MAX > 0
+
+
+def test_apply_size_cap_nonpositive_max_bytes_raises() -> None:
+    """A non-positive caller-provided max_bytes is a caller bug — fail loud directly
+    with ValueError, not via the indirect marker-budget RuntimeError."""
+    with pytest.raises(ValueError, match="max_bytes must be > 0"):
+        apply_size_cap("body", max_bytes=0)
+    with pytest.raises(ValueError, match="max_bytes must be > 0"):
+        apply_size_cap("body", max_bytes=-5)
 
 
 def test_apply_size_cap_negative_reserve_raises() -> None:

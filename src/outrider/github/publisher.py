@@ -4,7 +4,7 @@
 The publish node consumes `GitHubPublisher` to post inline review
 comments to GitHub. This module is the only place in the codebase that
 calls `gh.arequest("POST", "/repos/{owner}/{repo}/pulls/{n}/reviews",
-json=body)` — per the established githubkit escape hatch (cookbook
+json=request_payload)` — per the established githubkit escape hatch (cookbook
 recommends `arequest` over guessing generated method names that may
 not exist).
 
@@ -223,6 +223,7 @@ class GitHubPublisher(Protocol):
         head_sha: str,
         review_status: str,
         body_marker: str,
+        body: str | None = None,
         comments: tuple[InlineComment, ...],
     ) -> GitHubReviewCreated:
         """POST a new review with inline comments.
@@ -246,6 +247,13 @@ class GitHubPublisher(Protocol):
             body_marker: HTML comment to embed in the review body for
                 crash-after-success recovery (e.g.,
                 `<!-- outrider-review-id:{review_id} -->`).
+            body: Optional full review-body markdown, composed + sanitized +
+                size-capped by the publish node (DECISIONS.md#050). MUST start
+                with `body_marker` (offset 0): crash-recovery's
+                `find_existing_review_on_head_sha` matches
+                `startswith(body_marker)`, so a body not beginning with the
+                marker breaks recovery and is rejected. When None, the request
+                body falls back to `body_marker` alone (inline-only behavior).
             comments: Sanitized inline comments (path / line /
                 side=RIGHT / body). Atomic — any invalid comment
                 triggers 422 + zero reviews created.
@@ -254,6 +262,9 @@ class GitHubPublisher(Protocol):
             `GitHubReviewCreated(github_review_id, comments_posted)`.
 
         Raises:
+            `ValueError`: `body` was provided but does not start with
+                `body_marker` (a node-side composition bug — the marker
+                must be at offset 0 for crash-recovery).
             `GitHubReviewValidationError`: HTTP 422 with a validation-
                 failure body (atomic rejection per Q6).
             `GitHubSecondaryRateLimitError`: HTTP 422 with a
@@ -318,16 +329,28 @@ class GitHubKitPublisher:
         head_sha: str,
         review_status: str,
         body_marker: str,
+        body: str | None = None,
         comments: tuple[InlineComment, ...],
     ) -> GitHubReviewCreated:
         """Implementation per Protocol docstring above."""
-        # Construct the request body. `event` is the review_status
-        # (APPROVE / REQUEST_CHANGES / COMMENT); `body` carries the
-        # marker for crash-recovery; `comments[]` are sanitized.
-        body: dict[str, Any] = {
+        # The review body is either the node-composed body (marker-first,
+        # sanitized, size-capped — DECISIONS.md#050) or the bare marker when no
+        # body was passed (inline-only path). Guard the marker-first invariant
+        # that crash-recovery's `startswith(body_marker)` depends on.
+        if body is not None and not body.startswith(body_marker):
+            raise ValueError(
+                "create_review: composed body must start with body_marker "
+                "(offset 0) for crash-recovery; got a body that does not"
+            )
+        review_body = body if body is not None else body_marker
+        # Construct the request payload. `event` is the review_status
+        # (APPROVE / REQUEST_CHANGES / COMMENT); `body` carries the marker
+        # (+ optional "Related concerns" / dashboard-only note); `comments[]`
+        # are sanitized.
+        request_payload: dict[str, Any] = {
             "commit_id": head_sha,
             "event": review_status,
-            "body": body_marker,
+            "body": review_body,
             "comments": [
                 {
                     "path": c.path,
@@ -342,7 +365,7 @@ class GitHubKitPublisher:
             response = await gh.arequest(
                 "POST",
                 f"/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
-                json=body,
+                json=request_payload,
                 headers=_API_VERSION_HEADER,
             )
         except Exception as exc:

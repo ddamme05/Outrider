@@ -151,7 +151,8 @@ class PublishResult(BaseModel):
     `FAILED` (failed attempts raise rather than producing a result):
 
     - `success` — review posted; `github_review_id` populated.
-    - `empty` — zero eligible+INLINE findings; no GitHub call.
+    - `empty` — zero eligible/surfaced findings across all three tiers
+      (inline + review-body + dashboard-only); no GitHub call (DECISIONS.md#050).
     - `skipped` — prior PublishEvent for this review_id; no GitHub call.
     - `skipped_external` — body-marker query found existing review on
       head_sha (crash-after-success recovery path).
@@ -177,47 +178,99 @@ class PublishResult(BaseModel):
     # Populated on `success` and `skipped_external`; None on `empty` and `skipped`.
     github_review_id: int | None = Field(default=None, ge=1)
 
-    # Count of comments the publisher MATERIALIZED (passed to GitHub).
-    # Distinct from `comments_attempted` on `PublishAttemptEvent`, which
-    # counts only the publisher's outgoing payload — both track the same
-    # number for `success` outcomes. Zero on `empty`/`skipped` paths.
+    # Publish accounting splits into three channels (see DECISIONS.md#050):
+    # "posted" (inline + review-body) is distinct from "surfaced" (dashboard-only).
+    # `comments_posted` is the INLINE count — comments materialized as inline review
+    # comments (passed to GitHub). Distinct from `comments_attempted` on
+    # `PublishAttemptEvent` (the publisher's outgoing payload; same number for
+    # `success`). Zero on `empty`/`skipped` paths.
     comments_posted: int = Field(ge=0, default=0)
+    # Eligible REVIEW_BODY findings materialized into the "Related concerns" body
+    # section (eligibility-gated like inline). Defaulted (replay-tolerant for rows
+    # predating DECISIONS.md#050; the real count is threaded by the routing loop).
+    review_body_findings_posted: int = Field(ge=0, default=0)
+    # DASHBOARD_ONLY findings surfaced in the aggregate body note (count + link,
+    # never per-finding) — "surfaced", not "posted". Defaulted (replay-tolerant).
+    dashboard_only_findings_surfaced: int = Field(ge=0, default=0)
 
     @classmethod
-    def success(cls, *, github_review_id: int, comments_posted: int) -> Self:
-        """Publisher posted the review; github_review_id is the new row."""
+    def success(
+        cls,
+        *,
+        github_review_id: int,
+        comments_posted: int,
+        review_body_findings_posted: int = 0,
+        dashboard_only_findings_surfaced: int = 0,
+    ) -> Self:
+        """Publisher posted the review; github_review_id is the new row.
+
+        All three accounting channels (DECISIONS.md#050): `comments_posted`
+        (inline), `review_body_findings_posted` (Related concerns), and
+        `dashboard_only_findings_surfaced` (aggregate note).
+        """
         return cls(
             outcome="success",
             github_review_id=github_review_id,
             comments_posted=comments_posted,
+            review_body_findings_posted=review_body_findings_posted,
+            dashboard_only_findings_surfaced=dashboard_only_findings_surfaced,
         )
 
     @classmethod
     def empty(cls) -> Self:
-        """No eligible+INLINE findings; no GitHub call. Audit emits no_op_empty."""
+        """No eligible/surfaced findings across all three tiers; no GitHub call.
+
+        Per DECISIONS.md#050 `no_op_empty` fires only when inline, review-body,
+        AND dashboard-only are all zero. Audit emits no_op_empty.
+        """
         return cls(outcome="empty", github_review_id=None, comments_posted=0)
 
     @classmethod
-    def skipped(cls) -> Self:
+    def skipped(
+        cls,
+        *,
+        comments_posted: int = 0,
+        review_body_findings_posted: int = 0,
+        dashboard_only_findings_surfaced: int = 0,
+    ) -> Self:
         """Prior PublishEvent for this review_id; no GitHub call.
 
         Distinct from `skipped_external` because the local audit log
         had the prior row — this is intra-review-id retry idempotency,
-        not crash-after-success recovery.
+        not crash-after-success recovery. The three counts mirror the PRIOR
+        PublishEvent's channels (DECISIONS.md#050) so the dashboard / Slack FYI
+        reports what the original publish posted, not zero.
         """
-        return cls(outcome="idempotently_skipped", github_review_id=None, comments_posted=0)
+        return cls(
+            outcome="idempotently_skipped",
+            github_review_id=None,
+            comments_posted=comments_posted,
+            review_body_findings_posted=review_body_findings_posted,
+            dashboard_only_findings_surfaced=dashboard_only_findings_surfaced,
+        )
 
     @classmethod
-    def skipped_external(cls, *, existing_review_id: int) -> Self:
+    def skipped_external(
+        cls,
+        *,
+        existing_review_id: int,
+        comments_posted: int = 0,
+        review_body_findings_posted: int = 0,
+        dashboard_only_findings_surfaced: int = 0,
+    ) -> Self:
         """find_existing_review_on_head_sha matched a body marker.
 
         The prior process succeeded at the GitHub call but died before
         persisting PublishEvent. The current process discovers the
         prior review via the embedded `<!-- outrider-review-id:{review_id} -->`
-        marker and treats it as the canonical outcome.
+        marker and treats it as the canonical outcome. No prior PublishEvent
+        exists, so the three counts (DECISIONS.md#050) reflect the CURRENT
+        routing pass (what this run would have posted).
         """
         return cls(
             outcome="idempotently_skipped_external_record",
             github_review_id=existing_review_id,
-            comments_posted=0,
+            comments_posted=comments_posted,
+            review_body_findings_posted=review_body_findings_posted,
+            dashboard_only_findings_surfaced=dashboard_only_findings_surfaced,
         )

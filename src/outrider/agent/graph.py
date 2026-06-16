@@ -16,8 +16,10 @@ partitions findings by severity, optionally interrupts the graph for
 human approval, and emits `HITLRequestEvent` + `HITLDecisionEvent`
 audit-first; publish routes each finding through `coordinates/`,
 applies the V1 eligibility gate (CRITICAL/HIGH withheld unless an
-explicit HITL approval lands), and posts a single GitHub review for
-the eligible-inline set. The factory produces a `CompiledStateGraph`
+explicit HITL approval lands), and posts a single GitHub review
+materializing the eligible findings across all three tiers — inline
+comments, a "Related concerns" body section, and an aggregate
+dashboard-only note (DECISIONS.md#050). The factory produces a `CompiledStateGraph`
 that consumers invoke via `await graph.ainvoke(seed_state)`.
 
 The adaptive `analyze ⇄ trace` loop is bounded by `MAX_ANALYSIS_ROUNDS`
@@ -219,6 +221,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     cache_mode: CacheMode = CacheMode.SHADOW,
     slack_orchestrator: SlackNotificationOrchestrator | None = None,
     slack_channel_id: str | None = None,
+    dashboard_base_url: str | None = None,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -473,6 +476,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         review_status_sink=review_status_sink,
         github_factory=github_factory,
+        dashboard_base_url=dashboard_base_url,
     )
     trace_callable = functools.partial(
         trace,
