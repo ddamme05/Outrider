@@ -80,7 +80,10 @@ from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer, ReplayMode  # noqa: E402
 from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER  # noqa: E402
-from outrider.db.models.installations import set_slack_config  # noqa: E402
+from outrider.db.models.installations import (  # noqa: E402
+    get_slack_config,
+    set_slack_config,
+)
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.github.auth import make_installation_client_factory  # noqa: E402
 from outrider.github.config import GitHubAppSettings  # noqa: E402
@@ -189,17 +192,24 @@ async def _maybe_wire_slack(
     session_factory: async_sessionmaker[Any],
     persister: AuditPersister,
     pr_context: PRContext,
+    *,
+    overwrite: bool,
 ) -> PerInstallSlackResolver | None:
     """Full-smoke Slack wiring (no OAuth dance needed).
 
     If the dev-bootstrap Slack creds (`OUTRIDER_SLACK_BOT_TOKEN` +
     `OUTRIDER_SLACK_CHANNEL_ID`, via `SlackSettings`) AND the token-encryption key
-    (`OUTRIDER_TOKEN_ENC_KEY`) are present, seed THIS install's per-install Slack
-    config — encrypt the bot token + set the channel via `set_slack_config` — and
-    return a `PerInstallSlackResolver`. The graph then posts a real Slack message
-    exactly as production would (decrypt → per-install orchestrator). Absent creds →
-    None (no Slack); a swallowed Slack failure is surfaced via the log handler, never
-    fatal. Mirrors what the OAuth callback persists, so the posting path is identical.
+    (`OUTRIDER_TOKEN_ENC_KEY`) are present, returns a `PerInstallSlackResolver` so the
+    graph posts a real Slack message exactly as production would (decrypt → per-install
+    orchestrator). Absent creds → None (no Slack); a swallowed Slack failure is
+    surfaced via the log handler, never fatal.
+
+    DOES NOT CLOBBER an already-connected install: this script targets the REAL
+    DATABASE_URL, so if the install already has Slack config (e.g. from the OAuth
+    flow), the resolver USES that existing config rather than overwriting its
+    team/token/channel with dev-bootstrap values. Only an install with NO config is
+    seeded — unless `--overwrite-slack-config` (`overwrite=True`) is passed, the
+    explicit, visible escape hatch to replace it with the OUTRIDER_SLACK_* dev creds.
     """
     try:
         slack_dev = SlackSettings()
@@ -212,6 +222,24 @@ async def _maybe_wire_slack(
     if TOKEN_ENC_KEY_ENV not in os.environ:
         _say("  Slack ................ NOT wired (OUTRIDER_TOKEN_ENC_KEY missing — can't encrypt)")
         return None
+
+    resolver = PerInstallSlackResolver(
+        session_factory=session_factory,
+        sink=persister,
+        dashboard_base_url=os.environ.get("OUTRIDER_DASHBOARD_BASE_URL", ""),
+    )
+
+    async with session_factory() as session:
+        existing = await get_slack_config(session, pr_context.installation_id)
+    if existing is not None and not overwrite:
+        # Already connected (OAuth or a prior run) — use it, don't clobber.
+        _say(
+            f"  Slack ................ wired → using EXISTING per-install config "
+            f"(channel {existing.channel_id}; pass --overwrite-slack-config to replace it "
+            "with OUTRIDER_SLACK_* dev creds)"
+        )
+        return resolver
+
     async with session_factory() as session, session.begin():
         seeded = await set_slack_config(
             session,
@@ -224,15 +252,12 @@ async def _maybe_wire_slack(
     if not seeded:
         _say("  Slack ................ NOT wired (set_slack_config found no active install row)")
         return None
+    verb = "OVERWROTE" if existing is not None else "seeded"
     _say(
-        f"  Slack ................ wired → channel {slack_dev.channel_id} (per-install config "
-        "seeded from OUTRIDER_SLACK_* + token enc key; a real message will post)"
+        f"  Slack ................ wired → channel {slack_dev.channel_id} ({verb} per-install "
+        "config from OUTRIDER_SLACK_* + token enc key; a real message will post)"
     )
-    return PerInstallSlackResolver(
-        session_factory=session_factory,
-        sink=persister,
-        dashboard_base_url=os.environ.get("OUTRIDER_DASHBOARD_BASE_URL", ""),
-    )
+    return resolver
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -364,7 +389,9 @@ async def _run(args: argparse.Namespace) -> int:
         await engine.dispose()
         return 2
 
-    slack_resolver = await _maybe_wire_slack(session_factory, persister, pr_context)
+    slack_resolver = await _maybe_wire_slack(
+        session_factory, persister, pr_context, overwrite=args.overwrite_slack_config
+    )
 
     graph = build_graph(
         db_factory=session_factory,
@@ -683,6 +710,15 @@ def _parse_args() -> argparse.Namespace:
             "accept an 'empty' / non-posting publish outcome as a pass. By default a "
             "non-interrupted run must post a real GitHub review (the C2 happy-path proof); "
             "this relaxes that to allow runs where Claude produces no inline-eligible findings"
+        ),
+    )
+    parser.add_argument(
+        "--overwrite-slack-config",
+        action="store_true",
+        help=(
+            "replace an install's EXISTING per-install Slack config with the "
+            "OUTRIDER_SLACK_* dev creds. Default: use existing config, never clobber an "
+            "OAuth-connected install (this script runs against the real DATABASE_URL)"
         ),
     )
     return parser.parse_args()
