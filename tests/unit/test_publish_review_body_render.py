@@ -29,6 +29,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from outrider.agent.nodes.publish import (
+    _is_markdown_link_safe_url,
     _render_related_concern_entry,
     _render_review_body,
     _review_deep_link,
@@ -380,3 +381,65 @@ async def test_create_review_body_not_marker_first_raises_before_post() -> None:
             comments=(),
         )
     assert gh.captured_json is None  # guard fired before any HTTP call
+
+
+# ---------------------------------------------------------------------------
+# _is_markdown_link_safe_url + _review_deep_link malformed-URL fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://dash.example",
+        "http://localhost:5173",
+        "https://dash.example/base/path",
+        "https://dash.example:8443/x?a=b#frag",
+    ],
+)
+def test_is_markdown_link_safe_url_accepts_well_formed(url: str) -> None:
+    assert _is_markdown_link_safe_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://dash.example",  # non-http scheme
+        "javascript:alert(1)",  # non-http scheme
+        "dash.example",  # no scheme
+        "https://dash.example/a)b",  # close paren breaks markdown target
+        "https://dash.example/a(b",  # open paren
+        "https://dash.example/<b>",  # angle brackets -> HTML injection in prose
+        "https://dash.example/[x]",  # square brackets -> markdown link syntax
+        "https://dash.example/a b",  # whitespace
+        "https://dash.example/a\tb",  # tab
+        "https://dash.example/a\nb",  # newline
+        "https://dash.example/a\x00b",  # NUL control char
+        "https://dash.example/a\x7fb",  # DEL control char
+    ],
+)
+def test_is_markdown_link_safe_url_rejects_malformed(url: str) -> None:
+    assert _is_markdown_link_safe_url(url) is False
+
+
+def test_review_deep_link_malformed_base_url_falls_back_to_none() -> None:
+    # A malformed (non-empty) base URL degrades to None — the renderer then uses
+    # the no-link fallback prose rather than emitting a broken/unsafe link.
+    assert _review_deep_link("https://dash.example/x)y", uuid4(), uuid4()) is None
+    assert _review_deep_link("ftp://dash.example", uuid4(), None) is None
+    assert _review_deep_link("not a url", uuid4(), None) is None
+
+
+def test_render_review_body_malformed_base_url_uses_no_link_fallback() -> None:
+    # End-to-end: a malformed base URL → body renders with no-link prose, no URL.
+    f = _make_finding(severity=FindingSeverity.MEDIUM, title="concern")
+    body = _render_review_body(
+        body_marker=_MARKER,
+        review_body_findings=((f, FindingSeverity.MEDIUM),),
+        dashboard_only_findings=(_make_finding(file_path="src/x.py"),),
+        review_id=uuid4(),
+        dashboard_base_url="https://dash.example/bad)url",
+    )
+    assert "http" not in body
+    assert "see the Outrider dashboard" in body  # review-body entry fallback
+    assert "in the Outrider dashboard" in body  # aggregate note fallback

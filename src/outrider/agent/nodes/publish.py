@@ -25,7 +25,8 @@ Pre-flight order (intra-Outrider + external):
   2. Intra-Outrider idempotency: prior `PublishEvent` for this
      `review_id` → emit `PublishAttemptEvent(idempotently_skipped)`,
      return `PublishResult.skipped()`.
-  3. Empty-eligible-inline-comments → emit
+  3. All publish tiers empty (no eligible inline / review-body /
+     surfaced dashboard-only findings) → emit
      `PublishAttemptEvent(no_op_empty)`, return `PublishResult.empty()`.
   4. External-record check: `find_existing_review_on_head_sha` via
      body marker → emit
@@ -120,6 +121,7 @@ async def publish(
     # node never references the type at runtime — it just calls the
     # factory and passes the result to the publisher).
     github_factory: Callable[[int], InstallationGitHubClient],
+    dashboard_base_url: str | None = None,
 ) -> dict[str, object]:
     """Run the V1 publish flow over admitted findings.
 
@@ -140,6 +142,10 @@ async def publish(
             `completed` already and no-ops.
         github_factory: per-installation githubkit client factory
             per `nodes-receive-deps-via-closure`.
+        dashboard_base_url: optional dashboard base URL injected via
+            `build_graph`; the review-body "Related concerns" links + the
+            aggregate dashboard-only note link use it. None (unconfigured)
+            or malformed → graceful no-link fallback (DECISIONS.md#050).
 
     Returns:
         `{"publish_result": PublishResult}` for LangGraph's default
@@ -211,8 +217,12 @@ async def publish(
     # registry, not file_in_patch).
     changed_paths: set[str] = {cf.path for cf in state.pr_context.changed_files}
 
-    # Step 3: interleaved per-finding routing + eligibility loop.
+    # Step 3: interleaved per-finding routing + eligibility loop. Three
+    # eligibility-gated accumulators, one per publish tier (DECISIONS.md#050):
+    # a WITHHELD CRITICAL/HIGH finding reaches NONE of them.
     eligible_inline_comments: list[InlineComment] = []
+    eligible_review_body_findings: list[tuple[ReviewFinding, FindingSeverity]] = []
+    surfaced_dashboard_only_findings: list[ReviewFinding] = []
     for finding in admitted_findings:
         await _route_and_gate_one_finding(
             finding=finding,
@@ -220,6 +230,8 @@ async def publish(
             changed_paths=changed_paths,
             publish_event_sink=publish_event_sink,
             eligible_inline_comments=eligible_inline_comments,
+            eligible_review_body_findings=eligible_review_body_findings,
+            surfaced_dashboard_only_findings=surfaced_dashboard_only_findings,
         )
 
     sorted_finding_ids = tuple(sorted(f.finding_id for f in admitted_findings))
@@ -366,10 +378,24 @@ async def publish(
                 phase_id=phase_id,
                 is_eval=state.is_eval,
             )
-            return {"publish_result": PublishResult.skipped()}
+            return {
+                "publish_result": PublishResult.skipped(
+                    comments_posted=prior_publish_event.comments_posted,
+                    review_body_findings_posted=prior_publish_event.review_body_findings_posted,
+                    dashboard_only_findings_surfaced=(
+                        prior_publish_event.dashboard_only_findings_surfaced
+                    ),
+                )
+            }
 
-        # Step 5: empty-eligible-inline short-circuit. No GitHub call.
-        if not eligible_inline_comments:
+        # Step 5: truly-empty short-circuit — no GitHub call ONLY when all three
+        # eligibility-gated tiers are empty (DECISIONS.md#050). A review-body-only
+        # or dashboard-only-only review still posts.
+        if (
+            not eligible_inline_comments
+            and not eligible_review_body_findings
+            and not surfaced_dashboard_only_findings
+        ):
             await _emit_attempt(
                 publish_event_sink=publish_event_sink,
                 review_id=state.review_id,
@@ -460,6 +486,11 @@ async def publish(
             return {
                 "publish_result": PublishResult.skipped_external(
                     existing_review_id=existing_review_id,
+                    # No prior PublishEvent on the recovery path — report what the
+                    # CURRENT routing pass would have posted (DECISIONS.md#050).
+                    comments_posted=len(eligible_inline_comments),
+                    review_body_findings_posted=len(eligible_review_body_findings),
+                    dashboard_only_findings_surfaced=len(surfaced_dashboard_only_findings),
                 )
             }
 
@@ -471,6 +502,21 @@ async def publish(
         # gate); future enhancement may compute review status from the
         # highest-severity
         # finding that actually posted (per docs/spec.md §V).
+        # Compose the marker-FIRST review body (DECISIONS.md#050): marker at
+        # offset 0 + optional "Related concerns" + optional aggregate
+        # dashboard-only note. The renderer sanitizes + size-caps; when all
+        # tiers are empty it returns the bare marker (byte-identical to the
+        # prior inline-only behavior). The count channels below report the
+        # findings MATERIALIZED into each tier (routing-pass counts); the 64KB
+        # review-body cap could in theory tail-truncate the rendered display at
+        # extreme finding counts, but the dashboard always carries the full set.
+        review_body = _render_review_body(
+            body_marker=body_marker,
+            review_body_findings=tuple(eligible_review_body_findings),
+            dashboard_only_findings=tuple(surfaced_dashboard_only_findings),
+            review_id=state.review_id,
+            dashboard_base_url=dashboard_base_url,
+        )
         try:
             review_created = await publisher.create_review(
                 gh=gh,
@@ -480,6 +526,7 @@ async def publish(
                 head_sha=state.pr_context.head_sha,
                 review_status=review_status,
                 body_marker=body_marker,
+                body=review_body,
                 comments=tuple(eligible_inline_comments),
             )
         except Exception as exc:
@@ -513,6 +560,8 @@ async def publish(
                 is_eval=state.is_eval,
                 github_review_id=review_created.github_review_id,
                 comments_posted=review_created.comments_posted,
+                review_body_findings_posted=len(eligible_review_body_findings),
+                dashboard_only_findings_surfaced=len(surfaced_dashboard_only_findings),
                 review_status=review_status,
             )
         )
@@ -540,6 +589,8 @@ async def publish(
             "publish_result": PublishResult.success(
                 github_review_id=review_created.github_review_id,
                 comments_posted=review_created.comments_posted,
+                review_body_findings_posted=len(eligible_review_body_findings),
+                dashboard_only_findings_surfaced=len(surfaced_dashboard_only_findings),
             )
         }
     finally:
@@ -674,9 +725,15 @@ async def _route_and_gate_one_finding(
     changed_paths: set[str],
     publish_event_sink: PublishEventSink,
     eligible_inline_comments: list[InlineComment],
+    eligible_review_body_findings: list[tuple[ReviewFinding, FindingSeverity]],
+    surfaced_dashboard_only_findings: list[ReviewFinding],
 ) -> None:
-    """Route + gate one finding, emit both per-finding events, optionally
-    collect into `eligible_inline_comments` if the finding is materializable.
+    """Route + gate one finding, emit both per-finding events, and (if ELIGIBLE)
+    collect it into exactly ONE of the three tier accumulators by destination
+    (DECISIONS.md#050): INLINE_COMMENT → `eligible_inline_comments`, REVIEW_BODY →
+    `eligible_review_body_findings`, DASHBOARD_ONLY → `surfaced_dashboard_only_findings`.
+    The eligibility gate is the SAME across all three tiers, so a WITHHELD
+    CRITICAL/HIGH finding lands in none of them.
 
     Per the spec's "routing-emission-failed recovery": if routing
     emission raises, the per-finding `try/except` falls back to
@@ -887,6 +944,20 @@ async def _route_and_gate_one_finding(
                 body=body,
             )
         )
+    elif (
+        destination is PublishDestination.REVIEW_BODY and eligibility is PublishEligibility.ELIGIBLE
+    ):
+        # Eligible unchanged-region finding → "Related concerns" entry. Severity
+        # is the policy/HITL-resolved effective value (the SAME gate as inline);
+        # the renderer sanitizes + caps at body-assembly time (DECISIONS.md#050).
+        eligible_review_body_findings.append((finding, effective_severity))
+    elif (
+        destination is PublishDestination.DASHBOARD_ONLY
+        and eligibility is PublishEligibility.ELIGIBLE
+    ):
+        # Eligible trace-discovered finding outside the diff → counted in the
+        # aggregate dashboard-only note (count + link only, never per-finding).
+        surfaced_dashboard_only_findings.append(finding)
 
 
 def _resolve_inline_location(
@@ -1307,11 +1378,31 @@ def _build_finding_comment_body(
 # ---------------------------------------------------------------------------
 
 
+def _is_markdown_link_safe_url(value: str) -> bool:
+    """True if `value` is safe to embed in markdown — as a link target `(...)` AND
+    raw in prose.
+
+    Requires an http(s) scheme and rejects whitespace, C0/C1 control chars + DEL,
+    and markdown/HTML-significant chars `()<>[]`. The URL is used both inside a
+    markdown link target (per-finding entries, where `)` breaks the target) AND raw
+    in the aggregate-note prose (where `<...>` would inject HTML), so all of these
+    are unsafe. The dashboard base URL is operator/per-install config, so the threat
+    is misconfiguration, not attacker input; a malformed URL degrades to the no-link
+    fallback.
+    """
+    if not value.startswith(("http://", "https://")):
+        return False
+    return not any(
+        ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in "()<>[]" for ch in value
+    )
+
+
 def _review_deep_link(base_url: str | None, review_id: UUID, finding_id: UUID | None) -> str | None:
     """Dashboard deep-link for the review body, or None (no-link fallback) when no
-    base URL is configured. Duplicates `notify/deeplink.py::build_review_deeplink`
+    base URL is configured OR the configured URL is malformed (see
+    `_is_markdown_link_safe_url`). Duplicates `notify/deeplink.py::build_review_deeplink`
     on the Slack branch — consolidate to one shared builder post-merge."""
-    if not base_url:
+    if not base_url or not _is_markdown_link_safe_url(base_url):
         return None
     url = f"{base_url.rstrip('/')}/reviews/{review_id}"
     return f"{url}?finding={finding_id}" if finding_id is not None else url
