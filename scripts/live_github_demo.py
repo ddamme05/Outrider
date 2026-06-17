@@ -69,7 +69,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
@@ -408,47 +408,58 @@ async def _run(args: argparse.Namespace) -> int:
         session_factory, persister, pr_context, seed_dev_token=args.seed_dev_slack_token
     )
 
-    graph = build_graph(
-        db_factory=session_factory,
-        github_factory=github_factory,
-        provider=provider,
-        model_config=model_config,
-        phase_event_sink=persister,
-        file_examination_sink=persister,
-        analyze_event_sink=persister,
-        publish_event_sink=persister,
-        trace_sink=persister,
-        hitl_event_sink=persister,
-        synthesize_event_sink=persister,
-        review_status_sink=ReviewStatusPersister(session_factory=session_factory),
-        anomaly_sink=AnomalyPersister(session_factory=session_factory),
-        hitl_config=HITLConfig(),
-        # Required since the suggested-patches arc; OFF to keep the demo's
-        # live spend bounded to the review calls themselves.
-        patch_config=PatchConfig(patches_enabled=False),
-        checkpointer=InMemorySaver(),
-        publisher=GitHubKitPublisher(),
-        import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
-        # Production-parity shadow wiring (mirrors api/lifespan.py). NOTE:
-        # this script targets the REAL configured DATABASE_URL — a demo run
-        # writes content-tier cache rows (findings + trace candidates) into
-        # that database's analyze_file_cache, exactly as a production review
-        # would; they age out under the same 30-day/retention bounds.
-        analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
-        resolve_slack_target=slack_resolver,
-    )
+    # Durable Postgres checkpointer — mirrors api/lifespan.py EXACTLY so a HITL-gated
+    # demo review writes its interrupt checkpoint to Postgres (not in-memory). That's
+    # what makes the dashboard /decide → resume → publish flow work for a demo review,
+    # identical to a production (webhook-driven) review. `from_conn_string` wants a bare
+    # psycopg URL, so strip SQLAlchemy's `+psycopg` suffix (same as the lifespan factory).
+    checkpoint_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
+        await checkpointer.setup()  # idempotent; the checkpoint tables already exist
 
-    from outrider.agent.state import ReviewState  # noqa: PLC0415
+        graph = build_graph(
+            db_factory=session_factory,
+            github_factory=github_factory,
+            provider=provider,
+            model_config=model_config,
+            phase_event_sink=persister,
+            file_examination_sink=persister,
+            analyze_event_sink=persister,
+            publish_event_sink=persister,
+            trace_sink=persister,
+            hitl_event_sink=persister,
+            synthesize_event_sink=persister,
+            review_status_sink=ReviewStatusPersister(session_factory=session_factory),
+            anomaly_sink=AnomalyPersister(session_factory=session_factory),
+            hitl_config=HITLConfig(),
+            # Required since the suggested-patches arc; OFF to keep the demo's
+            # live spend bounded to the review calls themselves.
+            patch_config=PatchConfig(patches_enabled=False),
+            checkpointer=checkpointer,
+            publisher=GitHubKitPublisher(),
+            import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
+            # Production-parity shadow wiring (mirrors api/lifespan.py). NOTE:
+            # this script targets the REAL configured DATABASE_URL — a demo run
+            # writes content-tier cache rows (findings + trace candidates) into
+            # that database's analyze_file_cache, exactly as a production review
+            # would; they age out under the same 30-day/retention bounds.
+            analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
+            resolve_slack_target=slack_resolver,
+        )
 
-    seed_state = ReviewState(
-        review_id=review_id,
-        pr_context=pr_context,
-        received_at=datetime.now(UTC),
-        is_eval=False,
-    )
+        from outrider.agent.state import ReviewState  # noqa: PLC0415
 
-    _say("  Calling real Claude over the real diff ...")
-    result = await graph.ainvoke(seed_state, config={"configurable": {"thread_id": str(review_id)}})
+        seed_state = ReviewState(
+            review_id=review_id,
+            pr_context=pr_context,
+            received_at=datetime.now(UTC),
+            is_eval=False,
+        )
+
+        _say("  Calling real Claude over the real diff ...")
+        result = await graph.ainvoke(
+            seed_state, config={"configurable": {"thread_id": str(review_id)}}
+        )
     await provider.aclose()
 
     interrupted = "__interrupt__" in result
