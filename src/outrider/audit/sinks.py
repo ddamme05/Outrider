@@ -8,7 +8,7 @@ directly — this keeps `nodes-receive-deps-via-closure` honest (real sinks
 inject at graph-build time, test sinks inject at fixture-setup time) and
 keeps audit-table writes out of node call sites.
 
-V1 defines seven sink Protocols in this module (the eighth that
+V1 defines eight sink Protocols in this module (the ninth that
 `AuditPersister` implements, `LLMExchangePersister`, lives at
 `llm/base.py` because LLM-exchange persistence is owned by the LLM
 provider boundary, not by the audit-events surface): `PhaseEventSink`
@@ -26,17 +26,19 @@ for `FileExaminationEvent` (per intake + analyze per-file outcomes),
 `TraceEventSink` for `TraceDecisionEvent` per
 `specs/2026-05-23-trace-node.md` Q4 + M7, `HITLEventSink` bundling
 `emit_hitl_request` + `emit_hitl_decision` per
-`specs/2026-05-26-hitl-node.md` Q7, and `SynthesizeEventSink` for
+`specs/2026-05-26-hitl-node.md` Q7, `SynthesizeEventSink` for
 `SynthesizeCompletedEvent` per `specs/2026-05-28-synthesize-node.md`
-(per-review aggregate emitted at end-of-synthesize-work).
+(per-review aggregate emitted at end-of-synthesize-work), and
+`SlackEventSink` for `SlackNotificationEvent` per
+`specs/2026-06-15-slack-dashboard-in-slack.md` (one per Slack post).
 `LLMCallEvent` emission lives inside `LLMProvider.complete()` and uses
 the sibling `LLMExchangePersister` Protocol in `llm/base.py` — no node
 code emits `LLMCallEvent` directly.
 
 The durable `AuditPersister` in `outrider.audit.persister` implements
-ALL EIGHT (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
+ALL NINE (`PhaseEventSink` + `FileExaminationSink` + `AnalyzeEventSink`
 + `PublishEventSink` + `TraceEventSink` + `HITLEventSink` +
-`SynthesizeEventSink` + `LLMExchangePersister`) from one body, sharing
+`SynthesizeEventSink` + `SlackEventSink` + `LLMExchangePersister`) from one body, sharing
 DB transaction lifecycle and session-per-call discipline. Test-only
 no-op implementations
 (`NoOpPersister`, `RecordingPhaseEventSink`) live in
@@ -66,6 +68,7 @@ from outrider.audit.events import (
     PublishRoutingEvent,
     ReviewPhaseEvent,
     ScopeExclusionEvent,
+    SlackNotificationEvent,
     SynthesizeCompletedEvent,
     TraceDecisionEvent,
 )
@@ -592,7 +595,7 @@ class SynthesizeEventSink(Protocol):
     Synthesize emits exactly one audit event per review:
     `SynthesizeCompletedEvent` at end-of-work (after the summary
     call returns, after deduplication + sort, before returning the state
-    delta). One Protocol with one method matches the analyze-completed
+    delta). One emit method (plus a read query below) matches the analyze-completed
     pattern conceptually but with simpler shape (no per-pass
     multiplicity, no per-finding sub-events — every finding in the
     deduplicated `ReviewReport.findings` was already emitted as its own
@@ -616,9 +619,9 @@ class SynthesizeEventSink(Protocol):
     tests rather than being silently deduped).
 
     `@runtime_checkable` matches the sibling-Protocol precedent —
-    `build_graph` can reject sinks lacking `emit_synthesize_completed`
-    at construction time. PEP 544 caveat: member-presence only, not
-    signature shape; mypy strict is the write-time gate.
+    `build_graph` can reject sinks lacking `emit_synthesize_completed` or
+    `query_review_llm_aggregates` at construction time. PEP 544 caveat:
+    member-presence only, not signature shape; mypy strict is the write-time gate.
     """
 
     async def emit_synthesize_completed(self, event: SynthesizeCompletedEvent) -> None:
@@ -640,12 +643,56 @@ class SynthesizeEventSink(Protocol):
         ...
 
 
+@runtime_checkable
+class SlackEventSink(Protocol):
+    """Sink for the Slack notifier's one audit event type.
+
+    `notify/slack.py` emits exactly one `SlackNotificationEvent` per Slack
+    post — the rich HITL-pending card or the compact review-posted FYI. An emit
+    method + a read query (`query_slack_notification`), mirroring `SynthesizeEventSink`.
+
+    Production / durable implementations MUST:
+      - Be idempotent on `event.event_id` (event_id-PK per `DECISIONS.md#026`,
+        the `CacheLookupEvent` / `SynthesizeCompletedEvent` precedent) — retry
+        / checkpoint replay must not duplicate rows.
+      - Persist before returning, OR raise. Silent drop is never acceptable.
+
+    The `(review_id, channel_id, kind)` de-duplication the spec describes is a
+    best-effort PRE-POST check in the notifier (query before posting), NOT a
+    persister natural-key constraint — see
+    `specs/2026-06-15-slack-dashboard-in-slack.md` (Audit append-only). The
+    persist path here is the plain event_id-PK append.
+
+    `@runtime_checkable` matches the sibling-Protocol precedent — `build_graph`
+    can reject sinks lacking `emit_slack_notification` or `query_slack_notification`
+    at construction time.
+    """
+
+    async def emit_slack_notification(self, event: SlackNotificationEvent) -> None:
+        """Persist a `SlackNotificationEvent` row (one per Slack post)."""
+        ...
+
+    async def query_slack_notification(
+        self, *, review_id: UUID, channel_id: str, kind: str
+    ) -> SlackNotificationEvent | None:
+        """Most-recent `SlackNotificationEvent` for `(review_id, channel_id, kind)`, or None.
+
+        The notifier's read surface: backs the best-effort pre-post dedup (None →
+        safe to post) and the status-mirror target (the returned event's
+        `message_ts`). Read-only; the durable `AuditPersister` implements it
+        alongside `emit_slack_notification` (mirrors `PublishEventSink`'s
+        emit + `query_prior_publish_event` shape).
+        """
+        ...
+
+
 __all__ = [
     "AnalyzeEventSink",
     "FileExaminationSink",
     "HITLEventSink",
     "PhaseEventSink",
     "PublishEventSink",
+    "SlackEventSink",
     "SynthesizeEventSink",
     "TraceEventSink",
 ]

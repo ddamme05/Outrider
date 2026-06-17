@@ -26,6 +26,7 @@ from outrider.audit.events import (  # noqa: TC001  (used in test-double type an
     HITLDecisionEvent,
     HITLRequestEvent,
 )
+from outrider.notify.orchestrator import SlackNotifyTarget
 from outrider.policy import FindingSeverity
 from outrider.policy.canonical import compute_hitl_decision_content_hash
 from outrider.policy.publish_eligibility import is_hitl_gated_severity
@@ -153,6 +154,13 @@ def _make_state(
         def __init__(self, findings_: tuple[_FindingStub, ...]) -> None:
             self.findings = findings_
 
+    class _PRCtx:
+        owner = "acme"
+        repo = "api"
+        pr_number = 7
+        pr_title = "Add login"
+        installation_id = 12345  # read by the Slack resolver hook
+
     rounds_findings: tuple[_FindingStub, ...] = (
         tuple(analysis_round_findings) if analysis_round_findings is not None else tuple(findings)
     )
@@ -164,6 +172,7 @@ def _make_state(
             self.received_at = received_at
             self.analysis_rounds = (_Round(rounds_findings),)
             self.review_report = _ReviewReport(tuple(findings)) if use_review_report else None
+            self.pr_context = _PRCtx()
 
     return _State()
 
@@ -491,4 +500,130 @@ def test_compute_hitl_decision_content_hash_rejects_non_basemodel() -> None:
         compute_hitl_decision_content_hash(
             decisions=({"finding_id": str(uuid4()), "outcome": "approve"},),  # type: ignore[arg-type]
             annotation=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slack HITL-pending notification hook
+# ---------------------------------------------------------------------------
+
+
+class _FakeSlackOrchestrator:
+    """Records notify_hitl_pending calls; the hitl node calls only this method."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def notify_hitl_pending(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+def _resolver_for(orch: _FakeSlackOrchestrator, channel_id: str = "C0123ABC") -> Any:
+    """A per-install resolver that always resolves to `orch` on `channel_id` — the
+    test seam replacing the retired slack_orchestrator/slack_channel_id params."""
+
+    async def _resolve(_installation_id: int) -> SlackNotifyTarget:
+        return SlackNotifyTarget(channel_id=channel_id, orchestrator=orch)  # type: ignore[arg-type]
+
+    return _resolve
+
+
+@pytest.mark.asyncio
+async def test_hitl_notifies_slack_on_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gated path: the node posts a HITL-pending notification (before interrupt)
+    carrying ONLY the gated findings + the PR identity. interrupt is patched to
+    halt the body right after the notify so the call is observable in isolation."""
+    review_id = uuid4()
+    crit = _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+    high = _make_finding(review_id=review_id, severity=FindingSeverity.HIGH)
+    low = _make_finding(review_id=review_id, severity=FindingSeverity.LOW)
+    state = _make_state(
+        findings=[crit, high, low], review_id=review_id, received_at=datetime.now(UTC)
+    )
+    fake = _FakeSlackOrchestrator()
+
+    class _StopInterruptError(Exception):
+        pass
+
+    def _raise(*_a: Any, **_k: Any) -> None:
+        raise _StopInterruptError
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", _raise)
+
+    with pytest.raises(_StopInterruptError):
+        await hitl(
+            state,  # type: ignore[arg-type]
+            phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+            hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+            review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+            hitl_config=HITLConfig(),
+            resolve_slack_target=_resolver_for(fake),
+        )
+
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["channel_id"] == "C0123ABC"
+    assert call["review_id"] == review_id
+    assert call["repo"] == "acme/api"
+    assert call["pr_number"] == 7
+    assert call["pr_title"] == "Add login"
+    assert call["is_eval"] is False  # threaded from state.is_eval (eval isolation)
+    # Only the gated (CRITICAL/HIGH) findings reach the card, not the LOW one.
+    assert {f.finding_id for f in call["findings"]} == {crit.finding_id, high.finding_id}
+
+
+@pytest.mark.asyncio
+async def test_hitl_no_slack_on_passthrough() -> None:
+    """No gated findings → pass-through → no Slack notification, even with Slack
+    fully configured."""
+    review_id = uuid4()
+    state = _make_state(
+        findings=[_make_finding(review_id=review_id, severity=FindingSeverity.LOW)],
+        review_id=review_id,
+        received_at=datetime.now(UTC),
+    )
+    fake = _FakeSlackOrchestrator()
+    delta = await hitl(
+        state,  # type: ignore[arg-type]
+        phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+        hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+        review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+        hitl_config=HITLConfig(),
+        resolve_slack_target=_resolver_for(fake),
+    )
+    assert delta == {}
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_hitl_slack_resolver_failure_is_not_gate_breaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolver that raises (DB read / decrypt / notifier build) must NOT break the
+    gate: the body still reaches interrupt(). Slack is optional, never gate-breaking."""
+    review_id = uuid4()
+    crit = _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+    state = _make_state(findings=[crit], review_id=review_id, received_at=datetime.now(UTC))
+
+    class _StopInterruptError(Exception):
+        pass
+
+    def _raise(*_a: Any, **_k: Any) -> None:
+        raise _StopInterruptError
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", _raise)
+
+    async def _boom(_installation_id: int) -> SlackNotifyTarget:
+        raise RuntimeError("resolver exploded")
+
+    # If the resolver exception propagated, we'd see RuntimeError; instead the body
+    # swallows it and reaches the patched interrupt -> _StopInterruptError.
+    with pytest.raises(_StopInterruptError):
+        await hitl(
+            state,  # type: ignore[arg-type]
+            phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+            hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+            review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+            hitl_config=HITLConfig(),
+            resolve_slack_target=_boom,
         )

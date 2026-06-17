@@ -1,5 +1,5 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of eight sink Protocols.
+"""AuditPersister — durable single-class implementation of nine sink Protocols.
 
 Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
 `FileExaminationSink`, `AnalyzeEventSink`, `PublishEventSink`,
@@ -161,6 +161,7 @@ from outrider.audit.events import (
     HITLRequestEvent,  # noqa: E402  (model_validate at runtime)
     PublishEvent,  # noqa: E402  (intentional post-TYPE_CHECKING runtime import)
     ReplayVerdictEvent,  # noqa: E402  (model_validate at runtime in query_replay_verdict_event)
+    SlackNotificationEvent,  # noqa: E402  (model_validate at runtime in query_slack_notification)
     TraceDecisionEvent,  # noqa: E402  (model_validate at runtime)
 )
 
@@ -1488,6 +1489,7 @@ def _serialize_event_payload(
         | CacheLookupEvent
         | CacheServeEvent
         | ObservedSkipShadowEvent
+        | SlackNotificationEvent
         | TraceDecisionEvent
         | HITLRequestEvent
         | HITLDecisionEvent
@@ -2254,6 +2256,7 @@ class AuditPersister:
             | CacheLookupEvent
             | CacheServeEvent
             | ObservedSkipShadowEvent
+            | SlackNotificationEvent
             | SynthesizeCompletedEvent
         ),
     ) -> None:
@@ -2625,6 +2628,17 @@ class AuditPersister:
         """Persist a `SynthesizeCompletedEvent` row (per-review aggregate)."""
         await self._persist_non_phase_event(event)
 
+    # -- SlackEventSink surface ---------------------------------------------
+    # event_id-PK idempotency (CacheLookupEvent / SynthesizeCompletedEvent
+    # precedent, `_persist_non_phase_event` body). The (review_id, channel_id,
+    # kind) de-dup is the notifier's best-effort pre-post check, NOT a
+    # natural-key DB constraint — so no migration and no partial unique index.
+
+    async def emit_slack_notification(self, event: SlackNotificationEvent) -> None:
+        """Persist a `SlackNotificationEvent` row (one per Slack post;
+        event_id-PK idempotent per `DECISIONS.md#026`)."""
+        await self._persist_non_phase_event(event)
+
     async def emit_replay_verdict(self, event: ReplayVerdictEvent) -> bool:
         """Append a `ReplayVerdictEvent`, idempotent on `(review_id)` for
         `event_type='replay_verdict'` via the partial unique index
@@ -2956,6 +2970,39 @@ class AuditPersister:
         if payload is None:
             return None
         return PublishEvent.model_validate(payload)
+
+    async def query_slack_notification(
+        self, *, review_id: UUID, channel_id: str, kind: str
+    ) -> SlackNotificationEvent | None:
+        """Most-recent `SlackNotificationEvent` for the natural key
+        `(review_id, channel_id, kind)`, or None.
+
+        Backs the notifier's best-effort pre-post dedup (None → safe to post) AND
+        the status-mirror target (the returned event's `message_ts`). Read-only,
+        own session. Filters `review_id` + `event_type` in SQL, then `channel_id` /
+        `kind` in Python — a review carries at most a couple of slack_notification
+        rows, so the in-Python filter is cheap and avoids JSONB-operator coupling.
+        `ORDER BY timestamp DESC, sequence_number DESC` so a replay-appended
+        duplicate resolves to the most-recent row (mirrors `query_prior_publish_event`).
+        """
+        event_type: str = SlackNotificationEvent.model_fields["event_type"].default
+        async with self._session_factory() as session:
+            stmt = (
+                select(AuditEventRow.payload)
+                .where(
+                    AuditEventRow.review_id == review_id,
+                    AuditEventRow.event_type == event_type,
+                )
+                .order_by(
+                    AuditEventRow.timestamp.desc(),
+                    AuditEventRow.sequence_number.desc(),
+                )
+            )
+            payloads = (await session.scalars(stmt)).all()
+        for payload in payloads:
+            if payload.get("channel_id") == channel_id and payload.get("kind") == kind:
+                return SlackNotificationEvent.model_validate(payload)
+        return None
 
     async def query_review_llm_aggregates(
         self, *, review_id: UUID, is_eval: bool

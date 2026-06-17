@@ -87,10 +87,23 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     derivation. Per `nodes-receive-deps-via-closure`, config travels
     through the dependency-injection seam at `build_graph(...)` —
     the node body does not read env vars.
+  - `resolve_slack_target: SlackTargetResolver | None` — optional per-install
+    Slack resolver, `async (installation_id) -> SlackNotifyTarget | None`. When
+    set, the hitl + publish nodes resolve the install's channel + token-bound
+    orchestrator at runtime and post a best-effort notification (awaited inline,
+    never gate-breaking); None (the default) disables Slack. Injected here and
+    closed over in the nodes per `nodes-receive-deps-via-closure`. The resolver
+    body (installations read + token decrypt + notifier construction) lives in
+    the lifespan composition root, so `agent/` never imports `cryptography` /
+    `slack_sdk` (FUP-186).
   - `patch_config: PatchConfig` — required for synthesize's suggested-patch
     pass (`patches_enabled` + the per-review cap; the patch model is
     `model_config.patch_model`). Same closure-injection rule — synthesize
     reads no env (DECISIONS.md#040).
+  - `intake_config: IntakeConfig | None` — optional whole-PR size-gate config
+    (docs/spec.md §6.10: `OUTRIDER_INTAKE_MAX_LINES` / `MAX_FILES`, defaults
+    1000 / 30). None (the default) reads the env / spec defaults once here and
+    injects them; intake never reads env itself.
   - `checkpointer: BaseCheckpointSaver` — required for HITL durability.
     `interrupt(...)` writes state to the checkpointer; `Command(resume=...)`
     reads it back on the next `ainvoke(..., config={"configurable":
@@ -138,6 +151,7 @@ from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.intake import intake
+from outrider.agent.nodes.intake_config import IntakeConfig
 from outrider.agent.nodes.patch_config import PatchConfig
 from outrider.agent.nodes.publish import publish
 from outrider.agent.nodes.synthesize import synthesize
@@ -168,6 +182,7 @@ if TYPE_CHECKING:
     from outrider.cache import AnalyzeCacheStore
     from outrider.github import InstallationGitHubClient
     from outrider.llm.config import ModelConfig
+    from outrider.notify.orchestrator import SlackTargetResolver
 
 # LangGraph's CompiledStateGraph is generic over [StateT, ContextT, InputT,
 # OutputT]. V1 uses ReviewState for state — pin it as the first param so the
@@ -205,6 +220,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     anomaly_sink: AnomalySink,
     hitl_config: HITLConfig,
     patch_config: PatchConfig,
+    intake_config: IntakeConfig | None = None,
     checkpointer: BaseCheckpointSaver[Any],
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
@@ -212,6 +228,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    resolve_slack_target: SlackTargetResolver | None = None,
     dashboard_base_url: str | None = None,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
@@ -291,6 +308,19 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             f"github_factory must be callable (got type: {type(github_factory).__name__})"
         )
 
+    # Slack is optional: a per-install resolver, or None to disable. The resolver
+    # yields a real SlackNotificationOrchestrator per install, so the prior
+    # member-presence + all-or-nothing channel guards are no longer needed (the
+    # channel + notifier-method presence are guaranteed by the target it returns).
+    # A non-callable here is a miswired composition root — fail closed at build time
+    # rather than as a mid-review TypeError on the gate/publish path.
+    if resolve_slack_target is not None and not callable(resolve_slack_target):
+        raise BuildGraphError(
+            "resolve_slack_target must be an async callable "
+            f"(installation_id) -> SlackNotifyTarget | None (got type: "
+            f"{type(resolve_slack_target).__name__})"
+        )
+
     # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
     # module docstring — these catch missing-member, not wrong-signature.
     if not isinstance(provider, LLMProvider):
@@ -351,7 +381,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError(
             f"synthesize_event_sink does not satisfy SynthesizeEventSink Protocol "
             f"(passed type: {type(synthesize_event_sink).__name__}; "
-            f"missing `emit_synthesize_completed` member; "
+            f"missing one of `emit_synthesize_completed` / `query_review_llm_aggregates`; "
             f"see PEP 544 runtime-checkable semantics)"
         )
     if not isinstance(anomaly_sink, AnomalySink):
@@ -405,6 +435,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         db_factory=db_factory,
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
+        # Default reads OUTRIDER_INTAKE_* (or the §6.10 spec defaults) once at build time.
+        intake_config=intake_config or IntakeConfig(),
     )
     analyze_callable = functools.partial(
         analyze,
@@ -440,6 +472,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         review_status_sink=review_status_sink,
         github_factory=github_factory,
         dashboard_base_url=dashboard_base_url,
+        resolve_slack_target=resolve_slack_target,
     )
     trace_callable = functools.partial(
         trace,
@@ -455,6 +488,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         hitl_event_sink=hitl_event_sink,
         review_status_sink=review_status_sink,
         hitl_config=hitl_config,
+        resolve_slack_target=resolve_slack_target,
     )
     synthesize_callable = functools.partial(
         synthesize,

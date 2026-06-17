@@ -2,7 +2,7 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 """Audit event class hierarchy + discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has twenty-one
+`AuditEventBase` is the shared base. The hierarchy has twenty-two
 concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
 `ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
 `FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
@@ -14,8 +14,9 @@ synthesize-node addition (`SynthesizeCompletedEvent`), the
 replay-verdict-projection addition (`ReplayVerdictEvent`), the
 trivial-scope-filter addition (`ScopeExclusionEvent`), the
 analyze-cache lookup addition (`CacheLookupEvent`), the analyze-cache
-serve addition (`CacheServeEvent`), and the OBSERVED-tier skip-shadow
-addition (`ObservedSkipShadowEvent`, Cost Lever 3). Each
+serve addition (`CacheServeEvent`), the OBSERVED-tier skip-shadow
+addition (`ObservedSkipShadowEvent`, Cost Lever 3), and the Slack-notification
+addition (`SlackNotificationEvent`, dashboard-in-Slack V1). Each
 declares its own `event_type: Literal[...]` discriminator value. The
 `AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
 reconstruct concrete events from `audit_events.payload` JSONB at read time:
@@ -2885,6 +2886,30 @@ class ReplayVerdictEvent(AuditEventBase):
         return self
 
 
+class SlackNotificationEvent(AuditEventBase):
+    """A Slack notification posted for a review (dashboard-in-Slack, V1).
+
+    `kind` is the message class — `"hitl_pending"` (the rich HITL-pending
+    card, posted when the review enters `awaiting_approval`) or
+    `"review_posted"` (the compact one-line FYI for a review that published
+    without gating). The two are mutually exclusive per review. `message_ts`
+    is the Slack message timestamp returned by `chat.postMessage`, the key the
+    status-mirror `chat.update` targets.
+
+    Best-effort dedup is on the natural key `(review_id, channel_id, kind)`,
+    not `event_id`: because `message_ts` exists only after the Slack post, the
+    audit row is written after the side effect, so a crash in that window can
+    re-post once on replay (V1 accepts this; a durable pre-post reservation /
+    outbox is the upgrade). Metadata only — no message body, no finding text.
+    """
+
+    event_type: Literal["slack_notification"] = "slack_notification"
+    channel_id: Annotated[str, Field(min_length=1, max_length=256)]
+    message_ts: Annotated[str, Field(min_length=1, max_length=64)]
+    kind: Literal["hitl_pending", "review_posted"]
+    posted_at: AwareDatetime
+
+
 # Discriminated union for replay: TypeAdapter(AuditEvent).validate_python({...})
 # selects the right concrete subtype using the event_type field.
 AuditEvent = Annotated[
@@ -2908,7 +2933,8 @@ AuditEvent = Annotated[
     | FindingProposalRejectedEvent
     | AnalyzeResponseRejectedEvent
     | SynthesizeCompletedEvent
-    | ReplayVerdictEvent,
+    | ReplayVerdictEvent
+    | SlackNotificationEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -2938,6 +2964,7 @@ AuditEventAdapter: Final[
         | AnalyzeResponseRejectedEvent
         | SynthesizeCompletedEvent
         | ReplayVerdictEvent
+        | SlackNotificationEvent
     ]
 ] = TypeAdapter(AuditEvent)
 
@@ -2974,6 +3001,7 @@ __all__ = [
     "ScopeExclusionEntry",
     "ScopeExclusionEvent",
     "ServedTraceCandidateRef",
+    "SlackNotificationEvent",
     "SynthesizeCompletedEvent",
     "TraceDecisionEvent",
     "compute_publish_attempt_content_hash",

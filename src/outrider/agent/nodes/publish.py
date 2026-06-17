@@ -38,10 +38,10 @@ Pre-flight order (intra-Outrider + external):
 
 from __future__ import annotations
 
+import logging
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 from uuid import UUID
 
 from outrider.audit.events import (
@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from outrider.db.sinks import ReviewStatusSink
     from outrider.github import InstallationGitHubClient
     from outrider.github.publisher import GitHubPublisher
+    from outrider.notify.orchestrator import SlackTargetResolver
     from outrider.policy import FindingSeverity
     from outrider.schemas import ReviewFinding, ReviewState
     from outrider.schemas.hitl import HITLDecision, PerFindingDecision
@@ -95,6 +96,8 @@ __all__ = ["publish"]
 # query GitHub for an existing review carrying this exact marker on
 # the same head_sha. Per Q6 + 4d sandbox verification, GitHub preserves
 # the body text verbatim under apiVersion 2026-03-10.
+logger = logging.getLogger(__name__)
+
 _BODY_MARKER_TEMPLATE = "<!-- outrider-review-id:{review_id} -->"
 
 # Agent-readable marker template per ROADMAP.md section 3 / S1. Each marker is a
@@ -123,6 +126,7 @@ async def publish(
     # factory and passes the result to the publisher).
     github_factory: Callable[[int], InstallationGitHubClient],
     dashboard_base_url: str | None = None,
+    resolve_slack_target: SlackTargetResolver | None = None,
 ) -> dict[str, object]:
     """Run the V1 publish flow over admitted findings.
 
@@ -147,6 +151,12 @@ async def publish(
             `build_graph`; the review-body "Related concerns" links + the
             aggregate dashboard-only note link use it. None (unconfigured)
             or malformed → graceful no-link fallback (DECISIONS.md#050).
+        resolve_slack_target: optional per-install Slack resolver injected via
+            `build_graph` (`async (installation_id) -> SlackNotifyTarget | None`).
+            On a successful publish the node resolves the install's target and, if
+            present, posts a compact "review-posted" FYI (best-effort, no-raise);
+            the orchestrator self-skips for gated reviews (a `hitl_pending` row
+            exists) and on replay. None (or a None target) → no FYI (FUP-186).
 
     Returns:
         `{"publish_result": PublishResult}` for LangGraph's default
@@ -580,6 +590,40 @@ async def publish(
             phase_id=phase_id,
             is_eval=state.is_eval,
         )
+
+        # Slack review-posted FYI (best-effort). Resolve the install's target
+        # (channel + token-bound orchestrator) per FUP-186; a None resolver or a
+        # None target → no FYI. The orchestrator's notify_* is itself no-raise and
+        # self-skips for gated reviews (a `hitl_pending` row exists → the HITL status
+        # mirror owns the Slack surface) and on replay (a `review_posted` row exists).
+        # The whole resolve+notify is wrapped: Slack is optional and NEVER
+        # gate-breaking, so a resolver failure (DB read / decrypt / notifier build)
+        # degrades to no FYI rather than failing the node AFTER the review already
+        # posted to GitHub. `posted_count` is the two POSTED channels — inline +
+        # review-body (DECISIONS.md#050); dashboard-only is counted "surfaced".
+        if resolve_slack_target is not None:
+            try:
+                slack_target = await resolve_slack_target(state.pr_context.installation_id)
+                if slack_target is not None:
+                    await slack_target.orchestrator.notify_review_posted(
+                        review_id=state.review_id,
+                        is_eval=state.is_eval,
+                        channel_id=slack_target.channel_id,
+                        # owner/repo slug (matches hitl-pending FYI; org-disambiguated).
+                        repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
+                        pr_number=state.pr_context.pr_number,
+                        posted_count=(
+                            review_created.comments_posted + len(eligible_review_body_findings)
+                        ),
+                        dashboard_only_count=len(surfaced_dashboard_only_findings),
+                    )
+            except Exception:
+                # Never gate-breaking: the review is already posted; a Slack-path
+                # failure must not lose the PublishResult.
+                logger.exception(
+                    "slack review-posted FYI failed; publish result unaffected",
+                    extra={"review_id": str(state.review_id)},
+                )
 
         # Started_at is not part of the result shape — kept as a local
         # marker for future eval-timing metrics; PublishEvent doesn't
@@ -1376,38 +1420,14 @@ def _build_finding_comment_body(
 # ---------------------------------------------------------------------------
 
 
-def _is_markdown_link_safe_url(value: str) -> bool:
-    """True if `value` is safe to embed in markdown — as a link target `(...)` AND
-    raw in prose.
-
-    Requires an http(s) scheme (case-insensitive) WITH a non-empty parsed host
-    (`urlparse().netloc`), and rejects whitespace, C0/C1 control chars + DEL, and
-    markdown/HTML-significant chars `()<>[]`. The URL is used both inside a markdown
-    link target (per-finding entries, where `)` breaks the target) AND raw in the
-    aggregate-note prose (where `<...>` would inject HTML), so all of these are
-    unsafe. The host check rejects scheme-only / empty-host URLs (`https://`,
-    `https:///foo`) — `_review_deep_link`'s `rstrip('/')` would otherwise yield a
-    malformed `https:/reviews/...`. The dashboard base URL is operator/per-install
-    config, so the threat is misconfiguration, not attacker input; a malformed URL
-    degrades to the no-link fallback.
-    """
-    try:
-        parsed = urlparse(value)
-    except ValueError:
-        return False  # e.g. malformed IPv6 literal — degrade to no-link
-    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
-        return False
-    return not any(
-        ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in "()<>[]" for ch in value
-    )
-
-
 def _review_deep_link(base_url: str | None, review_id: UUID, finding_id: UUID | None) -> str | None:
     """Dashboard deep-link for the review body, or None (no-link fallback) when no
-    base URL is configured OR the configured URL is malformed (see
-    `_is_markdown_link_safe_url`). Duplicates `notify/deeplink.py::build_review_deeplink`
-    on the Slack branch — consolidate to one shared builder post-merge."""
-    if not base_url or not _is_markdown_link_safe_url(base_url):
+    base URL is configured OR the configured URL is malformed (per the shared
+    `is_safe_link_url` gate in `policy/output_sanitizer.py`, which the Slack
+    deep-link builder `notify/deeplink.py` shares)."""
+    from outrider.policy.output_sanitizer import is_safe_link_url  # noqa: PLC0415
+
+    if not base_url or not is_safe_link_url(base_url):
         return None
     url = f"{base_url.rstrip('/')}/reviews/{review_id}"
     return f"{url}?finding={finding_id}" if finding_id is not None else url

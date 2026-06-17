@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 import uuid
@@ -55,6 +56,7 @@ from _narrate import (
     narrate_audit_stream,
     narrate_db_state,
     narrate_llm_exchanges_from_db,
+    narrate_slack_notifications,
 )
 from _trace_log import TraceTee
 from pydantic import SecretStr, ValidationError
@@ -67,7 +69,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
@@ -78,12 +80,23 @@ from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.audit.replay import AuditReplayer, ReplayMode  # noqa: E402
 from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER  # noqa: E402
+from outrider.db.models.installations import (  # noqa: E402
+    get_slack_config,
+    set_slack_config,
+)
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.github.auth import make_installation_client_factory  # noqa: E402
 from outrider.github.config import GitHubAppSettings  # noqa: E402
 from outrider.github.publisher import GitHubKitPublisher  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
+from outrider.notify.config import SlackSettings  # noqa: E402
+from outrider.notify.resolver import PerInstallSlackResolver  # noqa: E402
+from outrider.notify.token_crypto import (  # noqa: E402
+    TOKEN_ENC_KEY_ENV,
+    TokenCryptoError,
+    encrypt_token,
+)
 from outrider.schemas.pr_context import PRContext  # noqa: E402
 
 if TYPE_CHECKING:
@@ -119,6 +132,18 @@ def _say(msg: str = "") -> None:
     print(msg, flush=True)
     if _TRACE is not None:
         _TRACE.write_line(msg)
+
+
+class _SayLogHandler(logging.Handler):
+    """Route `outrider.*` WARNING+ logs into the trace tee so SWALLOWED failures —
+    notably best-effort Slack errors the orchestrator/nodes log-and-ignore — show in
+    the terminal AND the scripts/generated/ trace file, not just on stderr. This is
+    the "catch every silent failure" hook: a Slack post that fails is never fatal, so
+    its only signal is the log line, and this makes that signal impossible to miss."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        for line in self.format(record).splitlines():
+            _say(f"  [log:{record.levelname}] {line}")
 
 
 async def _fetch_pr_seed(
@@ -165,6 +190,89 @@ async def _fetch_pr_seed(
         changed_files=(),
     )
     return pr_context, pr.base.repo.id
+
+
+async def _maybe_wire_slack(
+    session_factory: async_sessionmaker[Any],
+    persister: AuditPersister,
+    pr_context: PRContext,
+    *,
+    seed_dev_token: bool,
+) -> PerInstallSlackResolver | None:
+    """Wire the per-install Slack resolver for the smoke (None → no Slack).
+
+    DEFAULT (respecting DECISIONS.md#051): use the install's EXISTING per-install
+    Slack config — the one the OAuth flow stored. The dev-bootstrap env token
+    (`SlackSettings`/`OUTRIDER_SLACK_BOT_TOKEN`) is explicitly NOT the production
+    posting authority, so we do not persist it into the real installations row by
+    default. An unconnected install → no Slack (connect it via `/slack/install` first).
+
+    `--seed-dev-slack-token` (`seed_dev_token=True`) is the EXPLICIT dev override: it
+    encrypts + stores the dev env token as the install's Slack config so the smoke can
+    post without the OAuth dance. It's a knowing deviation from #051 (a dev token
+    becoming stored posting authority) — labeled loudly, off by default, and only for
+    a sandbox install you control. Decryption-time failures (bad enc key) are caught
+    and degrade to no-Slack rather than crashing the run mid-flight.
+
+    Either way the encryption key must be present (the resolver decrypts at post time);
+    without it no stored token is usable, so Slack is off.
+    """
+    if TOKEN_ENC_KEY_ENV not in os.environ:
+        _say("  Slack ................ NOT wired (OUTRIDER_TOKEN_ENC_KEY missing — can't decrypt)")
+        return None
+
+    resolver = PerInstallSlackResolver(
+        session_factory=session_factory,
+        sink=persister,
+        dashboard_base_url=os.environ.get("OUTRIDER_DASHBOARD_BASE_URL", ""),
+    )
+
+    async with session_factory() as session:
+        existing = await get_slack_config(session, pr_context.installation_id)
+    if existing is not None:
+        _say(
+            f"  Slack ................ wired → using EXISTING per-install config "
+            f"(channel {existing.channel_id})"
+        )
+        return resolver
+    if not seed_dev_token:
+        _say(
+            "  Slack ................ NOT wired (install not connected; run /slack/install, or "
+            "pass --seed-dev-slack-token to seed the dev env token — dev-only, see #051)"
+        )
+        return None
+
+    # Explicit dev override: persist the env token as this install's Slack config.
+    try:
+        slack_dev = SlackSettings()
+    except ValidationError:
+        _say(
+            "  Slack ................ NOT wired (--seed-dev-slack-token set but "
+            "OUTRIDER_SLACK_BOT_TOKEN / OUTRIDER_SLACK_CHANNEL_ID missing/invalid)"
+        )
+        return None
+    try:
+        ciphertext = encrypt_token(slack_dev.bot_token)
+    except TokenCryptoError as exc:
+        _say(f"  Slack ................ NOT wired (token encryption failed — bad enc key?): {exc}")
+        return None
+    async with session_factory() as session, session.begin():
+        seeded = await set_slack_config(
+            session,
+            installation_id=pr_context.installation_id,
+            team_id="(live-demo)",
+            bot_token_ciphertext=ciphertext,
+            channel_id=slack_dev.channel_id,
+            configured_by="live-github-demo",
+        )
+    if not seeded:
+        _say("  Slack ................ NOT wired (set_slack_config found no active install row)")
+        return None
+    _say(
+        f"  Slack ................ wired → channel {slack_dev.channel_id} (SEEDED the dev env "
+        "token as per-install config — dev-only deviation from #051; clear it after)"
+    )
+    return resolver
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -296,46 +404,62 @@ async def _run(args: argparse.Namespace) -> int:
         await engine.dispose()
         return 2
 
-    graph = build_graph(
-        db_factory=session_factory,
-        github_factory=github_factory,
-        provider=provider,
-        model_config=model_config,
-        phase_event_sink=persister,
-        file_examination_sink=persister,
-        analyze_event_sink=persister,
-        publish_event_sink=persister,
-        trace_sink=persister,
-        hitl_event_sink=persister,
-        synthesize_event_sink=persister,
-        review_status_sink=ReviewStatusPersister(session_factory=session_factory),
-        anomaly_sink=AnomalyPersister(session_factory=session_factory),
-        hitl_config=HITLConfig(),
-        # Required since the suggested-patches arc; OFF to keep the demo's
-        # live spend bounded to the review calls themselves.
-        patch_config=PatchConfig(patches_enabled=False),
-        checkpointer=InMemorySaver(),
-        publisher=GitHubKitPublisher(),
-        import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
-        # Production-parity shadow wiring (mirrors api/lifespan.py). NOTE:
-        # this script targets the REAL configured DATABASE_URL — a demo run
-        # writes content-tier cache rows (findings + trace candidates) into
-        # that database's analyze_file_cache, exactly as a production review
-        # would; they age out under the same 30-day/retention bounds.
-        analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
+    slack_resolver = await _maybe_wire_slack(
+        session_factory, persister, pr_context, seed_dev_token=args.seed_dev_slack_token
     )
 
-    from outrider.agent.state import ReviewState  # noqa: PLC0415
+    # Durable Postgres checkpointer — mirrors api/lifespan.py EXACTLY so a HITL-gated
+    # demo review writes its interrupt checkpoint to Postgres (not in-memory). That's
+    # what makes the dashboard /decide → resume → publish flow work for a demo review,
+    # identical to a production (webhook-driven) review. `from_conn_string` wants a bare
+    # psycopg URL, so strip SQLAlchemy's `+psycopg` suffix (same as the lifespan factory).
+    checkpoint_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
+        await checkpointer.setup()  # idempotent; the checkpoint tables already exist
 
-    seed_state = ReviewState(
-        review_id=review_id,
-        pr_context=pr_context,
-        received_at=datetime.now(UTC),
-        is_eval=False,
-    )
+        graph = build_graph(
+            db_factory=session_factory,
+            github_factory=github_factory,
+            provider=provider,
+            model_config=model_config,
+            phase_event_sink=persister,
+            file_examination_sink=persister,
+            analyze_event_sink=persister,
+            publish_event_sink=persister,
+            trace_sink=persister,
+            hitl_event_sink=persister,
+            synthesize_event_sink=persister,
+            review_status_sink=ReviewStatusPersister(session_factory=session_factory),
+            anomaly_sink=AnomalyPersister(session_factory=session_factory),
+            hitl_config=HITLConfig(),
+            # Required since the suggested-patches arc; OFF to keep the demo's
+            # live spend bounded to the review calls themselves.
+            patch_config=PatchConfig(patches_enabled=False),
+            checkpointer=checkpointer,
+            publisher=GitHubKitPublisher(),
+            import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
+            # Production-parity shadow wiring (mirrors api/lifespan.py). NOTE:
+            # this script targets the REAL configured DATABASE_URL — a demo run
+            # writes content-tier cache rows (findings + trace candidates) into
+            # that database's analyze_file_cache, exactly as a production review
+            # would; they age out under the same 30-day/retention bounds.
+            analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
+            resolve_slack_target=slack_resolver,
+        )
 
-    _say("  Calling real Claude over the real diff ...")
-    result = await graph.ainvoke(seed_state, config={"configurable": {"thread_id": str(review_id)}})
+        from outrider.agent.state import ReviewState  # noqa: PLC0415
+
+        seed_state = ReviewState(
+            review_id=review_id,
+            pr_context=pr_context,
+            received_at=datetime.now(UTC),
+            is_eval=False,
+        )
+
+        _say("  Calling real Claude over the real diff ...")
+        result = await graph.ainvoke(
+            seed_state, config={"configurable": {"thread_id": str(review_id)}}
+        )
     await provider.aclose()
 
     interrupted = "__interrupt__" in result
@@ -344,6 +468,7 @@ async def _run(args: argparse.Namespace) -> int:
     # whole-table dump of a shared database.
     await narrate_audit_stream(_say, engine, review_id)
     await narrate_llm_exchanges_from_db(_say, engine, review_id)
+    await narrate_slack_notifications(_say, engine, review_id)
     await narrate_db_state(_say, engine, review_id=review_id)
     rc = await _report_and_verify(
         engine,
@@ -352,6 +477,7 @@ async def _run(args: argparse.Namespace) -> int:
         result=result,
         interrupted=interrupted,
         allow_empty_publish=args.allow_empty_publish,
+        slack_wired=slack_resolver is not None,
     )
     await engine.dispose()
     return rc
@@ -452,6 +578,7 @@ async def _report_and_verify(
     result: dict[str, Any],
     interrupted: bool,
     allow_empty_publish: bool,
+    slack_wired: bool,
 ) -> int:
     _say()
     async with engine.begin() as conn:
@@ -575,6 +702,40 @@ async def _report_and_verify(
     except Exception as exc:  # noqa: BLE001 — surface any replay failure
         checks.append(("replay", False, f"{type(exc).__name__}: {exc}"))
 
+    # Slack write proof (only when Slack was wired). A gated review posts hitl_pending
+    # then pauses (interrupted); a clean review posts review_posted after a successful
+    # publish. In either case a slack_notification audit row MUST exist — a swallowed
+    # post (Slack never gate-breaks) would otherwise let the smoke pass with no message,
+    # the exact silent-failure this gate catches. Outcomes that never reach a posting
+    # point (empty/skipped publish, graph ended early) are reported, not gated.
+    if slack_wired:
+        async with engine.begin() as conn:
+            n_slack = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM audit_events "
+                        "WHERE review_id = :id AND event_type = 'slack_notification'"
+                    ),
+                    {"id": review_id},
+                )
+            ).scalar_one()
+        published_ok = (
+            publish_result is not None and getattr(publish_result, "outcome", None) == "success"
+        )
+        if interrupted or published_ok:
+            checks.append(
+                (
+                    "Slack notification posted (wired + reached a posting point)",
+                    n_slack >= 1,
+                    f"{n_slack} slack_notification row(s)",
+                )
+            )
+        else:
+            _say(
+                f"  Slack notify check ... skipped ({n_slack} row(s); review reached no Slack "
+                "posting point — gated→hitl or successful publish)"
+            )
+
     _say("  Structural checks (exit verdict = all must pass):")
     all_ok = True
     for label, ok, detail in checks:
@@ -613,6 +774,17 @@ def _parse_args() -> argparse.Namespace:
             "this relaxes that to allow runs where Claude produces no inline-eligible findings"
         ),
     )
+    parser.add_argument(
+        "--seed-dev-slack-token",
+        action="store_true",
+        help=(
+            "DEV-ONLY: persist the OUTRIDER_SLACK_* env token as this install's per-install "
+            "Slack config so the smoke can post without the OAuth dance. Off by default — a "
+            "knowing deviation from DECISIONS.md#051 (the env token is not production posting "
+            "authority); only for a sandbox install, and clear it afterward. Default behavior "
+            "uses the install's existing OAuth-stored config, or skips Slack if unconnected"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -621,12 +793,20 @@ def _main_with_log() -> int:
     global _TRACE  # noqa: PLW0603 — single assignment per process, set before any _say
     _TRACE = TraceTee("live_github_demo")
     print(f"  Full trace ........... {_TRACE.path}", flush=True)
+    # Route outrider WARNING+ logs (incl. SWALLOWED best-effort Slack failures) into
+    # the tee, so a non-fatal Slack error isn't a silent failure — it lands in the
+    # terminal + the trace file alongside everything else.
+    outrider_logger = logging.getLogger("outrider")
+    outrider_logger.setLevel(logging.WARNING)
+    log_handler = _SayLogHandler(level=logging.WARNING)
+    outrider_logger.addHandler(log_handler)
     try:
         return asyncio.run(_run(_parse_args()))
     except Exception:
         _TRACE.write_current_exception()
         raise
     finally:
+        outrider_logger.removeHandler(log_handler)
         print(f"  Full trace ........... {_TRACE.path}", flush=True)
         _TRACE.close()
         _TRACE = None

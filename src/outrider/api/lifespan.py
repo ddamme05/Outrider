@@ -71,7 +71,7 @@ from contextlib import (
 )
 from typing import TYPE_CHECKING, Any
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -90,6 +90,7 @@ from outrider.llm.base import LLMProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.logging import register_filter_on_all_handlers
 from outrider.llm.tracing import wrap_provider_if_tracing
+from outrider.notify.config import SlackOAuthSettings
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.policy.versions import (
     UnknownPolicyVersionError,
@@ -103,6 +104,39 @@ __all__ = ["StartupError", "build_lifespan", "lifespan"]
 
 
 _LOGGER = logging.getLogger("outrider.api.lifespan")
+
+
+# OAuth env vars whose PRESENCE (even empty) signals "Slack OAuth intended".
+_SLACK_OAUTH_VARS = (
+    "OUTRIDER_SLACK_CLIENT_ID",
+    "OUTRIDER_SLACK_CLIENT_SECRET",
+    "OUTRIDER_SLACK_REDIRECT_URI",
+)
+
+
+def _load_slack_oauth_settings() -> SlackOAuthSettings | None:
+    """Construct `SlackOAuthSettings` when any OAuth env var is present, else None.
+
+    Slack is OPTIONAL, so a present-but-invalid OAuth config (partial / empty / short)
+    is logged and DISABLED — never fatal. A misconfigured optional integration must not
+    block app startup or the core PR-review pipeline; only the `/slack/*` routes go
+    dark (their uniform 503). The loud ERROR log (not a silent None) preserves the
+    original "don't hide a typo" intent while scoping the failure to Slack. ALL OAuth
+    vars unset → None (Slack simply not configured, no log). The state secret +
+    token-encryption key are read at their call sites, not here.
+    """
+    if not any(var in os.environ for var in _SLACK_OAUTH_VARS):
+        return None
+    try:
+        return SlackOAuthSettings()
+    except ValidationError as exc:
+        _LOGGER.error(
+            "Slack OAuth config is present but invalid — the Slack install flow is "
+            "DISABLED; the rest of Outrider is unaffected. Fix or unset the "
+            "OUTRIDER_SLACK_* OAuth vars. Details: %s",
+            exc,
+        )
+        return None
 
 
 class StartupError(RuntimeError):
@@ -589,6 +623,27 @@ def build_lifespan(
 
             analyze_cache_store = AnalyzeCacheStore(session_factory=session_factory)
 
+            # Step 8b: per-install Slack resolver (commit 6.4c). Wired only when token
+            # decryption is possible (OUTRIDER_TOKEN_ENC_KEY present) — without it no
+            # stored bot token can be decrypted, so Slack posting is impossible and the
+            # graph runs with resolve_slack_target=None (no per-review config lookup).
+            # The resolver reads each install's Slack config, decrypts the token, and
+            # builds a per-install orchestrator on `persister` (the SlackEventSink),
+            # caching by (installation_id, ciphertext); registered for LIFO teardown so
+            # its notifiers close on shutdown. Keeps cryptography/slack_sdk out of
+            # agent/ (the graph holds only the resolver callable, FUP-186).
+            from outrider.notify.resolver import PerInstallSlackResolver  # noqa: PLC0415
+            from outrider.notify.token_crypto import TOKEN_ENC_KEY_ENV  # noqa: PLC0415
+
+            slack_resolver: PerInstallSlackResolver | None = None
+            if TOKEN_ENC_KEY_ENV in os.environ:
+                slack_resolver = PerInstallSlackResolver(
+                    session_factory=session_factory,
+                    sink=persister,
+                    dashboard_base_url=_dashboard_settings.dashboard_base_url or "",
+                )
+                stack.push_async_callback(slack_resolver.aclose)
+
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -611,6 +666,7 @@ def build_lifespan(
                 analyze_cache_store=analyze_cache_store,
                 cache_mode=cache_config.mode,
                 dashboard_base_url=_dashboard_settings.dashboard_base_url,
+                resolve_slack_target=slack_resolver,
             )
 
             # Step 9: `run_graph` closure for the V1 dispatcher to call
@@ -687,6 +743,12 @@ def build_lifespan(
             # disabled (require_agent_api_key returns a uniform 401). Admin stays
             # fail-loud above; the agent key tolerates absence.
             app.state.agent_api_key = _dashboard_settings.agent_api_key
+
+            # Slack OAuth install-flow config (commit 6.3c/6.3e). Opt-in + non-fatal:
+            # present-but-invalid config disables Slack with a loud log, it does NOT
+            # crash startup — Slack is optional, so it can never block the core app.
+            # See `_load_slack_oauth_settings`.
+            app.state.slack_oauth_settings = _load_slack_oauth_settings()
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
             # and start the periodic background task. Per

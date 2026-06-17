@@ -1,0 +1,175 @@
+"""Slack OAuth install `state` — a stateless, HMAC-signed CSRF token.
+
+The `state` round-trips through Slack's authorize → callback redirect, so it MUST
+be unforgeable AND bound to the originating admin's choices. It carries the
+`installation_id`, the admin principal, the chosen `channel_id`, a random nonce,
+and an expiry, HMAC-signed with `OUTRIDER_SLACK_STATE_SECRET`. The callback
+verifies the signature + expiry and reads installation_id / admin / channel FROM
+THE VERIFIED STATE — never from the (attacker-controllable) callback query params.
+
+Stateless by design (dashboard-in-Slack spec): no pending-state table; the nonce +
+expiry bound OAuth CSRF replay for this phase. A missing secret fails CLOSED
+(raises) so a misconfigured deploy can't mint/accept unsigned state.
+"""
+
+from __future__ import annotations
+
+import base64
+import hmac
+import json
+import os
+import re
+import secrets
+import time
+from dataclasses import dataclass
+from hashlib import sha256
+
+__all__ = [
+    "STATE_SECRET_ENV",
+    "SlackInstallState",
+    "SlackStateError",
+    "sign_state",
+    "validate_channel_id",
+    "verify_state",
+]
+
+# Env var NAME (not a secret value) — the HMAC key for OAuth state.
+STATE_SECRET_ENV = "OUTRIDER_SLACK_STATE_SECRET"  # noqa: S105
+_DEFAULT_TTL_SECONDS = 600  # 10 minutes — ample for the OAuth round-trip
+# Slack channel id shape: C… (public) / G… (private) prefix, then uppercase
+# alphanumerics (≥6 total). A sanity gate before signing — Slack itself is the
+# authority at post time (a bad channel fails with channel_not_found /
+# not_in_channel). DMs (D…) are out of V1 channel scope.
+_CHANNEL_ID_RE = re.compile(r"\A[CG][A-Z0-9]{5,}\Z")
+
+
+class SlackStateError(ValueError):
+    """The OAuth `state` is missing, malformed, expired, or badly signed — OR the
+    signing secret is unset. Fail-closed: the install-start / callback rejects."""
+
+
+@dataclass(frozen=True)
+class SlackInstallState:
+    """The verified contents of a signed OAuth `state` (read by the callback)."""
+
+    installation_id: int
+    admin_id: str
+    channel_id: str
+    nonce: str
+    exp: int
+
+
+# Known placeholders (mirrors github/config.py / dashboard/config.py /
+# notify/config.py — keep in sync). The state secret is the CSRF unforgeability
+# root, so a verbatim .env.example / weak default is rejected, same discipline as
+# the auth secrets (unlike the lower-stakes truncation-marker secret, which only
+# rejects empty).
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
+    {
+        "replace-me",
+        "replace-me-with-a-long-random-secret",
+        "change-me",
+        "changeme",
+        "secret",
+        "password",
+        "your-secret-here",
+    }
+)
+# Minimum length (chars) for the state secret. A short, non-placeholder secret
+# (e.g. "hunter2") slips past the placeholder set but still has too little entropy
+# to be a credible HMAC/CSRF root. 32 is the floor a `secrets.token_urlsafe(32)`
+# value (≈43 chars) clears comfortably; rejecting shorter values forces a real key.
+_MIN_STATE_SECRET_LEN = 32
+
+
+def _state_secret() -> bytes:
+    """Read the HMAC key from env, fail-closed if absent, a known placeholder, OR too
+    short. Read fresh per call (test monkeypatch + restart-free rotation). The checks
+    match the auth-secret discipline — this key is the CSRF unforgeability root, so a
+    weak/default/low-entropy value is a real forgery risk."""
+    raw = os.environ.get(STATE_SECRET_ENV, "").strip()
+    if not raw:
+        raise SlackStateError(
+            f"{STATE_SECRET_ENV} must be set (non-empty) to sign/verify Slack OAuth state. "
+            "The Slack install flow fails closed without it."
+        )
+    if raw.lower() in _PLACEHOLDER_SECRETS:
+        raise SlackStateError(
+            f"{STATE_SECRET_ENV} is a known placeholder ({raw!r}); it is the CSRF "
+            "unforgeability root for the OAuth state — set a real random secret."
+        )
+    if len(raw) < _MIN_STATE_SECRET_LEN:
+        raise SlackStateError(
+            f"{STATE_SECRET_ENV} is too short ({len(raw)} chars); it signs the OAuth state "
+            f"CSRF token, so use at least {_MIN_STATE_SECRET_LEN} chars — e.g. "
+            '`python -c "import secrets; print(secrets.token_urlsafe(32))"`.'
+        )
+    return raw.encode("utf-8")
+
+
+def _sign(body: str) -> str:
+    return base64.urlsafe_b64encode(
+        hmac.new(_state_secret(), body.encode("utf-8"), sha256).digest()
+    ).decode("ascii")
+
+
+def validate_channel_id(channel_id: str) -> str:
+    """Shape-gate a Slack channel id (non-empty, uppercase-alnum, ≥6 chars). Applied
+    BEFORE signing into state so a malformed channel never round-trips, and again on
+    verify. Returns the stripped, validated id; raises `SlackStateError` otherwise."""
+    cid = channel_id.strip()
+    if not _CHANNEL_ID_RE.match(cid):
+        raise SlackStateError(f"invalid Slack channel_id shape: {channel_id!r}")
+    return cid
+
+
+def sign_state(
+    *,
+    installation_id: int,
+    admin_id: str,
+    channel_id: str,
+    ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+) -> str:
+    """Mint a signed `state` for the install-start redirect. `channel_id` is
+    validated before signing; the returned token is `base64url(payload).hmac`."""
+    channel = validate_channel_id(channel_id)
+    payload = {
+        "iid": installation_id,
+        "admin": admin_id,
+        "chan": channel,
+        "nonce": secrets.token_urlsafe(16),
+        "exp": int(time.time()) + ttl_seconds,
+    }
+    body = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return f"{body}.{_sign(body)}"
+
+
+def verify_state(state: str) -> SlackInstallState:
+    """Verify a callback `state`: signature (constant-time), then expiry, then field
+    shape. Raises `SlackStateError` on any failure. The returned values — NOT the
+    callback query params — are the trusted installation_id / admin / channel."""
+    if not state or "." not in state:
+        raise SlackStateError("missing or malformed state")
+    body, _, sig = state.partition(".")
+    if not hmac.compare_digest(sig, _sign(body)):
+        raise SlackStateError("state signature mismatch")
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(body.encode("ascii")))
+        iid = int(payload["iid"])
+        admin_id = str(payload["admin"])
+        channel_id = str(payload["chan"])
+        nonce = str(payload["nonce"])
+        exp = int(payload["exp"])
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise SlackStateError("state payload malformed or missing fields") from exc
+    if int(time.time()) >= exp:
+        raise SlackStateError("state expired")
+    return SlackInstallState(
+        installation_id=iid,
+        admin_id=admin_id,
+        channel_id=validate_channel_id(channel_id),
+        nonce=nonce,
+        exp=exp,
+    )

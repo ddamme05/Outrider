@@ -69,8 +69,18 @@ async def narrate_audit_stream(
         elif et == "finding":
             detail = f"{payload.get('finding_type')} ({payload.get('severity')})"
         elif et == "publish":
+            # All three eligibility-gated tiers (DECISIONS.md#050): inline comments,
+            # review-body "Related concerns", and the dashboard-only aggregate.
             detail = (
-                f"status={payload.get('review_status')} posted={payload.get('comments_posted')}"
+                f"status={payload.get('review_status')} "
+                f"inline={payload.get('comments_posted')} "
+                f"review_body={payload.get('review_body_findings_posted')} "
+                f"dashboard_only={payload.get('dashboard_only_findings_surfaced')}"
+            )
+        elif et == "slack_notification":
+            detail = (
+                f"{payload.get('kind')} -> {payload.get('channel_id')} "
+                f"ts={payload.get('message_ts')}"
             )
         elif et == "publish_routing":
             detail = f"-> {payload.get('destination')}"
@@ -171,10 +181,52 @@ async def narrate_db_state(
 
 
 def narrate_recorded_publisher(say: Callable[..., None], publisher: object) -> None:
-    """The exact payload(s) a recording publisher captured (would-be GitHub posts)."""
+    """The exact payload(s) a recording publisher captured (would-be GitHub posts).
+
+    The `body` carries the review-body "Related concerns" section + the aggregate
+    dashboard-only note (DECISIONS.md#050) when those tiers have eligible findings —
+    dumped in full here alongside the inline `comments`.
+    """
     calls = getattr(publisher, "create_review_calls", [])
-    say(f"  GitHub publish ....... {len(calls)} call(s), FULL payloads:")
+    say(f"  GitHub publish ....... {len(calls)} call(s), FULL payloads (incl. review body):")
     for i, call in enumerate(calls, 1):
         say(f"    --- create_review call {i}:")
         say_block(say, "      ", dump_json(call))
+    say("")
+
+
+async def narrate_slack_notifications(
+    say: Callable[..., None], engine: AsyncEngine, review_id: UUID
+) -> None:
+    """The Slack notifications actually posted for the review, with FULL payloads.
+
+    A `slack_notification` audit row is written only AFTER a successful
+    `chat.postMessage` (metadata only — channel + ts + kind, never the message body
+    or the bot token, per DECISIONS.md#051). Zero rows therefore means one of:
+      - no Slack resolver wired (no OUTRIDER_TOKEN_ENC_KEY / no per-install config),
+      - the OTHER kind fired (a gated review posts `hitl_pending`, a clean review
+        posts `review_posted` — mutually exclusive per review),
+      - or a post FAILED and was swallowed (Slack is never gate-breaking) — check the
+        logs for `notification failed` / `SlackNotifyError` (enable INFO logging to see them).
+    """
+    async with engine.begin() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT sequence_number, payload FROM audit_events "
+                    "WHERE review_id = :id AND event_type = 'slack_notification' "
+                    "ORDER BY sequence_number"
+                ),
+                {"id": review_id},
+            )
+        ).all()
+    say(f"  Slack notifications .. {len(rows)} posted (metadata-only audit rows), FULL payloads:")
+    if not rows:
+        say("    (none — no resolver wired, the other kind fired, or a swallowed post — see logs)")
+    for seq, payload in rows:
+        say(
+            f"    --- seq={seq}: {payload.get('kind')} -> channel={payload.get('channel_id')} "
+            f"ts={payload.get('message_ts')}"
+        )
+        say_block(say, "      ", dump_json(payload))
     say("")

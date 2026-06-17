@@ -41,6 +41,7 @@ from outrider.audit.events import (
     compute_finding_content_hash,
 )
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
+from outrider.notify.orchestrator import SlackNotifyTarget
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -2024,3 +2025,157 @@ async def test_mixed_review_body_and_dashboard_only_both_materialize(
     assert pr.review_body_findings_posted == 1
     assert pr.dashboard_only_findings_surfaced == 1
     assert pr.comments_posted == 0
+
+
+# ---------------------------------------------------------------------------
+# Slack 5c-d — review-posted FYI hook (publish success path)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSlackOrchestrator:
+    """Records `notify_review_posted` calls (publish never calls notify_hitl_pending)."""
+
+    def __init__(self) -> None:
+        self.review_posted_calls: list[dict[str, Any]] = []
+
+    async def notify_review_posted(self, **kwargs: Any) -> None:
+        self.review_posted_calls.append(kwargs)
+
+
+def _resolver_for(orch: _RecordingSlackOrchestrator, channel_id: str = "C0123ABC") -> Any:
+    """A per-install resolver that always resolves to `orch` on `channel_id` — the
+    test seam replacing the retired slack_orchestrator/slack_channel_id params."""
+
+    async def _resolve(_installation_id: int) -> SlackNotifyTarget:
+        return SlackNotifyTarget(channel_id=channel_id, orchestrator=orch)  # type: ignore[arg-type]
+
+    return _resolve
+
+
+@pytest.mark.asyncio
+async def test_publish_posts_slack_review_posted_fyi_on_success() -> None:
+    """On a successful publish the node calls `notify_review_posted` with
+    posted_count = inline + review-body and dashboard_only_count = surfaced,
+    plus the review/channel/repo/PR identity (Slack 5c-d)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolver_for(orch),
+    )
+
+    assert len(orch.review_posted_calls) == 1
+    call = orch.review_posted_calls[0]
+    assert call["review_id"] == state.review_id
+    assert call["channel_id"] == "C0123ABC"
+    assert call["repo"] == f"{state.pr_context.owner}/{state.pr_context.repo}"  # matches hitl FYI
+    assert call["pr_number"] == state.pr_context.pr_number
+    assert call["posted_count"] == 1  # one inline comment, zero review-body
+    assert call["dashboard_only_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_slack_fyi_sums_inline_review_body_and_counts_dashboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """posted_count sums inline + review-body (DECISIONS.md#050); dashboard-only is
+    surfaced separately. Here: 0 inline + 1 review-body = posted_count 1; 1 surfaced."""
+    monkeypatch.setattr(publish_module, "source_line_to_github", _raise_unchanged_region)
+    rb = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)  # -> REVIEW_BODY
+    do = _make_finding(
+        severity=FindingSeverity.MEDIUM, file_path="src/other.py"
+    )  # -> DASHBOARD_ONLY
+    state = _make_state(
+        findings=(rb, do),
+        changed_files=(_make_changed_file(path="src/foo.py"),),
+        analysis_round_findings=(),
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolver_for(orch),
+    )
+
+    assert len(orch.review_posted_calls) == 1
+    call = orch.review_posted_calls[0]
+    assert call["posted_count"] == 1  # 0 inline + 1 review-body
+    assert call["dashboard_only_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_no_slack_fyi_when_resolver_absent() -> None:
+    """resolve_slack_target unset (default) → no FYI, no crash; publish still succeeds."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    result = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "success"
+
+
+@pytest.mark.asyncio
+async def test_publish_no_slack_fyi_when_target_unresolved() -> None:
+    """Resolver present but returns None (the install has no active Slack config) →
+    no FYI, no crash; publish still succeeds (per-install opt-out path, FUP-186)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    async def _resolve_none(_installation_id: int) -> None:
+        return None
+
+    result = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolve_none,
+    )
+
+    assert result["publish_result"].outcome == "success"
+    assert orch.review_posted_calls == []
+
+
+@pytest.mark.asyncio
+async def test_publish_slack_resolver_failure_is_not_publish_breaking() -> None:
+    """A resolver that raises (DB read / decrypt / notifier build) must NOT fail the
+    node after the review already posted to GitHub — Slack is never gate-breaking."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    async def _boom(_installation_id: int) -> SlackNotifyTarget:
+        raise RuntimeError("resolver exploded")
+
+    result = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_boom,
+    )
+
+    assert result["publish_result"].outcome == "success"

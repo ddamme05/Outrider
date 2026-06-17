@@ -48,6 +48,7 @@ from outrider.api.dashboard import (
     policy_router,
     reviews_router,
 )
+from outrider.api.slack import slack_oauth_router
 from outrider.api.webhooks.router import router as webhook_router
 
 app = FastAPI(
@@ -65,6 +66,9 @@ app.include_router(metrics_router)
 # Feature 3 / S2: read-only agent-view endpoint on its own require_agent_api_key
 # router (separate scope from the admin-gated routers above).
 app.include_router(agent_view_router)
+# Slack OAuth install flow (commit 6.3e): admin-authed /slack/install + public
+# /slack/oauth/callback. Disabled (uniform 503) unless OUTRIDER_SLACK_CLIENT_ID is set.
+app.include_router(slack_oauth_router)
 
 
 @app.get("/health")

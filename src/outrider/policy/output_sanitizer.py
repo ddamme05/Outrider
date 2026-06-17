@@ -61,6 +61,7 @@ import os
 import re
 from hashlib import sha256
 from typing import Final
+from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -349,6 +350,33 @@ def is_safe_suggestion_replacement(replacement: str) -> bool:
         or _ANSI_CONTROL_REGEX.search(replacement) is not None
         or _NUL_CHAR in replacement
         or _drop_lone_surrogates(replacement) != replacement
+    )
+
+
+def is_safe_link_url(value: str) -> bool:
+    """Whether `value` is safe to embed as a link URL in BOTH GitHub markdown
+    (`[text](url)`) and Slack mrkdwn (`<url|text>`).
+
+    Single source of truth for the deep-link URL-safety gate — called by the publish
+    review-body renderer (`_review_deep_link`) AND the Slack notification deep-link
+    builder (`notify/deeplink.py`). Requires an http(s) scheme (case-insensitive)
+    with a non-empty parsed host (`urlparse().netloc`), and rejects whitespace,
+    C0/C1 control chars + DEL, and the link-delimiter characters of BOTH formats:
+    `()` (markdown link target), `<>` (HTML / Slack `<...>`), `[]` (markdown), and
+    `|` (the Slack `<url|text>` separator). The host check rejects scheme-only /
+    empty-host URLs (`https://`, `https:///foo`) whose trailing-slash strip would
+    yield a malformed `https:/...`. The base URL is operator/per-install config, so
+    the threat is misconfiguration, not attacker input; a malformed URL degrades to
+    a no-link fallback at the call site.
+    """
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False  # e.g. malformed IPv6 literal — degrade to no-link
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return False
+    return not any(
+        ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in "()<>[]|" for ch in value
     )
 
 

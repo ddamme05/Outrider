@@ -14,6 +14,7 @@ This is the only join-style cascade in the schema; content tables use RESTRICT
 to force the sweep job to delete content explicitly first.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -24,11 +25,16 @@ from sqlalchemy import (
     ColumnExpressionArgument,
     ForeignKey,
     Index,
+    LargeBinary,
     Text,
     UniqueConstraint,
+    func,
+    select,
     text,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime, Uuid
 
@@ -58,6 +64,21 @@ class Installation(Base):
     )
     tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     purge_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Per-installation Slack config (dashboard-in-Slack, commit 6). All nullable —
+    # Slack is opt-in per install; an install that never connects Slack leaves them
+    # NULL. The bot token is stored ENCRYPTED at rest, never plaintext (see
+    # DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest; Fernet ciphertext via
+    # notify/token_crypto.py); decryption is confined to the Slack notifier boundary.
+    # The columns live here (not a side table) so #012's tombstone/purge carries the
+    # encrypted token with the install on hard-delete.
+    slack_team_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slack_bot_token_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    slack_channel_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slack_configured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    slack_configured_by: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InstallationRepository(Base):
@@ -100,3 +121,81 @@ def active_repo_membership(
         & (repo.repo_id == repo_id)
         & (repo.removed_at.is_(None))
     )
+
+
+async def set_slack_config(
+    session: AsyncSession,
+    *,
+    installation_id: int,
+    team_id: str,
+    bot_token_ciphertext: bytes,
+    channel_id: str,
+    configured_by: str,
+) -> bool:
+    """Persist per-install Slack config from a completed OAuth exchange (commit 6.3c).
+
+    Updates the five `slack_*` columns on the matching ACTIVE (non-tombstoned)
+    `installations` row and returns True; returns False if no active install matched
+    — a tombstoned-in-grace or absent install can't be connected (the OAuth callback
+    404s). The bot token is stored as Fernet ciphertext (see
+    DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest); this helper never sees
+    or persists plaintext. `slack_configured_at` is set server-side (`func.now()`,
+    timestamptz). The caller owns the transaction (wrap in `session.begin()` / commit).
+    """
+    result = await session.execute(
+        update(Installation)
+        .where(
+            Installation.installation_id == installation_id,
+            Installation.tombstoned_at.is_(None),
+        )
+        .values(
+            slack_team_id=team_id,
+            slack_bot_token_ciphertext=bot_token_ciphertext,
+            slack_channel_id=channel_id,
+            slack_configured_at=func.now(),
+            slack_configured_by=configured_by,
+        )
+    )
+    # `AsyncSession.execute` is typed `Result` (no `rowcount`); the runtime type for an
+    # UPDATE is `CursorResult`, which carries it. `getattr` dodges the base-class typing
+    # the same way the webhook/sweep UPDATE paths do.
+    rowcount: int = getattr(result, "rowcount", 0) or 0
+    return rowcount > 0
+
+
+@dataclass(frozen=True)
+class InstallSlackConfig:
+    """The per-install Slack config needed to post: the channel + the encrypted bot
+    token. Decryption stays at the composition-root resolver (notify/resolver.py),
+    not here — this struct carries ciphertext only (DECISIONS.md#051)."""
+
+    channel_id: str
+    bot_token_ciphertext: bytes
+
+
+async def get_slack_config(
+    session: AsyncSession, installation_id: int
+) -> InstallSlackConfig | None:
+    """Read the Slack config for an ACTIVE (non-tombstoned) install, or None.
+
+    Returns None when the install is absent, tombstoned-in-grace (#012 — Slack must
+    not post for an install pending purge), or has no Slack config (channel /
+    ciphertext NULL — never connected, or opted out). The bot token is returned as
+    ciphertext; the resolver decrypts it at the notify boundary, never here."""
+    row = (
+        await session.execute(
+            select(
+                Installation.slack_channel_id,
+                Installation.slack_bot_token_ciphertext,
+            ).where(
+                Installation.installation_id == installation_id,
+                Installation.tombstoned_at.is_(None),
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    channel_id, ciphertext = row
+    if not channel_id or ciphertext is None:
+        return None
+    return InstallSlackConfig(channel_id=channel_id, bot_token_ciphertext=bytes(ciphertext))

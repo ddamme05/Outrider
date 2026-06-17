@@ -60,6 +60,7 @@ from outrider.audit.events import (
     PublishRoutingEvent,
     ReplayVerdictEvent,
     ReviewPhaseEvent,
+    SlackNotificationEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
@@ -477,14 +478,19 @@ _NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxy
 # and so are exempt from node-containment. `AgentTransitionEvent` records a
 # transition BETWEEN phases (it carries from_node/to_node, not a single node_id);
 # `ReplayVerdictEvent` is post-completion replay metadata appended by the verdict
-# projector AFTER all phases have closed (it is bounded by nothing). `ReviewPhaseEvent`
-# is the phase marker itself, handled before this check. Keyed by
+# projector AFTER all phases have closed (it is bounded by nothing).
+# `SlackNotificationEvent` is a best-effort notification side effect emitted around
+# hitl or publish (depending on `kind`), so it belongs to no single node's
+# phase window — see DECISIONS.md#052-slacknotificationevent-is-phase-unbounded-in-replay
+# (the exemption narrows phase-events-bound-work for this event type ONLY).
+# `ReviewPhaseEvent` is the phase marker itself, handled before this check. Keyed by
 # `type[AuditEventBase]`, not the `AuditEvent` union alias (`type[...]` wants a class).
 # The runtime `continue` in `_verify_phase_wellformed` consults THIS tuple, so adding
 # a member here both registers it (for the completeness guard test) and exempts it.
 _PHASE_UNBOUNDED_EVENTS: Final[tuple[type[AuditEventBase], ...]] = (
     AgentTransitionEvent,
     ReplayVerdictEvent,
+    SlackNotificationEvent,
 )
 
 
@@ -494,7 +500,8 @@ def _required_phase_node(event: AuditEvent) -> str | None:
     Prefers the event's own `node_id` (LLMCallEvent, FileExaminationEvent, the
     analyze/synthesize aggregates); falls back to the node-less owner map
     (FindingEvent → analyze, etc.). Returns None for phase-unbounded events
-    (`AgentTransitionEvent`, `ReplayVerdictEvent`) — they are bounded by nothing.
+    (`AgentTransitionEvent`, `ReplayVerdictEvent`, `SlackNotificationEvent`) — they
+    are bounded by nothing.
     """
     own = getattr(event, "node_id", None)
     if own is not None:
@@ -515,9 +522,10 @@ def _verify_phase_wellformed(
 
     - **Boundedness.** Every work event occurs while a phase is open. The
       `_PHASE_UNBOUNDED_EVENTS` types (`AgentTransitionEvent`,
-      `ReplayVerdictEvent`) and the phase markers themselves are exempt —
-      transitions occur before/between phases, the verdict is post-completion
-      replay metadata.
+      `ReplayVerdictEvent`, `SlackNotificationEvent`) and the phase markers
+      themselves are exempt — transitions occur before/between phases, the verdict
+      is post-completion replay metadata, the Slack notification is a
+      best-effort side effect with no single owning node.
     - **Node containment.** A work event must occur inside a phase for the
       node that owns it — its own `node_id` when it carries one (`LLMCallEvent`,
       `FileExaminationEvent`, the analyze/synthesize aggregates), else the
@@ -526,8 +534,9 @@ def _verify_phase_wellformed(
       `analyze` LLM call belongs in an `analyze` phase, not a `triage` one; an
       analyze-owned `FindingEvent` likewise. This makes the stream
       graph-faithful, not merely phase-bounded. The `_PHASE_UNBOUNDED_EVENTS`
-      types (`AgentTransitionEvent`, `ReplayVerdictEvent`) are unbounded; the
-      completeness guard test asserts every other node-less type has an owner.
+      types (`AgentTransitionEvent`, `ReplayVerdictEvent`, `SlackNotificationEvent`)
+      are unbounded; the completeness guard test asserts every other node-less type
+      has an owner.
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).

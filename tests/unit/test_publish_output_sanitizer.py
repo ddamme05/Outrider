@@ -20,6 +20,7 @@ from outrider.policy.output_sanitizer import (
     apply_size_cap,
     compute_truncation_hmac,
     escape_markdown_prose,
+    is_safe_link_url,
     is_safe_suggestion_replacement,
     render_fenced_block,
     sanitize_display_string,
@@ -445,3 +446,47 @@ def test_is_safe_suggestion_replacement_accepts_clean_code() -> None:
 )
 def test_is_safe_suggestion_replacement_rejects(replacement: str, why: str) -> None:
     assert is_safe_suggestion_replacement(replacement) is False, f"should reject: {why}"
+
+
+# ---------------------------------------------------------------------------
+# is_safe_link_url — shared deep-link URL gate (publish markdown + Slack mrkdwn)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://dash.example",
+        "http://localhost:5173",
+        "https://dash.example/base/path",
+        "https://dash.example:8443/x?a=b#frag",
+        "HTTPS://dash.example",  # uppercase scheme (RFC-3986 case-insensitive)
+    ],
+)
+def test_is_safe_link_url_accepts_well_formed(url: str) -> None:
+    assert is_safe_link_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://dash.example",  # non-http scheme
+        "javascript:alert(1)",  # non-http scheme
+        "dash.example",  # no scheme
+        "https://dash.example/a)b",  # close paren breaks markdown target
+        "https://dash.example/a(b",  # open paren
+        "https://dash.example/<b>",  # angle brackets -> HTML / Slack <...>
+        "https://dash.example/[x]",  # square brackets -> markdown link syntax
+        "https://dash.example/a|b",  # pipe -> breaks Slack <url|text>
+        "https://dash.example/a b",  # whitespace
+        "https://dash.example/a\tb",  # tab
+        "https://dash.example/a\nb",  # newline
+        "https://dash.example/a\x00b",  # NUL control char
+        "https://dash.example/a\x7fb",  # DEL control char
+        "https://",  # scheme-only / host-less
+        "https:///",  # only slashes after the scheme
+        "https:///foo",  # empty host with a path (urlparse netloc == "")
+    ],
+)
+def test_is_safe_link_url_rejects_malformed(url: str) -> None:
+    assert is_safe_link_url(url) is False

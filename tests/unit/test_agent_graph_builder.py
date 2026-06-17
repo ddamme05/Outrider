@@ -613,3 +613,37 @@ def test_build_graph_signature_is_keyword_only() -> None:
             ModelConfig(),
             _StubPhaseSink(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Slack notification wiring — orchestrator + channel are all-or-nothing
+# ---------------------------------------------------------------------------
+
+
+async def _stub_resolver(_installation_id: int) -> None:
+    """A valid (callable) per-install resolver returning no target — enough to pass
+    the build_graph callable guard. Real resolution lives in the lifespan (FUP-186)."""
+    return None
+
+
+def test_build_graph_rejects_non_callable_resolver() -> None:
+    """resolve_slack_target must be an async callable; a non-callable is a miswired
+    composition root — fail closed at construction, not as a mid-review TypeError."""
+    args = _valid_args()
+    args["resolve_slack_target"] = object()
+    with pytest.raises(BuildGraphError, match="callable"):
+        build_graph(**args)
+
+
+def test_build_graph_accepts_callable_resolver() -> None:
+    """A callable per-install resolver → Slack enabled; the graph builds."""
+    args = _valid_args()
+    args["resolve_slack_target"] = _stub_resolver
+    graph = build_graph(**args)
+    assert callable(graph.ainvoke)
+
+
+def test_build_graph_accepts_no_slack_resolver() -> None:
+    """resolve_slack_target unset (default None) → Slack disabled; the graph builds."""
+    graph = build_graph(**_valid_args())
+    assert callable(graph.ainvoke)
