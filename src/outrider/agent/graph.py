@@ -100,6 +100,10 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
     pass (`patches_enabled` + the per-review cap; the patch model is
     `model_config.patch_model`). Same closure-injection rule — synthesize
     reads no env (DECISIONS.md#040).
+  - `intake_config: IntakeConfig | None` — optional whole-PR size-gate config
+    (docs/spec.md §6.10: `OUTRIDER_INTAKE_MAX_LINES` / `MAX_FILES`, defaults
+    1000 / 30). None (the default) reads the env / spec defaults once here and
+    injects them; intake never reads env itself.
   - `checkpointer: BaseCheckpointSaver` — required for HITL durability.
     `interrupt(...)` writes state to the checkpointer; `Command(resume=...)`
     reads it back on the next `ainvoke(..., config={"configurable":
@@ -147,6 +151,7 @@ from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.intake import intake
+from outrider.agent.nodes.intake_config import IntakeConfig
 from outrider.agent.nodes.patch_config import PatchConfig
 from outrider.agent.nodes.publish import publish
 from outrider.agent.nodes.synthesize import synthesize
@@ -215,6 +220,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     anomaly_sink: AnomalySink,
     hitl_config: HITLConfig,
     patch_config: PatchConfig,
+    intake_config: IntakeConfig | None = None,
     checkpointer: BaseCheckpointSaver[Any],
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
@@ -429,6 +435,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         db_factory=db_factory,
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
+        # Default reads OUTRIDER_INTAKE_* (or the §6.10 spec defaults) once at build time.
+        intake_config=intake_config or IntakeConfig(),
     )
     analyze_callable = functools.partial(
         analyze,

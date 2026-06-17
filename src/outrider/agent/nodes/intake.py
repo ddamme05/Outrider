@@ -44,6 +44,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 from sqlalchemy import and_, update
 
+from outrider.agent.nodes.intake_config import IntakeConfig
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import FileExaminationEvent, ReviewPhaseEvent
 from outrider.coordinates.diff_parser import validate_diff_path
@@ -68,17 +69,11 @@ __all__ = ["intake"]
 logger = logging.getLogger(__name__)
 
 
-# Per `docs/spec.md §6.10`: skip if > 1000 lines OR > 30 files.
-_SIZE_GATE_MAX_LINES = 1000
-_SIZE_GATE_MAX_FILES = 30
-
-# `list_pr_files`'s `per_page` MUST be `_SIZE_GATE_MAX_FILES + 1` so the
-# size gate fires deterministically: if the API returns `+1` entries, the
-# PR is over the threshold regardless of total file count. Encoding this
-# structurally (rather than as a constant on each side) catches drift —
-# a future bump of `_SIZE_GATE_MAX_FILES` without a matching `per_page`
-# change would silently bypass the gate.
-_LIST_PR_FILES_PER_PAGE = _SIZE_GATE_MAX_FILES + 1
+# The whole-PR size gate (docs/spec.md §6.10) is config-driven — see `IntakeConfig`
+# (OUTRIDER_INTAKE_MAX_LINES / MAX_FILES; defaults 1000 / 30). intake reads the injected
+# config for the thresholds AND derives the list-files `per_page` from it
+# (`max_files + 1`, so one extra entry surfaces and the gate fires deterministically; the
+# +1 must track max_files or the gate silently bypasses, hence it's computed, not a const).
 
 # Per the spec line 4 in the intake-node sequence: bounded concurrency on
 # the per-file content fan-out. 8 is the chosen ceiling — large enough to
@@ -102,6 +97,7 @@ async def intake(
     db_factory: async_sessionmaker[AsyncSession],
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
+    intake_config: IntakeConfig | None = None,
 ) -> Command[Literal["triage"]]:
     """Fetch the PR's changed-files metadata + content; enrich state.
 
@@ -122,6 +118,8 @@ async def intake(
         attempt_key="intake",
     )
     pr_context = state.pr_context
+    # Injected at build_graph; default reads OUTRIDER_INTAKE_* (or the spec defaults).
+    cfg = intake_config or IntakeConfig()
 
     # Tracks whether the phase-start event actually persisted. The failure
     # handler only emits a matching phase-end if this is True — otherwise
@@ -154,12 +152,12 @@ async def intake(
             owner=pr_context.owner,
             repo=pr_context.repo,
             pull_number=pr_context.pr_number,
-            per_page=_LIST_PR_FILES_PER_PAGE,
+            per_page=cfg.max_files + 1,
         )
 
-        # Whole-PR pre-flight size gate per docs/spec.md §6.10.
+        # Whole-PR pre-flight size gate per docs/spec.md §6.10 (config-driven thresholds).
         total_lines = pr_context.total_additions + pr_context.total_deletions
-        if total_lines > _SIZE_GATE_MAX_LINES or len(files_metadata) > _SIZE_GATE_MAX_FILES:
+        if total_lines > cfg.max_lines or len(files_metadata) > cfg.max_files:
             await _set_review_status(db_factory, state.review_id, "skipped")
             await _emit_phase_end(phase_event_sink, state, phase_id)
             return Command(goto=END)  # type: ignore[arg-type]  # END is a runtime sentinel not in the named-dest Literal
