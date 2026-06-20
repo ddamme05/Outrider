@@ -56,6 +56,18 @@ class FindingType(StrEnum):
     COMMAND_INJECTION = "command_injection"
     UNSAFE_DESERIALIZATION = "unsafe_deserialization"
     TLS_VERIFY_DISABLED = "tls_verify_disabled"
+    # Contextual security types (policy 1.2.0, DECISIONS.md#053 + #021).
+    # Dual-mode: the model picks the finer type as JUDGED; the policy
+    # assigns the fixed severity. The _METADATA / _AUTHED / _PASSWORD_HASH
+    # splits are the escalated variants, split so context selects a fixed
+    # severity without a runtime modifier (severity-set-by-policy).
+    WEAK_CRYPTO = "weak_crypto"
+    WEAK_PASSWORD_HASH = "weak_password_hash"  # noqa: S105 (finding-type label, not a password)
+    INSECURE_RANDOMNESS = "insecure_randomness"
+    SSRF = "ssrf"
+    SSRF_METADATA = "ssrf_metadata"
+    OPEN_REDIRECT = "open_redirect"
+    OPEN_REDIRECT_AUTHED = "open_redirect_authed"
 
 
 class FindingSeverity(StrEnum):
@@ -95,6 +107,14 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
         FindingType.COMMAND_INJECTION: FindingSeverity.CRITICAL,
         FindingType.UNSAFE_DESERIALIZATION: FindingSeverity.HIGH,
         FindingType.TLS_VERIFY_DISABLED: FindingSeverity.HIGH,
+        # Contextual security types (policy 1.2.0, DECISIONS.md#053).
+        FindingType.WEAK_CRYPTO: FindingSeverity.HIGH,
+        FindingType.WEAK_PASSWORD_HASH: FindingSeverity.CRITICAL,
+        FindingType.INSECURE_RANDOMNESS: FindingSeverity.HIGH,
+        FindingType.SSRF: FindingSeverity.HIGH,
+        FindingType.SSRF_METADATA: FindingSeverity.CRITICAL,
+        FindingType.OPEN_REDIRECT: FindingSeverity.MEDIUM,
+        FindingType.OPEN_REDIRECT_AUTHED: FindingSeverity.HIGH,
     }
 )
 
@@ -119,7 +139,10 @@ from re-emerging the way it did pre-PR-review-
 
 _SEMVER_RE: Final[re.Pattern[str]] = re.compile(BARE_SEMVER_PATTERN, re.ASCII)
 
-ACTIVE_POLICY_VERSION: Final[str] = "1.1.0"
+# 1.2.0 adds the contextual security types per DECISIONS.md#053 (seeded by
+# the severity_policies 1.2.0 migration). Additive — 1.1.0 reviews replay
+# untouched per `severity-policy-versioned-for-replay`.
+ACTIVE_POLICY_VERSION: Final[str] = "1.2.0"
 if not _SEMVER_RE.fullmatch(ACTIVE_POLICY_VERSION):
     raise RuntimeError(
         f"ACTIVE_POLICY_VERSION must be bare ASCII semver (no v prefix, no "

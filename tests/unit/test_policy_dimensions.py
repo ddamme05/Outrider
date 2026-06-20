@@ -70,6 +70,21 @@ def test_observed_tier_security_types_map_to_security() -> None:
     assert lookup_dimension(FindingType.TLS_VERIFY_DISABLED) == ReviewDimension.SECURITY
 
 
+def test_contextual_security_types_map_to_security() -> None:
+    """The seven contextual types added in policy 1.2.0 (DECISIONS.md#053)
+    all classify as SECURITY — dimension is taxonomy, not severity (#021)."""
+    for ftype in (
+        FindingType.WEAK_CRYPTO,
+        FindingType.WEAK_PASSWORD_HASH,
+        FindingType.INSECURE_RANDOMNESS,
+        FindingType.SSRF,
+        FindingType.SSRF_METADATA,
+        FindingType.OPEN_REDIRECT,
+        FindingType.OPEN_REDIRECT_AUTHED,
+    ):
+        assert lookup_dimension(ftype) == ReviewDimension.SECURITY
+
+
 def test_verify_lockstep_passes_in_canonical_state() -> None:
     """`verify_lockstep()` is a no-op when the three sets match."""
     verify_lockstep()  # raises AssertionError on drift; canonical state should pass

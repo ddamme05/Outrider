@@ -1482,3 +1482,38 @@ The severities ship as a NEW policy version `1.1.0` (additive — no existing ma
 **Consequences.** Replay's well-formedness check skips phase-containment for `slack_notification` rows only; the metadata-only audit guarantee (no message body, no token) plus the `kind` field preserve auditability. The narrowing is event-type-scoped and does not weaken `phase-events-bound-work` for any other event. A future Slack event (or a status-mirror `chat.update`) that needs strict per-node ownership must revisit this exemption.
 
 **Referenced from.** `src/outrider/audit/replay.py` (`_PHASE_UNBOUNDED_EVENTS`).
+
+---
+
+## 053. Dual-mode security taxonomy + severity policy 1.2.0
+
+**Status:** Accepted, 2026-06-20.
+
+**Context.** The PR #8 coverage smoke exposed two security-taxonomy gaps. (1) The closed `FindingType` enum + deterministic severity (`severity-set-by-policy`, spec §7.4) force-maps out-of-taxonomy security issues to the nearest type at the wrong severity — MD5 password hashing → `deprecated_api` → INFO understates a real vuln; SSRF / open-redirect / weak-crypto / insecure-randomness have no bucket. (2) The three 1.1.0 OBSERVED-tier types (`command_injection`, `unsafe_deserialization`, `tls_verify_disabled`, added by #048 for the Cost-Lever-3 query producer) are admissible as JUDGED by the parser (it skips the producer check for JUDGED) but omitted from the analyze prompt — the repo is between "OBSERVED-only" (unenforced) and "dual-mode" (the parser's actual behavior).
+
+**Decision.** Two parts.
+
+1. **Dual-mode is the explicit contract: `finding_type` is taxonomy, `evidence_tier` is proof.** A security `FindingType` may be OBSERVED (a tree-sitter query proved the syntactic fact; carries `query_match_id`, enforced by `evidence-tier-schema-enforced`) or JUDGED (the model made a contextual risk call; carries no structural artifact). The proof boundary is tier-based, not type-based. This makes the parser's existing behavior the intended contract; the 1.1.0 types + the new types are added to the analyze prompt's model-pickable vocabulary so the model can name contextual cases the queries miss. **No parser change.**
+
+2. **Seven new contextual security `FindingType` values under severity policy 1.2.0.** Split for one-type-one-severity determinism, each landing in lockstep (enum + `SEVERITY_POLICY` + `FINDING_TYPE_TO_DIMENSION`, `verify_lockstep` per #021) under a new `ACTIVE_POLICY_VERSION = "1.2.0"` (not an in-place 1.1.0 edit, per `severity-policy-versioned-for-replay`) + a seed migration:
+
+| FindingType | Severity | Dimension |
+| --- | --- | --- |
+| `weak_crypto` | HIGH | SECURITY |
+| `weak_password_hash` | CRITICAL | SECURITY |
+| `insecure_randomness` | HIGH | SECURITY |
+| `ssrf` | HIGH | SECURITY |
+| `ssrf_metadata` | CRITICAL | SECURITY |
+| `open_redirect` | MEDIUM | SECURITY |
+| `open_redirect_authed` | HIGH | SECURITY |
+
+The finer split (`weak_password_hash` vs `weak_crypto`, etc.) is what lets context map to a *fixed* severity without a runtime context modifier — the model picks the finer type; the policy assigns the fixed severity.
+
+**Consequences.**
+- Deterministic severity (`severity-set-by-policy`) is preserved — the split, not a runtime modifier, carries the context.
+- Replay: historical reviews replay under their snapshot `policy_version`; 1.2.0 is additive (no existing mapping changes; #021 append-only holds).
+- The analyze prompt + prompt tests gain the model-pickable security vocabulary; OBSERVED query-vocabulary tests stay separate; the `test_system_prompt_documents_all_finding_types` docstring is corrected to "every model-pickable/JUDGED type."
+- Dual-mode raises OBSERVED+JUDGED same-`(file,line,type)` collisions. The existing analyze content-hash dedup collapses them prefer-first (JUDGED wins, the colliding OBSERVED is dropped); the finding keeps the correct type+severity, only the stronger OBSERVED `query_match_id` proof is lost on that line. **Prefer-OBSERVED is deferred** (handoff Finding 4); this decision does not change dedup.
+- Affected eval expected outputs are regenerated.
+
+**Referenced from.** `policy/severity.py`, `policy/dimensions.py`, `prompts/analyze.py`, the 1.2.0 seed migration, `specs/2026-06-20-dual-mode-security-taxonomy.md`. Extends #048; complies with #021.

@@ -75,8 +75,9 @@ async def test_v1_0_0_seeded_with_canonical_mapping(migrated_db: str) -> None:
 
 
 # v1.1.0 extends v1.0.0 with three OBSERVED-tier security types
-# (DECISIONS.md#048). The lifespan fingerprint binds the live SEVERITY_POLICY
-# to this row at ACTIVE_POLICY_VERSION=1.1.0.
+# (DECISIONS.md#048). Now a FROZEN historical version (the live mapping
+# moved to 1.2.0 per DECISIONS.md#053); replayed reviews classified under
+# 1.1.0 still resolve these 15 entries.
 EXPECTED_V1_1_POLICY = {
     **EXPECTED_V1_POLICY,
     "command_injection": "critical",
@@ -84,14 +85,28 @@ EXPECTED_V1_1_POLICY = {
     "tls_verify_disabled": "high",
 }
 
+# v1.2.0 extends v1.1.0 with seven contextual security types
+# (DECISIONS.md#053). The lifespan fingerprint binds the live SEVERITY_POLICY
+# to this row at ACTIVE_POLICY_VERSION=1.2.0.
+EXPECTED_V1_2_POLICY = {
+    **EXPECTED_V1_1_POLICY,
+    "weak_crypto": "high",
+    "weak_password_hash": "critical",
+    "insecure_randomness": "high",
+    "ssrf": "high",
+    "ssrf_metadata": "critical",
+    "open_redirect": "medium",
+    "open_redirect_authed": "high",
+}
 
-async def test_v1_1_0_seeded_with_active_mapping(migrated_db: str) -> None:
-    """v1.1.0 exists with the 15-entry active mapping (DECISIONS.md#048).
 
-    Additive over v1.0.0: the three new keys are appended; the original
-    twelve are unchanged. Mirrors the v1.0.0 content check above so an
-    accidental in-place edit (or a divergence from the live mapping that
-    would fail the lifespan fingerprint) is caught before CI.
+async def test_v1_1_0_seeded_with_observed_tier_mapping(migrated_db: str) -> None:
+    """v1.1.0 exists with its frozen 15-entry mapping (DECISIONS.md#048).
+
+    Additive over v1.0.0: the three OBSERVED-tier keys are appended; the
+    original twelve are unchanged. Now a frozen historical version — an
+    accidental in-place edit (a `severity-policy-versioned-for-replay`
+    violation) is caught here before CI.
     """
     engine = create_async_engine(migrated_db)
     try:
@@ -101,9 +116,33 @@ async def test_v1_1_0_seeded_with_active_mapping(migrated_db: str) -> None:
             )
             policy = policy_result.scalar_one()
             assert policy == EXPECTED_V1_1_POLICY, (
-                "v1.1.0 policy diverges from DECISIONS.md#048 / the live "
+                "v1.1.0 policy diverges from DECISIONS.md#048. A change ships as a "
+                "new version row, never an UPDATE to v1.1.0 "
+                "(severity-policy-versioned-for-replay)."
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_v1_2_0_seeded_with_active_mapping(migrated_db: str) -> None:
+    """v1.2.0 exists with the 22-entry active mapping (DECISIONS.md#053).
+
+    Additive over v1.1.0: the seven contextual security keys are appended;
+    the original fifteen are unchanged. Mirrors the v1.0.0 content check so
+    an accidental in-place edit (or a divergence from the live mapping that
+    would fail the lifespan fingerprint) is caught before CI.
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.connect() as conn:
+            policy_result = await conn.execute(
+                text("SELECT policy FROM severity_policies WHERE version = '1.2.0'")
+            )
+            policy = policy_result.scalar_one()
+            assert policy == EXPECTED_V1_2_POLICY, (
+                "v1.2.0 policy diverges from DECISIONS.md#053 / the live "
                 "SEVERITY_POLICY. A change ships as a new version row, never an "
-                "UPDATE to v1.1.0 (severity-policy-versioned-for-replay)."
+                "UPDATE to v1.2.0 (severity-policy-versioned-for-replay)."
             )
     finally:
         await engine.dispose()

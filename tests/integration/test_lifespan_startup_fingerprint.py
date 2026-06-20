@@ -4,12 +4,14 @@ Pins the three drift windows §0c closes:
 
   (a) `ACTIVE_POLICY_VERSION` points at a version with no DB row.
   (b) DB row exists but its content differs from `dict(SEVERITY_POLICY)`.
-  (c) Happy path: `ACTIVE_POLICY_VERSION='1.0.0'` matches the genesis-seeded
-      DB row AND the live SEVERITY_POLICY mapping. Lifespan starts cleanly.
+  (c) Happy path: the live `ACTIVE_POLICY_VERSION` matches its seeded DB
+      row AND the live SEVERITY_POLICY mapping. Lifespan starts cleanly.
+      (The active version is 1.2.0 per DECISIONS.md#053, seeded by its
+      migration; the check is version-agnostic — it reads the live constant.)
 
 The test injects a real `migrated_db` engine via `build_lifespan(
 engine_factory=...)`. The fingerprint check runs against the real DB row
-seeded by genesis migration; happy path passes by construction, drift
+seeded for the active version; happy path passes by construction, drift
 cases are exercised by either patching `ACTIVE_POLICY_VERSION` (allowed —
 the conftest autouse guard protects only `SEVERITY_POLICY`) or
 inserting an extra row with diverging content.
@@ -45,13 +47,14 @@ def _build_engine_factory(db_url: str):
     return _factory
 
 
-async def test_happy_path_matches_genesis_seed(
+async def test_happy_path_matches_active_version_seed(
     migrated_db: str,
     make_stub_llm_provider: type,
     in_memory_checkpointer_factory: object,
 ) -> None:
-    """Lifespan starts cleanly when ACTIVE_POLICY_VERSION='1.0.0' matches
-    the genesis-seeded DB row and the live SEVERITY_POLICY mapping.
+    """Lifespan starts cleanly when the live ACTIVE_POLICY_VERSION (1.2.0,
+    seeded by its migration) matches its DB row and the live SEVERITY_POLICY
+    mapping.
     """
     stub_provider = make_stub_llm_provider()
     lifespan = build_lifespan(
