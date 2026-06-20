@@ -159,8 +159,9 @@ class FileExaminationSink(Protocol):
 
     The durable `AuditPersister` implements this Protocol alongside
     `PhaseEventSink`, `AnalyzeEventSink`, `PublishEventSink`,
-    `TraceEventSink`, `HITLEventSink`, and `LLMExchangePersister` — one
-    class, one transaction-lifecycle discipline, eight sinks. Test
+    `TraceEventSink`, `HITLEventSink`, `SynthesizeEventSink`,
+    `SlackEventSink`, and `LLMExchangePersister` — one class, one
+    transaction-lifecycle discipline, nine sinks. Test
     fixtures may record to a list or persist directly per the same
     recorder-vs-durable split documented on `PhaseEventSink`.
 

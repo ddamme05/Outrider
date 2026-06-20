@@ -6,8 +6,8 @@ implementation the lifespan injects. Per `installation_id` it reads the install'
 Slack config, decrypts the bot token (`token_crypto`), builds a per-install
 orchestrator (a `SlackWebClientNotifier` + the shared audit sink), and caches it
 keyed on `(installation_id, ciphertext)` so a token rotation (re-OAuth → new
-ciphertext) invalidates the cached notifier. Notifiers are closed at lifespan
-teardown.
+ciphertext) misses the cache and builds a fresh notifier; the prior entry is not
+evicted — it is released at lifespan teardown when all notifiers are closed.
 
 Lives in `notify/` (not `agent/`) so `cryptography` (via `token_crypto`) and
 `slack_sdk` (via `SlackWebClientNotifier`) stay out of the graph — `agent/` imports

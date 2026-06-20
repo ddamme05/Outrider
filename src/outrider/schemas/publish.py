@@ -15,7 +15,7 @@ path, but an import-graph unit test forbids it inside `src/outrider/`.
 
 `PublishResult` is the publish node's terminal state field — captured on
 `ReviewState.publish_result` and rolled up into the dashboard's review-level
-summary. Its three constructors (`success`, `empty`, `skipped`,
+summary. Its four constructors (`success`, `empty`, `skipped`,
 `skipped_external`) line up with the four non-`failed` `PublishAttemptOutcome`
 variants; the publisher raises on `failed` outcomes rather than returning
 a degraded result, matching the analyze convention of "failures propagate
@@ -147,7 +147,7 @@ class GitHubReviewCreated(BaseModel):
 class PublishResult(BaseModel):
     """Publish node's terminal state field; rolled up into ReviewState.
 
-    Five outcome shapes correspond 1:1 to `PublishAttemptOutcome` minus
+    Four outcome shapes correspond 1:1 to `PublishAttemptOutcome` minus
     `FAILED` (failed attempts raise rather than producing a result):
 
     - `success` — review posted; `github_review_id` populated.
