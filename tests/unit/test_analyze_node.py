@@ -521,6 +521,139 @@ async def test_budget_exhausted_skips_file_without_llm_call(deps: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Scenario 4b — bounded high-risk reserve (specs/2026-06-17-analyze-cost-fairness.md
+# Stage 1). With `_estimate_tokens` monkeypatched to 0, every file's estimate is
+# exactly `analyze_prompt.MAX_TOKENS` (8192 = E), so budgets are deterministic.
+# ---------------------------------------------------------------------------
+
+_E_TOKENS = 8192  # analyze_prompt.MAX_TOKENS — the per-file estimate when _estimate_tokens→0
+
+# A high-risk file: its added patch line carries `os.system(...)`, which
+# policy.recall flags → eligible for the reserve. content_head matches so the
+# changed scope (`my_function`) parses and triggers an LLM call like the default.
+_HIGH_RISK_CONTENT = b"def my_function():\n    os.system(cmd)\n"
+_HIGH_RISK_PATCH_TEMPLATE = (
+    "--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n def my_function():\n+    os.system(cmd)\n"
+)
+
+
+def _build_high_risk_file(path: str) -> ChangedFile:
+    return _build_changed_file(
+        path=path,
+        content=_HIGH_RISK_CONTENT,
+        patch=_HIGH_RISK_PATCH_TEMPLATE.format(path=path),
+    )
+
+
+# Budget regime for the reserve tests: budget = 4E.
+#   per_file_cap = min(int(4E * 0.25), 60000) = E  → never the binding constraint
+#   general      = 4E - reserved = 3E              → fits exactly the first 3 files
+#   reserved     = int(4E * 0.25) = E              → covers exactly ONE high-risk file
+# Crucially, a SINGLE pool (the pre-Stage-1 baseline) of 4E covers exactly 4 files,
+# so a 5th file starves UNLESS the reserve admits it. This makes the rescue/bound
+# tests load-bearing under the revert-the-fold check: delete the reserve and the
+# high-risk file at position 5 skips, flipping the asserted outcome.
+_RESERVE_TEST_BUDGET = 4 * _E_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_reserve_rescues_high_risk_file_under_budget_pressure(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A high-risk file (blatant signature) LATE in iteration is analyzed via the
+    reserve, jumping ahead of a benign file that already drained the general pool —
+    the deterministic fix for the verified PR #8 starvation.
+
+    Load-bearing: 4 benign files exhaust a single 4E pool, so under the pre-Stage-1
+    single pool the high-risk 5th file would skip. It survives ONLY because of the
+    reserve — and a benign file at position 4 (app/d.py) starves in the SAME run,
+    which is the re-prioritization the reserve exists to produce."""
+    monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
+    paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/danger.py"]
+    changed = (
+        _build_changed_file(path=paths[0]),
+        _build_changed_file(path=paths[1]),
+        _build_changed_file(path=paths[2]),
+        _build_changed_file(path=paths[3]),
+        _build_high_risk_file(paths[4]),
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
+    )
+
+    result = await analyze(state, **deps)
+    round_ = result["analysis_rounds"][0]
+
+    # General drained by the first 3 benign files; app/d.py (benign, position 4)
+    # starves, yet the high-risk file at position 5 is rescued by the reserve.
+    assert "app/danger.py" in round_.files_examined
+    assert "app/d.py" in round_.files_skipped
+    assert len(deps["provider"].calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_benign_file_starves_where_high_risk_would_be_rescued(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A/B control for the rescue test: SAME budget and SAME 5th position, but the
+    5th file is BENIGN (no signature) → it starves COST_BUDGET_EXHAUSTED. The ONLY
+    difference from the rescue case is the signature in the patch, so the flipped
+    outcome (examined → skipped) isolates the reserve's effect to policy.recall."""
+    monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
+    paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/benign.py"]
+    changed = tuple(_build_changed_file(path=p) for p in paths)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
+    )
+
+    result = await analyze(state, **deps)
+    round_ = result["analysis_rounds"][0]
+
+    # Benign 5th file gets no reserve → starves where the high-risk file was rescued.
+    assert "app/benign.py" in round_.files_skipped
+    assert len(deps["provider"].calls) == 3  # only the first 3 (general pool) fired
+
+
+@pytest.mark.asyncio
+async def test_reserve_is_bounded_second_high_risk_overflows(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reserve is BOUNDED. With general drained by 4 benign files, the reserve
+    (= E) covers exactly ONE high-risk file; a second high-risk file overflows it,
+    falls back to the exhausted general pool, and skips — proving it is not an
+    unlimited bypass.
+
+    Load-bearing: under the pre-Stage-1 single 4E pool the four benign files
+    exhaust the budget, so BOTH high-risk files would skip. The reserve is what
+    admits the first one (`h1`); the second (`h2`) skipping is the bound."""
+    monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
+    paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/h1.py", "app/h2.py"]
+    changed = (
+        _build_changed_file(path=paths[0]),
+        _build_changed_file(path=paths[1]),
+        _build_changed_file(path=paths[2]),
+        _build_changed_file(path=paths[3]),
+        _build_high_risk_file(paths[4]),
+        _build_high_risk_file(paths[5]),
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
+    )
+
+    result = await analyze(state, **deps)
+    round_ = result["analysis_rounds"][0]
+
+    assert "app/h1.py" in round_.files_examined  # reserve admits the first high-risk
+    assert "app/h2.py" in round_.files_skipped  # bounded: the second overflows
+
+
+# ---------------------------------------------------------------------------
 # Counter-source-of-truth + event-ordering pins
 # ---------------------------------------------------------------------------
 

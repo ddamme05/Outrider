@@ -155,6 +155,7 @@ from outrider.policy.canonical import (
     compute_round_id,
     compute_served_finding_id,
 )
+from outrider.policy.recall import scan_added_lines_for_risk
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
 from outrider.prompts import safe_code_fence
@@ -196,8 +197,22 @@ logger = logging.getLogger(__name__)
 # budgets) is FUP-044.
 PER_FILE_CAP_FRACTION: Final[float] = 0.25
 
-# Default per-review token budget; production wires a tighter value
-# from settings.
+# Bounded high-risk reserve (specs/2026-06-17-analyze-cost-fairness.md Stage 1).
+# A capped slice of the per-review budget that ONLY pass-0 files carrying a
+# blatant CRITICAL-class signature (policy.recall) may draw from, so a
+# late-iterated dangerous file is never starved purely by iteration position.
+# The reserve is the deterministic fix for the verified PR #8 failure (a CRITICAL
+# command_injection skipped COST_BUDGET_EXHAUSTED behind benign DEEP files). It is
+# BOUNDED — high-risk files draw the general pool first and dip into the reserve
+# only when general can't cover them, and a file past (general + reserve) still
+# skips; it is NOT an unlimited budget bypass. Composes with PER_FILE_CAP_FRACTION
+# (a single huge high-risk file still can't exceed the per-file cap). 0.25 of a
+# 200k budget = 50k, ~3-4 reserved files at typical DEEP per-file cost.
+HIGH_RISK_RESERVE_FRACTION: Final[float] = 0.25
+
+# Default per-review token budget; tunable via OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS
+# (AnalyzeConfig), wired through build_graph by api/lifespan.py. Before that wiring
+# (Stage 0), production silently used this hardcoded default.
 DEFAULT_REVIEW_BUDGET_TOKENS: Final[int] = 200_000
 
 # Absolute ceiling on the per-file pre-flight token estimate, applied
@@ -475,6 +490,15 @@ async def analyze(
     # (no trace context exists yet at that point).
     triage_result = state.triage_result
     if pass_index == 0:
+        # Bounded high-risk reserve (Stage 1): split the per-review budget into a
+        # general pool (all files) + a capped reserve only high-risk files may
+        # draw from. High-risk files spend general FIRST, dipping into the reserve
+        # only when general is exhausted — so the reserve stays available for a
+        # late high-risk file even after benign files drained general. Pass-1
+        # (trace-fetched, no patch → never high-risk) keeps the single
+        # `remaining_budget_tokens` pool below, untouched.
+        remaining_reserved_tokens = int(total_review_budget_tokens * HIGH_RISK_RESERVE_FRACTION)
+        remaining_general_tokens = total_review_budget_tokens - remaining_reserved_tokens
         for changed_file in state.pr_context.changed_files:
             tier = (
                 triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
@@ -492,6 +516,18 @@ async def analyze(
                 standard_analyze_model=standard_analyze_model,
             )
 
+            # High-risk files (a blatant CRITICAL-class signature in their ADDED
+            # lines, per policy.recall) may draw the reserve on top of the general
+            # pool; benign files see only the general pool. This is what keeps the
+            # CRITICAL command_injection from being starved behind benign DEEP
+            # files (the verified PR #8 failure).
+            is_high_risk = bool(scan_added_lines_for_risk(changed_file.patch))
+            available_budget_tokens = (
+                remaining_general_tokens + remaining_reserved_tokens
+                if is_high_risk
+                else remaining_general_tokens
+            )
+
             # Step 3: per-file processing.
             file_outcome = await _process_one_file(
                 changed_file=changed_file,
@@ -506,7 +542,7 @@ async def analyze(
                 active_policy_version=active_policy_version,
                 pass_index=pass_index,
                 per_file_cap_tokens=per_file_cap_tokens,
-                remaining_budget_tokens=remaining_budget_tokens,
+                remaining_budget_tokens=available_budget_tokens,
                 # Pass-0 PR-diff files ONLY — trace-fetched files (pass 1,
                 # `_process_one_trace_fetched_file`) have no changed-scope
                 # set, so the filter never evaluates there by design. The
@@ -577,7 +613,15 @@ async def analyze(
             total_cache_read_tokens += file_outcome.cache_read_tokens
             total_cache_write_tokens += file_outcome.cache_write_tokens
             total_cost_decimal += file_outcome.cost_decimal
-            remaining_budget_tokens -= file_outcome.estimated_tokens
+            # Draw general-first; the reserve absorbs only the overflow of a
+            # high-risk file when general can't cover it. Benign files saw a
+            # general-only pool, so `spent <= remaining_general_tokens` and the
+            # reserve term is 0 — they never touch the reserve. Skipped files have
+            # `estimated_tokens == 0`, so this deducts nothing.
+            spent_tokens = file_outcome.estimated_tokens
+            from_general = min(spent_tokens, remaining_general_tokens)
+            remaining_general_tokens -= from_general
+            remaining_reserved_tokens -= spent_tokens - from_general
 
             if file_outcome.parse_status == "skipped":
                 files_skipped.append(changed_file.path)
