@@ -73,10 +73,11 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `synthesize_event_sink: SynthesizeEventSink` — required for
     synthesize's `SynthesizeCompletedEvent` per-review aggregate
     emission.
-  - `anomaly_sink: AnomalySink` — required for synthesize's in-graph
-    anomaly emission on cross-round severity divergence detection
-    (CROSS_ROUND_SEVERITY_DIVERGENCE rule); sweep callers use the
-    same sink with `SWEEP_LOCK_ID` acquired around the call.
+  - `anomaly_sink: AnomalySink` — required for the in-graph anomaly
+    emitters: synthesize on cross-round severity divergence
+    (CROSS_ROUND_SEVERITY_DIVERGENCE) and analyze on budget starvation
+    (COST_BUDGET_STARVATION, Stage 2); sweep callers use the same sink
+    with `SWEEP_LOCK_ID` acquired around the call.
   - `review_status_sink: ReviewStatusSink` — required for hitl's
     `reviews.status` lifecycle transitions (mark_awaiting_approval +
     mark_running), publish's terminal-success transition (mark_completed
