@@ -91,6 +91,25 @@ async def _noop_severity_policy_fingerprint_check(_engine: object) -> None:
     """
 
 
+@pytest.fixture(autouse=True)
+def _ensure_truncation_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide `OUTRIDER_TRUNCATION_HMAC_SECRET` when the ambient env lacks it.
+
+    Integration tests that enter the app lifespan hit
+    `require_truncation_secret()` (landed 2026-06-19, `policy/output_sanitizer.py`),
+    which raises if the secret is unset. These tests exercise OTHER lifespan
+    behavior (teardown ordering, startup fingerprint, build_graph wiring), not the
+    secret requirement itself — that is covered at the unit tier by
+    `test_startup_secret_validation.py`. Without this, the whole lifespan-test class
+    fails in any shell that didn't source a `.env` carrying the secret (a fragility
+    introduced when the startup check landed but the lifespan tests were not made
+    self-contained). The `if not set` guard respects a real ambient secret (CI or a
+    sourced `.env`); it only fills the gap.
+    """
+    if not os.environ.get("OUTRIDER_TRUNCATION_HMAC_SECRET"):
+        monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "integration-test-truncation-secret")
+
+
 @pytest.fixture(scope="session")
 def noop_severity_policy_fingerprint_check() -> Callable[[object], Awaitable[None]]:
     """Session-scoped: the no-op is stateless, safe to share."""
