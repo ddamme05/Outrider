@@ -1,0 +1,36 @@
+{
+  "installation_id": 5303,
+  "owner": "acme",
+  "repo": "ops",
+  "pr_number": 14,
+  "base_sha": "11111111111111111111111111111111111111aa",
+  "head_sha": "22222222222222222222222222222222222222bb",
+  "pr_title": "Add backup helper (observed-only control)",
+  "pr_body": "Same backup helper, but the scripted model proposes no finding.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "ops/backup.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import os\n+\n+\n+def run_backup(name):\n+    os.system(\"tar czf /backups/\" + name + \".tgz /data\")\n+    return True\n",
+      "previous_path": null,
+      "content_base": "import os\n",
+      "content_head": "import os\n\n\ndef run_backup(name):\n    os.system(\"tar czf /backups/\" + name + \".tgz /data\")\n    return True\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"ops/backup.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the new shell-invoking backup helper.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "No model-proposed findings; the deterministic OBSERVED producer still flags the os.system command-injection sink."
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "installation_id": 5302,
+  "owner": "acme",
+  "repo": "ops",
+  "pr_number": 13,
+  "base_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+  "pr_title": "Add backup helper",
+  "pr_body": "Adds run_backup to archive the data directory for a named target.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "ops/backup.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import os\n+\n+\n+def run_backup(name):\n+    os.system(\"tar czf /backups/\" + name + \".tgz /data\")\n+    return True\n",
+      "previous_path": null,
+      "content_base": "import os\n",
+      "content_head": "import os\n\n\ndef run_backup(name):\n    os.system(\"tar czf /backups/\" + name + \".tgz /data\")\n    return True\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"ops/backup.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the new shell-invoking backup helper.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"command_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Command injection via os.system in run_backup\", \"description\": \"run_backup() concatenates the untrusted name argument into a shell string passed to os.system, so a value like '; rm -rf /' runs arbitrary commands. Avoid the shell: use subprocess.run with an argument list and no shell=True.\", \"evidence\": \"    os.system(\\\"tar czf /backups/\\\" + name + \\\".tgz /data\\\")\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "One CRITICAL finding: run_backup() passes an untrusted argument into os.system, a command-injection sink."
+    ]
+  }
+}
