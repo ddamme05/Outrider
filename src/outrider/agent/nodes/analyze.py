@@ -96,6 +96,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal
 
 from outrider.agent.nodes.analyze_observed import (
@@ -169,7 +170,7 @@ from outrider.schemas.llm.analyze import (
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
     from uuid import UUID
 
     from unidiff import PatchedFile
@@ -210,6 +211,14 @@ PER_FILE_CAP_FRACTION: Final[float] = 0.25
 # spend, and a single huge high-risk file still can't exceed the per-file cap). 0.25
 # of a 200k budget = 50k, ~3-4 reserved files at typical DEEP per-file cost.
 HIGH_RISK_RESERVE_FRACTION: Final[float] = 0.25
+
+# Tier-descending iteration order (specs/2026-06-17-analyze-cost-fairness.md Stage 2):
+# pass-0 processes DEEP-tier files before STANDARD so the per-review budget lands on
+# the higher-tier files first under pressure. Lower rank = earlier. SKIM/SKIP never
+# reach analyze, so they have no rank.
+_PASS0_TIER_RANK: Final[Mapping[ReviewTier, int]] = MappingProxyType(
+    {ReviewTier.DEEP: 0, ReviewTier.STANDARD: 1}
+)
 
 # Default per-review token budget; tunable via OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS
 # (AnalyzeConfig), wired through build_graph by api/lifespan.py. Before that wiring
@@ -501,15 +510,22 @@ async def analyze(
         # `remaining_budget_tokens` pool below, untouched.
         remaining_reserved_tokens = int(total_review_budget_tokens * HIGH_RISK_RESERVE_FRACTION)
         remaining_general_tokens = total_review_budget_tokens - remaining_reserved_tokens
-        for changed_file in state.pr_context.changed_files:
-            tier = (
-                triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
-                if triage_result is not None
-                else ReviewTier.SKIP
-            )
-            if tier not in (ReviewTier.DEEP, ReviewTier.STANDARD):
-                continue
 
+        # Tier-descending iteration order (Stage 2): build the admitted
+        # (DEEP/STANDARD) worklist, then STABLE-sort DEEP-first so budget pressure
+        # hits higher-tier files last. `list.sort` is stable, so `changed_files`
+        # order is preserved WITHIN a tier (no path re-sort). SKIM/SKIP are excluded
+        # by construction (absent from the tier map → SKIP); they never reach
+        # analyze. Orthogonal to the reserve, which is signature- not tier-based.
+        pass_zero_worklist: list[tuple[ChangedFile, ReviewTier]] = []
+        if triage_result is not None:
+            for changed_file in state.pr_context.changed_files:
+                tier = triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
+                if tier in (ReviewTier.DEEP, ReviewTier.STANDARD):
+                    pass_zero_worklist.append((changed_file, tier))
+            pass_zero_worklist.sort(key=lambda item: _PASS0_TIER_RANK[item[1]])
+
+        for changed_file, tier in pass_zero_worklist:
             # Tier → model (the cost lever, DECISIONS.md#041): STANDARD routes to
             # standard_analyze_model (Haiku by default), DEEP stays on analyze_model (Sonnet).
             model_for_file = _model_for_tier(
