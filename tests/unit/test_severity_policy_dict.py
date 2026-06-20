@@ -18,8 +18,9 @@ from outrider.policy import (
 )
 from outrider.policy import severity as severity_module
 
-# The active v1.1.0 mapping, inlined. DECISIONS.md#048 extended the v1.0.0
-# spec §7.4 mapping with three OBSERVED-tier security types (Cost Lever 3).
+# The active v1.2.0 mapping, inlined. DECISIONS.md#048 extended the v1.0.0
+# spec §7.4 mapping with three OBSERVED-tier security types (Cost Lever 3);
+# DECISIONS.md#053 added seven contextual (JUDGED-pickable) security types.
 EXPECTED_ACTIVE_POLICY: dict[FindingType, FindingSeverity] = {
     FindingType.SQL_INJECTION: FindingSeverity.CRITICAL,
     FindingType.AUTH_BYPASS: FindingSeverity.CRITICAL,
@@ -36,6 +37,13 @@ EXPECTED_ACTIVE_POLICY: dict[FindingType, FindingSeverity] = {
     FindingType.COMMAND_INJECTION: FindingSeverity.CRITICAL,
     FindingType.UNSAFE_DESERIALIZATION: FindingSeverity.HIGH,
     FindingType.TLS_VERIFY_DISABLED: FindingSeverity.HIGH,
+    FindingType.WEAK_CRYPTO: FindingSeverity.HIGH,
+    FindingType.WEAK_PASSWORD_HASH: FindingSeverity.CRITICAL,
+    FindingType.INSECURE_RANDOMNESS: FindingSeverity.HIGH,
+    FindingType.SSRF: FindingSeverity.HIGH,
+    FindingType.SSRF_METADATA: FindingSeverity.CRITICAL,
+    FindingType.OPEN_REDIRECT: FindingSeverity.MEDIUM,
+    FindingType.OPEN_REDIRECT_AUTHED: FindingSeverity.HIGH,
 }
 
 
@@ -58,7 +66,7 @@ def test_severity_policy_has_no_extra_keys() -> None:
 
 
 def test_severity_policy_matches_active_mapping() -> None:
-    """In-memory SEVERITY_POLICY equals the active v1.1.0 mapping verbatim."""
+    """In-memory SEVERITY_POLICY equals the active v1.2.0 mapping verbatim."""
     assert SEVERITY_POLICY == EXPECTED_ACTIVE_POLICY
 
 
@@ -73,6 +81,10 @@ def test_severity_policy_matches_active_mapping() -> None:
         (FindingType.COMMAND_INJECTION, FindingSeverity.CRITICAL),
         (FindingType.UNSAFE_DESERIALIZATION, FindingSeverity.HIGH),
         (FindingType.TLS_VERIFY_DISABLED, FindingSeverity.HIGH),
+        (FindingType.WEAK_PASSWORD_HASH, FindingSeverity.CRITICAL),
+        (FindingType.SSRF_METADATA, FindingSeverity.CRITICAL),
+        (FindingType.WEAK_CRYPTO, FindingSeverity.HIGH),
+        (FindingType.OPEN_REDIRECT, FindingSeverity.MEDIUM),
     ],
 )
 def test_lookup_severity_returns_canonical_value(

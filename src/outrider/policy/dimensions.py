@@ -53,6 +53,14 @@ FINDING_TYPE_TO_DIMENSION: Final[Mapping[FindingType, ReviewDimension]] = Mappin
         FindingType.COMMAND_INJECTION: ReviewDimension.SECURITY,
         FindingType.UNSAFE_DESERIALIZATION: ReviewDimension.SECURITY,
         FindingType.TLS_VERIFY_DISABLED: ReviewDimension.SECURITY,
+        # Contextual security types (policy 1.2.0, DECISIONS.md#053 + #021).
+        FindingType.WEAK_CRYPTO: ReviewDimension.SECURITY,
+        FindingType.WEAK_PASSWORD_HASH: ReviewDimension.SECURITY,
+        FindingType.INSECURE_RANDOMNESS: ReviewDimension.SECURITY,
+        FindingType.SSRF: ReviewDimension.SECURITY,
+        FindingType.SSRF_METADATA: ReviewDimension.SECURITY,
+        FindingType.OPEN_REDIRECT: ReviewDimension.SECURITY,
+        FindingType.OPEN_REDIRECT_AUTHED: ReviewDimension.SECURITY,
     }
 )
 
