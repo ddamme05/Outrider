@@ -693,6 +693,44 @@ async def test_reserve_not_wasted_when_high_risk_iterates_early(
 
 
 # ---------------------------------------------------------------------------
+# Scenario 4c — tier-descending iteration order (Stage 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pass0_processes_deep_tier_before_standard(deps: dict[str, Any]) -> None:
+    """Stage 2 tier-descending order: pass-0 processes all DEEP files before any
+    STANDARD file, regardless of changed_files order, stable within a tier. The
+    interleaved input [std, deep, std, deep] is examined as [deep, deep, std, std]
+    — load-bearing: without the sort, files_examined mirrors the input order.
+    `files_examined` preserves processing order (the schema validator canonicalizes
+    paths but does not sort)."""
+    paths = ["app/std1.py", "app/deep1.py", "app/std2.py", "app/deep2.py"]
+    tiers = {
+        "app/std1.py": ReviewTier.STANDARD,
+        "app/deep1.py": ReviewTier.DEEP,
+        "app/std2.py": ReviewTier.STANDARD,
+        "app/deep2.py": ReviewTier.DEEP,
+    }
+    changed = tuple(_build_changed_file(path=p) for p in paths)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=tiers),
+    )
+
+    result = await analyze(state, **deps)
+    round_ = result["analysis_rounds"][0]
+
+    # DEEP first (stable: deep1 before deep2), then STANDARD (stable: std1 before std2).
+    assert round_.files_examined == (
+        "app/deep1.py",
+        "app/deep2.py",
+        "app/std1.py",
+        "app/std2.py",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Counter-source-of-truth + event-ordering pins
 # ---------------------------------------------------------------------------
 
