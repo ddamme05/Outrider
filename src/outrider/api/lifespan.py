@@ -407,6 +407,21 @@ def build_lifespan(
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
         async with AsyncExitStack() as stack:
+            # Step 0: validate the truncation-marker HMAC secret is present. It is
+            # read LAZILY inside `apply_size_cap` (only when a finding body actually
+            # truncates), so a deploy missing OUTRIDER_TRUNCATION_HMAC_SECRET boots
+            # clean and reviews short PRs fine, then crashes the whole publish node
+            # mid-review the first time any finding body exceeds the size cap (the
+            # per-finding routing loop has no recovery wrapper). It is required on the
+            # core publish path of EVERY review (not optional like Slack), so fail loud
+            # at boot — same posture as DATABASE_URL / ANTHROPIC_API_KEY. Pure env read,
+            # no DB dependency, so it runs first, before any resource is allocated.
+            from outrider.policy.output_sanitizer import (  # noqa: PLC0415
+                require_truncation_secret,
+            )
+
+            require_truncation_secret()
+
             # Step 1: construct the engine; register dispose for teardown.
             engine = engine_factory()
             # Push dispose IMMEDIATELY after construction so the engine
@@ -633,10 +648,32 @@ def build_lifespan(
             # its notifiers close on shutdown. Keeps cryptography/slack_sdk out of
             # agent/ (the graph holds only the resolver callable, FUP-186).
             from outrider.notify.resolver import PerInstallSlackResolver  # noqa: PLC0415
-            from outrider.notify.token_crypto import TOKEN_ENC_KEY_ENV  # noqa: PLC0415
+            from outrider.notify.token_crypto import (  # noqa: PLC0415
+                TOKEN_ENC_KEY_ENV,
+                TokenCryptoError,
+                validate_token_enc_key,
+            )
 
+            # Gate on key VALIDITY, not mere presence: a present-but-invalid key (e.g.
+            # an uncommented .env.example `replace-me`) would make Slack appear
+            # configured while every decrypt fails. Validate once at boot; on failure
+            # DISABLE Slack with a loud log rather than crash — Slack is optional and
+            # must never block the core app (AUDIT M2).
             slack_resolver: PerInstallSlackResolver | None = None
+            slack_token_enc_ok = False
             if TOKEN_ENC_KEY_ENV in os.environ:
+                try:
+                    validate_token_enc_key()
+                    slack_token_enc_ok = True
+                except TokenCryptoError as exc:
+                    _LOGGER.error(
+                        "%s is present but invalid — Slack notifications are DISABLED; "
+                        "the rest of Outrider is unaffected. Fix or unset the key. "
+                        "Details: %s",
+                        TOKEN_ENC_KEY_ENV,
+                        exc,
+                    )
+            if slack_token_enc_ok:
                 slack_resolver = PerInstallSlackResolver(
                     session_factory=session_factory,
                     sink=persister,
@@ -748,7 +785,22 @@ def build_lifespan(
             # present-but-invalid config disables Slack with a loud log, it does NOT
             # crash startup — Slack is optional, so it can never block the core app.
             # See `_load_slack_oauth_settings`.
-            app.state.slack_oauth_settings = _load_slack_oauth_settings()
+            _slack_oauth_settings = _load_slack_oauth_settings()
+            # Two-gate reconciliation (AUDIT L6): the OAuth callback ENCRYPTS the bot
+            # token before persisting, so the install routes are useless without a valid
+            # OUTRIDER_TOKEN_ENC_KEY. If OAuth is configured but the enc key is
+            # missing/invalid, disable the routes with a loud log instead of letting the
+            # admin walk the whole Slack consent screen only to 500 at token-persist.
+            if _slack_oauth_settings is not None and not slack_token_enc_ok:
+                _LOGGER.error(
+                    "Slack OAuth is configured but %s is missing/invalid — the /slack/* "
+                    "install routes are DISABLED (an install cannot persist its token "
+                    "without a valid at-rest encryption key). Set %s to enable Slack.",
+                    TOKEN_ENC_KEY_ENV,
+                    TOKEN_ENC_KEY_ENV,
+                )
+                _slack_oauth_settings = None
+            app.state.slack_oauth_settings = _slack_oauth_settings
 
             # Stash deps the sweep needs (anomaly_sink, audit_persister)
             # and start the periodic background task. Per

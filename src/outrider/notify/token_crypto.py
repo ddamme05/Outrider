@@ -25,10 +25,33 @@ import os
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from pydantic import SecretStr
 
-__all__ = ["TOKEN_ENC_KEY_ENV", "TokenCryptoError", "decrypt_token", "encrypt_token"]
+__all__ = [
+    "TOKEN_ENC_KEY_ENV",
+    "TokenCryptoError",
+    "decrypt_token",
+    "encrypt_token",
+    "validate_token_enc_key",
+]
 
 # Env var NAME (not a secret value) — the at-rest encryption key(s).
 TOKEN_ENC_KEY_ENV = "OUTRIDER_TOKEN_ENC_KEY"  # noqa: S105
+
+# Known placeholders shipped in .env.example (+ the usual suspects); reject a verbatim
+# copy so a deploy can't treat a non-key as its at-rest encryption key. Mirrors
+# notify/config.py / api/dashboard/config.py / notify/oauth_state.py — keep in sync. A
+# placeholder is also not a valid Fernet key, so it would fail construction regardless;
+# this check names the misconfiguration instead of a generic "not a valid Fernet key".
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
+    {
+        "replace-me",
+        "replace-me-with-a-long-random-secret",
+        "change-me",
+        "changeme",
+        "secret",
+        "password",
+        "your-secret-here",
+    }
+)
 
 
 class TokenCryptoError(RuntimeError):
@@ -55,6 +78,13 @@ def _multifernet() -> MultiFernet:
             "with cryptography.fernet.Fernet.generate_key()."
         )
     parts = [p.strip() for p in raw.split(",")]
+    for p in parts:
+        if p and p.lower() in _PLACEHOLDER_SECRETS:
+            raise TokenCryptoError(
+                f"{TOKEN_ENC_KEY_ENV} is a known placeholder ({p!r}); it is the at-rest "
+                "encryption key for Slack bot tokens — generate a real key with "
+                "cryptography.fernet.Fernet.generate_key()."
+            )
     try:
         keys = [Fernet(p.encode("utf-8")) for p in parts if p]
     except (ValueError, TypeError) as exc:
@@ -85,3 +115,13 @@ def decrypt_token(ciphertext: bytes) -> SecretStr:
             "token ciphertext failed authentication (tampered, forged, or wrong key)"
         ) from exc
     return SecretStr(plaintext.decode("utf-8"))
+
+
+def validate_token_enc_key() -> None:
+    """Assert ``OUTRIDER_TOKEN_ENC_KEY`` is present AND well-formed — for eager startup
+    validation. Builds the ``MultiFernet`` once and discards it, so a missing /
+    placeholder / malformed key surfaces at boot (the lifespan logs + disables Slack)
+    instead of lazily at the first OAuth callback (a 500 after the admin already
+    authorized) or the first decrypt (a swallowed post). Raises ``TokenCryptoError`` on
+    any failure; returns None when the key set is present and well-formed."""
+    _multifernet()

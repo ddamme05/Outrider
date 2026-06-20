@@ -491,6 +491,21 @@ def compute_truncation_hmac(original_byte_count: int) -> str:
     return digest.hexdigest()[:_TRUNCATION_HMAC_LEN]
 
 
+def require_truncation_secret() -> None:
+    """Assert ``OUTRIDER_TRUNCATION_HMAC_SECRET`` is set — for eager startup validation.
+
+    The truncation marker's HMAC keys off this secret, read LAZILY (only when a body
+    actually exceeds the size cap inside ``apply_size_cap``). That laziness means a
+    deploy missing the secret boots clean and reviews short PRs fine, then fails the
+    whole publish node with a bare ``RuntimeError`` the first time any finding body
+    truncates (the per-finding routing loop has no recovery wrapper, so it aborts the
+    review). The lifespan calls this once at startup so the misconfiguration fails
+    loud at boot instead of mid-review. Raises ``RuntimeError`` (via
+    ``_get_truncation_secret``) when the secret is unset/empty; returns None when set.
+    """
+    _get_truncation_secret()
+
+
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
