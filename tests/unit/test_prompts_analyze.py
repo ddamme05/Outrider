@@ -43,16 +43,17 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v4() -> None:
+def test_version_is_named_analyze_v5() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v4" name so future renames break the test and force a
+    "analyze-v5" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v4 bump landed the cache-packing repartition (per-file context →
-    user_prompt; exemplars block in the cached prefix); v3 added the
-    sql_injection parameterized-query false-positive guidance
+    The v5 bump added the dual-mode security taxonomy vocabulary + guidance
+    (DECISIONS.md#053); v4 landed the cache-packing repartition (per-file
+    context → user_prompt; exemplars block in the cached prefix); v3 added
+    the sql_injection parameterized-query false-positive guidance
     (DECISIONS.md#041); v2 landed the trace-node pass-1 arc."""
-    assert VERSION == "analyze-v4"
+    assert VERSION == "analyze-v5"
 
 
 def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
@@ -249,26 +250,23 @@ def test_render_post_trace_system_prompt_is_byte_identical_across_files() -> Non
 
 
 def test_system_prompt_documents_all_finding_types() -> None:
-    """The prompt must enumerate every FindingType so the LLM knows the
-    constrained vocabulary. Drift here = LLM produces unknown finding_type =
-    parser rejects with `finding_type_not_in_enum`. Pin against drift."""
-    expected = (
-        "sql_injection",
-        "xss",
-        "hardcoded_secret",
-        "auth_bypass",
-        "path_traversal",
-        "missing_input_validation",
-        "n_plus_one_query",
-        "blocking_call_in_async",
-        "unused_import",
-        "missing_error_handling",
-        "missing_test",
-        "deprecated_api",
-    )
-    for finding_type in expected:
-        assert f"`{finding_type}`" in SYSTEM_PROMPT_INVARIANTS, (
-            f"FindingType `{finding_type}` missing from SYSTEM_PROMPT_INVARIANTS; "
+    """The prompt must enumerate every model-pickable FindingType so the
+    LLM knows the constrained vocabulary it may emit.
+
+    Under the dual-mode taxonomy (DECISIONS.md#053) every FindingType is
+    model-pickable — a security type may be emitted JUDGED (contextual) or
+    OBSERVED (a registry query fired) — so the prompt's `finding_type`
+    vocabulary must cover the WHOLE enum. Drift = the LLM produces an
+    unknown finding_type = parser rejects with `finding_type_not_in_enum`.
+    Iterating `FindingType` (not a hardcoded list) auto-tracks future
+    additions; the separate OBSERVED query vocabulary (which types carry a
+    `.scm` producer) is pinned by the queries-registry tests, not here.
+    """
+    from outrider.policy.severity import FindingType
+
+    for finding_type in FindingType:
+        assert f"`{finding_type.value}`" in SYSTEM_PROMPT_INVARIANTS, (
+            f"FindingType `{finding_type.value}` missing from SYSTEM_PROMPT_INVARIANTS; "
             f"the LLM won't know it as a valid value and parser rejection rates "
             f"climb until the prompt is fixed."
         )

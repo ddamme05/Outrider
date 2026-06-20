@@ -15,9 +15,10 @@ What it grounds and what it models:
     fixture's scripted-response size, and the report sweeps output to show sensitivity
     (output bills at ~5x input, so it moves the number materially).
   - CACHING: 0 hits BY CHOICE in the baseline runs — the probe defaults to
-    `model_cache=False`, so this measures the uncached cost shape. analyze-v4
-    DOES drive a cross-file stable cache prefix (the cache-packing repartition);
-    the cache-modeled proof lives in `test_cache_packing_cross_file_proof` below.
+    `model_cache=False`, so this measures the uncached cost shape. The analyze
+    prompt DOES drive a cross-file stable cache prefix (since the analyze-v4
+    cache-packing repartition); the cache-modeled proof lives in
+    `test_cache_packing_cross_file_proof` below.
   - MODEL TIER: `standard_analyze_model` now defaults to Haiku (the eval-gated flip,
     DECISIONS.md#041), but these 5 representative fixtures are all DEEP-tier, so analyze
     routes to `analyze_model` (Sonnet) for every file regardless of the flip — this stays
@@ -216,7 +217,7 @@ def test_cache_packing_cross_file_proof() -> None:
     """The analyze cache-packing proof (specs/2026-06-09-analyze-cache-packing.md).
 
     Drives a THREE-file STANDARD-tier review with the probe's deterministic
-    cache model on (`model_cache=True`) over the REAL rendered analyze-v4
+    cache model on (`model_cache=True`) over the REAL rendered analyze
     prompts. Post-repartition contract, on Haiku — the tier with the
     STRICTER 4096-token min-cacheable floor:
 

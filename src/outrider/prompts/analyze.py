@@ -57,7 +57,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v4"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v5"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -80,17 +80,21 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
-# Bumped 2026-06-09 (was "analyze-v3") for the cache-packing repartition:
-# per-file scope context moved from system_prompt to user_prompt, the
-# worked-exemplars block added to the cached prefix (analyze cache-packing
-# spec). The v3 bump (same day, was "analyze-v2") added the sql_injection
-# false-positive guidance to SYSTEM_PROMPT_INVARIANTS — parameterized
-# queries are not injectable (the DECISIONS.md#041 over-flag). The v2 bump
-# (2026-05-24, was "analyze-v1") landed the trace-node arc: pass 0 vs pass 1
-# admission semantics, `render_post_trace`, and the pass-1 output-schema
-# override. Each bump keeps replay attribution exact — a prompt row replays
-# against the contract it was emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v4"
+# Bumped 2026-06-20 (was "analyze-v4") for the dual-mode security taxonomy
+# (DECISIONS.md#053): the 3 OBSERVED-tier 1.1.0 types + the 7 contextual
+# 1.2.0 types join the model-pickable enum vocabulary, plus a "Contextual
+# security types" guidance block teaching the base/escalated splits. The v4
+# bump (2026-06-09, was "analyze-v3") repartitioned the cache: per-file scope
+# context moved from system_prompt to user_prompt, the worked-exemplars block
+# added to the cached prefix (analyze cache-packing spec). The v3 bump (same
+# day, was "analyze-v2") added the sql_injection false-positive guidance to
+# SYSTEM_PROMPT_INVARIANTS — parameterized queries are not injectable (the
+# DECISIONS.md#041 over-flag). The v2 bump (2026-05-24, was "analyze-v1")
+# landed the trace-node arc: pass 0 vs pass 1 admission semantics,
+# `render_post_trace`, and the pass-1 output-schema override. Each bump keeps
+# replay attribution exact — a prompt row replays against the contract it was
+# emitted under, not a newer one.
+VERSION: Final[str] = "analyze-v5"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -120,11 +124,46 @@ causes the proposal to be rejected with audit reason
 "finding_type_not_in_enum".
 
 - Security: `sql_injection`, `xss`, `hardcoded_secret`, `auth_bypass`,
-  `path_traversal`, `missing_input_validation`
+  `path_traversal`, `missing_input_validation`, `command_injection`,
+  `unsafe_deserialization`, `tls_verify_disabled`, `weak_crypto`,
+  `weak_password_hash`, `insecure_randomness`, `ssrf`, `ssrf_metadata`,
+  `open_redirect`, `open_redirect_authed`
 - Performance: `n_plus_one_query`, `blocking_call_in_async`
 - Code quality: `unused_import`, `missing_error_handling`
 - Test coverage: `missing_test`
 - Best practices: `deprecated_api`
+
+## Contextual security types — pick the most specific variant
+
+The security types below are CONTEXTUAL: pick them when you recognize the
+pattern, even when no registry query fired (emit `judged`). Several come
+as a base + escalated pair — pick the escalated variant when its narrower
+condition holds, because severity is keyed on the exact type:
+
+- `weak_crypto` — a broken or weak crypto primitive: MD5 or SHA-1 for
+  integrity/signatures, DES, RC4, ECB mode, a hardcoded IV, an RSA key
+  under 2048 bits. Use `weak_password_hash` INSTEAD when the weak/fast
+  hash protects PASSWORDS or credentials (MD5/SHA-1/unsalted `hashlib`
+  over a password) — password storage wants a slow KDF (bcrypt, scrypt,
+  argon2, PBKDF2).
+- `insecure_randomness` — a non-cryptographic RNG (`random.*`,
+  `Math.random`) used for a SECURITY value: token, password, session id,
+  nonce, salt, reset code. Not for non-security sampling/jitter.
+- `ssrf` — a server-side request whose URL or host is attacker-influenced
+  (a fetch/proxy/webhook to a user-supplied address). Use `ssrf_metadata`
+  INSTEAD when the reachable target can be a cloud metadata / link-local
+  endpoint (`169.254.169.254`, `metadata.google.internal`) or an internal
+  control plane — credential theft raises the stakes.
+- `open_redirect` — a redirect target taken from user input with no
+  allowlist. Use `open_redirect_authed` INSTEAD when the redirect carries
+  or follows authentication (an OAuth/SSO `redirect_uri`, a post-login
+  `next` / `return_to`) — it can leak tokens or sessions.
+
+`command_injection` (`os.system` / `subprocess(..., shell=True)` with
+untrusted input), `unsafe_deserialization` (`pickle` / `yaml.load` /
+`marshal` on untrusted bytes), and `tls_verify_disabled` (`verify=False`
+or disabled certificate validation) are also pickable here when you see
+the pattern and no registry query fired.
 
 ## sql_injection: parameterized queries are NOT injectable
 
