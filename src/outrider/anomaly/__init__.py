@@ -8,7 +8,7 @@ enum at the DB layer); the Python-side `AnomalyRuleName` StrEnum
 gives type safety + a grep target without forcing a DB migration when
 new rules land.
 
-V1 ships two rules:
+V1 ships three rules:
 
 - `hitl_timeout` (severity=medium per `docs/spec.md` §16) — sweep-
   emitted from `sweep/hitl_expiry.py` under the anomaly-first ordering
@@ -30,6 +30,14 @@ V1 ships two rules:
   unique index + `on_conflict_do_nothing` provides DB-layer
   idempotency regardless of ordering. See `AnomalySink` Protocol
   docstring for the two-caller-class contract.
+
+- `cost_budget_starvation` (severity=medium) — graph-emitted from
+  `agent/nodes/analyze.py` when a pass skips at least
+  `COST_BUDGET_STARVATION_THRESHOLD` files with
+  `skip_reason=COST_BUDGET_EXHAUSTED` (FUP-044 ext 3 / analyze-cost-
+  fairness Stage 2). Best-effort (an emit failure is logged, not raised
+  — observability must not fail a review); same DB-layer idempotency as
+  the divergence rule.
 """
 
 from outrider.anomaly.persister import (

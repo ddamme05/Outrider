@@ -70,6 +70,7 @@ _RULE_NAME_INDEX_WHERE: Final[Mapping[AnomalyRuleName, TextClause]] = MappingPro
         AnomalyRuleName.CROSS_ROUND_SEVERITY_DIVERGENCE: sa_text(
             "rule_name = 'cross_round_severity_divergence'"
         ),
+        AnomalyRuleName.COST_BUDGET_STARVATION: sa_text("rule_name = 'cost_budget_starvation'"),
     }
 )
 

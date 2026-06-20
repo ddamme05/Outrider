@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -268,6 +268,7 @@ async def _run(
         phase_event_sink=_NoOpPhaseSink(),
         file_examination_sink=_RecordingFileExaminationSink(),
         analyze_event_sink=sink,
+        anomaly_sink=AsyncMock(),
         import_path_resolver=MagicMock(),
         active_policy_version=ACTIVE_POLICY_VERSION,
         total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,

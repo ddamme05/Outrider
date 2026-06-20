@@ -188,6 +188,35 @@ async def test_distinct_review_ids_admit_separate_rows(
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_cost_budget_starvation_duplicate_emit_collapses_to_one_row(
+    anomaly_persister: tuple[AnomalyPersister, UUID],
+    migrated_db: str,
+) -> None:
+    """Two `COST_BUDGET_STARVATION` emits for the SAME review collapse to exactly
+    one row via `uq_anomalies_cost_budget_starvation_natural_key` (FUP-044 ext 3).
+    Exercises the analyze-cost-fairness migration's partial unique index against
+    the persister's `on_conflict_do_nothing` — the same idempotency contract the
+    sibling rules rely on, applied to the new rule_name."""
+    persister, review_id = anomaly_persister
+    details = {"budget_skipped_count": 4, "total_review_budget_tokens": 100, "pass_index": 0}
+    for _ in range(2):
+        await persister.emit_anomaly(
+            review_id=review_id,
+            rule_name=AnomalyRuleName.COST_BUDGET_STARVATION,
+            severity=AnomalySeverity.MEDIUM,
+            details=details,
+            is_eval=True,
+        )
+
+    count = await _count_anomaly_rows(migrated_db, review_id, "cost_budget_starvation")
+    assert count == 1, (
+        f"Expected exactly 1 cost_budget_starvation row after duplicate emit; got {count}. "
+        f"Suggests on_conflict_do_nothing failed to target the partial unique index "
+        f"`uq_anomalies_cost_budget_starvation_natural_key` and the second INSERT landed."
+    )
+
+
 # Forward-compat: the AnomalyPersister dispatches on rule_name —
 # `index_where=_RULE_NAME_INDEX_WHERE[rule_name]` (literal SQL) picks the
 # matching partial unique index at INSERT time. Every new

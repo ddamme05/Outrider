@@ -7,9 +7,10 @@ migration. The StrEnums are the Python-side contract: producers
 MUST emit values from these sets, and the persister's partial
 unique index keys on the canonical string `rule_name` value.
 
-V1 ships two rules: HITL_TIMEOUT (sweep-emitted) and
-CROSS_ROUND_SEVERITY_DIVERGENCE (graph-emitted by synthesize).
-Future detectors extend the enums.
+V1 ships three rules: HITL_TIMEOUT (sweep-emitted),
+CROSS_ROUND_SEVERITY_DIVERGENCE (graph-emitted by synthesize), and
+COST_BUDGET_STARVATION (graph-emitted by analyze). Future detectors
+extend the enums.
 """
 
 from enum import StrEnum
@@ -46,10 +47,21 @@ class AnomalyRuleName(StrEnum):
     severity axis was the originally specified trigger; the
     policy_version axis was added in the Pass-3 audit fold and is
     structurally co-emitted, not a separate concept.
+
+    `COST_BUDGET_STARVATION` — emitted by `agent/nodes/analyze.py` when an
+    analyze pass skips at least `COST_BUDGET_STARVATION_THRESHOLD` files with
+    `skip_reason=COST_BUDGET_EXHAUSTED` (FUP-044 extension 3). Makes
+    budget-starvation a first-class operator signal instead of something
+    inferred by counting individual `FileExaminationEvent` skips. Severity
+    `medium`. Idempotent on `(review_id, rule_name='cost_budget_starvation')`
+    via the partial unique index from the analyze-cost-fairness migration. The
+    reserve (Stage 1) reduces starvation of high-risk files; this anomaly
+    surfaces the residual starvation pattern operators care about.
     """
 
     HITL_TIMEOUT = "hitl_timeout"
     CROSS_ROUND_SEVERITY_DIVERGENCE = "cross_round_severity_divergence"
+    COST_BUDGET_STARVATION = "cost_budget_starvation"
 
 
 class AnomalySeverity(StrEnum):

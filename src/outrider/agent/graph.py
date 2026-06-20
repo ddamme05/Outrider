@@ -446,6 +446,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
+        anomaly_sink=anomaly_sink,
         import_path_resolver=import_path_resolver,
         total_review_budget_tokens=total_review_budget_tokens,
         # Inert default (shadow mode): the classifier runs and audits
