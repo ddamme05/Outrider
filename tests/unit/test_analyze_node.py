@@ -48,6 +48,7 @@ from outrider.agent.nodes.analyze import (
     _round_ended_at,
     analyze,
 )
+from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -82,6 +83,32 @@ class _RecordingFileExaminationSink:
 
     async def emit_file_examination(self, event: FileExaminationEvent) -> None:
         self.events.append(event)
+
+
+class _RecordingAnomalySink:
+    """Captures `emit_anomaly` calls for assertion (AnomalySink Protocol)."""
+
+    def __init__(self) -> None:
+        self.anomalies: list[dict[str, Any]] = []
+
+    async def emit_anomaly(
+        self,
+        *,
+        review_id: UUID,
+        rule_name: AnomalyRuleName,
+        severity: AnomalySeverity,
+        details: dict[str, Any],
+        is_eval: bool,
+    ) -> None:
+        self.anomalies.append(
+            {
+                "review_id": review_id,
+                "rule_name": rule_name,
+                "severity": severity,
+                "details": details,
+                "is_eval": is_eval,
+            }
+        )
 
 
 class _RecordingPhaseEventSink:
@@ -354,6 +381,7 @@ def deps() -> dict[str, Any]:
         "phase_event_sink": _RecordingPhaseEventSink(),
         "file_examination_sink": _RecordingFileExaminationSink(),
         "analyze_event_sink": _RecordingAnalyzeEventSink(),
+        "anomaly_sink": _RecordingAnomalySink(),
         "import_path_resolver": MagicMock(),
         "active_policy_version": ACTIVE_POLICY_VERSION,
         "total_review_budget_tokens": DEFAULT_REVIEW_BUDGET_TOKENS,
@@ -728,6 +756,58 @@ async def test_pass0_processes_deep_tier_before_standard(deps: dict[str, Any]) -
         "app/std1.py",
         "app/std2.py",
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4d — COST_BUDGET_STARVATION anomaly (Stage 2, FUP-044 ext 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_starvation_anomaly_emitted_above_threshold(
+    deps: dict[str, Any],
+) -> None:
+    """When pass-0 skips >= COST_BUDGET_STARVATION_THRESHOLD (3) files with
+    COST_BUDGET_EXHAUSTED, exactly one MEDIUM COST_BUDGET_STARVATION anomaly is
+    emitted, carrying the budget-skip count."""
+    deps["total_review_budget_tokens"] = 100  # per_file_cap = 25 → every file starves
+    paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py"]
+    changed = tuple(_build_changed_file(path=p) for p in paths)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
+    )
+
+    result = await analyze(state, **deps)
+    round_ = result["analysis_rounds"][0]
+    assert len(round_.files_skipped) == 4  # all four starved COST_BUDGET_EXHAUSTED
+
+    anomalies = deps["anomaly_sink"].anomalies
+    assert len(anomalies) == 1
+    emitted = anomalies[0]
+    assert emitted["rule_name"] is AnomalyRuleName.COST_BUDGET_STARVATION
+    assert emitted["severity"] is AnomalySeverity.MEDIUM
+    assert emitted["review_id"] == state.review_id
+    assert emitted["is_eval"] is True  # _build_review_state sets is_eval=True
+    assert emitted["details"]["budget_skipped_count"] == 4
+    assert emitted["details"]["total_review_budget_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_no_starvation_anomaly_below_threshold(deps: dict[str, Any]) -> None:
+    """Two budget skips (< the threshold of 3) emit NO anomaly — the signal fires
+    on a structural starvation pattern, not on any single budget skip."""
+    deps["total_review_budget_tokens"] = 100
+    paths = ["app/a.py", "app/b.py"]
+    changed = tuple(_build_changed_file(path=p) for p in paths)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
+    )
+
+    result = await analyze(state, **deps)
+    assert len(result["analysis_rounds"][0].files_skipped) == 2
+    assert deps["anomaly_sink"].anomalies == []
 
 
 # ---------------------------------------------------------------------------

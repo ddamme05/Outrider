@@ -31,7 +31,7 @@ def test_anomaly_rule_name_hitl_timeout_value_pinned() -> None:
 
 
 def test_anomaly_rule_name_v1_value_set() -> None:
-    """V1 ships two rules. New rules extend the enum + need matching
+    """V1 ships three rules. New rules extend the enum + need matching
     partial unique indexes on the anomalies table.
 
     HITL_TIMEOUT — sweep-emitted from `sweep/hitl_expiry.py` per
@@ -45,10 +45,14 @@ def test_anomaly_rule_name_v1_value_set() -> None:
     validator chain guarantee same content_hash + same finding_type
     + same policy_version => same severity). Either axis triggers
     the same rule; recovery action is identical.
+    COST_BUDGET_STARVATION — graph-emitted from `agent/nodes/analyze.py`
+    when a pass skips >= COST_BUDGET_STARVATION_THRESHOLD files with
+    COST_BUDGET_EXHAUSTED (FUP-044 ext 3 / analyze-cost-fairness Stage 2).
     """
     assert {m.value for m in AnomalyRuleName} == {
         "hitl_timeout",
         "cross_round_severity_divergence",
+        "cost_budget_starvation",
     }
 
 

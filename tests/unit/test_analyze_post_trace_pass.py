@@ -105,6 +105,13 @@ class _RecordingFileExaminationSink:
         self.events.append(event)
 
 
+class _StubAnomalySink:
+    """No-op AnomalySink; these scenarios don't starve >= the anomaly threshold."""
+
+    async def emit_anomaly(self, **_kwargs: object) -> None:
+        return None
+
+
 def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
     """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
     mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
@@ -285,6 +292,7 @@ async def test_pass_index_derives_from_analysis_rounds_state() -> None:
         phase_event_sink=phase_sink,  # type: ignore[arg-type]
         file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
         analyze_event_sink=analyze_event_sink_0,  # type: ignore[arg-type]
+        anomaly_sink=_StubAnomalySink(),  # type: ignore[arg-type]
         import_path_resolver=_StubImportPathResolver(),  # type: ignore[arg-type]
     )
     assert len(analyze_event_sink_0.completed) == 1
@@ -306,6 +314,7 @@ async def test_pass_index_derives_from_analysis_rounds_state() -> None:
         phase_event_sink=phase_sink,  # type: ignore[arg-type]
         file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
         analyze_event_sink=analyze_event_sink_1,  # type: ignore[arg-type]
+        anomaly_sink=_StubAnomalySink(),  # type: ignore[arg-type]
         import_path_resolver=_StubImportPathResolver(),  # type: ignore[arg-type]
     )
     assert len(analyze_event_sink_1.completed) == 1
@@ -399,6 +408,7 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
         phase_event_sink=phase_sink,  # type: ignore[arg-type]
         file_examination_sink=file_examination_sink,  # type: ignore[arg-type]
         analyze_event_sink=analyze_event_sink,  # type: ignore[arg-type]
+        anomaly_sink=_StubAnomalySink(),  # type: ignore[arg-type]
         import_path_resolver=_StubImportPathResolver(),  # type: ignore[arg-type]
     )
 

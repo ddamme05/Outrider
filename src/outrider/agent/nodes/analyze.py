@@ -118,6 +118,7 @@ from outrider.agent.nodes.degradation import (
     _ParseStatus,
     decide_degradation,
 )
+from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
@@ -175,6 +176,7 @@ if TYPE_CHECKING:
 
     from unidiff import PatchedFile
 
+    from outrider.anomaly.sinks import AnomalySink
     from outrider.ast_facts.base import ImportPathResolver
     from outrider.ast_facts.models import ParseResult, ScopeUnit
     from outrider.audit.sinks import (
@@ -219,6 +221,12 @@ HIGH_RISK_RESERVE_FRACTION: Final[float] = 0.25
 _PASS0_TIER_RANK: Final[Mapping[ReviewTier, int]] = MappingProxyType(
     {ReviewTier.DEEP: 0, ReviewTier.STANDARD: 1}
 )
+
+# Starvation anomaly (FUP-044 extension 3): an analyze pass that skips at least
+# this many files with COST_BUDGET_EXHAUSTED emits one COST_BUDGET_STARVATION
+# anomaly so operators see the structural pattern instead of counting individual
+# FileExaminationEvent skips. 3 matches the FUP-044 exit-rule threshold.
+COST_BUDGET_STARVATION_THRESHOLD: Final[int] = 3
 
 # Default per-review token budget; tunable via OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS
 # (AnalyzeConfig), wired through build_graph by api/lifespan.py. Before that wiring
@@ -320,6 +328,7 @@ async def analyze(
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
+    anomaly_sink: AnomalySink,
     import_path_resolver: ImportPathResolver,
     active_policy_version: str = ACTIVE_POLICY_VERSION,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
@@ -454,6 +463,9 @@ async def analyze(
     trace_candidates: list[TraceCandidate] = []
     files_examined: list[str] = []
     files_skipped: list[str] = []
+    # FUP-044 ext 3: count COST_BUDGET_EXHAUSTED skips in this pass (pass-0
+    # changed-file set) to drive the COST_BUDGET_STARVATION anomaly after the loop.
+    budget_skip_count = 0
     n_proposals_seen = 0
     n_findings_emitted = 0
     n_findings_served = 0
@@ -650,6 +662,8 @@ async def analyze(
 
             if file_outcome.parse_status == "skipped":
                 files_skipped.append(changed_file.path)
+                if file_outcome.skip_reason is SkipReason.COST_BUDGET_EXHAUSTED:
+                    budget_skip_count += 1
             else:
                 files_examined.append(changed_file.path)
     else:
@@ -801,6 +815,30 @@ async def analyze(
             elif fetched_file.path not in files_skipped:
                 files_skipped.append(fetched_file.path)
 
+    # FUP-044 ext 3 starvation anomaly: if pass-0 starved >= threshold files on the
+    # per-review budget, emit one COST_BUDGET_STARVATION anomaly so operators see
+    # the structural pattern instead of counting individual FileExaminationEvent
+    # skips. Scope: pass-0 changed-file set (the verified failure mode; pass-1
+    # trace-fetched starvation is out of V1 scope). Best-effort — observability must
+    # not fail the review, so an emit failure is logged, never raised (unlike
+    # synthesize's correctness-critical divergence anomaly). Idempotent on
+    # (review_id, rule_name) via the partial unique index.
+    if budget_skip_count >= COST_BUDGET_STARVATION_THRESHOLD:
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.COST_BUDGET_STARVATION,
+                severity=AnomalySeverity.MEDIUM,
+                details={
+                    "budget_skipped_count": budget_skip_count,
+                    "total_review_budget_tokens": total_review_budget_tokens,
+                    "pass_index": pass_index,
+                },
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logger.exception("analyze_cost_budget_starvation_anomaly_emit_failed")
+
     # ended_at is monotonic-derived so it can't precede started_at (FUP-141).
     ended_at = _round_ended_at(started_at, started_mono)
 
@@ -915,6 +953,11 @@ class _FileOutcome:
     # Stage B serve flip: non-None ONLY on a cache-served hit (parser_result is
     # then None — no LLM call). The main loop's served branch consumes it.
     served_result: _ServedResult | None = None
+    # Stage 2 (FUP-044 ext 3): the skip reason, mirrored from the
+    # FileExaminationEvent onto the in-memory outcome so the main loop can count
+    # COST_BUDGET_EXHAUSTED skips for the starvation anomaly. None on any
+    # non-skipped outcome (parse_status != "skipped").
+    skip_reason: SkipReason | None = None
 
 
 class _ServeReconstructionError(Exception):
@@ -1261,6 +1304,7 @@ async def _emit_skip(
         cache_write_tokens=0,
         cost_decimal=Decimal("0"),
         estimated_tokens=0,
+        skip_reason=skip_reason,
     )
 
 

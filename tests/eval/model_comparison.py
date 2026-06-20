@@ -83,6 +83,9 @@ class _NullSink:
     async def emit_observed_skip_shadow(self, event: object) -> None:  # noqa: ARG002
         return None
 
+    async def emit_anomaly(self, **_kwargs: object) -> None:
+        return None
+
 
 class _NoOpImportPathResolver:
     """Resolves nothing (returns `[]`) — the comparison runs pass-0 analyze only, which
@@ -208,6 +211,7 @@ async def run_analyze_under_model(
         phase_event_sink=sink,
         file_examination_sink=sink,
         analyze_event_sink=sink,
+        anomaly_sink=sink,
         import_path_resolver=_NoOpImportPathResolver(),
     )
     rounds = result["analysis_rounds"]
