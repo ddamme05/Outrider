@@ -653,6 +653,45 @@ async def test_reserve_is_bounded_second_high_risk_overflows(
     assert "app/h2.py" in round_.files_skipped  # bounded: the second overflows
 
 
+@pytest.mark.asyncio
+async def test_reserve_not_wasted_when_high_risk_iterates_early(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reserved-then-general contract: a high-risk file EARLY in iteration spends
+    its dedicated reserve first, leaving the general pool intact for benign files.
+
+    This is the guard against a general-FIRST rule (which the first cut used): under
+    general-first the early high-risk file would burn general, leave the reserve
+    unused, and starve a benign file the reserve could have covered — lower
+    throughput. Order [high-risk, benign x4] @ 4E (general=3E, reserved=E):
+    reserved-then-general examines danger + 3 benign (the reserve frees general),
+    skipping only app/d.py (throughput 4); general-first would examine only danger
+    + 2 benign, skipping app/c.py too (throughput 3, reserve wasted). The
+    `app/c.py examined` + `calls == 4` assertions fail under general-first."""
+    monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
+    paths = ["app/danger.py", "app/a.py", "app/b.py", "app/c.py", "app/d.py"]
+    changed = (
+        _build_high_risk_file(paths[0]),
+        _build_changed_file(path=paths[1]),
+        _build_changed_file(path=paths[2]),
+        _build_changed_file(path=paths[3]),
+        _build_changed_file(path=paths[4]),
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=changed),
+        triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
+    )
+
+    result = await analyze(state, **deps)
+    round_ = result["analysis_rounds"][0]
+
+    assert "app/danger.py" in round_.files_examined  # high-risk drew the reserve
+    assert "app/c.py" in round_.files_examined  # general intact → 3rd benign survives
+    assert "app/d.py" in round_.files_skipped  # only the 4th benign starves
+    assert len(deps["provider"].calls) == 4
+
+
 # ---------------------------------------------------------------------------
 # Counter-source-of-truth + event-ordering pins
 # ---------------------------------------------------------------------------
