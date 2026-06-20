@@ -559,6 +559,7 @@ def build_lifespan(
             # OUTRIDER_HITL_TIMEOUT_ACTION). Startup raises ValueError
             # if timeout_action is set to anything other than
             # `expire_only` — V1's hitl-gates-high-severity guarantee.
+            from outrider.agent.nodes.analyze_config import AnalyzeConfig  # noqa: PLC0415
             from outrider.agent.nodes.cache_config import CacheConfig  # noqa: PLC0415
             from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
             from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
@@ -573,6 +574,12 @@ def build_lifespan(
             # Suggested patches (DECISIONS.md#040): reads OUTRIDER_PATCHES_ENABLED
             # (default on) + the per-review cap. Patch model is ModelConfig.patch_model.
             patch_config = PatchConfig()
+            # Per-review analyze token budget (specs/2026-06-17-analyze-cost-fairness.md
+            # Stage 0): reads OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS (default 200k).
+            # Wired into build_graph below — before this, production silently used
+            # the hardcoded DEFAULT_REVIEW_BUDGET_TOKENS because the value was never
+            # passed.
+            analyze_config = AnalyzeConfig()
             # Analyze-cache read mode (Stage B serve flip): reads
             # OUTRIDER_CACHE_MODE (default `shadow` — behavior-neutral; the flip
             # to `serve` is a deliberate, telemetry-gated config change).
@@ -695,6 +702,7 @@ def build_lifespan(
                 anomaly_sink=anomaly_persister,
                 hitl_config=hitl_config,
                 patch_config=patch_config,
+                total_review_budget_tokens=analyze_config.review_budget_tokens,
                 checkpointer=checkpointer,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
