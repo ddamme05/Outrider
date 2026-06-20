@@ -50,7 +50,8 @@ class AnomalySink(Protocol):
       per-row idempotency on emission. Both layers are load-bearing.
 
     - **Graph callers** (`agent/nodes/synthesize.py` for
-      CROSS_ROUND_SEVERITY_DIVERGENCE): do NOT acquire any advisory
+      CROSS_ROUND_SEVERITY_DIVERGENCE; `agent/nodes/analyze.py` for
+      COST_BUDGET_STARVATION, Stage 2): do NOT acquire any advisory
       lock. The rationale is DB-layer idempotency, NOT a serialization
       premise — same-thread concurrent `ainvoke` serialization is
       explicitly NOT guaranteed per `DECISIONS.md#027` line 946 (the

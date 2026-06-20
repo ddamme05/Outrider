@@ -24,7 +24,9 @@ two caller classes:
   already-recorded anomaly returns cleanly and the sweep proceeds
   to the status flip.
 
-- **Graph callers** (`agent/nodes/synthesize.py`): no surrounding
+- **Graph callers** (`agent/nodes/synthesize.py` for
+  CROSS_ROUND_SEVERITY_DIVERGENCE, `agent/nodes/analyze.py` for
+  COST_BUDGET_STARVATION): no surrounding
   advisory lock — anomaly emission has no non-idempotent external
   side effect; concurrent or replayed inserts collapse via the
   partial unique index. Same DB-layer idempotency mechanism; the
@@ -108,8 +110,9 @@ class AnomalyPersister:
     loud-failure surfaces); `status='open'` is V1-hardcoded because
     V1 has no other terminal state at emit-time.
 
-    Serves both sweep callers (HITL_TIMEOUT) and graph callers
-    (CROSS_ROUND_SEVERITY_DIVERGENCE). The dispatch is implicit in
+    Serves sweep callers (HITL_TIMEOUT) and graph callers
+    (CROSS_ROUND_SEVERITY_DIVERGENCE from synthesize,
+    COST_BUDGET_STARVATION from analyze). The dispatch is implicit in
     the literal `index_where` looked up from `_RULE_NAME_INDEX_WHERE`
     by the runtime rule_name — each rule's partial unique index has a
     matching literal predicate.
