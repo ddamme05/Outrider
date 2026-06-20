@@ -203,11 +203,12 @@ PER_FILE_CAP_FRACTION: Final[float] = 0.25
 # late-iterated dangerous file is never starved purely by iteration position.
 # The reserve is the deterministic fix for the verified PR #8 failure (a CRITICAL
 # command_injection skipped COST_BUDGET_EXHAUSTED behind benign DEEP files). It is
-# BOUNDED — high-risk files draw the general pool first and dip into the reserve
-# only when general can't cover them, and a file past (general + reserve) still
-# skips; it is NOT an unlimited budget bypass. Composes with PER_FILE_CAP_FRACTION
-# (a single huge high-risk file still can't exceed the per-file cap). 0.25 of a
-# 200k budget = 50k, ~3-4 reserved files at typical DEEP per-file cost.
+# BOUNDED — high-risk files draw their dedicated reserve first and dip into general
+# on overflow, and a file past (reserve + general) still skips; it is NOT an
+# unlimited budget bypass. The fractional token reserve + PER_FILE_CAP_FRACTION are
+# the only bounds (no separate slot cap — the token cap already bounds total reserve
+# spend, and a single huge high-risk file still can't exceed the per-file cap). 0.25
+# of a 200k budget = 50k, ~3-4 reserved files at typical DEEP per-file cost.
 HIGH_RISK_RESERVE_FRACTION: Final[float] = 0.25
 
 # Default per-review token budget; tunable via OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS
@@ -492,10 +493,11 @@ async def analyze(
     if pass_index == 0:
         # Bounded high-risk reserve (Stage 1): split the per-review budget into a
         # general pool (all files) + a capped reserve only high-risk files may
-        # draw from. High-risk files spend general FIRST, dipping into the reserve
-        # only when general is exhausted — so the reserve stays available for a
-        # late high-risk file even after benign files drained general. Pass-1
-        # (trace-fetched, no patch → never high-risk) keeps the single
+        # draw from. A high-risk file draws its reserve FIRST, dipping into general
+        # only on overflow (reserved-then-general); a benign file draws general
+        # only. Dedicating the reserve to high-risk files (not spending general
+        # first) keeps it from being wasted when high-risk files iterate early.
+        # Pass-1 (trace-fetched, no patch → never high-risk) keeps the single
         # `remaining_budget_tokens` pool below, untouched.
         remaining_reserved_tokens = int(total_review_budget_tokens * HIGH_RISK_RESERVE_FRACTION)
         remaining_general_tokens = total_review_budget_tokens - remaining_reserved_tokens
@@ -613,15 +615,22 @@ async def analyze(
             total_cache_read_tokens += file_outcome.cache_read_tokens
             total_cache_write_tokens += file_outcome.cache_write_tokens
             total_cost_decimal += file_outcome.cost_decimal
-            # Draw general-first; the reserve absorbs only the overflow of a
-            # high-risk file when general can't cover it. Benign files saw a
-            # general-only pool, so `spent <= remaining_general_tokens` and the
-            # reserve term is 0 — they never touch the reserve. Skipped files have
+            # Reserved-then-general: a high-risk file spends its DEDICATED reserve
+            # first, dipping into general only on overflow; a benign file draws
+            # general only and never touches the reserve. Dedicating the reserve to
+            # high-risk files (rather than spending general first) is what keeps it
+            # from being wasted: under a general-first rule, high-risk files that
+            # iterate EARLY would spend general, leave the reserve unused, and let a
+            # later benign file starve that the reserve could have covered — lower
+            # throughput AND a weaker high-risk guarantee. Skipped files have
             # `estimated_tokens == 0`, so this deducts nothing.
             spent_tokens = file_outcome.estimated_tokens
-            from_general = min(spent_tokens, remaining_general_tokens)
-            remaining_general_tokens -= from_general
-            remaining_reserved_tokens -= spent_tokens - from_general
+            if is_high_risk:
+                from_reserved = min(spent_tokens, remaining_reserved_tokens)
+                remaining_reserved_tokens -= from_reserved
+                remaining_general_tokens -= spent_tokens - from_reserved
+            else:
+                remaining_general_tokens -= spent_tokens
 
             if file_outcome.parse_status == "skipped":
                 files_skipped.append(changed_file.path)
