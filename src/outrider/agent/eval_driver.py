@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from outrider.agent.graph import build_graph
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.patch_config import PatchConfig
@@ -190,6 +191,12 @@ class EvalFixture(BaseModel):
     # the base64 wire-shape normalization is exercised identically.
     repository_contents_head: dict[str, str] = Field(default_factory=dict)
     llm_responses: dict[str, list[str]]
+    # Opt-in per-review analyze token budget (analyze-cost-fairness Stage 1c seam).
+    # None → use build_graph's DEFAULT_REVIEW_BUDGET_TOKENS (200k). A starvation /
+    # budget-pressure scenario sets a tight value here so the analyze cost gate
+    # fires deterministically. Same opt-in shape as `trivial_scope_filter_enabled`
+    # / `cache_mode` — read in `_build_eval_graph`, threaded to `build_graph`.
+    total_review_budget_tokens: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _repo_content_is_beyond_the_diff(self) -> Self:
@@ -817,6 +824,14 @@ def _build_eval_graph(
     `checkpointer` differs across callers (`InMemorySaver` for single-pass;
     `AsyncPostgresSaver` for resume — durability is what makes resume possible).
     """
+    # Budget seam (Stage 1c): the fixture's budget, or build_graph's default 200k
+    # when unset. A starvation scenario sets a tight value so the analyze cost gate
+    # fires deterministically.
+    review_budget = (
+        fixture.total_review_budget_tokens
+        if fixture.total_review_budget_tokens is not None
+        else DEFAULT_REVIEW_BUDGET_TOKENS
+    )
     return build_graph(
         db_factory=session_factory,
         github_factory=_github_factory_for(fixture),
@@ -854,6 +869,7 @@ def _build_eval_graph(
         # Default shadow; the serve eval scenario injects CacheMode.SERVE with a
         # pre-seeded store through this seam.
         cache_mode=cache_mode,
+        total_review_budget_tokens=review_budget,
     )
 
 

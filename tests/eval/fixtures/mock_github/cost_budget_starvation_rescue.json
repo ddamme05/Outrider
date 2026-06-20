@@ -1,0 +1,81 @@
+{
+  "installation_id": 134482928,
+  "owner": "ddamme05",
+  "repo": "outrider-smoke-test",
+  "pr_number": 9001,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "cost-budget starvation rescue regression",
+  "pr_body": null,
+  "author": "eval",
+  "total_additions": 11,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/b1.py",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,2 @@\n+def helper():\n+    return 1\n",
+      "previous_path": null,
+      "content_base": null,
+      "content_head": "def helper():\n    return 1\n"
+    },
+    {
+      "path": "app/b2.py",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,2 @@\n+def helper():\n+    return 1\n",
+      "previous_path": null,
+      "content_base": null,
+      "content_head": "def helper():\n    return 1\n"
+    },
+    {
+      "path": "app/b3.py",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,2 @@\n+def helper():\n+    return 1\n",
+      "previous_path": null,
+      "content_base": null,
+      "content_head": "def helper():\n    return 1\n"
+    },
+    {
+      "path": "app/b4.py",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,2 @@\n+def helper():\n+    return 1\n",
+      "previous_path": null,
+      "content_base": null,
+      "content_head": "def helper():\n    return 1\n"
+    },
+    {
+      "path": "app/ops_service.py",
+      "status": "added",
+      "additions": 3,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,3 @@\n+def run_ping(host):\n+    cmd = \"ping \" + host\n+    os.system(cmd)\n",
+      "previous_path": null,
+      "content_base": null,
+      "content_head": "def run_ping(host):\n    cmd = \"ping \" + host\n    os.system(cmd)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/b1.py\": \"deep\", \"app/b2.py\": \"deep\", \"app/b3.py\": \"deep\", \"app/b4.py\": \"deep\", \"app/ops_service.py\": \"deep\"}, \"overall_risk\": \"critical\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"All changed service files warrant deep review; ops_service shells out via os.system.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}",
+      "{\"findings\": []}",
+      "{\"findings\": []}",
+      "{\"findings\": [{\"finding_type\": \"command_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Shell command injection via os.system\", \"description\": \"run_ping passes a controllable host into os.system, allowing command injection.\", \"evidence\": \"    os.system(cmd)\", \"line_start\": 3, \"line_end\": 3, \"trace_candidates\": []}]}",
+      "{\"findings\": [{\"finding_type\": \"command_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Shell command injection via os.system\", \"description\": \"run_ping passes a controllable host into os.system, allowing command injection.\", \"evidence\": \"    os.system(cmd)\", \"line_start\": 3, \"line_end\": 3, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "One CRITICAL command injection in ops_service.run_ping via os.system; several benign service files."
+    ]
+  },
+  "total_review_budget_tokens": 80000
+}
