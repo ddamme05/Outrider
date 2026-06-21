@@ -67,13 +67,17 @@ if TYPE_CHECKING:
     from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
-# Versions the parser's admission semantics for the analyze-cache key
-# (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166): bump on ANY
-# change to the §6 admission flow — rejection rules, span gates, schema
-# construction — so cached findings can never be served under admission
-# rules that no longer produced them. Code-pinned adjacent to what it
-# versions, never injectable (the TRIVIAL_FILTER_VERSION precedent).
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v2"
+# Versions the analyze node's admitted-findings semantics for the
+# analyze-cache key (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166):
+# bump on ANY change to what ends up in `admitted_findings` — the parser's
+# §6 admission flow (rejection rules, span gates, schema construction) AND
+# the node's post-parse OBSERVED merge — so cached findings can never be
+# served under rules that no longer produce them. v3 (DECISIONS.md#054):
+# prefer-OBSERVED evicts a JUDGED proposal colliding with an OBSERVED
+# finding, so a pre-v3 cache row would serve the stale JUDGED survivor.
+# Code-pinned adjacent to what it versions, never injectable (the
+# TRIVIAL_FILTER_VERSION precedent).
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v3"
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend

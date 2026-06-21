@@ -59,7 +59,7 @@ def test_key_is_deterministic_64_hex() -> None:
         ("trivial_filter_version", "trivial-filter-v2"),
         ("query_registry_digest", "b" * 64),
         ("active_policy_version", "policy-v2"),
-        ("analyze_parser_version", "analyze-parser-v3"),
+        ("analyze_parser_version", "analyze-parser-v4"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
         ("observed_producer_version", "observed-producer-v2"),
@@ -158,10 +158,12 @@ def test_parameterized_call_scan_digest_closes_fup_171() -> None:
 
 
 def test_analyze_parser_version_pinned() -> None:
-    """Bump rule: ANY admission-flow change bumps this (the spec's
-    TRIVIAL_FILTER_VERSION precedent). v2: the FUP-162 parameterized-call
-    veto joined the admission flow."""
-    assert ANALYZE_PARSER_VERSION == "analyze-parser-v2"
+    """Bump rule: ANY change to the admitted-findings semantics bumps this
+    (the spec's TRIVIAL_FILTER_VERSION precedent). v2: the FUP-162
+    parameterized-call veto joined the admission flow. v3: prefer-OBSERVED
+    (DECISIONS.md#054) evicts a JUDGED proposal colliding with an OBSERVED
+    finding, changing what a cache row may serve."""
+    assert ANALYZE_PARSER_VERSION == "analyze-parser-v3"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:
