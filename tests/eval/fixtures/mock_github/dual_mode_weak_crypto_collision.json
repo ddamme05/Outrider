@@ -1,0 +1,36 @@
+{
+  "installation_id": 5402,
+  "owner": "acme",
+  "repo": "crypto",
+  "pr_number": 16,
+  "base_sha": "55555555555555555555555555555555555555aa",
+  "head_sha": "66666666666666666666666666666666666666bb",
+  "pr_title": "Add DES cipher helper",
+  "pr_body": "Adds an encrypt() helper built on a DES cipher.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "crypto/cipher.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n from Crypto.Cipher import DES\n+\n+\n+def encrypt(data, key):\n+    cipher = DES.new(key)\n+    return cipher.encrypt(data)\n",
+      "previous_path": null,
+      "content_base": "from Crypto.Cipher import DES\n",
+      "content_head": "from Crypto.Cipher import DES\n\n\ndef encrypt(data, key):\n    cipher = DES.new(key)\n    return cipher.encrypt(data)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"crypto/cipher.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the new cipher helper.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"weak_crypto\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"DES is a broken cipher in encrypt()\", \"description\": \"encrypt() builds a DES cipher; DES has a 56-bit key and is brute-forceable. Use a modern authenticated cipher such as AES-GCM.\", \"evidence\": \"    cipher = DES.new(key)\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "One HIGH finding: encrypt() constructs a DES cipher, a broken algorithm."
+    ]
+  }
+}
