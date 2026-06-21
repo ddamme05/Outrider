@@ -553,6 +553,11 @@ export interface components {
              * @default 0
              */
             n_findings_observed: number;
+            /**
+             * N Proposals Superseded By Observed
+             * @default 0
+             */
+            n_proposals_superseded_by_observed: number;
             /** N Proposals Rejected */
             n_proposals_rejected: number;
             /** N Responses Rejected */

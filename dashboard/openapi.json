@@ -1066,6 +1066,12 @@
             "title": "N Findings Observed",
             "default": 0
           },
+          "n_proposals_superseded_by_observed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Proposals Superseded By Observed",
+            "default": 0
+          },
           "n_proposals_rejected": {
             "type": "integer",
             "minimum": 0.0,

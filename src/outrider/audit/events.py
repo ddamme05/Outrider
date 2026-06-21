@@ -73,10 +73,12 @@ by `HITLDecisionEvent.decisions`):
     and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
   - `AnalyzeCompletedEvent` enforces two accounting equations per
     foundation §5: `n_proposals_seen == (n_findings_emitted -
-    n_findings_served - n_findings_observed) + n_proposals_rejected`
-    (cache-served AND deterministic OBSERVED findings ride in
-    n_findings_emitted but sit outside the proposal lifecycle, so they
-    subtract), and `n_responses_rejected <= n_llm_calls`.
+    n_findings_served - n_findings_observed) + n_proposals_rejected
+    + n_proposals_superseded_by_observed` (cache-served AND deterministic
+    OBSERVED findings ride in n_findings_emitted but sit outside the
+    proposal lifecycle, so they subtract; JUDGED proposals superseded by a
+    colliding OBSERVED finding per #054 have no surviving finding, so they
+    ADD), and `n_responses_rejected <= n_llm_calls`.
   - `FindingProposalRejectedEvent` enforces the bidirectional
     `claimed_evidence_tier` ↔ `rejection_reason ==
     "evidence_tier_not_in_enum"` coupling.
