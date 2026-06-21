@@ -157,6 +157,7 @@ from outrider.policy.canonical import (
     compute_round_id,
     compute_served_finding_id,
 )
+from outrider.policy.findings import EvidenceTier
 from outrider.policy.recall import scan_added_lines_for_risk
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import analyze as analyze_prompt
@@ -470,6 +471,7 @@ async def analyze(
     n_findings_emitted = 0
     n_findings_served = 0
     n_findings_observed = 0
+    n_proposals_superseded_by_observed = 0
     n_proposals_rejected = 0
     n_responses_rejected = 0
     n_trace_candidates_emitted = 0
@@ -597,6 +599,9 @@ async def analyze(
                     + file_outcome.parser_result.counters.n_findings_observed
                 )
                 n_findings_observed += file_outcome.parser_result.counters.n_findings_observed
+                n_proposals_superseded_by_observed += (
+                    file_outcome.parser_result.counters.n_proposals_superseded_by_observed
+                )
                 n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
                 n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
                 n_trace_candidates_emitted += (
@@ -749,13 +754,17 @@ async def analyze(
                 n_llm_calls += 1
                 n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
                 # Trace-fetched files don't run the OBSERVED producer today, so
-                # n_findings_observed is 0 here; aggregated symmetrically with the
-                # main path so accounting stays correct if that ever changes.
+                # n_findings_observed / n_proposals_superseded_by_observed are 0
+                # here; aggregated symmetrically with the main path so accounting
+                # stays correct if that ever changes.
                 n_findings_emitted += (
                     file_outcome.parser_result.counters.n_findings_emitted
                     + file_outcome.parser_result.counters.n_findings_observed
                 )
                 n_findings_observed += file_outcome.parser_result.counters.n_findings_observed
+                n_proposals_superseded_by_observed += (
+                    file_outcome.parser_result.counters.n_proposals_superseded_by_observed
+                )
                 n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
                 n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
                 n_trace_candidates_emitted += (
@@ -876,6 +885,7 @@ async def analyze(
             n_findings_emitted=n_findings_emitted,
             n_findings_served=n_findings_served,
             n_findings_observed=n_findings_observed,
+            n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
             n_proposals_rejected=n_proposals_rejected,
             n_responses_rejected=n_responses_rejected,
             n_trace_candidates_emitted=n_trace_candidates_emitted,
@@ -1904,22 +1914,52 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             active_policy_version=active_policy_version,
         )
         if observed_findings:
-            seen_hashes = {f.content_hash for f in parser_result.admitted_findings}
+            # prefer-OBSERVED (DECISIONS.md#054): a producer OBSERVED finding that
+            # collides (same content_hash = file+line+finding_type) with an
+            # admitted model JUDGED proposal EVICTS the JUDGED in place — keeping
+            # the stronger, replay-verifiable query_match_id. A collision with an
+            # already-OBSERVED/INFERRED admitted finding keeps the incumbent (its
+            # proof is not lost) and drops the producer duplicate. Non-colliding
+            # producer findings append, as before. The swap MUST happen here,
+            # before round/FindingEvent construction: content_hash excludes
+            # evidence_tier, so two same-hash findings would trip
+            # AnalysisRound._enforce_findings_unique.
+            admitted_list = list(parser_result.admitted_findings)
+            index_by_hash = {f.content_hash: i for i, f in enumerate(admitted_list)}
             fresh: list[ReviewFinding] = []
+            fresh_hashes: set[str] = set()
+            n_superseded = 0
             for observed_finding in observed_findings:
-                if observed_finding.content_hash not in seen_hashes:
-                    seen_hashes.add(observed_finding.content_hash)
+                content_hash = observed_finding.content_hash
+                collide_idx = index_by_hash.get(content_hash)
+                if collide_idx is not None:
+                    if admitted_list[collide_idx].evidence_tier is EvidenceTier.JUDGED:
+                        admitted_list[collide_idx] = observed_finding
+                        n_superseded += 1
+                    # else: incumbent already carries structural proof — keep it,
+                    # drop the producer duplicate.
+                elif content_hash not in fresh_hashes:
                     fresh.append(observed_finding)
-            if fresh:
-                # Bump the OBSERVED counter alongside the merge: these fire real
-                # FindingEvents (emit loop below) and must show up in the
-                # aggregate n_findings_emitted, but they are NOT proposals — the
-                # AnalyzeCompletedEvent accounting equation subtracts
-                # n_findings_observed (like n_findings_served).
+                    fresh_hashes.add(content_hash)
+            n_observed = len(fresh) + n_superseded
+            if n_observed:
+                # OBSERVED findings (fresh + swapped-in) fire real FindingEvents
+                # and ride the aggregate n_findings_emitted, but are NOT proposals
+                # — subtracted via n_findings_observed (like n_findings_served).
+                # Each swap also evicts a JUDGED proposal: drop it from the parser
+                # n_findings_emitted (one fewer proposal-finding) and account it via
+                # n_proposals_superseded_by_observed, which the accounting equation
+                # ADDS (a proposal with no surviving finding — same side as
+                # n_proposals_rejected).
                 parser_result = replace(
                     parser_result,
-                    admitted_findings=parser_result.admitted_findings + tuple(fresh),
-                    counters=replace(parser_result.counters, n_findings_observed=len(fresh)),
+                    admitted_findings=tuple(admitted_list) + tuple(fresh),
+                    counters=replace(
+                        parser_result.counters,
+                        n_findings_emitted=parser_result.counters.n_findings_emitted - n_superseded,
+                        n_findings_observed=n_observed,
+                        n_proposals_superseded_by_observed=n_superseded,
+                    ),
                 )
 
         # Skip-routing SHADOW telemetry (Cost Lever 3, DECISIONS.md#049): record

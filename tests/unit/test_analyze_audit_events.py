@@ -226,6 +226,67 @@ def test_analyze_completed_admits_mixed_proposed_and_observed() -> None:
     assert event.n_findings_observed == 2
 
 
+def test_analyze_completed_admits_superseded_by_observed_adds() -> None:
+    """prefer-OBSERVED (DECISIONS.md#054): a JUDGED proposal superseded by a
+    colliding deterministic OBSERVED finding ADDS — it has no surviving finding,
+    a disposition on the same side as rejected. One collision: seen=1, emitted=1
+    (the surviving OBSERVED), observed=1, rejected=0, superseded=1 →
+    1 == (1 - 0 - 1) + 0 + 1."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            n_proposals_seen=1,
+            n_findings_emitted=1,
+            n_findings_observed=1,
+            n_proposals_rejected=0,
+            n_proposals_superseded_by_observed=1,
+            n_llm_calls=1,
+        )
+    )
+    assert event.n_proposals_superseded_by_observed == 1
+
+
+def test_analyze_completed_superseded_revert_the_fold() -> None:
+    """The superseded term is load-bearing and ADDED, not cosmetic: the same
+    counters that balance WITH superseded=1 must FAIL at superseded=0 (and a
+    SUBTRACTED term would over-correct — neither 0 nor a subtraction balances)."""
+    AnalyzeCompletedEvent(  # passes with the term added
+        **_completed_kwargs(
+            n_proposals_seen=1,
+            n_findings_emitted=1,
+            n_findings_observed=1,
+            n_proposals_superseded_by_observed=1,
+            n_llm_calls=1,
+        )
+    )
+    with pytest.raises(ValidationError, match="Proposal accounting mismatch"):
+        AnalyzeCompletedEvent(
+            **_completed_kwargs(
+                n_proposals_seen=1,
+                n_findings_emitted=1,
+                n_findings_observed=1,
+                n_proposals_superseded_by_observed=0,
+                n_llm_calls=1,
+            )
+        )
+
+
+def test_analyze_completed_backward_compat_missing_superseded_field() -> None:
+    """Audit boundary: a stored `analyze_completed` payload predating
+    n_proposals_superseded_by_observed (no such key) validates, fills the field
+    to 0, and satisfies the accounting equation (which reduces to its prior form
+    at superseded=0). Old persisted events must replay under the new schema."""
+    payload = _completed_kwargs(
+        n_proposals_seen=2,
+        n_findings_emitted=2,
+        n_findings_observed=0,
+        n_proposals_rejected=0,
+        n_llm_calls=1,
+    )
+    assert "n_proposals_superseded_by_observed" not in payload
+    event = AnalyzeCompletedEvent.model_validate(payload)
+    assert event.n_proposals_superseded_by_observed == 0
+
+
 def test_analyze_completed_observed_findings_revert_the_fold() -> None:
     """Revert-the-fold proof: the SAME OBSERVED-only counters that pass WITH the
     n_findings_observed subtraction would FAIL without it (0 != 2 + 0). Guards a

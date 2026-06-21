@@ -4,8 +4,10 @@ proof in SHADOW mode.
 A fixture promotes ONE OBSERVED query to `skip_safe` (test-local, restored by
 monkeypatch), so the file's only changed line is fully covered → the analyze node
 records a `would_skip` `ObservedSkipShadowEvent`. But V1 is shadow-only: the LLM
-STILL RUNS, and the JUDGED finding it returns is accounted for by the OBSERVED set
-(same `content_hash`) — the no-JUDGED-loss proof that gates a real promotion.
+STILL RUNS, and the JUDGED finding it returns shares a `content_hash` with the
+OBSERVED set, so prefer-OBSERVED (DECISIONS.md#054) evicts it in favor of the
+OBSERVED match — it surfaces as OBSERVED, leaving NO uncovered JUDGED. That is the
+no-JUDGED-loss proof that gates a real promotion.
 
 This is NOT proving production skipping; it proves the promotion CONTRACT while
 still calling the model. A separate test asserts the production registry stays
@@ -110,9 +112,10 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Promote one query to skip_safe (test-local): the file records `would_skip`,
-    the LLM still runs (shadow), and the JUDGED finding it returns is in the OBSERVED
-    set — so a skip would have lost nothing. The promotion contract, proven in
-    shadow mode without activating any production skip."""
+    the LLM still runs (shadow), and the JUDGED finding it returns collides with the
+    OBSERVED set — under prefer-OBSERVED (DECISIONS.md#054) it is evicted to OBSERVED,
+    so NO uncovered JUDGED survives and a skip would have lost nothing. The promotion
+    contract, proven in shadow mode without activating any production skip."""
     digest_before = query_registry.QUERY_REGISTRY_DIGEST
     _promote_to_skip_safe(monkeypatch)
 
@@ -140,15 +143,22 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
         >= 1
     )
 
-    # 3. No JUDGED loss: every JUDGED finding is accounted for by the OBSERVED set
-    #    (same content_hash) — skipping the LLM would have lost nothing here.
+    # 3. No JUDGED loss: the scripted LLM's JUDGED finding shares an OBSERVED
+    #    content_hash, so prefer-OBSERVED (DECISIONS.md#054) EVICTS it for the
+    #    OBSERVED match — it surfaces as OBSERVED. The safety property a would_skip
+    #    needs: NO JUDGED finding survives (a surviving JUDGED would be UNcovered by
+    #    OBSERVED — a real skip-loss). The covered finding is now in the OBSERVED set.
     observed_hashes = _observed_content_hashes()
     judged = [f for f in result.findings if f.evidence_tier == EvidenceTier.JUDGED]
-    assert judged, "the scripted LLM returned at least one JUDGED finding"
-    for finding in judged:
-        assert finding.content_hash in observed_hashes, (
-            f"JUDGED {finding.finding_type} @ {finding.line_start} not in OBSERVED set"
-        )
+    assert not judged, (
+        "a surviving JUDGED finding is uncovered by OBSERVED = a real skip-loss: "
+        f"{[(f.finding_type, f.line_start) for f in judged]}"
+    )
+    observed = [f for f in result.findings if f.evidence_tier == EvidenceTier.OBSERVED]
+    assert observed, "the covered finding must surface as OBSERVED after the prefer-OBSERVED swap"
+    assert all(f.content_hash in observed_hashes for f in observed), (
+        "every surviving OBSERVED finding must be in the deterministic OBSERVED set"
+    )
 
 
 async def test_production_registry_stays_zero_skip_safe() -> None:

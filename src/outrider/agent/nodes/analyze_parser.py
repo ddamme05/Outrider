@@ -140,10 +140,11 @@ class ResponseRejection:
 class ParserCounters:
     """Per-call counters the node body sums into `AnalyzeCompletedEvent`.
 
-    `n_proposals_seen == n_findings_emitted + n_proposals_rejected`
-    holds at the parser layer (response-level rejections produce zero
-    proposals); the equation is also enforced by
-    `AnalyzeCompletedEvent._enforce_proposal_accounting` at construction.
+    `n_proposals_seen == n_findings_emitted + n_proposals_rejected
+    + n_proposals_superseded_by_observed` holds at the parser layer
+    (response-level rejections produce zero proposals); the equation is
+    also enforced by `AnalyzeCompletedEvent._enforce_proposal_accounting`
+    at construction.
     """
 
     n_proposals_seen: int
@@ -165,6 +166,15 @@ class ParserCounters:
     real `FindingEvent`s (so they ride the aggregate `n_findings_emitted`)
     but have NO proposal in this pass, so the AnalyzeCompletedEvent
     accounting equation subtracts them, exactly like `n_findings_served`."""
+    n_proposals_superseded_by_observed: int = 0
+    """Model JUDGED proposals SEEN this pass but EVICTED at the merge point
+    because a deterministic OBSERVED producer finding shared their
+    `content_hash` (prefer-OBSERVED, DECISIONS.md#054). The node sets this
+    via `dataclasses.replace`. A superseded proposal was counted in
+    `n_proposals_seen` but is neither emitted as a finding nor rejected —
+    a third proposal disposition. The accounting equation ADDS it (it sits
+    on the same side as `n_proposals_rejected`); it fires no event. Default
+    0 (no superseding when the producer finds nothing colliding)."""
 
 
 @dataclass(frozen=True, slots=True)
