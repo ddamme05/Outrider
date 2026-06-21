@@ -148,6 +148,12 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
     #    OBSERVED match — it surfaces as OBSERVED. The safety property a would_skip
     #    needs: NO JUDGED finding survives (a surviving JUDGED would be UNcovered by
     #    OBSERVED — a real skip-loss). The covered finding is now in the OBSERVED set.
+    #    PRECONDITION: this whole-review `not judged` form is valid only because the
+    #    fixture's single changed line is fully covered, so EVERY admitted JUDGED
+    #    collides and is evicted. If the fixture ever gains an uncovered changed line
+    #    (or a JUDGED finding_type the producer doesn't emit), scope the assertion to
+    #    the covered line(s) — an uncovered JUDGED legitimately survives and is NOT a
+    #    skip-loss for the promoted query.
     observed_hashes = _observed_content_hashes()
     judged = [f for f in result.findings if f.evidence_tier == EvidenceTier.JUDGED]
     assert not judged, (

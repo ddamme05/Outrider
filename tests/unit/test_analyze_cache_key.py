@@ -59,6 +59,8 @@ def test_key_is_deterministic_64_hex() -> None:
         ("trivial_filter_version", "trivial-filter-v2"),
         ("query_registry_digest", "b" * 64),
         ("active_policy_version", "policy-v2"),
+        # "...-v4" is only a distinct-from-live probe (live ANALYZE_PARSER_VERSION
+        # is v3) — the key must differ when ANY component changes; not a real version.
         ("analyze_parser_version", "analyze-parser-v4"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
