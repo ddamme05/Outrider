@@ -1,0 +1,36 @@
+{
+  "installation_id": 5401,
+  "owner": "acme",
+  "repo": "crypto",
+  "pr_number": 15,
+  "base_sha": "33333333333333333333333333333333333333aa",
+  "head_sha": "44444444444444444444444444444444444444bb",
+  "pr_title": "Add DES cipher helper (observed-only control)",
+  "pr_body": "Same DES helper, but the scripted model proposes no finding.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "crypto/cipher.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n from Crypto.Cipher import DES\n+\n+\n+def encrypt(data, key):\n+    cipher = DES.new(key)\n+    return cipher.encrypt(data)\n",
+      "previous_path": null,
+      "content_base": "from Crypto.Cipher import DES\n",
+      "content_head": "from Crypto.Cipher import DES\n\n\ndef encrypt(data, key):\n    cipher = DES.new(key)\n    return cipher.encrypt(data)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"crypto/cipher.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the new cipher helper.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "No model-proposed findings; the deterministic OBSERVED producer still flags the DES cipher construction."
+    ]
+  }
+}

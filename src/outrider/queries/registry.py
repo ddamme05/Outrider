@@ -187,6 +187,30 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "thread executor."
             ),
         ),
+        ObservedQuery(
+            query_match_id="python.weak_crypto_broken_cipher",
+            filename="weak_crypto_broken_cipher.scm",
+            finding_type=FindingType.WEAK_CRYPTO,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Broken cipher (DES / RC4 / Blowfish) construction",
+            description=(
+                "A construction of a broken cipher (DES, RC4/ARC4, Blowfish) is "
+                "cryptographically weak. Use a modern authenticated cipher such "
+                "as AES-GCM."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="python.weak_crypto_ecb_mode",
+            filename="weak_crypto_ecb_mode.scm",
+            finding_type=FindingType.WEAK_CRYPTO,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Cipher constructed in ECB mode",
+            description=(
+                "ECB mode encrypts identical plaintext blocks to identical "
+                "ciphertext, leaking structure. Use an authenticated mode such "
+                "as GCM, or CBC with a random IV and a MAC."
+            ),
+        ),
     )
 }
 

@@ -24,8 +24,9 @@ from outrider.queries.observed import QueryClass
 
 
 def test_observed_query_count() -> None:
-    """The V1 seed library has eight OBSERVED queries."""
-    assert len(registry.OBSERVED_QUERY_IDS) == 8
+    """The OBSERVED seed library has ten queries (8 from the v1 library +
+    weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193 step 1)."""
+    assert len(registry.OBSERVED_QUERY_IDS) == 10
     assert set(registry.OBSERVED_QUERIES) == set(registry.OBSERVED_QUERY_IDS)
 
 
