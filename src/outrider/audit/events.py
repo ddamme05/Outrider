@@ -2450,6 +2450,16 @@ class AnalyzeCompletedEvent(AuditEventBase):
     `n_findings_emitted` (real `FindingEvent`s fire) but carry no LLM proposal,
     so `_enforce_proposal_accounting` subtracts them. Default 0 (degraded passes
     and pre-Lever-3 payloads produce none)."""
+    n_proposals_superseded_by_observed: int = Field(ge=0, default=0)
+    """Count of model JUDGED proposals SEEN this pass but EVICTED at the analyze
+    merge point because a deterministic OBSERVED finding shared their
+    `content_hash` (prefer-OBSERVED, DECISIONS.md#054). Counted in
+    `n_proposals_seen`, but neither emitted as a finding nor rejected — a third
+    proposal disposition, so `_enforce_proposal_accounting` ADDS it (the same side
+    as `n_proposals_rejected`), unlike the subtracted served/observed terms. Fires
+    no event. Default 0 (pre-#054 payloads and non-colliding passes produce none —
+    the default lets historical `analyze_completed` events replay, where the
+    equation reduces to its prior form)."""
     n_proposals_rejected: int = Field(ge=0)
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
@@ -2520,30 +2530,41 @@ class AnalyzeCompletedEvent(AuditEventBase):
     @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
         """Proposal accounting: `n_proposals_seen == (n_findings_emitted
-        - n_findings_served - n_findings_observed) + n_proposals_rejected`.
+        - n_findings_served - n_findings_observed) + n_proposals_rejected
+        + n_proposals_superseded_by_observed`.
 
-        Every raw LLM proposal either becomes a finding or gets rejected; total
-        accounting must hold. Two finding classes ride in `n_findings_emitted`
-        (they fire real `FindingEvent`s) but have no proposal in this pass, so
-        they subtract out: cache-SERVED findings (Stage B serve flip) via
-        `n_findings_served`, and deterministic OBSERVED-tier findings (Cost
-        Lever 3) via `n_findings_observed`. Response-level rejections
-        (`n_responses_rejected`) are separate — those don't have a proposal to
+        Every raw LLM proposal reaches exactly one disposition: emitted as a
+        finding, rejected, or — under prefer-OBSERVED (DECISIONS.md#054) —
+        superseded by a deterministic OBSERVED finding that shared its
+        content_hash. Two finding classes ride in `n_findings_emitted` (they
+        fire real `FindingEvent`s) but have no proposal in this pass, so they
+        SUBTRACT out: cache-SERVED findings via `n_findings_served`, and
+        deterministic OBSERVED-tier findings via `n_findings_observed`. The
+        superseded class is the inverse — a proposal with NO surviving finding,
+        a disposition on the same side as `n_proposals_rejected`, so it is
+        ADDED. (Pre-#054 events default `n_proposals_superseded_by_observed=0`,
+        reducing the equation to its prior form.) Response-level rejections
+        (`n_responses_rejected`) are separate — those have no proposal to
         count, so they don't enter this equation.
         """
         expected = (
-            self.n_findings_emitted - self.n_findings_served - self.n_findings_observed
-        ) + self.n_proposals_rejected
+            (self.n_findings_emitted - self.n_findings_served - self.n_findings_observed)
+            + self.n_proposals_rejected
+            + self.n_proposals_superseded_by_observed
+        )
         if self.n_proposals_seen != expected:
             raise ValueError(
                 f"Proposal accounting mismatch: n_proposals_seen={self.n_proposals_seen} "
                 f"!= (n_findings_emitted({self.n_findings_emitted}) - "
                 f"n_findings_served({self.n_findings_served}) - "
                 f"n_findings_observed({self.n_findings_observed})) + "
-                f"n_proposals_rejected({self.n_proposals_rejected}) = {expected}. "
-                f"Cache-served AND deterministic OBSERVED findings ride in "
+                f"n_proposals_rejected({self.n_proposals_rejected}) + "
+                f"n_proposals_superseded_by_observed({self.n_proposals_superseded_by_observed}) "
+                f"= {expected}. Cache-served AND deterministic OBSERVED findings ride in "
                 f"n_findings_emitted but outside the proposal lifecycle, so they "
-                f"subtract via n_findings_served / n_findings_observed. "
+                f"subtract via n_findings_served / n_findings_observed; proposals "
+                f"superseded by a colliding OBSERVED finding (prefer-OBSERVED) have no "
+                f"surviving finding and ADD via n_proposals_superseded_by_observed. "
                 f"Response-level rejections (n_responses_rejected={self.n_responses_rejected}) "
                 f"do NOT enter this equation — only proposal-level rejections do."
             )

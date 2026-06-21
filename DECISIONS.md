@@ -1517,3 +1517,24 @@ The finer split (`weak_password_hash` vs `weak_crypto`, etc.) is what lets conte
 - Affected eval expected outputs are regenerated.
 
 **Referenced from.** `policy/severity.py`, `policy/dimensions.py`, `prompts/analyze.py`, the 1.2.0 seed migration, `specs/2026-06-20-dual-mode-security-taxonomy.md`. Extends #048; complies with #021.
+
+---
+
+## 054. Prefer-OBSERVED on same-type analyze dedup collisions
+
+**Status:** Accepted, 2026-06-20.
+
+**Context.** Analyze merges the deterministic OBSERVED producer's findings with the model's parsed findings. Both can flag the same `content_hash` = `(file, line, finding_type)` — e.g. the `command_injection_os_system` / `weak_crypto_broken_cipher` query AND the model (which, since analyze-v5, is prompted with the OBSERVED-backed vocabulary) flagging the same line. The dedup shipped under #048/#053 is **prefer-first**: the model's JUDGED finding is admitted first, the colliding OBSERVED is dropped — so the replay-verifiable `query_match_id` (the strongest available proof) is lost exactly when both agree. `content_hash` deliberately excludes `evidence_tier` (which is why they collide), and `AnalysisRound.enforce_findings_unique` requires collapse-to-one before round construction.
+
+**Decision.** On a same-`content_hash` collision between an OBSERVED producer finding and an admitted JUDGED finding, **prefer the OBSERVED** — evict the JUDGED, keep the OBSERVED (with its `query_match_id`) — at the analyze merge point, before round/FindingEvent construction. A collision with an already-OBSERVED/INFERRED incumbent keeps the incumbent (no proof lost). The evicted JUDGED is a proposal that was SEEN but neither emitted-as-a-finding nor rejected: a new disposition, accounted by a dedicated counter `n_proposals_superseded_by_observed` (no event; default 0) on `ParserCounters` + `AnalyzeCompletedEvent`, **added** to the proposal-accounting equation:
+
+```text
+n_proposals_seen == (n_findings_emitted - n_findings_served - n_findings_observed)
+                    + n_proposals_rejected + n_proposals_superseded_by_observed
+```
+
+It is NOT routed through `n_proposals_rejected` (that would fire a `FindingProposalRejectedEvent` with no valid reason). Scope: same-type only; cross-type subsumption (`weak_password_hash` ⊐ `weak_crypto`) is deferred.
+
+**Consequences.** OBSERVED proof survives same-type collisions, so the audit trail records the replay-verifiable `query_match_id` rather than the model's opinion when both agree (`evidence-tier-schema-enforced` strengthened, not loosened). Severity is unchanged — `finding_type` is identical on both sides, so `severity-set-by-policy` resolves the same value either way. Adds one field to `AnalyzeCompletedEvent` (default 0, no discriminator migration; pre-#054 events replay with `superseded=0`, under which the equation reduces to its prior form — backed by a required audit-boundary test). The accounting term is **added** (a seen-proposal disposition, like rejected); subtracting over-corrects by 2. Supersedes the prefer-first behavior shipped under #048/#053, and is designed to extend to the deferred cross-type subsumption step.
+
+**Referenced from.** `agent/nodes/analyze.py` (merge point), `agent/nodes/analyze_parser.py` (`ParserCounters`), `audit/events.py` (`AnalyzeCompletedEvent` + `_enforce_proposal_accounting`), `specs/2026-06-20-prefer-observed-dedup.md`. Supersedes the prefer-first dedup; extends #048 + #053.
