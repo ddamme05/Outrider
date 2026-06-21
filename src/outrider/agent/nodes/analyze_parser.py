@@ -144,11 +144,14 @@ class ResponseRejection:
 class ParserCounters:
     """Per-call counters the node body sums into `AnalyzeCompletedEvent`.
 
-    `n_proposals_seen == n_findings_emitted + n_proposals_rejected
-    + n_proposals_superseded_by_observed` holds at the parser layer
-    (response-level rejections produce zero proposals); the equation is
-    also enforced by `AnalyzeCompletedEvent._enforce_proposal_accounting`
-    at construction.
+    At the PARSER layer the invariant is the 2-term form
+    `n_proposals_seen == n_findings_emitted + n_proposals_rejected`
+    (response-level rejections produce zero proposals; `n_findings_observed`
+    and `n_proposals_superseded_by_observed` are NODE-set via
+    `dataclasses.replace` and are always 0 as the parser produces them). The
+    node's post-merge form subtracts the observed/served terms and ADDS the
+    superseded term; that full equation is enforced by
+    `AnalyzeCompletedEvent._enforce_proposal_accounting` at construction.
     """
 
     n_proposals_seen: int

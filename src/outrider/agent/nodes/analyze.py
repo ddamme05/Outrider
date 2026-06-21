@@ -1884,10 +1884,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # (the producer never runs in degraded mode); merged into
     # `parser_result.admitted_findings` BEFORE the emit/cache/return below, so
     # they ride the audit stream, the cache payload (serve reconstructs them),
-    # and the round identically to LLM findings. Deduped by content_hash —
-    # `AnalysisRound` requires unique content_hashes, and an OBSERVED match the
-    # model ALSO flagged (same file/lines/type) is redundant. signal_only: the
-    # LLM still ran; OBSERVED augments it, never skips it.
+    # and the round identically to LLM findings. Collapsed by content_hash —
+    # `AnalysisRound` requires unique content_hashes. On a same-(file,lines,type)
+    # collision with a model JUDGED finding, prefer-OBSERVED (DECISIONS.md#054)
+    # EVICTS the JUDGED and keeps the OBSERVED (its query_match_id is the stronger
+    # proof); a collision with an already-OBSERVED incumbent keeps the incumbent.
+    # signal_only: the LLM still ran; OBSERVED augments it, never skips it.
     #
     # HEAD-CONTENT ONLY (defense-in-depth): the OBSERVED producer is head-content
     # proof — its queries run on head, and `evidence` + the shadow event's
@@ -1936,8 +1938,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     if admitted_list[collide_idx].evidence_tier is EvidenceTier.JUDGED:
                         admitted_list[collide_idx] = observed_finding
                         n_superseded += 1
-                    # else: incumbent already carries structural proof — keep it,
-                    # drop the producer duplicate.
+                    # else: incumbent already carries its own proof artifact —
+                    # keep it, drop the producer duplicate. In V1 the reachable
+                    # incumbent here is INFERRED (a pass-1+ trace finding on a
+                    # security finding_type); an OBSERVED incumbent cannot collide,
+                    # since the model-citable registry is structural-only and the
+                    # producer registry security-only, and content_hash carries
+                    # finding_type (queries/registry.py REGISTERED_QUERY_IDS vs
+                    # OBSERVED_QUERIES).
                 elif content_hash not in fresh_hashes:
                     fresh.append(observed_finding)
                     fresh_hashes.add(content_hash)
@@ -1951,9 +1959,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 # n_proposals_superseded_by_observed, which the accounting equation
                 # ADDS (a proposal with no surviving finding — same side as
                 # n_proposals_rejected).
+                # No substitution (the common case — the producer flags lines the
+                # model missed) means admitted_list is an untouched copy, so reuse
+                # the original tuple instead of rebuilding an identical one.
+                base_admitted = (
+                    parser_result.admitted_findings if n_superseded == 0 else tuple(admitted_list)
+                )
                 parser_result = replace(
                     parser_result,
-                    admitted_findings=tuple(admitted_list) + tuple(fresh),
+                    admitted_findings=base_admitted + tuple(fresh),
                     counters=replace(
                         parser_result.counters,
                         n_findings_emitted=parser_result.counters.n_findings_emitted - n_superseded,
