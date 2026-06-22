@@ -147,13 +147,13 @@ def _scenario_from_file(diff_path: Path) -> _Scenario:
     # finding routes at publish, not whether analyze runs.
     rel = f"src/{diff_path.name}"
     body_lines = content.splitlines()
-    # Synthetic all-added unified-diff patch (status="added"): /dev/null -> file.
-    # NOTE: this single-file path keeps its proven header-bearing patch shape; the
-    # multi-file --git-range path below is wire-faithful (hunks-only) instead.
+    # Hunks-only ADDED patch (status="added"), matching GitHub's /pulls/{n}/files
+    # wire shape — the same shape the --git-range path produces. coordinates
+    # synthesizes the `--- a/`/`+++ b/` headers, and unidiff infers added-ness from
+    # the `@@ -0,0` range, so dropping the synthetic /dev/null header is equivalent
+    # and makes both demo paths exercise the real hunks-only -> synthesis flow.
     patch = (
-        f"--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1,{len(body_lines)} @@\n"
-        + "\n".join(f"+{line}" for line in body_lines)
-        + "\n"
+        f"@@ -0,0 +1,{len(body_lines)} @@\n" + "\n".join(f"+{line}" for line in body_lines) + "\n"
     )
     entry = FileEntry(
         path=rel,
@@ -293,7 +293,7 @@ def _seed_state_for_scenario(review_id: UUID, scenario: _Scenario) -> object:
             content_base=f.content_base,
             content_head=f.content_head,
             previous_path=f.previous_path,
-            language="python" if f.is_python else None,
+            language=None,  # intake omits language in V1 (changed_files is overwritten anyway)
         )
         for f in scenario.files
     )
@@ -833,8 +833,8 @@ def main() -> int:
             return 2
 
     if args.dry_run:
-        if scenario is None:
-            _say("  --dry-run requires --git-range (nothing to preview otherwise).")
+        if args.git_range is None:
+            _say("  --dry-run requires --git-range (it previews a reconstructed range).")
             return 2
         _say(_RULE)
         _say("  Outrider — git-range dry-run (offline · no DB · no Claude)")

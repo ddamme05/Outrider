@@ -91,8 +91,21 @@ def test_parse_range() -> None:
     _check("parse_range: A..B", _parse_range("0c70d18^..39c538b") == ("0c70d18^", "39c538b"))
     # Refs with single dots must survive (the separator is the run of TWO dots).
     _check("parse_range: dotted refs", _parse_range("v1.2.3..v1.2.4") == ("v1.2.3", "v1.2.4"))
-    # Three-dot is rejected: this tool always does a two-dot diff (see _RANGE_RE).
-    for bad in ("main...HEAD", "garbage", "A..B; rm -rf /", "A B", "A..B..C-extra word", ""):
+    # Reflog/peel refs are valid endpoints.
+    _check("parse_range: reflog ref", _parse_range("HEAD@{1}..HEAD") == ("HEAD@{1}", "HEAD"))
+    # Rejected: three-dot, embedded '..', leading/trailing dot, empty side, shell noise.
+    for bad in (
+        "main...HEAD",  # three-dot
+        "main..HEAD..other",  # embedded '..' (3 parts)
+        ".main..HEAD",  # leading dot in START
+        "main..HEAD.",  # trailing dot in END
+        "a..",  # empty END
+        "..b",  # empty START
+        "garbage",  # no separator
+        "A..B; rm -rf /",  # shell metacharacters
+        "A B",  # space, no separator
+        "",  # empty
+    ):
         rejected = False
         try:
             _parse_range(bad)
