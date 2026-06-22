@@ -109,7 +109,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N", "TCH", "S"]
 # tiny single-purpose fixtures.)
 "scripts/demo_fixtures/vulnerable_query.py" = ["S608"]        # planted SQL injection
 "scripts/demo_fixtures/weak_crypto_handler.py" = ["S304"]     # planted weak cipher (DES/ECB)
-"scripts/demo_fixtures/report_builder.py" = ["S110", "SIM105", "S608"]  # planted try-except-pass + SQL injection
+"scripts/demo_fixtures/report_builder.py" = ["S110", "SIM105"]  # planted bare try-except-pass
 
 [tool.mypy]
 python_version = "3.13"

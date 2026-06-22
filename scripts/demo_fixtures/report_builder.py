@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 
 class _Db(Protocol):
-    async def fetch(self, query: str) -> list[dict[str, Any]]: ...
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]: ...
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None: ...
 
@@ -28,7 +28,7 @@ class ReportBuilder:
         # 50 rows per page; the page index drives the window offset.
         offset = int(page) * 50
 
-        rows = await self._db.fetch(f"SELECT id, user_id FROM activity LIMIT 50 OFFSET {offset}")
+        rows = await self._db.fetch("SELECT id, user_id FROM activity LIMIT 50 OFFSET $1", offset)
 
         # Resolve the owning user for each activity row so the feed can show names.
         enriched = []
