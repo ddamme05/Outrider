@@ -136,6 +136,7 @@ from outrider.audit.events import (
     ContextManifestEntry,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
+    ObservedSubsumedMatch,
     ReviewPhaseEvent,
     ScopeExclusionEntry,
     ScopeExclusionEvent,
@@ -160,10 +161,11 @@ from outrider.policy.canonical import (
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.recall import scan_added_lines_for_risk
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
+from outrider.policy.subsumption import SUBSUMES_DIGEST, subsumes
 from outrider.prompts import analyze as analyze_prompt
 from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
-from outrider.queries.registry import QUERY_REGISTRY_DIGEST
+from outrider.queries.registry import OBSERVED_QUERY_IDS, QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound, ReviewFinding, TraceCandidate
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
@@ -462,6 +464,10 @@ async def analyze(
     # same proposal in a single response.
     admitted_keys_seen: set[tuple[str, str]] = set()
     trace_candidates: list[TraceCandidate] = []
+    # Cross-type subsumption proof-retention records (DECISIONS.md#055), aggregated
+    # across files for the per-pass AnalyzeCompletedEvent. Set on every _FileOutcome
+    # (normal merge + cache serve), so it accumulates regardless of cache hit/miss.
+    pass_subsumed_matches: list[ObservedSubsumedMatch] = []
     files_examined: list[str] = []
     files_skipped: list[str] = []
     # FUP-044 ext 3: count COST_BUDGET_EXHAUSTED skips in this pass (pass-0
@@ -648,6 +654,10 @@ async def analyze(
             total_cache_read_tokens += file_outcome.cache_read_tokens
             total_cache_write_tokens += file_outcome.cache_write_tokens
             total_cost_decimal += file_outcome.cost_decimal
+            # Cross-type subsumption records (DECISIONS.md#055) from this file's
+            # outcome — empty for trace-fetched files (no OBSERVED producer runs
+            # there) and for cache misses with nothing subsumed.
+            pass_subsumed_matches.extend(file_outcome.subsumed_matches)
             # Reserved-then-general: a high-risk file spends its DEDICATED reserve
             # first, dipping into general only on overflow; a benign file draws
             # general only and never touches the reserve. Dedicating the reserve to
@@ -795,6 +805,10 @@ async def analyze(
             total_cache_read_tokens += file_outcome.cache_read_tokens
             total_cache_write_tokens += file_outcome.cache_write_tokens
             total_cost_decimal += file_outcome.cost_decimal
+            # Cross-type subsumption records (DECISIONS.md#055) from this file's
+            # outcome — empty for trace-fetched files (no OBSERVED producer runs
+            # there) and for cache misses with nothing subsumed.
+            pass_subsumed_matches.extend(file_outcome.subsumed_matches)
             remaining_budget_tokens -= file_outcome.estimated_tokens
 
             # Pass-1 fan-out can iterate the same `fetched_file.path`
@@ -886,6 +900,7 @@ async def analyze(
             n_findings_served=n_findings_served,
             n_findings_observed=n_findings_observed,
             n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
+            subsumed_matches=tuple(pass_subsumed_matches),
             n_proposals_rejected=n_proposals_rejected,
             n_responses_rejected=n_responses_rejected,
             n_trace_candidates_emitted=n_trace_candidates_emitted,
@@ -968,6 +983,11 @@ class _FileOutcome:
     # COST_BUDGET_EXHAUSTED skips for the starvation anomaly. None on any
     # non-skipped outcome (parse_status != "skipped").
     skip_reason: SkipReason | None = None
+    # Cross-type subsumption proof-retention records (DECISIONS.md#055), set on
+    # BOTH paths — the normal merge assembles them, the cache serve reconstructs
+    # them from the payload — so the main loop accumulates them onto the per-pass
+    # AnalyzeCompletedEvent uniformly regardless of cache hit/miss.
+    subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
 
 
 class _ServeReconstructionError(Exception):
@@ -1046,6 +1066,15 @@ async def _serve_cache_hit(
         )
         served_candidates = tuple(
             TraceCandidate.model_validate(dump) for dump in entry.payload["trace_candidates"]
+        )
+        # Cross-type subsumption proof-retention records (DECISIONS.md#055): the
+        # dropped OBSERVED findings are NOT in `findings`, so reconstruct their
+        # telemetry from the payload so a cache HIT retains the proof too. `.get`
+        # tolerates pre-#055 rows (none survive the analyze-parser-v4 bump, but the
+        # default keeps reconstruction total).
+        served_subsumed_matches = tuple(
+            ObservedSubsumedMatch.model_validate(dump)
+            for dump in entry.payload.get("subsumed_matches", [])
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _ServeReconstructionError(
@@ -1127,6 +1156,7 @@ async def _serve_cache_hit(
             admitted_findings=served_findings,
             trace_candidates=served_candidates,
         ),
+        subsumed_matches=served_subsumed_matches,
     )
 
 
@@ -1719,6 +1749,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
             parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
             observed_producer_version=OBSERVED_PRODUCER_VERSION,
+            subsumes_digest=SUBSUMES_DIGEST,
         )
         try:
             # Self-hit exclusion: a crash/retry re-execution of this node
@@ -1900,6 +1931,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # None` file that still carries added lines (a ChangedFile-invariant violation)
     # would otherwise run OBSERVED on the `content_base` fallback and flag deleted
     # code with base lines treated as head.
+    # Cross-type subsumption records (DECISIONS.md#055), assembled in the merge
+    # below and threaded out for the per-pass `AnalyzeCompletedEvent`; stays empty
+    # in degraded mode and when nothing is subsumed.
+    subsumed_matches: list[ObservedSubsumedMatch] = []
     if not degraded_mode and changed_file.content_head is not None:
         # Single deterministic OBSERVED query pass; the findings producer and
         # (the routing increment's) skip-coverage check both read these matches.
@@ -1976,6 +2011,82 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     ),
                 )
 
+            # Cross-type subsumption (DECISIONS.md#055): over the POST-#054
+            # admitted set, drop an OBSERVED finding X when a same-span JUDGED
+            # finding Y of a more-specific finding_type subsumes it — the INVERSE
+            # tiebreaker from #054 (accuracy over proof when the claims DIFFER, not
+            # agree). The two-sided tier gate is load-bearing: Y JUDGED keeps the
+            # survivor honestly JUDGED; X OBSERVED keeps the dropped side
+            # structural, so the accounting nets out through n_findings_observed
+            # alone and the both-JUDGED case is a non-goal by construction.
+            # Running over the post-#054 set (not the pending producer list)
+            # handles the triple-collision: a redundant model JUDGED weak_crypto
+            # has already been swapped to OBSERVED by #054, so this pass finds and
+            # drops it. The dropped query_match_id is retained in subsumed_matches
+            # (the signal_only match is absent from the skip-shadow telemetry).
+            # Exact-span match only: a multi-line envelope mismatch is an accepted
+            # recall gap, never loose overlap (which could absorb an unrelated
+            # weak_crypto sharing lines with a password-hash subsumer).
+            admitted = parser_result.admitted_findings
+            judged_by_span: dict[tuple[int, int], list[ReviewFinding]] = {}
+            for jf in admitted:
+                if jf.evidence_tier is EvidenceTier.JUDGED:
+                    judged_by_span.setdefault((jf.line_start, jf.line_end), []).append(jf)
+            if judged_by_span:
+                surviving: list[ReviewFinding] = []
+                for af in admitted:
+                    subsumer: ReviewFinding | None = None
+                    # Only a PRODUCER-origin OBSERVED finding is subsumable: its
+                    # query_match_id is in OBSERVED_QUERY_IDS (the security producer
+                    # registry), and ONLY producer findings are counted in
+                    # n_findings_observed — the term the drop decrements. A
+                    # MODEL-cited OBSERVED finding (the model claimed `observed`
+                    # citing a fired STRUCTURAL query id, which the parser admits
+                    # without binding finding_type to the query) rides the parser's
+                    # n_findings_emitted instead; dropping it would underflow
+                    # n_findings_observed and crash the pass. The two id sets are
+                    # disjoint, so this gate excludes the model-cited case cleanly.
+                    if (
+                        af.evidence_tier is EvidenceTier.OBSERVED
+                        and af.query_match_id is not None
+                        and af.query_match_id in OBSERVED_QUERY_IDS
+                    ):
+                        for yf in judged_by_span.get((af.line_start, af.line_end), ()):
+                            if subsumes(yf.finding_type, af.finding_type):
+                                subsumer = yf
+                                break
+                    if subsumer is None:
+                        surviving.append(af)
+                    else:
+                        subsumed_matches.append(
+                            ObservedSubsumedMatch(
+                                file_path=af.file_path,
+                                query_match_id=af.query_match_id,
+                                finding_type=af.finding_type,
+                                subsumed_by_finding_type=subsumer.finding_type,
+                                line_start=af.line_start,
+                                line_end=af.line_end,
+                                dropped_content_hash=af.content_hash,
+                                subsumer_content_hash=subsumer.content_hash,
+                            )
+                        )
+                n_subsumed = len(admitted) - len(surviving)
+                if n_subsumed:
+                    # The dropped finding is always OBSERVED, so it rode
+                    # n_findings_observed (and the aggregate n_findings_emitted via
+                    # the parser_emitted + parser_observed sum). Decrement ONLY
+                    # n_findings_observed; the aggregate emitted drops with it and
+                    # the two cancel in _enforce_proposal_accounting — no new term.
+                    parser_result = replace(
+                        parser_result,
+                        admitted_findings=tuple(surviving),
+                        counters=replace(
+                            parser_result.counters,
+                            n_findings_observed=parser_result.counters.n_findings_observed
+                            - n_subsumed,
+                        ),
+                    )
+
         # Skip-routing SHADOW telemetry (Cost Lever 3, DECISIONS.md#049): record
         # the per-file skip-eligibility decision from the SAME OBSERVED matches.
         # V1 RECORDS ONLY — it never skips the LLM (which already ran above);
@@ -2045,6 +2156,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     "trace_candidates": [
                         c.model_dump(mode="json") for c in parser_result.trace_candidates
                     ],
+                    # Cross-type subsumption proof-retention records (DECISIONS.md#055):
+                    # the dropped OBSERVED findings are absent from `findings`, so without
+                    # this the cache-hit path would lose their query_match_id telemetry.
+                    "subsumed_matches": [m.model_dump(mode="json") for m in subsumed_matches],
                 },
                 model=analyze_model,
                 prompt_template_version=analyze_prompt.VERSION,
@@ -2074,6 +2189,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         cache_write_tokens=response.cache_write_tokens,
         cost_decimal=cost_decimal,
         estimated_tokens=estimated_tokens,
+        subsumed_matches=tuple(subsumed_matches),
     )
 
 

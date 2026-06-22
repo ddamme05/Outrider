@@ -37,6 +37,7 @@ from outrider.llm.base import LLMRequest, LLMResponse, _canonical_prompt_hash
 from outrider.policy import EvidenceTier, FindingType
 from outrider.policy.canonical import compute_served_finding_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
+from outrider.policy.subsumption import SUBSUMES_DIGEST
 from outrider.prompts import analyze as analyze_prompt
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST
 from outrider.schemas import (
@@ -301,7 +302,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
     # The written key is exactly the recomputed full key (prompt digest
-    # + eleven explicit components) over the request actually sent.
+    # + twelve explicit components) over the request actually sent.
     [request] = provider.calls
     # FUP-096: the request that produced the cached payload rode with the
     # pinned schema — the key's response_format_digest describes it truly.
@@ -320,6 +321,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
         parameterized_call_scan_digest=scan_digest(scan_parameterized_calls(_HEAD.encode("utf-8"))),
         observed_producer_version=OBSERVED_PRODUCER_VERSION,
+        subsumes_digest=SUBSUMES_DIGEST,
     )
     assert write["cache_key"] == expected_key == event.cache_key == looked_up_key
     assert write["source_review_id"] == _REVIEW_ID
@@ -558,6 +560,46 @@ async def test_serve_hit_short_circuits_and_reemits_finding() -> None:
     [completed] = sink.completed
     assert completed.n_llm_calls == 0
     assert completed.n_findings_emitted == 1
+    assert completed.n_findings_served == 1
+
+
+@pytest.mark.asyncio
+async def test_serve_hit_reconstructs_subsumed_matches() -> None:
+    """A serve hit reconstructs `subsumed_matches` (DECISIONS.md#055) from the cache
+    payload and threads them onto the per-pass `AnalyzeCompletedEvent` — so cross-type
+    subsumption proof retention survives a cache HIT, not only a miss."""
+    source_finding = _build_cached_finding()
+    subsumed = {
+        "file_path": "src/cached.py",
+        "query_match_id": "python.weak_crypto_broken_cipher",
+        "finding_type": "weak_crypto",
+        "subsumed_by_finding_type": "weak_password_hash",
+        "line_start": 5,
+        "line_end": 5,
+        "dropped_content_hash": "a" * 64,
+        "subsumer_content_hash": "b" * 64,
+    }
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload={
+            "findings": [source_finding.model_dump(mode="json")],
+            "trace_candidates": [],
+            "subsumed_matches": [subsumed],
+        },
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=_SCOPE, entry=entry)
+    provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+
+    assert provider.calls == []  # served — no model call
+    [completed] = sink.completed
+    assert len(completed.subsumed_matches) == 1
+    rec = completed.subsumed_matches[0]
+    assert rec.query_match_id == "python.weak_crypto_broken_cipher"
+    assert rec.file_path == "src/cached.py"
+    # subsumed_matches is telemetry — the served finding still rides n_findings_served.
     assert completed.n_findings_served == 1
 
 

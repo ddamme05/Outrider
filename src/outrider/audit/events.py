@@ -606,8 +606,8 @@ class CacheLookupEvent(AuditEventBase):
     rejection, no max_tokens truncation), a concurrent live row wins
     the insert, and a store failure is contained, not retried.
     The accumulated would-hit rate is the evidence the serve
-    flip is gated on. `cache_key` is the twelve-field digest (prompt
-    digest + eleven explicit scope/version components) from
+    flip is gated on. `cache_key` is the thirteen-field digest (prompt
+    digest + twelve explicit scope/version components) from
     `cache/key.py::compute_analyze_cache_key`; the serve-stage
     `CacheServeEvent` (flip arc) carries the full self-contained replay
     payload — this shadow event deliberately stays thin.
@@ -663,7 +663,7 @@ class CacheServeEvent(AuditEventBase):
     FindingEvents, not this event, so it survives the source review / cache row
     being purged, per `DECISIONS.md#014` point 4).
 
-    `cache_key` is the composed twelve-field digest — the canonical fingerprint of
+    `cache_key` is the composed thirteen-field digest — the canonical fingerprint of
     every key component (`compute_analyze_cache_key`) and the join to the prior
     `CacheLookupEvent` telemetry; carrying the digest carries the components'
     identity, and replay never recomputes the analyze key, so the individual
@@ -2421,6 +2421,42 @@ class PublishAttemptEvent(AuditEventBase):
 _SHA256_HEX_PATTERN_SHORT: Final = SHA256_HEX_PATTERN_SHORT
 
 
+class ObservedSubsumedMatch(BaseModel):
+    """An OBSERVED finding dropped by cross-type subsumption (DECISIONS.md#055):
+    a same-span JUDGED subsumer of a more-specific `finding_type` absorbed it, so
+    the broader OBSERVED finding is suppressed from the published set. This record
+    RETAINS its replay-verifiable `query_match_id` in the audit stream — the
+    existing `ObservedSkipShadowEvent` carries only `skip_safe` matches, and the
+    subsumed query is `signal_only`, so without this record the structural proof
+    would vanish.
+
+    `file_path` is REQUIRED (unlike `ObservedSkipCoveringMatch`, which rides a
+    per-file event): `AnalyzeCompletedEvent` is per-pass and aggregates over all
+    files, so `query_match_id` + line span alone is ambiguous across files. The
+    two content hashes cross-reference the dropped finding and the surviving
+    subsumer's `FindingEvent`. Frozen + extra=forbid.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    file_path: Annotated[str, Field(min_length=1)]
+    query_match_id: Annotated[str, Field(max_length=200, min_length=1)]
+    finding_type: FindingType
+    subsumed_by_finding_type: FindingType
+    line_start: Annotated[int, Field(ge=1)]
+    line_end: Annotated[int, Field(ge=1)]
+    dropped_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    subsumer_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+
+    @model_validator(mode="after")
+    def _enforce_line_order(self) -> Self:
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+
 class AnalyzeCompletedEvent(AuditEventBase):
     """Per-pass aggregate emitted at the end of each analyze ⇄ trace iteration.
 
@@ -2462,6 +2498,18 @@ class AnalyzeCompletedEvent(AuditEventBase):
     no event. Default 0 (pre-#054 payloads and non-colliding passes produce none —
     the default lets historical `analyze_completed` events replay, where the
     equation reduces to its prior form)."""
+    subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
+    """Cross-type subsumption proof-retention records (DECISIONS.md#055): one per
+    OBSERVED finding dropped because a same-span JUDGED finding of a more-specific
+    `finding_type` subsumed it. TELEMETRY — explicitly OUTSIDE
+    `_enforce_proposal_accounting`. The dropped finding is always OBSERVED, so its
+    suppression decrements `n_findings_observed` only; the aggregate
+    `n_findings_emitted` (= proposal-findings + observed) drops with it and the two
+    cancel in the equation, leaving it balanced with no new term. Carries the
+    dropped `query_match_id` so the structural proof survives even though the
+    finding is unpublished (the `signal_only` match is absent from
+    `ObservedSkipShadowEvent`). Default-empty → historical payloads replay
+    unchanged."""
     n_proposals_rejected: int = Field(ge=0)
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
@@ -3011,6 +3059,7 @@ __all__ = [
     "ObservedSkipChangedRegion",
     "ObservedSkipCoveringMatch",
     "ObservedSkipShadowEvent",
+    "ObservedSubsumedMatch",
     "PublishAttemptEvent",
     "PublishAttemptOutcome",
     "PublishEligibility",

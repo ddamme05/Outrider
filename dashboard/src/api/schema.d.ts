@@ -558,6 +558,11 @@ export interface components {
              * @default 0
              */
             n_proposals_superseded_by_observed: number;
+            /**
+             * Subsumed Matches
+             * @default []
+             */
+            subsumed_matches: components["schemas"]["ObservedSubsumedMatch"][];
             /** N Proposals Rejected */
             n_proposals_rejected: number;
             /** N Responses Rejected */
@@ -658,8 +663,8 @@ export interface components {
          *     rejection, no max_tokens truncation), a concurrent live row wins
          *     the insert, and a store failure is contained, not retried.
          *     The accumulated would-hit rate is the evidence the serve
-         *     flip is gated on. `cache_key` is the twelve-field digest (prompt
-         *     digest + eleven explicit scope/version components) from
+         *     flip is gated on. `cache_key` is the thirteen-field digest (prompt
+         *     digest + twelve explicit scope/version components) from
          *     `cache/key.py::compute_analyze_cache_key`; the serve-stage
          *     `CacheServeEvent` (flip arc) carries the full self-contained replay
          *     payload — this shadow event deliberately stays thin.
@@ -726,7 +731,7 @@ export interface components {
          *     FindingEvents, not this event, so it survives the source review / cache row
          *     being purged, per `DECISIONS.md#014` point 4).
          *
-         *     `cache_key` is the composed twelve-field digest — the canonical fingerprint of
+         *     `cache_key` is the composed thirteen-field digest — the canonical fingerprint of
          *     every key component (`compute_analyze_cache_key`) and the join to the prior
          *     `CacheLookupEvent` telemetry; carrying the digest carries the components'
          *     identity, and replay never recomputes the analyze key, so the individual
@@ -1571,6 +1576,38 @@ export interface components {
              * @default []
              */
             blockers: components["schemas"]["ObservedSkipChangedRegion"][];
+        };
+        /**
+         * ObservedSubsumedMatch
+         * @description An OBSERVED finding dropped by cross-type subsumption (DECISIONS.md#055):
+         *     a same-span JUDGED subsumer of a more-specific `finding_type` absorbed it, so
+         *     the broader OBSERVED finding is suppressed from the published set. This record
+         *     RETAINS its replay-verifiable `query_match_id` in the audit stream — the
+         *     existing `ObservedSkipShadowEvent` carries only `skip_safe` matches, and the
+         *     subsumed query is `signal_only`, so without this record the structural proof
+         *     would vanish.
+         *
+         *     `file_path` is REQUIRED (unlike `ObservedSkipCoveringMatch`, which rides a
+         *     per-file event): `AnalyzeCompletedEvent` is per-pass and aggregates over all
+         *     files, so `query_match_id` + line span alone is ambiguous across files. The
+         *     two content hashes cross-reference the dropped finding and the surviving
+         *     subsumer's `FindingEvent`. Frozen + extra=forbid.
+         */
+        ObservedSubsumedMatch: {
+            /** File Path */
+            file_path: string;
+            /** Query Match Id */
+            query_match_id: string;
+            finding_type: components["schemas"]["FindingType"];
+            subsumed_by_finding_type: components["schemas"]["FindingType"];
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            /** Dropped Content Hash */
+            dropped_content_hash: string;
+            /** Subsumer Content Hash */
+            subsumer_content_hash: string;
         };
         /**
          * PerFindingDecision

@@ -75,9 +75,13 @@ if TYPE_CHECKING:
 # served under rules that no longer produce them. v3 (DECISIONS.md#054):
 # prefer-OBSERVED evicts a JUDGED proposal colliding with an OBSERVED
 # finding, so a pre-v3 cache row would serve the stale JUDGED survivor.
+# v4 (DECISIONS.md#055): cross-type subsumption drops an admitted OBSERVED
+# finding under a same-span JUDGED subsumer, again changing the admitted set;
+# this version pins the mechanism, while the SUBSUMES relation's CONTENT is
+# keyed separately via SUBSUMES_DIGEST in the cache key for future edge edits.
 # Code-pinned adjacent to what it versions, never injectable (the
 # TRIVIAL_FILTER_VERSION precedent).
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v3"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v4"
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend
