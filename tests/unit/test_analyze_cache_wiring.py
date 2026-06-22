@@ -610,6 +610,42 @@ async def test_serve_hit_reconstructs_subsumed_matches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_serve_hit_with_malformed_subsumed_path_degrades_not_crashes() -> None:
+    """Cache-serve containment (review follow-on): a malformed cached
+    `subsumed_matches.file_path` raises `CoordinateError` in reconstruction (the
+    file_path validator re-runs `validate_diff_path`, and `CoordinateError` is NOT a
+    `ValueError`). The degrade guard must catch it so the review falls back to a live
+    LLM call instead of aborting."""
+    source_finding = _build_cached_finding()
+    bad_subsumed = {
+        "file_path": "../../etc/passwd",  # fails validate_diff_path → CoordinateError
+        "query_match_id": "python.weak_crypto_broken_cipher",
+        "finding_type": "weak_crypto",
+        "subsumed_by_finding_type": "weak_password_hash",
+        "line_start": 5,
+        "line_end": 5,
+        "dropped_content_hash": "0" * 64,
+        "subsumer_content_hash": "0" * 64,
+    }
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload={
+            "findings": [source_finding.model_dump(mode="json")],
+            "trace_candidates": [],
+            "subsumed_matches": [bad_subsumed],
+        },
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=_SCOPE, entry=entry)
+    provider, sink = await _run(store, cache_mode=CacheMode.SERVE)
+
+    # Degraded to a live LLM call (NOT served); the review did not crash.
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_serve_miss_calls_model_and_writes() -> None:
     """A serve-miss is a real miss: the model runs, miss telemetry fires, and
     step 3g writes the new outcome (same as shadow-miss)."""
