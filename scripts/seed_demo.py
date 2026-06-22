@@ -40,8 +40,11 @@ import dataclasses
 import os
 import subprocess  # noqa: S404 — local dev tooling; argv lists only, never shell=True
 import sys
+import traceback
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -328,15 +331,21 @@ def _seed_all(admin_url: str, api_key: str) -> int:
         print(
             f"  === seeding [{i + 1}/{len(SEED_SPECS)}] {spec.key} — {spec.label} ===", flush=True
         )
-        scenario = spec.build_scenario(_head_sha_for(i))
-        review_id, structural_ok = asyncio.run(
-            _run(demo_url, api_key, scenario, expect_findings=spec.expect_findings)
-        )
-        cap = asyncio.run(_validate_capture(demo_url, str(review_id), spec))
-        if not structural_ok:
-            cap = CaptureResult(
-                spec.key, ok=False, detail=(cap.detail + "; structural smoke FAILED").strip("; ")
+        try:
+            scenario = spec.build_scenario(_head_sha_for(i))
+            review_id, structural_ok = asyncio.run(
+                _run(demo_url, api_key, scenario, expect_findings=spec.expect_findings)
             )
+            cap = asyncio.run(_validate_capture(demo_url, str(review_id), spec))
+            if not structural_ok:
+                cap = CaptureResult(
+                    spec.key,
+                    ok=False,
+                    detail=(cap.detail + "; structural smoke FAILED").strip("; "),
+                )
+        except Exception as exc:  # noqa: BLE001 — one bad review must not abort the whole seed
+            traceback.print_exc()  # full traceback to the log; the run continues
+            cap = CaptureResult(spec.key, ok=False, detail=f"CRASHED: {type(exc).__name__}: {exc}")
         results.append(cap)
         mark = "OK" if cap.ok else "FAIL"
         print(f"  --- capture [{mark}] {spec.key}: {cap.detail}\n", flush=True)
@@ -354,6 +363,47 @@ def _seed_all(admin_url: str, api_key: str) -> int:
         f"\n  Snapshot ............. {_SEED_SQL} (re-seedable with zero Claude spend)", flush=True
     )
     return 0
+
+
+class _Tee:
+    """Mirror a stream to a logfile so the WHOLE seed run lands in one file."""
+
+    def __init__(self, stream: TextIO, logfile: TextIO) -> None:
+        self._stream = stream
+        self._logfile = logfile
+
+    def write(self, s: str) -> int:
+        self._stream.write(s)
+        self._logfile.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._logfile.flush()
+
+    def isatty(self) -> bool:
+        return bool(getattr(self._stream, "isatty", lambda: False)())
+
+
+def _run_with_log(admin_url: str, api_key: str) -> int:
+    """Tee all stdout+stderr — the seed's prints, _run's narration, any traceback —
+    into ONE clearly-named log, so the run is inspectable after the fact (the live
+    output scrolls past the terminal buffer otherwise)."""
+    log_dir = _REPO_ROOT / "scripts" / "generated"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"seed_demo_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.txt"
+    logfile = log_path.open("w", encoding="utf-8")
+    orig_out, orig_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Tee(orig_out, logfile), _Tee(orig_err, logfile)  # type: ignore[assignment]
+    try:
+        print(f"  Seed log ............. {log_path}\n", flush=True)
+        return _seed_all(admin_url, api_key)
+    finally:
+        print(f"\n  Seed log ............. {log_path}", flush=True)
+        sys.stdout, sys.stderr = orig_out, orig_err
+        logfile.close()
+        # Echo the path on the REAL stdout so it is unmissable even after the tee.
+        print(f"  >> full seed log: {log_path}", flush=True)
 
 
 def main() -> int:
@@ -378,8 +428,9 @@ def main() -> int:
     admin_url = _load_test_db_url()
     _assert_isolated(admin_url)
     # _seed_all is SYNC (it calls asyncio.run() per step); the demo DB is left in
-    # place after — it backs the dump and is re-creatable by re-running.
-    return _seed_all(admin_url, api_key)
+    # place after — it backs the dump and is re-creatable by re-running. Wrapped so
+    # the whole run is teed to one inspectable log.
+    return _run_with_log(admin_url, api_key)
 
 
 if __name__ == "__main__":
