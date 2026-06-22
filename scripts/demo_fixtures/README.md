@@ -47,3 +47,76 @@ also be suppressed — an acceptable tradeoff for these tiny single-purpose file
    should come back empty.
 3. If a new fixture trips a new Ruff rule, add a narrow per-file ignore in
    `pyproject.toml` — never a wildcard, never an inline `noqa`.
+
+## Running the demo locally (to inspect the seeded reviews)
+
+After a successful `scripts/seed_demo.py` run, the five reviews live in the
+`outrider_test_demo` database on the test container (port 5433). Point the API
+server at it and open the dashboard. All secrets resolve from 1Password via
+`op run --env-file=.env` (the server requires `ANTHROPIC_API_KEY` at boot even
+though viewing never calls it — the keyless lifespan is a later piece).
+
+**Prerequisites**
+
+```bash
+op whoami                          # 1Password CLI unlocked (else: op signin / unlock the app)
+docker compose up -d postgres-test # the seed DB lives here
+```
+
+**1. API server** (terminal 1) — pointed at the seeded demo DB, secrets from 1Password:
+
+```bash
+op run --env-file=.env -- bash -c '
+  export DATABASE_URL="${TEST_DATABASE_URL%/*}/outrider_test_demo"
+  uv run uvicorn outrider.main:app --host 127.0.0.1 --port 8000
+'
+```
+
+(The LangGraph checkpoint URL is derived from `DATABASE_URL` automatically. This
+runs in full mode so you can click around; set `OUTRIDER_DEMO_MODE=1` to exercise
+the read-only public allowlist instead.)
+
+**2. Dashboard** (terminal 2) — Vite dev server, proxies `/api` to `:8000`:
+
+```bash
+cd dashboard
+npm install            # first run only
+npm run dev            # http://localhost:5173
+```
+
+**3. Log in** — the dashboard prompts for a bearer token. Print the admin key
+(resolved from 1Password) and paste it in:
+
+```bash
+op run --env-file=.env -- printenv OUTRIDER_ADMIN_API_KEY
+```
+
+**What to look at**
+
+- The reviews list — five reviews. Some park at `AWAITING_APPROVAL` (the HITL gate
+  fires on a CRITICAL/HIGH finding); others publish inline comments.
+- A review's findings — severity comes from the policy table (not the model), and
+  OBSERVED findings (`weak_crypto`, `blocking_call_in_async`) carry a real
+  `query_match_id`.
+- The audit explorer — the full event stream; run a **replay** to watch it
+  reconstruct and re-verify.
+- `scale_triage` — the 27-file self-review: the triage tiers, ~15 files reviewed,
+  and the one `.ts` file skipped as `UNSUPPORTED_LANGUAGE`.
+
+**Restore from the snapshot instead** (the test container is ephemeral — a
+`docker compose restart postgres-test` wipes the seed DB; this also matches the
+deploy path, version-matched via the container's own psql):
+
+```bash
+op run --env-file=.env -- bash -c '
+  docker compose exec -T -e PGPASSWORD="$TEST_POSTGRES_PASSWORD" postgres-test \
+    psql -U "$TEST_POSTGRES_USER" \
+    -c "DROP DATABASE IF EXISTS outrider_test_demo; CREATE DATABASE outrider_test_demo;"
+  docker compose exec -T -e PGPASSWORD="$TEST_POSTGRES_PASSWORD" postgres-test \
+    psql -U "$TEST_POSTGRES_USER" -d outrider_test_demo < scripts/demo_fixtures/demo_seed.sql
+'
+```
+
+Note: the HITL reviews show `AWAITING_APPROVAL` but can't be *resumed* from the
+seed — the seed used an in-memory checkpointer, so there's no persisted checkpoint.
+Viewing works; the live resume flow needs a real run.
