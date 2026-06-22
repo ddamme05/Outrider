@@ -503,28 +503,36 @@ async def _drive(
     _say(f"  Calling real Claude .. analyzing {analyzed_label}")
     _say()
 
-    result = await graph.ainvoke(seed_state, config={"configurable": {"thread_id": str(review_id)}})
-    await provider.aclose()
-
-    interrupted = "__interrupt__" in result
-    await _report(engine, review_id, result, publisher, interrupted=interrupted)
-    # Full-granularity dumps (same recipe as scripts/smoke_e2e.py): the real
-    # provider persists every exchange, so the USER prompt + Claude's REAL
-    # response come from llm_call_content (system prompt rides as hash +
-    # template version per #016 — reconstructable, not retained as text).
-    await narrate_audit_stream(_say, engine, review_id)
-    await narrate_llm_exchanges_from_db(_say, engine, review_id)
-    narrate_recorded_publisher(_say, publisher)
-    await narrate_db_state(_say, engine)
-    verdict = await _verify(
-        engine,
-        session_factory,
-        review_id,
-        publisher=publisher,
-        interrupted=interrupted,
-        expect_findings=expect_findings,
-    )
-    return (review_id, verdict)
+    # Close the provider's httpx client whether the graph succeeds OR raises. The
+    # client is constructed eagerly (anthropic_provider.py), so a triage/analyze
+    # crash would otherwise leak it — and seed_demo now continues past a failed
+    # review, so a leak per failure would accumulate. aclose() is idempotent.
+    # build_graph above is pure construction and won't raise here, so it stays out.
+    try:
+        result = await graph.ainvoke(
+            seed_state, config={"configurable": {"thread_id": str(review_id)}}
+        )
+        interrupted = "__interrupt__" in result
+        await _report(engine, review_id, result, publisher, interrupted=interrupted)
+        # Full-granularity dumps (same recipe as scripts/smoke_e2e.py): the real
+        # provider persists every exchange, so the USER prompt + Claude's REAL
+        # response come from llm_call_content (system prompt rides as hash +
+        # template version per #016 — reconstructable, not retained as text).
+        await narrate_audit_stream(_say, engine, review_id)
+        await narrate_llm_exchanges_from_db(_say, engine, review_id)
+        narrate_recorded_publisher(_say, publisher)
+        await narrate_db_state(_say, engine)
+        verdict = await _verify(
+            engine,
+            session_factory,
+            review_id,
+            publisher=publisher,
+            interrupted=interrupted,
+            expect_findings=expect_findings,
+        )
+        return (review_id, verdict)
+    finally:
+        await provider.aclose()
 
 
 async def _report(
