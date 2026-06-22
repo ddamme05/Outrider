@@ -248,12 +248,49 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
 
 
 def _pg_dump(db_url: str, out_path: Path) -> bool:
-    """pg_dump the seeded demo DB to a portable SQL artifact (libpq URL form)."""
-    libpq = make_url(db_url).set(drivername="postgresql").render_as_string(hide_password=False)
-    argv = ["pg_dump", "--dbname", libpq, "--no-owner", "--no-privileges", "--file", str(out_path)]
-    proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+    """pg_dump the seeded demo DB to a portable SQL artifact.
+
+    Runs pg_dump INSIDE the postgres-test container (docker compose exec) so the
+    dumper version always matches the server — a host pg_dump older than the server
+    refuses to run (the dev box ships v16 against a v18 test container). Output is
+    streamed to the host file via stdout; the in-container connection is local
+    (localhost:5432, the container's own postgres) with the password via PGPASSWORD.
+    """
+    url = make_url(db_url)
+    exec_argv = [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "-e",
+        f"PGPASSWORD={url.password or ''}",
+        "postgres-test",
+        "pg_dump",
+        "-h",
+        "localhost",
+        "-U",
+        str(url.username),
+        "-d",
+        str(url.database),
+        "--no-owner",
+        "--no-privileges",
+    ]
+    try:
+        with out_path.open("w", encoding="utf-8") as fh:
+            proc = subprocess.run(  # noqa: S603 — argv list, no shell; docker on PATH
+                exec_argv, stdout=fh, stderr=subprocess.PIPE, text=True, check=False
+            )
+    except FileNotFoundError:
+        print(
+            "  pg_dump step needs `docker compose` on PATH (it runs in the "
+            "postgres-test container so the version matches the server).",
+            flush=True,
+        )
+        out_path.unlink(missing_ok=True)
+        return False
     if proc.returncode != 0:
         print(f"  pg_dump failed: {proc.stderr.strip()}", flush=True)
+        out_path.unlink(missing_ok=True)  # never leave a partial/empty dump
         return False
     return True
 
@@ -269,11 +306,19 @@ def _print_plan() -> None:
     print(f"\n  -> one review each into {_DEMO_DB_NAME}, then pg_dump -> {_SEED_SQL}", flush=True)
 
 
-async def _seed_all(admin_url: str, api_key: str) -> int:
-    demo_url = _swap_db(admin_url, _DEMO_DB_NAME)
-    # Fresh DB every run -> reproducible seed.
+async def _recreate_demo_db(admin_url: str) -> None:
+    """Drop + recreate the demo DB — fresh every run, so the seed is reproducible."""
     await _drop_db(admin_url, _DEMO_DB_NAME)
     await _create_db(admin_url, _DEMO_DB_NAME)
+
+
+def _seed_all(admin_url: str, api_key: str) -> int:
+    """SYNC orchestration: each async step gets its OWN asyncio.run(), and the
+    sync _migrate() runs between them. _migrate -> alembic env.py calls
+    asyncio.run() internally, which faults if it runs inside an already-running
+    loop — so this function must NOT be a coroutine (mirrors live_claude_smoke.main)."""
+    demo_url = _swap_db(admin_url, _DEMO_DB_NAME)
+    asyncio.run(_recreate_demo_db(admin_url))
     print(f"  Demo DB .............. {_DEMO_DB_NAME} (recreated)", flush=True)
     _migrate(demo_url)
     print("  Migrated ............. alembic upgrade head\n", flush=True)
@@ -284,10 +329,10 @@ async def _seed_all(admin_url: str, api_key: str) -> int:
             f"  === seeding [{i + 1}/{len(SEED_SPECS)}] {spec.key} — {spec.label} ===", flush=True
         )
         scenario = spec.build_scenario(_head_sha_for(i))
-        review_id, structural_ok = await _run(
-            demo_url, api_key, scenario, expect_findings=spec.expect_findings
+        review_id, structural_ok = asyncio.run(
+            _run(demo_url, api_key, scenario, expect_findings=spec.expect_findings)
         )
-        cap = await _validate_capture(demo_url, str(review_id), spec)
+        cap = asyncio.run(_validate_capture(demo_url, str(review_id), spec))
         if not structural_ok:
             cap = CaptureResult(
                 spec.key, ok=False, detail=(cap.detail + "; structural smoke FAILED").strip("; ")
@@ -332,12 +377,9 @@ def main() -> int:
 
     admin_url = _load_test_db_url()
     _assert_isolated(admin_url)
-    try:
-        return asyncio.run(_seed_all(admin_url, api_key))
-    finally:
-        # The demo DB is intentionally LEFT in place (it backs the dump + lets you
-        # inspect it). Re-running drops and recreates it.
-        pass
+    # _seed_all is SYNC (it calls asyncio.run() per step); the demo DB is left in
+    # place after — it backs the dump and is re-creatable by re-running.
+    return _seed_all(admin_url, api_key)
 
 
 if __name__ == "__main__":
