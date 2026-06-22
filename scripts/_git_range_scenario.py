@@ -54,16 +54,13 @@ _HIGH_RISK_RESERVE_FRACTION = 0.25
 _STARVATION_THRESHOLD = 3
 _BYTES_PER_TOKEN = 3
 
-# Two-dot net diff only: `START..END`. Three-dot (`...`, merge-base symmetric
-# diff) is deliberately rejected — this tool always runs `git diff START..END`,
-# so accepting `...` and silently doing a two-dot diff would be a footgun. Refs may
-# contain single dots (`v1.2.3`) but git forbids `..` inside a ref and forbids a
-# leading/trailing dot, so anchoring each side to a non-dot boundary makes the `..`
-# separator unambiguous. git rev-parse validates the refs after this shape check;
-# the regex only rejects shell noise before anything reaches a subprocess argv.
-_RANGE_RE = re.compile(
-    r"^(?P<start>[A-Za-z0-9._/^~-]*[A-Za-z0-9_/^~-])\.\.(?P<end>[A-Za-z0-9_/^~-][A-Za-z0-9._/^~-]*)$"
-)
+# A single git ref endpoint: a safe charset that rejects shell noise before
+# anything reaches a subprocess argv. The first char excludes `.` so a leading dot
+# is rejected; `_parse_range` adds a trailing-dot check. `@{}` are allowed so
+# reflog/peel refs (`HEAD@{1}`, `main^`, `v1~3`) work; argv lists (never shell=True)
+# make `{}` safe as a literal arg. git rev-parse validates that each endpoint
+# actually resolves; this is only the pre-subprocess shape gate.
+_REF_RE = re.compile(r"^[A-Za-z0-9_/^~@{}-][A-Za-z0-9._/^~@{}-]*$")
 
 
 class GitRangeError(RuntimeError):
@@ -178,14 +175,25 @@ def _show(ref: str, path: str, repo_root: Path) -> str | None:
 
 
 def _parse_range(range_spec: str) -> tuple[str, str]:
-    """Split `START..END` (two-dot net diff only). See `_RANGE_RE`."""
-    m = _RANGE_RE.match(range_spec.strip())
-    if m is None:
+    """Split `START..END` (two-dot net diff only) and reject malformed refs.
+
+    Splitting on `..` and requiring exactly two non-empty parts rejects embedded
+    `..`, three-dot `...` (this tool always runs a two-dot `git diff START..END`,
+    so silently accepting `...` would be a footgun), and a missing endpoint. The
+    per-ref check then rejects a leading/trailing dot and shell metacharacters.
+    git rev-parse validates that each endpoint resolves.
+    """
+    parts = range_spec.strip().split("..")
+    if len(parts) != 2 or not all(parts):
         raise GitRangeError(
-            f"range must look like START..END (got {range_spec!r}); two-dot net diff "
-            "only, e.g. 0c70d18^..39c538b (three-dot '...' is not supported)"
+            f"range must be START..END, two-dot net diff only (got {range_spec!r}); "
+            "e.g. 0c70d18^..39c538b — '...' and embedded '..' are rejected"
         )
-    return (m.group("start"), m.group("end"))
+    start, end = parts
+    for ref in (start, end):
+        if ref.endswith(".") or _REF_RE.match(ref) is None:
+            raise GitRangeError(f"invalid ref in range {range_spec!r}: {ref!r}")
+    return (start, end)
 
 
 def build_file_entries_from_range(range_spec: str, repo_root: Path) -> list[FileEntry]:
