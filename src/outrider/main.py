@@ -106,6 +106,9 @@ def create_app(*, demo_mode: bool) -> FastAPI:
         lifespan=lifespan,
     )
     _include_routers(app, demo_mode=demo_mode)
+    # Read by the lifespan to select the keyless boot (no provider/github/graph/
+    # slack/sweep — the demo box serves precomputed seeds and runs no reviews).
+    app.state.demo_mode = demo_mode
 
     @app.get("/health")
     async def health() -> dict[str, str]:
