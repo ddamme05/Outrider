@@ -38,6 +38,8 @@ top (k8s readiness probe, an `/api/readiness` endpoint, etc.).
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 
 from outrider.api import lifespan
@@ -51,6 +53,44 @@ from outrider.api.dashboard import (
 from outrider.api.slack import slack_oauth_router
 from outrider.api.webhooks.router import router as webhook_router
 
+
+def _demo_mode_from_env() -> bool:
+    """Demo deployment toggle (`specs/2026-06-21-demo-deployment.md`). A plain
+    env read, NOT a `BaseSettings` field, because it gates module-level route
+    mounting that happens BEFORE the lifespan loads pydantic-settings."""
+    return os.environ.get("OUTRIDER_DEMO_MODE", "") == "1"
+
+
+def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
+    """Mount the route allowlist.
+
+    `demo_mode` is a default-deny **allowlist**, NOT a method-based denylist: a
+    "block non-GET" rule would leave Slack's GET `/oauth/callback` — which
+    exchanges an OAuth code and persists config — reachable on a public demo box.
+    So the read-only dashboard GET surface is ALWAYS mounted; every mutation AND
+    side-effecting router (webhook intake, HITL `decide`, the Slack OAuth GET
+    flow) mounts ONLY in production. A new side-effecting route added later stays
+    off in demo mode by default. See `specs/2026-06-21-demo-deployment.md`.
+    """
+    # Read-only dashboard surface — the demo allowlist (all four routers are GET-only).
+    app.include_router(reviews_router)
+    app.include_router(policy_router)
+    app.include_router(metrics_router)
+    # Feature 3 / S2: read-only agent-view endpoint on its own require_agent_api_key
+    # router (separate scope from the admin-gated routers above).
+    app.include_router(agent_view_router)
+    if demo_mode:
+        return
+    # Production-only: mutation + side-effecting routers.
+    app.include_router(webhook_router)
+    app.include_router(hitl_router)  # POST /reviews/{id}/decide
+    # Slack OAuth install flow (commit 6.3e): admin-authed GET /slack/install +
+    # public GET /slack/oauth/callback (both side-effecting). Disabled (uniform
+    # 503) unless OUTRIDER_SLACK_CLIENT_ID is set — but in demo mode it's not
+    # mounted at all, so the GET-with-side-effects surface is structurally absent.
+    app.include_router(slack_oauth_router)
+
+
 app = FastAPI(
     title="Outrider",
     description=(
@@ -58,17 +98,7 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
-app.include_router(webhook_router)
-app.include_router(hitl_router)
-app.include_router(reviews_router)
-app.include_router(policy_router)
-app.include_router(metrics_router)
-# Feature 3 / S2: read-only agent-view endpoint on its own require_agent_api_key
-# router (separate scope from the admin-gated routers above).
-app.include_router(agent_view_router)
-# Slack OAuth install flow (commit 6.3e): admin-authed /slack/install + public
-# /slack/oauth/callback. Disabled (uniform 503) unless OUTRIDER_SLACK_CLIENT_ID is set.
-app.include_router(slack_oauth_router)
+_include_routers(app, demo_mode=_demo_mode_from_env())
 
 
 @app.get("/health")
