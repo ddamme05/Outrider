@@ -72,6 +72,7 @@ if str(_SRC) not in sys.path:
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
+from outrider.agent.nodes.analyze_config import AnalyzeConfig  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
 from outrider.agent.nodes.patch_config import PatchConfig  # noqa: E402
 from outrider.anomaly.persister import AnomalyPersister  # noqa: E402
@@ -445,6 +446,12 @@ async def _run(args: argparse.Namespace) -> int:
             # would; they age out under the same 30-day/retention bounds.
             analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
             resolve_slack_target=slack_resolver,
+            # Respect OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS (mirrors api/lifespan.py).
+            # Without this the demo ran on the hardcoded 200k default — the exact
+            # gap that starved 4 of PR #8's 15 findings. Raise the env budget so a
+            # multi-DEEP-file PR reviews every file (the reserve protects the
+            # high-severity ones at any budget; a bigger budget catches the rest).
+            total_review_budget_tokens=AnalyzeConfig().review_budget_tokens,
         )
 
         from outrider.agent.state import ReviewState  # noqa: PLC0415
