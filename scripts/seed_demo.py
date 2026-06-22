@@ -107,6 +107,7 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         label="Auto-publish (sub-HIGH multi-finding)",
         diff_file="api_request_handler.py",
         expect_findings=True,
+        expected_finding_types=frozenset({"blocking_call_in_async", "missing_input_validation"}),
     ),
     SeedSpec(
         key="observed_proof",
@@ -120,7 +121,11 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         label="Breadth across dimensions",
         diff_file="report_builder.py",
         expect_findings=True,
-        expected_finding_types=frozenset({"missing_input_validation"}),
+        # All three dimensions the fixture plants — breadth IS the demo's point, so
+        # a review that collapses to one finding is a dud and must be rejected.
+        expected_finding_types=frozenset(
+            {"missing_input_validation", "n_plus_one_query", "missing_error_handling"}
+        ),
     ),
     SeedSpec(
         key="scale_triage",
@@ -174,6 +179,22 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
             ).scalar_one()
             if rejected:
                 failures.append(f"{rejected} finding_proposal_rejected event(s)")
+
+            # A wholesale analyze-response rejection (invalid JSON, empty, etc.) is a
+            # degraded run even with audit rows + no starvation — the loose scale
+            # review would otherwise dump it. live_claude_smoke treats it as the
+            # semantic-empty-run path; the seed must reject it too.
+            resp_rejected = (
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM audit_events WHERE review_id = :id "
+                        "AND event_type = 'analyze_response_rejected'"
+                    ),
+                    {"id": review_id},
+                )
+            ).scalar_one()
+            if resp_rejected:
+                failures.append(f"{resp_rejected} analyze_response_rejected event(s)")
 
             types = {
                 row[0]
