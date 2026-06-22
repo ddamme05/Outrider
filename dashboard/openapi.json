@@ -2788,7 +2788,7 @@
         "properties": {
           "file_path": {
             "type": "string",
-            "minLength": 1,
+            "maxLength": 1024,
             "title": "File Path"
           },
           "query_match_id": {

@@ -33,6 +33,7 @@ from outrider.audit.events import (
     ObservedSkipCoveringMatch,
     ObservedSkipShadowEvent,
     ObservedSubsumedMatch,
+    compute_finding_content_hash,
 )
 from outrider.policy import EvidenceTier
 from outrider.policy.canonical import compute_identity_hash, compute_response_hash
@@ -119,7 +120,6 @@ def test_analyze_completed_subsumed_matches_outside_equation() -> None:
     """subsumed_matches is telemetry OUTSIDE `_enforce_proposal_accounting`: an
     event whose proposal equation already balances still validates with the field
     populated (it adds no term — the cross-type drop nets out via observed)."""
-    digest = "a" * 64
     rec = ObservedSubsumedMatch(
         file_path="app/crypto.py",
         query_match_id="python.weak_crypto_broken_cipher",
@@ -127,14 +127,60 @@ def test_analyze_completed_subsumed_matches_outside_equation() -> None:
         subsumed_by_finding_type=FindingType.WEAK_PASSWORD_HASH,
         line_start=5,
         line_end=5,
-        dropped_content_hash=digest,
-        subsumer_content_hash=digest,
+        # Recomputed (the model validator verifies both): the dropped weak_crypto's
+        # own content_hash and the same-span weak_password_hash subsumer's.
+        dropped_content_hash=compute_finding_content_hash(
+            "app/crypto.py", line_start=5, line_end=5, finding_type=FindingType.WEAK_CRYPTO
+        ),
+        subsumer_content_hash=compute_finding_content_hash(
+            "app/crypto.py", line_start=5, line_end=5, finding_type=FindingType.WEAK_PASSWORD_HASH
+        ),
     )
     event = AnalyzeCompletedEvent(
         **_completed_kwargs(n_proposals_seen=1, n_findings_emitted=1, subsumed_matches=(rec,))
     )
     assert len(event.subsumed_matches) == 1
     assert event.subsumed_matches[0].subsumed_by_finding_type is FindingType.WEAK_PASSWORD_HASH
+
+
+def test_subsumed_match_rejects_mismatched_content_hash() -> None:
+    """The content-hash recompute validator rejects a spoofed/mismatched hash (e.g.
+    from a tampered cache payload) — both hashes are derivable from the record's own
+    fields, so a wrong value fails construction."""
+    good_subsumer = compute_finding_content_hash(
+        "app/crypto.py", line_start=5, line_end=5, finding_type=FindingType.WEAK_PASSWORD_HASH
+    )
+    with pytest.raises(ValidationError, match="dropped_content_hash mismatch"):
+        ObservedSubsumedMatch(
+            file_path="app/crypto.py",
+            query_match_id="python.weak_crypto_broken_cipher",
+            finding_type=FindingType.WEAK_CRYPTO,
+            subsumed_by_finding_type=FindingType.WEAK_PASSWORD_HASH,
+            line_start=5,
+            line_end=5,
+            dropped_content_hash="0" * 64,  # not the recomputed weak_crypto hash
+            subsumer_content_hash=good_subsumer,
+        )
+
+
+def test_subsumed_match_rejects_traversal_path() -> None:
+    """The file_path field validator re-runs validate_diff_path
+    (paths-validated-before-use, [security-critical]), so a traversal path fails
+    even when reconstructed from a payload. CoordinateError is not a ValueError, so
+    pydantic may surface it directly — accept either (sibling-event precedent)."""
+    from outrider.coordinates import CoordinateError
+
+    with pytest.raises((CoordinateError, ValidationError)):
+        ObservedSubsumedMatch(
+            file_path="../../etc/passwd",
+            query_match_id="python.weak_crypto_broken_cipher",
+            finding_type=FindingType.WEAK_CRYPTO,
+            subsumed_by_finding_type=FindingType.WEAK_PASSWORD_HASH,
+            line_start=5,
+            line_end=5,
+            dropped_content_hash="0" * 64,
+            subsumer_content_hash="0" * 64,
+        )
 
 
 def test_analyze_completed_admits_consistent_proposal_accounting() -> None:
