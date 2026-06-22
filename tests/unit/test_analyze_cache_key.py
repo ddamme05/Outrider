@@ -20,6 +20,7 @@ from outrider.ast_facts.parameterized_calls import (
 )
 from outrider.cache import compute_analyze_cache_key
 from outrider.llm.base import _canonical_prompt_hash
+from outrider.policy.subsumption import SUBSUMES_DIGEST
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST, _registry_digest
 from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_FORMAT_DIGEST
 
@@ -37,6 +38,7 @@ _BASE_KWARGS = {
     "response_format_digest": ANALYZE_RESPONSE_FORMAT_DIGEST,
     "parameterized_call_scan_digest": "d" * 64,
     "observed_producer_version": OBSERVED_PRODUCER_VERSION,
+    "subsumes_digest": SUBSUMES_DIGEST,
 }
 
 
@@ -59,20 +61,24 @@ def test_key_is_deterministic_64_hex() -> None:
         ("trivial_filter_version", "trivial-filter-v2"),
         ("query_registry_digest", "b" * 64),
         ("active_policy_version", "policy-v2"),
-        # "...-v4" is only a distinct-from-live probe (live ANALYZE_PARSER_VERSION
-        # is v3) — the key must differ when ANY component changes; not a real version.
-        ("analyze_parser_version", "analyze-parser-v4"),
+        # "...-v5" is only a distinct-from-live probe (live ANALYZE_PARSER_VERSION
+        # is v4) — the key must differ when ANY component changes; not a real version.
+        ("analyze_parser_version", "analyze-parser-v5"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
         ("observed_producer_version", "observed-producer-v2"),
+        # A SUBSUMES relation edit changes the admitted set (DECISIONS.md#055),
+        # so its digest must change the key — "f"*64 is a distinct-from-live probe.
+        ("subsumes_digest", "f" * 64),
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the thirteen inputs is load-bearing: changing any one of
+    """Each of the fourteen inputs is load-bearing: changing any one of
     them alone produces a different key (the correct-by-construction
     invalidation property the spec pins). `observed_producer_version`
     (Cost Lever 3) pins the deterministic OBSERVED producer's admission
-    logic so a rule change invalidates cached outcomes."""
+    logic, and `subsumes_digest` (DECISIONS.md#055) pins the cross-type
+    SUBSUMES relation, so a rule change invalidates cached outcomes."""
     base = compute_analyze_cache_key(**_BASE_KWARGS)
     varied = compute_analyze_cache_key(**{**_BASE_KWARGS, field: changed})
     assert varied != base, field
@@ -94,11 +100,11 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_prompt_digest_plus_eleven_framed_components() -> None:
+def test_golden_recipe_prompt_digest_plus_twelve_framed_components() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: twelve length-prefixed fields — `_canonical_prompt_hash` output
+    test: thirteen length-prefixed fields — `_canonical_prompt_hash` output
     first (one recipe, two consumers; never forks from
-    `LLMCallEvent.prompt_hash`), then the eleven explicit scope/version
+    `LLMCallEvent.prompt_hash`), then the twelve explicit scope/version
     components in declaration order, each framed `{len(bytes)}:` on
     UTF-8 bytes. Any change to the framing, the component order, or the
     prompt component's recipe fails this test — deliberately: that
@@ -122,6 +128,7 @@ def test_golden_recipe_prompt_digest_plus_eleven_framed_components() -> None:
         _BASE_KWARGS["response_format_digest"],
         _BASE_KWARGS["parameterized_call_scan_digest"],
         _BASE_KWARGS["observed_producer_version"],
+        _BASE_KWARGS["subsumes_digest"],
     ):
         component_bytes = component.encode("utf-8")
         expected.update(f"{len(component_bytes)}:".encode())
@@ -164,8 +171,10 @@ def test_analyze_parser_version_pinned() -> None:
     (the spec's TRIVIAL_FILTER_VERSION precedent). v2: the FUP-162
     parameterized-call veto joined the admission flow. v3: prefer-OBSERVED
     (DECISIONS.md#054) evicts a JUDGED proposal colliding with an OBSERVED
-    finding, changing what a cache row may serve."""
-    assert ANALYZE_PARSER_VERSION == "analyze-parser-v3"
+    finding. v4: cross-type subsumption (DECISIONS.md#055) drops an admitted
+    OBSERVED finding under a same-span JUDGED subsumer — again changing what a
+    cache row may serve."""
+    assert ANALYZE_PARSER_VERSION == "analyze-parser-v4"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:

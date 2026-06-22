@@ -1072,6 +1072,14 @@
             "title": "N Proposals Superseded By Observed",
             "default": 0
           },
+          "subsumed_matches": {
+            "items": {
+              "$ref": "#/components/schemas/ObservedSubsumedMatch"
+            },
+            "type": "array",
+            "title": "Subsumed Matches",
+            "default": []
+          },
           "n_proposals_rejected": {
             "type": "integer",
             "minimum": 0.0,
@@ -1321,7 +1329,7 @@
           "cache_key"
         ],
         "title": "CacheLookupEvent",
-        "description": "Per-file analyze-cache lookup record \u2014 the lever-8 shadow-stage\ntelemetry (specs/2026-06-11-file-hash-analyze-cache.md).\n\nOne event per pass-0 clean-mode candidate file when the cache is\nenabled: `outcome=\"would_hit\"` means a live entry existed for the\ncomposed key (shadow mode still calls the model \u2014 nothing is\nserved); `outcome=\"miss\"` means none did \u2014 a store write is then\nATTEMPTED, but a miss does not guarantee a row: the write is\nadditionally gated on response acceptance (no response-level\nrejection, no max_tokens truncation), a concurrent live row wins\nthe insert, and a store failure is contained, not retried.\nThe accumulated would-hit rate is the evidence the serve\nflip is gated on. `cache_key` is the twelve-field digest (prompt\ndigest + eleven explicit scope/version components) from\n`cache/key.py::compute_analyze_cache_key`; the serve-stage\n`CacheServeEvent` (flip arc) carries the full self-contained replay\npayload \u2014 this shadow event deliberately stays thin.\n\nCarries `node_id` so replay's node-containment binds it to analyze's\nphase window without an owner-map exemption (`ScopeExclusionEvent`\nprecedent). Idempotency mode: event_id-PK per `DECISIONS.md#026` \u2014\nresume re-emission appends; consumer-side dedup collapses."
+        "description": "Per-file analyze-cache lookup record \u2014 the lever-8 shadow-stage\ntelemetry (specs/2026-06-11-file-hash-analyze-cache.md).\n\nOne event per pass-0 clean-mode candidate file when the cache is\nenabled: `outcome=\"would_hit\"` means a live entry existed for the\ncomposed key (shadow mode still calls the model \u2014 nothing is\nserved); `outcome=\"miss\"` means none did \u2014 a store write is then\nATTEMPTED, but a miss does not guarantee a row: the write is\nadditionally gated on response acceptance (no response-level\nrejection, no max_tokens truncation), a concurrent live row wins\nthe insert, and a store failure is contained, not retried.\nThe accumulated would-hit rate is the evidence the serve\nflip is gated on. `cache_key` is the thirteen-field digest (prompt\ndigest + twelve explicit scope/version components) from\n`cache/key.py::compute_analyze_cache_key`; the serve-stage\n`CacheServeEvent` (flip arc) carries the full self-contained replay\npayload \u2014 this shadow event deliberately stays thin.\n\nCarries `node_id` so replay's node-containment binds it to analyze's\nphase window without an owner-map exemption (`ScopeExclusionEvent`\nprecedent). Idempotency mode: event_id-PK per `DECISIONS.md#026` \u2014\nresume re-emission appends; consumer-side dedup collapses."
       },
       "CacheServeEvent": {
         "properties": {
@@ -1431,7 +1439,7 @@
           "source_cache_created_at"
         ],
         "title": "CacheServeEvent",
-        "description": "Per-file analyze-cache SERVE record \u2014 the serve-flip counterpart to\n`CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).\n\nEmitted (in place of `CacheLookupEvent`) when `cache_mode=\"serve\"` and a live\ncache entry is served: the LLM call is skipped and the cached findings are\nreconstructed onto this review. Carries the serve DECISION + identity;\nserved-finding CONTENT rides the re-emitted `FindingEvent` stream (the\ncontent/metadata split \u2014 replay equivalence is verified through those\nFindingEvents, not this event, so it survives the source review / cache row\nbeing purged, per `DECISIONS.md#014` point 4).\n\n`cache_key` is the composed twelve-field digest \u2014 the canonical fingerprint of\nevery key component (`compute_analyze_cache_key`) and the join to the prior\n`CacheLookupEvent` telemetry; carrying the digest carries the components'\nidentity, and replay never recomputes the analyze key, so the individual\ncomponents are not re-listed. `(installation_id, repo_id)` is the tenant scope\n(load-bearing, never dropped). `served_trace_candidates` carries the\nmetadata-only identity of each served trace candidate (their only audit\ntrace; `reason` excluded \u2014 content tier). `source_review_id` /\n`source_cache_created_at` are non-load-bearing provenance pointers.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the analyze\nphase (CacheLookupEvent precedent). A served file emits this event, one\n`FileExaminationEvent(parse_status=\"clean\")`, and one `FindingEvent` per served\nfinding \u2014 and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`."
+        "description": "Per-file analyze-cache SERVE record \u2014 the serve-flip counterpart to\n`CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).\n\nEmitted (in place of `CacheLookupEvent`) when `cache_mode=\"serve\"` and a live\ncache entry is served: the LLM call is skipped and the cached findings are\nreconstructed onto this review. Carries the serve DECISION + identity;\nserved-finding CONTENT rides the re-emitted `FindingEvent` stream (the\ncontent/metadata split \u2014 replay equivalence is verified through those\nFindingEvents, not this event, so it survives the source review / cache row\nbeing purged, per `DECISIONS.md#014` point 4).\n\n`cache_key` is the composed thirteen-field digest \u2014 the canonical fingerprint of\nevery key component (`compute_analyze_cache_key`) and the join to the prior\n`CacheLookupEvent` telemetry; carrying the digest carries the components'\nidentity, and replay never recomputes the analyze key, so the individual\ncomponents are not re-listed. `(installation_id, repo_id)` is the tenant scope\n(load-bearing, never dropped). `served_trace_candidates` carries the\nmetadata-only identity of each served trace candidate (their only audit\ntrace; `reason` excluded \u2014 content tier). `source_review_id` /\n`source_cache_created_at` are non-load-bearing provenance pointers.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the analyze\nphase (CacheLookupEvent precedent). A served file emits this event, one\n`FileExaminationEvent(parse_status=\"clean\")`, and one `FindingEvent` per served\nfinding \u2014 and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`."
       },
       "ContextManifestEntry": {
         "properties": {
@@ -2775,6 +2783,61 @@
         ],
         "title": "ObservedSkipShadowEvent",
         "description": "Per-file OBSERVED-tier skip-routing SHADOW record (Cost Lever 3,\nspecs/2026-06-14-observed-query-library-v1.md; `DECISIONS.md#049`).\n\nOne event per pass-0 clean-mode file the default-deny skip routing\nevaluates. `outcome=\"would_skip\"` means every changed region in the file\nwas covered by a `skip_safe` OBSERVED match (so the LLM call COULD be\nskipped); `outcome=\"not_eligible\"` means at least one changed region fell\noutside every `skip_safe` envelope. V1 records the decision only \u2014 it is\nshadow telemetry; the LLM still runs (no skip is enforced) until the\nevidence-gated flip. V1 also seeds zero `skip_safe` queries (default-deny),\nso every emission is `not_eligible` until a query is promoted.\n\nSelf-contained enough to reconstruct a promotion proof AFTER content\nretention purges the findings (`DECISIONS.md#014`): it carries the\n`changed_regions` evaluated (the per-side changed line spans \u2014 the union of\n`coordinates.changed_line_spans` across the file's included scopes), the\n`covering_matches` (each `skip_safe` match's `query_match_id` + head-source\nline span; their union is the coverage envelope), and the `blockers` (the changed\nregions outside every `skip_safe` envelope \u2014 the concrete reason a\n`not_eligible` was not eligible). Spans/ranges only, never raw model output,\nso it stays within the metadata-only audit contract.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the\nanalyze phase window (`CacheLookupEvent` precedent). Idempotency mode:\nevent_id-PK per `DECISIONS.md#026` \u2014 resume re-emission appends;\nconsumer-side dedup collapses."
+      },
+      "ObservedSubsumedMatch": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "minLength": 1,
+            "title": "File Path"
+          },
+          "query_match_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query Match Id"
+          },
+          "finding_type": {
+            "$ref": "#/components/schemas/FindingType"
+          },
+          "subsumed_by_finding_type": {
+            "$ref": "#/components/schemas/FindingType"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "dropped_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Dropped Content Hash"
+          },
+          "subsumer_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Subsumer Content Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "file_path",
+          "query_match_id",
+          "finding_type",
+          "subsumed_by_finding_type",
+          "line_start",
+          "line_end",
+          "dropped_content_hash",
+          "subsumer_content_hash"
+        ],
+        "title": "ObservedSubsumedMatch",
+        "description": "An OBSERVED finding dropped by cross-type subsumption (DECISIONS.md#055):\na same-span JUDGED subsumer of a more-specific `finding_type` absorbed it, so\nthe broader OBSERVED finding is suppressed from the published set. This record\nRETAINS its replay-verifiable `query_match_id` in the audit stream \u2014 the\nexisting `ObservedSkipShadowEvent` carries only `skip_safe` matches, and the\nsubsumed query is `signal_only`, so without this record the structural proof\nwould vanish.\n\n`file_path` is REQUIRED (unlike `ObservedSkipCoveringMatch`, which rides a\nper-file event): `AnalyzeCompletedEvent` is per-pass and aggregates over all\nfiles, so `query_match_id` + line span alone is ambiguous across files. The\ntwo content hashes cross-reference the dropped finding and the surviving\nsubsumer's `FindingEvent`. Frozen + extra=forbid."
       },
       "PerFindingDecision": {
         "properties": {

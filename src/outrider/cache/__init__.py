@@ -2,7 +2,7 @@
 """Analyze-result cache (cost lever #8).
 
 V1 surface: `compute_analyze_cache_key` (the key recipe — canonical
-prompt digest plus eleven explicit scope/version components), the
+prompt digest plus twelve explicit scope/version components), the
 DB-backed `AnalyzeCacheStore` with its `CacheScope` / `CacheEntry`
 shapes, the contained `CacheStoreError`, and the `CACHE_TTL_DAYS`
 bound. The analyze node consumes the store in shadow mode (lookup +

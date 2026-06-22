@@ -34,6 +34,12 @@ register_filter_on_all_handlers()
 # `git commit --no-verify`).
 import outrider.policy.dimensions  # noqa: F401, E402 — forced import for lockstep guard
 
+# Forced-import side effect per DECISIONS.md#055: `outrider.policy.subsumption`
+# runs a module-load well-formedness assertion over the `SUBSUMES` cross-type
+# relation (enum-membership / irreflexivity / single-hop acyclicity / severity-
+# monotonicity). Same deterministic-floor rationale as the lockstep guard above.
+import outrider.policy.subsumption  # noqa: F401, E402 — forced import for SUBSUMES guard
+
 
 def main() -> None:
     print("Hello from outrider!")

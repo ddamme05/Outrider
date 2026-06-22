@@ -41,10 +41,16 @@ def compute_analyze_cache_key(
     response_format_digest: str,
     parameterized_call_scan_digest: str,
     observed_producer_version: str,
+    subsumes_digest: str,
 ) -> str:
-    """The analyze-cache key: twelve length-prefixed fields — the canonical
-    prompt digest plus eleven explicit scope/version components — as one
-    SHA-256 hex digest. `observed_producer_version` (Cost Lever 3) pins the
+    """The analyze-cache key: thirteen length-prefixed fields — the canonical
+    prompt digest plus twelve explicit scope/version components — as one
+    SHA-256 hex digest. `subsumes_digest` (DECISIONS.md#055) pins the
+    `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
+    admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
+    edge edit changes the admitted finding set without touching the prompt,
+    registry digest, or parser version — it must invalidate entries.
+    `observed_producer_version` (Cost Lever 3) pins the
     deterministic OBSERVED producer's ADMISSION logic (scope-containment,
     test-file suppression, zero-width skip, byte→line mapping) — a change there
     alters the cached finding set without touching the prompt, the registry
@@ -80,6 +86,7 @@ def compute_analyze_cache_key(
         response_format_digest,
         parameterized_call_scan_digest,
         observed_producer_version,
+        subsumes_digest,
     ):
         component_bytes = component.encode("utf-8")
         h.update(f"{len(component_bytes)}:".encode())

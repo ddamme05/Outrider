@@ -26,7 +26,7 @@ Two foreign keys, mirroring `findings`:
     an installation hard-deletes; RESTRICT prevents a silent CASCADE
     that would skip the purge-audit row.
 
-`cache_key` (the twelve-field digest — prompt digest + eleven explicit
+`cache_key` (the thirteen-field digest — prompt digest + twelve explicit
 components — from `cache/key.py::compute_analyze_cache_key`) is the
 primary key — the write path's conflict arbiter for concurrent same-key
 reviews (`ON CONFLICT DO UPDATE ... WHERE` the existing row is expired:

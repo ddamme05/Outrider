@@ -32,9 +32,11 @@ from outrider.audit.events import (
     ObservedSkipChangedRegion,
     ObservedSkipCoveringMatch,
     ObservedSkipShadowEvent,
+    ObservedSubsumedMatch,
 )
 from outrider.policy import EvidenceTier
 from outrider.policy.canonical import compute_identity_hash, compute_response_hash
+from outrider.policy.severity import FindingType
 
 
 def _completed_kwargs(**overrides: Any) -> dict[str, Any]:
@@ -104,6 +106,35 @@ def test_analyze_completed_admits_zero_counters() -> None:
     event = AnalyzeCompletedEvent(**_completed_kwargs())
     assert event.event_type == "analyze_completed"
     assert event.pass_index == 0
+
+
+def test_analyze_completed_subsumed_matches_defaults_empty() -> None:
+    """Backward-compat (DECISIONS.md#055): historical payloads without
+    subsumed_matches replay with the default-empty tuple — additive telemetry."""
+    event = AnalyzeCompletedEvent(**_completed_kwargs())
+    assert event.subsumed_matches == ()
+
+
+def test_analyze_completed_subsumed_matches_outside_equation() -> None:
+    """subsumed_matches is telemetry OUTSIDE `_enforce_proposal_accounting`: an
+    event whose proposal equation already balances still validates with the field
+    populated (it adds no term — the cross-type drop nets out via observed)."""
+    digest = "a" * 64
+    rec = ObservedSubsumedMatch(
+        file_path="app/crypto.py",
+        query_match_id="python.weak_crypto_broken_cipher",
+        finding_type=FindingType.WEAK_CRYPTO,
+        subsumed_by_finding_type=FindingType.WEAK_PASSWORD_HASH,
+        line_start=5,
+        line_end=5,
+        dropped_content_hash=digest,
+        subsumer_content_hash=digest,
+    )
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(n_proposals_seen=1, n_findings_emitted=1, subsumed_matches=(rec,))
+    )
+    assert len(event.subsumed_matches) == 1
+    assert event.subsumed_matches[0].subsumed_by_finding_type is FindingType.WEAK_PASSWORD_HASH
 
 
 def test_analyze_completed_admits_consistent_proposal_accounting() -> None:
