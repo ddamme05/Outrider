@@ -36,8 +36,7 @@ class ReportBuilder:
             user = await self._db.fetchrow("SELECT name FROM users WHERE id = $1", row["user_id"])
             enriched.append({"id": row["id"], "user": user})
 
-        # The total backs the page controls but isn't critical to render the feed,
-        # so a count failure degrades to an unknown total rather than failing the page.
+        # Attach the overall activity count for the dashboard's page controls.
         total = None
         try:
             total = await self._db.fetchrow("SELECT count(*) AS n FROM activity")
