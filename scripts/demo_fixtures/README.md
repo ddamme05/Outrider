@@ -32,8 +32,10 @@ The planted flaws trip Ruff's security rules. Because inline `# noqa` comments a
 themselves a "this is intentional" signal triage can read, the suppressions live
 in `pyproject.toml` under `[tool.ruff.lint.per-file-ignores]`, scoped to the exact
 file + exact rule (e.g. `vulnerable_query.py = ["S608"]`). It is **not** a wildcard
-ignore — each file lists only the rule its flaw trips, so a real accidental issue
-in a fixture still gets caught.
+ignore — each file ignores only the specific rule(s) its planted flaw trips, so
+every **other** ruff rule still applies. (Ruff per-file ignores are rule-scoped,
+not line-scoped: a second accidental hit of the *same* rule in that file would
+also be suppressed — an acceptable tradeoff for these tiny single-purpose files.)
 
 ## When editing a fixture
 
