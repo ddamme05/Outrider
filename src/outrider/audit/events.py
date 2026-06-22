@@ -2439,7 +2439,7 @@ class ObservedSubsumedMatch(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    file_path: Annotated[str, Field(min_length=1)]
+    file_path: Annotated[str, Field(max_length=1024)]
     query_match_id: Annotated[str, Field(max_length=200, min_length=1)]
     finding_type: FindingType
     subsumed_by_finding_type: FindingType
@@ -2448,11 +2448,51 @@ class ObservedSubsumedMatch(BaseModel):
     dropped_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     subsumer_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
 
+    @field_validator("file_path")
+    @classmethod
+    def _validate_file_path(cls, path: str) -> str:
+        # Re-run validate_diff_path so this record enforces the path boundary
+        # even when reconstructed from a cached payload (paths-validated-before-use,
+        # [security-critical]) — same shadow as FindingEvent / CacheServeEvent.
+        return validate_diff_path(path)
+
     @model_validator(mode="after")
     def _enforce_line_order(self) -> Self:
         if self.line_end < self.line_start:
             raise ValueError(
                 f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _verify_content_hashes(self) -> Self:
+        # Both hashes are derivable from this record's own (canonical file_path,
+        # line span, finding_type) — recompute and verify so a spoofed/mismatched
+        # hash (e.g. a tampered cache payload) fails construction, the same
+        # integrity shape as ReviewFinding/FindingEvent._verify_content_hash.
+        # file_path is already canonical (the field validator ran first);
+        # compute_finding_content_hash canonicalizes idempotently.
+        expected_dropped = compute_finding_content_hash(
+            self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.finding_type,
+        )
+        if self.dropped_content_hash != expected_dropped:
+            raise ValueError(
+                f"dropped_content_hash mismatch: expected {expected_dropped}, "
+                f"got {self.dropped_content_hash}"
+            )
+        expected_subsumer = compute_finding_content_hash(
+            self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.subsumed_by_finding_type,
+        )
+        if self.subsumer_content_hash != expected_subsumer:
+            raise ValueError(
+                f"subsumer_content_hash mismatch: expected {expected_subsumer}, "
+                f"got {self.subsumer_content_hash}"
             )
         return self
 

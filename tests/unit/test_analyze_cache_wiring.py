@@ -576,8 +576,14 @@ async def test_serve_hit_reconstructs_subsumed_matches() -> None:
         "subsumed_by_finding_type": "weak_password_hash",
         "line_start": 5,
         "line_end": 5,
-        "dropped_content_hash": "a" * 64,
-        "subsumer_content_hash": "b" * 64,
+        # Recomputed: the ObservedSubsumedMatch model validator verifies both
+        # hashes against the record's own (file_path, line span, finding_type).
+        "dropped_content_hash": compute_finding_content_hash(
+            "src/cached.py", line_start=5, line_end=5, finding_type=FindingType.WEAK_CRYPTO
+        ),
+        "subsumer_content_hash": compute_finding_content_hash(
+            "src/cached.py", line_start=5, line_end=5, finding_type=FindingType.WEAK_PASSWORD_HASH
+        ),
     }
     entry = CacheEntry(
         cache_key="c" * 64,
