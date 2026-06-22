@@ -24,7 +24,7 @@ reintroduce that framing into the docstrings or comments.
 | `vulnerable_query.py` | f-string-interpolated request input in SQL (×2) | `sql_injection` (CRITICAL) → HITL gate | JUDGED |
 | `api_request_handler.py` | `time.sleep()` in an `async def` + unvalidated `int(limit)` | `blocking_call_in_async` (MEDIUM) + `missing_input_validation` (MEDIUM) → auto-publish | blocking_call is **OBSERVED**; input validation is JUDGED |
 | `weak_crypto_handler.py` | `DES.new(key, DES.MODE_ECB)` | `weak_crypto` (HIGH) → HITL gate | **OBSERVED** (two tree-sitter queries) |
-| `report_builder.py` | unvalidated `int(page)` → SQL OFFSET, an N+1 query, a bare `except: pass` | `missing_input_validation` + `n_plus_one_query` + `missing_error_handling` → auto-publish | JUDGED |
+| `report_builder.py` | unbounded `int(page)` page index, an N+1 fetch loop, a bare `except: pass` | `missing_input_validation` + `n_plus_one_query` (both gated) + `missing_error_handling` (model-dependent bonus) → auto-publish | JUDGED |
 
 ## Lint suppressions
 
