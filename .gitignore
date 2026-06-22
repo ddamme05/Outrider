@@ -47,6 +47,11 @@ spikes/hitl/smoke_hitl_edges.sh
 .env.local
 *.pem
 
+# --- Demo seed snapshot (a full DB dump; keep OUT of git until it has been ---
+# --- generated, scrubbed/secret-scanned, and intentionally approved as a ---
+# --- deploy artifact). Remove this line to track it deliberately. ---
+scripts/demo_fixtures/demo_seed.sql
+
 # --- Python ---
 __pycache__/
 *.py[cod]
