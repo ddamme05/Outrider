@@ -106,6 +106,7 @@ from tests.integration.test_e2e_smoke import (  # noqa: E402
 )
 
 from outrider.agent.graph import build_graph  # noqa: E402
+from outrider.agent.nodes.analyze_config import AnalyzeConfig  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
 from outrider.agent.nodes.patch_config import PatchConfig  # noqa: E402
 from outrider.anomaly.persister import AnomalyPersister  # noqa: E402
@@ -495,6 +496,10 @@ async def _drive(
         # to this script's ephemeral test DB; telemetry is queryable there
         # until the run's DB is dropped.
         analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
+        # Respect OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS (mirrors api/lifespan.py).
+        # Without this, build_graph defaults to 200k and a large multi-file review
+        # (the #6 27-file showcase) starves files at the analyze cost gate.
+        total_review_budget_tokens=AnalyzeConfig().review_budget_tokens,
     )
     _say(
         f"  Models ............... {ModelConfig().analyze_model} (analyze) + "
