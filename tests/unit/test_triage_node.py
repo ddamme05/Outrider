@@ -5,7 +5,8 @@
 
 Tests cover:
 - Happy path with phase-event bracket
-- Schema-violation propagation (malformed JSON, wrong enum casing, >500 char reasoning)
+- Schema-violation propagation (malformed JSON, wrong enum casing)
+- Reasoning-length clamp at the boundary (>500 chars is normalized, not rejected)
 - Provider-failure propagation (LLMProviderError subclasses)
 - Policy-violation: SKIP, unknown path, missing path — each pinned with
   dangling-start phase-event pattern
@@ -31,8 +32,10 @@ from pydantic import ValidationError
 
 from outrider.agent.nodes.triage import (
     _POLICY_VIOLATION_SAMPLE_SIZE,
+    _REASONING_MAX_CHARS,
     TriagePolicyViolationError,
     _enforce_triage_policy,
+    _validate_triage_response,
     triage,
 )
 from outrider.llm.base import LLMRequest, LLMResponse, LLMTimeoutError
@@ -291,18 +294,8 @@ async def test_triage_propagates_llm_provider_error_with_dangling_start(
             "uppercase tier",
         ),
         (json.dumps({"file_tiers": {}, "extra_unknown_field": "x"}), "extra field"),
-        # 600-char reasoning exceeds Field(max_length=500)
-        (
-            json.dumps(
-                {
-                    "file_tiers": {"src/example.py": "standard"},
-                    "overall_risk": "low",
-                    "relevant_dimensions": [],
-                    "reasoning": "x" * 600,
-                }
-            ),
-            "reasoning too long",
-        ),
+        # NOTE: >500-char reasoning is NO LONGER a propagation case — it is clamped
+        # to the cap at the boundary (see test_validate_triage_response_* below).
         # unknown dimension value (not in ReviewDimension enum)
         (
             json.dumps(
@@ -339,6 +332,34 @@ async def test_triage_propagates_schema_violation_with_dangling_start(
     events = recording_phase_event_sink.events
     assert len(events) == 1, f"({desc}) expected only start event"
     assert events[0].marker == "start"
+
+
+def test_validate_triage_response_clamps_overlong_reasoning() -> None:
+    """A reasoning longer than the cap is clamped, not rejected — the model
+    exceeds it on large PRs (the 27-file self-review seed regressed here) and
+    crashing triage over an advisory field would be wrong."""
+    result = _validate_triage_response(_build_triage_json(reasoning="x" * 600))
+    assert len(result.reasoning) == _REASONING_MAX_CHARS
+    assert result.reasoning == "x" * _REASONING_MAX_CHARS
+
+
+def test_validate_triage_response_constant_matches_schema_cap() -> None:
+    """_REASONING_MAX_CHARS must equal the schema's actual max, or the clamp would
+    over-truncate or leave an over-long value that still fails validation."""
+    from annotated_types import MaxLen
+
+    caps = [
+        m.max_length
+        for m in TriageResult.model_fields["reasoning"].metadata
+        if isinstance(m, MaxLen)
+    ]
+    assert caps == [_REASONING_MAX_CHARS]
+
+
+def test_validate_triage_response_malformed_json_still_raises() -> None:
+    """Only length is normalized — malformed JSON still surfaces Pydantic's error."""
+    with pytest.raises(ValidationError):
+        _validate_triage_response("not-json-at-all")
 
 
 # ---------------------------------------------------------------------------
