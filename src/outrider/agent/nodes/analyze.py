@@ -144,6 +144,7 @@ from outrider.audit.events import (
 )
 from outrider.cache import CacheStoreError, compute_analyze_cache_key
 from outrider.coordinates import (
+    CoordinateError,
     added_line_byte_ranges,
     bound_diff_hunks_text,
     changed_line_spans,
@@ -1076,7 +1077,12 @@ async def _serve_cache_hit(
             ObservedSubsumedMatch.model_validate(dump)
             for dump in entry.payload.get("subsumed_matches", [])
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (CoordinateError, KeyError, TypeError, ValueError) as exc:
+        # CoordinateError is NOT a ValueError: the file_path validators on
+        # ReviewFinding AND ObservedSubsumedMatch re-run validate_diff_path, which
+        # raises CoordinateError on a malformed cached path. Catch it here so a
+        # tampered/corrupt cache payload DEGRADES to a real LLM call rather than
+        # aborting the review (the whole point of the reconstruction guard).
         raise _ServeReconstructionError(
             f"serve reconstruction failed for {file_path}: {type(exc).__name__}"
         ) from exc
