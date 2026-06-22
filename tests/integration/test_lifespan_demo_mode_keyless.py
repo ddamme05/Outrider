@@ -142,3 +142,52 @@ async def test_demo_mode_off_with_same_env_fails_at_truncation_gate(
     with pytest.raises(RuntimeError, match="OUTRIDER_TRUNCATION_HMAC_SECRET"):
         async with lifespan(app):
             pass
+
+
+async def test_demo_and_production_wire_identical_app_state_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    make_stub_llm_provider: type,
+    noop_severity_policy_fingerprint_check: object,
+    in_memory_checkpointer_factory: object,
+    github_app_env: None,  # noqa: ARG001 — sets OUTRIDER_GITHUB_* + OUTRIDER_ADMIN_API_KEY
+) -> None:
+    """Parity guard for the deliberate two-block `app.state` duplication.
+
+    The demo branch and the production path each inline all 17 `app.state.*`
+    assignments (demo with `None` for the review/write half). That duplication is
+    intentional — self-contained so the demo can be retired by deleting one block —
+    but it means a key added to one block and not the other drifts silently, and a
+    demo-allowlisted route reading a never-set key would raise `AttributeError` at
+    request time. This guard boots BOTH paths under the same mock harness and asserts
+    the key SETS are identical. It is deliberately a comparison test, not a shared
+    wiring helper: a helper would couple the two blocks and fight the easy-retire goal.
+    """
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret")
+    # Don't spawn a real background sweep loop; sweep_task is still keyed (as None).
+    monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")
+
+    async def _boot_keys(*, demo: bool) -> set[str]:
+        engine = _mock_engine()
+        lifespan = build_lifespan(
+            engine_factory=lambda: engine,
+            provider_factory=lambda _p, _m: make_stub_llm_provider(),
+            severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,
+            checkpointer_factory=in_memory_checkpointer_factory,
+        )
+        app = FastAPI()
+        app.state.demo_mode = demo
+        async with lifespan(app):
+            # Starlette stashes attrs in the private `_state` dict; there is no
+            # public key-enumeration API, so read it directly (test-only).
+            return set(app.state._state.keys())  # noqa: SLF001
+
+    demo_keys = await _boot_keys(demo=True)
+    prod_keys = await _boot_keys(demo=False)
+
+    assert demo_keys == prod_keys, (
+        "demo and production app.state key sets diverged — a key was added to one "
+        f"lifespan block but not the other. only-in-demo={demo_keys - prod_keys}, "
+        f"only-in-prod={prod_keys - demo_keys}"
+    )
+    # Sanity: the compared set is the real 17 + harness-set demo_mode, not two empties.
+    assert {"compiled_graph", "persister", "admin_api_key"} <= prod_keys
