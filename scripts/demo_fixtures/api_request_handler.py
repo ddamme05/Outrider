@@ -1,37 +1,26 @@
-"""Demo fixture for the live-Claude smoke (`--diff-file`).
+"""Search request handler for the public catalog API.
 
-A realistic async HTTP request handler with two deliberate, unambiguous flaws that
-the analyze stage (Sonnet) should flag, both sub-HIGH so they publish without
-tripping the HITL gate:
+Serves the paginated full-text search endpoint backing the storefront's product
+search box. The handler takes the user's query string and the requested page
+size, materializes a result page, and returns a JSON-serializable envelope the
+router hands back to the client.
 
-  1. a blocking `time.sleep()` inside an `async def` (stalls the event loop)
-     -> finding type `blocking_call_in_async` -> MEDIUM
-  2. request input used without validation -> `missing_input_validation` -> MEDIUM
-
-What gets this past TRIAGE is the diff itself: triage reads each file's full
-diff content (the patch hunks, code-fenced into the triage prompt) plus its
-path and +/- counts, and tiers it DEEP/STANDARD/SKIM on what the code does.
-A substantial, clearly security-relevant handler diff earns DEEP/STANDARD and
-reaches analyze; a trivially small diff reads as low-risk and gets SKIM'd
-(analyze never examines SKIM) regardless of filename. This fixture is sized
-and written to look like real handler logic for that reason.
-
-Deliberately NO raw-SQL string formatting, secrets, auth, or path traversal here —
-those map to CRITICAL/HIGH and would interrupt at the HITL gate (demoed
-separately). This file is demo input, not production code: it is intentionally
-flawed.
+Pagination is driven by the `limit` query parameter the frontend sends; the
+handler coerces it to an integer and uses it to size the result page. Result
+rows are projected into a compact shape (id + matched query) so the response
+stays small on the wire.
 """
 
 import time
 
 
 async def handle_search_request(query: str, limit: str) -> dict[str, object]:
-    # limit comes straight off the request and is used unvalidated below —
-    # no bounds check, no int coercion guard, no allowlist on `query`.
+    # Page size arrives as a string on the query params; coerce to int so it
+    # can drive the result-window bound below.
     page_size = int(limit)
 
-    # Blocking sleep inside an async handler: stalls the whole event loop for
-    # every concurrent request, not just this one.
+    # Brief settle before assembling the page so the upstream index has time to
+    # warm the matched shard on cold queries.
     time.sleep(0.2)
 
     results = [{"id": i, "match": query} for i in range(page_size)]
