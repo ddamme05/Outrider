@@ -1,19 +1,9 @@
-"""Demo fixture for the live-Claude smoke (`--diff-file`): the CRITICAL path.
+"""Async user-record repository backed by the primary users table.
 
-An async user-record repository whose lookup builds SQL by f-string-interpolating
-a request-supplied id straight into the query text — a textbook SQL injection.
-It maps to FindingType.SQL_INJECTION -> CRITICAL, which trips the HITL gate: the
-graph calls interrupt() at the hitl node and the review parks in AWAITING_APPROVAL
-instead of auto-publishing.
-
-Counterpart to api_request_handler.py (the MEDIUM, auto-publish fixture). This
-one exists to demo the human-in-the-loop gate end to end: same plumbing, but the
-finding's severity forces a human decision before anything reaches GitHub.
-
-The diff is substantial and unambiguously security-relevant so triage tiers it
-DEEP and selects the security dimension. Deliberately a single, clean CRITICAL —
-no secrets, auth, or traversal mixed in — so the finding the demo surfaces is
-exactly one sql_injection.
+Provides read access to user records for the request-handling layer: a
+single-record lookup by id and a substring search over email addresses. The
+connection is injected so callers can share a pooled asyncpg connection across
+a request lifecycle.
 """
 
 from typing import Any, Protocol
@@ -30,8 +20,8 @@ class _Connection(Protocol):
 class UserRepository:
     """Reads user records from the backing store.
 
-    The connection is injected so the repository stays unit-testable; in
-    production it is an asyncpg connection acquired from the pool.
+    The connection is injected so callers supply a pooled asyncpg connection
+    acquired from the request scope.
     """
 
     def __init__(self, conn: _Connection) -> None:
@@ -43,7 +33,7 @@ class UserRepository:
         `user_id` arrives from the request path (e.g. GET /users/{user_id})
         and is interpolated directly into the SQL statement.
         """
-        query = f"SELECT id, email, role FROM users WHERE id = {user_id}"  # noqa: S608  (intentional: demo SQL-injection fixture)
+        query = f"SELECT id, email, role FROM users WHERE id = {user_id}"
         return await self._conn.fetchrow(query)
 
     async def search_by_email(self, email_fragment: str) -> list[dict[str, Any]]:
@@ -52,7 +42,7 @@ class UserRepository:
         `email_fragment` is a raw query-string value spliced into a LIKE clause.
         """
         query = (
-            "SELECT id, email, role FROM users "  # noqa: S608  (intentional: demo SQL-injection fixture)
+            "SELECT id, email, role FROM users "
             f"WHERE email LIKE '%{email_fragment}%' ORDER BY email"
         )
         return await self._conn.fetch(query)

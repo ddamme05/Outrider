@@ -1,20 +1,12 @@
-"""Demo fixture for the live-Claude smoke (`--diff-file`): the BREADTH path.
+"""Activity report builder for the dashboard's paginated activity view.
 
-A report endpoint with several deliberate, unambiguous issues spread across review
-DIMENSIONS, all sub-HIGH so the review auto-publishes (no HITL gate) and the demo
-shows a single review surfacing findings in different categories at once:
+Assembles a single page of the per-user activity feed: it pulls a window of
+activity rows for the requested page, resolves the owning user for each row, and
+attaches an overall total so the dashboard can render page controls.
 
-  1. `page` taken off the request and used unvalidated → `missing_input_validation`
-     (MEDIUM, security)
-  2. a per-row query inside the loop → `n_plus_one_query` (MEDIUM, performance)
-  3. a bare `except: pass` swallowing errors → `missing_error_handling`
-     (LOW, code quality)
-
-These are JUDGED (model-identified) findings, so the exact set/severity is the
-model's call at run time — the seed-capture check confirms what actually landed.
-Deliberately NO secrets / SQLi / weak-crypto / auth here — those map to HIGH/CRITICAL
-and would trip the HITL gate (demoed by the other fixtures). This file is demo
-input, not production code: it is intentionally flawed.
+The builder is storage-agnostic — it talks to a small `_Db` protocol rather than
+a concrete driver — so the same logic works over the live Postgres pool or an
+in-memory store.
 """
 
 from typing import Any, Protocol
@@ -33,26 +25,23 @@ class ReportBuilder:
         self._db = db
 
     async def build(self, page: str) -> dict[str, Any]:
-        # `page` comes straight off the query string with no int coercion guard,
-        # no bounds check, and no allowlist — a caller controls the offset math.
+        # 50 rows per page; the page index drives the window offset.
         offset = int(page) * 50
 
-        rows = await self._db.fetch(
-            f"SELECT id, user_id FROM activity LIMIT 50 OFFSET {offset}"  # noqa: S608  (intentional: demo missing-input-validation fixture)
-        )
+        rows = await self._db.fetch(f"SELECT id, user_id FROM activity LIMIT 50 OFFSET {offset}")
 
-        # N+1: one extra round-trip PER row to resolve the user. Should be a single
-        # JOIN or a batched IN (...) lookup instead of a query inside the loop.
+        # Resolve the owning user for each activity row so the feed can show names.
         enriched = []
         for row in rows:
             user = await self._db.fetchrow("SELECT name FROM users WHERE id = $1", row["user_id"])
             enriched.append({"id": row["id"], "user": user})
 
+        # The total backs the page controls but isn't critical to render the feed,
+        # so a count failure degrades to an unknown total rather than failing the page.
         total = None
-        try:  # noqa: SIM105  (intentional: demo missing-error-handling fixture)
+        try:
             total = await self._db.fetchrow("SELECT count(*) AS n FROM activity")
-        except Exception:  # noqa: BLE001, S110  (intentional: demo missing-error-handling fixture)
-            # Bare swallow: a DB error here silently reports total=None with no log.
+        except Exception:
             pass
 
         return {"page": page, "rows": enriched, "total": total}
