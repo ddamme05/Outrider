@@ -91,29 +91,40 @@ def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
     app.include_router(slack_oauth_router)
 
 
-app = FastAPI(
-    title="Outrider",
-    description=(
-        "Agentic PR review (intake → triage → analyze ⇄ trace → synthesize → hitl → publish)."
-    ),
-    lifespan=lifespan,
-)
-_include_routers(app, demo_mode=_demo_mode_from_env())
+def create_app(*, demo_mode: bool) -> FastAPI:
+    """Build the production FastAPI app for the given mode.
 
-
-@app.get("/health")
-async def health() -> dict[str, str]:
-    """**Liveness only**, not readiness.
-
-    Returns 200 once the lifespan reaches its `yield` (i.e., the
-    process booted and dependency CONSTRUCTORS ran without raising).
-    It does NOT probe DB connectivity, Anthropic reachability, or
-    GitHub-API health — the lifespan's construction may have built an
-    engine pointed at an unreachable Postgres host and this endpoint
-    would still return 200.
-
-    Useful as a "did uvicorn boot" smoke test behind smee.io /
-    cloudflared / nginx. NOT a substitute for an actual readiness
-    probe; layer that on top if you need it.
+    `demo_mode` selects the route allowlist (see `_include_routers`). Factored out
+    of module scope so the route-mount surface is testable EXACTLY per mode against
+    the real app (not a helper-built one) — `app` below uses the env flag.
     """
-    return {"status": "ok"}
+    app = FastAPI(
+        title="Outrider",
+        description=(
+            "Agentic PR review (intake → triage → analyze ⇄ trace → synthesize → hitl → publish)."
+        ),
+        lifespan=lifespan,
+    )
+    _include_routers(app, demo_mode=demo_mode)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        """**Liveness only**, not readiness.
+
+        Returns 200 once the lifespan reaches its `yield` (i.e., the
+        process booted and dependency CONSTRUCTORS ran without raising).
+        It does NOT probe DB connectivity, Anthropic reachability, or
+        GitHub-API health — the lifespan's construction may have built an
+        engine pointed at an unreachable Postgres host and this endpoint
+        would still return 200.
+
+        Useful as a "did uvicorn boot" smoke test behind smee.io /
+        cloudflared / nginx. NOT a substitute for an actual readiness
+        probe; layer that on top if you need it.
+        """
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app(demo_mode=_demo_mode_from_env())
