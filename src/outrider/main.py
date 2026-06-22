@@ -17,7 +17,17 @@ from `app.state` bindings the lifespan installs (engine, session_factory,
 retention_settings, persister, provider, github_app_settings,
 github_factory, compiled_graph, run_graph).
 
-**Startup failure modes.** Required env vars (`OUTRIDER_GITHUB_APP_ID`,
+**DEMO_MODE.** Under `create_app(demo_mode=True)` (env `OUTRIDER_DEMO_MODE`,
+the public read-only demo box) the lifespan takes a keyless early-return
+path: it builds only the read-side deps (engine, session, retention,
+persister) and serves precomputed reviews through the dashboard allowlist.
+The Anthropic provider, GitHub App, graph, checkpointer, Slack, and sweeps
+are NOT constructed, and the review/write half of `app.state` is `None` — so
+the env vars listed below are NOT required in demo mode (only
+`OUTRIDER_ADMIN_API_KEY` + `DATABASE_URL` are). See `api/lifespan.py`'s
+`if demo_mode:` branch.
+
+**Startup failure modes (production mode).** Required env vars (`OUTRIDER_GITHUB_APP_ID`,
 `OUTRIDER_GITHUB_APP_PRIVATE_KEY`, `OUTRIDER_GITHUB_WEBHOOK_SECRET`,
 `ANTHROPIC_API_KEY`, `DATABASE_URL`) read by their respective
 `BaseSettings` subclasses with `extra="forbid"` — a missing or typoed
