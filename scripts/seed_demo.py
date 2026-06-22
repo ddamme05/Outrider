@@ -116,6 +116,9 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         diff_file="weak_crypto_handler.py",
         expect_findings=True,
         expected_finding_types=frozenset({"weak_crypto"}),
+        # weak_crypto is HIGH (severity policy) -> trips the HITL gate, so this
+        # review parks at AWAITING_APPROVAL like hitl_gate. Verify that row exists.
+        expect_hitl=True,
     ),
     SeedSpec(
         key="breadth",
