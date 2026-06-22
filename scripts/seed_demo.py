@@ -15,9 +15,10 @@ so the seed path and the smoke path cannot drift. Each entry gets a unique
 
 The capture gate (the recall safeguard — why a 21-file kitchen sink once shipped a
 thin review): for every seeded review assert (a) no COST_BUDGET_EXHAUSTED skip,
-(b) no finding_proposal_rejected, (c) every expected finding type is present, and
-(d) the expected HITL / audit rows exist. A review that fails any check is
-reported and the seed exits non-zero — a dud is never dumped.
+(b) no finding_proposal_rejected AND no analyze_response_rejected (a wholesale
+degraded analyze), (c) every expected finding type is present, and (d) the
+expected HITL / audit rows exist. A review that fails any check is reported and
+the seed exits non-zero — a dud is never dumped.
 
 Run it:
 
