@@ -44,7 +44,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Literal, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -88,7 +88,12 @@ class SeedSpec:
     label: str
     expect_findings: bool  # feeds _run's structural --expect-findings verdict
     expected_finding_types: frozenset[str] = field(default_factory=frozenset)
-    expect_hitl: bool = False  # a CRITICAL/HIGH finding should park at the gate
+    # The advertised ROUTING outcome — asserted at capture, not just the finding
+    # types. "hitl": a CRITICAL/HIGH finding must park the review at the gate.
+    # "published": the review must auto-publish (NO hitl_request + publish_routing
+    # events) — a HIGH/CRITICAL over-flag that parks it is a gate failure, not a pass.
+    # "any": routing is model-dependent across a real arc; don't assert it.
+    expected_outcome: Literal["hitl", "published", "any"] = "any"
     diff_file: str | None = None  # a fixture under scripts/demo_fixtures/
     git_range: str | None = None  # OR a two-dot git range (the showcase)
 
@@ -110,7 +115,7 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         diff_file="vulnerable_query.py",
         expect_findings=True,
         expected_finding_types=frozenset({"sql_injection"}),
-        expect_hitl=True,
+        expected_outcome="hitl",
     ),
     SeedSpec(
         key="auto_publish",
@@ -118,6 +123,7 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         diff_file="api_request_handler.py",
         expect_findings=True,
         expected_finding_types=frozenset({"blocking_call_in_async", "missing_input_validation"}),
+        expected_outcome="published",
     ),
     SeedSpec(
         key="observed_proof",
@@ -127,7 +133,7 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         expected_finding_types=frozenset({"weak_crypto"}),
         # weak_crypto is HIGH (severity policy) -> trips the HITL gate, so this
         # review parks at AWAITING_APPROVAL like hitl_gate. Verify that row exists.
-        expect_hitl=True,
+        expected_outcome="hitl",
     ),
     SeedSpec(
         key="breadth",
@@ -140,12 +146,17 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         # call on the bare-except; the rewritten file gives it a fair shot but it's
         # not gated on (requiring an uncertain JUDGED type would false-reject).
         expected_finding_types=frozenset({"missing_input_validation", "n_plus_one_query"}),
+        # All three planted flaws are sub-HIGH, so breadth must AUTO-PUBLISH. The gate
+        # now enforces that: a CRITICAL/HIGH over-flag that parks it at HITL is a
+        # failure (caught a false-positive sql_injection on the int(page) OFFSET).
+        expected_outcome="published",
     ),
     SeedSpec(
         key="scale_triage",
         label="Scale & triage (27-file self-review)",
         git_range=_SHOWCASE_RANGE,
         expect_findings=False,  # findings model-dependent across a real arc; gate loosely
+        expected_outcome="any",  # routing is model-dependent on a real arc; don't assert it
     ),
 )
 
@@ -235,18 +246,47 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
             if n_events == 0:
                 failures.append("no audit events persisted")
 
-            if spec.expect_hitl:
-                hitl = (
+            # Routing-outcome gate: the advertised story (HITL vs auto-publish) must
+            # match what the review actually did — not just which finding types fired.
+            # Without this, a CRITICAL/HIGH over-flag on a supposed auto-publish review
+            # parks it at AWAITING_APPROVAL yet still passes on finding types alone,
+            # dumping a review that contradicts its own demo label.
+            hitl = (
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM audit_events WHERE review_id = :id "
+                        "AND event_type = 'hitl_request'"
+                    ),
+                    {"id": review_id},
+                )
+            ).scalar_one()
+            if spec.expected_outcome == "hitl":
+                if not hitl:
+                    failures.append(
+                        "expected a HITL request event (CRITICAL/HIGH finding parks the gate), "
+                        "found none"
+                    )
+            elif spec.expected_outcome == "published":
+                if hitl:
+                    failures.append(
+                        f"expected auto-publish but found {hitl} hitl_request event(s) — a "
+                        "CRITICAL/HIGH finding parked the review at the gate, contradicting the "
+                        "auto-publish demo"
+                    )
+                routed = (
                     await conn.execute(
                         text(
                             "SELECT count(*) FROM audit_events WHERE review_id = :id "
-                            "AND event_type = 'hitl_request'"
+                            "AND event_type = 'publish_routing'"
                         ),
                         {"id": review_id},
                     )
                 ).scalar_one()
-                if not hitl:
-                    failures.append("expected a HITL request event, found none")
+                if not routed:
+                    failures.append(
+                        "expected auto-publish routing events (publish_routing), found none"
+                    )
+            # "any": routing is model-dependent across a real arc; no outcome assertion.
     finally:
         await engine.dispose()
 
@@ -310,9 +350,11 @@ def _print_plan() -> None:
     for i, spec in enumerate(SEED_SPECS):
         src = spec.git_range or f"demo_fixtures/{spec.diff_file}"
         exp = ", ".join(sorted(spec.expected_finding_types)) or "(model-dependent)"
-        hitl = " +HITL" if spec.expect_hitl else ""
+        outcome = {"hitl": " +HITL", "published": " +auto-publish", "any": ""}[
+            spec.expected_outcome
+        ]
         print(f"    {i + 1}. {spec.key:<14} head_sha=…{_head_sha_for(i)[-6:]}  {src}", flush=True)
-        print(f"        {spec.label} — expect: {exp}{hitl}", flush=True)
+        print(f"        {spec.label} — expect: {exp}{outcome}", flush=True)
     print(f"\n  -> one review each into {_DEMO_DB_NAME}, then pg_dump -> {_SEED_SQL}", flush=True)
 
 
