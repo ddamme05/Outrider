@@ -60,6 +60,12 @@ if TYPE_CHECKING:
 
 # Bare import: running `python scripts/live_claude_smoke.py` puts scripts/ at
 # sys.path[0], so the sibling helper resolves without packaging scripts/.
+from _git_range_scenario import (
+    FileEntry,
+    GitRangeError,
+    build_file_entries_from_range,
+    summarize_dry_run,
+)
 from _narrate import (
     narrate_audit_stream,
     narrate_db_state,
@@ -114,21 +120,23 @@ from outrider.llm.config import ModelConfig  # noqa: E402
 _RULE = "=" * 62
 _INSTALLATION_ID = 12345  # matches tests.integration.test_e2e_smoke._INSTALLATION_ID
 _HEAD_SHA = "b" * 40  # matches the seed PRContext head_sha
+_BASE_SHA = "a" * 40  # matches the seed PRContext base_sha (factory keys base content on it)
 
 
 @dataclass(frozen=True)
 class _Scenario:
-    """A file for the live run: path + head content + an all-added patch.
+    """One or more files for the live run, as the (stubbed) GitHub client sees them.
 
-    Intake re-fetches content from the (stubbed) GitHub client and rebuilds
-    `ChangedFile`, so the analyzed content comes from these stubs, NOT the seed
-    state. `--diff-file` builds one of these as an ADDED file (every line is a
-    changed line, so any finding Claude raises lands inline).
+    Intake re-fetches content from the stub and rebuilds `ChangedFile`, so the
+    analyzed content comes from these `FileEntry` records, NOT the seed state.
+    `--diff-file` builds a single ADDED file (every line is a changed line, so any
+    finding Claude raises lands inline). `--git-range START..END` builds N real
+    modified/added/etc. files reconstructed from local history (the #6 showcase).
     """
 
-    path: str
-    head_content: str
-    patch: str
+    files: tuple[FileEntry, ...]
+    pr_title: str
+    label: str  # what the run narrates as "analyzing ..."
 
 
 def _scenario_from_file(diff_path: Path) -> _Scenario:
@@ -140,16 +148,61 @@ def _scenario_from_file(diff_path: Path) -> _Scenario:
     rel = f"src/{diff_path.name}"
     body_lines = content.splitlines()
     # Synthetic all-added unified-diff patch (status="added"): /dev/null -> file.
+    # NOTE: this single-file path keeps its proven header-bearing patch shape; the
+    # multi-file --git-range path below is wire-faithful (hunks-only) instead.
     patch = (
         f"--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1,{len(body_lines)} @@\n"
         + "\n".join(f"+{line}" for line in body_lines)
         + "\n"
     )
-    return _Scenario(path=rel, head_content=content, patch=patch)
+    entry = FileEntry(
+        path=rel,
+        status="added",
+        additions=len(body_lines),
+        deletions=0,
+        patch=patch,
+        content_base=None,
+        content_head=content,
+        previous_path=None,
+    )
+    return _Scenario(files=(entry,), pr_title=f"Add {rel}", label=rel)
+
+
+def _scenario_from_git_range(range_spec: str) -> _Scenario:
+    """Reconstruct a faithful N-file PR diff from a local two-dot git range.
+
+    The #6 "Outrider reviewing Outrider" showcase: real hunks/status/base/head per
+    file (see scripts/_git_range_scenario.py), so most files carry small changes
+    triage SKIM/SKIPs and only the substantive few go DEEP.
+    """
+    entries = build_file_entries_from_range(range_spec, _REPO_ROOT)
+    if not entries:
+        raise GitRangeError(f"no changed files in range {range_spec!r}")
+    return _Scenario(
+        files=tuple(entries),
+        pr_title=f"Outrider self-review: {range_spec}",
+        label=f"{len(entries)} files from {range_spec}",
+    )
 
 
 def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object]:
-    """Stub GitHub client serving `scenario` as an added file (intake path)."""
+    """Stub GitHub serving `scenario`'s files via the real intake fetch path.
+
+    `async_list_files` returns one meta per file (wire-faithful: `previous_filename`
+    and `patch` use the empty-string sentinel GitHubKit emits for the
+    non-applicable case, which intake collapses to None via `or None`).
+    `async_get_content` serves base/head content keyed on (path, ref) — head at
+    `_HEAD_SHA`, base at `_BASE_SHA`, and a rename's base at its previous path.
+    """
+
+    # (path, ref_sha) -> file text. Built per-status from the FileEntry records so
+    # the stub answers exactly the per-status fetches intake makes.
+    content_by_path_ref: dict[tuple[str, str], str] = {}
+    for f in scenario.files:
+        if f.content_head is not None:
+            content_by_path_ref[(f.path, _HEAD_SHA)] = f.content_head
+        if f.content_base is not None:
+            content_by_path_ref[(f.previous_path or f.path, _BASE_SHA)] = f.content_base
 
     @dataclass
     class _Meta:
@@ -171,11 +224,15 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
 
     class _Repos:
         async def async_get_content(self, owner: str, repo: str, path: str, *, ref: str) -> _Resp:
-            # Added file: only the head ref is read.
+            text_content = content_by_path_ref.get((path, ref))
+            if text_content is None:
+                raise KeyError(f"stub has no content for {path!r} at ref {ref!r}")
             return _Resp(
                 _ContentFile(
                     encoding="base64",
-                    content=base64.b64encode(scenario.head_content.encode()).decode("ascii"),
+                    # encodebytes -> newline-wrapped base64, matching GitHub's
+                    # contents API for content past ~60 base64 chars (real files).
+                    content=base64.encodebytes(text_content.encode()).decode("ascii"),
                 )
             )
 
@@ -186,12 +243,14 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
             return _Resp(
                 [
                     _Meta(
-                        filename=scenario.path,
-                        status="added",
-                        additions=len(scenario.head_content.splitlines()),
-                        deletions=0,
-                        patch=scenario.patch,
+                        filename=f.path,
+                        status=f.status,
+                        additions=f.additions,
+                        deletions=f.deletions,
+                        patch=f.patch if f.patch is not None else "",
+                        previous_filename=f.previous_path or "",
                     )
+                    for f in scenario.files
                 ]
             )
 
@@ -213,15 +272,31 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
 
 
 def _seed_state_for_scenario(review_id: UUID, scenario: _Scenario) -> object:
-    """Seed ReviewState whose PRContext points at the scenario's added file.
+    """Seed ReviewState whose PRContext carries the scenario's files.
 
     Intake rebuilds `changed_files` from the stub fetch, so only the PR
     coordinates (owner/repo/pr_number/shas/installation) are load-bearing here;
-    the seed's `changed_files` entry just has to be a valid added-file shape.
+    the seed's `changed_files` just has to construct as valid per-status shapes
+    (which also catches any reconstruction that violates a status invariant before
+    a cent is spent).
     """
     from outrider.schemas.pr_context import ChangedFile, PRContext
     from outrider.schemas.review_state import ReviewState
 
+    changed = tuple(
+        ChangedFile(
+            path=f.path,
+            status=f.status,
+            additions=f.additions,
+            deletions=f.deletions,
+            patch=f.patch,
+            content_base=f.content_base,
+            content_head=f.content_head,
+            previous_path=f.previous_path,
+            language="python" if f.is_python else None,
+        )
+        for f in scenario.files
+    )
     return ReviewState(
         review_id=review_id,
         received_at=datetime.now(UTC),
@@ -230,26 +305,14 @@ def _seed_state_for_scenario(review_id: UUID, scenario: _Scenario) -> object:
             owner="acme",
             repo="widget",
             pr_number=7,
-            base_sha="a" * 40,
+            base_sha=_BASE_SHA,
             head_sha=_HEAD_SHA,
-            pr_title=f"Add {scenario.path}",
+            pr_title=scenario.pr_title,
             pr_body=None,
             author="someone",
-            total_additions=len(scenario.head_content.splitlines()),
-            total_deletions=0,
-            changed_files=(
-                ChangedFile(
-                    path=scenario.path,
-                    status="added",
-                    additions=len(scenario.head_content.splitlines()),
-                    deletions=0,
-                    patch=scenario.patch,
-                    content_base=None,
-                    content_head=scenario.head_content,
-                    previous_path=None,
-                    language="python",
-                ),
-            ),
+            total_additions=sum(f.additions for f in scenario.files),
+            total_deletions=sum(f.deletions for f in scenario.files),
+            changed_files=changed,
         ),
         is_eval=False,
     )
@@ -371,7 +434,7 @@ async def _drive(
     await _seed_installation(engine)
     # Persist the same PR title the agent state carries, so the dashboard shows
     # it (the direct-invoke path bypasses the webhook that normally sets it).
-    pr_title = f"Add {scenario.path}" if scenario is not None else "Add vulnerable handler"
+    pr_title = scenario.pr_title if scenario is not None else "Add vulnerable handler"
     await _seed_review(engine, review_id, pr_title=pr_title)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -396,7 +459,7 @@ async def _drive(
     else:
         github_factory = _make_scenario_github_factory(scenario)
         seed_state = _seed_state_for_scenario(review_id, scenario)
-        analyzed_label = scenario.path
+        analyzed_label = scenario.label
 
     graph = build_graph(
         db_factory=session_factory,
@@ -729,7 +792,32 @@ def main() -> int:
             "HITL pause counts as a pass (the gate firing IS the flow working)."
         ),
     )
+    parser.add_argument(
+        "--git-range",
+        default=None,
+        metavar="START..END",
+        help=(
+            "Reconstruct a real N-file PR diff from a local two-dot git range and "
+            "review it live — the #6 'Outrider reviewing Outrider' showcase (e.g. "
+            "0c70d18^..39c538b). Mutually exclusive with --diff-file. Pair with "
+            "--dry-run to preview the offline file/status/budget summary first."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "With --git-range: print the offline reconstruction summary (files, "
+            "status, line deltas, budget bounds), validate the seed PRContext "
+            "constructs, then exit WITHOUT touching the DB or calling Claude — the "
+            "honest preview before the paid seed run."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.diff_file is not None and args.git_range is not None:
+        _say("  --diff-file and --git-range are mutually exclusive.")
+        return 2
 
     scenario: _Scenario | None = None
     if args.diff_file is not None:
@@ -737,6 +825,33 @@ def main() -> int:
             _say(f"  --diff-file not found: {args.diff_file}")
             return 2
         scenario = _scenario_from_file(args.diff_file)
+    elif args.git_range is not None:
+        try:
+            scenario = _scenario_from_git_range(args.git_range)
+        except GitRangeError as exc:
+            _say(f"  --git-range error: {exc}")
+            return 2
+
+    if args.dry_run:
+        if scenario is None:
+            _say("  --dry-run requires --git-range (nothing to preview otherwise).")
+            return 2
+        _say(_RULE)
+        _say("  Outrider — git-range dry-run (offline · no DB · no Claude)")
+        _say(_RULE)
+        _say()
+        _say(summarize_dry_run(list(scenario.files), args.git_range))
+        _say()
+        # Validate the seed PRContext + all N ChangedFile construct — catches a
+        # reconstruction that violates a status invariant before the paid run.
+        try:
+            _seed_state_for_scenario(uuid4(), scenario)
+        except Exception as exc:  # noqa: BLE001 — surface any construction failure
+            _say(f"  SEED CONSTRUCTION FAILED: {type(exc).__name__}: {exc}")
+            return 1
+        _say(f"  seed PRContext + {len(scenario.files)} ChangedFile construct OK")
+        _say()
+        return 0
 
     _say(_RULE)
     _say("  Outrider — live Claude smoke (real LLM · fake GitHub · real DB)")
