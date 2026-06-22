@@ -52,9 +52,17 @@ also be suppressed — an acceptable tradeoff for these tiny single-purpose file
 
 After a successful `scripts/seed_demo.py` run, the five reviews live in the
 `outrider_test_demo` database on the test container (port 5433). Point the API
-server at it and open the dashboard. All secrets resolve from 1Password via
-`op run --env-file=.env` (the server requires `ANTHROPIC_API_KEY` at boot even
-though viewing never calls it — the keyless lifespan is a later piece).
+server at it and open the dashboard. Two ways to boot:
+
+- **Full mode** (`op run --env-file=.env`): secrets resolve from 1Password and
+  the server requires `ANTHROPIC_API_KEY` + the GitHub App env at boot even
+  though viewing never calls them. Use this if you also want to exercise a live
+  review from the same box.
+- **Demo mode** (`OUTRIDER_DEMO_MODE=1`): a **keyless** boot — no Anthropic,
+  GitHub, or Slack credentials are read or constructed; the only secret needed
+  is `OUTRIDER_ADMIN_API_KEY` (the dashboard read token). This is the public
+  deploy shape (read-only allowlist, no review/write half). See the
+  `if demo_mode:` branch in `src/outrider/api/lifespan.py`.
 
 **Prerequisites**
 
@@ -73,8 +81,9 @@ op run --env-file=.env -- bash -c '
 ```
 
 (The LangGraph checkpoint URL is derived from `DATABASE_URL` automatically. This
-runs in full mode so you can click around; set `OUTRIDER_DEMO_MODE=1` to exercise
-the read-only public allowlist instead.)
+command boots **full mode** so you can click around. For the keyless public
+shape, drop `op run` and start with just `OUTRIDER_DEMO_MODE=1` +
+`OUTRIDER_ADMIN_API_KEY` + `DATABASE_URL` set — no other secrets are read.)
 
 **2. Dashboard** (terminal 2) — Vite dev server, proxies `/api` to `:8000`:
 

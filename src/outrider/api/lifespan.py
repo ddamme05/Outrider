@@ -407,6 +407,15 @@ def build_lifespan(
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
         async with AsyncExitStack() as stack:
+            # DEMO_MODE (stashed by create_app): a keyless, read-only boot that
+            # serves precomputed seed reviews. It skips the truncation secret + the
+            # entire review/write half (provider, GitHub App, graph, Slack, sweeps),
+            # so a public demo box holds NO live LLM/GitHub/Slack credentials and
+            # cannot call out. The `if demo_mode:` branch after the persister (the
+            # last shared step) wires the read-side app.state, yields, and returns —
+            # leaving the production path below untouched.
+            demo_mode = bool(getattr(app.state, "demo_mode", False))
+
             # Step 0: validate the truncation-marker HMAC secret is present. It is
             # read LAZILY inside `apply_size_cap` (only when a finding body actually
             # truncates), so a deploy missing OUTRIDER_TRUNCATION_HMAC_SECRET boots
@@ -420,7 +429,10 @@ def build_lifespan(
                 require_truncation_secret,
             )
 
-            require_truncation_secret()
+            # Skipped in demo mode: there is no publish/output-generation path that
+            # could truncate a finding body, so the secret is never read.
+            if not demo_mode:
+                require_truncation_secret()
 
             # Step 1: construct the engine; register dispose for teardown.
             engine = engine_factory()
@@ -505,6 +517,58 @@ def build_lifespan(
                 session_factory=session_factory,
                 retention_settings=retention_settings,
             )
+
+            # ── DEMO_MODE: keyless read-only boot ──────────────────────────────
+            # The public demo box holds NO live LLM/GitHub/Slack credentials. It
+            # serves precomputed seed reviews through the read-only dashboard
+            # allowlist (main.py `_include_routers`) and runs no reviews, so
+            # everything below — provider, GitHub App, graph, checkpointer, Slack,
+            # sweeps — is skipped. The shared steps above (engine, fingerprint,
+            # session, retention, persister) are all the read routers need.
+            #
+            # Self-contained on purpose: to retire the demo, delete this block, the
+            # `demo_mode` read + its truncation guard above, `app.state.demo_mode`
+            # in create_app, and the allowlist branch in main.py. The production
+            # path below is byte-identical whether or not this block runs.
+            if demo_mode:
+                from outrider.api.dashboard.config import (  # noqa: PLC0415
+                    DashboardSettings,
+                )
+
+                _demo_dashboard_settings = DashboardSettings()
+                # Read-side deps the dashboard resolves — real.
+                app.state.engine = engine
+                app.state.session_factory = session_factory
+                app.state.retention_settings = retention_settings
+                app.state.persister = persister
+                app.state.audit_persister = persister
+                # Auth: admin is fail-loud (the public read token); the agent token
+                # follows its env — unset → None → the agent-view surface is
+                # disabled (require_agent_api_key returns a uniform 401).
+                app.state.admin_api_key = _demo_dashboard_settings.admin_api_key
+                app.state.agent_api_key = _demo_dashboard_settings.agent_api_key
+                # Review/write half — absent. Set to None (not unset) so a handler
+                # that defensively reads one gets None, not AttributeError; no read
+                # route in the demo allowlist consumes any of these.
+                app.state.provider = None
+                app.state.github_app_settings = None
+                app.state.github_factory = None
+                app.state.compiled_graph = None
+                app.state.run_graph = None
+                app.state.checkpointer = None
+                app.state.review_status_reader = None
+                app.state.slack_oauth_settings = None
+                app.state.anomaly_sink = None
+                app.state.sweep_task = None
+                # Re-apply the log-content filter (Step 10 in the full path).
+                register_filter_on_all_handlers()
+                _LOGGER.info(
+                    "DEMO_MODE: keyless boot — read-only dashboard over seed data; "
+                    "no provider/GitHub/graph/checkpointer/Slack/sweeps constructed."
+                )
+                yield
+                return
+            # ───────────────────────────────────────────────────────────────────
 
             # Step 5: ModelConfig built ONCE here and shared with both
             # the provider (step 5b) AND build_graph (step 8). Reading
