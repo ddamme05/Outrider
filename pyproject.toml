@@ -102,8 +102,11 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N", "TCH", "S"]
 # flaws. They must read as plausible production code (no inline noqa, which the
 # triage model would read as a "skip this, it's test scaffolding" signal), so the
 # planted-flaw suppressions live here — scoped to the exact file + exact rule.
-# See scripts/demo_fixtures/README.md. NOT a wildcard: each file lists only the
-# rules its planted flaw trips, so a real accidental issue still gets caught.
+# See scripts/demo_fixtures/README.md. NOT a wildcard: each file ignores only the
+# specific rules its planted flaw trips, so every OTHER ruff rule still applies to
+# the file. (The ignore is rule-scoped, not line-scoped — a second accidental hit
+# of the same rule in that file would also be suppressed; acceptable for these
+# tiny single-purpose fixtures.)
 "scripts/demo_fixtures/vulnerable_query.py" = ["S608"]        # planted SQL injection
 "scripts/demo_fixtures/weak_crypto_handler.py" = ["S304"]     # planted weak cipher (DES/ECB)
 "scripts/demo_fixtures/report_builder.py" = ["S110", "SIM105", "S608"]  # planted try-except-pass + SQL injection
