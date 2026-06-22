@@ -137,6 +137,8 @@ class _Scenario:
     files: tuple[FileEntry, ...]
     pr_title: str
     label: str  # what the run narrates as "analyzing ..."
+    head_sha: str = _HEAD_SHA  # per-review; seed_demo.py varies it so N reviews of
+    # the same (repo, pr_number) don't collide on the (repo, pr_number, head_sha) key
 
 
 def _scenario_from_file(diff_path: Path) -> _Scenario:
@@ -200,7 +202,7 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
     content_by_path_ref: dict[tuple[str, str], str] = {}
     for f in scenario.files:
         if f.content_head is not None:
-            content_by_path_ref[(f.path, _HEAD_SHA)] = f.content_head
+            content_by_path_ref[(f.path, scenario.head_sha)] = f.content_head
         if f.content_base is not None:
             content_by_path_ref[(f.previous_path or f.path, _BASE_SHA)] = f.content_base
 
@@ -306,7 +308,7 @@ def _seed_state_for_scenario(review_id: UUID, scenario: _Scenario) -> object:
             repo="widget",
             pr_number=7,
             base_sha=_BASE_SHA,
-            head_sha=_HEAD_SHA,
+            head_sha=scenario.head_sha,
             pr_title=scenario.pr_title,
             pr_body=None,
             author="someone",
@@ -419,7 +421,13 @@ def _migrate(db_url: str) -> None:
 
 async def _run(
     db_url: str, api_key: str, scenario: _Scenario | None, *, expect_findings: bool
-) -> bool:
+) -> tuple[UUID, bool]:
+    """Run one review into `db_url` and return (review_id, structural-verdict).
+
+    The review_id is returned so a caller (seed_demo.py) can capture-validate the
+    persisted review; the DB is NOT dropped here, so reviews accumulate when called
+    repeatedly against the same database.
+    """
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:
         return await _drive(engine, api_key, scenario, expect_findings=expect_findings)
@@ -429,13 +437,14 @@ async def _run(
 
 async def _drive(
     engine: AsyncEngine, api_key: str, scenario: _Scenario | None, *, expect_findings: bool
-) -> bool:
+) -> tuple[UUID, bool]:
     review_id = uuid4()
     await _seed_installation(engine)
     # Persist the same PR title the agent state carries, so the dashboard shows
     # it (the direct-invoke path bypasses the webhook that normally sets it).
     pr_title = scenario.pr_title if scenario is not None else "Add vulnerable handler"
-    await _seed_review(engine, review_id, pr_title=pr_title)
+    head_sha = scenario.head_sha if scenario is not None else _HEAD_SHA
+    await _seed_review(engine, review_id, head_sha=head_sha, pr_title=pr_title)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     persister = AuditPersister(
@@ -507,7 +516,7 @@ async def _drive(
     await narrate_llm_exchanges_from_db(_say, engine, review_id)
     narrate_recorded_publisher(_say, publisher)
     await narrate_db_state(_say, engine)
-    return await _verify(
+    verdict = await _verify(
         engine,
         session_factory,
         review_id,
@@ -515,6 +524,7 @@ async def _drive(
         interrupted=interrupted,
         expect_findings=expect_findings,
     )
+    return (review_id, verdict)
 
 
 async def _report(
@@ -882,7 +892,7 @@ def main() -> int:
         _migrate(db_url)
         _say("  Migrated ............. alembic upgrade head")
         _say()
-        ok = asyncio.run(_run(db_url, api_key, scenario, expect_findings=args.expect_findings))
+        _, ok = asyncio.run(_run(db_url, api_key, scenario, expect_findings=args.expect_findings))
     finally:
         asyncio.run(_drop_db(admin_url, db_name))
         _say(f"  Ephemeral DB ......... {db_name} (dropped)")
