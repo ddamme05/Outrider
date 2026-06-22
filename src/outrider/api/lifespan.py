@@ -40,6 +40,14 @@ Constructs at startup, in dependency order:
       filter to any handler uvicorn registered between `import outrider`
       and lifespan entry. Idempotent (see `llm/logging.py`).
 
+When `app.state.demo_mode` is set (the keyless public-demo boot), the
+lifespan runs steps 1-4 only — engine, fingerprint check, session,
+retention, persister — then wires the read-side `app.state`, yields, and
+returns. The truncation secret and steps 5-10 (provider, GitHub App, graph,
+run_graph, sweeps) are skipped; the demo box serves precomputed reviews
+read-only and holds no live LLM/GitHub/Slack credentials. See the
+`if demo_mode:` branch after step 4.
+
 Teardown is `AsyncExitStack` LIFO — every push_async_callback runs even
 if a prior callback raises. Closes FUP-006 (filter re-registration) and
 FUP-011 (provider aclose).
