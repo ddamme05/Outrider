@@ -40,6 +40,7 @@ import dataclasses
 import os
 import subprocess  # noqa: S404 — local dev tooling; argv lists only, never shell=True
 import sys
+import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -66,6 +67,8 @@ from sqlalchemy.engine import make_url  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
+from outrider.llm.base import LLMRateLimitError, LLMTimeoutError  # noqa: E402
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _FIXTURES = _REPO_ROOT / "scripts" / "demo_fixtures"
 _DEMO_DB_NAME = "outrider_test_demo"  # contains 'test' -> passes the 5433 isolation guard
@@ -78,6 +81,15 @@ _SHOWCASE_RANGE = _GIT_RANGE
 # CAP, not spend — actual cost is the analyze input the reviewed files consume.
 # setdefault (in main) respects an explicit OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS.
 _DEMO_ANALYZE_BUDGET_TOKENS = 1_500_000
+
+# Backoff waits (seconds) before each full-seed retry on a transient Anthropic 429
+# (or read-timeout). The 27-file showcase can exhaust the per-minute token ceiling
+# mid-review; the analyze node has no per-call retry yet (FUP-025), so a single 429
+# is otherwise terminal for the whole run. We recreate + re-run the full seed rather
+# than the one failed review because the audit_events append-only trigger blocks
+# surgical cleanup of a partially-written review (an orphaned `running` row would
+# otherwise land in the dump). The wait lets the rolling-60s window clear first.
+_RATE_LIMIT_BACKOFF_SECONDS: tuple[int, ...] = (60, 120)
 
 
 @dataclass(frozen=True)
@@ -365,10 +377,48 @@ async def _recreate_demo_db(admin_url: str) -> None:
 
 
 def _seed_all(admin_url: str, api_key: str) -> int:
+    """Seed all reviews, retrying the WHOLE run on a transient LLM rate limit/timeout.
+
+    A 429 mid-review can't be cleaned up in place (the audit_events append-only
+    trigger blocks deleting the partial review), so on a transient limit we wait for
+    the per-minute window to clear and re-run the full seed from a fresh DB. The
+    expensive 27-file review is retried either way; only the cheap single-file
+    reviews are re-spent. After the configured backoff attempts are exhausted, reject."""
+    total_attempts = len(_RATE_LIMIT_BACKOFF_SECONDS) + 1
+    for attempt in range(total_attempts):
+        if attempt:
+            wait = _RATE_LIMIT_BACKOFF_SECONDS[attempt - 1]
+            print(
+                f"\n  Rate limited (Anthropic 429/timeout) — waiting {wait}s for the per-minute "
+                f"window to clear, then re-running the full seed (attempt {attempt + 1}/"
+                f"{total_attempts}; the cheap single-file reviews are re-spent).",
+                flush=True,
+            )
+            time.sleep(wait)
+        try:
+            return _seed_once(admin_url, api_key)
+        except (LLMRateLimitError, LLMTimeoutError) as exc:
+            print(f"  Seed hit a transient LLM limit: {type(exc).__name__}", flush=True)
+            continue
+    print(
+        "\n  SEED REJECTED — still rate-limited after retries; demo_seed.sql NOT written.\n"
+        "  The 27-file showcase needs more tokens-per-minute than this Anthropic tier allows in\n"
+        "  one window. Raise the usage tier, re-run later when quota is fresh, or land FUP-025\n"
+        "  (per-call retry/pacing in the analyze node).",
+        flush=True,
+    )
+    return 1
+
+
+def _seed_once(admin_url: str, api_key: str) -> int:
     """SYNC orchestration: each async step gets its OWN asyncio.run(), and the
     sync _migrate() runs between them. _migrate -> alembic env.py calls
     asyncio.run() internally, which faults if it runs inside an already-running
-    loop — so this function must NOT be a coroutine (mirrors live_claude_smoke.main)."""
+    loop — so this function must NOT be a coroutine (mirrors live_claude_smoke.main).
+
+    A transient LLM rate limit / timeout propagates OUT (not caught per-review) so
+    the _seed_all wrapper can back off and re-run the whole seed; every other
+    exception is recorded as a per-review FAIL and the run continues."""
     demo_url = _swap_db(admin_url, _DEMO_DB_NAME)
     asyncio.run(_recreate_demo_db(admin_url))
     print(f"  Demo DB .............. {_DEMO_DB_NAME} (recreated)", flush=True)
@@ -392,6 +442,10 @@ def _seed_all(admin_url: str, api_key: str) -> int:
                     ok=False,
                     detail=(cap.detail + "; structural smoke FAILED").strip("; "),
                 )
+        except (LLMRateLimitError, LLMTimeoutError):
+            # Transient — propagate so _seed_all backs off and re-runs the whole seed
+            # (a partially-written review can't be cleaned up under the append-only trigger).
+            raise
         except Exception as exc:  # noqa: BLE001 — one bad review must not abort the whole seed
             traceback.print_exc()  # full traceback to the log; the run continues
             cap = CaptureResult(spec.key, ok=False, detail=f"CRASHED: {type(exc).__name__}: {exc}")
