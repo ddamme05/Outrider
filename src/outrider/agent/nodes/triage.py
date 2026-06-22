@@ -50,6 +50,7 @@ and schema failure (`pydantic.ValidationError`).
 """
 
 import hashlib
+import json
 from collections.abc import Iterable, Set
 
 from outrider.agent.state import ReviewState
@@ -73,6 +74,32 @@ streams. See `_format_path_set_for_error` below for the message shape;
 see DECISIONS#013 point 5 + #016 point 4 for the underlying "logs never
 contain prompt or completion content" rule.
 """
+
+_REASONING_MAX_CHARS = 500
+"""Cap mirroring `TriageResult.reasoning` `Field(max_length=500)`.
+
+The model occasionally exceeds it on large/complex PRs (the prompt gives no length
+instruction), so `_validate_triage_response` clamps an over-long `reasoning` to
+this cap at the boundary rather than crashing triage — the same vendor-output
+normalization discipline as `strip_outer_json_fence`. Truncation is safe:
+`reasoning` is advisory and consulted by no deterministic gate. A unit test pins
+this constant to the schema's actual constraint so the two can't drift.
+"""
+
+
+def _validate_triage_response(raw_json: str) -> TriageResult:
+    """Validate the triage response, clamping an over-long `reasoning` to the cap.
+
+    Malformed JSON falls through to `model_validate_json` so Pydantic raises its
+    clear error; only the length normalization is applied here.
+    """
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return TriageResult.model_validate_json(raw_json)
+    if isinstance(data, dict) and isinstance(data.get("reasoning"), str):
+        data["reasoning"] = data["reasoning"][:_REASONING_MAX_CHARS]
+    return TriageResult.model_validate(data)
 
 
 class TriagePolicyViolationError(ValueError):
@@ -303,13 +330,15 @@ async def triage(
     # LLMProvider Protocol contract. LLMProviderError subclasses propagate.
     response = await provider.complete(request)
 
-    # Step 5: schema validation. ValidationError on malformed JSON,
-    # missing required keys, wrong enum casing, or reasoning >500 chars.
-    # `strip_outer_json_fence` tolerates a single ```json...``` wrapper
-    # that the model sometimes adds despite the system-prompt
-    # instruction; malformed wrappers fall through unchanged so
-    # Pydantic raises a clear error.
-    triage_result = TriageResult.model_validate_json(strip_outer_json_fence(response.text))
+    # Step 5: schema validation. ValidationError on malformed JSON, missing
+    # required keys, or wrong enum casing. `strip_outer_json_fence` tolerates a
+    # single ```json...``` wrapper the model sometimes adds despite the
+    # system-prompt instruction; malformed wrappers fall through unchanged so
+    # Pydantic raises a clear error. `_validate_triage_response` additionally
+    # clamps an over-long `reasoning` to the schema cap at the boundary — the
+    # model exceeds it on large PRs and crashing triage over an advisory field
+    # would be wrong (same normalization discipline as the JSON-fence strip).
+    triage_result = _validate_triage_response(strip_outer_json_fence(response.text))
 
     # Step 5b: deterministic policy gate. Catches schema-valid output that
     # violates this node's contract (SKIP, unknown path, missing path).
