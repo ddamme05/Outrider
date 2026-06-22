@@ -9,10 +9,16 @@ fires on the `DES.new(...)` construction and `weak_crypto_ecb_mode` on `DES.MODE
 So the finding carries `evidence_tier=OBSERVED` and a replay-verifiable
 `query_match_id` — the structural proof a third party can re-check, not the model's
 opinion. It maps to `FindingType.WEAK_CRYPTO` → HIGH. This is the fixture that
-demos the OBSERVED tier and the dual-mode / prefer-OBSERVED / cross-type-subsumption
-arc (`DECISIONS.md#053`–`#055`): if the model ALSO flags the line as JUDGED, the
-deterministic proof wins (prefer-OBSERVED); if the model escalates it to a
-more-specific contextual type, that wins (cross-type subsumption).
+demos the OBSERVED tier and prefer-OBSERVED dedup (`DECISIONS.md#053` dual-mode
+taxonomy → `#054` prefer-OBSERVED): if the model ALSO flags this line as a JUDGED
+`weak_crypto`, the deterministic proof wins and the OBSERVED finding (with its
+`query_match_id`) is the one that survives.
+
+Note this fixture does NOT exercise cross-type subsumption (`#055`): that fires for
+md5/password-style cases where a more-specific JUDGED type (`weak_password_hash`)
+subsumes `weak_crypto`. DES/ECB token encryption is not password hashing, so the
+only `SUBSUMES` pair doesn't apply here — see `scripts/demo_fixtures/` if a
+subsumption demo is wanted later.
 
 Deliberately a single, clean weak-crypto site — no SQLi/secrets/auth mixed in — so
 the finding the demo surfaces is exactly one `weak_crypto`. This file is demo
