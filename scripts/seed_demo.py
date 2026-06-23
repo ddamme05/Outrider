@@ -82,6 +82,15 @@ _SHOWCASE_RANGE = _GIT_RANGE
 # setdefault (in main) respects an explicit OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS.
 _DEMO_ANALYZE_BUDGET_TOKENS = 1_500_000
 
+# A persistent demo box wants its HITL reviews to stay PENDING forever, not inherit
+# the 30-min production default — `expires_at = created_at + timeout_minutes`, and the
+# dashboard renders `expires_at < now()` as "expired" client-side (dashboard/src/lib/
+# format.ts), so a 30-min window makes the two HITL-gated reviews look stale the moment
+# the demo is viewed later. A ~100-year timeout bakes a far-future expires_at into BOTH
+# the reviews row AND the hitl_request audit event (consistent → replay-safe). setdefault
+# respects an explicit OUTRIDER_HITL_TIMEOUT_MINUTES.
+_DEMO_HITL_TIMEOUT_MINUTES = 100 * 365 * 24 * 60  # ~100 years
+
 # Backoff waits (seconds) before each full-seed retry on a transient Anthropic 429
 # (or read-timeout). The 27-file showcase can exhaust the per-minute token ceiling
 # mid-review; the analyze node has no per-call retry yet (FUP-025), so a single 429
@@ -532,6 +541,8 @@ def main() -> int:
     # cost gate (respects an explicit env override). live_smoke's _drive reads this
     # via AnalyzeConfig and passes it to build_graph.
     os.environ.setdefault("OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS", str(_DEMO_ANALYZE_BUDGET_TOKENS))
+    # Seeded HITL reviews stay pending (never render "expired") on the persistent demo.
+    os.environ.setdefault("OUTRIDER_HITL_TIMEOUT_MINUTES", str(_DEMO_HITL_TIMEOUT_MINUTES))
 
     admin_url = _load_test_db_url()
     _assert_isolated(admin_url)
