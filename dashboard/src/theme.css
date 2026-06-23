@@ -1442,18 +1442,19 @@ button.verdict-pill:hover {
   border-radius: var(--radius-sm);
   padding: 7px 11px;
 }
-/* HITL decision bar — the mockup's flush chrome-edge bar (.hitl-sticky): full-bleed
-   across the content gutter (.content has 26px side padding → -26px margins), pinned
-   to the bottom of the scroll viewport, a top hairline + lift shadow (no full border /
-   radius — it reads as an extension of the chrome, not a floating pill). React gates
-   visibility by rendering the element conditionally, so it ships display:flex (the
-   mockup's display:none + #screen-detail.show-hitl-sticky toggle is the static-HTML
-   equivalent of that conditional). */
+/* HITL decision bar (.hitl-sticky): pinned to the bottom of the VIEWPORT with position:fixed
+   so "Submit decision" is always reachable while deciding, no matter the scroll position. (Sticky
+   was inert here: .content's overflow:auto traps the sticky context while the window is what
+   actually scrolls.) Spans the content column — left = sidebar width (248px grid track), right
+   edge — with a top hairline + lift shadow so it reads as chrome, not a floating pill. React gates
+   visibility by rendering it conditionally; the review section adds bottom padding (.has-sticky-bar)
+   so the last content clears the bar. */
 .hitl-sticky {
-  position: sticky;
+  position: fixed;
+  left: 248px;
+  right: 0;
   bottom: 0;
   z-index: 7;
-  margin: 16px -26px 0;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -1461,6 +1462,10 @@ button.verdict-pill:hover {
   background: var(--header);
   border-top: 1px solid var(--hair);
   box-shadow: 0 -10px 22px -16px rgba(0, 0, 0, 0.85);
+}
+/* Clearance so the fixed bar never covers the last content of the review. */
+.has-sticky-bar {
+  padding-bottom: 76px;
 }
 .hitl-sticky .hs-tick {
   width: 3px;
