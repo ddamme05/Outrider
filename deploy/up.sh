@@ -30,11 +30,27 @@ fi
 [ -s demo_seed.sql ] || fail "deploy/demo_seed.sql is empty — re-scp the real ~795K dump."
 [ -f .env ] || fail "deploy/.env is missing. Create it (see .env.demo.example)."
 
-domain=$(grep -E '^DEMO_DOMAIN=' .env | tail -1 | cut -d= -f2-)
-token=$(grep -E '^OUTRIDER_ADMIN_API_KEY=' .env | tail -1 | cut -d= -f2-)
+# Read KEY=value from .env, stripping ONE layer of surrounding quotes (compose's dotenv
+# strips them too, so the preflight sees the same value the app will). The `|| true` keeps
+# a grep no-match from aborting the script under `set -e`+`pipefail` before the guards run.
+read_env() {
+  local v
+  v=$(grep -E "^$1=" .env | tail -1 | cut -d= -f2- || true)
+  v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+  printf '%s' "$v"
+}
+domain=$(read_env DEMO_DOMAIN)
+token=$(read_env OUTRIDER_ADMIN_API_KEY)
+
 [ -n "$domain" ] || fail "DEMO_DOMAIN is unset in .env."
 [ "$domain" != "demo.example.com" ] || fail "DEMO_DOMAIN is still the placeholder demo.example.com — set your real domain in .env."
-[ "$token" != "change-me" ] || fail "OUTRIDER_ADMIN_API_KEY is still the placeholder change-me — set a real token in .env."
+
+# Reject the SAME placeholders the app rejects at startup (config.py _PLACEHOLDER_SECRETS),
+# case-insensitively, so the preflight isn't narrower than the runtime check it fronts for.
+case "$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]')" in
+  ""|change-me|changeme|replace-me|replace-me-with-a-long-random-secret|secret|password|your-secret-here)
+    fail "OUTRIDER_ADMIN_API_KEY is empty or a known placeholder ('$token') — set a real token in .env (the app rejects these at startup and would crash-loop)." ;;
+esac
 
 echo "Preflight OK — seed $(wc -c < demo_seed.sql) bytes, DEMO_DOMAIN=$domain. Launching..."
 exec docker compose -f docker-compose.demo.yml up -d --build

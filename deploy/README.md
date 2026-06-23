@@ -53,7 +53,8 @@ ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
 ```
 
 ## 6 · Verify
-- `https://demo.yourdomain.com/health` → `{"status":"ok"}`
+- `https://demo.yourdomain.com/health` → `{"status":"ok"}`. Caddy starts before the app
+  finishes booting, so the first hit may return **502 for ~15s** — retry, it's not a failure.
 - Open `https://demo.yourdomain.com`, paste `OUTRIDER_ADMIN_API_KEY` when prompted →
   the 5 seeded reviews appear. Two park at `awaiting_approval` (the HITL gate), three
   publish; run a **replay** on any review to watch it reconstruct.
