@@ -10,6 +10,7 @@ import { ReplayFeed } from "../components/ReplayFeed";
 import { ReplayInfoModal } from "../components/ReplayInfoModal";
 import { StatusPill } from "../components/StatusPill";
 import { expiresLabel } from "../lib/format";
+import { SEVERITY_ORDER } from "../lib/metrics";
 import {
   type DecisionDraft,
   EMPTY_DRAFT,
@@ -90,7 +91,17 @@ export function ReviewDetail() {
     return () => clearTimeout(t);
   }, [submitSeq]);
 
-  const allFindings = useMemo(() => findings.data?.findings ?? [], [findings.data]);
+  // Findings sorted most-severe-first (critical → info) so the reviewer leads with the
+  // findings that gate the PR. The server returns them in production/dedup order; the
+  // display order is a UI concern. Unknown severities sort last; ties keep server order
+  // (Array.sort is stable). Copy first — never mutate the cached query data.
+  const allFindings = useMemo(() => {
+    const rank = (s: string) => {
+      const i = SEVERITY_ORDER.indexOf(s as (typeof SEVERITY_ORDER)[number]);
+      return i === -1 ? SEVERITY_ORDER.length : i;
+    };
+    return [...(findings.data?.findings ?? [])].sort((a, b) => rank(a.severity) - rank(b.severity));
+  }, [findings.data]);
   const actionable = isActionable(detail.data?.status ?? "");
   // Authoritative gated set from the server (ReviewDetail.findings_requiring_approval),
   // by finding_id — never inferred from severity. The decide endpoint enforces
