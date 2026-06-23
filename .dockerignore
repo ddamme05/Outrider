@@ -34,3 +34,17 @@ dashboard/dist
 .codex
 .agents
 generated
+
+# Local-only tracking files + dirs (gitignored; the droplet git-archive already strips
+# these — listed here so a LOCAL `docker build` context stays clean and a future `COPY .`
+# can't sweep them in)
+AUDIT_LOG.md
+AUDIT_*.md
+COMMIT_LOG.md
+ITERATION_LOG.md
+SESSION_RETRO.md
+docs/
+specs/
+specs_arch/
+reports/
+dashboard-mockups/
