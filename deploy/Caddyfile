@@ -1,0 +1,20 @@
+# {$DEMO_DOMAIN}: set to your domain (e.g. demo.example.com) for automatic HTTPS,
+# or to ":80" to serve plain HTTP on the droplet's IP (no certificate).
+{$DEMO_DOMAIN} {
+	encode gzip
+
+	# Read API + liveness probe -> the keyless FastAPI app (internal network only).
+	handle /api/* {
+		reverse_proxy app:8000
+	}
+	handle /health {
+		reverse_proxy app:8000
+	}
+
+	# Everything else -> the dashboard SPA, with history-API fallback to index.html.
+	handle {
+		root * /srv/dashboard
+		try_files {path} /index.html
+		file_server
+	}
+}

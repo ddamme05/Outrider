@@ -1,0 +1,57 @@
+# Keyless public demo: Postgres (seed restored) + the DEMO_MODE app + Caddy
+# (serves the SPA, proxies /api, terminates HTTPS). NO Anthropic / GitHub / Slack
+# credentials live on this box. Launch: `docker compose -f docker-compose.demo.yml up -d --build`
+name: outrider-demo
+
+services:
+  postgres:
+    image: postgres:18-bookworm
+    environment:
+      POSTGRES_USER: outrider
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: outrider_demo
+    volumes:
+      - demo-data:/var/lib/postgresql/data
+      # Auto-restored ONCE, on a fresh data volume. Re-seed = `down -v` then `up`.
+      - ./demo_seed.sql:/docker-entrypoint-initdb.d/01_demo_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outrider -d outrider_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      OUTRIDER_DEMO_MODE: "1"
+      OUTRIDER_ADMIN_API_KEY: ${OUTRIDER_ADMIN_API_KEY:?set OUTRIDER_ADMIN_API_KEY in .env}
+      DATABASE_URL: postgresql+psycopg://outrider:${POSTGRES_PASSWORD}@postgres:5432/outrider_demo
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    # No published ports — only Caddy reaches the app over the internal network.
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    environment:
+      DEMO_DOMAIN: ${DEMO_DOMAIN:?set DEMO_DOMAIN (your domain, or \":80\" for HTTP on the IP)}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  demo-data:
+  caddy-data:
+  caddy-config:
