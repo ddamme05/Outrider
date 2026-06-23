@@ -15,13 +15,20 @@ export function spanMs(start: string | null | undefined, end: string | null | un
   return Number.isFinite(ms) && ms >= 0 ? ms : null;
 }
 
-// Human "expires in Xm/Xh" from an ISO timestamp. Returns null when absent or
-// unparseable; "expired" when already past.
+// Human "expires in Xm/Xh/Xd" from an ISO timestamp. Returns null when absent or
+// unparseable, "expired" when already past, and null again when more than a year out —
+// no countdown is meaningful for a far-future timeout (e.g. the demo's pinned-pending
+// HITL reviews, which carry a ~100-year expiry so they never read "expired").
 export function expiresLabel(expiresAt: string | null): string | null {
   if (!expiresAt) return null;
   const ms = new Date(expiresAt).getTime() - Date.now();
   if (Number.isNaN(ms)) return null;
   if (ms <= 0) return "expired";
   const mins = Math.round(ms / 60000);
-  return mins < 60 ? `expires in ${mins}m` : `expires in ${Math.round(mins / 60)}h`;
+  if (mins < 60) return `expires in ${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `expires in ${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days <= 365) return `expires in ${days}d`;
+  return null;
 }
