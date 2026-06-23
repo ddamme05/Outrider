@@ -148,6 +148,32 @@ test("renders the reconstruction title + back link to the review", async () => {
   expect(back).toHaveAttribute("href", "/reviews/r1");
 });
 
+test("the policy chip opens the severity-policy modal", async () => {
+  const user = userEvent.setup();
+  server.use(
+    http.get("http://localhost/api/policy/v3", () =>
+      HttpResponse.json({
+        version: "v3",
+        entries: [{ finding_type: "sql_injection", dimension: "security", severity: "critical" }],
+      }),
+    ),
+  );
+  mount();
+  await user.click(await screen.findByRole("button", { name: /policy v3/i }));
+  expect(await screen.findByText("Severity policy v3")).toBeInTheDocument();
+  expect(await screen.findByText("sql_injection")).toBeInTheDocument();
+});
+
+test("the Follow toggle stops following the playhead on click", async () => {
+  const user = userEvent.setup();
+  mount();
+  // Default is following; one click flips it so the operator can scroll freely while it plays.
+  await user.click(await screen.findByRole("button", { name: /stop following the playhead/i }));
+  expect(
+    await screen.findByRole("button", { name: /^follow the playhead$/i }),
+  ).toBeInTheDocument();
+});
+
 test("under reduced motion the reconstruction renders instantly with the verdict", async () => {
   mount({ reduced: true });
   // Instant render: counter at total/total, verdict shown, retention note.

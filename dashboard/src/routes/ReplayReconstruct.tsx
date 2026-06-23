@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
+import { PolicyModal } from "../components/PolicyModal";
 import { ReplayFeed, phaseNowLabel, renderedEvents } from "../components/ReplayFeed";
 
 // Base step at 1× — one revealed event per interval; the speed multiplier divides it.
@@ -43,6 +44,12 @@ export function ReplayReconstruct() {
   const [shown, setShown] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
+  const [showPolicy, setShowPolicy] = useState(false);
+  // Auto-follow: while playing, scroll the just-revealed ("current") row into view so the feed
+  // tracks the playhead. The operator can stop following — via the Follow toggle, or just by
+  // scrolling away (wheel/touch) — and read freely while playback keeps running.
+  const [follow, setFollow] = useState(true);
+  const feedRef = useRef<HTMLDivElement>(null);
 
   // Auto-play once the snapshot loads — or render instantly under reduced motion / a non-equivalent
   // verdict (where the flat fallback shows everything and there's nothing to step through).
@@ -71,12 +78,32 @@ export function ReplayReconstruct() {
     return () => window.clearTimeout(handle);
   }, [playing, shown, total, speed]);
 
+  // Follow the playhead: while following + playing, keep the just-revealed row in view.
+  // `block: "nearest"` only scrolls when the row is off-screen — no jolt when it's already shown.
+  useEffect(() => {
+    if (!follow || !playing) return;
+    feedRef.current?.querySelector(".tl-evrow.current")?.scrollIntoView({ block: "nearest" });
+  }, [shown, follow, playing]);
+
+  // A user scroll gesture (wheel/touch) stops following — they've taken over the viewport, so
+  // playback keeps running but the screen no longer chases the events. Re-enable via the toggle.
+  useEffect(() => {
+    const stop = () => setFollow(false);
+    window.addEventListener("wheel", stop, { passive: true });
+    window.addEventListener("touchmove", stop, { passive: true });
+    return () => {
+      window.removeEventListener("wheel", stop);
+      window.removeEventListener("touchmove", stop);
+    };
+  }, []);
+
   const play = () => {
     if (reducedMotion) {
       setShown(total);
       return;
     }
     if (shown >= total) setShown(0); // restart from the top if already at the end
+    setFollow(true);
     setPlaying(true);
   };
   const pause = () => setPlaying(false);
@@ -85,6 +112,7 @@ export function ReplayReconstruct() {
       setShown(total);
       return;
     }
+    setFollow(true);
     setShown(0);
     setPlaying(true);
   };
@@ -114,7 +142,17 @@ export function ReplayReconstruct() {
                 )}
               </h1>
               <div className="rd-meta">
-                {d?.policy_version ? <span className="pill mono">policy {d.policy_version}</span> : null}
+                {d?.policy_version ? (
+                  <button
+                    type="button"
+                    className="chip policy mono"
+                    aria-haspopup="dialog"
+                    aria-expanded={showPolicy}
+                    onClick={() => setShowPolicy(true)}
+                  >
+                    policy {d.policy_version}
+                  </button>
+                ) : null}
                 <span className="pill">🔒 append-only · read-only reconstruction</span>
               </div>
             </div>
@@ -144,6 +182,15 @@ export function ReplayReconstruct() {
             </button>
             <button type="button" className="btn" onClick={restart} aria-label="Restart reconstruction">
               ↻ Restart
+            </button>
+            <button
+              type="button"
+              className={`btn${follow ? " active" : ""}`}
+              aria-pressed={follow}
+              onClick={() => setFollow((f) => !f)}
+              aria-label={follow ? "Stop following the playhead" : "Follow the playhead"}
+            >
+              {follow ? "⤓ Following" : "⤓ Follow"}
             </button>
             <span className="rp-speed" role="group" aria-label="Playback speed">
               {SPEEDS.map((s) => (
@@ -198,7 +245,7 @@ export function ReplayReconstruct() {
       </div>
 
       {/* reconstructed feed */}
-      <div className="panel">
+      <div className="panel" ref={feedRef}>
         <div className="panel-h">
           <h2>Reconstructed audit feed</h2>
           <div className="sub">phase-grouped · {total} events</div>
@@ -215,6 +262,10 @@ export function ReplayReconstruct() {
           <ReplayFeed data={data} shown={shown} />
         ) : null}
       </div>
+
+      {showPolicy && d?.policy_version ? (
+        <PolicyModal version={d.policy_version} onClose={() => setShowPolicy(false)} />
+      ) : null}
     </section>
   );
 }

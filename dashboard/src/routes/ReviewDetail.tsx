@@ -173,6 +173,9 @@ export function ReviewDetail() {
   const resumed = submitted && !actionable;
   // Submit is re-enabled if never submitted, OR the resume looks stuck.
   const canSubmit = actionable && allGatedValid && !decide.isPending && (!submitted || stuck);
+  // The fixed decision bar shows whenever decisions are pending or a submit is in flight; the
+  // section reserves bottom space (.has-sticky-bar) so the last content clears the fixed bar.
+  const showHitlBar = submitted || (actionable && gated.length > 0);
 
   const onSubmit = () => {
     // First submit builds from the drafts; a stuck re-submit resends the exact
@@ -194,7 +197,7 @@ export function ReviewDetail() {
   };
 
   return (
-    <section>
+    <section className={showHitlBar ? "has-sticky-bar" : undefined}>
       <Link to="/reviews" className="backlink">
         ← Reviews
       </Link>
@@ -417,7 +420,7 @@ export function ReviewDetail() {
         ) : null}
       </div>
 
-      {submitted || (actionable && gated.length > 0) ? (
+      {showHitlBar ? (
         <div className="hitl-sticky" role="region" aria-label="Pending decisions">
           <span className="hs-tick" aria-hidden="true" />
           <span className="status-text">
