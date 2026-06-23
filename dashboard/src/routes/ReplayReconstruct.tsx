@@ -80,10 +80,20 @@ export function ReplayReconstruct() {
 
   // Follow the playhead: while following + playing, keep the just-revealed row in view.
   // `block: "nearest"` only scrolls when the row is off-screen — no jolt when it's already shown.
+  // ReplayFeed drops the `.current` class on the FINAL tick (shown >= total), so once there's no
+  // current row AND we're at the end, fall back to the last row — otherwise the closing event
+  // never scrolls into view. The end-guard avoids jumping to the bottom at shown=0 (also no current).
   useEffect(() => {
     if (!follow || !playing) return;
-    feedRef.current?.querySelector(".tl-evrow.current")?.scrollIntoView({ block: "nearest" });
-  }, [shown, follow, playing]);
+    const feed = feedRef.current;
+    if (!feed) return;
+    let target: HTMLElement | null = feed.querySelector(".tl-evrow.current");
+    if (!target && shown >= total && total > 0) {
+      const rows = feed.querySelectorAll<HTMLElement>(".tl-evrow");
+      target = rows[rows.length - 1] ?? null;
+    }
+    target?.scrollIntoView({ block: "nearest" });
+  }, [shown, follow, playing, total]);
 
   // A user scroll gesture (wheel/touch) stops following — they've taken over the viewport, so
   // playback keeps running but the screen no longer chases the events. Re-enable via the toggle.
