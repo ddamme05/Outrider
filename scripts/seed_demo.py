@@ -507,7 +507,12 @@ def _print_plan() -> None:
     print("  Demo seed plan (specs/2026-06-21-demo-deployment.md):", flush=True)
     for i, spec in enumerate(SEED_SPECS):
         src = spec.git_range or f"demo_fixtures/{spec.diff_file}"
-        exp = ", ".join(sorted(spec.expected_finding_types)) or "(model-dependent)"
+        bits = []
+        if spec.expected_finding_types:
+            bits.append(", ".join(sorted(spec.expected_finding_types)))
+        if spec.required_observed_proofs:
+            bits.append(f"OBSERVED proofs: {', '.join(sorted(spec.required_observed_proofs))}")
+        exp = "; ".join(bits) or "(model-dependent)"
         outcome = {"hitl": " +HITL", "published": " +auto-publish", "any": ""}[
             spec.expected_outcome
         ]
