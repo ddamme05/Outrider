@@ -101,6 +101,20 @@ _DEMO_HITL_TIMEOUT_MINUTES = 100 * 365 * 24 * 60  # ~100 years
 _RATE_LIMIT_BACKOFF_SECONDS: tuple[int, ...] = (60, 120)
 
 
+def _force_env_at_least(key: str, minimum: int) -> None:
+    """Set env `key` to `minimum` UNLESS it already holds a larger integer.
+
+    `setdefault` is wrong for the demo seed: the documented run is
+    `op run --env-file=.env`, which injects .env's production values BEFORE this
+    process starts, so the key is always present and `setdefault` never fires. This
+    forces the demo floor past a smaller .env value (the 30-min HITL default, a tight
+    analyze budget) while still honoring a DELIBERATELY larger explicit override.
+    """
+    current = os.environ.get(key, "").strip()
+    if not (current.isdigit() and int(current) >= minimum):
+        os.environ[key] = str(minimum)
+
+
 @dataclass(frozen=True)
 class SeedSpec:
     """One seeded review: how to build it + what its capture must contain."""
@@ -537,12 +551,14 @@ def main() -> int:
         print("  export a real key (or run via `op run --env-file=.env -- ...`).", flush=True)
         return 2
 
-    # Give analyze a generous budget so the 27-file showcase doesn't starve at the
-    # cost gate (respects an explicit env override). live_smoke's _drive reads this
-    # via AnalyzeConfig and passes it to build_graph.
-    os.environ.setdefault("OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS", str(_DEMO_ANALYZE_BUDGET_TOKENS))
-    # Seeded HITL reviews stay pending (never render "expired") on the persistent demo.
-    os.environ.setdefault("OUTRIDER_HITL_TIMEOUT_MINUTES", str(_DEMO_HITL_TIMEOUT_MINUTES))
+    # The demo seed needs its OWN budget + HITL timeout, but the documented run is
+    # `op run --env-file=.env`, which loads .env's PRODUCTION values (a tight
+    # OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS, OUTRIDER_HITL_TIMEOUT_MINUTES=30) into the
+    # environment BEFORE this process starts — so `setdefault` would be a silent no-op
+    # and the seed would starve the 27-file showcase / bake 30-min HITL expiry. Force the
+    # demo floor, while still honoring a DELIBERATELY larger explicit override.
+    _force_env_at_least("OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS", _DEMO_ANALYZE_BUDGET_TOKENS)
+    _force_env_at_least("OUTRIDER_HITL_TIMEOUT_MINUTES", _DEMO_HITL_TIMEOUT_MINUTES)
 
     admin_url = _load_test_db_url()
     _assert_isolated(admin_url)
