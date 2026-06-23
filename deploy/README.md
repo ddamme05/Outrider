@@ -40,10 +40,12 @@ ssh root@<droplet-ip>
 cd /opt/outrider/deploy
 cp .env.demo.example .env
 nano .env     # set POSTGRES_PASSWORD, OUTRIDER_ADMIN_API_KEY, DEMO_DOMAIN
-docker compose -f docker-compose.demo.yml up -d --build
+bash up.sh    # preflight-checks the seed + .env, then `docker compose up -d --build`
 ```
 First boot builds the app + dashboard images and Postgres auto-restores the seed.
-Caddy fetches a Let's Encrypt certificate for `DEMO_DOMAIN` automatically.
+`up.sh` fails loud if `deploy/demo_seed.sql` is missing — a silent miss makes Docker
+create a root-owned directory there and crash-loops Postgres. Caddy fetches a Let's
+Encrypt certificate for `DEMO_DOMAIN` automatically.
 
 ## 5 · Firewall
 ```bash
@@ -57,11 +59,14 @@ ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
   publish; run a **replay** on any review to watch it reconstruct.
 
 ## Re-seeding
-The seed restores only onto a fresh data volume:
+The seed restores only onto a fresh data volume. Drop **only** the DB volume — `down -v`
+would also wipe `caddy-data` and force a Let's Encrypt re-issue (rate-limit risk):
 ```bash
-docker compose -f docker-compose.demo.yml down -v      # drops the demo data volume
+docker compose -f docker-compose.demo.yml stop postgres
+docker compose -f docker-compose.demo.yml rm -f postgres
+docker volume rm outrider-demo_demo-data
 # replace deploy/demo_seed.sql, then:
-docker compose -f docker-compose.demo.yml up -d --build
+bash up.sh
 ```
 
 ## Notes
