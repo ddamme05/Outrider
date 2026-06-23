@@ -79,7 +79,8 @@ _SHOWCASE_RANGE = _GIT_RANGE
 # budget starves ~9 of them at the cost gate. Set a generous budget for the demo
 # so the showcase completes cleanly (the spec's "budget tuning for #6"). This is a
 # CAP, not spend — actual cost is the analyze input the reviewed files consume.
-# setdefault (in main) respects an explicit OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS.
+# `_force_env_at_least` (in main) forces this floor past .env's smaller value while
+# honoring a deliberately larger explicit OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS.
 _DEMO_ANALYZE_BUDGET_TOKENS = 1_500_000
 
 # A persistent demo box wants its HITL reviews to stay PENDING forever, not inherit
@@ -87,8 +88,9 @@ _DEMO_ANALYZE_BUDGET_TOKENS = 1_500_000
 # dashboard renders `expires_at < now()` as "expired" client-side (dashboard/src/lib/
 # format.ts), so a 30-min window makes the two HITL-gated reviews look stale the moment
 # the demo is viewed later. A ~100-year timeout bakes a far-future expires_at into BOTH
-# the reviews row AND the hitl_request audit event (consistent → replay-safe). setdefault
-# respects an explicit OUTRIDER_HITL_TIMEOUT_MINUTES.
+# the reviews row AND the hitl_request audit event (consistent → replay-safe).
+# `_force_env_at_least` (in main) forces this floor past .env's 30-min default while
+# honoring a deliberately larger explicit OUTRIDER_HITL_TIMEOUT_MINUTES.
 _DEMO_HITL_TIMEOUT_MINUTES = 100 * 365 * 24 * 60  # ~100 years
 
 # Backoff waits (seconds) before each full-seed retry on a transient Anthropic 429
