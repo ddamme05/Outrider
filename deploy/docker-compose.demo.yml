@@ -15,7 +15,10 @@ services:
       # Auto-restored ONCE, on a fresh data volume. Re-seed = `down -v` then `up`.
       - ./demo_seed.sql:/docker-entrypoint-initdb.d/01_demo_seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U outrider -d outrider_demo"]
+      # -h 127.0.0.1 forces a TCP check. During initdb/seed restore Postgres runs a
+      # temporary SOCKET-ONLY server, so a bare pg_isready would report healthy mid-restore
+      # and let the app (depends_on: service_healthy) connect before the real TCP server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U outrider -d outrider_demo"]
       interval: 5s
       timeout: 5s
       retries: 10
