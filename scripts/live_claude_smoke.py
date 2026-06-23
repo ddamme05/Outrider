@@ -188,6 +188,30 @@ def _scenario_from_git_range(range_spec: str) -> _Scenario:
     )
 
 
+@dataclass
+class _StubHTTPResponse:
+    status_code: int
+
+
+class _StubNotFoundError(Exception):
+    """A 404 from the stub GitHub client, shaped like githubkit's RequestFailed
+    (carries `.response.status_code == 404`).
+
+    The trace probe (`agent/nodes/trace.py::_resolve_via_probes`) classifies a
+    fetch failure by `exc.response.status_code`: 404 means "the LLM proposed a path
+    that doesn't exist" — the COMMON probe outcome, treated as "candidate did not
+    resolve" — while anything else is transient and re-raised. A real GitHub
+    `get_content` on a missing path 404s, so the stub must too: a raw KeyError has no
+    `status_code`, gets classified as transient, and crashes the whole review. (The
+    27-file showcase's trace node probes import paths like `outrider/coordinates.py`
+    that don't exist at the repo root in a `src/` layout — exactly the real 404 case.)
+    """
+
+    def __init__(self, path: str, ref: str) -> None:
+        super().__init__(f"stub 404: no content for {path!r} at ref {ref!r}")
+        self.response = _StubHTTPResponse(status_code=404)
+
+
 def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object]:
     """Stub GitHub serving `scenario`'s files via the real intake fetch path.
 
@@ -229,7 +253,10 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
         async def async_get_content(self, owner: str, repo: str, path: str, *, ref: str) -> _Resp:
             text_content = content_by_path_ref.get((path, ref))
             if text_content is None:
-                raise KeyError(f"stub has no content for {path!r} at ref {ref!r}")
+                # Wire-faithful 404: a missing path is the COMMON trace-probe outcome.
+                # Must carry `.response.status_code == 404` or trace re-raises it as a
+                # transient error and crashes the review (see _StubNotFoundError).
+                raise _StubNotFoundError(path, ref)
             return _Resp(
                 _ContentFile(
                     encoding="base64",
