@@ -174,6 +174,25 @@ test("the Follow toggle stops following the playhead on click", async () => {
   ).toBeInTheDocument();
 });
 
+test("auto-follow scrolls the FINAL event into view on the last tick", async () => {
+  // Record which element each follow-scroll targets. ReplayFeed drops the `.current` class at the
+  // end (shown >= total), so the final tick must fall back to the last row — otherwise the closing
+  // event never scrolls into view under Follow. The last scroll target must be the last row.
+  const targets: Element[] = [];
+  const spy = vi
+    .spyOn(Element.prototype, "scrollIntoView")
+    .mockImplementation(function (this: Element) {
+      targets.push(this);
+    });
+  mount({ reduced: false }); // playback mode → auto-follow runs
+  // The verdict meta renders only once playback reaches the end (shown === total).
+  await screen.findByText(/2 events · 0 findings/, undefined, { timeout: 3000 });
+  const rows = Array.from(document.querySelectorAll(".tl-evrow"));
+  expect(rows.length).toBeGreaterThan(0);
+  expect(targets.at(-1)).toBe(rows.at(-1));
+  spy.mockRestore();
+});
+
 test("under reduced motion the reconstruction renders instantly with the verdict", async () => {
   mount({ reduced: true });
   // Instant render: counter at total/total, verdict shown, retention note.
