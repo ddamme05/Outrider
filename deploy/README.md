@@ -21,11 +21,15 @@ curl -fsSL https://get.docker.com | sh
 ```
 
 ## 3 · Copy the repo + the seed
-From your laptop:
+From your laptop. Use `git archive` so **only tracked files** reach the public box — a
+broad `rsync` would also copy local artifacts (`.venv`, `.claude`, `.codex`, `.agents`,
+`AUDIT_LOG.md`, the gitignored `docs/`, stray `.env` files), which don't belong on a
+public demo host:
 ```bash
-rsync -a --exclude .git --exclude 'dashboard/node_modules' --exclude '.env' \
-  ~/projects/outrider/ root@<droplet-ip>:/opt/outrider/
-# the seed is gitignored — copy it into deploy/ where compose expects it:
+ssh root@<droplet-ip> 'mkdir -p /opt/outrider'
+git -C ~/projects/outrider archive --format=tar HEAD \
+  | ssh root@<droplet-ip> 'tar -x -C /opt/outrider'
+# the seed is gitignored (so not in the archive) — copy it into deploy/ separately:
 scp ~/projects/outrider/scripts/demo_fixtures/demo_seed.sql \
   root@<droplet-ip>:/opt/outrider/deploy/demo_seed.sql
 ```
