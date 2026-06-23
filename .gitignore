@@ -51,6 +51,8 @@ spikes/hitl/smoke_hitl_edges.sh
 # --- generated, scrubbed/secret-scanned, and intentionally approved as a ---
 # --- deploy artifact). Remove this line to track it deliberately. ---
 scripts/demo_fixtures/demo_seed.sql
+# Transient pg_dump temp (atomic os.replace lands the real file); never commit a partial dump.
+scripts/demo_fixtures/demo_seed.sql.partial
 
 # --- Python ---
 __pycache__/

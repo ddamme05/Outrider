@@ -137,6 +137,11 @@ class SeedSpec:
     label: str
     expect_findings: bool  # feeds _run's structural --expect-findings verdict
     expected_finding_types: frozenset[str] = field(default_factory=frozenset)
+    # Finding types that MUST land as OBSERVED proofs: evidence_tier='observed' AND a
+    # non-null query_match_id (a JUDGED finding of the same type does NOT satisfy this).
+    # These are deterministic tree-sitter matches, so requiring them is safe — and this is
+    # what actually backs an "N OBSERVED proofs" claim, which expected_finding_types can't.
+    required_observed_proofs: frozenset[str] = field(default_factory=frozenset)
     # The advertised ROUTING outcome — asserted at capture, not just the finding
     # types. "hitl": a CRITICAL/HIGH finding must park the review at the gate.
     # "published": the review must auto-publish (NO hitl_request + publish_routing
@@ -217,11 +222,18 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         repo_root=_SMOKE_REPO,
         pr_title="Add accounts, payments, reports & client services",
         expect_findings=True,
-        # Deterministic OBSERVED security types (tree-sitter matches on planted patterns)
-        # land reliably; the broad JUDGED set is model-dependent, so the gate requires the
-        # proofs, not the full taxonomy.
-        expected_finding_types=frozenset(
-            {"sql_injection", "weak_crypto", "unsafe_deserialization", "blocking_call_in_async"}
+        # The 6 deterministic OBSERVED security types (tree-sitter matches on planted
+        # patterns) must each land as a query-backed proof; the broad JUDGED set is
+        # model-dependent, so the gate requires the proofs, not the full taxonomy.
+        required_observed_proofs=frozenset(
+            {
+                "sql_injection",
+                "command_injection",
+                "unsafe_deserialization",
+                "tls_verify_disabled",
+                "weak_crypto",
+                "blocking_call_in_async",
+            }
         ),
         expected_outcome="hitl",  # sql_injection -> CRITICAL parks it at the gate
     ),
@@ -304,6 +316,31 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
             if missing:
                 failures.append(f"missing expected finding type(s): {sorted(missing)}")
 
+            # OBSERVED-proof gate: each required type must land as a query-backed proof
+            # (evidence_tier='observed' AND non-null query_match_id), not merely as a
+            # same-named JUDGED finding. This is what enforces the "N OBSERVED proofs" claim.
+            if spec.required_observed_proofs:
+                observed_proofs = {
+                    row[0]
+                    for row in (
+                        await conn.execute(
+                            text(
+                                "SELECT DISTINCT payload->>'finding_type' FROM audit_events "
+                                "WHERE review_id = :id AND event_type = 'finding' "
+                                "AND payload->>'evidence_tier' = 'observed' "
+                                "AND payload->>'query_match_id' IS NOT NULL"
+                            ),
+                            {"id": review_id},
+                        )
+                    ).all()
+                }
+                missing_proofs = spec.required_observed_proofs - observed_proofs
+                if missing_proofs:
+                    failures.append(
+                        "missing OBSERVED proof(s) (need evidence_tier=observed + "
+                        f"query_match_id): {sorted(missing_proofs)}"
+                    )
+
             n_events = (
                 await conn.execute(
                     text("SELECT count(*) FROM audit_events WHERE review_id = :id"),
@@ -359,9 +396,8 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
 
     if failures:
         return CaptureResult(spec.key, ok=False, detail="; ".join(failures))
-    return CaptureResult(
-        spec.key, ok=True, detail=f"{len(spec.expected_finding_types)} expected type(s) present"
-    )
+    n = len(spec.expected_finding_types) + len(spec.required_observed_proofs)
+    return CaptureResult(spec.key, ok=True, detail=f"{n} expected type(s)/proof(s) present")
 
 
 def _pg_dump(db_url: str, out_path: Path) -> bool:
@@ -392,8 +428,12 @@ def _pg_dump(db_url: str, out_path: Path) -> bool:
         "--no-owner",
         "--no-privileges",
     ]
+    # Dump to a same-directory temp file, then os.replace() into place ONLY on success.
+    # A failed pg_dump must never truncate/delete an existing good dump — in append mode
+    # out_path IS the known-good seed. os.replace is atomic within one filesystem.
+    tmp_path = out_path.with_name(f"{out_path.name}.partial")
     try:
-        with out_path.open("w", encoding="utf-8") as fh:
+        with tmp_path.open("w", encoding="utf-8") as fh:
             proc = subprocess.run(  # noqa: S603 — argv list, no shell; docker on PATH
                 exec_argv, stdout=fh, stderr=subprocess.PIPE, text=True, check=False
             )
@@ -403,12 +443,13 @@ def _pg_dump(db_url: str, out_path: Path) -> bool:
             "postgres-test container so the version matches the server).",
             flush=True,
         )
-        out_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
         return False
     if proc.returncode != 0:
         print(f"  pg_dump failed: {proc.stderr.strip()}", flush=True)
-        out_path.unlink(missing_ok=True)  # never leave a partial/empty dump
+        tmp_path.unlink(missing_ok=True)  # leave the prior out_path untouched
         return False
+    os.replace(tmp_path, out_path)
     return True
 
 
