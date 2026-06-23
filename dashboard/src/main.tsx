@@ -3,9 +3,14 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router/dom";
 
+import { adoptTokenFromUrlFragment } from "./auth/token";
 import { TokenGate } from "./auth/TokenGate";
 import { router } from "./router";
 import "./theme.css";
+
+// One-click demo access: if the shared link carries `#token=...`, adopt and strip it
+// before first render so the token-gate doesn't flash. No-op for a normal visit.
+adoptTokenFromUrlFragment();
 
 // No query retries: every read view already polls/refetches (2s), so a failed
 // read should render its "unavailable" state once rather than amplify a 5xx into
