@@ -75,6 +75,13 @@ _DEMO_DB_NAME = "outrider_test_demo"  # contains 'test' -> passes the 5433 isola
 _SEED_SQL = _REPO_ROOT / "scripts" / "demo_fixtures" / "demo_seed.sql"
 _GIT_RANGE = "0c70d18^..39c538b"  # the 27-file analyze-cache arc (the #6 showcase)
 _SHOWCASE_RANGE = _GIT_RANGE
+# The smoke-test repo + PR #9 range back the breadth review (28 files, broad taxonomy).
+# Local-only at SEED time — the review content bakes into demo_seed.sql, so the demo box
+# never needs this checkout. Override the path with OUTRIDER_DEMO_SMOKE_REPO if it differs.
+_SMOKE_REPO = os.environ.get(
+    "OUTRIDER_DEMO_SMOKE_REPO", str(Path.home() / "projects" / "outrider-smoke-test")
+)
+_SMOKE_RANGE = "1f7cd2d..d4e7d6ef"  # PR #9 base..head (28 files); NOT d4e7d6ef^.. (last commit, 9)
 # The 27-file showcase tiers ~16 files DEEP/STANDARD; the default 200k analyze
 # budget starves ~9 of them at the cost gate. Set a generous budget for the demo
 # so the showcase completes cleanly (the spec's "budget tuning for #6"). This is a
@@ -138,10 +145,13 @@ class SeedSpec:
     expected_outcome: Literal["hitl", "published", "any"] = "any"
     diff_file: str | None = None  # a fixture under scripts/demo_fixtures/
     git_range: str | None = None  # OR a two-dot git range (the showcase)
+    repo_root: str | None = None  # git_range against a DIFFERENT repo (the smoke breadth review)
+    pr_title: str | None = None  # override the git-range scenario's default title
 
     def build_scenario(self, head_sha: str) -> _Scenario:
         if self.git_range is not None:
-            base = _scenario_from_git_range(self.git_range)
+            root = Path(self.repo_root) if self.repo_root else None
+            base = _scenario_from_git_range(self.git_range, root, pr_title=self.pr_title)
         elif self.diff_file is not None:
             base = _scenario_from_file(_FIXTURES / self.diff_file)
         else:
@@ -199,6 +209,21 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         git_range=_SHOWCASE_RANGE,
         expect_findings=False,  # findings model-dependent across a real arc; gate loosely
         expected_outcome="any",  # routing is model-dependent on a real arc; don't assert it
+    ),
+    SeedSpec(
+        key="smoke_breadth",
+        label="Breadth showcase (28-file smoke PR — broad taxonomy + OBSERVED proofs)",
+        git_range=_SMOKE_RANGE,
+        repo_root=_SMOKE_REPO,
+        pr_title="Add accounts, payments, reports & client services",
+        expect_findings=True,
+        # Deterministic OBSERVED security types (tree-sitter matches on planted patterns)
+        # land reliably; the broad JUDGED set is model-dependent, so the gate requires the
+        # proofs, not the full taxonomy.
+        expected_finding_types=frozenset(
+            {"sql_injection", "weak_crypto", "unsafe_deserialization", "blocking_call_in_async"}
+        ),
+        expected_outcome="hitl",  # sql_injection -> CRITICAL parks it at the gate
     ),
 )
 
@@ -456,7 +481,7 @@ async def _recreate_demo_db(admin_url: str) -> None:
     await _create_db(admin_url, _DEMO_DB_NAME)
 
 
-def _seed_all(admin_url: str, api_key: str) -> int:
+def _seed_all(admin_url: str, api_key: str, *, only: str | None = None) -> int:
     """SYNC orchestration with per-review CHECKPOINT + retry on a transient LLM limit.
 
     Each async step gets its own asyncio.run(); _migrate runs in sync context (alembic
@@ -470,18 +495,45 @@ def _seed_all(admin_url: str, api_key: str) -> int:
     never do, and what lets the heavy 27-file review finally land."""
     demo_url = _swap_db(admin_url, _DEMO_DB_NAME)
     asyncio.run(_recreate_demo_db(admin_url))
-    print(f"  Demo DB .............. {_DEMO_DB_NAME} (recreated)", flush=True)
-    _migrate(demo_url)
-    print("  Migrated ............. alembic upgrade head\n", flush=True)
-    _CHECKPOINT.unlink(missing_ok=True)
-    have_checkpoint = False
+    if only is not None:
+        # Append mode: restore the existing seed as the baseline (the prior reviews are kept
+        # WITHOUT re-running them), then run only `only`. The restored dump also seeds the
+        # retry-checkpoint, so a rate-limit retry resets to the baseline, not a fresh DB.
+        specs = [(i, s) for i, s in enumerate(SEED_SPECS) if s.key == only]
+        if not specs:
+            print(f"  --only {only!r}: no spec with that key.", flush=True)
+            return 1
+        if not _SEED_SQL.exists():
+            print(
+                f"  --only needs an existing {_SEED_SQL.name} to append to; none found.",
+                flush=True,
+            )
+            return 1
+        if not _load_sql(demo_url, _SEED_SQL):
+            print(f"  failed to restore {_SEED_SQL.name} for append.", flush=True)
+            return 1
+        _CHECKPOINT.write_bytes(_SEED_SQL.read_bytes())
+        have_checkpoint = True
+        print(
+            f"  Demo DB .............. {_DEMO_DB_NAME} (recreated + restored {_SEED_SQL.name})",
+            flush=True,
+        )
+        print(
+            f"  Append mode .......... only [{only}]; {len(SEED_SPECS) - 1} prior reviews kept\n",
+            flush=True,
+        )
+    else:
+        specs = list(enumerate(SEED_SPECS))
+        print(f"  Demo DB .............. {_DEMO_DB_NAME} (recreated)", flush=True)
+        _migrate(demo_url)
+        print("  Migrated ............. alembic upgrade head\n", flush=True)
+        _CHECKPOINT.unlink(missing_ok=True)
+        have_checkpoint = False
 
     total_attempts = len(_RATE_LIMIT_BACKOFF_SECONDS) + 1
     results: list[CaptureResult] = []
-    for i, spec in enumerate(SEED_SPECS):
-        print(
-            f"  === seeding [{i + 1}/{len(SEED_SPECS)}] {spec.key} — {spec.label} ===", flush=True
-        )
+    for pos, (i, spec) in enumerate(specs):
+        print(f"  === seeding [{pos + 1}/{len(specs)}] {spec.key} — {spec.label} ===", flush=True)
         cap = CaptureResult(spec.key, ok=False, detail="(no attempt ran)")  # overwritten below
         for attempt in range(total_attempts):
             if attempt:
@@ -529,7 +581,7 @@ def _seed_all(admin_url: str, api_key: str) -> int:
         print(f"  --- capture [{mark}] {spec.key}: {cap.detail}\n", flush=True)
         # Checkpoint the good state so the NEXT review's retry restores here. Skip after
         # the last review — nothing retries past it.
-        if cap.ok and i < len(SEED_SPECS) - 1:
+        if cap.ok and pos < len(specs) - 1:
             if not _pg_dump(demo_url, _CHECKPOINT):
                 print("  checkpoint dump failed — aborting (cannot retry reliably).", flush=True)
                 return 1
@@ -578,7 +630,7 @@ class _Tee:
         return bool(getattr(self._stream, "isatty", lambda: False)())
 
 
-def _run_with_log(admin_url: str, api_key: str) -> int:
+def _run_with_log(admin_url: str, api_key: str, *, only: str | None = None) -> int:
     """Tee all stdout+stderr — the seed's prints, _run's narration, any traceback —
     into ONE clearly-named log, so the run is inspectable after the fact (the live
     output scrolls past the terminal buffer otherwise)."""
@@ -590,7 +642,7 @@ def _run_with_log(admin_url: str, api_key: str) -> int:
     sys.stdout, sys.stderr = _Tee(orig_out, logfile), _Tee(orig_err, logfile)  # type: ignore[assignment]
     try:
         print(f"  Seed log ............. {log_path}\n", flush=True)
-        return _seed_all(admin_url, api_key)
+        return _seed_all(admin_url, api_key, only=only)
     finally:
         print(f"\n  Seed log ............. {log_path}", flush=True)
         sys.stdout, sys.stderr = orig_out, orig_err
@@ -605,6 +657,15 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="print the seed plan (entries + expectations) and exit; no DB, no Claude.",
+    )
+    parser.add_argument(
+        "--only",
+        metavar="KEY",
+        default=None,
+        help=(
+            "append mode: restore the existing demo_seed.sql, run ONLY the spec with this "
+            "key, re-dump the full seed. Adds one review without re-running the others."
+        ),
     )
     args = parser.parse_args()
 
@@ -632,7 +693,7 @@ def main() -> int:
     # _seed_all is SYNC (it calls asyncio.run() per step); the demo DB is left in
     # place after — it backs the dump and is re-creatable by re-running. Wrapped so
     # the whole run is teed to one inspectable log.
-    return _run_with_log(admin_url, api_key)
+    return _run_with_log(admin_url, api_key, only=args.only)
 
 
 if __name__ == "__main__":

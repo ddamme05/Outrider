@@ -171,19 +171,22 @@ def _scenario_from_file(diff_path: Path) -> _Scenario:
     return _Scenario(files=(entry,), pr_title=f"Add {rel}", label=rel)
 
 
-def _scenario_from_git_range(range_spec: str) -> _Scenario:
+def _scenario_from_git_range(
+    range_spec: str, repo_root: Path | None = None, *, pr_title: str | None = None
+) -> _Scenario:
     """Reconstruct a faithful N-file PR diff from a local two-dot git range.
 
-    The #6 "Outrider reviewing Outrider" showcase: real hunks/status/base/head per
-    file (see scripts/_git_range_scenario.py), so most files carry small changes
-    triage SKIM/SKIPs and only the substantive few go DEEP.
+    Defaults to the Outrider repo (the #6 "Outrider reviewing Outrider" showcase: real
+    hunks/status/base/head per file, so most files SKIM/SKIP and the substantive few go
+    DEEP). Pass `repo_root` to reconstruct a range from a DIFFERENT local checkout (the
+    smoke breadth review) and `pr_title` to override the default self-review title.
     """
-    entries = build_file_entries_from_range(range_spec, _REPO_ROOT)
+    entries = build_file_entries_from_range(range_spec, repo_root or _REPO_ROOT)
     if not entries:
         raise GitRangeError(f"no changed files in range {range_spec!r}")
     return _Scenario(
         files=tuple(entries),
-        pr_title=f"Outrider self-review: {range_spec}",
+        pr_title=pr_title or f"Outrider self-review: {range_spec}",
         label=f"{len(entries)} files from {range_spec}",
     )
 
