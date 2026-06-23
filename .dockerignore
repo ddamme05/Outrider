@@ -1,50 +1,30 @@
-# Build-context hygiene. The demo images build with `context: ..` (repo root, see
-# deploy/docker-compose.demo.yml), so the Docker daemon receives the whole context dir
-# unless excluded here. The Dockerfiles COPY explicit paths (src/, db/, dashboard/,
-# deploy/Caddyfile, pyproject.toml, uv.lock, alembic.ini) — nothing below is needed by a
-# build. This keeps runtime secrets, the seed dump, and local artifacts out of the
-# daemon's context, and makes a future `COPY .` safe instead of a secret leak.
+# Build-context allowlist. The demo images build with `context: ..` (the repo root), so the
+# Docker daemon would otherwise receive the whole repo. This is a DEFAULT-DENY allowlist:
+# ignore everything (`*`), then un-ignore only the paths the Dockerfiles COPY, then re-exclude
+# secrets and build-noise inside them. Net effect: no secret, seed dump, or local-only artifact
+# (deploy/.env, demo_seed.sql, CLAUDE.md, COST_ANALYSIS.md, PRICING_STRATEGY.md, AUDIT_LOG.md,
+# docs/, specs/, .venv, ...) can reach the build context or a future `COPY .` — and new local
+# files are excluded by default, with no denylist to keep in sync.
+#
+# Safe because the wheel build packages only `src/outrider` (pyproject [tool.hatch.build...];
+# no readme/license-file refs) and the Dockerfiles COPY explicit paths:
+#   app (deploy/Dockerfile):      pyproject.toml uv.lock src/ db/ alembic.ini
+#   web (deploy/Dockerfile.web):  dashboard/ deploy/Caddyfile
+*
 
-# Runtime secrets + the seed dump, placed next to the compose file at deploy time
+!src
+!db
+!dashboard
+!deploy
+!pyproject.toml
+!uv.lock
+!alembic.ini
+
+# Re-exclude secrets / runtime files / build-noise within the un-ignored paths.
 deploy/.env
 deploy/.env.*
 deploy/demo_seed.sql
-
-# Version control (git archive already strips this on the droplet; belt-and-suspenders
-# for dev-machine builds where .git exists)
-.git
-.gitignore
-
-# Python venv + caches
-.venv
-**/__pycache__
-*.pyc
-.mypy_cache
-.pytest_cache
-.ruff_cache
-.coverage
-htmlcov
-
-# Node: the web image runs `npm ci` itself, so source node_modules/dist aren't needed
 dashboard/node_modules
 dashboard/dist
-
-# Agent / local tooling dirs + generated local output
-.claude
-.codex
-.agents
-generated
-
-# Local-only tracking files + dirs (gitignored; the droplet git-archive already strips
-# these — listed here so a LOCAL `docker build` context stays clean and a future `COPY .`
-# can't sweep them in)
-AUDIT_LOG.md
-AUDIT_*.md
-COMMIT_LOG.md
-ITERATION_LOG.md
-SESSION_RETRO.md
-docs/
-specs/
-specs_arch/
-reports/
-dashboard-mockups/
+**/__pycache__
+**/*.pyc
