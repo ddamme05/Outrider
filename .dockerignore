@@ -1,0 +1,36 @@
+# Build-context hygiene. The demo images build with `context: ..` (repo root, see
+# deploy/docker-compose.demo.yml), so the Docker daemon receives the whole context dir
+# unless excluded here. The Dockerfiles COPY explicit paths (src/, db/, dashboard/,
+# deploy/Caddyfile, pyproject.toml, uv.lock, alembic.ini) — nothing below is needed by a
+# build. This keeps runtime secrets, the seed dump, and local artifacts out of the
+# daemon's context, and makes a future `COPY .` safe instead of a secret leak.
+
+# Runtime secrets + the seed dump, placed next to the compose file at deploy time
+deploy/.env
+deploy/.env.*
+deploy/demo_seed.sql
+
+# Version control (git archive already strips this on the droplet; belt-and-suspenders
+# for dev-machine builds where .git exists)
+.git
+.gitignore
+
+# Python venv + caches
+.venv
+**/__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Node: the web image runs `npm ci` itself, so source node_modules/dist aren't needed
+dashboard/node_modules
+dashboard/dist
+
+# Agent / local tooling dirs + generated local output
+.claude
+.codex
+.agents
+generated
