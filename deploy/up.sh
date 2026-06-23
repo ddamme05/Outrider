@@ -18,8 +18,11 @@ cd "$(dirname "$0")"
 fail() { echo "PREFLIGHT FAILED: $*" >&2; exit 1; }
 
 if [ -d demo_seed.sql ]; then
-  fail "deploy/demo_seed.sql is a DIRECTORY — a previous launch with a missing seed created it. Run:
-    docker compose -f docker-compose.demo.yml down -v && sudo rm -rf demo_seed.sql
+  fail "deploy/demo_seed.sql is a DIRECTORY — a previous launch with a missing seed created it. Run
+  (drops ONLY the bad DB volume — keeps the Caddy cert, matching the re-seed path):
+    docker compose -f docker-compose.demo.yml down
+    docker volume rm outrider-demo_demo-data
+    sudo rm -rf demo_seed.sql
   then scp the real seed (scripts/demo_fixtures/demo_seed.sql) into place and re-run."
 fi
 [ -f demo_seed.sql ] || fail "deploy/demo_seed.sql is missing. From your laptop:
