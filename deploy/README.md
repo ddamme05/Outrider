@@ -73,8 +73,11 @@ bash up.sh
 ## Notes
 - **Keyless by design.** No LLM/GitHub/Slack secrets exist on this box. The only
   credential is `OUTRIDER_ADMIN_API_KEY`, a read-gate over public seed data.
-- **Frictionless viewing (optional).** To skip the token prompt in a recorded demo,
-  share the token on your landing page, or bake a default into the dashboard build.
+- **Frictionless viewing.** Share a one-click link with the token in the URL fragment —
+  `https://outrider-review.duckdns.org/#token=<OUTRIDER_ADMIN_API_KEY>`. The dashboard
+  adopts the token and strips the fragment on load (supplied at runtime via the link,
+  never baked into the bundle per `DECISIONS.md#011`). Or just print the token next to
+  the link and let viewers paste it into the gate.
 - **HTTP-only / no domain.** Set `DEMO_DOMAIN=:80` to serve plain HTTP on the IP (no
   cert) — fine for a quick demo, but prefer a domain + HTTPS for anything public.
 - **Updating the demo data** is just a re-seed (above) — the box never needs the
