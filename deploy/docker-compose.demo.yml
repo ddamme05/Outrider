@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: outrider_demo
     volumes:
-      - demo-data:/var/lib/postgresql/data
+      - demo-data:/var/lib/postgresql
       # Auto-restored ONCE, on a fresh data volume. Re-seed = `down -v` then `up`.
       - ./demo_seed.sql:/docker-entrypoint-initdb.d/01_demo_seed.sql:ro
     healthcheck:
