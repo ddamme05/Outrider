@@ -232,9 +232,10 @@ jobs:
         # analyze node, trace node, hitl + audit/replay), its skip
         # marker flips and assertions begin gating. Pytest treats skip
         # as non-failure, so any unflipped scenario still reports "pass."
-        # Today the structural + driver-backed scenarios all run live; the
-        # only skip-marked scenario is test_real_cve_fix_pr (FUP-109, needs
-        # a CVE fixture + ground truth).
+        # Today the structural + driver-backed scenarios all run live. The only
+        # UNCONDITIONAL skip is test_real_cve_fix_pr (FUP-109, needs a CVE fixture
+        # + ground truth); the opt-in real-model evidence tests also skip here (no
+        # OUTRIDER_EVAL_REAL_MODELS=1 in this job — they need API spend).
         run: pytest tests/eval --is-eval
 
   dashboard:
