@@ -551,3 +551,23 @@ def test_triage_scenario_spec_from_fixture_builds_state() -> None:
     assert spec.scenario == "pygoat"
     assert len(spec.state.pr_context.changed_files) >= 1
     assert spec.expected is _TRIAGE_EXPECTED
+
+
+def test_build_triage_scorecard_rejects_uncovered_expected() -> None:
+    # A spec whose ground truth omits the changed file (src/example.py) is rejected
+    # up front, before any provider call — a missing key would silently weaken the
+    # safety gate (a dropped file invisible to n_dropped_from_analysis).
+    bad = ExpectedTriage(
+        expected_file_tiers={"wrong/path.py": ReviewTier.DEEP},
+        overall_risk=RiskLevel.HIGH,
+        relevant_dimensions=(ReviewDimension.SECURITY,),
+    )
+    spec = TriageScenarioSpec(scenario="example", state=_build_state(), expected=bad)
+    with pytest.raises(ValueError, match="cover exactly the changed files"):
+        build_triage_scorecard(
+            [spec],
+            baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            candidate_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            baseline_model=_BASELINE,
+            candidate_models=[_CANDIDATE],
+        )

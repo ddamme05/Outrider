@@ -25,6 +25,7 @@ from .triage_grading import (
     compare_triage,
     compare_triage_models_on_scenario,
     grade_triage,
+    require_expected_coverage,
     run_triage_under_model,
 )
 
@@ -329,3 +330,89 @@ def test_scorecard_triage_markdown_and_json_sections() -> None:
     data = json.loads(card.to_json())
     assert len(data["triage_rows"]) == 1
     assert len(data["triage_aggregates"]) == 1
+
+
+# --- expected-coverage validation -------------------------------------------
+
+
+def test_require_expected_coverage_accepts_exact_match() -> None:
+    require_expected_coverage(_expected({"a.py": ReviewTier.DEEP}), {"a.py"})  # no raise
+
+
+def test_require_expected_coverage_rejects_missing_changed_file() -> None:
+    # Ground truth omits a changed file -> it would silently drop from the grade.
+    with pytest.raises(ValueError, match="missing=\\['b.py'\\]"):
+        require_expected_coverage(_expected({"a.py": ReviewTier.DEEP}), {"a.py", "b.py"})
+
+
+def test_require_expected_coverage_rejects_extra_path() -> None:
+    # Ground truth names a path the PR never changed.
+    with pytest.raises(ValueError, match="extra=\\['ghost.py'\\]"):
+        require_expected_coverage(
+            _expected({"a.py": ReviewTier.DEEP, "ghost.py": ReviewTier.DEEP}), {"a.py"}
+        )
+
+
+async def test_compare_triage_models_rejects_uncovered_expected() -> None:
+    # _build_state's changed file is src/example.py; expected covers the wrong path,
+    # so the comparison rejects up front WITHOUT running either provider.
+    bad_expected = ExpectedTriage(
+        expected_file_tiers={"wrong/path.py": ReviewTier.DEEP},
+        overall_risk=RiskLevel.HIGH,
+        relevant_dimensions=(ReviewDimension.SECURITY,),
+    )
+    with pytest.raises(ValueError, match="cover exactly the changed files"):
+        await compare_triage_models_on_scenario(
+            _build_state(),
+            bad_expected,
+            baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            baseline_model=_BASELINE,
+            candidate_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            candidate_model=_CANDIDATE,
+        )
+
+
+# --- dropped_files surfaced onto the row + artifact -------------------------
+
+
+def _drop_comparison() -> object:
+    # Baseline tiers STANDARD (clean), candidate SKIM (drops the file below the floor).
+    expected = _expected({"a.py": ReviewTier.STANDARD})
+    return compare_triage(
+        grade_triage(_triage({"a.py": ReviewTier.STANDARD}), expected),
+        grade_triage(_triage({"a.py": ReviewTier.SKIM}), expected),
+    )
+
+
+def test_triage_scorecard_row_carries_dropped_files() -> None:
+    row = TriageScorecardRow.from_comparison(
+        scenario="s", model=_CANDIDATE, baseline_model=_BASELINE, comparison=_drop_comparison()
+    )
+    assert row.n_dropped_from_analysis == 1
+    assert row.dropped_files == ("a.py",)
+    # And it survives the JSON round-trip (the machine-readable artifact).
+    card = Scorecard(triage_rows=(row,))
+    data = json.loads(card.to_json())
+    assert data["triage_rows"][0]["dropped_files"] == ["a.py"]
+
+
+def test_triage_scorecard_row_errored_has_null_dropped_files() -> None:
+    row = TriageScorecardRow.errored(
+        scenario="s", model=_CANDIDATE, baseline_model=_BASELINE, error="boom"
+    )
+    assert row.dropped_files is None
+
+
+def test_scorecard_triage_markdown_names_dropped_file() -> None:
+    card = Scorecard(
+        triage_rows=(
+            TriageScorecardRow.from_comparison(
+                scenario="s",
+                model=_CANDIDATE,
+                baseline_model=_BASELINE,
+                comparison=_drop_comparison(),
+            ),
+        )
+    )
+    md = card.to_markdown()
+    assert "a.py" in md  # the dropped path is named, not just the count

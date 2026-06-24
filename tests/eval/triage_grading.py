@@ -97,11 +97,37 @@ class TriageGrade:
     dropped_files: tuple[str, ...]
 
 
+def require_expected_coverage(
+    expected: ExpectedTriage, changed_paths: set[str], *, scenario: str = ""
+) -> None:
+    """Raise `ValueError` unless `expected.expected_file_tiers` covers EXACTLY the
+    changed-file set. The triage node tiers every changed file and ONLY changed
+    files (its policy gate, rules b+c in `agent/nodes/triage.py`), so hand-authored
+    ground truth must mirror that set. A MISSING key would silently drop a changed
+    file from `n_files` / tier accuracy / `n_dropped_from_analysis` — weakening the
+    safety gate the feature exists for; an EXTRA key would grade a path the PR never
+    changed. Called BEFORE the (paid) provider run by
+    `compare_triage_models_on_scenario` + `build_triage_scorecard`, so a mis-authored
+    scenario fails fast with no spend."""
+    expected_keys = set(expected.expected_file_tiers)
+    if expected_keys == changed_paths:
+        return
+    missing = sorted(changed_paths - expected_keys)
+    extra = sorted(expected_keys - changed_paths)
+    label = f" for scenario {scenario!r}" if scenario else ""
+    raise ValueError(
+        f"ExpectedTriage{label} must cover exactly the changed files "
+        f"(missing={missing}, extra={extra})"
+    )
+
+
 def grade_triage(actual: TriageResult, expected: ExpectedTriage) -> TriageGrade:
     """Grade one triage result against ground truth, over the EXPECTED file set
     (the triage node's policy gate guarantees it tiers exactly the changed files,
     which ground truth mirrors). A file absent from `actual` is treated as `SKIP`
-    (below the analysis floor)."""
+    (below the analysis floor). The runner layer calls `require_expected_coverage`
+    before grading, so on a real run `expected` and `actual` span the same changed
+    files; the absent-as-SKIP fallback only fires for a direct/synthetic call."""
     expected_tiers = expected.expected_file_tiers
     n_files = len(expected_tiers)
     n_correct = 0
@@ -241,7 +267,10 @@ async def compare_triage_models_on_scenario(
 ) -> TriageComparison:
     """Run `state` through triage under the baseline and candidate models, grade
     each against `expected`, and apply the gate. The parallel to
-    `compare_models_on_scenario` for analyze."""
+    `compare_models_on_scenario` for analyze. Validates that `expected` covers
+    exactly the changed files BEFORE running either model (no spend on a
+    mis-authored scenario)."""
+    require_expected_coverage(expected, {cf.path for cf in state.pr_context.changed_files})
     baseline_triage = await run_triage_under_model(
         state, provider=baseline_provider, model=baseline_model
     )

@@ -339,6 +339,9 @@ class TriageScorecardRow(BaseModel):
     risk_correct: bool | None = None
     under_risked: bool | None = None
     gate: TriageGateVerdict | None = None
+    # The PATHS behind n_dropped_from_analysis (which files left the review set) — a
+    # bare count can't name them in a multi-file scenario. Empty tuple = no drops.
+    dropped_files: tuple[str, ...] | None = None
     triage_source: TriageSource = "run_triage_direct"
 
     @model_validator(mode="after")
@@ -353,6 +356,7 @@ class TriageScorecardRow(BaseModel):
             self.risk_correct,
             self.under_risked,
             self.gate,
+            self.dropped_files,
         )
         if self.status == "ok":
             if any(m is None for m in metrics):
@@ -404,6 +408,7 @@ class TriageScorecardRow(BaseModel):
             risk_correct=cand.risk_correct,
             under_risked=cand.under_risked,
             gate=gate,
+            dropped_files=cand.dropped_files,
         )
 
     @classmethod
@@ -667,9 +672,7 @@ class Scorecard(BaseModel):
                         trow.model,
                         trow.scenario,
                         f"{trow.tier_accuracy:.3f}" if trow.tier_accuracy is not None else "—",
-                        str(trow.n_dropped_from_analysis)
-                        if trow.n_dropped_from_analysis is not None
-                        else "—",
+                        _fmt_dropped(trow.n_dropped_from_analysis, trow.dropped_files),
                         str(trow.n_deep_downgraded) if trow.n_deep_downgraded is not None else "—",
                         str(trow.n_overtiered) if trow.n_overtiered is not None else "—",
                         f"{trow.dimension_recall:.3f}"
@@ -767,6 +770,16 @@ def _fmt_under_risk(value: bool | None) -> str:
     if value is False:
         return "no"
     return "—"
+
+
+def _fmt_dropped(count: int | None, paths: tuple[str, ...] | None) -> str:
+    """Render the drop cell: "—" (errored / no metric), "0" (no drops), or
+    "N (path, ...)" so a multi-file drop names the files that left review."""
+    if count is None:
+        return "—"
+    if count and paths:
+        return f"{count} ({', '.join(paths)})"
+    return str(count)
 
 
 __all__ = [
