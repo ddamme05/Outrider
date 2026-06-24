@@ -21,10 +21,12 @@ text. Construction goes through `ReviewFinding(...)` so `enforce_proof_boundary`
 the schema floor.
 
 CLEAN-parse only: the caller gates on `degraded_mode` (no OBSERVED findings on a
-degraded/failed parse). OBSERVED findings AUGMENT the LLM pass and never skip it
-in V1. Skip-routing TELEMETRY landed (`compute_observed_skip_shadow` records the
-per-file `would_skip` / `not_eligible` decision); only ENFORCED skipping (the
-pre-LLM skip) is a later, evidence-gated flip (`DECISIONS.md#049`).
+degraded/failed parse). In the default/production config OBSERVED findings AUGMENT
+the LLM pass and never skip it (the registry seeds zero `skip_safe` queries and
+`analyze_observed_skip_enforced` defaults False). `compute_observed_skip_shadow`
+records the per-file `would_skip` / `not_eligible` decision; the ENFORCED pre-LLM
+skip that consumes it is wired in `analyze._process_one_file` behind that flag
+(Step 3b-mechanism, `DECISIONS.md#049`), dormant until a query is promoted.
 """
 
 from __future__ import annotations
@@ -264,9 +266,12 @@ def compute_observed_skip_shadow(
     changed region across the included scopes lies within the coverage envelope of
     at least one `skip_safe` match. `signal_only` matches never count toward
     coverage. Base/removed regions are un-coverable by head-content matches → they
-    are always blockers. Because V1 seeds zero `skip_safe` queries, every emitted
-    event with changed regions is `not_eligible`. The caller RECORDS this event; it
-    never skips the LLM — enforcement is the later evidence-gated flip.
+    are always blockers. Because the production registry seeds zero `skip_safe`
+    queries, every production-emitted event with changed regions is `not_eligible`.
+    This function only COMPUTES the decision; the caller (`analyze._process_one_file`)
+    records it and, when `analyze_observed_skip_enforced` is set and the outcome is
+    `would_skip`, enforces the pre-LLM skip (Step 3b-mechanism). Under the production
+    defaults (flag off + zero `skip_safe`) the LLM always runs.
 
     The returned event is coherent by construction (it satisfies
     `ObservedSkipShadowEvent`'s coverage-coherence validator): a `would_skip` has

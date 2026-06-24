@@ -815,6 +815,7 @@ def _build_eval_graph(
     publisher: _CapturingPublisher,
     checkpointer: Any,
     trivial_scope_filter_enabled: bool = False,
+    analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
     model_config: ModelConfig | None = None,
@@ -866,6 +867,10 @@ def _build_eval_graph(
         # enforce-mode scenario opts in through this seam
         # (specs/2026-06-10-trivial-scope-filter.md).
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
+        # Step 3b-mechanism: enforced OBSERVED skip seam — same opt-in shape as
+        # trivial_scope_filter_enabled. Default False; a skip-enforcement scenario
+        # opts in (paired with a test-local skip_safe promotion).
+        analyze_observed_skip_enforced=analyze_observed_skip_enforced,
         # Eval reviews use the cache like production, kept isolated by the lookup's
         # required is_eval read-isolation predicate (DECISIONS.md#046) — no bypass.
         # Default None still disables it; a cache eval scenario injects its own
@@ -886,6 +891,7 @@ async def _drive(
     probe: CostProbe | None = None,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    analyze_observed_skip_enforced: bool = False,
     model_config: ModelConfig | None = None,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
@@ -917,6 +923,7 @@ async def _drive(
             checkpointer=InMemorySaver(),
             analyze_cache_store=analyze_cache_store,
             cache_mode=cache_mode,
+            analyze_observed_skip_enforced=analyze_observed_skip_enforced,
             model_config=model_config,
         )
 
@@ -1222,6 +1229,7 @@ async def run_review_persisting(
     db_url: str,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    analyze_observed_skip_enforced: bool = False,
 ) -> EvalRunResult:
     """Drive the graph ONCE against a caller-supplied, already-migrated `db_url`.
 
@@ -1253,4 +1261,5 @@ async def run_review_persisting(
         db_url,
         analyze_cache_store=analyze_cache_store,
         cache_mode=cache_mode,
+        analyze_observed_skip_enforced=analyze_observed_skip_enforced,
     )

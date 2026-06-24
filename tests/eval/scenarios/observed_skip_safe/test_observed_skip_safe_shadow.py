@@ -44,7 +44,7 @@ from outrider.agent import run_review_persisting
 from outrider.agent.nodes.analyze_observed import produce_observed_findings, run_observed_matches
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.ast_facts import parse_python
-from outrider.policy import EvidenceTier
+from outrider.policy import EvidenceTier, FindingSeverity
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.queries.observed import QueryClass
 
@@ -212,6 +212,66 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
     assert all(f.content_hash in observed_hashes for f in observed), (
         "every surviving OBSERVED finding must be in the deterministic OBSERVED set"
     )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "promote_id", "head"),
+    [(fixture, promote_id, head) for _label, fixture, promote_id, head in _PROMOTION_CASES],
+    ids=[case[0] for case in _PROMOTION_CASES],
+)
+async def test_observed_skip_safe_enforced_skips_llm_and_preserves_hitl(
+    fixture: str,
+    promote_id: str,
+    head: str,
+    eval_db: str,
+    eval_db_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 3b-mechanism: with `analyze_observed_skip_enforced=True` + a test-local
+    skip_safe promotion, the covered file's analyze LLM call is SKIPPED, yet the
+    OBSERVED finding still flows to the HITL gate. Both promoted candidates produce a
+    CRITICAL/HIGH OBSERVED finding (command_injection / unsafe_deserialization), so
+    the LOAD-BEARING assertion is that the enforced skip does NOT bypass HITL —
+    `hitl-gates-high-severity` holds even when the LLM never ran for the file."""
+    _promote_to_skip_safe(monkeypatch, promote_id)
+
+    result = await run_review_persisting(
+        fixture,
+        db_url=eval_db,
+        analyze_cache_store=None,
+        cache_mode=CacheMode.SHADOW,
+        analyze_observed_skip_enforced=True,
+    )
+
+    # 1. The enforced skip fired: the would_skip file records skip_enforced=True.
+    payloads = await _shadow_payloads(eval_db_session_factory, result.review_id)
+    assert len(payloads) == 1
+    shadow = payloads[0]
+    assert shadow["outcome"] == "would_skip"
+    assert shadow["skip_enforced"] is True
+
+    # 2. The analyze LLM was NOT called for the covered file (the cost saving).
+    assert (
+        await _count_events(
+            eval_db_session_factory, result.review_id, event_type="llm_call", node_id="analyze"
+        )
+        == 0
+    )
+
+    # 3. The OBSERVED finding still reached the review (the deterministic tier reviewed
+    #    the file in place of the LLM); no JUDGED exists (the LLM never ran).
+    observed = [f for f in result.findings if f.evidence_tier == EvidenceTier.OBSERVED]
+    assert observed, "the enforced-skip file's OBSERVED finding must reach the report"
+    assert not [f for f in result.findings if f.evidence_tier == EvidenceTier.JUDGED]
+
+    # 4. LOAD-BEARING (hitl-gates-high-severity): the skipped file's CRITICAL/HIGH
+    #    OBSERVED finding STILL gated at HITL — the enforced skip did NOT bypass the
+    #    human-approval gate. This is the single most important assertion in 3b.
+    assert result.hitl_gated is True, (
+        "an enforced OBSERVED skip must NOT bypass HITL: a gated-severity OBSERVED "
+        "finding must still interrupt for human approval"
+    )
+    assert any(f.severity in (FindingSeverity.CRITICAL, FindingSeverity.HIGH) for f in observed)
 
 
 async def test_production_registry_stays_zero_skip_safe() -> None:
