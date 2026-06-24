@@ -141,12 +141,11 @@ def _observed_content_hashes(head: str) -> set[str]:
 
 
 @pytest.mark.parametrize(
-    ("label", "fixture", "promote_id", "head"),
-    _PROMOTION_CASES,
-    ids=[c[0] for c in _PROMOTION_CASES],
+    ("fixture", "promote_id", "head"),
+    [(fixture, promote_id, head) for _label, fixture, promote_id, head in _PROMOTION_CASES],
+    ids=[case[0] for case in _PROMOTION_CASES],
 )
 async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
-    label: str,
     fixture: str,
     promote_id: str,
     head: str,

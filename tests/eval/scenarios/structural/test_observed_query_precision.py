@@ -137,11 +137,18 @@ _YAML_LOADER_CASES: tuple[tuple[str, bool], ...] = (
     ("import yaml\nyaml.load(data, Loader=yaml.Loader)\n", True),  # base Loader is unsafe
     ("import yaml\nyaml.load(data, Loader=yaml.SafeLoader)\n", False),  # safe -> suppressed
     ("import yaml\nyaml.load(data, Loader=CSafeLoader)\n", False),  # C safe variant -> suppressed
-    # One residual limit (an under-match): a non-loader token literally containing
-    # `SafeLoader` (here a variable name) is suppressed -> NO match. The predicate
-    # is NOT skip-safe on its own — it ALSO over-matches a safe loader aliased
-    # without the literal text (a false-positive); exact resolution is FUP-184.
+    # Residual limits of the substring predicate, PINNED so they stay visible and a
+    # test flips when FUP-184 (ast_facts exact loader-value resolution) closes them.
+    # The predicate is NOT skip-safe on its own:
+    #  - UNDER-match / fails OPEN (the sharper residual): an UNSAFE loader whose NAME
+    #    contains `SafeLoader` is silently suppressed -> NO match = a missed vuln.
+    ("import yaml\nyaml.load(data, Loader=NotSafeLoader)\n", False),
+    #  - UNDER-match: a non-loader data token literally containing `SafeLoader` is
+    #    suppressed -> NO match.
     ("import yaml\nyaml.load(SafeLoader_default_blob)\n", False),
+    #  - OVER-match / false-positive: a genuinely SAFE loader aliased without the
+    #    literal `SafeLoader` text (e.g. `Loader=SL`) still matches -> spurious finding.
+    ("import yaml\nyaml.load(data, Loader=SL)\n", True),
 )
 
 
