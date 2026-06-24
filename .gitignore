@@ -103,3 +103,6 @@ spikes/**/__pycache__/
 # review IDs that are useful for reconnaissance; never commit.
 spikes/**/*.jsonl
 spikes/**/.local/
+
+# --- Local dashboard feature write-ups (not a project artifact) ---
+stuff/
