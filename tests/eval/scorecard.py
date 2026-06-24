@@ -14,6 +14,11 @@ Per `specs/2026-06-23-eval-runner-scorecard.md`:
     replay from the resume/persisting drivers (`replay_source`). The scorecard
     makes the split-path join explicit instead of pretending one path measures
     everything equally well.
+  - `cost_source` is THREE-state so a missing cost is never a false zero:
+    `full_graph` (measured), `not_measured` (the cost pass was not requested),
+    `measure_failed` (it was requested but produced no usable number — a
+    transient flake or a review that completed with no metrics). The aggregate
+    surfaces `n_costed` so `total_cost_usd` carries its own denominator.
   - Report-only: a row records its gate verdict (`gate.passes`); nothing here
     raises on a failed gate. Enforcement, if ever wanted, is a separate surface.
 
@@ -21,7 +26,7 @@ Wires the three previously-unconsumed `metrics.py` shapes (`FalsePositiveRate`,
 `CostPerReview`, `LatencyPerReview`) into their first consumer. Quality numbers
 are pulled OFF a `grading.ModelComparison` (the deterministic gate); this module
 computes no recall/precision/severity itself — only the false-positive RATE,
-which the grader exposes as a raw count.
+over the same finding population the grader's precision uses.
 """
 
 from __future__ import annotations
@@ -42,10 +47,12 @@ from .metrics import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from .grading import ModelComparison
 
 QualitySource = Literal["analyze_direct"]
-CostSource = Literal["full_graph", "not_measured"]
+CostSource = Literal["full_graph", "not_measured", "measure_failed"]
 ReplaySource = Literal["resume", "persisting", "not_applicable"]
 RowStatus = Literal["ok", "errored"]
 
@@ -94,8 +101,8 @@ class ScorecardRow(BaseModel):
 
     An `status="errored"` row (transient-failure isolation: the scenario raised,
     so it gets a row instead of aborting the batch) carries an `error` and null
-    quality metrics. The `_check_consistency` validator enforces the
-    status/metric invariant."""
+    quality/cost/latency/replay metrics. The `_check_consistency` validator
+    enforces the status/metric invariant."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -123,7 +130,8 @@ class ScorecardRow(BaseModel):
     regression: RegressionVerdict | None = None
 
     # Cost/latency — review-level, from the full-graph run. Optional even on an
-    # ok row: the cost pass is a separate join that a caller may skip.
+    # ok row: the cost pass is a separate join that a caller may skip (or that
+    # may fail). `cost_source` disambiguates present / not-requested / failed.
     cost: CostPerReview | None = None
     latency: LatencyPerReview | None = None
     cost_source: CostSource = "not_measured"
@@ -153,10 +161,14 @@ class ScorecardRow(BaseModel):
                 or self.regression is not None
                 or self.cost is not None
                 or self.latency is not None
+                or self.replay_equivalent is not None
+                or self.replay_source != "not_applicable"
             ):
-                raise ValueError("an 'errored' row must have null quality/cost metrics")
+                raise ValueError("an 'errored' row must have null quality/cost/replay metrics")
             if self.error is None:
                 raise ValueError("an 'errored' row must carry an error message")
+        # cost present iff measured (full_graph); a None cost is either
+        # not_measured (not requested) or measure_failed (requested, no number).
         if (self.cost is not None) != (self.cost_source == "full_graph"):
             raise ValueError("cost is present iff cost_source == 'full_graph'")
         if self.latency is not None and self.cost is None:
@@ -174,21 +186,24 @@ class ScorecardRow(BaseModel):
         comparison: ModelComparison,
         regression: RegressionVerdict | None = None,
         cost: CostPerReview | None = None,
+        cost_source: CostSource | None = None,
         latency: LatencyPerReview | None = None,
         replay_equivalent: bool | None = None,
         replay_source: ReplaySource = "not_applicable",
     ) -> ScorecardRow:
         """Build an 'ok' row from a graded comparison. Pulls the candidate's
-        quality off `comparison` and derives the false-positive rate (extra
-        findings over all candidate findings — the grader exposes only the raw
-        count). `regression`, cost, latency are joined in by the caller (the
-        runner); `cost_source` is set from whether a cost was supplied."""
+        quality off `comparison` and derives the false-positive rate over the
+        SAME finding population the grader's precision uses (`precision.denominator`
+        = all candidate findings) so the two metrics never diverge. `regression`,
+        cost, latency are joined in by the caller (the runner). `cost_source`,
+        when omitted, is derived from cost presence (`full_graph`/`not_measured`);
+        the caller passes it explicitly to flag `measure_failed`."""
         cand = comparison.candidate
-        n_findings = cand.n_matched + cand.n_false_positives
+        denom = cand.precision.denominator  # n_actual = all candidate findings
         false_positive_rate = FalsePositiveRate(
-            value=(cand.n_false_positives / n_findings) if n_findings else 0.0,
+            value=(cand.n_false_positives / denom) if denom else 0.0,
             numerator=cand.n_false_positives,
-            denominator=n_findings,
+            denominator=denom,
         )
         gate = GateVerdict(
             passes=comparison.passes,
@@ -198,6 +213,11 @@ class ScorecardRow(BaseModel):
             recall_tolerance=comparison.recall_tolerance,
             fp_allowance=comparison.fp_allowance,
             baseline_recall_floor=comparison.baseline_recall_floor,
+        )
+        effective_cost_source: CostSource = (
+            cost_source
+            if cost_source is not None
+            else ("full_graph" if cost is not None else "not_measured")
         )
         return cls(
             node=node,
@@ -214,7 +234,7 @@ class ScorecardRow(BaseModel):
             regression=regression,
             cost=cost,
             latency=latency,
-            cost_source="full_graph" if cost is not None else "not_measured",
+            cost_source=effective_cost_source,
             replay_equivalent=replay_equivalent,
             replay_source=replay_source,
         )
@@ -247,7 +267,9 @@ class AggregateRow(BaseModel):
 
     Means/totals are over the 'ok' rows only; errored rows count toward
     `n_scenarios`/`n_errored` but not the metric reductions (a transient failure
-    must not silently depress a mean recall)."""
+    must not silently depress a mean recall). `n_costed` is the denominator for
+    `total_cost_usd` — how many ok rows actually carried a measured cost, so a
+    partial-cost batch isn't mistaken for a complete total."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -258,6 +280,7 @@ class AggregateRow(BaseModel):
     n_errored: int
     n_passed: int
     n_failed: int
+    n_costed: int = 0
     mean_recall: float | None = None
     mean_precision: float | None = None
     total_cost_usd: float | None = None
@@ -275,28 +298,43 @@ class Scorecard(BaseModel):
 
     def aggregates(self) -> tuple[AggregateRow, ...]:
         """Roll rows up per `(node, model)`, sorted by key for a deterministic
-        artifact (no wall-clock / random ordering)."""
+        artifact (no wall-clock / random ordering). Single pass over each group's
+        ok rows."""
         groups: dict[tuple[str, str], list[ScorecardRow]] = {}
         for row in self.rows:
             groups.setdefault((row.node, row.model), []).append(row)
 
         out: list[AggregateRow] = []
         for (node, model), group in sorted(groups.items(), key=lambda item: item[0]):
-            ok = [r for r in group if r.status == "ok"]
-            recalls = [r.recall.value for r in ok if r.recall is not None]
-            precisions = [r.precision.value for r in ok if r.precision is not None]
-            costs = [r.cost.usd for r in ok if r.cost is not None]
-            latencies = [r.latency.seconds for r in ok if r.latency is not None]
-            n_passed = sum(1 for r in ok if r.gate is not None and r.gate.passes)
+            n_ok = n_passed = 0
+            recalls: list[float] = []
+            precisions: list[float] = []
+            costs: list[float] = []
+            latencies: list[float] = []
+            for r in group:
+                if r.status != "ok":
+                    continue
+                n_ok += 1
+                if r.gate is not None and r.gate.passes:
+                    n_passed += 1
+                if r.recall is not None:
+                    recalls.append(r.recall.value)
+                if r.precision is not None:
+                    precisions.append(r.precision.value)
+                if r.cost is not None:
+                    costs.append(r.cost.usd)
+                if r.latency is not None:
+                    latencies.append(r.latency.seconds)
             out.append(
                 AggregateRow(
                     node=node,
                     model=model,
                     n_scenarios=len(group),
-                    n_ok=len(ok),
-                    n_errored=len(group) - len(ok),
+                    n_ok=n_ok,
+                    n_errored=len(group) - n_ok,
                     n_passed=n_passed,
-                    n_failed=len(ok) - n_passed,
+                    n_failed=n_ok - n_passed,
+                    n_costed=len(costs),
                     mean_recall=fmean(recalls) if recalls else None,
                     mean_precision=fmean(precisions) if precisions else None,
                     total_cost_usd=sum(costs) if costs else None,
@@ -307,84 +345,114 @@ class Scorecard(BaseModel):
 
     def to_json(self) -> str:
         """JSON artifact: `{rows, aggregates}`, key-sorted for stable diffs."""
+        aggregates = self.aggregates()
         payload = {
             "rows": [r.model_dump(mode="json") for r in self.rows],
-            "aggregates": [a.model_dump(mode="json") for a in self.aggregates()],
+            "aggregates": [a.model_dump(mode="json") for a in aggregates],
         }
         return json.dumps(payload, indent=2, sort_keys=True)
 
     def to_markdown(self) -> str:
         """Human-glance artifact: a per-row table + a per-`(node, model)`
-        aggregate table. Null cells render as an em dash."""
-        lines: list[str] = ["# Eval scorecard", ""]
-        lines.append(
-            "| node | model | scenario | recall | precision | severity | FP | gate | regr "
-            "| $/review | latency(s) | replay | quality_src | cost_src |"
-        )
-        lines.append(
-            "|------|-------|----------|--------|-----------|----------|----|------|------"
-            "|----------|------------|--------|-------------|----------|"
-        )
+        aggregate table. Null cells render as an em dash; cell values are
+        pipe/newline-escaped so a stray label can't break column alignment."""
+        row_headers = [
+            "node",
+            "model",
+            "scenario",
+            "recall",
+            "precision",
+            "severity",
+            "FP",
+            "gate",
+            "regr",
+            "$/review",
+            "latency(s)",
+            "replay",
+            "quality_src",
+            "cost_src",
+        ]
+        row_data: list[list[str]] = []
         for r in self.rows:
             if r.status == "errored":
                 gate_cell = f"ERROR: {r.error}"
             else:
                 gate_cell = "PASS" if (r.gate is not None and r.gate.passes) else "FAIL"
-            lines.append(
-                "| "
-                + " | ".join(
-                    (
-                        r.node,
-                        r.model,
-                        r.scenario,
-                        _fmt_ratio(r.recall),
-                        _fmt_ratio(r.precision),
-                        _fmt_ratio(r.severity_accuracy),
-                        str(r.n_false_positives) if r.n_false_positives is not None else "—",
-                        gate_cell,
-                        _fmt_regression(r.regression),
-                        f"{r.cost.usd:.4f}" if r.cost is not None else "—",
-                        f"{r.latency.seconds:.2f}" if r.latency is not None else "—",
-                        _fmt_replay(r.replay_equivalent),
-                        r.quality_source,
-                        r.cost_source,
-                    )
-                )
-                + " |"
+            row_data.append(
+                [
+                    r.node,
+                    r.model,
+                    r.scenario,
+                    _fmt_ratio(r.recall),
+                    _fmt_ratio(r.precision),
+                    _fmt_ratio(r.severity_accuracy),
+                    str(r.n_false_positives) if r.n_false_positives is not None else "—",
+                    gate_cell,
+                    _fmt_regression(r.regression),
+                    f"{r.cost.usd:.4f}" if r.cost is not None else "—",
+                    f"{r.latency.seconds:.2f}" if r.latency is not None else "—",
+                    _fmt_replay(r.replay_equivalent),
+                    r.quality_source,
+                    r.cost_source,
+                ]
             )
-        lines.extend(["", "## Aggregate (per node × model)", ""])
-        lines.append(
-            "| node | model | scenarios | ok | errored | passed | failed "
-            "| mean recall | mean precision | total $ | mean latency(s) |"
-        )
-        lines.append(
-            "|------|-------|-----------|----|---------|--------|--------"
-            "|-------------|----------------|---------|-----------------|"
-        )
+
+        agg_headers = [
+            "node",
+            "model",
+            "scenarios",
+            "ok",
+            "errored",
+            "passed",
+            "failed",
+            "mean recall",
+            "mean precision",
+            "total $",
+            "costed",
+            "mean latency(s)",
+        ]
+        agg_data: list[list[str]] = []
         for a in self.aggregates():
-            lines.append(
-                "| "
-                + " | ".join(
-                    (
-                        a.node,
-                        a.model,
-                        str(a.n_scenarios),
-                        str(a.n_ok),
-                        str(a.n_errored),
-                        str(a.n_passed),
-                        str(a.n_failed),
-                        f"{a.mean_recall:.3f}" if a.mean_recall is not None else "—",
-                        f"{a.mean_precision:.3f}" if a.mean_precision is not None else "—",
-                        f"{a.total_cost_usd:.4f}" if a.total_cost_usd is not None else "—",
-                        f"{a.mean_latency_seconds:.2f}"
-                        if a.mean_latency_seconds is not None
-                        else "—",
-                    )
-                )
-                + " |"
+            agg_data.append(
+                [
+                    a.node,
+                    a.model,
+                    str(a.n_scenarios),
+                    str(a.n_ok),
+                    str(a.n_errored),
+                    str(a.n_passed),
+                    str(a.n_failed),
+                    f"{a.mean_recall:.3f}" if a.mean_recall is not None else "—",
+                    f"{a.mean_precision:.3f}" if a.mean_precision is not None else "—",
+                    f"{a.total_cost_usd:.4f}" if a.total_cost_usd is not None else "—",
+                    str(a.n_costed),
+                    f"{a.mean_latency_seconds:.2f}" if a.mean_latency_seconds is not None else "—",
+                ]
             )
+
+        lines: list[str] = ["# Eval scorecard", ""]
+        lines.extend(_md_table(row_headers, row_data))
+        lines.extend(["", "## Aggregate (per node × model)", ""])
+        lines.extend(_md_table(agg_headers, agg_data))
         lines.append("")
         return "\n".join(lines)
+
+
+def _md_cell(value: str) -> str:
+    """Escape a value for a Markdown table cell — a literal `|` would add a
+    phantom column and a newline would split the row, silently misaligning the
+    one artifact the operator reads to make a decision."""
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _md_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
+    """Render a GitHub-flavored Markdown table. The dashed separator is DERIVED
+    from the header count (not hand-maintained), so a column add/remove can't
+    drift the separator out of alignment."""
+    out = ["| " + " | ".join(_md_cell(h) for h in headers) + " |"]
+    out.append("| " + " | ".join("---" for _ in headers) + " |")
+    out.extend("| " + " | ".join(_md_cell(c) for c in row) + " |" for row in rows)
+    return out
 
 
 def _fmt_ratio(metric: FindingRecall | FindingPrecision | SeverityAccuracy | None) -> str:
