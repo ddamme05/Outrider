@@ -9,10 +9,24 @@ OBSERVED set, so prefer-OBSERVED (DECISIONS.md#054) evicts it in favor of the
 OBSERVED match — it surfaces as OBSERVED, leaving NO uncovered JUDGED. That is the
 no-JUDGED-loss proof that gates a real promotion.
 
+Parametrized over two candidates (Step 3a): `command_injection_subprocess_shell`
+and `unsafe_deserialization_yaml` (the 3a candidate, after its precision edit). Both
+prove the SAME contract, and the collision is SEMANTIC — the scripted LLM's JUDGED
+finding is the same file/line/finding_type as the OBSERVED match, so it collides
+through the real prefer-OBSERVED path (DECISIONS.md#054), not because fields were
+hand-shaped around the hash.
+
 This is NOT proving production skipping; it proves the promotion CONTRACT while
 still calling the model. A separate test asserts the production registry stays
 zero-`skip_safe` (the promotion never leaks past this scenario), protecting
 DECISIONS#049 from silently becoming "V1 has one skip-safe seed".
+
+Cache control (Step 3a, FUP-183): the run is pinned to `analyze_cache_store=None`
++ `CacheMode.SHADOW` so the OBSERVED producer fires on every file. A cache SERVE
+hit reconstructs findings from the cached payload WITHOUT running the producer or
+`compute_observed_skip_shadow`, biasing the would-skip evidence base (FUP-183); the
+no-store + SHADOW pin forecloses that. These ARE the `run_review_persisting`
+defaults — pinned explicitly so a later default change cannot silently bias the proof.
 """
 
 from __future__ import annotations
@@ -22,11 +36,13 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
 import outrider.queries.registry as query_registry
 from outrider.agent import run_review_persisting
 from outrider.agent.nodes.analyze_observed import produce_observed_findings, run_observed_matches
+from outrider.agent.nodes.cache_config import CacheMode
 from outrider.ast_facts import parse_python
 from outrider.policy import EvidenceTier
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -35,23 +51,41 @@ from outrider.queries.observed import QueryClass
 if TYPE_CHECKING:
     from uuid import UUID
 
-    import pytest
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-_FIXTURE = "tests/eval/fixtures/mock_github/observed_skip_safe.json"
-_PROMOTE_ID = "python.command_injection_subprocess_shell"
-_HEAD = (
+_FILE_PATH = "src/vuln.py"
+
+_SUBPROCESS_HEAD = (
     "import subprocess\n\n\ndef run_it(cmd):\n    return cmd\n    subprocess.run(cmd, shell=True)\n"
+)
+_YAML_HEAD = "import yaml\n\n\ndef load_it(data):\n    return data\n    yaml.load(data)\n"
+
+# (label, fixture, promote_id, head): each promotes ONE query to skip_safe and proves
+# no uncovered JUDGED survives. The yaml case is the Step-3a candidate; both share
+# `_FILE_PATH` and a single changed line (line 6) fully covered by the promoted match.
+_PROMOTION_CASES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "subprocess_shell",
+        "tests/eval/fixtures/mock_github/observed_skip_safe.json",
+        "python.command_injection_subprocess_shell",
+        _SUBPROCESS_HEAD,
+    ),
+    (
+        "yaml_load",
+        "tests/eval/fixtures/mock_github/observed_skip_safe_yaml.json",
+        "python.unsafe_deserialization_yaml",
+        _YAML_HEAD,
+    ),
 )
 
 
-def _promote_to_skip_safe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Swap the module's OBSERVED_QUERIES attribute for a COPY with `_PROMOTE_ID`
+def _promote_to_skip_safe(monkeypatch: pytest.MonkeyPatch, promote_id: str) -> None:
+    """Swap the module's OBSERVED_QUERIES attribute for a COPY with `promote_id`
     flipped to skip_safe. The real `_OBSERVED_QUERIES` dict and the import-time
     `QUERY_REGISTRY_DIGEST` constant are untouched; monkeypatch restores the
     attribute at teardown."""
     promoted = dict(query_registry.OBSERVED_QUERIES)
-    promoted[_PROMOTE_ID] = promoted[_PROMOTE_ID].model_copy(
+    promoted[promote_id] = promoted[promote_id].model_copy(
         update={"query_class": QueryClass.SKIP_SAFE}
     )
     monkeypatch.setattr(query_registry, "OBSERVED_QUERIES", MappingProxyType(promoted))
@@ -89,16 +123,16 @@ async def _count_events(
         return (await session.execute(text(sql), params)).scalar_one()
 
 
-def _observed_content_hashes() -> set[str]:
+def _observed_content_hashes(head: str) -> set[str]:
     """The content_hashes the deterministic OBSERVED producer emits for the fixture
     head — the set a skip must not lose anything outside of."""
-    scopes = parse_python(_HEAD.encode(), "src/vuln.py", MagicMock()).scope_units
+    scopes = parse_python(head.encode(), _FILE_PATH, MagicMock()).scope_units
     matches = run_observed_matches(
-        file_path="src/vuln.py", head_content=_HEAD, included_scope_units=scopes
+        file_path=_FILE_PATH, head_content=head, included_scope_units=scopes
     )
     findings = produce_observed_findings(
         matches,
-        file_path="src/vuln.py",
+        file_path=_FILE_PATH,
         review_id=uuid4(),
         installation_id=0,
         active_policy_version=ACTIVE_POLICY_VERSION,
@@ -106,7 +140,16 @@ def _observed_content_hashes() -> set[str]:
     return {f.content_hash for f in findings}
 
 
+@pytest.mark.parametrize(
+    ("label", "fixture", "promote_id", "head"),
+    _PROMOTION_CASES,
+    ids=[c[0] for c in _PROMOTION_CASES],
+)
 async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
+    label: str,
+    fixture: str,
+    promote_id: str,
+    head: str,
     eval_db: str,
     eval_db_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
@@ -115,11 +158,16 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
     the LLM still runs (shadow), and the JUDGED finding it returns collides with the
     OBSERVED set — under prefer-OBSERVED (DECISIONS.md#054) it is evicted to OBSERVED,
     so NO uncovered JUDGED survives and a skip would have lost nothing. The promotion
-    contract, proven in shadow mode without activating any production skip."""
+    contract, proven in shadow mode for each candidate without activating any
+    production skip."""
     digest_before = query_registry.QUERY_REGISTRY_DIGEST
-    _promote_to_skip_safe(monkeypatch)
+    _promote_to_skip_safe(monkeypatch, promote_id)
 
-    result = await run_review_persisting(_FIXTURE, db_url=eval_db)
+    # Cache pinned OFF + SHADOW so the OBSERVED producer fires (FUP-183): a SERVE hit
+    # would reconstruct findings from the cached payload without running the producer.
+    result = await run_review_persisting(
+        fixture, db_url=eval_db, analyze_cache_store=None, cache_mode=CacheMode.SHADOW
+    )
 
     # The test-local promotion swaps only the OBSERVED_QUERIES attribute; the
     # import-time cache-key digest constant is untouched (no cache-identity drift).
@@ -131,9 +179,9 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
     shadow = payloads[0]
     assert shadow["outcome"] == "would_skip"
     assert shadow["node_id"] == "analyze"
-    assert shadow["file_path"] == "src/vuln.py"
+    assert shadow["file_path"] == _FILE_PATH
     assert shadow["blockers"] == []
-    assert [c["query_match_id"] for c in shadow["covering_matches"]] == [_PROMOTE_ID]  # type: ignore[union-attr]
+    assert [c["query_match_id"] for c in shadow["covering_matches"]] == [promote_id]  # type: ignore[union-attr]
 
     # 2. Shadow-only: the LLM STILL RAN (>=1 analyze llm_call). V1 never skips.
     assert (
@@ -154,7 +202,7 @@ async def test_observed_skip_safe_promotion_would_skip_with_no_judged_loss(
     #    (or a JUDGED finding_type the producer doesn't emit), scope the assertion to
     #    the covered line(s) — an uncovered JUDGED legitimately survives and is NOT a
     #    skip-loss for the promoted query.
-    observed_hashes = _observed_content_hashes()
+    observed_hashes = _observed_content_hashes(head)
     judged = [f for f in result.findings if f.evidence_tier == EvidenceTier.JUDGED]
     assert not judged, (
         "a surviving JUDGED finding is uncovered by OBSERVED = a real skip-loss: "
