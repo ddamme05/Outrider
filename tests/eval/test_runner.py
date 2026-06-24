@@ -21,21 +21,25 @@ from uuid import uuid4
 
 import pytest
 
+from outrider.agent.nodes.triage import TriagePolicyViolationError
 from outrider.audit.events import compute_finding_content_hash
 from outrider.llm.base import LLMAuthError, LLMTimeoutError
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas.review_finding import ReviewFinding
+from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel
 
 from .grading import grade
 from .runner import (
     ScenarioSpec,
+    TriageScenarioSpec,
     _CellError,
     _isolate_transients,
     _regression_verdict,
     _sqli_fp_count,
     build_scorecard,
+    build_triage_scorecard,
 )
 from .test_model_comparison import (
     _FINDS_RESPONSE,
@@ -44,6 +48,8 @@ from .test_model_comparison import (
     _build_state,
     _ScriptedProvider,
 )
+from .test_triage_grading import _TRIAGE_DEEP, _TRIAGE_SKIM
+from .triage_grading import ExpectedTriage
 
 if TYPE_CHECKING:
     from outrider.llm.base import LLMRequest, LLMResponse
@@ -350,3 +356,198 @@ def test_build_scorecard_runs_baseline_once_per_scenario() -> None:
     )
     assert baseline.complete_calls == 1  # cached across the 2 candidates
     assert candidate.complete_calls == 2  # once per candidate
+
+
+# --- build_triage_scorecard matrix orchestration ----------------------------
+
+# _build_state's one changed file is src/example.py; the scripted _TRIAGE_DEEP /
+# _TRIAGE_SKIM responses (from test_triage_grading) tier exactly that path, so the
+# real triage node's path-coverage gate is satisfied.
+_TRIAGE_EXPECTED = ExpectedTriage(
+    expected_file_tiers={"src/example.py": ReviewTier.DEEP},
+    overall_risk=RiskLevel.HIGH,
+    relevant_dimensions=(ReviewDimension.SECURITY,),
+)
+
+
+class _RaisingProvider:
+    """Raises a transient on complete() — pins the errored-cell path of the triage
+    matrix (a `_CellError` -> `TriageScorecardRow.errored`, not an abort)."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        raise LLMTimeoutError
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_build_triage_scorecard_passing_gate() -> None:
+    spec = TriageScenarioSpec(scenario="example", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    card = build_triage_scorecard(
+        [spec],
+        baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+        candidate_provider=_ScriptedProvider(_TRIAGE_DEEP),
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+    )
+    assert card.rows == ()  # this entrypoint fills triage_rows only; analyze rows untouched
+    assert len(card.triage_rows) == 1
+    row = card.triage_rows[0]
+    assert (row.node, row.model, row.scenario) == ("triage", _CANDIDATE, "example")
+    assert row.baseline_model == _BASELINE
+    assert row.status == "ok"
+    assert row.gate is not None and row.gate.passes is True
+    assert row.n_dropped_from_analysis == 0
+    assert row.triage_source == "run_triage_direct"
+
+
+def test_build_triage_scorecard_failing_gate_on_drop() -> None:
+    # baseline DEEP, candidate SKIM -> the file drops below the analysis floor.
+    spec = TriageScenarioSpec(scenario="example", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    card = build_triage_scorecard(
+        [spec],
+        baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+        candidate_provider=_ScriptedProvider(_TRIAGE_SKIM),
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+    )
+    row = card.triage_rows[0]
+    assert row.gate is not None
+    assert row.gate.passes is False
+    assert row.gate.drop_held is False
+    assert row.n_dropped_from_analysis == 1
+
+
+def test_build_triage_scorecard_emits_row_per_scenario() -> None:
+    specs = [
+        TriageScenarioSpec(scenario="s1", state=_build_state(), expected=_TRIAGE_EXPECTED),
+        TriageScenarioSpec(scenario="s2", state=_build_state(), expected=_TRIAGE_EXPECTED),
+    ]
+    card = build_triage_scorecard(
+        specs,
+        baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+        candidate_provider=_ScriptedProvider(_TRIAGE_DEEP),
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+    )
+    assert len(card.triage_rows) == 2
+    assert {row.scenario for row in card.triage_rows} == {"s1", "s2"}
+
+
+def test_build_triage_scorecard_errored_cell_on_transient() -> None:
+    # A transient on the candidate triage -> an errored row, not an abort.
+    spec = TriageScenarioSpec(scenario="example", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    card = build_triage_scorecard(
+        [spec],
+        baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+        candidate_provider=_RaisingProvider(),
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+    )
+    row = card.triage_rows[0]
+    assert row.status == "errored"
+    assert row.tier_accuracy is None
+    assert row.gate is None
+    assert "LLMTimeoutError" in (row.error or "")
+
+
+def test_build_triage_scorecard_runs_baseline_once_per_scenario() -> None:
+    # 1 scenario × 2 candidate models: the baseline triage runs ONCE (its grade is
+    # invariant across candidates), the candidate triage once per model.
+    baseline = _CountingProvider(_TRIAGE_DEEP)
+    candidate = _CountingProvider(_TRIAGE_DEEP)
+    spec = TriageScenarioSpec(scenario="s", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    build_triage_scorecard(
+        [spec],
+        baseline_provider=baseline,
+        candidate_provider=candidate,
+        baseline_model=_BASELINE,
+        candidate_models=["claude-haiku-4-5", "claude-sonnet-4-6"],
+    )
+    assert baseline.complete_calls == 1  # cached across the 2 candidates
+    assert candidate.complete_calls == 2  # once per candidate
+
+
+def test_build_triage_scorecard_rejects_duplicate_scenario_labels() -> None:
+    specs = [
+        TriageScenarioSpec(scenario="dup", state=_build_state(), expected=_TRIAGE_EXPECTED),
+        TriageScenarioSpec(scenario="dup", state=_build_state(), expected=_TRIAGE_EXPECTED),
+    ]
+    with pytest.raises(ValueError, match="unique"):
+        build_triage_scorecard(
+            specs,
+            baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            candidate_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            baseline_model=_BASELINE,
+            candidate_models=[_CANDIDATE],
+        )
+
+
+def test_build_triage_scorecard_rejects_malformed_candidate_model() -> None:
+    # A non-Anthropic model id fails up front (ModelConfig field-validator) before
+    # any triage work — same guard as build_scorecard.
+    spec = TriageScenarioSpec(scenario="s", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    with pytest.raises(ValueError):  # noqa: PT011 — pydantic ValidationError (a ValueError)
+        build_triage_scorecard(
+            [spec],
+            baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            candidate_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            baseline_model=_BASELINE,
+            candidate_models=["gpt-4o"],
+        )
+
+
+def test_build_triage_scorecard_closes_providers_when_requested() -> None:
+    baseline = _ClosingProvider(_TRIAGE_DEEP)
+    candidate = _ClosingProvider(_TRIAGE_DEEP)
+    spec = TriageScenarioSpec(scenario="s", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    build_triage_scorecard(
+        [spec],
+        baseline_provider=baseline,
+        candidate_provider=candidate,
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+        close_providers=True,
+    )
+    assert baseline.closed is True
+    assert candidate.closed is True
+
+
+# A schema-valid triage result that VIOLATES the node's policy gate (rule (a): no
+# SKIP). The node raises TriagePolicyViolationError post-schema — not an
+# LLMProviderError, so _isolate_transients does not catch it.
+_TRIAGE_SKIP = (
+    '{"file_tiers": {"src/example.py": "skip"}, "overall_risk": "high", '
+    '"relevant_dimensions": ["security"], "reasoning": "skip it"}'
+)
+
+
+def test_build_triage_scorecard_aborts_on_policy_violation() -> None:
+    # A candidate whose triage emits SKIP violates the node's policy gate. Unlike a
+    # transient (which becomes an errored cell), this is TERMINAL — it aborts the run,
+    # surfacing the unusable candidate rather than silently recording a cell. This is
+    # the one behavior that distinguishes the triage matrix from the analyze matrix,
+    # and it rests on TriagePolicyViolationError being a ValueError, NOT an
+    # LLMProviderError (the only class _isolate_transients converts to a _CellError).
+    spec = TriageScenarioSpec(scenario="example", state=_build_state(), expected=_TRIAGE_EXPECTED)
+    with pytest.raises(TriagePolicyViolationError):
+        build_triage_scorecard(
+            [spec],
+            baseline_provider=_ScriptedProvider(_TRIAGE_DEEP),
+            candidate_provider=_ScriptedProvider(_TRIAGE_SKIP),
+            baseline_model=_BASELINE,
+            candidate_models=[_CANDIDATE],
+        )
+
+
+def test_triage_scenario_spec_from_fixture_builds_state() -> None:
+    # from_fixture derives the state via state_from_eval_fixture (no node run); the
+    # fixture's changed files populate pr_context for the real triage matrix.
+    fixture = Path(__file__).parent / "fixtures" / "mock_github" / "pygoat_sql_injection.json"
+    spec = TriageScenarioSpec.from_fixture("pygoat", str(fixture), _TRIAGE_EXPECTED)
+    assert spec.scenario == "pygoat"
+    assert len(spec.state.pr_context.changed_files) >= 1
+    assert spec.expected is _TRIAGE_EXPECTED

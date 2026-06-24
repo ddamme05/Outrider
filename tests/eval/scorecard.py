@@ -50,8 +50,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from .grading import ModelComparison
+    from .triage_grading import TriageComparison
 
 QualitySource = Literal["analyze_direct"]
+TriageSource = Literal["run_triage_direct"]
 CostSource = Literal["full_graph", "not_measured", "measure_failed"]
 ReplaySource = Literal["resume", "persisting", "not_applicable"]
 RowStatus = Literal["ok", "errored"]
@@ -292,6 +294,158 @@ class AggregateRow(BaseModel):
     mean_latency_seconds: float | None = None
 
 
+class TriageGateVerdict(BaseModel):
+    """The deterministic triage gate verdict for one candidate-vs-baseline
+    comparison, flattened off `triage_grading.TriageComparison` — pass/fail plus
+    the declared-threshold sub-conditions, so a FAIL is self-explanatory (a new
+    drop, an under-risk, an over-tier balloon, or a dimension-recall regression)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    passes: bool
+    baseline_valid: bool
+    drop_held: bool
+    risk_safety_held: bool
+    overtier_bounded: bool
+    dimension_recall_held: bool
+    overtier_allowance: int
+    dimension_recall_tolerance: float
+
+
+class TriageScorecardRow(BaseModel):
+    """One `(node, model, scenario)` triage cell — the tier-classification parallel
+    to `ScorecardRow`, kept cohesive (no finding-level fields). Carries the
+    analysis-floor safety metric (`n_dropped_from_analysis`), the softer
+    `n_deep_downgraded`, the cost `n_overtiered`, dimension recall/precision, risk
+    correctness + under-risk, and the gate. An `errored` row carries an `error` and
+    null metrics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node: str = "triage"
+    model: str
+    scenario: str
+    baseline_model: str
+
+    status: RowStatus = "ok"
+    error: str | None = None
+
+    tier_accuracy: float | None = None
+    n_dropped_from_analysis: int | None = None
+    n_deep_downgraded: int | None = None
+    n_overtiered: int | None = None
+    dimension_recall: float | None = None
+    dimension_precision: float | None = None
+    risk_correct: bool | None = None
+    under_risked: bool | None = None
+    gate: TriageGateVerdict | None = None
+    triage_source: TriageSource = "run_triage_direct"
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> TriageScorecardRow:
+        metrics = (
+            self.tier_accuracy,
+            self.n_dropped_from_analysis,
+            self.n_deep_downgraded,
+            self.n_overtiered,
+            self.dimension_recall,
+            self.dimension_precision,
+            self.risk_correct,
+            self.under_risked,
+            self.gate,
+        )
+        if self.status == "ok":
+            if any(m is None for m in metrics):
+                raise ValueError("an 'ok' triage row must populate every metric")
+            if self.error is not None:
+                raise ValueError("an 'ok' triage row must not carry an error")
+        else:
+            if any(m is not None for m in metrics):
+                raise ValueError("an 'errored' triage row must have null metrics")
+            if self.error is None:
+                raise ValueError("an 'errored' triage row must carry an error message")
+        return self
+
+    @classmethod
+    def from_comparison(
+        cls,
+        *,
+        scenario: str,
+        model: str,
+        baseline_model: str,
+        comparison: TriageComparison,
+        node: str = "triage",
+    ) -> TriageScorecardRow:
+        """Build an 'ok' triage row from a graded comparison (the candidate's grade
+        + the gate verdict)."""
+        cand = comparison.candidate
+        gate = TriageGateVerdict(
+            passes=comparison.passes,
+            baseline_valid=comparison.baseline_valid,
+            drop_held=comparison.drop_held,
+            risk_safety_held=comparison.risk_safety_held,
+            overtier_bounded=comparison.overtier_bounded,
+            dimension_recall_held=comparison.dimension_recall_held,
+            overtier_allowance=comparison.overtier_allowance,
+            dimension_recall_tolerance=comparison.dimension_recall_tolerance,
+        )
+        return cls(
+            node=node,
+            model=model,
+            scenario=scenario,
+            baseline_model=baseline_model,
+            status="ok",
+            tier_accuracy=cand.tier_accuracy,
+            n_dropped_from_analysis=cand.n_dropped_from_analysis,
+            n_deep_downgraded=cand.n_deep_downgraded,
+            n_overtiered=cand.n_overtiered,
+            dimension_recall=cand.dimension_recall,
+            dimension_precision=cand.dimension_precision,
+            risk_correct=cand.risk_correct,
+            under_risked=cand.under_risked,
+            gate=gate,
+        )
+
+    @classmethod
+    def errored(
+        cls,
+        *,
+        scenario: str,
+        model: str,
+        baseline_model: str,
+        error: str,
+        node: str = "triage",
+    ) -> TriageScorecardRow:
+        """Build an 'errored' triage row (transient-failure isolation)."""
+        return cls(
+            node=node,
+            model=model,
+            scenario=scenario,
+            baseline_model=baseline_model,
+            status="errored",
+            error=error,
+        )
+
+
+class TriageAggregateRow(BaseModel):
+    """Per-`(node, model)` triage roll-up. `total_dropped_from_analysis` is the
+    safety headline (files that left the review set across the matrix); means are
+    over the ok rows only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node: str
+    model: str
+    n_scenarios: int
+    n_ok: int
+    n_errored: int
+    n_passed: int
+    n_failed: int
+    total_dropped_from_analysis: int | None = None
+    mean_tier_accuracy: float | None = None
+    mean_dimension_recall: float | None = None
+
+
 class Scorecard(BaseModel):
     """A collection of `ScorecardRow`s with per-`(node, model)` aggregates and
     JSON + Markdown emitters — the persisted decision artifact. Pure: the
@@ -300,6 +454,7 @@ class Scorecard(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rows: tuple[ScorecardRow, ...] = ()
+    triage_rows: tuple[TriageScorecardRow, ...] = ()
 
     def aggregates(self) -> tuple[AggregateRow, ...]:
         """Roll rows up per `(node, model)`, sorted by key for a deterministic
@@ -348,12 +503,55 @@ class Scorecard(BaseModel):
             )
         return tuple(out)
 
+    def triage_aggregates(self) -> tuple[TriageAggregateRow, ...]:
+        """Roll triage rows up per `(node, model)`, sorted by key. Means over the ok
+        rows; `total_dropped_from_analysis` sums the safety metric across them."""
+        groups: dict[tuple[str, str], list[TriageScorecardRow]] = {}
+        for row in self.triage_rows:
+            groups.setdefault((row.node, row.model), []).append(row)
+
+        out: list[TriageAggregateRow] = []
+        for (node, model), group in sorted(groups.items(), key=lambda item: item[0]):
+            n_ok = n_passed = 0
+            total_dropped = 0
+            tier_accs: list[float] = []
+            dim_recalls: list[float] = []
+            for r in group:
+                if r.status != "ok":
+                    continue
+                n_ok += 1
+                if r.gate is not None and r.gate.passes:
+                    n_passed += 1
+                if r.n_dropped_from_analysis is not None:
+                    total_dropped += r.n_dropped_from_analysis
+                if r.tier_accuracy is not None:
+                    tier_accs.append(r.tier_accuracy)
+                if r.dimension_recall is not None:
+                    dim_recalls.append(r.dimension_recall)
+            out.append(
+                TriageAggregateRow(
+                    node=node,
+                    model=model,
+                    n_scenarios=len(group),
+                    n_ok=n_ok,
+                    n_errored=len(group) - n_ok,
+                    n_passed=n_passed,
+                    n_failed=n_ok - n_passed,
+                    total_dropped_from_analysis=total_dropped if n_ok else None,
+                    mean_tier_accuracy=fmean(tier_accs) if tier_accs else None,
+                    mean_dimension_recall=fmean(dim_recalls) if dim_recalls else None,
+                )
+            )
+        return tuple(out)
+
     def to_json(self) -> str:
-        """JSON artifact: `{rows, aggregates}`, key-sorted for stable diffs."""
-        aggregates = self.aggregates()
+        """JSON artifact: `{rows, aggregates, triage_rows, triage_aggregates}`,
+        key-sorted for stable diffs."""
         payload = {
             "rows": [r.model_dump(mode="json") for r in self.rows],
-            "aggregates": [a.model_dump(mode="json") for a in aggregates],
+            "aggregates": [a.model_dump(mode="json") for a in self.aggregates()],
+            "triage_rows": [r.model_dump(mode="json") for r in self.triage_rows],
+            "triage_aggregates": [a.model_dump(mode="json") for a in self.triage_aggregates()],
         }
         return json.dumps(payload, indent=2, sort_keys=True)
 
@@ -397,7 +595,7 @@ class Scorecard(BaseModel):
                     _fmt_regression(r.regression),
                     f"{r.cost.usd:.4f}" if r.cost is not None else "—",
                     f"{r.latency.seconds:.2f}" if r.latency is not None else "—",
-                    _fmt_replay(r.replay_equivalent),
+                    _fmt_bool(r.replay_equivalent),
                     r.replay_source,
                     r.quality_source,
                     r.cost_source,
@@ -441,6 +639,89 @@ class Scorecard(BaseModel):
         lines.extend(_md_table(row_headers, row_data))
         lines.extend(["", "## Aggregate (per node × model)", ""])
         lines.extend(_md_table(agg_headers, agg_data))
+
+        if self.triage_rows:
+            triage_row_headers = [
+                "node",
+                "model",
+                "scenario",
+                "tier_acc",
+                "dropped",
+                "downgrade",
+                "overtier",
+                "dim_recall",
+                "dim_prec",
+                "risk_ok",
+                "under_risk",
+                "gate",
+            ]
+            triage_row_data: list[list[str]] = []
+            for trow in self.triage_rows:
+                if trow.status == "errored":
+                    gate_cell = f"ERROR: {trow.error}"
+                else:
+                    gate_cell = "PASS" if (trow.gate is not None and trow.gate.passes) else "FAIL"
+                triage_row_data.append(
+                    [
+                        trow.node,
+                        trow.model,
+                        trow.scenario,
+                        f"{trow.tier_accuracy:.3f}" if trow.tier_accuracy is not None else "—",
+                        str(trow.n_dropped_from_analysis)
+                        if trow.n_dropped_from_analysis is not None
+                        else "—",
+                        str(trow.n_deep_downgraded) if trow.n_deep_downgraded is not None else "—",
+                        str(trow.n_overtiered) if trow.n_overtiered is not None else "—",
+                        f"{trow.dimension_recall:.3f}"
+                        if trow.dimension_recall is not None
+                        else "—",
+                        f"{trow.dimension_precision:.3f}"
+                        if trow.dimension_precision is not None
+                        else "—",
+                        _fmt_bool(trow.risk_correct),
+                        _fmt_under_risk(trow.under_risked),
+                        gate_cell,
+                    ]
+                )
+            triage_agg_headers = [
+                "node",
+                "model",
+                "scenarios",
+                "ok",
+                "errored",
+                "passed",
+                "failed",
+                "total dropped",
+                "mean tier_acc",
+                "mean dim_recall",
+            ]
+            triage_agg_data: list[list[str]] = []
+            for tagg in self.triage_aggregates():
+                triage_agg_data.append(
+                    [
+                        tagg.node,
+                        tagg.model,
+                        str(tagg.n_scenarios),
+                        str(tagg.n_ok),
+                        str(tagg.n_errored),
+                        str(tagg.n_passed),
+                        str(tagg.n_failed),
+                        str(tagg.total_dropped_from_analysis)
+                        if tagg.total_dropped_from_analysis is not None
+                        else "—",
+                        f"{tagg.mean_tier_accuracy:.3f}"
+                        if tagg.mean_tier_accuracy is not None
+                        else "—",
+                        f"{tagg.mean_dimension_recall:.3f}"
+                        if tagg.mean_dimension_recall is not None
+                        else "—",
+                    ]
+                )
+            lines.extend(["", "## Triage (per node × model)", ""])
+            lines.extend(_md_table(triage_row_headers, triage_row_data))
+            lines.extend(["", "### Triage aggregate", ""])
+            lines.extend(_md_table(triage_agg_headers, triage_agg_data))
+
         lines.append("")
         return "\n".join(lines)
 
@@ -466,7 +747,7 @@ def _fmt_ratio(metric: FindingRecall | FindingPrecision | SeverityAccuracy | Non
     return f"{metric.value:.3f}" if metric is not None else "—"
 
 
-def _fmt_replay(value: bool | None) -> str:
+def _fmt_bool(value: bool | None) -> str:
     if value is True:
         return "✓"
     if value is False:
@@ -480,10 +761,21 @@ def _fmt_regression(verdict: RegressionVerdict | None) -> str:
     return "clean" if verdict.ok else f"⚠ {verdict.label}"
 
 
+def _fmt_under_risk(value: bool | None) -> str:
+    if value is True:
+        return "⚠ yes"
+    if value is False:
+        return "no"
+    return "—"
+
+
 __all__ = [
     "AggregateRow",
     "GateVerdict",
     "RegressionVerdict",
     "Scorecard",
     "ScorecardRow",
+    "TriageAggregateRow",
+    "TriageGateVerdict",
+    "TriageScorecardRow",
 ]
