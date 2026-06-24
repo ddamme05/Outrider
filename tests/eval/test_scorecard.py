@@ -423,6 +423,17 @@ def test_real_scorecard_evidence() -> None:
     cfg = ModelConfig()
     baseline_model = cfg.analyze_model  # today's top-tier analyze (Sonnet), NOT standard_*
     candidate_model = "claude-haiku-4-5"  # the shipped STANDARD default (DECISIONS#041)
+
+    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
+
+    # Guard the meaningless self-comparison (e.g. OUTRIDER_MODEL_ANALYZE_MODEL=Haiku)
+    # BEFORE constructing the provider, so a guard-fire can't leak an unclosed client.
+    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
+        pytest.fail(
+            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
+            "same model — the scorecard would prove nothing about Sonnet-vs-Haiku. Point "
+            "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
+        )
     provider = AnthropicProvider(
         api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
     )
@@ -475,6 +486,7 @@ def test_real_scorecard_evidence() -> None:
         baseline_model=baseline_model,
         candidate_models=[candidate_model],
         measure_cost=True,
+        close_providers=True,  # close the real provider inside build_scorecard's loop
     )
 
     out_dir = Path("reports") / "scorecard"

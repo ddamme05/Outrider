@@ -237,6 +237,18 @@ def _measure_cost_isolating_transients(
         return None
 
 
+async def _aclose_providers(
+    baseline_provider: LLMProvider, candidate_provider: LLMProvider
+) -> None:
+    """Close the provider(s) via the `LLMProvider.aclose()` Protocol method. MUST
+    run in the loop the providers were used in — a real httpx-backed client can't
+    be closed cleanly from a different loop. Closes each distinct instance once;
+    `aclose()` is idempotent and scripted test doubles no-op."""
+    await baseline_provider.aclose()
+    if candidate_provider is not baseline_provider:
+        await candidate_provider.aclose()
+
+
 def build_scorecard(
     specs: Sequence[ScenarioSpec],
     *,
@@ -251,6 +263,7 @@ def build_scorecard(
     recall_tolerance: float = 0.0,
     fp_allowance: int = 0,
     baseline_recall_floor: float = 1.0,
+    close_providers: bool = False,
 ) -> Scorecard:
     """Drive the `(scenario × candidate-model)` matrix into a `Scorecard`.
 
@@ -260,6 +273,12 @@ def build_scorecard(
     `(node, candidate-model, scenario)`; the baseline is the gate's reference, not
     its own row. Report-only: rows record gate verdicts, this never raises on a
     failed gate.
+
+    `close_providers=True` closes `baseline_provider` / `candidate_provider` (via
+    the `LLMProvider.aclose()` Protocol method) INSIDE the quality event loop — the
+    only safe place to close a real httpx-backed provider, since this is a sync
+    function and a sync caller cannot `await aclose()` cleanly across loops. Default
+    `False` leaves provider lifecycle to the caller (scripted test doubles).
     """
     if measure_cost and any(spec.fixture_path is None for spec in specs):
         raise ValueError(
@@ -267,19 +286,25 @@ def build_scorecard(
             "(run_review reads the PR fixture from disk); build specs via "
             "ScenarioSpec.from_fixture(...)"
         )
-    quality = asyncio.run(
-        _gather_quality(
-            specs,
-            candidate_models,
-            baseline_provider=baseline_provider,
-            candidate_provider=candidate_provider,
-            baseline_model=baseline_model,
-            line_window=line_window,
-            recall_tolerance=recall_tolerance,
-            fp_allowance=fp_allowance,
-            baseline_recall_floor=baseline_recall_floor,
-        )
-    )
+
+    async def _quality_then_close() -> dict[tuple[str, str], ModelComparison | _CellError]:
+        try:
+            return await _gather_quality(
+                specs,
+                candidate_models,
+                baseline_provider=baseline_provider,
+                candidate_provider=candidate_provider,
+                baseline_model=baseline_model,
+                line_window=line_window,
+                recall_tolerance=recall_tolerance,
+                fp_allowance=fp_allowance,
+                baseline_recall_floor=baseline_recall_floor,
+            )
+        finally:
+            if close_providers:
+                await _aclose_providers(baseline_provider, candidate_provider)
+
+    quality = asyncio.run(_quality_then_close())
     rows: list[ScorecardRow] = []
     for spec in specs:
         for model in candidate_models:
