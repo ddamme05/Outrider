@@ -380,6 +380,82 @@ def test_to_markdown_renders_rows_and_aggregate() -> None:
     assert "s_pass" in md and "s_fail" in md and "s_err" in md
 
 
+def test_to_markdown_escapes_pipe_in_label() -> None:
+    # A '|' in a label is escaped so it can't add a phantom column and misalign
+    # the row in the human-read artifact.
+    card = Scorecard(rows=(_ok_row("auth|bypass", passes=True),))
+    md = card.to_markdown()
+    assert "auth\\|bypass" in md
+
+
+# --- cost-source 3-state + errored-replay + aggregate denominator ------------
+
+
+def test_measure_failed_row_is_valid() -> None:
+    # A requested-but-failed cost pass: cost=None + cost_source="measure_failed"
+    # validates clean (distinct from "not_measured" = never requested).
+    row = ScorecardRow(
+        node="analyze",
+        model=_CANDIDATE_MODEL,
+        scenario="s",
+        baseline_model=_BASELINE_MODEL,
+        status="ok",
+        recall=FindingRecall(value=1.0, numerator=1, denominator=1),
+        precision=FindingPrecision(value=1.0, numerator=1, denominator=1),
+        severity_accuracy=SeverityAccuracy(value=1.0, numerator=1, denominator=1),
+        false_positive_rate=FalsePositiveRate(value=0.0, numerator=0, denominator=1),
+        n_false_positives=0,
+        gate=_gate(passes=True),
+        cost=None,
+        cost_source="measure_failed",
+    )
+    assert row.cost is None
+    assert row.cost_source == "measure_failed"
+
+
+def test_cost_present_with_measure_failed_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ScorecardRow(
+            node="analyze",
+            model=_CANDIDATE_MODEL,
+            scenario="s",
+            baseline_model=_BASELINE_MODEL,
+            status="ok",
+            recall=FindingRecall(value=1.0, numerator=1, denominator=1),
+            precision=FindingPrecision(value=1.0, numerator=1, denominator=1),
+            severity_accuracy=SeverityAccuracy(value=1.0, numerator=1, denominator=1),
+            false_positive_rate=FalsePositiveRate(value=0.0, numerator=0, denominator=1),
+            n_false_positives=0,
+            gate=_gate(passes=True),
+            cost=CostPerReview(usd=0.01),
+            cost_source="measure_failed",  # cost present requires full_graph
+        )
+
+
+def test_errored_row_with_replay_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ScorecardRow(
+            node="analyze",
+            model=_CANDIDATE_MODEL,
+            scenario="s",
+            baseline_model=_BASELINE_MODEL,
+            status="errored",
+            error="boom",
+            replay_equivalent=True,
+            replay_source="resume",
+        )
+
+
+def test_aggregate_surfaces_n_costed() -> None:
+    # n_costed is total_cost_usd's denominator: how many ok rows actually carried
+    # a measured cost, so a partial-cost batch isn't read as a complete total.
+    card = Scorecard(rows=(_ok_row("s1", cost_usd=0.01), _ok_row("s2")))
+    agg = card.aggregates()[0]
+    assert agg.n_ok == 2
+    assert agg.n_costed == 1  # only s1 carried a measured cost
+    assert agg.total_cost_usd == pytest.approx(0.01)
+
+
 # --- opt-in real-model artifact entrypoint ----------------------------------
 
 

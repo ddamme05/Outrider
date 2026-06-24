@@ -4,16 +4,20 @@ Productizes the inline three-dimension loop (recall / precision / regression) +
 `GATE SUMMARY` print from the opt-in spend test into a reusable batch runner that
 emits a typed `Scorecard`. Per `specs/2026-06-23-eval-runner-scorecard.md`:
 
-  - Quality (recall/precision/severity/FP/gate) from the analyze-direct
-    `compare_models_on_scenario` path — triage held fixed (the `#041` isolation).
-    `quality_source="analyze_direct"`.
-  - Cost (opt-in via `measure_cost`) from a full-graph `run_review` pass under
-    the candidate model (the `model_config=` seam) with a `CostProbe` —
-    review-level, joined onto the analyze row; `cost_source="full_graph"`.
-    Latency is deferred (run_review wall-clock is harness-dominated — ephemeral
-    DB + full migration per call — not review latency); replay-equivalence is
-    not yet wired (the schema supports both, the orchestrator does not drive
-    them yet).
+  - Quality (recall/precision/severity/FP/gate) from the analyze-direct path —
+    triage held fixed (the `#041` isolation). `quality_source="analyze_direct"`.
+    The BASELINE analyze runs ONCE per scenario (its grade is invariant across
+    candidate models), so a multi-candidate matrix doesn't re-pay for it.
+  - Cost (opt-in via `measure_cost`) from a full-graph `run_review` pass under a
+    fully-pinned `ModelConfig` (candidate on both analyze tiers; the other nodes
+    pinned to declared defaults, NOT ambient env — so $/review is reproducible),
+    with a `CostProbe`. Review-level; `cost_source` is `full_graph` (measured),
+    `not_measured` (not requested), or `measure_failed` (requested, no number).
+    Two honest provenance caveats: cost prices the file's REAL triage tier (DEEP
+    for the shipped fixtures) while quality holds triage fixed at STANDARD; and
+    OUTPUT tokens come from the fixtures' scripted responses (input tokens are
+    real). Latency is deferred (run_review wall-clock is harness-dominated, not
+    review latency); replay-equivalence is not yet wired.
   - Transient-failure isolation: a `retry_at_layer="node"` provider error on one
     cell becomes an ERRORED row and the batch continues; a terminal class
     (auth/config) re-raises and aborts — a revoked key must not "complete" a run
@@ -22,18 +26,19 @@ emits a typed `Scorecard`. Per `specs/2026-06-23-eval-runner-scorecard.md`:
     track). Ports `_sqli_fp_count` / `_regression_verdict`.
 
 One row per `(node, candidate-model, scenario)`; the baseline is the gate's
-reference, not its own row.
+reference, not its own row. Duplicate scenario labels or candidate models are
+rejected up front (they would collide on the `(scenario, model)` result key).
 
 SYNC by necessity: the cost pass calls `run_review` (a sync wrapper around
 `asyncio.run`), which cannot nest inside a running loop. So `build_scorecard`
 runs all quality comparisons in ONE `asyncio.run`, then issues the cost-pass
-`run_review` calls sequentially. The opt-in entrypoint is therefore a sync test,
-not `async def`.
+`run_review` calls sequentially. The opt-in entrypoint is therefore a sync test.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -44,9 +49,9 @@ from outrider.llm.config import ModelConfig
 from outrider.policy import FindingType
 from outrider.schemas.triage_result import ReviewTier
 
-from .grading import DEFAULT_LINE_WINDOW
+from .grading import DEFAULT_LINE_WINDOW, compare, grade
 from .metrics import CostPerReview
-from .model_comparison import compare_models_on_scenario, state_from_eval_fixture
+from .model_comparison import run_analyze_under_model, state_from_eval_fixture
 from .scorecard import RegressionVerdict, Scorecard, ScorecardRow
 
 if TYPE_CHECKING:
@@ -57,15 +62,20 @@ if TYPE_CHECKING:
     from outrider.schemas.triage_result import ReviewDimension
 
     from .grading import ExpectedFinding, GradeResult, ModelComparison
+    from .scorecard import CostSource
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ScenarioSpec:
     """One cell-source in the matrix: a label, the post-triage `ReviewState` the
     analyze comparison runs over (triage held fixed), the hand-authored ground
     truth, and — for the cost pass — the `mock_github` fixture path `run_review`
     reads. Build via `from_fixture` for real scenarios; construct directly with
-    an in-memory `state` (and no `fixture_path`) for zero-spend quality tests."""
+    an in-memory `state` (and no `fixture_path`) for zero-spend quality tests.
+
+    `eq=False` (identity equality/hash): `state` is an unhashable Pydantic model
+    (`frozen=False`), so a `frozen=True`-generated field hash would raise; specs
+    are only iterated, never used as set/dict keys, so identity is correct."""
 
     scenario: str
     state: ReviewState
@@ -102,13 +112,15 @@ class _CellError:
     message: str
 
 
-def _sqli_fp_count(grade: GradeResult) -> int:
+def _sqli_fp_count(grade_result: GradeResult) -> int:
     """Count ONLY `sql_injection` false positives (extras) in a grade. The
     regression track is type-scoped because the `#041` caveat is type-specific
     (a parameterized query mislabeled as SQL injection); counting any-type FPs
     lets an unrelated baseline over-flag force a wrongly non-discriminating
     verdict."""
-    return sum(1 for finding in grade.extra if finding.finding_type == FindingType.SQL_INJECTION)
+    return sum(
+        1 for finding in grade_result.extra if finding.finding_type == FindingType.SQL_INJECTION
+    )
 
 
 def _regression_verdict(baseline_sqli_fp: int, candidate_sqli_fp: int) -> RegressionVerdict:
@@ -144,8 +156,8 @@ def _regression_verdict(baseline_sqli_fp: int, candidate_sqli_fp: int) -> Regres
     )
 
 
-async def _isolate_transients(coro: Awaitable[ModelComparison]) -> ModelComparison | _CellError:
-    """Await one cell's comparison, isolating TRANSIENT provider failures. A
+async def _isolate_transients[T](coro: Awaitable[T]) -> T | _CellError:
+    """Await one analyze/grade step, isolating TRANSIENT provider failures. A
     `retry_at_layer="node"` error (timeout/429/409/5xx) → a `_CellError` so the
     batch continues; terminal classes (auth/config) re-raise to abort the run (a
     revoked key must not 'complete' a run with every cell ERRORED). Ports
@@ -156,6 +168,15 @@ async def _isolate_transients(coro: Awaitable[ModelComparison]) -> ModelComparis
         if exc.retry_at_layer != "node":
             raise
         return _CellError(message=f"ERRORED ({type(exc).__name__}) — rerun")
+
+
+async def _graded_analyze(
+    spec: ScenarioSpec, *, provider: LLMProvider, model: str, line_window: int
+) -> GradeResult:
+    """Run one analyze pass under `model` over the spec's held-fixed state and
+    grade it against the spec's ground truth."""
+    findings = await run_analyze_under_model(spec.state, provider=provider, model=model)
+    return grade(findings, spec.ground_truth, line_window=line_window)
 
 
 async def _gather_quality(
@@ -171,66 +192,94 @@ async def _gather_quality(
     baseline_recall_floor: float,
 ) -> dict[tuple[str, str], ModelComparison | _CellError]:
     """Run every `(scenario, candidate-model)` quality comparison in one event
-    loop, each isolated. Sequential awaits (not gathered) keep the real-provider
-    spend ordered and the failure semantics simple."""
+    loop, each isolated. The BASELINE analyze runs ONCE per scenario (invariant
+    across candidate models); a baseline transient errors every candidate cell
+    for that scenario, a candidate transient errors only its own cell."""
     out: dict[tuple[str, str], ModelComparison | _CellError] = {}
     for spec in specs:
+        baseline = await _isolate_transients(
+            _graded_analyze(
+                spec, provider=baseline_provider, model=baseline_model, line_window=line_window
+            )
+        )
         for model in candidate_models:
-            out[(spec.scenario, model)] = await _isolate_transients(
-                compare_models_on_scenario(
-                    spec.state,
-                    spec.ground_truth,
-                    baseline_provider=baseline_provider,
-                    baseline_model=baseline_model,
-                    candidate_provider=candidate_provider,
-                    candidate_model=model,
-                    line_window=line_window,
-                    recall_tolerance=recall_tolerance,
-                    fp_allowance=fp_allowance,
-                    baseline_recall_floor=baseline_recall_floor,
+            if isinstance(baseline, _CellError):
+                out[(spec.scenario, model)] = baseline
+                continue
+            candidate = await _isolate_transients(
+                _graded_analyze(
+                    spec, provider=candidate_provider, model=model, line_window=line_window
                 )
+            )
+            if isinstance(candidate, _CellError):
+                out[(spec.scenario, model)] = candidate
+                continue
+            out[(spec.scenario, model)] = compare(
+                baseline,
+                candidate,
+                recall_tolerance=recall_tolerance,
+                fp_allowance=fp_allowance,
+                baseline_recall_floor=baseline_recall_floor,
             )
     return out
 
 
-def _measure_cost(
-    fixture_path: str, model: str, token_estimator: Callable[[str], int]
-) -> CostPerReview:
-    """Measure review-level cost for one scenario under `model` via a full-graph
-    `run_review` + `CostProbe` (zero Anthropic spend — the probe counts real
-    prompt tokens through the production pricing path). `model` drives BOTH
-    analyze tiers via the `model_config=` seam so a STANDARD file routes to it;
-    the other `ModelConfig` fields resolve from env-or-defaults, held constant
-    across candidate models so only analyze varies.
+def _cost_model_config(model: str) -> ModelConfig:
+    """Build a fully-pinned `ModelConfig` for the cost pass: the candidate `model`
+    on BOTH analyze tiers, and the non-analyze nodes pinned to their DECLARED
+    defaults (NOT ambient `OUTRIDER_MODEL_*` env), so the persisted $/review is
+    reproducible across machines and only analyze varies across the matrix.
+    Constructing it also VALIDATES `model` up front (the regex field-validator),
+    so a malformed/deprecated candidate fails before any paid quality work — not
+    mid-run in the cost pass after the quality spend already landed."""
+    fields = ModelConfig.model_fields
+    return ModelConfig(
+        analyze_model=model,
+        standard_analyze_model=model,
+        triage_model=fields["triage_model"].default,
+        synthesize_model=fields["synthesize_model"].default,
+        trace_model=fields["trace_model"].default,
+        patch_model=fields["patch_model"].default,
+    )
 
-    Cost only — NOT latency: `run_review` spins an ephemeral DB and runs the full
-    Alembic migration per call, so its wall-clock is harness-dominated, not the
-    "review latency" `LatencyPerReview` contracts for. Review-latency measurement
-    needs a graph-span timer (a future seam exposing `_drive`'s `graph.ainvoke`
-    duration); deferred — rows keep `latency=None` in step 1. `total_cost_usd` is
-    `float | None`, so a missing aggregate floors to 0.0 rather than crashing the
-    `CostPerReview` build."""
+
+def _measure_cost(
+    fixture_path: str, model_config: ModelConfig, token_estimator: Callable[[str], int]
+) -> CostPerReview | None:
+    """Measure review-level cost for one scenario via a full-graph `run_review` +
+    `CostProbe` (zero Anthropic spend — the probe counts real prompt tokens
+    through the production pricing path). Returns `None` when the run produced no
+    usable cost (e.g. a size-gate-skipped review with no metrics) so the caller
+    flags `measure_failed` rather than reporting a false $0.00.
+
+    Provenance caveats baked into the design (see the module docstring):
+      - Cost is WHOLE-REVIEW under the candidate's REAL triage tier (run_review
+        runs the real triage node), whereas the quality half holds triage fixed
+        at STANDARD — the row joins a STANDARD-tier quality verdict with the
+        file's real-tier cost.
+      - OUTPUT tokens come from the fixture's SCRIPTED responses (input/prompt
+        tokens ARE real), so $/review is accurate on the input side and
+        fixture-author-dependent on the output side.
+      - Cost only, NOT latency: run_review's wall-clock is harness-dominated
+        (ephemeral DB + full migration per call); rows keep latency=None."""
     probe = CostProbe(token_estimator=token_estimator)
-    model_config = ModelConfig(analyze_model=model, standard_analyze_model=model)
     result = run_review(fixture_path, probe=probe, model_config=model_config)
     metrics = result.review_metrics
-    total = (
-        metrics.total_cost_usd
-        if (metrics is not None and metrics.total_cost_usd is not None)
-        else 0.0
-    )
-    return CostPerReview(usd=total)
+    if metrics is None or metrics.total_cost_usd is None:
+        return None
+    return CostPerReview(usd=metrics.total_cost_usd)
 
 
 def _measure_cost_isolating_transients(
-    fixture_path: str, model: str, token_estimator: Callable[[str], int]
+    fixture_path: str, model_config: ModelConfig, token_estimator: Callable[[str], int]
 ) -> CostPerReview | None:
-    """`_measure_cost` with the same transient isolation as the quality pass: a
-    `retry_at_layer="node"` failure leaves cost unmeasured (the quality row is
-    still emitted — a flaked cost pass must not drop a real recall signal); a
-    terminal class re-raises and aborts."""
+    """`_measure_cost` with transient isolation: a `retry_at_layer="node"` failure
+    returns None (the quality row is still emitted — a flaked cost must not drop a
+    real recall signal); a terminal class re-raises and aborts. A None return
+    (transient OR absent-metrics) tells the caller to flag `measure_failed`, kept
+    distinct from a cost pass that was never requested (`not_measured`)."""
     try:
-        return _measure_cost(fixture_path, model, token_estimator)
+        return _measure_cost(fixture_path, model_config, token_estimator)
     except LLMProviderError as exc:
         if exc.retry_at_layer != "node":
             raise
@@ -247,6 +296,30 @@ async def _aclose_providers(
     await baseline_provider.aclose()
     if candidate_provider is not baseline_provider:
         await candidate_provider.aclose()
+
+
+async def _drive_quality(
+    coro: Awaitable[dict[tuple[str, str], ModelComparison | _CellError]],
+    baseline_provider: LLMProvider,
+    candidate_provider: LLMProvider,
+    *,
+    close_providers: bool,
+) -> dict[tuple[str, str], ModelComparison | _CellError]:
+    """Await the quality coroutine, then close the providers in the SAME event
+    loop (the only safe place for a real httpx client). On a body exception (a
+    terminal abort), close best-effort and SUPPRESS any close failure so it can't
+    mask the original error; on success, close and let a real close failure
+    surface."""
+    try:
+        result = await coro
+    except Exception:
+        if close_providers:
+            with contextlib.suppress(Exception):
+                await _aclose_providers(baseline_provider, candidate_provider)
+        raise
+    if close_providers:
+        await _aclose_providers(baseline_provider, candidate_provider)
+    return result
 
 
 def build_scorecard(
@@ -274,22 +347,34 @@ def build_scorecard(
     its own row. Report-only: rows record gate verdicts, this never raises on a
     failed gate.
 
+    Rejects duplicate scenario labels / candidate models up front (they collide on
+    the result key), and validates every candidate model string before any paid
+    quality work (a malformed id fails here, not mid-run in the cost pass).
+
     `close_providers=True` closes `baseline_provider` / `candidate_provider` (via
     the `LLMProvider.aclose()` Protocol method) INSIDE the quality event loop — the
     only safe place to close a real httpx-backed provider, since this is a sync
     function and a sync caller cannot `await aclose()` cleanly across loops. Default
     `False` leaves provider lifecycle to the caller (scripted test doubles).
     """
+    scenario_labels = [spec.scenario for spec in specs]
+    if len(set(scenario_labels)) != len(scenario_labels):
+        raise ValueError(f"ScenarioSpec labels must be unique; got duplicates in {scenario_labels}")
+    if len(set(candidate_models)) != len(candidate_models):
+        raise ValueError(f"candidate_models must be unique; got {list(candidate_models)}")
     if measure_cost and any(spec.fixture_path is None for spec in specs):
         raise ValueError(
             "measure_cost=True requires every ScenarioSpec to carry a fixture_path "
             "(run_review reads the PR fixture from disk); build specs via "
             "ScenarioSpec.from_fixture(...)"
         )
+    # Validate + pin every candidate model BEFORE the (paid) quality pass: a
+    # malformed/deprecated id raises here via ModelConfig's field-validator.
+    cost_configs = {model: _cost_model_config(model) for model in candidate_models}
 
-    async def _quality_then_close() -> dict[tuple[str, str], ModelComparison | _CellError]:
-        try:
-            return await _gather_quality(
+    quality = asyncio.run(
+        _drive_quality(
+            _gather_quality(
                 specs,
                 candidate_models,
                 baseline_provider=baseline_provider,
@@ -299,12 +384,13 @@ def build_scorecard(
                 recall_tolerance=recall_tolerance,
                 fp_allowance=fp_allowance,
                 baseline_recall_floor=baseline_recall_floor,
-            )
-        finally:
-            if close_providers:
-                await _aclose_providers(baseline_provider, candidate_provider)
+            ),
+            baseline_provider,
+            candidate_provider,
+            close_providers=close_providers,
+        )
+    )
 
-    quality = asyncio.run(_quality_then_close())
     rows: list[ScorecardRow] = []
     for spec in specs:
         for model in candidate_models:
@@ -324,8 +410,13 @@ def build_scorecard(
                 _sqli_fp_count(outcome.baseline), _sqli_fp_count(outcome.candidate)
             )
             cost: CostPerReview | None = None
+            cost_source: CostSource | None = None  # None -> from_comparison derives not_measured
             if measure_cost and spec.fixture_path is not None:
-                cost = _measure_cost_isolating_transients(spec.fixture_path, model, token_estimator)
+                cost = _measure_cost_isolating_transients(
+                    spec.fixture_path, cost_configs[model], token_estimator
+                )
+                if cost is None:
+                    cost_source = "measure_failed"  # requested but produced no usable number
             rows.append(
                 ScorecardRow.from_comparison(
                     node=node,
@@ -335,10 +426,9 @@ def build_scorecard(
                     comparison=outcome,
                     regression=regression,
                     cost=cost,
-                    # latency stays None: review-latency measurement is deferred
-                    # (see _measure_cost). replay-equivalence is likewise not yet
-                    # wired — the runner does not drive run_review_with_resume per
-                    # HITL scenario, so replay_source defaults to "not_applicable".
+                    cost_source=cost_source,
+                    # latency stays None (review-latency deferred); replay-equivalence
+                    # is not yet wired, so replay_source defaults to "not_applicable".
                 )
             )
     return Scorecard(rows=tuple(rows))

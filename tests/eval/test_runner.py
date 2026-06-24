@@ -272,3 +272,81 @@ def test_build_scorecard_leaves_providers_open_by_default() -> None:
     )
     assert baseline.closed is False
     assert candidate.closed is False
+
+
+# --- input validation + baseline caching ------------------------------------
+
+
+class _CountingProvider:
+    """Counts complete() calls — pins that the baseline analyze runs once per
+    scenario, not once per candidate model."""
+
+    def __init__(self, response_text: str) -> None:
+        self._inner = _ScriptedProvider(response_text)
+        self.complete_calls = 0
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self.complete_calls += 1
+        return await self._inner.complete(request)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_build_scorecard_rejects_duplicate_scenario_labels() -> None:
+    specs = [
+        ScenarioSpec(scenario="dup", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH)),
+        ScenarioSpec(scenario="dup", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH)),
+    ]
+    with pytest.raises(ValueError, match="unique"):
+        build_scorecard(
+            specs,
+            baseline_provider=_ScriptedProvider(_FINDS_RESPONSE),
+            candidate_provider=_ScriptedProvider(_FINDS_RESPONSE),
+            baseline_model=_BASELINE,
+            candidate_models=[_CANDIDATE],
+        )
+
+
+def test_build_scorecard_rejects_duplicate_candidate_models() -> None:
+    spec = ScenarioSpec(scenario="s", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH))
+    with pytest.raises(ValueError, match="unique"):
+        build_scorecard(
+            [spec],
+            baseline_provider=_ScriptedProvider(_FINDS_RESPONSE),
+            candidate_provider=_ScriptedProvider(_FINDS_RESPONSE),
+            baseline_model=_BASELINE,
+            candidate_models=[_CANDIDATE, _CANDIDATE],
+        )
+
+
+def test_build_scorecard_rejects_malformed_candidate_model() -> None:
+    # A non-Anthropic model id fails up front (ModelConfig field-validator) before
+    # any quality work — not mid-run in the cost pass after the spend landed.
+    spec = ScenarioSpec(scenario="s", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH))
+    with pytest.raises(ValueError):  # noqa: PT011 — pydantic ValidationError (a ValueError)
+        build_scorecard(
+            [spec],
+            baseline_provider=_ScriptedProvider(_FINDS_RESPONSE),
+            candidate_provider=_ScriptedProvider(_FINDS_RESPONSE),
+            baseline_model=_BASELINE,
+            candidate_models=["gpt-4o"],
+        )
+
+
+def test_build_scorecard_runs_baseline_once_per_scenario() -> None:
+    # 1 scenario × 2 candidate models: the baseline analyze runs ONCE (its grade is
+    # invariant across candidates), the candidate analyze once per model — not
+    # baseline×2. _build_state has one changed file -> one analyze call per run.
+    baseline = _CountingProvider(_FINDS_RESPONSE)
+    candidate = _CountingProvider(_FINDS_RESPONSE)
+    spec = ScenarioSpec(scenario="s", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH))
+    build_scorecard(
+        [spec],
+        baseline_provider=baseline,
+        candidate_provider=candidate,
+        baseline_model=_BASELINE,
+        candidate_models=["claude-haiku-4-5", "claude-sonnet-4-6"],
+    )
+    assert baseline.complete_calls == 1  # cached across the 2 candidates
+    assert candidate.complete_calls == 2  # once per candidate
