@@ -2771,6 +2771,11 @@
             "type": "array",
             "title": "Blockers",
             "default": []
+          },
+          "skip_enforced": {
+            "type": "boolean",
+            "title": "Skip Enforced",
+            "default": false
           }
         },
         "additionalProperties": false,
