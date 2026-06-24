@@ -456,6 +456,45 @@ def test_aggregate_surfaces_n_costed() -> None:
     assert agg.total_cost_usd == pytest.approx(0.01)
 
 
+def test_replay_equivalent_without_source_is_rejected() -> None:
+    # A replay verdict requires a real source: replay_equivalent set while
+    # replay_source is still "not_applicable" is inconsistent (mirrors cost).
+    with pytest.raises(ValidationError):
+        ScorecardRow(
+            node="analyze",
+            model=_CANDIDATE_MODEL,
+            scenario="s",
+            baseline_model=_BASELINE_MODEL,
+            status="ok",
+            recall=FindingRecall(value=1.0, numerator=1, denominator=1),
+            precision=FindingPrecision(value=1.0, numerator=1, denominator=1),
+            severity_accuracy=SeverityAccuracy(value=1.0, numerator=1, denominator=1),
+            false_positive_rate=FalsePositiveRate(value=0.0, numerator=0, denominator=1),
+            n_false_positives=0,
+            gate=_gate(passes=True),
+            replay_equivalent=True,  # but replay_source defaults to "not_applicable"
+        )
+
+
+def test_replay_source_without_verdict_is_rejected() -> None:
+    # The reverse: a real source with no equivalence verdict is also inconsistent.
+    with pytest.raises(ValidationError):
+        ScorecardRow(
+            node="analyze",
+            model=_CANDIDATE_MODEL,
+            scenario="s",
+            baseline_model=_BASELINE_MODEL,
+            status="ok",
+            recall=FindingRecall(value=1.0, numerator=1, denominator=1),
+            precision=FindingPrecision(value=1.0, numerator=1, denominator=1),
+            severity_accuracy=SeverityAccuracy(value=1.0, numerator=1, denominator=1),
+            false_positive_rate=FalsePositiveRate(value=0.0, numerator=0, denominator=1),
+            n_false_positives=0,
+            gate=_gate(passes=True),
+            replay_source="resume",  # but replay_equivalent is None
+        )
+
+
 # --- opt-in real-model artifact entrypoint ----------------------------------
 
 
