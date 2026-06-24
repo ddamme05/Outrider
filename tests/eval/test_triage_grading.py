@@ -403,6 +403,18 @@ def test_triage_scorecard_row_errored_has_null_dropped_files() -> None:
     assert row.dropped_files is None
 
 
+def test_triage_scorecard_row_rejects_drop_count_path_mismatch() -> None:
+    # n_dropped_from_analysis must equal len(dropped_files): a decision artifact must
+    # not emit a self-contradictory row. from_comparison always agrees; direct
+    # construction with a mismatch is rejected at construction.
+    valid = TriageScorecardRow.from_comparison(
+        scenario="s", model=_CANDIDATE, baseline_model=_BASELINE, comparison=_drop_comparison()
+    )
+    assert valid.n_dropped_from_analysis == 1 and valid.dropped_files == ("a.py",)
+    with pytest.raises(ValidationError, match="dropped_files must name exactly"):
+        TriageScorecardRow(**{**valid.model_dump(), "dropped_files": ()})  # claims 1, names none
+
+
 def test_scorecard_triage_markdown_names_dropped_file() -> None:
     card = Scorecard(
         triage_rows=(

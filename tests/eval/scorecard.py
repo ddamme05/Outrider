@@ -363,6 +363,14 @@ class TriageScorecardRow(BaseModel):
                 raise ValueError("an 'ok' triage row must populate every metric")
             if self.error is not None:
                 raise ValueError("an 'ok' triage row must not carry an error")
+            # The count and the paths must agree — a decision artifact cannot emit a
+            # row that says "dropped=1" with no path, or "dropped=0" with hidden paths.
+            if len(self.dropped_files or ()) != self.n_dropped_from_analysis:
+                raise ValueError(
+                    "dropped_files must name exactly n_dropped_from_analysis paths "
+                    f"(got {len(self.dropped_files or ())}, "
+                    f"n_dropped_from_analysis={self.n_dropped_from_analysis})"
+                )
         else:
             if any(m is not None for m in metrics):
                 raise ValueError("an 'errored' triage row must have null metrics")
