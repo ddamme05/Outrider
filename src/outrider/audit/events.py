@@ -792,6 +792,11 @@ class ObservedSkipShadowEvent(AuditEventBase):
     changed_regions: tuple[ObservedSkipChangedRegion, ...]
     covering_matches: tuple[ObservedSkipCoveringMatch, ...] = ()
     blockers: tuple[ObservedSkipChangedRegion, ...] = ()
+    # Step 3b-mechanism: whether the enforced skip was actually TAKEN (the LLM was
+    # not called for this file). Shadow-only emissions leave this False; only the
+    # enforced `would_skip` branch sets it True. Default-valued -> no migration; a
+    # pre-3b row replays as False (the CacheLookupEvent field-widening precedent).
+    skip_enforced: bool = False
 
     @field_validator("file_path")
     @classmethod
@@ -816,6 +821,18 @@ class ObservedSkipShadowEvent(AuditEventBase):
             raise ValueError(
                 "ObservedSkipShadowEvent: outcome='not_eligible' requires at least "
                 "one blocker (the uncovered changed region), got none"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_skip_enforced_implies_would_skip(self) -> Self:
+        """An enforced skip can only happen on a `would_skip` decision — a
+        `not_eligible` file always runs the LLM, so `skip_enforced=True` with any
+        other outcome is incoherent (Step 3b-mechanism)."""
+        if self.skip_enforced and self.outcome != "would_skip":
+            raise ValueError(
+                "ObservedSkipShadowEvent: skip_enforced=True requires "
+                f"outcome='would_skip', got {self.outcome!r}"
             )
         return self
 
