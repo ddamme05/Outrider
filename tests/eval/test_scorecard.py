@@ -11,13 +11,15 @@ spend.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 from outrider.audit.events import compute_finding_content_hash
-from outrider.policy import EvidenceTier, FindingSeverity, FindingType
+from outrider.policy import EvidenceTier, FindingSeverity, FindingType, lookup_severity
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas.review_finding import ReviewFinding
@@ -376,3 +378,113 @@ def test_to_markdown_renders_rows_and_aggregate() -> None:
     assert "FAIL" in md
     assert "ERROR: 529 overloaded" in md
     assert "s_pass" in md and "s_fail" in md and "s_err" in md
+
+
+# --- opt-in real-model artifact entrypoint ----------------------------------
+
+
+@pytest.mark.skipif(
+    os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
+    reason="real-model scorecard spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
+)
+def test_real_scorecard_evidence() -> None:
+    """OPT-IN real API spend — emits the cross-scenario scorecard artifact.
+
+    REPORT-ONLY, BY DESIGN: asserts only that the run COMPLETED (a row per spec).
+    The verdict is the JSON + Markdown scorecard written to `reports/scorecard/`,
+    read by a human — pytest does not gate on a candidate gate failure (the runner
+    is report-only). Quality (recall/precision/severity/FP/gate) is REAL spend
+    through the analyze-direct path under baseline (Sonnet) vs candidate (Haiku);
+    cost is zero-spend (the fixtures' scripted run_review responses priced through
+    the production path).
+
+    Sync test on purpose: `build_scorecard` calls `run_review` (asyncio.run inside)
+    for the cost pass, which cannot nest in a running loop.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY is required for the real-model scorecard")
+
+    from pydantic import SecretStr  # noqa: PLC0415
+
+    from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
+    from outrider.llm.config import ModelConfig  # noqa: PLC0415
+
+    from .runner import ScenarioSpec, build_scorecard  # noqa: PLC0415
+
+    class _NoOpExchangePersister:
+        """No-op `LLMExchangePersister`: `AnthropicProvider.complete()` is
+        fail-closed on `persister=None`; the scorecard reads findings from
+        analyze's return, so the exchange persist is discarded."""
+
+        async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
+            return None
+
+    cfg = ModelConfig()
+    baseline_model = cfg.analyze_model  # today's top-tier analyze (Sonnet), NOT standard_*
+    candidate_model = "claude-haiku-4-5"  # the shipped STANDARD default (DECISIONS#041)
+    provider = AnthropicProvider(
+        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+    )
+
+    mock = Path("tests/eval/fixtures/mock_github")
+
+    def _gt(
+        file_path: str, line_start: int, line_end: int, finding_type: FindingType
+    ) -> tuple[ExpectedFinding, ...]:
+        return (
+            ExpectedFinding(
+                file_path=file_path,
+                line_start=line_start,
+                line_end=line_end,
+                finding_type=finding_type,
+                severity=lookup_severity(finding_type),
+            ),
+        )
+
+    # Full-response fixtures (drive triage+analyze+synthesize, so the cost pass's
+    # run_review works) with ground truth; safe_refactor carries none (clean code).
+    specs = [
+        ScenarioSpec.from_fixture(
+            "pygoat_sql_injection",
+            str(mock / "pygoat_sql_injection.json"),
+            _gt("pygoat/introduction/views.py", 5, 5, FindingType.SQL_INJECTION),
+        ),
+        ScenarioSpec.from_fixture(
+            "pygoat_auth_bypass",
+            str(mock / "pygoat_auth_bypass.json"),
+            _gt("pygoat/introduction/auth_views.py", 7, 8, FindingType.AUTH_BYPASS),
+        ),
+        ScenarioSpec.from_fixture(
+            "missing_error_handling",
+            str(mock / "missing_error_handling.json"),
+            _gt("profile/client.py", 5, 5, FindingType.MISSING_ERROR_HANDLING),
+        ),
+        ScenarioSpec.from_fixture(
+            "n_plus_one_query",
+            str(mock / "n_plus_one_query.json"),
+            _gt("orders/enrich.py", 7, 7, FindingType.N_PLUS_ONE_QUERY),
+        ),
+        ScenarioSpec.from_fixture("safe_refactor", str(mock / "safe_refactor.json"), ()),
+    ]
+
+    card = build_scorecard(
+        specs,
+        baseline_provider=provider,
+        candidate_provider=provider,
+        baseline_model=baseline_model,
+        candidate_models=[candidate_model],
+        measure_cost=True,
+    )
+
+    out_dir = Path("reports") / "scorecard"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "scorecard.json").write_text(card.to_json(), encoding="utf-8")
+    (out_dir / "scorecard.md").write_text(card.to_markdown(), encoding="utf-8")
+
+    print(  # noqa: T201 — operator artifact pointer
+        f"\nSCORECARD — REPORT ONLY: wrote {out_dir}/scorecard.{{json,md}} "
+        f"({len(card.rows)} rows, baseline={baseline_model}, candidate={candidate_model})"
+    )
+    # Report-only: assert only that the run produced a row per spec (it COMPLETED).
+    assert len(card.rows) == len(specs)
