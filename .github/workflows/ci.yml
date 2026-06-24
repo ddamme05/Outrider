@@ -26,9 +26,9 @@
 #                       support tmpfs / arbitrary Postgres args)
 #   5. eval — pytest tests/eval --is-eval against postgres-test (the
 #                       eval-harness integration-tier test uses the eval_db
-#                       fixture). Runs harness-internal tests today; the
-#                       17 scaffolded scenarios are skip-marked on day one
-#                       and become real gates as their dependencies land.
+#                       fixture). Runs the full eval tier today; only the
+#                       real-CVE scenario (test_real_cve_fix_pr, FUP-109) is
+#                       skip-marked, pending a CVE fixture + ground truth.
 #   6. dashboard     — npm ci + build (tsc --noEmit && vite build) + vitest run
 #                       for the React SPA under dashboard/ (Node toolchain, not uv).
 #   7. pre-commit-tracked-only — runs the subset of pre-commit hooks that
@@ -231,12 +231,10 @@ jobs:
         # scenarios. As each scenario's dependency lands (ast_facts,
         # analyze node, trace node, hitl + audit/replay), its skip
         # marker flips and assertions begin gating. Pytest treats skip
-        # as non-failure, so unflipped scenarios still report "pass."
-        # As of the ast_facts/ V1 spec landing: 5 structural scenarios
-        # are live (async_definitions, decorator_extraction,
-        # import_parsing, multiline_signatures, nested_class_method);
-        # the remaining 12 are skip-marked pending coordinates/, the
-        # analyze node, the trace node, or HITL + audit/replay.
+        # as non-failure, so any unflipped scenario still reports "pass."
+        # Today the structural + driver-backed scenarios all run live; the
+        # only skip-marked scenario is test_real_cve_fix_pr (FUP-109, needs
+        # a CVE fixture + ground truth).
         run: pytest tests/eval --is-eval
 
   dashboard:

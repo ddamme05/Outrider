@@ -9,10 +9,13 @@ Six metrics ship as Pydantic models in V1:
   - `CostPerReview` — summed from `LLMCallEvent.cost_usd`
   - `LatencyPerReview` — wall-clock from webhook receipt to review posted
 
-The shapes only — the SCORING functions (LLM-as-judge for precision /
-recall; deterministic comparison for severity accuracy and false-positive
-rate) are non-goals of the eval-harness spec; they land with the
-analyze-node spec when the LLM Protocol + provider wrappers exist.
+The shapes only — this module defines no scoring. Deterministic scoring
+SHIPPED in `grading.py` (recall / precision / severity-accuracy via a
+structural match contract — deliberately NOT LLM-as-judge): `grading.py`
+consumes `FindingPrecision`/`FindingRecall`/`SeverityAccuracy`, and the eval
+scorecard (`scorecard.py` / `runner.py`) consumes `FalsePositiveRate` /
+`CostPerReview` / `LatencyPerReview`. The earlier "LLM-as-judge scorer lands
+with the analyze-node spec" plan was rejected, not built.
 
 Each metric carries:
   - `value: float` in `[0.0, 1.0]` for ratio metrics, or non-negative for
