@@ -1576,6 +1576,11 @@ export interface components {
              * @default []
              */
             blockers: components["schemas"]["ObservedSkipChangedRegion"][];
+            /**
+             * Skip Enforced
+             * @default false
+             */
+            skip_enforced: boolean;
         };
         /**
          * ObservedSubsumedMatch
