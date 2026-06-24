@@ -46,6 +46,8 @@ from .test_model_comparison import (
 )
 
 if TYPE_CHECKING:
+    from outrider.llm.base import LLMRequest, LLMResponse
+
     from .grading import ModelComparison
 
 _BASELINE = "claude-sonnet-4-6"
@@ -224,3 +226,49 @@ def test_build_scorecard_measures_full_graph_cost() -> None:
     assert row.cost_source == "full_graph"
     assert row.cost.usd > 0.0  # real prompt tokens priced through the production path
     assert row.latency is None  # deferred: harness-dominated wall-clock, not review latency
+
+
+class _ClosingProvider:
+    """Wraps a scripted provider, recording whether `aclose()` was called — pins
+    the `close_providers=` lifecycle without a real httpx client."""
+
+    def __init__(self, response_text: str) -> None:
+        self._inner = _ScriptedProvider(response_text)
+        self.closed = False
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        return await self._inner.complete(request)
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_build_scorecard_closes_providers_when_requested() -> None:
+    baseline = _ClosingProvider(_FINDS_RESPONSE)
+    candidate = _ClosingProvider(_FINDS_RESPONSE)
+    spec = ScenarioSpec(scenario="s", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH))
+    build_scorecard(
+        [spec],
+        baseline_provider=baseline,
+        candidate_provider=candidate,
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+        close_providers=True,
+    )
+    assert baseline.closed is True
+    assert candidate.closed is True
+
+
+def test_build_scorecard_leaves_providers_open_by_default() -> None:
+    baseline = _ClosingProvider(_FINDS_RESPONSE)
+    candidate = _ClosingProvider(_FINDS_RESPONSE)
+    spec = ScenarioSpec(scenario="s", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH))
+    build_scorecard(
+        [spec],
+        baseline_provider=baseline,
+        candidate_provider=candidate,
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+    )
+    assert baseline.closed is False
+    assert candidate.closed is False
