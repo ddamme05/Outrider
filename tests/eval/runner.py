@@ -53,7 +53,12 @@ from .grading import DEFAULT_LINE_WINDOW, compare, grade
 from .metrics import CostPerReview
 from .model_comparison import run_analyze_under_model, state_from_eval_fixture
 from .scorecard import RegressionVerdict, Scorecard, ScorecardRow, TriageScorecardRow
-from .triage_grading import compare_triage, grade_triage, run_triage_under_model
+from .triage_grading import (
+    compare_triage,
+    grade_triage,
+    require_expected_coverage,
+    run_triage_under_model,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -562,6 +567,14 @@ def build_triage_scorecard(
     # ModelConfig's field-validator (discard the config — triage has no cost pass).
     for model in candidate_models:
         _cost_model_config(model)
+    # Each spec's ground truth must cover exactly its changed files, else a missing
+    # key silently drops a file from the grade + the safety gate. Fail fast, no spend.
+    for spec in specs:
+        require_expected_coverage(
+            spec.expected,
+            {cf.path for cf in spec.state.pr_context.changed_files},
+            scenario=spec.scenario,
+        )
 
     quality = asyncio.run(
         _drive_quality(
