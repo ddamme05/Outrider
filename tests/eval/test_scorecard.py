@@ -356,11 +356,12 @@ def test_aggregates_sorted_by_node_then_model() -> None:
 def test_to_json_round_trips_rows_and_aggregates() -> None:
     card = Scorecard(rows=(_ok_row("s1", cost_usd=0.01), _errored_row("s2")))
     data = json.loads(card.to_json())
-    assert set(data) == {"rows", "aggregates"}
+    assert set(data) == {"rows", "aggregates", "triage_rows", "triage_aggregates"}
     assert len(data["rows"]) == 2
     assert len(data["aggregates"]) == 1
     assert data["aggregates"][0]["n_errored"] == 1
     assert data["rows"][0]["quality_source"] == "analyze_direct"
+    assert data["triage_rows"] == []  # analyze-only card -> empty triage section
 
 
 def test_to_markdown_renders_rows_and_aggregate() -> None:
@@ -615,3 +616,155 @@ def test_real_scorecard_evidence() -> None:
     )
     # Report-only: assert only that the run produced a row per spec (it COMPLETED).
     assert len(card.rows) == len(specs)
+
+
+@pytest.mark.skipif(
+    os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
+    reason="real-model triage scorecard spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
+)
+def test_real_triage_scorecard_evidence() -> None:
+    """OPT-IN real API spend — emits the TRIAGE scorecard artifact (Sonnet vs Haiku
+    triage over the known-vuln fixtures).
+
+    REPORT-ONLY, BY DESIGN: asserts only that the run COMPLETED (a triage row per
+    spec). The verdict is the JSON + Markdown written to
+    `reports/scorecard/triage-scorecard.{json,md}`, read by a human — the runner is
+    report-only. Quality (tier accuracy / drop-from-analysis / dimension recall /
+    under-risking / gate) is REAL spend through the real triage node; there is NO
+    cost pass (triage rows are quality-only per the spec).
+
+    Self-contained: its own provider, closed inside `build_triage_scorecard`'s event
+    loop. It does NOT share the analyze entrypoint's client — each `asyncio.run`
+    binds the httpx client to its own loop, and a real client can't be reused across
+    loops. Sync test for the same reason as `test_real_scorecard_evidence`.
+
+    Ground truth is hand-authored (per spec, no `--regenerate-expected`): each
+    fixture's single changed file gets the tier/risk/dimension a human reviewer would
+    assign. If the baseline (Sonnet) under-tiers or under-risks against this opinion,
+    `baseline_valid` is False and the candidate's hold reads vacuous — that's the
+    signal to revisit either the model or the ground truth, surfaced in the artifact.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY is required for the real-model triage scorecard")
+
+    from pydantic import SecretStr  # noqa: PLC0415
+
+    from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
+    from outrider.llm.config import ModelConfig  # noqa: PLC0415
+    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
+    from outrider.schemas.triage_result import (  # noqa: PLC0415
+        ReviewDimension,
+        ReviewTier,
+        RiskLevel,
+    )
+
+    from .runner import TriageScenarioSpec, build_triage_scorecard  # noqa: PLC0415
+    from .triage_grading import ExpectedTriage  # noqa: PLC0415
+
+    class _NoOpExchangePersister:
+        """No-op `LLMExchangePersister`: the triage node's `provider.complete()` is
+        fail-closed on `persister=None`; the grader reads the `TriageResult` off the
+        node return, so the exchange persist is discarded (no audit events)."""
+
+        async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
+            return None
+
+    cfg = ModelConfig()
+    baseline_model = cfg.analyze_model  # Sonnet — the strong reference tier
+    candidate_model = "claude-haiku-4-5"  # the cheap tier under test for triage
+    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
+        pytest.fail(
+            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
+            "same model — the triage scorecard would prove nothing about Sonnet-vs-Haiku. Point "
+            "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
+        )
+    provider = AnthropicProvider(
+        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+    )
+
+    mock = Path("tests/eval/fixtures/mock_github")
+
+    def _exp(
+        path: str, tier: ReviewTier, risk: RiskLevel, dimension: ReviewDimension
+    ) -> ExpectedTriage:
+        return ExpectedTriage(
+            expected_file_tiers={path: tier}, overall_risk=risk, relevant_dimensions=(dimension,)
+        )
+
+    # One changed file per fixture; the vuln files warrant DEEP + a security lens,
+    # the quality/perf changes STANDARD, and the clean billing refactor STANDARD-LOW
+    # (totals math is worth a cheap pass even when the diff looks safe).
+    specs = [
+        TriageScenarioSpec.from_fixture(
+            "pygoat_sql_injection",
+            str(mock / "pygoat_sql_injection.json"),
+            _exp(
+                "pygoat/introduction/views.py",
+                ReviewTier.DEEP,
+                RiskLevel.HIGH,
+                ReviewDimension.SECURITY,
+            ),
+        ),
+        TriageScenarioSpec.from_fixture(
+            "pygoat_auth_bypass",
+            str(mock / "pygoat_auth_bypass.json"),
+            _exp(
+                "pygoat/introduction/auth_views.py",
+                ReviewTier.DEEP,
+                RiskLevel.HIGH,
+                ReviewDimension.SECURITY,
+            ),
+        ),
+        TriageScenarioSpec.from_fixture(
+            "missing_error_handling",
+            str(mock / "missing_error_handling.json"),
+            _exp(
+                "profile/client.py",
+                ReviewTier.STANDARD,
+                RiskLevel.MEDIUM,
+                ReviewDimension.CODE_QUALITY,
+            ),
+        ),
+        TriageScenarioSpec.from_fixture(
+            "n_plus_one_query",
+            str(mock / "n_plus_one_query.json"),
+            _exp(
+                "orders/enrich.py",
+                ReviewTier.STANDARD,
+                RiskLevel.MEDIUM,
+                ReviewDimension.PERFORMANCE,
+            ),
+        ),
+        TriageScenarioSpec.from_fixture(
+            "safe_refactor",
+            str(mock / "safe_refactor.json"),
+            _exp(
+                "billing/totals.py",
+                ReviewTier.STANDARD,
+                RiskLevel.LOW,
+                ReviewDimension.CODE_QUALITY,
+            ),
+        ),
+    ]
+
+    card = build_triage_scorecard(
+        specs,
+        baseline_provider=provider,
+        candidate_provider=provider,
+        baseline_model=baseline_model,
+        candidate_models=[candidate_model],
+        close_providers=True,  # close the real provider inside build_triage_scorecard's loop
+    )
+
+    out_dir = Path("reports") / "scorecard"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "triage-scorecard.json").write_text(card.to_json(), encoding="utf-8")
+    (out_dir / "triage-scorecard.md").write_text(card.to_markdown(), encoding="utf-8")
+
+    print(  # noqa: T201 — operator artifact pointer
+        f"\nTRIAGE SCORECARD — REPORT ONLY: wrote {out_dir}/triage-scorecard.{{json,md}} "
+        f"({len(card.triage_rows)} rows, baseline={baseline_model}, candidate={candidate_model})"
+    )
+    # Report-only: assert only that the run produced a triage row per spec.
+    assert len(card.triage_rows) == len(specs)

@@ -52,7 +52,8 @@ from outrider.schemas.triage_result import ReviewTier
 from .grading import DEFAULT_LINE_WINDOW, compare, grade
 from .metrics import CostPerReview
 from .model_comparison import run_analyze_under_model, state_from_eval_fixture
-from .scorecard import RegressionVerdict, Scorecard, ScorecardRow
+from .scorecard import RegressionVerdict, Scorecard, ScorecardRow, TriageScorecardRow
+from .triage_grading import compare_triage, grade_triage, run_triage_under_model
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
 
     from .grading import ExpectedFinding, GradeResult, ModelComparison
     from .scorecard import CostSource
+    from .triage_grading import ExpectedTriage, TriageComparison, TriageGrade
 
 
 @dataclass(frozen=True, eq=False)
@@ -101,6 +103,32 @@ class ScenarioSpec:
             state=state,
             ground_truth=tuple(ground_truth),
             fixture_path=fixture_path,
+        )
+
+
+@dataclass(frozen=True, eq=False)
+class TriageScenarioSpec:
+    """One TRIAGE matrix cell-source: a label, the `ReviewState` the triage
+    comparison runs over, and the hand-authored `ExpectedTriage` ground truth. No
+    `fixture_path` — triage rows are quality-only (no cost pass per the spec). The
+    triage node re-tiers from `state.pr_context.changed_files`, ignoring any pre-set
+    `triage_result`, so unlike `ScenarioSpec` the state is NOT held fixed here — the
+    real triage node runs. `eq=False` for the same reason as `ScenarioSpec` (the
+    Pydantic `state` is unhashable)."""
+
+    scenario: str
+    state: ReviewState
+    expected: ExpectedTriage
+
+    @classmethod
+    def from_fixture(
+        cls, scenario: str, fixture_path: str, expected: ExpectedTriage
+    ) -> TriageScenarioSpec:
+        """Build from a `mock_github/*.json` fixture: derive the state via
+        `state_from_eval_fixture`. The held-fixed tier/dimensions that helper sets
+        are irrelevant — the triage node re-tiers the changed files itself."""
+        return cls(
+            scenario=scenario, state=state_from_eval_fixture(fixture_path), expected=expected
         )
 
 
@@ -298,18 +326,18 @@ async def _aclose_providers(
         await candidate_provider.aclose()
 
 
-async def _drive_quality(
-    coro: Awaitable[dict[tuple[str, str], ModelComparison | _CellError]],
+async def _drive_quality[T](
+    coro: Awaitable[T],
     baseline_provider: LLMProvider,
     candidate_provider: LLMProvider,
     *,
     close_providers: bool,
-) -> dict[tuple[str, str], ModelComparison | _CellError]:
-    """Await the quality coroutine, then close the providers in the SAME event
-    loop (the only safe place for a real httpx client). On a body exception (a
-    terminal abort), close best-effort and SUPPRESS any close failure so it can't
-    mask the original error; on success, close and let a real close failure
-    surface."""
+) -> T:
+    """Await the quality coroutine (analyze OR triage matrix), then close the
+    providers in the SAME event loop (the only safe place for a real httpx client).
+    On a body exception (a terminal abort), close best-effort and SUPPRESS any
+    close failure so it can't mask the original error; on success, close and let a
+    real close failure surface."""
     try:
         result = await coro
     except Exception:
@@ -434,7 +462,154 @@ def build_scorecard(
     return Scorecard(rows=tuple(rows))
 
 
+# --- Triage matrix ----------------------------------------------------------
+
+
+async def _graded_triage(
+    spec: TriageScenarioSpec, *, provider: LLMProvider, model: str
+) -> TriageGrade:
+    """Run one triage pass under `model` over the spec's state and grade it against
+    the spec's `ExpectedTriage`. Parallel to `_graded_analyze`."""
+    result = await run_triage_under_model(spec.state, provider=provider, model=model)
+    return grade_triage(result, spec.expected)
+
+
+async def _gather_triage_quality(
+    specs: Sequence[TriageScenarioSpec],
+    candidate_models: Sequence[str],
+    *,
+    baseline_provider: LLMProvider,
+    candidate_provider: LLMProvider,
+    baseline_model: str,
+    overtier_allowance: int,
+    dimension_recall_tolerance: float,
+) -> dict[tuple[str, str], TriageComparison | _CellError]:
+    """Run every `(scenario, candidate-model)` triage comparison in one event loop,
+    each isolated. The BASELINE triage runs ONCE per scenario (invariant across
+    candidate models); a baseline transient errors every candidate cell for that
+    scenario, a candidate transient errors only its own cell. Mirrors
+    `_gather_quality`. A triage POLICY violation (the node rejecting a candidate's
+    output) is NOT a transient — it propagates and aborts (see
+    `build_triage_scorecard`)."""
+    out: dict[tuple[str, str], TriageComparison | _CellError] = {}
+    for spec in specs:
+        baseline = await _isolate_transients(
+            _graded_triage(spec, provider=baseline_provider, model=baseline_model)
+        )
+        for model in candidate_models:
+            if isinstance(baseline, _CellError):
+                out[(spec.scenario, model)] = baseline
+                continue
+            candidate = await _isolate_transients(
+                _graded_triage(spec, provider=candidate_provider, model=model)
+            )
+            if isinstance(candidate, _CellError):
+                out[(spec.scenario, model)] = candidate
+                continue
+            out[(spec.scenario, model)] = compare_triage(
+                baseline,
+                candidate,
+                overtier_allowance=overtier_allowance,
+                dimension_recall_tolerance=dimension_recall_tolerance,
+            )
+    return out
+
+
+def build_triage_scorecard(
+    specs: Sequence[TriageScenarioSpec],
+    *,
+    baseline_provider: LLMProvider,
+    candidate_provider: LLMProvider,
+    baseline_model: str,
+    candidate_models: Sequence[str],
+    node: str = "triage",
+    overtier_allowance: int = 0,
+    dimension_recall_tolerance: float = 0.0,
+    close_providers: bool = False,
+) -> Scorecard:
+    """Drive the `(scenario × candidate-model)` TRIAGE matrix into a
+    `Scorecard.triage_rows`. The analyze `rows` stay empty — the sibling
+    `build_scorecard` fills those; an operator wanting one combined artifact merges
+    `Scorecard(rows=analyze.rows, triage_rows=triage.triage_rows)`.
+
+    Quality-only per the spec non-goal: no cost / latency / replay on triage rows
+    (triage is one cheap call; whole-review cost lives on the analyze rows). One row
+    per `(scenario, candidate-model)`; the baseline is the gate's reference, not its
+    own row. Report-only — never raises on a failed gate.
+
+    Rejects duplicate scenario labels / candidate models up front (they collide on
+    the result key), and validates every candidate model string before any paid
+    triage work — reusing `ModelConfig`'s field-validator, exactly as
+    `build_scorecard` does (the config itself is discarded; triage has no cost pass).
+
+    Failure handling mirrors `build_scorecard` for TRANSIENT provider errors (→ a
+    `_CellError` errored row). It DIVERGES for a triage POLICY violation: a candidate
+    that emits `SKIP` or mis-covers paths makes the node raise
+    `TriagePolicyViolationError`, which is terminal here — the run aborts naming the
+    bad output rather than recording an errored cell. A policy-violating triage is a
+    'this candidate is unusable for triage' signal, not a flake to retry.
+
+    `close_providers` — same loop-bound close semantics as `build_scorecard`.
+    """
+    scenario_labels = [spec.scenario for spec in specs]
+    if len(set(scenario_labels)) != len(scenario_labels):
+        raise ValueError(
+            f"TriageScenarioSpec labels must be unique; got duplicates in {scenario_labels}"
+        )
+    if len(set(candidate_models)) != len(candidate_models):
+        raise ValueError(f"candidate_models must be unique; got {list(candidate_models)}")
+    # Validate every candidate model id BEFORE the (paid) triage pass via
+    # ModelConfig's field-validator (discard the config — triage has no cost pass).
+    for model in candidate_models:
+        _cost_model_config(model)
+
+    quality = asyncio.run(
+        _drive_quality(
+            _gather_triage_quality(
+                specs,
+                candidate_models,
+                baseline_provider=baseline_provider,
+                candidate_provider=candidate_provider,
+                baseline_model=baseline_model,
+                overtier_allowance=overtier_allowance,
+                dimension_recall_tolerance=dimension_recall_tolerance,
+            ),
+            baseline_provider,
+            candidate_provider,
+            close_providers=close_providers,
+        )
+    )
+
+    rows: list[TriageScorecardRow] = []
+    for spec in specs:
+        for model in candidate_models:
+            outcome = quality[(spec.scenario, model)]
+            if isinstance(outcome, _CellError):
+                rows.append(
+                    TriageScorecardRow.errored(
+                        node=node,
+                        scenario=spec.scenario,
+                        model=model,
+                        baseline_model=baseline_model,
+                        error=outcome.message,
+                    )
+                )
+                continue
+            rows.append(
+                TriageScorecardRow.from_comparison(
+                    node=node,
+                    scenario=spec.scenario,
+                    model=model,
+                    baseline_model=baseline_model,
+                    comparison=outcome,
+                )
+            )
+    return Scorecard(triage_rows=tuple(rows))
+
+
 __all__ = [
     "ScenarioSpec",
+    "TriageScenarioSpec",
     "build_scorecard",
+    "build_triage_scorecard",
 ]
