@@ -2,9 +2,10 @@
 
 This subpackage exists for one structural reason: the eval graph driver
 (`run_review`, exported from `outrider.agent`) is reachable from production
-`src/outrider/`, the eval scenarios call it with only a fixture path (no
-injection seam), so it must self-construct its dependencies and run its own
-ephemeral-database lifecycle. Because `pythonpath = ["src"]` only — `tests/`
+`src/outrider/`, the eval scenarios call it with only a fixture path — it
+self-constructs its DB + adapter dependencies (the optional `probe=` /
+`model_config=` overrides aside) and runs its own ephemeral-database
+lifecycle. Because `pythonpath = ["src"]` only — `tests/`
 is NOT importable from `src/` (see `docs/conventions.md`) — that lifecycle
 code cannot live under `tests/`. It lives here instead so that `run_review`
 can call it, and it is the single shared implementation of the
