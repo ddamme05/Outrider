@@ -227,6 +227,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     trivial_scope_filter_enabled: bool = False,
+    analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
     resolve_slack_target: SlackTargetResolver | None = None,
@@ -455,6 +456,12 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # is a later evidence-backed change per the trivial-scope-filter
         # spec's #041-style lifecycle.
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
+        # Step 3b-mechanism: enforced OBSERVED skip. Inert default (False) + the
+        # production registry seeds zero skip_safe queries, so no file is ever
+        # skip-eligible in production — the enforced branch never fires until the
+        # evidence-gated flip (DECISIONS.md#049). Injected at build_graph and closed
+        # over in the analyze node (nodes-receive-deps-via-closure).
+        analyze_observed_skip_enforced=analyze_observed_skip_enforced,
         # None disables the analyze cache (the eval driver's default for
         # scenarios that don't exercise it); production wiring injects a
         # real AnalyzeCacheStore. Store-or-None IS the enable switch —

@@ -101,6 +101,7 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
+    ObservedMatch,
     compute_observed_skip_shadow,
     produce_observed_findings,
     run_observed_matches,
@@ -136,6 +137,7 @@ from outrider.audit.events import (
     ContextManifestEntry,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
+    ObservedSkipShadowEvent,
     ObservedSubsumedMatch,
     ReviewPhaseEvent,
     ScopeExclusionEntry,
@@ -337,6 +339,7 @@ async def analyze(
     active_policy_version: str = ACTIVE_POLICY_VERSION,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     trivial_scope_filter_enabled: bool = False,
+    analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> dict[str, object]:
@@ -587,6 +590,7 @@ async def analyze(
                 # set, so the filter never evaluates there by design. The
                 # analyze cache is pass-0-only for the same reason.
                 trivial_scope_filter_enabled=trivial_scope_filter_enabled,
+                analyze_observed_skip_enforced=analyze_observed_skip_enforced,
                 analyze_cache_store=analyze_cache_store,
                 cache_scope=cache_scope,
                 cache_mode=cache_mode,
@@ -649,6 +653,18 @@ async def analyze(
                 # extend into state below for the trace loop.
                 _admit_with_dedup(served.admitted_findings, admitted_findings, admitted_keys_seen)
                 trace_candidates.extend(served.trace_candidates)
+            elif file_outcome.observed_skip_result is not None:
+                # Step 3b-mechanism: enforced OBSERVED skip — the file's changed
+                # scopes were fully skip_safe-covered, so the LLM was NOT called. The
+                # OBSERVED findings ride n_findings_emitted (real FindingEvents fired)
+                # AND n_findings_observed (the proposal-accounting subtraction channel;
+                # OBSERVED findings have no proposal lifecycle), exactly like the
+                # augment path; n_llm_calls is untouched. They still flow to synthesize
+                # + HITL via admission.
+                obs_skip = file_outcome.observed_skip_result
+                n_findings_emitted += len(obs_skip.admitted_findings)
+                n_findings_observed += len(obs_skip.admitted_findings)
+                _admit_with_dedup(obs_skip.admitted_findings, admitted_findings, admitted_keys_seen)
 
             total_input_tokens += file_outcome.input_tokens
             total_output_tokens += file_outcome.output_tokens
@@ -956,6 +972,19 @@ class _ServedResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _ObservedSkipResult:
+    """Deterministic OBSERVED findings for a file whose ENFORCED skip fired (Step
+    3b-mechanism): every changed scope was covered by `skip_safe` OBSERVED matches, so
+    the LLM was NOT called. Populated on `_FileOutcome` INSTEAD of `parser_result`
+    (which stays None). The main loop admits these like the augment path's OBSERVED
+    findings — `n_findings_emitted` (real FindingEvents fired) AND `n_findings_observed`
+    (the proposal-accounting subtraction channel; OBSERVED findings have no proposal
+    lifecycle) — with NO LLM call counted. They still flow to synthesize + HITL."""
+
+    admitted_findings: tuple[ReviewFinding, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _FileOutcome:
     """Per-file processing result. Populated by `_process_one_file` and
     consumed by the main loop's accumulators.
@@ -979,6 +1008,10 @@ class _FileOutcome:
     # Stage B serve flip: non-None ONLY on a cache-served hit (parser_result is
     # then None — no LLM call). The main loop's served branch consumes it.
     served_result: _ServedResult | None = None
+    # Step 3b-mechanism: non-None ONLY on an enforced OBSERVED skip (parser_result is
+    # then None — no LLM call). The main loop's observed-skip branch admits these
+    # OBSERVED findings into the round so they reach synthesize + HITL.
+    observed_skip_result: _ObservedSkipResult | None = None
     # Stage 2 (FUP-044 ext 3): the skip reason, mirrored from the
     # FileExaminationEvent onto the in-memory outcome so the main loop can count
     # COST_BUDGET_EXHAUSTED skips for the starvation anomaly. None on any
@@ -1437,6 +1470,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     per_file_cap_tokens: int,
     remaining_budget_tokens: int,
     trivial_scope_filter_enabled: bool = False,
+    analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_scope: CacheScope | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
@@ -1841,6 +1875,66 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         parse_status=parse_status_for_event,
     )
 
+    # Step 3e.5 (Step 3b-mechanism): compute the OBSERVED coverage decision BEFORE the
+    # LLM call so an enforced `would_skip` short-circuits provider.complete. The matches
+    # are reused by the post-LLM OBSERVED block; the shadow event is EMITTED at its
+    # existing post-LLM point for the non-enforced path (byte-identical audit ordering —
+    # a provider failure still leaves no shadow event), and only HERE, pre-LLM-return, on
+    # an enforced skip. Same clean-parse + head-content gate as the post-LLM block.
+    observed_matches: tuple[ObservedMatch, ...] = ()
+    observed_skip_event: ObservedSkipShadowEvent | None = None
+    if not degraded_mode and changed_file.content_head is not None:
+        observed_matches = run_observed_matches(
+            file_path=changed_file.path,
+            head_content=content,
+            included_scope_units=included_scope_units,
+        )
+        if patched_file is not None:
+            observed_skip_event = compute_observed_skip_shadow(
+                observed_matches,
+                file_path=changed_file.path,
+                included_scope_units=included_scope_units,
+                patched_file=patched_file,
+                head_source=content,
+                base_source=changed_file.content_base,
+                review_id=review_id,
+                is_eval=is_eval,
+            )
+        if (
+            analyze_observed_skip_enforced
+            and observed_skip_event is not None
+            and observed_skip_event.outcome == "would_skip"
+        ):
+            # ENFORCED SKIP: every changed scope is skip_safe-covered, so the LLM is
+            # NOT called. Emit the OBSERVED findings (they reach synthesize + HITL via
+            # the round, preserving hitl-gates-high-severity) + the shadow event with
+            # skip_enforced=True, then return. The FileExaminationEvent (clean) was
+            # already emitted above. No #054/#055 merge (no LLM parser_result to merge
+            # against); no cache write (skip outcomes are never memoized).
+            skip_findings = produce_observed_findings(
+                observed_matches,
+                file_path=changed_file.path,
+                review_id=review_id,
+                installation_id=installation_id,
+                active_policy_version=active_policy_version,
+            )
+            await analyze_event_sink.emit_observed_skip_shadow(
+                observed_skip_event.model_copy(update={"skip_enforced": True})
+            )
+            for skip_finding in skip_findings:
+                await analyze_event_sink.emit_finding(skip_finding, is_eval=is_eval)
+            return _FileOutcome(
+                parse_status=parse_status_for_event,
+                parser_result=None,
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                cost_decimal=Decimal("0"),
+                estimated_tokens=0,
+                observed_skip_result=_ObservedSkipResult(tuple(skip_findings)),
+            )
+
     # Step 3f: LLM call + response parse.
     # One ContextManifestEntry per included scope unit for clean+full_llm.
     # Empty tuple for degraded — `_enforce_context_for_scope_nodes`
@@ -1942,13 +2036,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # in degraded mode and when nothing is subsumed.
     subsumed_matches: list[ObservedSubsumedMatch] = []
     if not degraded_mode and changed_file.content_head is not None:
-        # Single deterministic OBSERVED query pass; the findings producer and
-        # (the routing increment's) skip-coverage check both read these matches.
-        observed_matches = run_observed_matches(
-            file_path=changed_file.path,
-            head_content=content,
-            included_scope_units=included_scope_units,
-        )
+        # `observed_matches` was computed PRE-LLM (Step 3b-mechanism) so an enforced
+        # `would_skip` could short-circuit the LLM; reuse the same matches here for the
+        # findings producer + the #054 merge (a single deterministic OBSERVED query pass).
         observed_findings = produce_observed_findings(
             observed_matches,
             file_path=changed_file.path,
@@ -2093,24 +2183,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                         ),
                     )
 
-        # Skip-routing SHADOW telemetry (Cost Lever 3, DECISIONS.md#049): record
-        # the per-file skip-eligibility decision from the SAME OBSERVED matches.
-        # V1 RECORDS ONLY — it never skips the LLM (which already ran above);
-        # enforcement is the later evidence-gated flip. Needs the diff, so it is
-        # gated on patched_file (None for binary / oversized / absent patches).
-        if patched_file is not None:
-            shadow_event = compute_observed_skip_shadow(
-                observed_matches,
-                file_path=changed_file.path,
-                included_scope_units=included_scope_units,
-                patched_file=patched_file,
-                head_source=content,
-                base_source=changed_file.content_base,
-                review_id=review_id,
-                is_eval=is_eval,
-            )
-            if shadow_event is not None:
-                await analyze_event_sink.emit_observed_skip_shadow(shadow_event)
+        # Skip-routing telemetry (Cost Lever 3, DECISIONS.md#049): the skip-eligibility
+        # decision (`observed_skip_event`) was computed PRE-LLM (Step 3b-mechanism);
+        # EMIT it here for the non-enforced path so audit ordering + failure semantics
+        # stay byte-identical (a `provider.complete` failure above leaves no shadow
+        # event — this point is never reached). The enforced `would_skip` branch already
+        # emitted it (skip_enforced=True) and returned; `skip_enforced` stays False here
+        # (the LLM ran, so no skip was enforced).
+        if observed_skip_event is not None:
+            await analyze_event_sink.emit_observed_skip_shadow(observed_skip_event)
 
     # Lift parser rejection payloads into audit events.
     for proposal_rej in parser_result.proposal_rejections:
