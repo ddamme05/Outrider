@@ -5,4 +5,4 @@
   arguments: (argument_list) @_args
   (#eq? @_obj "yaml")
   (#eq? @_meth "load")
-  (#not-match? @_args "Loader")) @unsafe_deserialization_yaml
+  (#not-match? @_args "SafeLoader")) @unsafe_deserialization_yaml
