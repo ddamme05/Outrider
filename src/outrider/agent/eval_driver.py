@@ -13,8 +13,9 @@ compiled graph with real audit persisters against an ephemeral
 graph to completion, and returns an `EvalRunResult`.
 
 **Why this lives in `src/`** (resolution A): the scenarios call
-`run_review("…json")` with only a path — no injection seam — so the shim
-must self-construct its dependencies, and the import contract
+`run_review("…json")` with only a path — its dependencies are
+self-constructed by default (the optional `probe=` cost probe and
+`model_config=` per-node-model seams aside) — and the import contract
 (`outrider.agent.run_review`) forces it to be `src`-reachable. The three
 adapters it constructs (`_FixtureScriptedProvider`, `_FixtureGitHubClient`,
 `_CapturingPublisher`) are therefore `src`-local, but they are a
@@ -816,6 +817,7 @@ def _build_eval_graph(
     trivial_scope_filter_enabled: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    model_config: ModelConfig | None = None,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -823,6 +825,10 @@ def _build_eval_graph(
     resume driver, so they cannot drift on which sinks/deps are injected. Only the
     `checkpointer` differs across callers (`InMemorySaver` for single-pass;
     `AsyncPostgresSaver` for resume — durability is what makes resume possible).
+
+    `model_config` lets a caller (the eval scorecard runner) vary per-node models
+    in-process without mutating `OUTRIDER_MODEL_*` env between runs; default `None`
+    reads the env exactly as production does (`ModelConfig()`).
     """
     # Budget seam (Stage 1c): the fixture's budget, or build_graph's default 200k
     # when unset. A starvation scenario sets a tight value so the analyze cost gate
@@ -836,7 +842,7 @@ def _build_eval_graph(
         db_factory=session_factory,
         github_factory=_github_factory_for(fixture),
         provider=provider,
-        model_config=ModelConfig(),
+        model_config=model_config or ModelConfig(),
         phase_event_sink=persister,
         file_examination_sink=persister,
         analyze_event_sink=persister,
@@ -880,6 +886,7 @@ async def _drive(
     probe: CostProbe | None = None,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    model_config: ModelConfig | None = None,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -910,6 +917,7 @@ async def _drive(
             checkpointer=InMemorySaver(),
             analyze_cache_store=analyze_cache_store,
             cache_mode=cache_mode,
+            model_config=model_config,
         )
 
         result = await graph.ainvoke(
@@ -955,15 +963,22 @@ async def _drive(
 
 
 async def _arun_review(
-    fixture: EvalFixture, base_url: str, *, probe: CostProbe | None = None
+    fixture: EvalFixture,
+    base_url: str,
+    *,
+    probe: CostProbe | None = None,
+    model_config: ModelConfig | None = None,
 ) -> EvalRunResult:
     async with ephemeral_database(base_url=base_url) as db_url:
         await run_alembic_upgrade_head(db_url)
-        return await _drive(fixture, db_url, probe=probe)
+        return await _drive(fixture, db_url, probe=probe, model_config=model_config)
 
 
 def run_review(
-    fixture_path: str | os.PathLike[str], *, probe: CostProbe | None = None
+    fixture_path: str | os.PathLike[str],
+    *,
+    probe: CostProbe | None = None,
+    model_config: ModelConfig | None = None,
 ) -> EvalRunResult:
     """Drive the real 7-node graph against a JSON PR fixture; return the result.
 
@@ -973,6 +988,10 @@ def run_review(
 
     Pass a `CostProbe` to measure grounded cost-per-review on real prompt sizes
     (zero Anthropic spend); default `None` keeps the fixed-sentinel token counts.
+
+    Pass a `model_config` to run under a specific per-node model matrix (the eval
+    scorecard runner's cost pass); default `None` reads `OUTRIDER_MODEL_*` from env
+    exactly as production does.
     """
     require_eval_mode()
     try:
@@ -987,7 +1006,7 @@ def run_review(
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
 
-    return asyncio.run(_arun_review(fixture, base_url, probe=probe))
+    return asyncio.run(_arun_review(fixture, base_url, probe=probe, model_config=model_config))
 
 
 # ---------------------------------------------------------------------------
