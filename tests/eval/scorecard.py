@@ -173,6 +173,11 @@ class ScorecardRow(BaseModel):
             raise ValueError("cost is present iff cost_source == 'full_graph'")
         if self.latency is not None and self.cost is None:
             raise ValueError("latency requires a cost (they are a review-level pair)")
+        # replay verdict + its provenance are a pair: a True/False equivalence
+        # verdict requires a real source (resume/persisting), and no verdict
+        # (None) requires "not_applicable" — mirrors the cost/cost_source invariant.
+        if (self.replay_equivalent is not None) != (self.replay_source != "not_applicable"):
+            raise ValueError("replay_equivalent is set iff replay_source != 'not_applicable'")
         return self
 
     @classmethod
@@ -369,6 +374,7 @@ class Scorecard(BaseModel):
             "$/review",
             "latency(s)",
             "replay",
+            "replay_src",
             "quality_src",
             "cost_src",
         ]
@@ -392,6 +398,7 @@ class Scorecard(BaseModel):
                     f"{r.cost.usd:.4f}" if r.cost is not None else "—",
                     f"{r.latency.seconds:.2f}" if r.latency is not None else "—",
                     _fmt_replay(r.replay_equivalent),
+                    r.replay_source,
                     r.quality_source,
                     r.cost_source,
                 ]
