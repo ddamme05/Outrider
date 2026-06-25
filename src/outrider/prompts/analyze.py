@@ -81,11 +81,14 @@ if TYPE_CHECKING:
     from uuid import UUID
 
 # Bumped 2026-06-25 (was "analyze-v5") to tighten the `ssrf` finding-type
-# definition: SSRF turns on control of the request DESTINATION (host / origin
-# / scheme), so a user value interpolated only into the PATH/QUERY of a
-# hardcoded host is NOT ssrf. Closes a shared Sonnet+Haiku over-flag the eval
-# scorecard surfaced (a fixed-host fetch flagged as ssrf); real-SSRF detection
-# (attacker-controlled host) is unchanged.
+# definition: SSRF turns on control of the request DESTINATION (host / port /
+# origin / scheme), so a user value confined to the PATH of a hardcoded host is
+# NOT ssrf — closing a shared Sonnet+Haiku over-flag the eval scorecard surfaced
+# (a fixed-host fetch flagged ssrf). The authority rule is PRINCIPLED + safe-side
+# (reach-the-authority-by-any-means + when-in-doubt-flag), not an enumerated
+# token list, after a 4-lens red-team found the enumerated form under-flagged
+# (`//` scheme-relative, port, encoded separators, urljoin-absolute, proxy-query).
+# Real-SSRF detection (attacker-controlled destination) is unchanged.
 # Bumped 2026-06-20 (was "analyze-v4") for the dual-mode security taxonomy
 # (DECISIONS.md#053): the 3 OBSERVED-tier 1.1.0 types + the 7 contextual
 # 1.2.0 types join the model-pickable enum vocabulary, plus a "Contextual
@@ -156,15 +159,22 @@ condition holds, because severity is keyed on the exact type:
   `Math.random`) used for a SECURITY value: token, password, session id,
   nonce, salt, reset code. Not for non-security sampling/jitter.
 - `ssrf` — a server-side request whose DESTINATION is attacker-influenced:
-  the host, origin, or scheme (WHERE the request goes) comes from user
-  input — a fetch/proxy/webhook to a user-supplied address. NOT ssrf when
-  only a path or query value is interpolated into a FIXED, hardcoded host
-  (e.g. `requests.get("https://api.example.com/users/" + user_id)` still
-  reaches the same server — flag another type if warranted, but not ssrf).
-  Use `ssrf_metadata` INSTEAD when the reachable target can be a cloud
-  metadata / link-local endpoint (`169.254.169.254`,
-  `metadata.google.internal`) or an internal control plane — credential
-  theft raises the stakes.
+  the host, port, origin, or scheme (WHERE the request goes, and to which
+  service) comes from user input — a fetch/proxy/webhook to a user-supplied
+  address. The ONLY safe case (NOT ssrf) is a user value confined strictly to
+  the path of a hardcoded host that it cannot escape — e.g.
+  `requests.get("https://api.example.com/users/" + user_id)`. It is STILL
+  ssrf whenever the value can reach the host, port, or scheme by ANY means
+  (not only these): a leading `//` (scheme-relative) or absolute URL; an `@`,
+  a backslash, or an encoded separator (`%2F`, `%40`); an absolute or `//`
+  value resolved via `urljoin` / `URL()`; a user-chosen port or scheme; a host
+  picked by a user-supplied key; or a fixed host that is itself a proxy /
+  fetcher using the value as its target (`?url=`, `?target=`). When unsure
+  whether a value can shift the destination, flag ssrf. Check the metadata
+  escalation BEFORE the safe case. Use `ssrf_metadata` INSTEAD when the
+  reachable target can be a cloud metadata / link-local endpoint
+  (`169.254.169.254`, `metadata.google.internal`) or an internal control
+  plane — credential theft raises the stakes.
 - `open_redirect` — a redirect target taken from user input with no
   allowlist. Use `open_redirect_authed` INSTEAD when the redirect carries
   or follows authentication (an OAuth/SSO `redirect_uri`, a post-login

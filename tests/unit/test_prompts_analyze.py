@@ -58,6 +58,35 @@ def test_version_is_named_analyze_v6() -> None:
     assert VERSION == "analyze-v6"
 
 
+def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
+    """The `ssrf` definition (analyze-v6) must keep BOTH halves of the
+    destination-control framing, pinned directly because the wording is
+    security-sensitive (a VERSION bump alone wouldn't catch a regression):
+
+    (1) the NARROW safe case — only a value confined strictly to the path of a
+        fixed host is NOT ssrf. Widening/dropping it reopens the shared
+        Sonnet+Haiku over-flag the eval scorecard surfaced (a fixed-host fetch
+        flagged ssrf).
+    (2) the PRINCIPLED authority rule — the value reaching the host/port/scheme
+        by ANY means is STILL ssrf, with a when-in-doubt-flag default. This is
+        the red-team-hardened replacement for an enumerated token checklist: a
+        literal model reads a closed list as exhaustive and under-flags (`//`
+        scheme-relative, port, encoded separators, urljoin-absolute, proxy-query
+        all defeat a closed list), so the rule is intentionally non-exhaustive.
+    """
+    # whitespace-normalized so phrases wrapped across lines match as substrings.
+    text = " ".join(SYSTEM_PROMPT_INVARIANTS.lower().split())
+    # (1) narrow safe case — closes the over-flag without widening
+    assert "the only safe case" in text
+    assert "confined strictly to the path" in text
+    # (2) principled, non-exhaustive authority rule — preserves real-SSRF recall
+    assert "still ssrf whenever the value can reach" in text
+    assert "by any means" in text
+    assert "when unsure" in text
+    assert "the host, port, origin, or scheme" in text  # port now in scope
+    assert "before the safe case" in text  # metadata escalation evaluated first
+
+
 def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
     """Guards the DECISIONS.md#041 over-flag fix. The prompt must tell the
     model THREE things, each pinned against an observed regression:
