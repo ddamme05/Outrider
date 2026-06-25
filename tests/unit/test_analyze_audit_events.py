@@ -322,6 +322,76 @@ def test_analyze_completed_admits_superseded_by_observed_adds() -> None:
     assert event.n_proposals_superseded_by_observed == 1
 
 
+def test_analyze_completed_admits_capped_proposal_adds() -> None:
+    """Per-round cap (FUP-180): a model proposal admitted then DROPPED by the cap
+    ADDS — no surviving finding, same side as rejected/superseded. seen=2,
+    emitted=1 (kept), capped=1, dropped_over_cap=1 → 2 == (1 - 0 - 0) + 0 + 0 + 1."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            n_proposals_seen=2,
+            n_findings_emitted=1,
+            n_proposals_capped=1,
+            n_findings_dropped_over_cap=1,
+            n_llm_calls=1,
+        )
+    )
+    assert event.n_proposals_capped == 1
+    assert event.n_findings_dropped_over_cap == 1
+
+
+def test_analyze_completed_capped_revert_the_fold() -> None:
+    """The capped term is load-bearing and ADDED: the same counters that balance
+    WITH capped=1 must FAIL at capped=0 (the dropped proposal would be unaccounted)."""
+    AnalyzeCompletedEvent(  # balances with the term
+        **_completed_kwargs(
+            n_proposals_seen=2,
+            n_findings_emitted=1,
+            n_proposals_capped=1,
+            n_findings_dropped_over_cap=1,
+            n_llm_calls=1,
+        )
+    )
+    with pytest.raises(ValidationError, match="Proposal accounting mismatch"):
+        AnalyzeCompletedEvent(
+            **_completed_kwargs(
+                n_proposals_seen=2,
+                n_findings_emitted=1,
+                n_proposals_capped=0,
+                n_findings_dropped_over_cap=1,
+                n_llm_calls=1,
+            )
+        )
+
+
+def test_analyze_completed_capped_producer_observed_only_no_proposal_term() -> None:
+    """A degrade that dropped only producer-OBSERVED findings adds NO proposal term:
+    the dropped observed findings are already absent from the post-cap n_findings_*
+    counters. dropped_over_cap=2, capped=0, all emitted counters 0 → equation balances
+    at 0 and the consistency guard holds (0 <= 2)."""
+    event = AnalyzeCompletedEvent(
+        **_completed_kwargs(n_findings_dropped_over_cap=2, n_proposals_capped=0)
+    )
+    assert event.n_findings_dropped_over_cap == 2
+    assert event.n_proposals_capped == 0
+
+
+def test_analyze_completed_rejects_capped_exceeding_dropped() -> None:
+    """Consistency guard: capped proposals are a subset of all cap drops, so
+    n_proposals_capped must never exceed n_findings_dropped_over_cap. The proposal
+    equation is kept balanced (seen=2, emitted=0, capped=2) so this isolates the
+    cap-drop-consistency validator."""
+    with pytest.raises(ValidationError, match="Cap-drop accounting mismatch"):
+        AnalyzeCompletedEvent(
+            **_completed_kwargs(
+                n_proposals_seen=2,
+                n_findings_emitted=0,
+                n_proposals_capped=2,
+                n_findings_dropped_over_cap=1,
+                n_llm_calls=1,
+            )
+        )
+
+
 def test_analyze_completed_superseded_revert_the_fold() -> None:
     """The superseded term is load-bearing and ADDED, not cosmetic: the same
     counters that balance WITH superseded=1 must FAIL at superseded=0 (and a
