@@ -1072,10 +1072,10 @@
             "title": "N Proposals Superseded By Observed",
             "default": 0
           },
-          "n_proposals_capped": {
+          "n_proposals_dropped": {
             "type": "integer",
             "minimum": 0.0,
-            "title": "N Proposals Capped",
+            "title": "N Proposals Dropped",
             "default": 0
           },
           "n_findings_dropped_over_cap": {
