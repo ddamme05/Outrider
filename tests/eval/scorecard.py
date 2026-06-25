@@ -114,9 +114,10 @@ class DiagnosticFinding(BaseModel):
 
 class RowDiagnostics(BaseModel):
     """Failed-row diagnostics: the candidate's actual false positives + misses,
-    plus the baseline's counts for the delta. Populated by `from_comparison` ONLY
-    when the candidate has at least one FP or miss (a clean row carries None), so
-    the artifact turns a FAIL from "why?" (open the JSON / logs) into a glance."""
+    plus the baseline's counts for the delta. Populated by `from_comparison`
+    whenever the candidate has an FP/miss OR the gate failed (a clean PASS carries
+    None), so the artifact explains every FAIL — including a baseline-invalid FAIL
+    with no candidate FP/miss — instead of sending you to the JSON / logs."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -165,8 +166,8 @@ class ScorecardRow(BaseModel):
     regression: RegressionVerdict | None = None
 
     # Failed-row diagnostics — the candidate's actual FP/missed findings + the
-    # baseline delta. Populated by `from_comparison` only when there's something
-    # to diagnose (>= 1 FP or miss); None on clean and errored rows.
+    # baseline delta. Populated by `from_comparison` on any FP/miss OR gate
+    # failure; None on clean passes and errored rows.
     diagnostics: RowDiagnostics | None = None
 
     # Cost/latency — review-level, from the full-graph run. Optional even on an
@@ -741,8 +742,8 @@ class Scorecard(BaseModel):
             sections.extend(_html_table(agg_headers, agg_data))
 
             # Diagnostics: the candidate findings behind a FAIL (FP titles/paths)
-            # plus the per-scenario delta vs baseline. Built only from rows that
-            # carry diagnostics (>= 1 FP or miss); a clean batch renders nothing.
+            # plus the per-scenario delta vs baseline. Built from rows that carry
+            # diagnostics (any FP/miss or gate failure); a clean batch renders nothing.
             delta_data: list[list[str]] = []
             detail_data: list[list[str]] = []
             for r in self.rows:
