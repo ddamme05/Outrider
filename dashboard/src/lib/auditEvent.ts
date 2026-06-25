@@ -29,6 +29,10 @@ export function summarizeEvent(e: AuditEvent): string {
       return `${e.applied ? "applied" : "shadow"} · ${e.entries.length} scope(s) · ${e.file_path}`;
     case "observed_skip_shadow":
       return `${e.outcome}${e.skip_enforced ? " (LLM skipped)" : ""} · ${e.blockers.length}/${e.changed_regions.length} blocked · ${e.file_path}`;
+    case "analyze_completed":
+      return `${e.n_findings_emitted} finding(s)${e.n_findings_dropped_over_cap ? ` · ${e.n_findings_dropped_over_cap} over-cap dropped` : ""}`;
+    case "synthesize_completed":
+      return `${e.n_findings} finding(s)${e.n_findings_dropped_over_cap ? ` · ${e.n_findings_dropped_over_cap} over-cap dropped` : ""}`;
     default:
       return "";
   }

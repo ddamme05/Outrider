@@ -1072,6 +1072,18 @@
             "title": "N Proposals Superseded By Observed",
             "default": 0
           },
+          "n_proposals_capped": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Proposals Capped",
+            "default": 0
+          },
+          "n_findings_dropped_over_cap": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Findings Dropped Over Cap",
+            "default": 0
+          },
           "subsumed_matches": {
             "items": {
               "$ref": "#/components/schemas/ObservedSubsumedMatch"
@@ -5162,6 +5174,12 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "N Findings"
+          },
+          "n_findings_dropped_over_cap": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "N Findings Dropped Over Cap",
+            "default": 0
           },
           "files_examined": {
             "type": "integer",
