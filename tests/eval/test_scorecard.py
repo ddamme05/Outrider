@@ -34,6 +34,16 @@ from .metrics import (
     SeverityAccuracy,
 )
 from .scorecard import GateVerdict, RowDiagnostics, Scorecard, ScorecardRow
+from .test_model_comparison import (
+    _GROUND_TRUTH_BY_FIXTURE,
+    _MISSING_ERROR_HANDLING_FIXTURE,
+    _MISSING_INPUT_VALIDATION_FIXTURE,
+    _N_PLUS_ONE_FIXTURE,
+    _PATH_TRAVERSAL_FIXTURE,
+    _PYGOAT_AUTH_FIXTURE,
+    _PYGOAT_SQL_FIXTURE,
+    _SQLI_HOLDOUT_CONCAT_FIXTURE,
+)
 
 _BASELINE_MODEL = "claude-sonnet-4-6"
 _CANDIDATE_MODEL = "claude-haiku-4-5"
@@ -713,37 +723,53 @@ def test_real_scorecard_evidence() -> None:
     # is real-model spend per rerun, so the set stays explicit and capped. Tier 1
     # wires existing JUDGED single-finding fixtures for broader finding-type
     # coverage + precision traps; Tier 2 adds the SSRF recall + fixed-host
-    # precision pair (regression coverage for the analyze-v6 ssrf destination-
-    # control rule). Dual-mode command_injection/weak_crypto fixtures are
+    # precision pair (regression coverage for ssrf destination-control precision —
+    # a fixed-host fetch must not over-flag). Dual-mode command_injection/weak_crypto fixtures are
     # intentionally excluded: they are OBSERVED-tier (deterministic), so they
     # do not discriminate Sonnet-vs-Haiku and would be near-vacuous rows.
     specs = [
         # --- true positives (recall) ---
+        # These 7 rows reuse the canonical ground truth from `_GROUND_TRUTH_BY_FIXTURE`
+        # (shared with test_model_comparison) — a single source of truth, so a fixture
+        # line-shift cannot drift the two eval suites' expected findings apart.
         ScenarioSpec.from_fixture(
             "pygoat_sql_injection",
-            str(mock / "pygoat_sql_injection.json"),
-            _gt("pygoat/introduction/views.py", 5, 5, FindingType.SQL_INJECTION),
+            _PYGOAT_SQL_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_PYGOAT_SQL_FIXTURE],
         ),
         ScenarioSpec.from_fixture(
             "sqli_concat",
-            str(mock / "sqli_holdout_concat.json"),
-            _gt("contacts/lookup.py", 6, 6, FindingType.SQL_INJECTION),
+            _SQLI_HOLDOUT_CONCAT_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_SQLI_HOLDOUT_CONCAT_FIXTURE],
         ),
         ScenarioSpec.from_fixture(
             "pygoat_auth_bypass",
-            str(mock / "pygoat_auth_bypass.json"),
-            _gt("pygoat/introduction/auth_views.py", 7, 8, FindingType.AUTH_BYPASS),
+            _PYGOAT_AUTH_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_PYGOAT_AUTH_FIXTURE],
         ),
         ScenarioSpec.from_fixture(
             "missing_input_validation",
-            str(mock / "missing_input_validation.json"),
-            _gt("accounts/views.py", 5, 5, FindingType.MISSING_INPUT_VALIDATION),
+            _MISSING_INPUT_VALIDATION_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_MISSING_INPUT_VALIDATION_FIXTURE],
         ),
         ScenarioSpec.from_fixture(
             "path_traversal",
-            str(mock / "path_traversal.json"),
-            _gt("reports/views.py", 6, 6, FindingType.PATH_TRAVERSAL),
+            _PATH_TRAVERSAL_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_PATH_TRAVERSAL_FIXTURE],
         ),
+        ScenarioSpec.from_fixture(
+            "missing_error_handling",
+            _MISSING_ERROR_HANDLING_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_MISSING_ERROR_HANDLING_FIXTURE],
+        ),
+        ScenarioSpec.from_fixture(
+            "n_plus_one_query",
+            _N_PLUS_ONE_FIXTURE,
+            _GROUND_TRUTH_BY_FIXTURE[_N_PLUS_ONE_FIXTURE],
+        ),
+        # Scorecard-local TPs (not in the shared registry): a weak_password_hash row +
+        # the ssrf_metadata recall row (a fully attacker-controlled URL whose reachable
+        # target CAN be metadata/internal -> the prompt's escalated ssrf_metadata type).
         ScenarioSpec.from_fixture(
             "weak_password_hash",
             str(mock / "weak_password_hash_md5.json"),
@@ -752,17 +778,7 @@ def test_real_scorecard_evidence() -> None:
         ScenarioSpec.from_fixture(
             "ssrf_user_host",
             str(mock / "ssrf_user_host.json"),
-            _gt("app/fetch.py", 7, 7, FindingType.SSRF),
-        ),
-        ScenarioSpec.from_fixture(
-            "missing_error_handling",
-            str(mock / "missing_error_handling.json"),
-            _gt("profile/client.py", 5, 5, FindingType.MISSING_ERROR_HANDLING),
-        ),
-        ScenarioSpec.from_fixture(
-            "n_plus_one_query",
-            str(mock / "n_plus_one_query.json"),
-            _gt("orders/enrich.py", 7, 7, FindingType.N_PLUS_ONE_QUERY),
+            _gt("app/fetch.py", 7, 7, FindingType.SSRF_METADATA),
         ),
         # --- precision traps (clean: NO finding expected) ---
         ScenarioSpec.from_fixture(
