@@ -61,9 +61,11 @@ class AnomalyRuleName(StrEnum):
     `GATED_FINDINGS_OVER_CAP` — emitted by `agent/nodes/analyze.py` (per round) and
     `agent/nodes/synthesize.py` (per report) when HITL-gated (CRITICAL/HIGH) findings
     ALONE exceed the soft finding cap (FUP-180). Gated findings are never dropped to
-    fit the soft cap, so they are all kept and reach HITL — but a review with >200
-    gated findings is a loud capacity signal worth an operator's attention (the
-    telemetry counter `n_findings_dropped_over_cap` only records NON-gated drops).
+    fit the soft cap, so up to the hard runaway ceiling (`MAX_FINDINGS_HARD_CAP`) they
+    are all kept and reach HITL — a review with >200 (soft cap) gated findings is a
+    loud capacity signal worth an operator's attention. Beyond the hard ceiling the
+    overflow gated findings ARE dropped (and counted in `n_findings_dropped_over_cap`),
+    so this anomaly firing does not by itself guarantee every gated finding was kept.
     Severity `high`. Idempotent on `(review_id,
     rule_name='gated_findings_over_cap')` via the partial unique index from the
     finding-cap migration.

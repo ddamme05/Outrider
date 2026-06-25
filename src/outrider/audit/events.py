@@ -2575,10 +2575,14 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_findings_dropped_over_cap: int = Field(ge=0, default=0)
     """Total findings (ALL origins) dropped specifically by the per-round CAP this pass —
     the degrade signal surfaced to the dashboard. TELEMETRY, outside the proposal
-    equation. Distinct from `n_proposals_dropped`: this is cap-only (a NON-gated drop,
-    since gated findings are never cap-dropped), while `n_proposals_dropped` also covers
-    dedup + collapse and is proposal-origin only — so neither subsumes the other.
-    Default 0 (no degrade, or pre-FUP-180 payloads)."""
+    equation. NORMALLY non-gated: gated (CRITICAL/HIGH) findings are never dropped to fit
+    the SOFT cap (FUP-180). The exception is the hard runaway ceiling
+    (`MAX_FINDINGS_HARD_CAP`): a review with more gated findings than that ceiling drops
+    the overflow gated findings too, and those ARE counted here — so a non-zero value is
+    NOT a guarantee that only non-gated findings were dropped (the paired
+    `GATED_FINDINGS_OVER_CAP` anomaly fires whenever gated exceed the soft cap). Distinct
+    from `n_proposals_dropped`, which covers dedup + collapse + cap and is proposal-origin
+    only — neither subsumes the other. Default 0 (no degrade, or pre-FUP-180 payloads)."""
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
     """Cross-type subsumption proof-retention records (DECISIONS.md#055): one per
     OBSERVED finding dropped because a same-span JUDGED finding of a more-specific

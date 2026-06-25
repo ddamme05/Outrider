@@ -113,7 +113,8 @@ class AnomalyPersister:
 
     Serves sweep callers (HITL_TIMEOUT) and graph callers
     (CROSS_ROUND_SEVERITY_DIVERGENCE from synthesize,
-    COST_BUDGET_STARVATION from analyze). The dispatch is implicit in
+    COST_BUDGET_STARVATION + GATED_FINDINGS_OVER_CAP from analyze, and
+    GATED_FINDINGS_OVER_CAP from synthesize). The dispatch is implicit in
     the literal `index_where` looked up from `_RULE_NAME_INDEX_WHERE`
     by the runtime rule_name — each rule's partial unique index has a
     matching literal predicate.
