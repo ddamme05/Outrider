@@ -48,9 +48,10 @@ def test_version_is_named_analyze_v6() -> None:
     "analyze-v6" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v6 bump tightened the `ssrf` definition (destination-control, not a
-    user value in the path/query of a fixed host); v5 added the dual-mode
-    security taxonomy vocabulary + guidance (DECISIONS.md#053); v4 landed the
+    The v6 bump tightened the `ssrf` definition (destination-control: a value
+    confined to the path or an ordinary query of a fixed host is not ssrf);
+    v5 added the dual-mode security taxonomy vocabulary + guidance
+    (DECISIONS.md#053); v4 landed the
     cache-packing repartition (per-file context → user_prompt; exemplars block
     in the cached prefix); v3 added the sql_injection parameterized-query
     false-positive guidance (DECISIONS.md#041); v2 landed the trace-node
@@ -63,10 +64,11 @@ def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
     destination-control framing, pinned directly because the wording is
     security-sensitive (a VERSION bump alone wouldn't catch a regression):
 
-    (1) the NARROW safe case — only a value confined strictly to the path of a
-        fixed host is NOT ssrf. Widening/dropping it reopens the shared
-        Sonnet+Haiku over-flag the eval scorecard surfaced (a fixed-host fetch
-        flagged ssrf).
+    (1) the safe case — a value confined to the PATH, or to an ordinary query
+        parameter that cannot select a downstream target, of a fixed host is
+        NOT ssrf. Dropping the path half reopens the shared Sonnet+Haiku
+        over-flag the scorecard surfaced; dropping the ordinary-query half
+        re-flags benign `?q=` params (the over-correction Codex caught).
     (2) the PRINCIPLED authority rule — the value reaching the host/port/scheme
         by ANY means is STILL ssrf, with a when-in-doubt-flag default. This is
         the red-team-hardened replacement for an enumerated token checklist: a
@@ -76,9 +78,11 @@ def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
     """
     # whitespace-normalized so phrases wrapped across lines match as substrings.
     text = " ".join(SYSTEM_PROMPT_INVARIANTS.lower().split())
-    # (1) narrow safe case — closes the over-flag without widening
-    assert "the only safe case" in text
-    assert "confined strictly to the path" in text
+    # (1) safe case = PATH or an ordinary (non-target) query on a fixed host —
+    #     closes the path over-flag without re-flagging benign query params.
+    assert "confined to the path" in text
+    assert "ordinary query parameter that does not select a downstream target" in text
+    assert "using the value as its target" in text  # but proxy ?url= IS still ssrf
     # (2) principled, non-exhaustive authority rule — preserves real-SSRF recall
     assert "still ssrf whenever the value can reach" in text
     assert "by any means" in text
