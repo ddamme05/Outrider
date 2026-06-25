@@ -709,16 +709,50 @@ def test_real_scorecard_evidence() -> None:
 
     # Full-response fixtures (drive triage+analyze+synthesize, so the cost pass's
     # run_review works) with ground truth; safe_refactor carries none (clean code).
+    # Curated scorecard corpus (decision-oriented, NOT a fixture dump) — each row
+    # is real-model spend per rerun, so the set stays explicit and capped. Tier 1
+    # wires existing JUDGED single-finding fixtures for broader finding-type
+    # coverage + precision traps; Tier 2 adds the SSRF recall + fixed-host
+    # precision pair (regression coverage for the analyze-v6 ssrf destination-
+    # control rule). Dual-mode command_injection/weak_crypto fixtures are
+    # intentionally excluded: they are OBSERVED-tier (deterministic), so they
+    # do not discriminate Sonnet-vs-Haiku and would be near-vacuous rows.
     specs = [
+        # --- true positives (recall) ---
         ScenarioSpec.from_fixture(
             "pygoat_sql_injection",
             str(mock / "pygoat_sql_injection.json"),
             _gt("pygoat/introduction/views.py", 5, 5, FindingType.SQL_INJECTION),
         ),
         ScenarioSpec.from_fixture(
+            "sqli_concat",
+            str(mock / "sqli_holdout_concat.json"),
+            _gt("contacts/lookup.py", 6, 6, FindingType.SQL_INJECTION),
+        ),
+        ScenarioSpec.from_fixture(
             "pygoat_auth_bypass",
             str(mock / "pygoat_auth_bypass.json"),
             _gt("pygoat/introduction/auth_views.py", 7, 8, FindingType.AUTH_BYPASS),
+        ),
+        ScenarioSpec.from_fixture(
+            "missing_input_validation",
+            str(mock / "missing_input_validation.json"),
+            _gt("accounts/views.py", 5, 5, FindingType.MISSING_INPUT_VALIDATION),
+        ),
+        ScenarioSpec.from_fixture(
+            "path_traversal",
+            str(mock / "path_traversal.json"),
+            _gt("reports/views.py", 6, 6, FindingType.PATH_TRAVERSAL),
+        ),
+        ScenarioSpec.from_fixture(
+            "weak_password_hash",
+            str(mock / "weak_password_hash_md5.json"),
+            _gt("accounts/auth.py", 5, 5, FindingType.WEAK_PASSWORD_HASH),
+        ),
+        ScenarioSpec.from_fixture(
+            "ssrf_user_host",
+            str(mock / "ssrf_user_host.json"),
+            _gt("app/fetch.py", 6, 6, FindingType.SSRF),
         ),
         ScenarioSpec.from_fixture(
             "missing_error_handling",
@@ -729,6 +763,17 @@ def test_real_scorecard_evidence() -> None:
             "n_plus_one_query",
             str(mock / "n_plus_one_query.json"),
             _gt("orders/enrich.py", 7, 7, FindingType.N_PLUS_ONE_QUERY),
+        ),
+        # --- precision traps (clean: NO finding expected) ---
+        ScenarioSpec.from_fixture(
+            "safe_parameterized_query",
+            str(mock / "safe_parameterized_query.json"),
+            (),
+        ),
+        ScenarioSpec.from_fixture(
+            "ssrf_fixed_host_safe",
+            str(mock / "ssrf_fixed_host_safe.json"),
+            (),
         ),
         ScenarioSpec.from_fixture("safe_refactor", str(mock / "safe_refactor.json"), ()),
     ]
