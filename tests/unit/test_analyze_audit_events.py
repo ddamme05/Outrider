@@ -750,6 +750,38 @@ def test_observed_skip_shadow_rejects_would_skip_with_base_changed_region() -> N
         )
 
 
+def test_observed_skip_shadow_default_skip_enforced_false() -> None:
+    """`skip_enforced` defaults to False — a shadow decision records what WOULD
+    happen without skipping the LLM. The enforced branch sets it True explicitly."""
+    event = ObservedSkipShadowEvent(**_skip_shadow_kwargs())
+    assert event.skip_enforced is False
+
+
+def test_observed_skip_shadow_skip_enforced_requires_would_skip() -> None:
+    """skip_enforced=True is only coherent on a would_skip decision: a not_eligible
+    file always runs the LLM, so an enforced skip on it is a contradiction (the
+    branch that sets skip_enforced is gated on would_skip; the validator is the
+    floor if that gate ever changes — Step 3b-mechanism)."""
+    with pytest.raises(ValidationError, match="skip_enforced=True requires"):
+        ObservedSkipShadowEvent(**_skip_shadow_kwargs(skip_enforced=True))
+
+
+def test_observed_skip_shadow_skip_enforced_with_would_skip_ok() -> None:
+    """The enforced-skip shape: a would_skip decision the analyze node acted on by
+    NOT calling the LLM. This is the exact event the enforced branch emits."""
+    match = ObservedSkipCoveringMatch(query_match_id="q-1", side="head", line_start=10, line_end=14)
+    event = ObservedSkipShadowEvent(
+        **_skip_shadow_kwargs(
+            outcome="would_skip",
+            covering_matches=(match,),
+            blockers=(),
+            skip_enforced=True,
+        )
+    )
+    assert event.skip_enforced is True
+    assert event.outcome == "would_skip"
+
+
 def test_observed_skip_changed_region_frozen_and_extra_forbid() -> None:
     """The sub-model's frozen-ness does not inherit from the outer event — it is
     declared on the sub-model itself, so pin both here."""

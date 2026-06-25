@@ -28,7 +28,7 @@ export function summarizeEvent(e: AuditEvent): string {
     case "scope_exclusion":
       return `${e.applied ? "applied" : "shadow"} · ${e.entries.length} scope(s) · ${e.file_path}`;
     case "observed_skip_shadow":
-      return `${e.outcome} · ${e.blockers.length}/${e.changed_regions.length} blocked · ${e.file_path}`;
+      return `${e.outcome}${e.skip_enforced ? " (LLM skipped)" : ""} · ${e.blockers.length}/${e.changed_regions.length} blocked · ${e.file_path}`;
     default:
       return "";
   }
