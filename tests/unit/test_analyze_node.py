@@ -460,20 +460,23 @@ async def test_clean_file_admits_one_finding(deps: dict[str, Any]) -> None:
     assert completed[0].n_files_analyzed == 1
     assert completed[0].n_files_skipped == 0
 
+    # Provider was called exactly once.
+    assert len(deps["provider"].calls) == 1
+
 
 @pytest.mark.asyncio
-async def test_over_cap_drops_lowest_severity_no_strand(
+async def test_over_cap_drops_non_gated_no_strand(
     deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """FUP-180: when a round's admitted findings exceed the per-round cap, the analyze
-    node keeps the highest-severity findings, drops the lowest, and STILL emits
-    AnalyzeCompletedEvent (no strand). The emitted FindingEvents equal the round's
-    findings (no orphaned events), and the degrade + capped-proposal counters are
+    """FUP-180: when admitted findings exceed the soft cap, the analyze node keeps the
+    gated (CRITICAL/HIGH) findings + the highest non-gated up to the cap, drops the
+    lowest NON-gated, and STILL emits AnalyzeCompletedEvent (no strand). Emitted
+    FindingEvents equal the round's findings; the dropped + accounting counters are
     recorded with the proposal equation balanced (proven by the event constructing)."""
     monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 2)
-    # 4 JUDGED proposals of descending severity, all in the changed scope:
-    # sql_injection=CRITICAL, hardcoded_secret=HIGH, missing_input_validation=MEDIUM,
-    # unused_import=INFO. cap=2 keeps the CRITICAL + HIGH, drops MEDIUM + INFO.
+    # 4 JUDGED proposals: sql_injection=CRITICAL, hardcoded_secret=HIGH (both gated),
+    # missing_input_validation=MEDIUM, unused_import=INFO (non-gated). soft_cap=2 keeps
+    # the 2 gated, drops the 2 non-gated.
     deps["provider"] = _StubLLMProvider(
         _build_multi_finding_json(
             ["sql_injection", "hardcoded_secret", "missing_input_validation", "unused_import"]
@@ -503,10 +506,38 @@ async def test_over_cap_drops_lowest_severity_no_strand(
     assert c.n_proposals_seen == 4
     assert c.n_findings_emitted == 2
     assert c.n_findings_dropped_over_cap == 2
-    assert c.n_proposals_capped == 2  # all 4 are JUDGED proposals; the 2 dropped count
+    assert c.n_proposals_dropped == 2  # all 4 are JUDGED proposals; the 2 dropped count
+    # Non-gated drop is not a gated overflow → no anomaly.
+    assert not deps["anomaly_sink"].anomalies
 
-    # Provider was called exactly once
-    assert len(deps["provider"].calls) == 1
+
+@pytest.mark.asyncio
+async def test_gated_findings_never_dropped_emit_anomaly(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FUP-180 design call: gated (CRITICAL/HIGH) findings are NEVER dropped to fit the
+    soft cap. 4 distinct gated findings with soft_cap=2 → ALL 4 kept (the round exceeds
+    the soft cap), nothing dropped, and a loud GATED_FINDINGS_OVER_CAP anomaly fires."""
+    monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 2)
+    # 4 distinct gated types (2 CRITICAL + 2 HIGH), distinct content_hashes.
+    deps["provider"] = _StubLLMProvider(
+        _build_multi_finding_json(["sql_injection", "auth_bypass", "hardcoded_secret", "xss"])
+    )
+    state = _build_review_state()
+    result = await analyze(state, **deps)
+
+    round_ = result["analysis_rounds"][0]
+    assert len(round_.findings) == 4  # ALL gated kept, exceeding soft_cap=2
+    finding_events = deps["analyze_event_sink"].findings
+    assert len(finding_events) == 4
+
+    c = deps["analyze_event_sink"].completed[0]
+    assert c.n_findings_emitted == 4
+    assert c.n_findings_dropped_over_cap == 0  # nothing dropped
+    assert c.n_proposals_dropped == 0
+
+    anomalies = deps["anomaly_sink"].anomalies
+    assert any(a["rule_name"] is AnomalyRuleName.GATED_FINDINGS_OVER_CAP for a in anomalies)
 
 
 # ---------------------------------------------------------------------------

@@ -32,17 +32,25 @@ from outrider.schemas.review_finding import (
     ReviewFinding,  # noqa: TC001 — Pydantic field type, needs runtime import
 )
 
-# Per-round finding ceiling (FUP-180). A round aggregates admitted findings
-# across ALL files processed in one analyze pass (one LLM call per file), so
-# this is the cross-file aggregate bound — NOT the per-LLM-call ceiling
-# (`AnalyzeResponseRaw.findings`, 50, which a multi-file round legitimately
-# exceeds). Sized to match `ReviewReport.findings` (200), the downstream
-# consumer. The analyze node enforces it BEFORE emission via
-# `agent.nodes.finding_cap.cap_findings_by_severity` (severity-ordered,
-# CRITICAL/HIGH preserved), so this schema constraint is the defense-in-depth
-# backstop, not the live gate — it should never raise. See
+# Finding ceilings (FUP-180). A round aggregates admitted findings across ALL
+# files in one analyze pass, so these are cross-file aggregate bounds — NOT the
+# per-LLM-call ceiling (`AnalyzeResponseRaw.findings`, 50).
+#
+# `MAX_FINDINGS_PER_ROUND` is the SOFT cap: the analyze node truncates NON-gated
+# findings to this bound before emission via `finding_cap.cap_findings_by_severity`.
+# Gated (CRITICAL/HIGH) findings are NEVER dropped to fit it (FUP-180 review design
+# call — silently dropping a gated finding would weaken hitl-gates-high-severity),
+# so a round whose gated findings alone exceed the soft cap legitimately holds more
+# than `MAX_FINDINGS_PER_ROUND`.
+#
+# `MAX_FINDINGS_HARD_CAP` is the runaway backstop: the schema `max_length` below,
+# and the absolute ceiling the cap enforces even on gated findings. Only a truly
+# pathological / adversarial review (>1000 gated findings in one round) reaches it.
+# Because the cap runs BEFORE emission and the round is built from the capped set,
+# this schema constraint should never raise. See
 # specs/2026-06-24-finding-cap-pre-side-effect.md.
 MAX_FINDINGS_PER_ROUND: Final[int] = 200
+MAX_FINDINGS_HARD_CAP: Final[int] = 1000
 
 
 class AnalysisRound(BaseModel):
@@ -62,14 +70,13 @@ class AnalysisRound(BaseModel):
     # produces same id, so replay re-application collapses duplicates.
     round_id: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
     pass_index: int = Field(ge=0)
-    # Per-round finding ceiling — the cross-file aggregate bound, NOT the
-    # per-LLM-call ceiling (`AnalyzeResponseRaw.findings`, 50). See
-    # `MAX_FINDINGS_PER_ROUND` above: a round aggregates findings across all
-    # files in a pass, so it legitimately exceeds 50; the analyze node
-    # truncates to this bound BEFORE emission (severity-ordered), so this
-    # constraint is the defense-in-depth backstop. Also bounds checkpoint
-    # serialization size + the audit-row payload from runaway emission.
-    findings: tuple[ReviewFinding, ...] = Field(max_length=MAX_FINDINGS_PER_ROUND)
+    # max_length is the HARD runaway ceiling (not the soft cap) — gated findings
+    # are never dropped to fit the soft `MAX_FINDINGS_PER_ROUND`, so the round can
+    # legitimately exceed it; only `MAX_FINDINGS_HARD_CAP` bounds it. The analyze
+    # node enforces the cap BEFORE emission, so this is the defense-in-depth
+    # backstop that bounds checkpoint + audit-row payload size. See the constants
+    # above.
+    findings: tuple[ReviewFinding, ...] = Field(max_length=MAX_FINDINGS_HARD_CAP)
     files_examined: tuple[Annotated[str, Field(max_length=1024)], ...]
     files_skipped: tuple[Annotated[str, Field(max_length=1024)], ...]
     started_at: AwareDatetime

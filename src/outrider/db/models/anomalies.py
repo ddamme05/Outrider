@@ -66,6 +66,12 @@ class Anomaly(Base):
             unique=True,
             postgresql_where=text("rule_name = 'cost_budget_starvation'"),
         ),
+        Index(
+            "uq_anomalies_gated_findings_over_cap_natural_key",
+            "review_id",
+            unique=True,
+            postgresql_where=text("rule_name = 'gated_findings_over_cap'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

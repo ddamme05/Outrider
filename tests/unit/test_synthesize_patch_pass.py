@@ -296,3 +296,128 @@ async def test_summary_request_carries_configured_model_and_prompt_version() -> 
     assert summary_req.model == "stub-synthesize-model"
     assert summary_req.prompt_template_version == synthesize_prompt.VERSION
     assert synthesize_prompt.VERSION == "synthesize-v3"
+
+
+def _make_finding(
+    *, finding_type: FindingType, severity: FindingSeverity, line: int
+) -> ReviewFinding:
+    file_path = "src/foo.py"
+    return ReviewFinding(
+        finding_id=uuid4(),
+        review_id=uuid4(),
+        installation_id=42,
+        finding_type=finding_type,
+        severity=severity,
+        file_path=file_path,
+        line_start=line,
+        line_end=line,
+        title="t",
+        description="d",
+        evidence="e",
+        dimension=lookup_dimension(finding_type),
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version=ACTIVE_POLICY_VERSION,
+        content_hash=compute_finding_content_hash(
+            file_path=file_path, line_start=line, line_end=line, finding_type=finding_type
+        ),
+        proposal_hash=f"{line:064x}",  # distinct per finding (round requires unique)
+    )
+
+
+def _make_multi_state(findings: tuple[ReviewFinding, ...]) -> ReviewState:
+    file_path = findings[0].file_path
+    changed_file = ChangedFile(
+        path=file_path,
+        status="modified",  # type: ignore[arg-type]
+        additions=1,
+        deletions=1,
+        patch="@@ -1,3 +1,3 @@\n a\n-old\n+new\n c\n",
+        content_base="a\nold\nc\n",
+        content_head="a\nb\nc\n",
+        previous_path=None,
+    )
+    pr_context = PRContext(
+        installation_id=42,
+        owner="o",
+        repo="r",
+        pr_number=1,
+        pr_title="t",
+        base_sha="1" * 40,
+        head_sha="0" * 40,
+        author="a",
+        total_additions=1,
+        total_deletions=0,
+        changed_files=(changed_file,),
+    )
+    now = datetime.now(UTC)
+    round_id = compute_round_id(
+        pass_index=0,
+        files_examined=(file_path,),
+        files_skipped=(),
+        finding_content_hashes=tuple(f.content_hash for f in findings),
+    )
+    analysis_round = AnalysisRound(
+        round_id=round_id,
+        pass_index=0,
+        findings=findings,
+        files_examined=(file_path,),
+        files_skipped=(),
+        started_at=now,
+        ended_at=now,
+    )
+    triage_result = TriageResult(
+        file_tiers={file_path: ReviewTier.DEEP},
+        overall_risk=RiskLevel.HIGH,
+        relevant_dimensions=(ReviewDimension.SECURITY,),
+        reasoning="r",
+        policy_version=ACTIVE_POLICY_VERSION,
+    )
+    return ReviewState(
+        review_id=uuid4(),
+        pr_context=pr_context,
+        received_at=now,
+        analysis_rounds=[analysis_round],
+        triage_result=triage_result,
+    )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_report_cap_keeps_gated_drops_non_gated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FUP-180: synthesize re-caps the deduped cross-round union to the report bound,
+    gated-aware. With soft_cap=2 and 2 HIGH (gated) + LOW + INFO (non-gated), the report
+    keeps the 2 HIGH and drops the 2 non-gated — gated findings reach HITL, non-gated
+    are degraded. (The cap runs BEFORE the summary call, so the summary describes only
+    the kept set.)"""
+    monkeypatch.setattr("outrider.agent.nodes.synthesize.MAX_FINDINGS_PER_REPORT", 2)
+    findings = (
+        _make_finding(
+            finding_type=FindingType.HARDCODED_SECRET, severity=FindingSeverity.HIGH, line=2
+        ),
+        _make_finding(finding_type=FindingType.XSS, severity=FindingSeverity.HIGH, line=4),
+        _make_finding(
+            finding_type=FindingType.MISSING_ERROR_HANDLING, severity=FindingSeverity.LOW, line=6
+        ),
+        _make_finding(
+            finding_type=FindingType.UNUSED_IMPORT, severity=FindingSeverity.INFO, line=8
+        ),
+    )
+    state = _make_multi_state(findings)
+    provider = _DispatchingProvider(_batch_json(uuid4(), "x", "y"))
+
+    result = await synthesize(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        synthesize_model="m",
+        patch_model="m",
+        patches_enabled=False,
+        max_suggestions=5,
+        phase_event_sink=_StubPhaseSink(),
+        synthesize_event_sink=_StubSynthesizeEventSink(),
+        anomaly_sink=_StubAnomalySink(),
+    )
+
+    report = result["review_report"]
+    assert len(report.findings) == 2
+    assert all(f.severity is FindingSeverity.HIGH for f in report.findings)

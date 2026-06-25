@@ -95,6 +95,7 @@ from outrider.policy.canonical import compute_phase_id
 # ACTIVE_POLICY_VERSION used only in docstring references for context;
 # the runtime snapshot anchor is `state.triage_result.policy_version`.
 from outrider.prompts import synthesize as synthesize_prompt
+from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP
 from outrider.schemas.review_report import (
     MAX_FINDINGS_PER_REPORT,
     ReviewMetrics,
@@ -567,14 +568,32 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # report bound HERE — BEFORE patch generation (4b), the summary prompt render
     # (step 6), the summary call (step 7), and `ReviewReport(...)` (step 10) — so the
     # summary describes (and patches generate for) exactly the findings that ship, and
-    # the report can never strand the review at its schema cap. Severity-ordered
-    # (CRITICAL/HIGH preserved). A cross-round dedup MERGE above is not a drop; only
-    # this cap drops, and its count is the report-level degrade signal.
+    # the report can never strand the review at its schema cap. Gated (CRITICAL/HIGH)
+    # findings are NEVER dropped to fit the soft cap (hitl-gates-high-severity holds at
+    # the report boundary too); only NON-gated drop, and their count is the degrade
+    # signal. A cross-round dedup MERGE above is not a drop.
     capped_findings, report_dropped_findings = cap_findings_by_severity(
-        list(deduplicated_findings), MAX_FINDINGS_PER_REPORT
+        list(deduplicated_findings),
+        soft_cap=MAX_FINDINGS_PER_REPORT,
+        hard_cap=MAX_FINDINGS_HARD_CAP,
     )
-    deduplicated_findings = tuple(capped_findings)
     n_findings_dropped_over_cap = len(report_dropped_findings)
+    if len(capped_findings) > MAX_FINDINGS_PER_REPORT:
+        # Gated findings alone exceed the soft report cap — all kept (they reach HITL),
+        # but a loud operator signal. Best-effort: observability must not fail the review.
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
+                severity=AnomalySeverity.HIGH,
+                details={"n_kept": len(capped_findings), "soft_cap": MAX_FINDINGS_PER_REPORT},
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "synthesize_gated_findings_over_cap_anomaly_emit_failed"
+            )
+    deduplicated_findings = tuple(capped_findings)
 
     # Suggested-patch pass (DECISIONS.md#040): set `suggested_fix` on the deduped
     # set BEFORE the summary request + the aggregate query + ReviewReport, so the

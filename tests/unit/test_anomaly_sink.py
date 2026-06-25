@@ -31,8 +31,8 @@ def test_anomaly_rule_name_hitl_timeout_value_pinned() -> None:
 
 
 def test_anomaly_rule_name_v1_value_set() -> None:
-    """V1 ships three rules. New rules extend the enum + need matching
-    partial unique indexes on the anomalies table.
+    """The rule set. New rules extend the enum + need matching partial unique
+    indexes on the anomalies table.
 
     HITL_TIMEOUT — sweep-emitted from `sweep/hitl_expiry.py` per
     `docs/spec.md` §16.
@@ -48,11 +48,15 @@ def test_anomaly_rule_name_v1_value_set() -> None:
     COST_BUDGET_STARVATION — graph-emitted from `agent/nodes/analyze.py`
     when a pass skips >= COST_BUDGET_STARVATION_THRESHOLD files with
     COST_BUDGET_EXHAUSTED (FUP-044 ext 3 / analyze-cost-fairness Stage 2).
+    GATED_FINDINGS_OVER_CAP — graph-emitted from `agent/nodes/analyze.py`
+    (per round) + `agent/nodes/synthesize.py` (per report) when HITL-gated
+    (CRITICAL/HIGH) findings alone exceed the soft finding cap (FUP-180).
     """
     assert {m.value for m in AnomalyRuleName} == {
         "hitl_timeout",
         "cross_round_severity_divergence",
         "cost_budget_starvation",
+        "gated_findings_over_cap",
     }
 
 

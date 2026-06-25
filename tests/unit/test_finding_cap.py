@@ -1,11 +1,10 @@
 # Tests for agent/nodes/finding_cap.py (FUP-180).
-"""Pin the severity-ordered finding-cap helper.
+"""Pin the gated-aware, severity-ordered finding-cap helper.
 
-The cap keeps the N highest-severity findings before any FindingEvent fires.
-The load-bearing property is HITL-safety: a drop can only ever remove a
-finding no higher in severity than every kept one, so a CRITICAL/HIGH is
-never dropped to keep a lower-severity finding (`hitl-gates-high-severity`).
-Selection is content-deterministic (replay-stable) — `content_hash` tiebreak.
+The load-bearing property (FUP-180 review design call): a HITL-gated
+(CRITICAL/HIGH) finding is NEVER dropped to fit the soft cap — only non-gated
+findings drop down to `soft_cap`, and only the `hard_cap` runaway backstop can
+drop a gated finding. Selection is content-deterministic (replay-stable).
 """
 
 from __future__ import annotations
@@ -30,8 +29,7 @@ _TYPE_BY_SEVERITY = {
 
 def _finding(severity: FindingSeverity, line: int) -> ReviewFinding:
     """A minimal ReviewFinding of the given severity. `line` varies the span so
-    each finding gets a DISTINCT content_hash (the cap's tiebreak + the round's
-    uniqueness invariant both key on it)."""
+    each finding gets a DISTINCT content_hash (the cap's tiebreak)."""
     finding_type = _TYPE_BY_SEVERITY[severity]
     file_path = "src/foo.py"
     ls = line + 1  # line_start is 1-indexed (Field ge=1); keep spans distinct.
@@ -57,57 +55,68 @@ def _finding(severity: FindingSeverity, line: int) -> ReviewFinding:
     )
 
 
-def test_no_op_when_within_cap() -> None:
-    """<= cap: nothing dropped, kept preserves input order (no truncation)."""
+def test_within_soft_cap_keeps_all() -> None:
+    """<= soft_cap: nothing dropped."""
     findings = [_finding(FindingSeverity.MEDIUM, line) for line in range(5)]
-    kept, dropped = cap_findings_by_severity(findings, cap=5)
+    kept, dropped = cap_findings_by_severity(findings, soft_cap=5, hard_cap=100)
     assert dropped == []
-    assert kept == findings  # same objects, same order
+    assert {f.content_hash for f in kept} == {f.content_hash for f in findings}
 
 
 def test_empty_input() -> None:
-    kept, dropped = cap_findings_by_severity([], cap=10)
+    kept, dropped = cap_findings_by_severity([], soft_cap=10, hard_cap=100)
     assert kept == []
     assert dropped == []
 
 
-def test_over_cap_keeps_highest_severity() -> None:
-    """Over cap: the kept set is exactly the `cap` highest-severity findings;
-    the dropped set is the lowest-severity remainder."""
+def test_drops_only_non_gated_to_soft_cap() -> None:
+    """Over soft_cap: gated kept, non-gated dropped down to the budget. Keeps the 2
+    CRITICAL + the budget (1) of the 3 LOW; drops 2 LOW. No gated dropped."""
     crit = [_finding(FindingSeverity.CRITICAL, line) for line in range(2)]
-    high = [_finding(FindingSeverity.HIGH, line) for line in range(10, 12)]
-    low = [_finding(FindingSeverity.LOW, line) for line in range(20, 23)]
-    kept, dropped = cap_findings_by_severity([*low, *crit, *high], cap=4)
-    assert len(kept) == 4
-    assert len(dropped) == 3
-    # The 4 kept are the 2 CRITICAL + 2 HIGH; all 3 LOW dropped.
-    kept_sev = {f.severity for f in kept}
-    assert kept_sev == {FindingSeverity.CRITICAL, FindingSeverity.HIGH}
+    low = [_finding(FindingSeverity.LOW, line) for line in range(10, 13)]
+    kept, dropped = cap_findings_by_severity([*low, *crit], soft_cap=3, hard_cap=100)
+    assert len(kept) == 3
+    assert {f.severity for f in kept if f.severity is FindingSeverity.CRITICAL}  # crit kept
+    assert sum(1 for f in kept if f.severity is FindingSeverity.CRITICAL) == 2
     assert all(f.severity is FindingSeverity.LOW for f in dropped)
+    assert len(dropped) == 2
 
 
-def test_hitl_safety_no_high_dropped_for_lower() -> None:
-    """The HITL-safety invariant: every dropped finding is no higher in severity
-    than every kept finding — so a CRITICAL/HIGH is never dropped while a
-    lower-severity finding survives."""
-    rank = {s: i for i, s in enumerate(FindingSeverity)}
-    findings = (
-        [_finding(FindingSeverity.CRITICAL, line) for line in range(3)]
-        + [_finding(FindingSeverity.MEDIUM, line) for line in range(10, 13)]
-        + [_finding(FindingSeverity.INFO, line) for line in range(20, 23)]
-    )
-    kept, dropped = cap_findings_by_severity(findings, cap=5)
-    worst_kept_rank = max(rank[f.severity] for f in kept)
-    best_dropped_rank = min(rank[f.severity] for f in dropped)
-    # Lower rank = higher severity. Every kept finding is at least as severe as
-    # every dropped one.
-    assert worst_kept_rank <= best_dropped_rank
+def test_never_drops_gated_even_over_soft_cap() -> None:
+    """The load-bearing case: 4 CRITICAL with soft_cap=2 → ALL 4 kept (kept exceeds
+    soft_cap), nothing dropped. A gated finding is never dropped to fit the soft cap."""
+    crit = [_finding(FindingSeverity.CRITICAL, line) for line in range(4)]
+    kept, dropped = cap_findings_by_severity(crit, soft_cap=2, hard_cap=100)
+    assert len(kept) == 4  # exceeds soft_cap — all gated kept
+    assert dropped == []
+
+
+def test_gated_over_cap_drops_all_non_gated() -> None:
+    """3 HIGH (gated) + 2 INFO (non-gated), soft_cap=2 → keep all 3 HIGH (exceeds the
+    soft cap), drop both INFO. Caller detects len(kept) > soft_cap → loud anomaly."""
+    high = [_finding(FindingSeverity.HIGH, line) for line in range(3)]
+    info = [_finding(FindingSeverity.INFO, line) for line in range(10, 12)]
+    kept, dropped = cap_findings_by_severity([*info, *high], soft_cap=2, hard_cap=100)
+    assert len(kept) == 3
+    assert all(f.severity is FindingSeverity.HIGH for f in kept)
+    assert {f.severity for f in dropped} == {FindingSeverity.INFO}
+
+
+def test_hard_cap_bounds_even_gated() -> None:
+    """The runaway backstop: 5 CRITICAL with soft_cap=2, hard_cap=3 → only at the hard
+    ceiling are gated findings dropped (down to 3). The single case a gated finding
+    drops."""
+    crit = [_finding(FindingSeverity.CRITICAL, line) for line in range(5)]
+    kept, dropped = cap_findings_by_severity(crit, soft_cap=2, hard_cap=3)
+    assert len(kept) == 3
+    assert len(dropped) == 2
+    assert all(f.severity is FindingSeverity.CRITICAL for f in dropped)
 
 
 def test_deterministic_under_shuffle() -> None:
     """Selection is content-deterministic: the kept SET (by content_hash) does not
-    depend on input order — the `content_hash` tiebreak makes it a pure function."""
+    depend on input order."""
     findings = [_finding(FindingSeverity.MEDIUM, line) for line in range(10)]
-    kept_a, _ = cap_findings_by_severity(findings, cap=4)
-    kept_b, _ = cap_findings_by_severity(list(reversed(findings)), cap=4)
+    kept_a, _ = cap_findings_by_severity(findings, soft_cap=4, hard_cap=100)
+    kept_b, _ = cap_findings_by_severity(list(reversed(findings)), soft_cap=4, hard_cap=100)
     assert {f.content_hash for f in kept_a} == {f.content_hash for f in kept_b}

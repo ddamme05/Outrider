@@ -87,6 +87,7 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from outrider.policy.severity import FindingSeverity
+from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.triage_result import RiskLevel
 
@@ -108,11 +109,13 @@ _SEVERITY_SORT_KEY: Final[Mapping[FindingSeverity, int]] = MappingProxyType(
     }
 )
 
-# Per-report finding ceiling (FUP-180). The report aggregates deduped findings
-# across ALL analysis rounds; synthesize truncates to this bound BEFORE building
-# the report (severity-ordered via `agent.nodes.finding_cap`, CRITICAL/HIGH
-# preserved), so this schema constraint is the defense-in-depth backstop, not the
-# live gate. Matches `AnalysisRound.MAX_FINDINGS_PER_ROUND` (the per-round bound).
+# Per-report finding ceilings (FUP-180), mirroring `AnalysisRound`'s two-tier shape.
+# `MAX_FINDINGS_PER_REPORT` is the SOFT cap: synthesize truncates NON-gated findings
+# across all rounds to this bound before building the report (via
+# `agent.nodes.finding_cap`). Gated (CRITICAL/HIGH) findings are NEVER dropped to fit
+# it, so the report can legitimately exceed it; the schema `max_length` below is the
+# shared HARD runaway ceiling (`MAX_FINDINGS_HARD_CAP`). Since the cap runs before
+# `ReviewReport(...)`, the schema constraint is the defense-in-depth backstop.
 MAX_FINDINGS_PER_REPORT: Final[int] = 200
 
 
@@ -204,14 +207,13 @@ class ReviewReport(BaseModel):
     # the audit stream; never parse them out of this text.
     summary: str = Field(max_length=2000)
     overall_risk: RiskLevel
-    # See MAX_FINDINGS_PER_REPORT above. The report aggregates DEDUPED findings
-    # across all rounds (each capped at AnalysisRound.MAX_FINDINGS_PER_ROUND=200,
-    # FUP-180); synthesize re-caps the cross-round union to this bound
-    # severity-ordered BEFORE building the report, so this schema constraint is the
-    # runaway-protection backstop — protecting checkpoint payload size + downstream
-    # HITL-partition pagination + the audit-row JSONB payload. A bump is a one-line
-    # edit to the constant.
-    findings: tuple[ReviewFinding, ...] = Field(max_length=MAX_FINDINGS_PER_REPORT)
+    # max_length is the HARD runaway ceiling (MAX_FINDINGS_HARD_CAP), NOT the soft
+    # MAX_FINDINGS_PER_REPORT — gated findings are never dropped to fit the soft cap
+    # (FUP-180), so the report can legitimately exceed it. Synthesize re-caps the
+    # deduped cross-round union severity-ordered BEFORE building the report, so this
+    # constraint is the runaway-protection backstop (checkpoint payload size +
+    # HITL-partition pagination + the audit-row JSONB payload).
+    findings: tuple[ReviewFinding, ...] = Field(max_length=MAX_FINDINGS_HARD_CAP)
     metrics: ReviewMetrics
 
     @field_validator("findings", mode="after")
