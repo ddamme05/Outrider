@@ -1911,15 +1911,33 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # skip_enforced=True, then return. The FileExaminationEvent (clean) was
             # already emitted above. No #054/#055 merge (no LLM parser_result to merge
             # against); no cache write (skip outcomes are never memoized).
-            skip_findings = produce_observed_findings(
+            produced = produce_observed_findings(
                 observed_matches,
                 file_path=changed_file.path,
                 review_id=review_id,
                 installation_id=installation_id,
                 active_policy_version=active_policy_version,
             )
+            # Collapse same-content_hash producer duplicates BEFORE emit/admit — the
+            # same first-wins reason as the augment path's #054 `fresh_hashes`:
+            # content_hash excludes evidence_tier, so two OBSERVED findings of the same
+            # finding_type matching the same span (two queries) would otherwise fire
+            # duplicate FindingEvents AND trip AnalysisRound._enforce_findings_unique.
+            # No JUDGED to supersede here (the LLM never ran).
+            skip_findings: list[ReviewFinding] = []
+            skip_hashes: set[str] = set()
+            for produced_finding in produced:
+                if produced_finding.content_hash not in skip_hashes:
+                    skip_findings.append(produced_finding)
+                    skip_hashes.add(produced_finding.content_hash)
+            # model_validate (not model_copy) so the skip_enforced=True event is
+            # RE-VALIDATED (skip_enforced => would_skip); the branch already guarantees
+            # would_skip, but model_copy bypasses validators — re-validation keeps the
+            # audit-event contract enforced even if the gate above ever changes.
             await analyze_event_sink.emit_observed_skip_shadow(
-                observed_skip_event.model_copy(update={"skip_enforced": True})
+                ObservedSkipShadowEvent.model_validate(
+                    {**observed_skip_event.model_dump(), "skip_enforced": True}
+                )
             )
             for skip_finding in skip_findings:
                 await analyze_event_sink.emit_finding(skip_finding, is_eval=is_eval)
