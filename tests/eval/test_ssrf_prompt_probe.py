@@ -8,8 +8,8 @@ PROMPT-REACHABLE, or is it a model bias to absorb via HITL?
 
 It runs analyze-direct (NO full graph, NO scorecard cost pass) over two fixtures
 under a v6 control plus three candidate ssrf phrasings, for both Sonnet and
-Haiku, 3 reps each, and records the PER-REP outcome — so a variant that fixes the
-FP in 2/3 reps reads as noise, not a clean fix.
+Haiku, 5 reps each, and records the PER-REP outcome — so a variant that fixes the
+FP in some-but-not-all reps reads as noise, not a clean fix.
 
 Winner bar (strict, the operator's rule): a variant wins only if, across BOTH
 models AND ALL reps, it produces ZERO fixed-host SSRF false positives AND keeps
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 # counts as a recall hit (catching the SSRF, base or escalated).
 _SSRF_FAMILY = {FindingType.SSRF, FindingType.SSRF_METADATA}
 
-_REPS = 3
+_REPS = 5
 
 # Two fixtures, each a single changed file. `fixed_host` is CLEAN (any ssrf-family
 # finding = FP — the over-flag we want to kill); `user_host` is a REAL SSRF (a
@@ -100,17 +100,23 @@ _VARIANT_DESTINATION_CONTROL = """\
   or an internal control plane.
 """
 
-_VARIANT_DECISION_PROCEDURE = """\
-- `ssrf` — apply this test before flagging. (1) Identify the request's scheme,
-  host, and port. (2) Ask: can the user's input CHANGE any of them? If the
-  scheme and host are a hardcoded string literal and the user value is only
-  concatenated or interpolated as a PATH or ordinary query parameter, the answer
-  is NO → NOT ssrf, even if the value is unvalidated (e.g.
-  `requests.get("https://api.example.com/users/" + user_id)`). (3) The answer is
-  YES — DO flag — whenever the value can reach the host/port/scheme by ANY means:
+# Reconfirm candidate: the destination-control RULE + the worked-negative EXAMPLES
+# (the two framings that each cleared the first probe), to see if the combination
+# is the most robust general wording.
+_VARIANT_COMBINED = """\
+- `ssrf` — flag ONLY when the user can influence the request's scheme, host, or
+  port. A user value appended as a PATH segment or an ordinary query parameter
+  of a hardcoded `scheme://host` literal is NOT ssrf — the destination is fixed
+  and the value cannot escape it — EVEN when the value is unvalidated.
+  DO flag (user controls the host): `requests.get(request.GET["url"])`;
+  `requests.get("http://" + user_host + "/x")`; a `?url=`/`?target=` proxy.
+  Do NOT flag (host is a hardcoded literal):
+  `requests.get("https://api.example.com/users/" + user_id)`;
+  `requests.get("https://api.example.com/search?q=" + term)`.
+  It IS still ssrf whenever the value can reach the host/port/scheme by ANY means:
   a leading `//` or absolute URL, an `@`, a backslash, an encoded `%2F`/`%40`, a
-  `urljoin`/`URL()` absolute value, a user-chosen port/scheme, a host picked by a
-  user-supplied key, or a fixed host that is itself a proxy/fetcher using the
+  `urljoin`/`URL()` absolute value, a user-chosen port/scheme, a host selected by
+  a user-supplied key, or a fixed host that is itself a proxy/fetcher using the
   value as its target (`?url=`, `?target=`). When genuinely unsure whether the
   value can shift the host, flag ssrf. Check the metadata escalation BEFORE the
   safe case. Use `ssrf_metadata` INSTEAD when the reachable target can be a cloud
@@ -123,7 +129,7 @@ _VARIANTS: tuple[tuple[str, str | None], ...] = (
     ("v6-control", None),
     ("worked-negative", _VARIANT_WORKED_NEGATIVE),
     ("destination-control", _VARIANT_DESTINATION_CONTROL),
-    ("decision-procedure", _VARIANT_DECISION_PROCEDURE),
+    ("combined", _VARIANT_COMBINED),
 )
 
 
