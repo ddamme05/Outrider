@@ -311,7 +311,7 @@ def test_scorecard_triage_aggregate_counts_and_total_dropped() -> None:
     assert agg.total_dropped_from_analysis == 1  # s2 dropped one file
 
 
-def test_scorecard_triage_markdown_and_json_sections() -> None:
+def test_scorecard_triage_html_and_json_sections() -> None:
     expected = _expected({"a.py": ReviewTier.DEEP})
     cmp = compare_triage(
         grade_triage(_triage({"a.py": ReviewTier.DEEP}), expected),
@@ -324,9 +324,9 @@ def test_scorecard_triage_markdown_and_json_sections() -> None:
             ),
         )
     )
-    md = card.to_markdown()
-    assert "## Triage" in md
-    assert "tri_s" in md
+    rendered = card.to_html()
+    assert "<h2>Triage</h2>" in rendered
+    assert "tri_s" in rendered
     data = json.loads(card.to_json())
     assert len(data["triage_rows"]) == 1
     assert len(data["triage_aggregates"]) == 1
@@ -415,7 +415,7 @@ def test_triage_scorecard_row_rejects_drop_count_path_mismatch() -> None:
         TriageScorecardRow(**{**valid.model_dump(), "dropped_files": ()})  # claims 1, names none
 
 
-def test_scorecard_triage_markdown_names_dropped_file() -> None:
+def test_scorecard_triage_html_names_dropped_file() -> None:
     card = Scorecard(
         triage_rows=(
             TriageScorecardRow.from_comparison(
@@ -426,5 +426,5 @@ def test_scorecard_triage_markdown_names_dropped_file() -> None:
             ),
         )
     )
-    md = card.to_markdown()
-    assert "a.py" in md  # the dropped path is named, not just the count
+    rendered = card.to_html()
+    assert "a.py" in rendered  # the dropped path is named, not just the count

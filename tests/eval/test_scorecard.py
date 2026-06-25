@@ -4,7 +4,7 @@ Covers the typed objects + serialization that step 1 promotes out of the inline
 GATE SUMMARY print: `ScorecardRow.from_comparison` (the analyze-direct quality
 join + false-positive-rate derivation), the errored-row path (transient
 isolation), the status/metric consistency validator, the per-`(node, model)`
-aggregate reduction, and the JSON + Markdown emitters. Pure — no DB, no LLM, no
+aggregate reduction, and the JSON + HTML emitters. Pure — no DB, no LLM, no
 spend.
 """
 
@@ -364,7 +364,7 @@ def test_to_json_round_trips_rows_and_aggregates() -> None:
     assert data["triage_rows"] == []  # analyze-only card -> empty triage section
 
 
-def test_to_markdown_renders_rows_and_aggregate() -> None:
+def test_to_html_renders_rows_and_aggregate() -> None:
     card = Scorecard(
         rows=(
             _ok_row("s_pass", passes=True),
@@ -372,21 +372,23 @@ def test_to_markdown_renders_rows_and_aggregate() -> None:
             _errored_row("s_err", error="529 overloaded"),
         )
     )
-    md = card.to_markdown()
-    assert "# Eval scorecard" in md
-    assert "## Aggregate" in md
-    assert "PASS" in md
-    assert "FAIL" in md
-    assert "ERROR: 529 overloaded" in md
-    assert "s_pass" in md and "s_fail" in md and "s_err" in md
+    rendered = card.to_html()
+    assert "<!DOCTYPE html>" in rendered
+    assert "<table>" in rendered
+    assert "<h2>Analyze</h2>" in rendered
+    assert '<span class="badge pass">PASS</span>' in rendered
+    assert '<span class="badge fail">FAIL</span>' in rendered
+    assert "ERROR: 529 overloaded" in rendered
+    assert "s_pass" in rendered and "s_fail" in rendered and "s_err" in rendered
 
 
-def test_to_markdown_escapes_pipe_in_label() -> None:
-    # A '|' in a label is escaped so it can't add a phantom column and misalign
-    # the row in the human-read artifact.
-    card = Scorecard(rows=(_ok_row("auth|bypass", passes=True),))
-    md = card.to_markdown()
-    assert "auth\\|bypass" in md
+def test_to_html_escapes_markup_in_label() -> None:
+    # A label with HTML metacharacters is escaped so it can't inject markup into
+    # the artifact (the HTML analogue of the old Markdown pipe-escaping).
+    card = Scorecard(rows=(_ok_row("a<b>&c", passes=True),))
+    rendered = card.to_html()
+    assert "a&lt;b&gt;&amp;c" in rendered
+    assert "<b>" not in rendered  # raw markup must never reach the document
 
 
 # --- cost-source 3-state + errored-replay + aggregate denominator ------------
@@ -507,7 +509,7 @@ def test_real_scorecard_evidence() -> None:
     """OPT-IN real API spend — emits the cross-scenario scorecard artifact.
 
     REPORT-ONLY, BY DESIGN: asserts only that the run COMPLETED (a row per spec).
-    The verdict is the JSON + Markdown scorecard written to `reports/scorecard/`,
+    The verdict is the JSON + HTML scorecard written to `reports/scorecard/`,
     read by a human — pytest does not gate on a candidate gate failure (the runner
     is report-only). Quality (recall/precision/severity/FP/gate) is REAL spend
     through the analyze-direct path under baseline (Sonnet) vs candidate (Haiku);
@@ -608,10 +610,10 @@ def test_real_scorecard_evidence() -> None:
     out_dir = Path("reports") / "scorecard"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "scorecard.json").write_text(card.to_json(), encoding="utf-8")
-    (out_dir / "scorecard.md").write_text(card.to_markdown(), encoding="utf-8")
+    (out_dir / "scorecard.html").write_text(card.to_html(), encoding="utf-8")
 
     print(  # noqa: T201 — operator artifact pointer
-        f"\nSCORECARD — REPORT ONLY: wrote {out_dir}/scorecard.{{json,md}} "
+        f"\nSCORECARD — REPORT ONLY: wrote {out_dir}/scorecard.{{json,html}} "
         f"({len(card.rows)} rows, baseline={baseline_model}, candidate={candidate_model})"
     )
     # Report-only: assert only that the run produced a row per spec (it COMPLETED).
@@ -627,8 +629,8 @@ def test_real_triage_scorecard_evidence() -> None:
     triage over the known-vuln fixtures).
 
     REPORT-ONLY, BY DESIGN: asserts only that the run COMPLETED (a triage row per
-    spec). The verdict is the JSON + Markdown written to
-    `reports/scorecard/triage-scorecard.{json,md}`, read by a human — the runner is
+    spec). The verdict is the JSON + HTML written to
+    `reports/scorecard/triage-scorecard.{json,html}`, read by a human — the runner is
     report-only. Quality (tier accuracy / drop-from-analysis / dimension recall /
     under-risking / gate) is REAL spend through the real triage node; there is NO
     cost pass (triage rows are quality-only per the spec).
@@ -760,10 +762,10 @@ def test_real_triage_scorecard_evidence() -> None:
     out_dir = Path("reports") / "scorecard"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "triage-scorecard.json").write_text(card.to_json(), encoding="utf-8")
-    (out_dir / "triage-scorecard.md").write_text(card.to_markdown(), encoding="utf-8")
+    (out_dir / "triage-scorecard.html").write_text(card.to_html(), encoding="utf-8")
 
     print(  # noqa: T201 — operator artifact pointer
-        f"\nTRIAGE SCORECARD — REPORT ONLY: wrote {out_dir}/triage-scorecard.{{json,md}} "
+        f"\nTRIAGE SCORECARD — REPORT ONLY: wrote {out_dir}/triage-scorecard.{{json,html}} "
         f"({len(card.triage_rows)} rows, baseline={baseline_model}, candidate={candidate_model})"
     )
     # Report-only: assert only that the run produced a triage row per spec.
