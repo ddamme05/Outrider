@@ -1,0 +1,36 @@
+{
+  "installation_id": 5305,
+  "owner": "acme",
+  "repo": "profiles",
+  "pr_number": 35,
+  "base_sha": "9999999999999999999999999999999999999999",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pr_title": "Add get_profile helper",
+  "pr_body": "Adds get_profile, which fetches a user's profile from the fixed upstream API by id.",
+  "author": "contributor",
+  "total_additions": 9,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/profile.py",
+      "status": "modified",
+      "additions": 9,
+      "deletions": 0,
+      "patch": "@@ -1 +1,10 @@\n import requests\n+\n+\n+def get_profile(user_id):\n+    try:\n+        resp = requests.get(\"https://api.example.com/users/\" + user_id)\n+        resp.raise_for_status()\n+        return resp.json()\n+    except requests.RequestException:\n+        return None\n",
+      "previous_path": null,
+      "content_base": "import requests\n",
+      "content_head": "import requests\n\n\ndef get_profile(user_id):\n    try:\n        resp = requests.get(\"https://api.example.com/users/\" + user_id)\n        resp.raise_for_status()\n        return resp.json()\n    except requests.RequestException:\n        return None\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/profile.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision scenario (ssrf over-flag trap): get_profile interpolates user_id only into the PATH of a FIXED host (api.example.com) and handles errors -- not SSRF, the destination cannot be shifted. Deep-review to confirm no ssrf is hallucinated (the analyze-v6 destination-control rule).\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Precision scenario: no findings. get_profile fetches a FIXED host with the user value confined to the path and proper error handling; under the destination-control rule this is not SSRF."
+    ]
+  }
+}

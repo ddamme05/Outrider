@@ -1,0 +1,36 @@
+{
+  "installation_id": 5304,
+  "owner": "acme",
+  "repo": "webhooks",
+  "pr_number": 34,
+  "base_sha": "7777777777777777777777777777777777777777",
+  "head_sha": "8888888888888888888888888888888888888888",
+  "pr_title": "Add fetch_url proxy view",
+  "pr_body": "Adds fetch_url, which fetches a caller-supplied URL and returns the body.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/fetch.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import requests\n+\n+\n+def fetch_url(request):\n+    target = request.GET[\"url\"]\n+    return requests.get(target).text\n",
+      "previous_path": null,
+      "content_base": "import requests\n",
+      "content_head": "import requests\n\n\ndef fetch_url(request):\n    target = request.GET[\"url\"]\n    return requests.get(target).text\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/fetch.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (ssrf recall): fetch_url fetches a caller-supplied URL (request.GET['url']) with no allowlist -- the request DESTINATION is attacker-controlled. Deep-review for SSRF.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"ssrf\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SSRF: fetch_url requests an attacker-controlled URL\", \"description\": \"fetch_url reads request.GET['url'] and passes it straight to requests.get, so the caller controls the request destination (host/scheme) and can reach internal services or cloud metadata. Restrict to an allowlist of approved hosts.\", \"evidence\": \"    return requests.get(target).text\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one ssrf finding -- fetch_url fetches a caller-supplied URL with no host allowlist."
+    ]
+  }
+}
