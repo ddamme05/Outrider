@@ -207,8 +207,9 @@ class AnalyzeEventSink(Protocol):
       would-hit/miss telemetry); `CacheServeEvent` replaces it on a
       served hit under `cache_mode=serve`. `ObservedSkipShadowEvent` is the
       OBSERVED skip-routing shadow record — at-most-one per pass-0 clean-mode
-      file, recording the default-deny coverage decision (V1 shadow-only,
-      outside the proposal accounting).
+      file, recording the coverage decision + whether an enforced skip was
+      taken (`skip_enforced`; dormant in production), outside the proposal
+      accounting.
     - Separate kwargs on the analyze function signature would
       crowd the deps surface and invite test-time mock proliferation;
       one sink keeps the test setup focused.
@@ -297,9 +298,10 @@ class AnalyzeEventSink(Protocol):
         ...
 
     async def emit_observed_skip_shadow(self, event: ObservedSkipShadowEvent) -> None:
-        """Persist the per-file OBSERVED skip-routing SHADOW record (Cost Lever
-        3: the default-deny coverage decision; V1 shadow-only, the LLM still
-        runs). event_id-PK idempotent per `DECISIONS.md#026`.
+        """Persist the per-file OBSERVED skip-routing record (Cost Lever 3: the
+        coverage decision + `skip_enforced` — whether the enforced pre-LLM skip
+        was taken; dormant in production, so the LLM still runs there).
+        event_id-PK idempotent per `DECISIONS.md#026`.
         """
         ...
 
