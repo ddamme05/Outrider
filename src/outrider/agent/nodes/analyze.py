@@ -937,19 +937,20 @@ async def analyze(
     n_findings_served = kept_served
     n_findings_observed = kept_observed
 
-    # Drop trace candidates whose source finding did not survive to the kept set (collapse
-    # or cap): trace's proposal-hash join is built from round.findings only, so an
-    # unjoinable candidate is misread as a rejected parent (FUP-180 review finding D).
-    # Pure filter — no side effect, safe before the round build.
-    kept_proposal_hashes = {f.proposal_hash for f in kept_findings}
-    trace_candidates = [
-        tc for tc in trace_candidates if tc.source_proposal_hash in kept_proposal_hashes
-    ]
+    # NOTE: trace_candidates is intentionally NOT filtered to surviving findings. A
+    # candidate whose source finding did not survive (cap-dropped, or a rejected-parent
+    # proposal) stays in state.trace_candidates as a forensic-only record per
+    # DECISIONS.md#025 point 6 — trace's proposal-hash join already INFO-skips any
+    # unjoinable candidate (no GitHub fetch), so a cap-orphaned candidate is handled
+    # identically and safely. (An earlier filter here over-removed the rejected-parent
+    # forensic class; reverted.)
 
-    # Step 4: build AnalysisRound FIRST — its uniqueness + round_id validators run here, so
-    # building BEFORE any side effect (FindingEvents, the anomaly) means a validator raise
-    # crashes cleanly with NOTHING emitted, closing the strand class fully (FUP-180 review
-    # finding A). `round_id` is content-derived so re-emission is idempotent on replay.
+    # Step 4: build AnalysisRound AND construct AnalyzeCompletedEvent — BOTH BEFORE any
+    # side effect. Their validators (round uniqueness + round_id; the proposal-accounting
+    # equation) run here, so a validator raise crashes cleanly with NOTHING emitted,
+    # closing the strand class fully (FUP-180 review finding A + the residual: the
+    # completed-event accounting validators must run before the FindingEvent emit too).
+    # `round_id` is content-derived so re-emission is idempotent on replay.
     round_id = compute_round_id(
         pass_index=pass_index,
         files_examined=tuple(files_examined),
@@ -965,11 +966,44 @@ async def analyze(
         started_at=started_at,
         ended_at=ended_at,
     )
+    # Counters from local accumulators — the producer-side source of truth (spec §7 step
+    # 5). Constructed (accounting-validated) HERE, before any emit.
+    completed_event = AnalyzeCompletedEvent(
+        review_id=state.review_id,
+        is_eval=state.is_eval,
+        pass_index=pass_index,
+        n_files_analyzed=len(files_examined),
+        n_files_skipped=len(files_skipped),
+        n_llm_calls=n_llm_calls,
+        n_proposals_seen=n_proposals_seen,
+        n_findings_emitted=n_findings_emitted,
+        n_findings_served=n_findings_served,
+        n_findings_observed=n_findings_observed,
+        n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
+        n_proposals_dropped=n_proposals_dropped,
+        n_findings_dropped_over_cap=n_findings_dropped_over_cap,
+        subsumed_matches=tuple(pass_subsumed_matches),
+        n_proposals_rejected=n_proposals_rejected,
+        n_responses_rejected=n_responses_rejected,
+        n_trace_candidates_emitted=n_trace_candidates_emitted,
+        n_trace_candidates_dropped_malformed=n_trace_candidates_dropped_malformed,
+        total_input_tokens=total_input_tokens,
+        total_cache_read_tokens=total_cache_read_tokens,
+        total_cache_write_tokens=total_cache_write_tokens,
+        total_output_tokens=total_output_tokens,
+        # Decimal-summed across files, cast to float once. Matches
+        # `sum(LLMCallEvent.cost_usd)` to within one float-cast step.
+        total_cost_usd=float(total_cost_decimal),
+        pricing_version=PRICING_VERSION,
+        policy_version=active_policy_version,
+        analyze_model=analyze_model,
+        standard_analyze_model=standard_model_used,
+    )
 
-    # Gated-overflow anomaly (emitted AFTER the round validated, so a round-build raise
-    # strands no anomaly). `len(kept) > soft cap` happens only when gated findings ALONE
-    # exceed it — they were all kept (up to the hard ceiling), still reaching HITL, so this
-    # is a loud capacity signal. Best-effort: observability must never fail the review.
+    # All validation done. Side effects now, in order:
+    # Gated-overflow anomaly (best-effort). `len(kept) > soft cap` only when gated findings
+    # ALONE exceed it — all kept (gated are never dropped; >hard_cap fails loud earlier),
+    # still reaching HITL — a loud capacity signal. Observability must never fail the review.
     if len(kept_findings) > MAX_FINDINGS_PER_ROUND:
         try:
             await anomaly_sink.emit_anomaly(
@@ -986,47 +1020,11 @@ async def analyze(
         except Exception:
             logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
 
-    # Emit one FindingEvent per kept finding — AFTER the round validated, so the emitted
-    # FindingEvents equal the round's findings by construction (FUP-180).
+    # One FindingEvent per kept finding — the emitted set equals the round by construction.
     for finding in kept_findings:
         await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
 
-    # Step 5: AnalyzeCompletedEvent. Counters from local accumulators
-    # — the producer-side source of truth per spec §7 step 5.
-    await analyze_event_sink.emit_analyze_completed(
-        AnalyzeCompletedEvent(
-            review_id=state.review_id,
-            is_eval=state.is_eval,
-            pass_index=pass_index,
-            n_files_analyzed=len(files_examined),
-            n_files_skipped=len(files_skipped),
-            n_llm_calls=n_llm_calls,
-            n_proposals_seen=n_proposals_seen,
-            n_findings_emitted=n_findings_emitted,
-            n_findings_served=n_findings_served,
-            n_findings_observed=n_findings_observed,
-            n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
-            n_proposals_dropped=n_proposals_dropped,
-            n_findings_dropped_over_cap=n_findings_dropped_over_cap,
-            subsumed_matches=tuple(pass_subsumed_matches),
-            n_proposals_rejected=n_proposals_rejected,
-            n_responses_rejected=n_responses_rejected,
-            n_trace_candidates_emitted=n_trace_candidates_emitted,
-            n_trace_candidates_dropped_malformed=n_trace_candidates_dropped_malformed,
-            total_input_tokens=total_input_tokens,
-            total_cache_read_tokens=total_cache_read_tokens,
-            total_cache_write_tokens=total_cache_write_tokens,
-            total_output_tokens=total_output_tokens,
-            # Decimal-summed across files, cast to float once. Matches
-            # `sum(LLMCallEvent.cost_usd)` to within one float-cast step
-            # rather than per-file FP drift.
-            total_cost_usd=float(total_cost_decimal),
-            pricing_version=PRICING_VERSION,
-            policy_version=active_policy_version,
-            analyze_model=analyze_model,
-            standard_analyze_model=standard_model_used,
-        )
-    )
+    await analyze_event_sink.emit_analyze_completed(completed_event)
 
     # Step 6: end phase event. Same phase_id as the start event.
     await phase_event_sink.emit_phase(

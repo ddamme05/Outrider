@@ -48,6 +48,7 @@ from outrider.agent.nodes.analyze import (
     _round_ended_at,
     analyze,
 )
+from outrider.agent.nodes.finding_cap import FindingCapOverflowError
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.llm.base import LLMRequest, LLMResponse
@@ -541,37 +542,27 @@ async def test_gated_findings_never_dropped_emit_anomaly(
 
 
 @pytest.mark.asyncio
-async def test_hard_cap_drops_gated_at_runaway_ceiling(
+async def test_hard_cap_fails_loud_on_gated_overflow(
     deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """FUP-180 runaway backstop: ONLY the hard cap (not the soft cap) can drop a gated
-    finding — the single path that drops a CRITICAL/HIGH below HITL. With soft_cap=1 +
-    hard_cap=2 and 3 gated findings, the hard ceiling keeps 2 and drops 1 gated; the drop
-    is counted in n_findings_dropped_over_cap and the overflow anomaly still fires. This
-    exercises the safety-critical gated-drop path at the call site (not just the helper)."""
+    """FUP-180 runaway ceiling: a review with MORE gated findings than the hard cap (==
+    HITL's gated capacity) fails LOUD (FindingCapOverflowError) rather than silently
+    dropping a CRITICAL below HITL. soft_cap=1, hard_cap=2, 3 gated findings → analyze
+    raises, and because the cap runs BEFORE emission it is a clean crash: NO FindingEvents
+    and NO AnalyzeCompletedEvent (no strand)."""
     monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 1)
     monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_HARD_CAP", 2)
-    # 3 distinct gated findings (2 CRITICAL + 1 HIGH).
+    # 3 distinct gated findings (2 CRITICAL + 1 HIGH) — exceeds hard_cap=2.
     deps["provider"] = _StubLLMProvider(
         _build_multi_finding_json(["sql_injection", "auth_bypass", "hardcoded_secret"])
     )
     state = _build_review_state()
-    result = await analyze(state, **deps)
+    with pytest.raises(FindingCapOverflowError):
+        await analyze(state, **deps)
 
-    round_ = result["analysis_rounds"][0]
-    assert len(round_.findings) == 2  # hard_cap kept 2 of the 3 gated
-    finding_events = deps["analyze_event_sink"].findings
-    assert len(finding_events) == 2
-
-    c = deps["analyze_event_sink"].completed[0]
-    assert c.n_findings_emitted == 2
-    assert c.n_findings_dropped_over_cap == 1  # a GATED finding WAS dropped at the ceiling
-    assert c.n_proposals_dropped == 1  # the dropped gated finding is a JUDGED proposal
-    # The overflow anomaly still fires (kept=2 > soft_cap=1).
-    assert any(
-        a["rule_name"] is AnomalyRuleName.GATED_FINDINGS_OVER_CAP
-        for a in deps["anomaly_sink"].anomalies
-    )
+    # Clean crash (no strand): the cap raised before any FindingEvent / completion fired.
+    assert deps["analyze_event_sink"].findings == []
+    assert deps["analyze_event_sink"].completed == []
 
 
 # ---------------------------------------------------------------------------
