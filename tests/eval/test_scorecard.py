@@ -33,7 +33,7 @@ from .metrics import (
     LatencyPerReview,
     SeverityAccuracy,
 )
-from .scorecard import GateVerdict, Scorecard, ScorecardRow
+from .scorecard import GateVerdict, RowDiagnostics, Scorecard, ScorecardRow
 
 _BASELINE_MODEL = "claude-sonnet-4-6"
 _CANDIDATE_MODEL = "claude-haiku-4-5"
@@ -219,6 +219,128 @@ def test_from_comparison_carries_replay_provenance() -> None:
     assert row.replay_source == "resume"
 
 
+# --- failed-row diagnostics (FP titles/paths + baseline delta) --------------
+
+
+def test_from_comparison_populates_diagnostics_with_fp() -> None:
+    expected = [_expected()]
+    # Candidate catches the expected finding AND adds one FP in another file.
+    candidate = grade([_finding(), _finding(file_path="app/evil.py")], expected)
+    comparison = compare(grade([_finding()], expected), candidate, fp_allowance=1)
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="s",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    assert row.diagnostics is not None
+    assert len(row.diagnostics.candidate_false_positives) == 1
+    fp = row.diagnostics.candidate_false_positives[0]
+    assert fp.file_path == "app/evil.py"
+    assert fp.title == "t"
+    assert fp.finding_type == FindingType.SQL_INJECTION.value
+    assert row.diagnostics.candidate_missed == ()
+    assert row.diagnostics.baseline_n_false_positives == 0
+
+
+def test_from_comparison_diagnostics_none_when_clean() -> None:
+    expected = [_expected()]
+    comparison = compare(grade([_finding()], expected), grade([_finding()], expected))
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="s",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    assert row.diagnostics is None
+
+
+def test_from_comparison_diagnostics_captures_missed() -> None:
+    expected = [_expected()]
+    # Candidate catches nothing -> the expected finding is a recall loss (miss).
+    comparison = compare(grade([_finding()], expected), grade([], expected))
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="s",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    assert row.diagnostics is not None
+    assert len(row.diagnostics.candidate_missed) == 1
+    assert row.diagnostics.candidate_missed[0].title is None  # ExpectedFinding has no title
+    assert row.diagnostics.candidate_missed[0].file_path == "app/db.py"
+
+
+def test_to_html_renders_diagnostics_section() -> None:
+    expected = [_expected()]
+    candidate = grade([_finding(), _finding(file_path="app/evil.py")], expected)
+    comparison = compare(grade([_finding()], expected), candidate, fp_allowance=1)
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="fx/sqli.json",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    rendered = Scorecard(rows=(row,)).to_html()
+    assert "<h2>Diagnostics</h2>" in rendered
+    assert "app/evil.py:10" in rendered  # the FP location is named, not just the count
+    assert "false positive" in rendered
+
+
+def test_to_html_no_diagnostics_section_when_clean() -> None:
+    expected = [_expected()]
+    comparison = compare(grade([_finding()], expected), grade([_finding()], expected))
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="fx/clean.json",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    rendered = Scorecard(rows=(row,)).to_html()
+    assert "Diagnostics" not in rendered
+
+
+def test_from_comparison_diagnostics_on_baseline_invalid_fail() -> None:
+    expected = [_expected()]
+    # Baseline (Sonnet) MISSES the finding -> baseline_valid False -> gate FAILS,
+    # even though the candidate caught it (no FP, no miss). Diagnostics must still
+    # populate so the FAIL is explained as non-discriminating, not candidate-bad.
+    comparison = compare(grade([], expected), grade([_finding()], expected))
+    assert comparison.passes is False
+    assert comparison.baseline_valid is False
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="s",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    assert row.diagnostics is not None  # populated despite no candidate FP/miss
+    assert row.diagnostics.candidate_false_positives == ()
+    assert row.diagnostics.candidate_missed == ()
+
+
+def test_to_html_explains_baseline_invalid_fail() -> None:
+    expected = [_expected()]
+    comparison = compare(grade([], expected), grade([_finding()], expected))
+    row = ScorecardRow.from_comparison(
+        node="analyze",
+        scenario="fx/x.json",
+        model=_CANDIDATE_MODEL,
+        baseline_model=_BASELINE_MODEL,
+        comparison=comparison,
+    )
+    rendered = Scorecard(rows=(row,)).to_html()
+    assert "<h2>Diagnostics</h2>" in rendered
+    assert "baseline invalid" in rendered  # the why-reason names the cause
+    assert "<h3>Findings</h3>" not in rendered  # no FP/miss -> no findings table
+
+
 # --- errored rows + the consistency validator -------------------------------
 
 
@@ -229,6 +351,20 @@ def test_errored_row_has_null_metrics() -> None:
     assert row.recall is None
     assert row.gate is None
     assert row.n_false_positives is None
+
+
+def test_errored_row_with_diagnostics_is_rejected() -> None:
+    # Diagnostics are null on an errored row, same invariant as the other metrics.
+    with pytest.raises(ValidationError):
+        ScorecardRow(
+            node="analyze",
+            model=_CANDIDATE_MODEL,
+            scenario="s",
+            baseline_model=_BASELINE_MODEL,
+            status="errored",
+            error="boom",
+            diagnostics=RowDiagnostics(),
+        )
 
 
 def test_ok_row_missing_quality_is_rejected() -> None:

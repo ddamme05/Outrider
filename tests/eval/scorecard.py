@@ -94,6 +94,38 @@ class RegressionVerdict(BaseModel):
     candidate_sqli_fp: int
 
 
+class DiagnosticFinding(BaseModel):
+    """One finding behind a failed/noisy row — a candidate FALSE POSITIVE (the
+    model flagged it; ground truth did not) or a candidate MISS (ground truth had
+    it; the candidate did not catch it). `title` is present for false positives (a
+    real `ReviewFinding`) and None for misses (an `ExpectedFinding` carries no
+    title). Lets the artifact name WHAT the candidate got wrong, not just how
+    many."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    file_path: str
+    line_start: int
+    line_end: int
+    finding_type: str
+    severity: str
+    title: str | None = None
+
+
+class RowDiagnostics(BaseModel):
+    """Failed-row diagnostics: the candidate's actual false positives + misses,
+    plus the baseline's counts for the delta. Populated by `from_comparison` ONLY
+    when the candidate has at least one FP or miss (a clean row carries None), so
+    the artifact turns a FAIL from "why?" (open the JSON / logs) into a glance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_false_positives: tuple[DiagnosticFinding, ...] = ()
+    candidate_missed: tuple[DiagnosticFinding, ...] = ()
+    baseline_n_false_positives: int = 0
+    baseline_n_missed: int = 0
+
+
 class ScorecardRow(BaseModel):
     """One `(node, model, scenario)` cell of the scorecard.
 
@@ -132,6 +164,11 @@ class ScorecardRow(BaseModel):
     # Optional: not every scenario is security-relevant, and errored rows omit it.
     regression: RegressionVerdict | None = None
 
+    # Failed-row diagnostics — the candidate's actual FP/missed findings + the
+    # baseline delta. Populated by `from_comparison` only when there's something
+    # to diagnose (>= 1 FP or miss); None on clean and errored rows.
+    diagnostics: RowDiagnostics | None = None
+
     # Cost/latency — review-level, from the full-graph run. Optional even on an
     # ok row: the cost pass is a separate join that a caller may skip (or that
     # may fail). `cost_source` disambiguates present / not-requested / failed.
@@ -162,6 +199,7 @@ class ScorecardRow(BaseModel):
             if (
                 any(q is not None for q in quality)
                 or self.regression is not None
+                or self.diagnostics is not None
                 or self.cost is not None
                 or self.latency is not None
                 or self.replay_equivalent is not None
@@ -227,6 +265,45 @@ class ScorecardRow(BaseModel):
             if cost_source is not None
             else ("full_graph" if cost is not None else "not_measured")
         )
+        # Failed-row diagnostics: name the candidate's actual FP / missed findings
+        # (+ baseline counts for the delta) so a FAIL is diagnosable from the
+        # artifact. None when there's nothing to show (clean row).
+        fps = tuple(
+            DiagnosticFinding(
+                file_path=f.file_path,
+                line_start=f.line_start,
+                line_end=f.line_end,
+                finding_type=f.finding_type.value,
+                severity=f.severity.value,
+                title=f.title,
+            )
+            for f in cand.extra
+        )
+        missed = tuple(
+            DiagnosticFinding(
+                file_path=e.file_path,
+                line_start=e.line_start,
+                line_end=e.line_end,
+                finding_type=e.finding_type.value,
+                severity=e.severity.value,
+            )
+            for e in cand.missed
+        )
+        diagnostics = (
+            RowDiagnostics(
+                candidate_false_positives=fps,
+                candidate_missed=missed,
+                baseline_n_false_positives=comparison.baseline.n_false_positives,
+                baseline_n_missed=len(comparison.baseline.missed),
+            )
+            # Populate on ANY gate failure, not just FP/miss: a FAIL caused solely
+            # by a non-discriminating baseline (baseline_valid False) carries no
+            # candidate FP/miss, but the row must still reach the Diagnostics
+            # section so the HTML's `why` column explains the FAIL instead of
+            # leaving a bare, unexplained FAIL that reads as "candidate bad".
+            if (fps or missed or not comparison.passes)
+            else None
+        )
         return cls(
             node=node,
             model=model,
@@ -240,6 +317,7 @@ class ScorecardRow(BaseModel):
             n_false_positives=cand.n_false_positives,
             gate=gate,
             regression=regression,
+            diagnostics=diagnostics,
             cost=cost,
             latency=latency,
             cost_source=effective_cost_source,
@@ -662,6 +740,63 @@ class Scorecard(BaseModel):
             sections.append('<h3>Aggregate <span class="muted">(per node × model)</span></h3>')
             sections.extend(_html_table(agg_headers, agg_data))
 
+            # Diagnostics: the candidate findings behind a FAIL (FP titles/paths)
+            # plus the per-scenario delta vs baseline. Built only from rows that
+            # carry diagnostics (>= 1 FP or miss); a clean batch renders nothing.
+            delta_data: list[list[str]] = []
+            detail_data: list[list[str]] = []
+            for r in self.rows:
+                d = r.diagnostics
+                if d is None:
+                    continue
+                gate_cell = "PASS" if (r.gate is not None and r.gate.passes) else "FAIL"
+                delta_data.append(
+                    [
+                        r.scenario,
+                        gate_cell,
+                        _gate_reason(r.gate),
+                        str(len(d.candidate_false_positives)),
+                        str(d.baseline_n_false_positives),
+                        str(len(d.candidate_missed)),
+                        str(d.baseline_n_missed),
+                    ]
+                )
+                detail_data.extend(
+                    _diag_detail_row(r.scenario, "false positive", f)
+                    for f in d.candidate_false_positives
+                )
+                detail_data.extend(
+                    _diag_detail_row(r.scenario, "missed", f) for f in d.candidate_missed
+                )
+            if delta_data:
+                sections.append("<h2>Diagnostics</h2>")
+                sections.append(_DIAG_INTRO)
+                sections.append(
+                    '<h3>Per-scenario delta <span class="muted">(candidate vs baseline)</span></h3>'
+                )
+                sections.extend(
+                    _html_table(
+                        [
+                            "scenario",
+                            "gate",
+                            "why",
+                            "cand FP",
+                            "base FP",
+                            "cand missed",
+                            "base missed",
+                        ],
+                        delta_data,
+                    )
+                )
+                if detail_data:
+                    sections.append("<h3>Findings</h3>")
+                    sections.extend(
+                        _html_table(
+                            ["scenario", "kind", "title", "location", "type", "severity"],
+                            detail_data,
+                        )
+                    )
+
         if self.triage_rows:
             triage_row_headers = [
                 "node",
@@ -845,6 +980,48 @@ def _html_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list[s
     return out
 
 
+_DIAG_INTRO = (
+    '<p class="muted">Every FAIL plus any candidate false positive / miss '
+    "&mdash; the failing gate condition (<code>why</code>) and the findings, "
+    "not just the count.</p>"
+)
+
+
+def _loc(file_path: str, line_start: int, line_end: int) -> str:
+    """`file:line` (or `file:start-end`) location string for a diagnostic finding."""
+    if line_start == line_end:
+        return f"{file_path}:{line_start}"
+    return f"{file_path}:{line_start}-{line_end}"
+
+
+def _gate_reason(gate: GateVerdict | None) -> str:
+    """The failing gate sub-condition(s) for a FAIL row, so a bare FAIL is
+    self-explanatory — especially a baseline-invalid (non-discriminating) FAIL,
+    which carries no candidate FP/miss to show in the findings table."""
+    if gate is None or gate.passes:
+        return "—"
+    reasons = []
+    if not gate.baseline_valid:
+        reasons.append("baseline invalid")
+    if not gate.recall_held:
+        reasons.append("recall")
+    if not gate.fp_bounded:
+        reasons.append("FP")
+    return ", ".join(reasons) or "—"
+
+
+def _diag_detail_row(scenario: str, kind: str, finding: DiagnosticFinding) -> list[str]:
+    """One row of the diagnostics detail table for a candidate FP or miss."""
+    return [
+        scenario,
+        kind,
+        finding.title or "—",
+        _loc(finding.file_path, finding.line_start, finding.line_end),
+        finding.finding_type,
+        finding.severity,
+    ]
+
+
 def _fmt_ratio(metric: FindingRecall | FindingPrecision | SeverityAccuracy | None) -> str:
     return f"{metric.value:.3f}" if metric is not None else "—"
 
@@ -883,8 +1060,10 @@ def _fmt_dropped(count: int | None, paths: tuple[str, ...] | None) -> str:
 
 __all__ = [
     "AggregateRow",
+    "DiagnosticFinding",
     "GateVerdict",
     "RegressionVerdict",
+    "RowDiagnostics",
     "Scorecard",
     "ScorecardRow",
     "TriageAggregateRow",
