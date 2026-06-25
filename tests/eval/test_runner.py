@@ -161,6 +161,42 @@ def test_build_scorecard_passing_gate_clean_regression() -> None:
     assert row.quality_source == "analyze_direct"
 
 
+def test_build_scorecard_stamps_provenance_when_version_given() -> None:
+    # The real-model entrypoints stamp provenance by passing prompt_template_version;
+    # exercise that wiring on the scripted path (no spend), deriving scenario_set +
+    # models from build_scorecard's own authoritative inputs.
+    spec = ScenarioSpec(
+        scenario="example_sqli", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH)
+    )
+    card = build_scorecard(
+        [spec],
+        baseline_provider=_ScriptedProvider(_FINDS_RESPONSE),
+        candidate_provider=_ScriptedProvider(_FINDS_RESPONSE),
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+        prompt_template_version="analyze-vtest",
+    )
+    assert card.provenance is not None
+    assert card.provenance.prompt_template_version == "analyze-vtest"
+    assert card.provenance.scenario_set == ("example_sqli",)
+    assert card.provenance.baseline_model == _BASELINE
+    assert card.provenance.candidate_models == (_CANDIDATE,)
+
+
+def test_build_scorecard_no_provenance_without_version() -> None:
+    spec = ScenarioSpec(
+        scenario="example_sqli", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH)
+    )
+    card = build_scorecard(
+        [spec],
+        baseline_provider=_ScriptedProvider(_FINDS_RESPONSE),
+        candidate_provider=_ScriptedProvider(_FINDS_RESPONSE),
+        baseline_model=_BASELINE,
+        candidate_models=[_CANDIDATE],
+    )
+    assert card.provenance is None
+
+
 def test_build_scorecard_failing_gate_on_recall_drop() -> None:
     spec = ScenarioSpec(
         scenario="example_sqli", state=_build_state(), ground_truth=tuple(_GROUND_TRUTH)

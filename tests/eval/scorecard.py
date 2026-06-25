@@ -36,7 +36,7 @@ import json
 from statistics import fmean
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from .metrics import (
     CostPerReview,
@@ -539,6 +539,24 @@ class TriageAggregateRow(BaseModel):
     mean_dimension_recall: float | None = None
 
 
+class ScorecardProvenance(BaseModel):
+    """Self-certifying provenance for a scorecard run: the git commit, prompt
+    template version, and scenario set that produced these numbers. Stamped into
+    BOTH emitters so the artifact stands on its own — a reader never has to
+    reconstruct "which checkout / which prompt" from local reflog or file mtimes
+    (the ambiguity that made an earlier run unverifiable after the fact)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    git_sha: str
+    git_dirty: bool
+    prompt_template_version: str
+    scenario_set: tuple[str, ...]
+    baseline_model: str
+    candidate_models: tuple[str, ...]
+    generated_at: AwareDatetime
+
+
 class Scorecard(BaseModel):
     """A collection of `ScorecardRow`s with per-`(node, model)` aggregates and
     JSON + HTML emitters — the persisted decision artifact. Pure: the
@@ -548,6 +566,7 @@ class Scorecard(BaseModel):
 
     rows: tuple[ScorecardRow, ...] = ()
     triage_rows: tuple[TriageScorecardRow, ...] = ()
+    provenance: ScorecardProvenance | None = None
 
     def aggregates(self) -> tuple[AggregateRow, ...]:
         """Roll rows up per `(node, model)`, sorted by key for a deterministic
@@ -638,13 +657,18 @@ class Scorecard(BaseModel):
         return tuple(out)
 
     def to_json(self) -> str:
-        """JSON artifact: `{rows, aggregates, triage_rows, triage_aggregates}`,
-        key-sorted for stable diffs."""
+        """JSON artifact: `{rows, aggregates, triage_rows, triage_aggregates,
+        provenance}`, key-sorted for stable diffs (`provenance` is null when unset).
+        "Stable" is key ORDERING; provenance carries per-run values (`generated_at`,
+        `git_sha`/`git_dirty`) that intentionally differ run-to-run."""
         payload = {
             "rows": [r.model_dump(mode="json") for r in self.rows],
             "aggregates": [a.model_dump(mode="json") for a in self.aggregates()],
             "triage_rows": [r.model_dump(mode="json") for r in self.triage_rows],
             "triage_aggregates": [a.model_dump(mode="json") for a in self.triage_aggregates()],
+            "provenance": (
+                self.provenance.model_dump(mode="json") if self.provenance is not None else None
+            ),
         }
         return json.dumps(payload, indent=2, sort_keys=True)
 
@@ -656,6 +680,8 @@ class Scorecard(BaseModel):
         tables); every cell value is HTML-escaped and PASS / FAIL / ERROR are
         badged so the gate verdict reads at a glance."""
         sections: list[str] = []
+        if self.provenance is not None:
+            sections.append(_provenance_html(self.provenance))
 
         if self.rows:
             row_headers = [
@@ -920,6 +946,8 @@ _HTML_HEAD = """<!DOCTYPE html>
   footer { margin-top: 2rem; font-size: .76rem; color: #57606a; border-top: 1px solid #e3e6ea; }
   footer p { margin: .5rem 0; }
   code { background: #f3f4f6; padding: .05rem .25rem; border-radius: .25rem; }
+  .provenance { font-size: .8rem; color: #444c56; margin: .5rem 0 1.4rem; }
+  .provenance div { margin: .12rem 0; }
 </style>
 </head>
 <body>
@@ -979,6 +1007,26 @@ def _html_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list[s
     out.extend("<tr>" + "".join(f"<td>{_html_cell(c)}</td>" for c in row) + "</tr>" for row in rows)
     out.append("</tbody></table>")
     return out
+
+
+def _provenance_html(prov: ScorecardProvenance) -> str:
+    """Render run provenance (git, prompt version, scenario set, models) as a
+    small definition block at the top of the artifact. Every value routes through
+    `_html_cell` (escaped); the literal tags are the only un-escaped markup."""
+    dirty = ' <span class="muted">(dirty tree)</span>' if prov.git_dirty else ""
+    items = [
+        ("git", f"<code>{_html_cell(prov.git_sha)}</code>{dirty}"),
+        ("prompt template", f"<code>{_html_cell(prov.prompt_template_version)}</code>"),
+        ("baseline", _html_cell(prov.baseline_model)),
+        ("candidate(s)", _html_cell(", ".join(prov.candidate_models))),
+        ("scenarios", f"{len(prov.scenario_set)} — {_html_cell(', '.join(prov.scenario_set))}"),
+        # `...Z` to match to_json's serialization of the same instant (not `+00:00`).
+        ("generated", _html_cell(prov.generated_at.isoformat().replace("+00:00", "Z"))),
+    ]
+    body = "\n".join(
+        f'<div><span class="muted">{label}:</span> {value}</div>' for label, value in items
+    )
+    return f'<section class="provenance">\n<h2>Provenance</h2>\n{body}\n</section>'
 
 
 _DIAG_INTRO = (
@@ -1066,6 +1114,7 @@ __all__ = [
     "RegressionVerdict",
     "RowDiagnostics",
     "Scorecard",
+    "ScorecardProvenance",
     "ScorecardRow",
     "TriageAggregateRow",
     "TriageGateVerdict",
