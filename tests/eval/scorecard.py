@@ -1,9 +1,9 @@
-"""Cross-scenario eval scorecard: typed rows + JSON/Markdown emit.
+"""Cross-scenario eval scorecard: typed rows + JSON/HTML emit.
 
 Productizes the inline `(fixture, dimension, ok, fail_label)` aggregation that
 lived only in the opt-in spend test (`test_model_comparison.py`'s GATE SUMMARY
 print) into reusable typed objects. One `ScorecardRow` per `(node, model,
-scenario)`; a `Scorecard` collects rows and emits a JSON + Markdown artifact.
+scenario)`; a `Scorecard` collects rows and emits a JSON + HTML artifact.
 
 Per `specs/2026-06-23-eval-runner-scorecard.md`:
   - Step 1 emits `node="analyze"` rows only; the `node` axis is in the schema
@@ -31,6 +31,7 @@ over the same finding population the grader's precision uses.
 
 from __future__ import annotations
 
+import html
 import json
 from statistics import fmean
 from typing import TYPE_CHECKING, Literal
@@ -461,7 +462,7 @@ class TriageAggregateRow(BaseModel):
 
 class Scorecard(BaseModel):
     """A collection of `ScorecardRow`s with per-`(node, model)` aggregates and
-    JSON + Markdown emitters — the persisted decision artifact. Pure: the
+    JSON + HTML emitters — the persisted decision artifact. Pure: the
     emitters return strings; writing them to a path is the caller's job."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -568,90 +569,98 @@ class Scorecard(BaseModel):
         }
         return json.dumps(payload, indent=2, sort_keys=True)
 
-    def to_markdown(self) -> str:
-        """Human-glance artifact: a per-row table + a per-`(node, model)`
-        aggregate table. Null cells render as an em dash; cell values are
-        pipe/newline-escaped so a stray label can't break column alignment."""
-        row_headers = [
-            "node",
-            "model",
-            "scenario",
-            "recall",
-            "precision",
-            "severity",
-            "FP",
-            "gate",
-            "regr",
-            "$/review",
-            "latency(s)",
-            "replay",
-            "replay_src",
-            "quality_src",
-            "cost_src",
-        ]
-        row_data: list[list[str]] = []
-        for r in self.rows:
-            if r.status == "errored":
-                gate_cell = f"ERROR: {r.error}"
-            else:
-                gate_cell = "PASS" if (r.gate is not None and r.gate.passes) else "FAIL"
-            row_data.append(
-                [
-                    r.node,
-                    r.model,
-                    r.scenario,
-                    _fmt_ratio(r.recall),
-                    _fmt_ratio(r.precision),
-                    _fmt_ratio(r.severity_accuracy),
-                    str(r.n_false_positives) if r.n_false_positives is not None else "—",
-                    gate_cell,
-                    _fmt_regression(r.regression),
-                    f"{r.cost.usd:.4f}" if r.cost is not None else "—",
-                    f"{r.latency.seconds:.2f}" if r.latency is not None else "—",
-                    _fmt_bool(r.replay_equivalent),
-                    r.replay_source,
-                    r.quality_source,
-                    r.cost_source,
-                ]
-            )
+    def to_html(self) -> str:
+        """Self-contained HTML artifact (inline CSS, no external deps) — the
+        human-glance counterpart to `to_json`. A per-row table + a per-`(node,
+        model)` aggregate, for analyze and/or triage. Empty sections are
+        SUPPRESSED (a triage-only or analyze-only card renders only its own
+        tables); every cell value is HTML-escaped and PASS / FAIL / ERROR are
+        badged so the gate verdict reads at a glance."""
+        sections: list[str] = []
 
-        agg_headers = [
-            "node",
-            "model",
-            "scenarios",
-            "ok",
-            "errored",
-            "passed",
-            "failed",
-            "mean recall",
-            "mean precision",
-            "total $",
-            "costed",
-            "mean latency(s)",
-        ]
-        agg_data: list[list[str]] = []
-        for a in self.aggregates():
-            agg_data.append(
-                [
-                    a.node,
-                    a.model,
-                    str(a.n_scenarios),
-                    str(a.n_ok),
-                    str(a.n_errored),
-                    str(a.n_passed),
-                    str(a.n_failed),
-                    f"{a.mean_recall:.3f}" if a.mean_recall is not None else "—",
-                    f"{a.mean_precision:.3f}" if a.mean_precision is not None else "—",
-                    f"{a.total_cost_usd:.4f}" if a.total_cost_usd is not None else "—",
-                    str(a.n_costed),
-                    f"{a.mean_latency_seconds:.2f}" if a.mean_latency_seconds is not None else "—",
-                ]
-            )
+        if self.rows:
+            row_headers = [
+                "node",
+                "model",
+                "scenario",
+                "recall",
+                "precision",
+                "severity",
+                "FP",
+                "gate",
+                "regr",
+                "$/review",
+                "latency(s)",
+                "replay",
+                "replay_src",
+                "quality_src",
+                "cost_src",
+            ]
+            row_data: list[list[str]] = []
+            for r in self.rows:
+                if r.status == "errored":
+                    gate_cell = f"ERROR: {r.error}"
+                else:
+                    gate_cell = "PASS" if (r.gate is not None and r.gate.passes) else "FAIL"
+                row_data.append(
+                    [
+                        r.node,
+                        r.model,
+                        r.scenario,
+                        _fmt_ratio(r.recall),
+                        _fmt_ratio(r.precision),
+                        _fmt_ratio(r.severity_accuracy),
+                        str(r.n_false_positives) if r.n_false_positives is not None else "—",
+                        gate_cell,
+                        _fmt_regression(r.regression),
+                        f"{r.cost.usd:.4f}" if r.cost is not None else "—",
+                        f"{r.latency.seconds:.2f}" if r.latency is not None else "—",
+                        _fmt_bool(r.replay_equivalent),
+                        r.replay_source,
+                        r.quality_source,
+                        r.cost_source,
+                    ]
+                )
 
-        lines: list[str] = ["# Eval scorecard", ""]
-        lines.extend(_md_table(row_headers, row_data))
-        lines.extend(["", "## Aggregate (per node × model)", ""])
-        lines.extend(_md_table(agg_headers, agg_data))
+            agg_headers = [
+                "node",
+                "model",
+                "scenarios",
+                "ok",
+                "errored",
+                "passed",
+                "failed",
+                "mean recall",
+                "mean precision",
+                "total $",
+                "costed",
+                "mean latency(s)",
+            ]
+            agg_data: list[list[str]] = []
+            for a in self.aggregates():
+                agg_data.append(
+                    [
+                        a.node,
+                        a.model,
+                        str(a.n_scenarios),
+                        str(a.n_ok),
+                        str(a.n_errored),
+                        str(a.n_passed),
+                        str(a.n_failed),
+                        f"{a.mean_recall:.3f}" if a.mean_recall is not None else "—",
+                        f"{a.mean_precision:.3f}" if a.mean_precision is not None else "—",
+                        f"{a.total_cost_usd:.4f}" if a.total_cost_usd is not None else "—",
+                        str(a.n_costed),
+                        f"{a.mean_latency_seconds:.2f}"
+                        if a.mean_latency_seconds is not None
+                        else "—",
+                    ]
+                )
+
+            sections.append("<h2>Analyze</h2>")
+            sections.extend(_html_table(row_headers, row_data))
+            sections.append('<h3>Aggregate <span class="muted">(per node × model)</span></h3>')
+            sections.extend(_html_table(agg_headers, agg_data))
 
         if self.triage_rows:
             triage_row_headers = [
@@ -728,29 +737,111 @@ class Scorecard(BaseModel):
                         else "—",
                     ]
                 )
-            lines.extend(["", "## Triage (per node × model)", ""])
-            lines.extend(_md_table(triage_row_headers, triage_row_data))
-            lines.extend(["", "### Triage aggregate", ""])
-            lines.extend(_md_table(triage_agg_headers, triage_agg_data))
+            sections.append("<h2>Triage</h2>")
+            sections.extend(_html_table(triage_row_headers, triage_row_data))
+            sections.append("<h3>Triage aggregate</h3>")
+            sections.extend(_html_table(triage_agg_headers, triage_agg_data))
 
-        lines.append("")
-        return "\n".join(lines)
+        footer_notes: list[str] = []
+        if self.rows:
+            footer_notes.append(_ANALYZE_NOTE)
+        if self.triage_rows:
+            footer_notes.append(_TRIAGE_NOTE)
+        footer_notes.append(_CORPUS_NOTE)
+        footer = "<footer>\n" + "\n".join(footer_notes) + "\n</footer>"
+        return _HTML_HEAD + "\n".join(sections) + "\n" + footer + _HTML_TAIL
 
 
-def _md_cell(value: str) -> str:
-    """Escape a value for a Markdown table cell — a literal `|` would add a
-    phantom column and a newline would split the row, silently misaligning the
-    one artifact the operator reads to make a decision."""
-    return value.replace("|", "\\|").replace("\n", " ")
+# Self-contained HTML document shell (inline CSS, no external deps) wrapping the
+# scorecard tables. Head/foot are split so `to_html` only assembles the body; the
+# footer carries the two reading caveats an operator needs to not over-read the
+# numbers (cost provenance + strict-gate semantics).
+_HTML_HEAD = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outrider eval scorecard</title>
+<style>
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 1120px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.45; color: #1b1f24;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 .15rem; }
+  h2 { font-size: 1.15rem; margin: 1.8rem 0 .5rem; border-bottom: 2px solid #e3e6ea; }
+  h3 { font-size: .95rem; margin: 1.2rem 0 .35rem; font-weight: 600; }
+  .muted { color: #6a737d; font-weight: 400; }
+  table { border-collapse: collapse; width: 100%; font-size: .82rem; margin-bottom: .4rem; }
+  th, td { padding: .38rem .55rem; text-align: left; border-bottom: 1px solid #eceff1; }
+  th { background: #24292f; color: #fff; font-weight: 600; white-space: nowrap; }
+  td { white-space: nowrap; }
+  tbody tr:nth-child(even) { background: #f6f8fa; }
+  tbody tr:hover { background: #fff8e1; }
+  .badge { display: inline-block; padding: .04rem .45rem; border-radius: .7rem; font-weight: 700; }
+  .badge.pass { background: #1a7f37; color: #fff; }
+  .badge.fail { background: #cf222e; color: #fff; }
+  .badge.err { background: #9a6700; color: #fff; }
+  footer { margin-top: 2rem; font-size: .76rem; color: #57606a; border-top: 1px solid #e3e6ea; }
+  footer p { margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .05rem .25rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+<h1>Outrider eval scorecard</h1>
+<p class="muted">
+  Baseline vs candidate quality gate — report-only.
+  <span class="badge pass">PASS</span>/<span class="badge fail">FAIL</span> is the gate verdict.
+</p>
+"""
+
+# Footer reading-notes, assembled per the sections ACTUALLY present so a
+# triage-only card never claims analyze-only metrics ($/review, the FP gate) and
+# an analyze-only card never claims triage metrics. A combined card gets both.
+_ANALYZE_NOTE = """<p><strong>Analyze reading notes.</strong> Quality (recall / precision /
+severity / FP) is real-model spend through the analyze-direct path. <code>$/review</code>
+prices the full-graph run with <em>real input tokens</em> and <em>scripted output tokens</em>
+&mdash; an input-accurate estimate, not a measured spend. The gate is strict (zero FP
+allowance, zero recall slack), so a <span class="badge fail">FAIL</span> is typically an
+added false positive, not a missed finding.</p>"""
+
+_TRIAGE_NOTE = """<p><strong>Triage reading notes.</strong> Metrics are tier accuracy, files
+dropped below the analysis floor, DEEP downgrades, over-tiering, and dimension
+recall/precision &mdash; there is no cost column (triage rows are quality-only). The gate is
+safety-oriented: it fails on a file dropped from analysis, under-risking, or a dimension-recall
+regression, not on over-broad tiering.</p>"""
+
+_CORPUS_NOTE = "<p>Small fixture corpus &mdash; read trends, not absolutes.</p>"
+
+_HTML_TAIL = """
+</body>
+</html>
+"""
 
 
-def _md_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
-    """Render a GitHub-flavored Markdown table. The dashed separator is DERIVED
-    from the header count (not hand-maintained), so a column add/remove can't
-    drift the separator out of alignment."""
-    out = ["| " + " | ".join(_md_cell(h) for h in headers) + " |"]
-    out.append("| " + " | ".join("---" for _ in headers) + " |")
-    out.extend("| " + " | ".join(_md_cell(c) for c in row) + " |" for row in rows)
+def _html_cell(value: str) -> str:
+    """Escape a value for an HTML table cell, then badge the known gate states
+    (PASS / FAIL / ERROR:) with a status span so the verdict reads at a glance.
+    The badge match is on the ALREADY-ESCAPED text, so no cell content can
+    inject markup."""
+    esc = html.escape(value)
+    if esc == "PASS":
+        return '<span class="badge pass">PASS</span>'
+    if esc == "FAIL":
+        return '<span class="badge fail">FAIL</span>'
+    if esc.startswith("ERROR:"):
+        return f'<span class="badge err">{esc}</span>'
+    return esc
+
+
+def _html_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
+    """Render an HTML table. Every header + cell is escaped; cells route through
+    `_html_cell` for gate-state badging."""
+    out = ["<table>", "<thead><tr>"]
+    out.extend(f"<th>{html.escape(h)}</th>" for h in headers)
+    out.append("</tr></thead>")
+    out.append("<tbody>")
+    out.extend("<tr>" + "".join(f"<td>{_html_cell(c)}</td>" for c in row) + "</tr>" for row in rows)
+    out.append("</tbody></table>")
     return out
 
 
