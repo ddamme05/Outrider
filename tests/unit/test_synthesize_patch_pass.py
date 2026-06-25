@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 
 from outrider.agent.nodes.synthesize import synthesize
+from outrider.anomaly.rule_names import AnomalyRuleName
 from outrider.audit.aggregates import ReviewLLMAggregates
 from outrider.audit.events import compute_finding_content_hash
 from outrider.llm.base import LLMRequest, LLMResponse
@@ -46,8 +47,11 @@ class _StubPhaseSink:
 
 
 class _StubSynthesizeEventSink:
-    async def emit_synthesize_completed(self, event: Any) -> None:  # noqa: ARG002
-        return None
+    def __init__(self) -> None:
+        self.completed: list[Any] = []
+
+    async def emit_synthesize_completed(self, event: Any) -> None:
+        self.completed.append(event)
 
     async def query_review_llm_aggregates(  # noqa: ARG002
         self, *, review_id: Any, is_eval: bool
@@ -58,8 +62,11 @@ class _StubSynthesizeEventSink:
 
 
 class _StubAnomalySink:
-    async def emit_anomaly(self, **kwargs: Any) -> None:  # noqa: ARG002
-        return None
+    def __init__(self) -> None:
+        self.anomalies: list[dict[str, Any]] = []
+
+    async def emit_anomaly(self, **kwargs: Any) -> None:
+        self.anomalies.append(kwargs)
 
 
 class _DispatchingProvider:
@@ -405,6 +412,48 @@ async def test_synthesize_report_cap_keeps_gated_drops_non_gated(
     )
     state = _make_multi_state(findings)
     provider = _DispatchingProvider(_batch_json(uuid4(), "x", "y"))
+    event_sink = _StubSynthesizeEventSink()
+    anomaly_sink = _StubAnomalySink()
+
+    result = await synthesize(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        synthesize_model="m",
+        patch_model="m",
+        patches_enabled=False,
+        max_suggestions=5,
+        phase_event_sink=_StubPhaseSink(),
+        synthesize_event_sink=event_sink,
+        anomaly_sink=anomaly_sink,
+    )
+
+    report = result["review_report"]
+    assert len(report.findings) == 2
+    assert all(f.severity is FindingSeverity.HIGH for f in report.findings)
+    # The degrade counter lands on SynthesizeCompletedEvent (2 non-gated dropped).
+    assert event_sink.completed[0].n_findings_dropped_over_cap == 2
+    # kept (2) == soft_cap (2), not a gated overflow → no anomaly.
+    assert not anomaly_sink.anomalies
+
+
+@pytest.mark.asyncio
+async def test_synthesize_gated_overflow_emits_anomaly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FUP-180: when gated (CRITICAL/HIGH) findings alone exceed the soft report cap, the
+    report keeps them ALL (they reach HITL) and a loud GATED_FINDINGS_OVER_CAP anomaly
+    fires. 3 HIGH with soft_cap=2 → report has 3, anomaly emitted."""
+    monkeypatch.setattr("outrider.agent.nodes.synthesize.MAX_FINDINGS_PER_REPORT", 2)
+    findings = (
+        _make_finding(
+            finding_type=FindingType.HARDCODED_SECRET, severity=FindingSeverity.HIGH, line=2
+        ),
+        _make_finding(finding_type=FindingType.XSS, severity=FindingSeverity.HIGH, line=4),
+        _make_finding(
+            finding_type=FindingType.PATH_TRAVERSAL, severity=FindingSeverity.HIGH, line=6
+        ),
+    )
+    state = _make_multi_state(findings)
+    provider = _DispatchingProvider(_batch_json(uuid4(), "x", "y"))
+    anomaly_sink = _StubAnomalySink()
 
     result = await synthesize(
         state,
@@ -415,9 +464,10 @@ async def test_synthesize_report_cap_keeps_gated_drops_non_gated(
         max_suggestions=5,
         phase_event_sink=_StubPhaseSink(),
         synthesize_event_sink=_StubSynthesizeEventSink(),
-        anomaly_sink=_StubAnomalySink(),
+        anomaly_sink=anomaly_sink,
     )
 
-    report = result["review_report"]
-    assert len(report.findings) == 2
-    assert all(f.severity is FindingSeverity.HIGH for f in report.findings)
+    assert len(result["review_report"].findings) == 3  # all gated kept, exceeding soft_cap
+    assert any(
+        a["rule_name"] is AnomalyRuleName.GATED_FINDINGS_OVER_CAP for a in anomaly_sink.anomalies
+    )

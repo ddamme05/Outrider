@@ -572,27 +572,18 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # findings are NEVER dropped to fit the soft cap (hitl-gates-high-severity holds at
     # the report boundary too); only NON-gated drop, and their count is the degrade
     # signal. A cross-round dedup MERGE above is not a drop.
+    # Gated findings exceeding the hard ceiling raises FindingCapOverflowError here —
+    # BEFORE the patch/summary side effects — a clean crash (never silently drops gated).
     capped_findings, report_dropped_findings = cap_findings_by_severity(
         list(deduplicated_findings),
         soft_cap=MAX_FINDINGS_PER_REPORT,
         hard_cap=MAX_FINDINGS_HARD_CAP,
     )
     n_findings_dropped_over_cap = len(report_dropped_findings)
-    if len(capped_findings) > MAX_FINDINGS_PER_REPORT:
-        # Gated findings alone exceed the soft report cap — all kept (they reach HITL),
-        # but a loud operator signal. Best-effort: observability must not fail the review.
-        try:
-            await anomaly_sink.emit_anomaly(
-                review_id=state.review_id,
-                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
-                severity=AnomalySeverity.HIGH,
-                details={"n_kept": len(capped_findings), "soft_cap": MAX_FINDINGS_PER_REPORT},
-                is_eval=state.is_eval,
-            )
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "synthesize_gated_findings_over_cap_anomaly_emit_failed"
-            )
+    # Gated findings alone exceeding the soft cap is a loud signal — but the anomaly is
+    # emitted AFTER `ReviewReport(...)` builds (below), so a report-build raise strands no
+    # anomaly (matching the analyze fix).
+    report_gated_overflow = len(capped_findings) > MAX_FINDINGS_PER_REPORT
     deduplicated_findings = tuple(capped_findings)
 
     # Suggested-patch pass (DECISIONS.md#040): set `suggested_fix` on the deduped
@@ -699,6 +690,23 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         findings=deduplicated_findings,
         metrics=final_metrics,
     )
+
+    # Gated-overflow anomaly (FUP-180): emitted AFTER ReviewReport validated, so a
+    # report-build raise strands no anomaly (matches the analyze ordering). Best-effort —
+    # observability must never fail the review.
+    if report_gated_overflow:
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
+                severity=AnomalySeverity.HIGH,
+                details={"n_kept": len(deduplicated_findings), "soft_cap": MAX_FINDINGS_PER_REPORT},
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "synthesize_gated_findings_over_cap_anomaly_emit_failed"
+            )
 
     # Step 11: emit the per-review completion event.
     await synthesize_event_sink.emit_synthesize_completed(

@@ -1,30 +1,30 @@
 # Severity-ordered finding cap (FUP-180): keep findings BEFORE any FindingEvent/
-# round side-effect can strand the audit stream, and NEVER silently drop a
-# HITL-gated (CRITICAL/HIGH) finding. Shared by analyze (per-round) + synthesize
-# (per-report).
+# round side-effect can strand the audit stream, and NEVER drop a HITL-gated
+# (CRITICAL/HIGH) finding. Shared by analyze (per-round) + synthesize (per-report).
 """Gated-aware, deterministic finding truncation.
 
 The per-round (`AnalysisRound.findings`) and per-report (`ReviewReport.findings`)
 caps are output-boundary truncation policy: when the admitted set exceeds the
 bound, drop findings — but never a gated one.
 
-The contract has two tiers (FUP-180 review design call: "never drop gated"):
+The contract (FUP-180 + its review design call: "never drop gated; a telemetry
+counter is not a HITL gate"):
 
-- **Gated findings (CRITICAL/HIGH, `is_hitl_gated_severity`) are never dropped to
-  fit the soft cap.** They bypass HITL only by reaching it; silently dropping one
-  at the report boundary would weaken `hitl-gates-high-severity`. So the cap drops
-  ONLY non-gated (MEDIUM/LOW/INFO) down to `soft_cap`; if gated findings alone
-  exceed `soft_cap`, ALL of them are kept (the result exceeds `soft_cap`) and the
-  caller emits a loud anomaly.
-- **`hard_cap` is the runaway backstop.** Only when gated findings exceed
-  `hard_cap` (a truly pathological / adversarial input) are gated findings dropped,
-  down to `hard_cap` — the schema `max_length` equals `hard_cap`, so the kept set
-  always satisfies it.
+- **Gated findings (CRITICAL/HIGH, `is_hitl_gated_severity`) are never dropped.**
+  Only non-gated (MEDIUM/LOW/INFO) are dropped, down to `soft_cap`. If gated
+  findings alone exceed `soft_cap`, ALL of them are kept (the result exceeds
+  `soft_cap`) and the caller emits a loud anomaly.
+- **`hard_cap` fails LOUD, it does not drop gated.** `hard_cap` is aligned to
+  `HITL_MAX_GATED_FINDINGS` (the most gated findings the HITL request can carry).
+  A review with MORE gated findings than that can't have them all reach HITL, so
+  rather than silently dropping a CRITICAL below the approval gate it raises
+  `FindingCapOverflowError` — a clean crash BEFORE any side effect (no stranded
+  audit rows). This is reachable only on adversarial / degenerate input
+  (>`HITL_MAX_GATED_FINDINGS` gated findings in one round or report).
 
 Selection within each tier is content-deterministic (replay-stable): severity
-rank then `content_hash` (unique within a round/report). The severity rank derives
-from the `FindingSeverity` enum definition order (CRITICAL first … INFO last) — the
-single source of truth — not a hardcoded copy.
+rank then `content_hash`. The rank derives from the `FindingSeverity` enum
+definition order (CRITICAL first … INFO last) — the single source of truth.
 """
 
 from __future__ import annotations
@@ -44,6 +44,26 @@ if TYPE_CHECKING:
 _SEVERITY_RANK: Final[dict[FindingSeverity, int]] = {s: i for i, s in enumerate(FindingSeverity)}
 
 
+class FindingCapOverflowError(RuntimeError):
+    """Raised when HITL-gated (CRITICAL/HIGH) findings exceed the hard ceiling
+    (`MAX_FINDINGS_HARD_CAP`, aligned to `HITL_MAX_GATED_FINDINGS`).
+
+    Gated findings are never silently dropped (FUP-180): a review with more gated
+    findings than HITL can carry fails LOUD rather than dropping a CRITICAL below the
+    approval gate. Raised by `cap_findings_by_severity` BEFORE any side effect, so it
+    is a clean crash (no stranded audit rows). Reachable only on adversarial /
+    degenerate input."""
+
+    def __init__(self, n_gated: int, hard_cap: int) -> None:
+        self.n_gated = n_gated
+        self.hard_cap = hard_cap
+        super().__init__(
+            f"{n_gated} HITL-gated findings exceed the hard ceiling {hard_cap} "
+            f"(== HITL_MAX_GATED_FINDINGS). Gated findings are never dropped below HITL; "
+            f"a review this large fails loud (likely an adversarial / degenerate input)."
+        )
+
+
 def _sort_key(finding: ReviewFinding) -> tuple[int, str]:
     return (_SEVERITY_RANK[finding.severity], finding.content_hash)
 
@@ -53,31 +73,29 @@ def cap_findings_by_severity(
 ) -> tuple[list[ReviewFinding], list[ReviewFinding]]:
     """Return ``(kept, dropped)`` enforcing the gated-aware cap.
 
-    Never drops a HITL-gated (CRITICAL/HIGH) finding to fit ``soft_cap``: only
-    non-gated findings are dropped down to ``soft_cap``. If gated findings alone
-    exceed ``soft_cap``, ALL gated are kept (``len(kept) > soft_cap`` — the caller
-    detects this and emits a loud anomaly) and every non-gated finding is dropped.
-    Only ``hard_cap`` (the runaway backstop, == the schema ``max_length``) can drop
-    gated findings, and only when they exceed it.
-
-    Both returned lists are in selection order (severity rank, then
-    ``content_hash``). When nothing is dropped, ``dropped`` is empty.
-    """
+    Never drops a HITL-gated (CRITICAL/HIGH) finding: only non-gated findings are
+    dropped, down to ``soft_cap``. If gated findings alone exceed ``soft_cap``, ALL
+    gated are kept (``len(kept) > soft_cap`` — the caller detects this and emits a
+    loud anomaly). If gated findings exceed ``hard_cap`` (aligned to
+    ``HITL_MAX_GATED_FINDINGS``) the function raises ``FindingCapOverflowError``
+    rather than dropping a gated finding. ``dropped`` therefore only ever contains
+    non-gated findings. Both lists are in selection order (severity rank, then
+    ``content_hash``)."""
     gated = sorted((f for f in findings if is_hitl_gated_severity(f.severity)), key=_sort_key)
     non_gated = sorted(
         (f for f in findings if not is_hitl_gated_severity(f.severity)), key=_sort_key
     )
 
-    if len(gated) >= hard_cap:
-        # Runaway backstop: even gated findings exceed the hard ceiling. Keep the
-        # top hard_cap gated; drop the rest of gated AND all non-gated.
-        return gated[:hard_cap], [*gated[hard_cap:], *non_gated]
+    if len(gated) > hard_cap:
+        # The runaway ceiling: more gated findings than HITL can carry. Fail loud rather
+        # than silently drop a CRITICAL/HIGH below the approval gate (FUP-180).
+        raise FindingCapOverflowError(len(gated), hard_cap)
 
-    # Keep ALL gated; fill the remaining soft-cap budget with the top non-gated.
-    # When len(gated) >= soft_cap the budget is 0, so all non-gated drop and the
-    # kept set is exactly the gated set (which exceeds soft_cap).
+    # Keep ALL gated; fill the remaining soft-cap budget with the top non-gated. When
+    # len(gated) >= soft_cap the budget is 0, so all non-gated drop and the kept set is
+    # exactly the gated set (which exceeds soft_cap).
     budget = max(0, soft_cap - len(gated))
     return [*gated, *non_gated[:budget]], list(non_gated[budget:])
 
 
-__all__ = ["cap_findings_by_severity"]
+__all__ = ["FindingCapOverflowError", "cap_findings_by_severity"]

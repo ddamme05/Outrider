@@ -28,6 +28,7 @@ from pydantic import (
 
 from outrider.coordinates import validate_diff_path
 from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_round_id
+from outrider.schemas.hitl import HITL_MAX_GATED_FINDINGS
 from outrider.schemas.review_finding import (
     ReviewFinding,  # noqa: TC001 — Pydantic field type, needs runtime import
 )
@@ -43,14 +44,17 @@ from outrider.schemas.review_finding import (
 # so a round whose gated findings alone exceed the soft cap legitimately holds more
 # than `MAX_FINDINGS_PER_ROUND`.
 #
-# `MAX_FINDINGS_HARD_CAP` is the runaway backstop: the schema `max_length` below,
-# and the absolute ceiling the cap enforces even on gated findings. Only a truly
-# pathological / adversarial review (>1000 gated findings in one round) reaches it.
-# Because the cap runs BEFORE emission and the round is built from the capped set,
-# this schema constraint should never raise. See
-# specs/2026-06-24-finding-cap-pre-side-effect.md.
+# `MAX_FINDINGS_HARD_CAP` is the runaway ceiling — ALIGNED to `HITL_MAX_GATED_FINDINGS`
+# (the most gated findings the HITL request can carry). Gated findings are never
+# dropped to fit it; instead `finding_cap.cap_findings_by_severity` raises
+# `FindingCapOverflowError` (a clean crash, before any side effect) when gated findings
+# exceed it — a review with more gated findings than HITL can hold fails loud rather
+# than dropping a CRITICAL below the approval gate. Alignment matters: a hard cap LARGER
+# than the HITL bound would keep gated findings the HITL request can't carry, crashing
+# at HITL-partition construction (a strand) instead. The schema `max_length` below uses
+# this so the kept set always satisfies it. See specs/2026-06-24-finding-cap-pre-side-effect.md.
 MAX_FINDINGS_PER_ROUND: Final[int] = 200
-MAX_FINDINGS_HARD_CAP: Final[int] = 1000
+MAX_FINDINGS_HARD_CAP: Final[int] = HITL_MAX_GATED_FINDINGS
 
 
 class AnalysisRound(BaseModel):

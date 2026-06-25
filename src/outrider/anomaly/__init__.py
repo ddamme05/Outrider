@@ -8,7 +8,7 @@ enum at the DB layer); the Python-side `AnomalyRuleName` StrEnum
 gives type safety + a grep target without forcing a DB migration when
 new rules land.
 
-V1 ships three rules:
+Four rules ship:
 
 - `hitl_timeout` (severity=medium per `docs/spec.md` §16) — sweep-
   emitted from `sweep/hitl_expiry.py` under the anomaly-first ordering
@@ -38,6 +38,11 @@ V1 ships three rules:
   fairness Stage 2). Best-effort (an emit failure is logged, not raised
   — observability must not fail a review); same DB-layer idempotency as
   the divergence rule.
+
+- `gated_findings_over_cap` (severity=high) — graph-emitted from
+  `agent/nodes/analyze.py` (per round) + `agent/nodes/synthesize.py`
+  (per report) when HITL-gated (CRITICAL/HIGH) findings alone exceed the
+  soft finding cap (FUP-180). Best-effort; same DB-layer idempotency.
 """
 
 from outrider.anomaly.persister import (
