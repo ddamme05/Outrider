@@ -24,13 +24,13 @@
   ],
   "llm_responses": {
     "triage": [
-      "{\"file_tiers\": {\"app/fetch.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (ssrf_metadata recall, single-finding): fetch_url fetches a fully caller-supplied URL (request.GET['url']) with no allowlist -- the destination is attacker-controlled AND the reachable target CAN be a metadata/link-local/internal endpoint, so the prompt's escalated ssrf_metadata applies. The network call is error-handled, so it is the only finding.\"}"
+      "{\"file_tiers\": {\"app/fetch.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (ssrf recall, single-finding): fetch_url fetches a fully caller-supplied URL (request.GET['url']) with no allowlist -- the destination (host/scheme) is attacker-controlled, so it is base ssrf. The network call is error-handled, so it is the only finding.\"}"
     ],
     "analyze": [
-      "{\"findings\": [{\"finding_type\": \"ssrf_metadata\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SSRF (metadata-reachable): fetch_url fetches a fully attacker-controlled URL\", \"description\": \"fetch_url reads request.GET['url'] and passes it straight to requests.get, so the caller controls the request destination (host/scheme) and the reachable target CAN be a cloud-metadata / link-local / internal endpoint (e.g. 169.254.169.254). Restrict to an allowlist of approved hosts.\", \"evidence\": \"        resp = requests.get(target)\", \"line_start\": 7, \"line_end\": 7, \"trace_candidates\": []}]}"
+      "{\"findings\": [{\"finding_type\": \"ssrf\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SSRF: fetch_url fetches a fully attacker-controlled URL\", \"description\": \"fetch_url reads request.GET['url'] and passes it straight to requests.get, so the caller controls the request destination (host/scheme/port). Restrict to an allowlist of approved hosts.\", \"evidence\": \"        resp = requests.get(target)\", \"line_start\": 7, \"line_end\": 7, \"trace_candidates\": []}]}"
     ],
     "synthesize": [
-      "True-positive: one ssrf_metadata finding -- fetch_url fetches a fully attacker-controlled URL (metadata/link-local reachable) with no host allowlist; the call is error-handled, so it is the only finding."
+      "True-positive: one ssrf finding -- fetch_url fetches a fully attacker-controlled URL (caller controls host/scheme) with no allowlist; the call is error-handled, so it is the only finding."
     ]
   }
 }
