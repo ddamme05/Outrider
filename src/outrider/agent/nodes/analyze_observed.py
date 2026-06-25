@@ -262,7 +262,7 @@ def compute_observed_skip_shadow(
     it as an `ObservedSkipShadowEvent` — or `None` when there is nothing to
     evaluate (no included scopes, or no changed regions in them).
 
-    Default-deny + shadow-only: a file is skip-eligible (`would_skip`) iff EVERY
+    Default-deny: a file is skip-eligible (`would_skip`) iff EVERY
     changed region across the included scopes lies within the coverage envelope of
     at least one `skip_safe` match. `signal_only` matches never count toward
     coverage. Base/removed regions are un-coverable by head-content matches → they
