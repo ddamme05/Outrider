@@ -721,12 +721,14 @@ def test_real_scorecard_evidence() -> None:
     # run_review works) with ground truth; safe_refactor carries none (clean code).
     # Curated scorecard corpus (decision-oriented, NOT a fixture dump) — each row
     # is real-model spend per rerun, so the set stays explicit and capped. Tier 1
-    # wires existing JUDGED single-finding fixtures for broader finding-type
-    # coverage + precision traps; Tier 2 adds the SSRF recall + fixed-host
-    # precision pair (regression coverage for ssrf destination-control precision —
-    # a fixed-host fetch must not over-flag). Dual-mode command_injection/weak_crypto fixtures are
-    # intentionally excluded: they are OBSERVED-tier (deterministic), so they
-    # do not discriminate Sonnet-vs-Haiku and would be near-vacuous rows.
+    # wires existing single-finding fixtures for broader finding-type coverage +
+    # precision traps; Tier 2 adds the SSRF recall + fixed-host precision pair
+    # (regression coverage for ssrf destination-control precision — a fixed-host
+    # fetch must not over-flag). Dual-mode command_injection/weak_crypto fixtures
+    # are intentionally excluded: those finding types are deterministically
+    # backstopped by OBSERVED tree-sitter queries (the real-model finding collapses
+    # to OBSERVED), so they do not discriminate Sonnet-vs-Haiku and would be
+    # near-vacuous rows.
     specs = [
         # --- true positives (recall) ---
         # These 7 rows reuse the canonical ground truth from `_GROUND_TRUTH_BY_FIXTURE`
@@ -770,6 +772,10 @@ def test_real_scorecard_evidence() -> None:
         # Scorecard-local TPs (not in the shared registry): a weak_password_hash row +
         # the ssrf_metadata recall row (a fully attacker-controlled URL whose reachable
         # target CAN be metadata/internal -> the prompt's escalated ssrf_metadata type).
+        # NB the base-ssrf-vs-escalated-ssrf_metadata split is a real-model judgment
+        # call (the fixture names no literal metadata host), so on a live rerun a model
+        # emitting base `ssrf` registers here as a miss+FP — surfaced (not silent) via
+        # the row diagnostics. A softer discriminator than the deterministic rows.
         ScenarioSpec.from_fixture(
             "weak_password_hash",
             str(mock / "weak_password_hash_md5.json"),
