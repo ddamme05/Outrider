@@ -937,38 +937,19 @@ async def analyze(
     n_findings_served = kept_served
     n_findings_observed = kept_observed
 
-    # Gated-overflow anomaly: `len(kept) > soft cap` happens only when gated findings
-    # ALONE exceed it (they were all kept rather than dropped). The findings all still
-    # reach HITL — this is a loud capacity signal, not a safety gap. Best-effort, like the
-    # starvation anomaly (observability must never fail the review).
-    if len(kept_findings) > MAX_FINDINGS_PER_ROUND:
-        try:
-            await anomaly_sink.emit_anomaly(
-                review_id=state.review_id,
-                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
-                severity=AnomalySeverity.HIGH,
-                details={
-                    "n_kept": len(kept_findings),
-                    "soft_cap": MAX_FINDINGS_PER_ROUND,
-                    "pass_index": pass_index,
-                },
-                is_eval=state.is_eval,
-            )
-        except Exception:
-            logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
-
     # Drop trace candidates whose source finding did not survive to the kept set (collapse
     # or cap): trace's proposal-hash join is built from round.findings only, so an
     # unjoinable candidate is misread as a rejected parent (FUP-180 review finding D).
+    # Pure filter — no side effect, safe before the round build.
     kept_proposal_hashes = {f.proposal_hash for f in kept_findings}
     trace_candidates = [
         tc for tc in trace_candidates if tc.source_proposal_hash in kept_proposal_hashes
     ]
 
     # Step 4: build AnalysisRound FIRST — its uniqueness + round_id validators run here, so
-    # building BEFORE emission means any validator raise crashes cleanly with NO emitted
-    # FindingEvents, closing the strand class fully (FUP-180 review finding A). `round_id`
-    # is content-derived so re-emission of the same logical round is idempotent on replay.
+    # building BEFORE any side effect (FindingEvents, the anomaly) means a validator raise
+    # crashes cleanly with NOTHING emitted, closing the strand class fully (FUP-180 review
+    # finding A). `round_id` is content-derived so re-emission is idempotent on replay.
     round_id = compute_round_id(
         pass_index=pass_index,
         files_examined=tuple(files_examined),
@@ -984,6 +965,26 @@ async def analyze(
         started_at=started_at,
         ended_at=ended_at,
     )
+
+    # Gated-overflow anomaly (emitted AFTER the round validated, so a round-build raise
+    # strands no anomaly). `len(kept) > soft cap` happens only when gated findings ALONE
+    # exceed it — they were all kept (up to the hard ceiling), still reaching HITL, so this
+    # is a loud capacity signal. Best-effort: observability must never fail the review.
+    if len(kept_findings) > MAX_FINDINGS_PER_ROUND:
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
+                severity=AnomalySeverity.HIGH,
+                details={
+                    "n_kept": len(kept_findings),
+                    "soft_cap": MAX_FINDINGS_PER_ROUND,
+                    "pass_index": pass_index,
+                },
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
 
     # Emit one FindingEvent per kept finding — AFTER the round validated, so the emitted
     # FindingEvents equal the round's findings by construction (FUP-180).
