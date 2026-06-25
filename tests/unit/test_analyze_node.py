@@ -51,7 +51,7 @@ from outrider.agent.nodes.analyze import (
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.llm.base import LLMRequest, LLMResponse
-from outrider.policy.severity import ACTIVE_POLICY_VERSION
+from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity
 from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
@@ -369,6 +369,31 @@ def _build_finding_proposal_json(
     )
 
 
+def _build_multi_finding_json(finding_types: list[str]) -> str:
+    """Build an `AnalyzeResponseRaw` with one JUDGED proposal per finding_type, all
+    spanning lines 1-2 (the changed `my_function` scope). Distinct finding_types give
+    distinct content_hashes, so all are admitted as separate findings."""
+    return json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": ft,
+                    "evidence_tier": "judged",
+                    "query_match_id": None,
+                    "trace_path": None,
+                    "title": "Test finding",
+                    "description": "A test finding for the over-cap path.",
+                    "evidence": "def my_function():\n    return 42",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "trace_candidates": [],
+                }
+                for ft in finding_types
+            ]
+        }
+    )
+
+
 @pytest.fixture
 def deps() -> dict[str, Any]:
     """Default per-scenario dependency bundle. Tests override the
@@ -434,6 +459,51 @@ async def test_clean_file_admits_one_finding(deps: dict[str, Any]) -> None:
     assert completed[0].n_llm_calls == 1
     assert completed[0].n_files_analyzed == 1
     assert completed[0].n_files_skipped == 0
+
+
+@pytest.mark.asyncio
+async def test_over_cap_drops_lowest_severity_no_strand(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FUP-180: when a round's admitted findings exceed the per-round cap, the analyze
+    node keeps the highest-severity findings, drops the lowest, and STILL emits
+    AnalyzeCompletedEvent (no strand). The emitted FindingEvents equal the round's
+    findings (no orphaned events), and the degrade + capped-proposal counters are
+    recorded with the proposal equation balanced (proven by the event constructing)."""
+    monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 2)
+    # 4 JUDGED proposals of descending severity, all in the changed scope:
+    # sql_injection=CRITICAL, hardcoded_secret=HIGH, missing_input_validation=MEDIUM,
+    # unused_import=INFO. cap=2 keeps the CRITICAL + HIGH, drops MEDIUM + INFO.
+    deps["provider"] = _StubLLMProvider(
+        _build_multi_finding_json(
+            ["sql_injection", "hardcoded_secret", "missing_input_validation", "unused_import"]
+        )
+    )
+    state = _build_review_state()
+    result = await analyze(state, **deps)
+
+    round_ = result["analysis_rounds"][0]
+    assert len(round_.findings) == 2
+    assert {f.severity for f in round_.findings} == {
+        FindingSeverity.CRITICAL,
+        FindingSeverity.HIGH,
+    }
+
+    # FindingEvents == round count == kept: the cap decided membership BEFORE any
+    # FindingEvent fired, so the audit stream and the round agree.
+    finding_events = deps["analyze_event_sink"].findings
+    assert len(finding_events) == 2
+    assert {fe.finding_content_hash for fe in finding_events} == {
+        f.content_hash for f in round_.findings
+    }
+
+    completed = deps["analyze_event_sink"].completed
+    assert len(completed) == 1  # AnalyzeCompletedEvent emitted = NO strand (the bug)
+    c = completed[0]
+    assert c.n_proposals_seen == 4
+    assert c.n_findings_emitted == 2
+    assert c.n_findings_dropped_over_cap == 2
+    assert c.n_proposals_capped == 2  # all 4 are JUDGED proposals; the 2 dropped count
 
     # Provider was called exactly once
     assert len(deps["provider"].calls) == 1

@@ -83,6 +83,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from outrider.agent.nodes.finding_cap import cap_findings_by_severity
 from outrider.agent.nodes.patch_generation import generate_patches
 from outrider.anomaly import AnomalyRuleName, AnomalySeverity
 from outrider.audit.events import ReviewPhaseEvent, SynthesizeCompletedEvent
@@ -94,7 +95,11 @@ from outrider.policy.canonical import compute_phase_id
 # ACTIVE_POLICY_VERSION used only in docstring references for context;
 # the runtime snapshot anchor is `state.triage_result.policy_version`.
 from outrider.prompts import synthesize as synthesize_prompt
-from outrider.schemas.review_report import ReviewMetrics, ReviewReport
+from outrider.schemas.review_report import (
+    MAX_FINDINGS_PER_REPORT,
+    ReviewMetrics,
+    ReviewReport,
+)
 
 if TYPE_CHECKING:
     from outrider.anomaly import AnomalySink
@@ -558,6 +563,19 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # pass arbitrary order here (the schema canonicalizes).
     deduplicated_findings = tuple(kept_by_hash.values())
 
+    # Per-report finding cap (FUP-180): re-cap the deduped cross-round union to the
+    # report bound HERE — BEFORE patch generation (4b), the summary prompt render
+    # (step 6), the summary call (step 7), and `ReviewReport(...)` (step 10) — so the
+    # summary describes (and patches generate for) exactly the findings that ship, and
+    # the report can never strand the review at its schema cap. Severity-ordered
+    # (CRITICAL/HIGH preserved). A cross-round dedup MERGE above is not a drop; only
+    # this cap drops, and its count is the report-level degrade signal.
+    capped_findings, report_dropped_findings = cap_findings_by_severity(
+        list(deduplicated_findings), MAX_FINDINGS_PER_REPORT
+    )
+    deduplicated_findings = tuple(capped_findings)
+    n_findings_dropped_over_cap = len(report_dropped_findings)
+
     # Suggested-patch pass (DECISIONS.md#040): set `suggested_fix` on the deduped
     # set BEFORE the summary request + the aggregate query + ReviewReport, so the
     # report AND the SynthesizeCompletedEvent snapshot carry the same patches, and
@@ -671,6 +689,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             summary_content_hash=summary_content_hash,
             overall_risk=overall_risk,
             n_findings=len(deduplicated_findings),
+            n_findings_dropped_over_cap=n_findings_dropped_over_cap,
             files_examined=final_metrics.files_examined,
             files_traced_beyond_diff=final_metrics.files_traced_beyond_diff,
             llm_calls_made=final_metrics.llm_calls_made,

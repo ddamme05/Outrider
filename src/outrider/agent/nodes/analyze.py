@@ -119,6 +119,7 @@ from outrider.agent.nodes.degradation import (
     _ParseStatus,
     decide_degradation,
 )
+from outrider.agent.nodes.finding_cap import cap_findings_by_severity
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import SkipReason, TrivialityReason
@@ -170,6 +171,7 @@ from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
 from outrider.queries.registry import OBSERVED_QUERY_IDS, QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound, ReviewFinding, TraceCandidate
+from outrider.schemas.analysis_round import MAX_FINDINGS_PER_ROUND
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -481,6 +483,11 @@ async def analyze(
     n_findings_emitted = 0
     n_findings_served = 0
     n_findings_observed = 0
+    # FUP-180: content_hashes of cache-SERVED findings, so the post-loop cap can
+    # classify a dropped served finding back to its origin (served findings can be
+    # any evidence_tier, so origin isn't derivable from the finding alone — only the
+    # serve branch knows). Producer-OBSERVED vs proposal IS derivable (OBSERVED_QUERY_IDS).
+    served_content_hashes: set[str] = set()
     n_proposals_superseded_by_observed = 0
     n_proposals_rejected = 0
     n_responses_rejected = 0
@@ -646,6 +653,7 @@ async def analyze(
                 served = file_outcome.served_result
                 n_findings_emitted += len(served.admitted_findings)
                 n_findings_served += len(served.admitted_findings)
+                served_content_hashes.update(f.content_hash for f in served.admitted_findings)
                 # n_trace_candidates_emitted stays parser/model-emitted (pre-dedup);
                 # served candidates were NOT emitted this pass and fire no per-item
                 # event (unlike served FINDINGS, which re-emit FindingEvents) — their
@@ -882,6 +890,42 @@ async def analyze(
     # ended_at is monotonic-derived so it can't precede started_at (FUP-141).
     ended_at = _round_ended_at(started_at, started_mono)
 
+    # Step 3h (FUP-180): enforce the per-round finding cap BEFORE any FindingEvent
+    # fires, so the emitted audit stream == the round (and downstream report) can never
+    # diverge. The cap keeps the highest-severity findings — CRITICAL/HIGH are preserved,
+    # so hitl-gates-high-severity holds — and drops the lowest-severity over the bound.
+    # In the common case (<= cap) nothing drops and this is purely a reorder of WHEN
+    # FindingEvents emit (post-loop here, not per-file in the processors).
+    kept_findings, dropped_findings = cap_findings_by_severity(
+        admitted_findings, MAX_FINDINGS_PER_ROUND
+    )
+    n_findings_dropped_over_cap = len(dropped_findings)
+    n_proposals_capped = 0
+    if dropped_findings:
+        # Reconcile the emitted-set counters to the KEPT set, classified by ORIGIN
+        # (NOT evidence_tier): a SERVED finding (content_hash tracked above) decrements
+        # n_findings_served; a PRODUCER-OBSERVED finding (tier OBSERVED + query_match_id
+        # in the producer registry) decrements n_findings_observed; anything else is a
+        # model PROPOSAL of any tier (JUDGED / INFERRED / model-cited OBSERVED) and ADDS
+        # via n_proposals_capped. Keeps `_enforce_proposal_accounting` balanced (FUP-180).
+        n_findings_emitted -= n_findings_dropped_over_cap
+        for dropped in dropped_findings:
+            if dropped.content_hash in served_content_hashes:
+                n_findings_served -= 1
+            elif (
+                dropped.evidence_tier is EvidenceTier.OBSERVED
+                and dropped.query_match_id in OBSERVED_QUERY_IDS
+            ):
+                n_findings_observed -= 1
+            else:
+                n_proposals_capped += 1
+
+    # Emit one FindingEvent per KEPT finding. Deferred from the per-file processors
+    # (FUP-180) so the cap decides membership before any event fires — the emitted
+    # FindingEvents now equal the round's findings by construction.
+    for finding in kept_findings:
+        await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
+
     # Step 4: build AnalysisRound. `round_id` is content-derived from
     # pass_index + file lists + finding content_hashes per the canonical
     # recipe so re-emission of the same logical round produces the same
@@ -890,12 +934,12 @@ async def analyze(
         pass_index=pass_index,
         files_examined=tuple(files_examined),
         files_skipped=tuple(files_skipped),
-        finding_content_hashes=tuple(f.content_hash for f in admitted_findings),
+        finding_content_hashes=tuple(f.content_hash for f in kept_findings),
     )
     new_round = AnalysisRound(
         round_id=round_id,
         pass_index=pass_index,
-        findings=tuple(admitted_findings),
+        findings=tuple(kept_findings),
         files_examined=tuple(files_examined),
         files_skipped=tuple(files_skipped),
         started_at=started_at,
@@ -917,6 +961,8 @@ async def analyze(
             n_findings_served=n_findings_served,
             n_findings_observed=n_findings_observed,
             n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
+            n_proposals_capped=n_proposals_capped,
+            n_findings_dropped_over_cap=n_findings_dropped_over_cap,
             subsumed_matches=tuple(pass_subsumed_matches),
             n_proposals_rejected=n_proposals_rejected,
             n_responses_rejected=n_responses_rejected,
@@ -1175,12 +1221,13 @@ async def _serve_cache_hit(
         file_path=file_path,
     )
 
-    # Re-emit one FindingEvent per served finding so this review's audit/findings
-    # tables are self-contained for replay (the cache stores content; audit rows
-    # are per-review). The deterministic finding_id keeps the persister's
-    # no-resurrection content-row guard correct under checkpoint replay.
-    for finding in served_findings:
-        await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
+    # Served findings re-emit one FindingEvent each so this review's audit/findings
+    # tables are self-contained for replay (the cache stores content; audit rows are
+    # per-review). Emission is DEFERRED to the main loop's post-cap step (FUP-180): the
+    # per-round finding cap must decide the kept set before any FindingEvent fires, so
+    # the returned `_ServedResult` carries the findings and the main loop emits the kept
+    # ones. The deterministic finding_id keeps the persister's no-resurrection
+    # content-row guard correct under checkpoint replay.
 
     return _FileOutcome(
         parse_status="clean",
@@ -1939,8 +1986,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     {**observed_skip_event.model_dump(), "skip_enforced": True}
                 )
             )
-            for skip_finding in skip_findings:
-                await analyze_event_sink.emit_finding(skip_finding, is_eval=is_eval)
+            # FindingEvent emission for these OBSERVED findings is DEFERRED to the
+            # main loop's post-cap step (FUP-180); they ride out on the returned
+            # `_ObservedSkipResult`.
             return _FileOutcome(
                 parse_status=parse_status_for_event,
                 parser_result=None,
@@ -2225,9 +2273,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             )
         )
 
-    # Persist one finding (audit row + content row) per admitted finding.
-    for finding in parser_result.admitted_findings:
-        await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
+    # FindingEvent emission (audit row + content row per admitted finding) is
+    # DEFERRED to the main loop's post-cap step (FUP-180): the per-round finding cap
+    # must decide the kept set before any FindingEvent fires. The admitted findings
+    # ride out on the returned `parser_result.admitted_findings`.
 
     # Step 3g: analyze-cache write-on-miss. Only completed clean-mode
     # calls populate the store — a response-level rejection has no
@@ -2573,8 +2622,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             )
         )
 
-    for finding in parser_result.admitted_findings:
-        await analyze_event_sink.emit_finding(finding, is_eval=is_eval)
+    # FindingEvent emission DEFERRED to the main loop's post-cap step (FUP-180), same
+    # as the pass-0 path — the trace-fetched (pass-1) round is capped identically. The
+    # admitted findings ride out on `parser_result.admitted_findings`.
 
     return _FileOutcome(
         parse_status="clean",

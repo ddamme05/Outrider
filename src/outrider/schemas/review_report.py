@@ -108,6 +108,13 @@ _SEVERITY_SORT_KEY: Final[Mapping[FindingSeverity, int]] = MappingProxyType(
     }
 )
 
+# Per-report finding ceiling (FUP-180). The report aggregates deduped findings
+# across ALL analysis rounds; synthesize truncates to this bound BEFORE building
+# the report (severity-ordered via `agent.nodes.finding_cap`, CRITICAL/HIGH
+# preserved), so this schema constraint is the defense-in-depth backstop, not the
+# live gate. Matches `AnalysisRound.MAX_FINDINGS_PER_ROUND` (the per-round bound).
+MAX_FINDINGS_PER_REPORT: Final[int] = 200
+
 
 class ReviewMetrics(BaseModel):
     """Per-review statistics computed in synthesize, per spec.md:1106-1114.
@@ -197,14 +204,14 @@ class ReviewReport(BaseModel):
     # the audit stream; never parse them out of this text.
     summary: str = Field(max_length=2000)
     overall_risk: RiskLevel
-    # max_length cap follows AnalysisRound.findings precedent (50 per
-    # round) with cross-round aggregate headroom. V1 caps analyze at
-    # MAX_ANALYSIS_ROUNDS=2 → 100 raw findings maximum, post-dedup
-    # typically much fewer. The 200 cap is "this would already be a
-    # runaway" defense — protects checkpoint payload size + downstream
-    # HITL-partition pagination + audit-row JSONB payload. Bump if real
-    # workloads exceed it; the bump itself is a one-line policy edit.
-    findings: tuple[ReviewFinding, ...] = Field(max_length=200)
+    # See MAX_FINDINGS_PER_REPORT above. The report aggregates DEDUPED findings
+    # across all rounds (each capped at AnalysisRound.MAX_FINDINGS_PER_ROUND=200,
+    # FUP-180); synthesize re-caps the cross-round union to this bound
+    # severity-ordered BEFORE building the report, so this schema constraint is the
+    # runaway-protection backstop — protecting checkpoint payload size + downstream
+    # HITL-partition pagination + the audit-row JSONB payload. A bump is a one-line
+    # edit to the constant.
+    findings: tuple[ReviewFinding, ...] = Field(max_length=MAX_FINDINGS_PER_REPORT)
     metrics: ReviewMetrics
 
     @field_validator("findings", mode="after")
