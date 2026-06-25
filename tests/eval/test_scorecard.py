@@ -855,12 +855,12 @@ def test_real_scorecard_evidence() -> None:
             _GROUND_TRUTH_BY_FIXTURE[_N_PLUS_ONE_FIXTURE],
         ),
         # Scorecard-local TPs (not in the shared registry): a weak_password_hash row +
-        # the ssrf_metadata recall row (a fully attacker-controlled URL whose reachable
-        # target CAN be metadata/internal -> the prompt's escalated ssrf_metadata type).
-        # NB the base-ssrf-vs-escalated-ssrf_metadata split is a real-model judgment
-        # call (the fixture names no literal metadata host), so on a live rerun a model
-        # emitting base `ssrf` registers here as a miss+FP — surfaced (not silent) via
-        # the row diagnostics. A softer discriminator than the deterministic rows.
+        # an SSRF recall row. ssrf_user_host pins base `ssrf` (HIGH), NOT escalated
+        # ssrf_metadata: a real-model run showed both Sonnet and Haiku classify a bare
+        # caller-controlled fetch (no literal metadata host) as base `ssrf`, so the
+        # escalated pin made the row non-discriminating (baseline-invalid). Base `ssrf`
+        # is what the models actually emit, so the row measures SSRF recall again; the
+        # metadata-escalation taxonomy gets its own explicit-metadata fixture (Tier 3).
         ScenarioSpec.from_fixture(
             "weak_password_hash",
             str(mock / "weak_password_hash_md5.json"),
@@ -869,7 +869,7 @@ def test_real_scorecard_evidence() -> None:
         ScenarioSpec.from_fixture(
             "ssrf_user_host",
             str(mock / "ssrf_user_host.json"),
-            _gt("app/fetch.py", 7, 7, FindingType.SSRF_METADATA),
+            _gt("app/fetch.py", 7, 7, FindingType.SSRF),
         ),
         # --- precision traps (clean: NO finding expected) ---
         ScenarioSpec.from_fixture(
