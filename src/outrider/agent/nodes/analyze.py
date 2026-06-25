@@ -171,7 +171,7 @@ from outrider.prompts import safe_code_fence
 from outrider.queries import registry as query_registry
 from outrider.queries.registry import OBSERVED_QUERY_IDS, QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound, ReviewFinding, TraceCandidate
-from outrider.schemas.analysis_round import MAX_FINDINGS_PER_ROUND
+from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP, MAX_FINDINGS_PER_ROUND
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -890,46 +890,85 @@ async def analyze(
     # ended_at is monotonic-derived so it can't precede started_at (FUP-141).
     ended_at = _round_ended_at(started_at, started_mono)
 
-    # Step 3h (FUP-180): enforce the per-round finding cap BEFORE any FindingEvent
-    # fires, so the emitted audit stream == the round (and downstream report) can never
-    # diverge. The cap keeps the highest-severity findings — CRITICAL/HIGH are preserved,
-    # so hitl-gates-high-severity holds — and drops the lowest-severity over the bound.
-    # In the common case (<= cap) nothing drops and this is purely a reorder of WHEN
-    # FindingEvents emit (post-loop here, not per-file in the processors).
+    # Step 3h (FUP-180): finalize the round's findings BEFORE any FindingEvent fires, so
+    # the emitted audit stream == the round by construction (no mid-assembly strand).
+    #
+    # 1. Collapse content_hash duplicates (first-wins). The cold-parse proposal path can
+    #    admit two findings sharing a content_hash but differing in proposal_hash (same
+    #    file/line/finding_type, different prose); `_admit_with_dedup` keys on the PAIR so
+    #    both survive, and `AnalysisRound._enforce_findings_unique` (content_hash) would
+    #    then raise — the same collapse the augment/skip paths apply via fresh_hashes /
+    #    skip_hashes (FUP-180 review finding A).
+    collapsed_findings: list[ReviewFinding] = []
+    seen_content_hashes: set[str] = set()
+    for finding in admitted_findings:
+        if finding.content_hash not in seen_content_hashes:
+            collapsed_findings.append(finding)
+            seen_content_hashes.add(finding.content_hash)
+
+    # 2. Gated-aware severity cap. NON-gated findings drop to the soft cap; gated
+    #    (CRITICAL/HIGH) are NEVER dropped to fit it (hitl-gates-high-severity), only the
+    #    hard runaway ceiling bounds them (FUP-180 review design call).
     kept_findings, dropped_findings = cap_findings_by_severity(
-        admitted_findings, MAX_FINDINGS_PER_ROUND
+        collapsed_findings, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
     )
     n_findings_dropped_over_cap = len(dropped_findings)
-    n_proposals_capped = 0
-    if dropped_findings:
-        # Reconcile the emitted-set counters to the KEPT set, classified by ORIGIN
-        # (NOT evidence_tier): a SERVED finding (content_hash tracked above) decrements
-        # n_findings_served; a PRODUCER-OBSERVED finding (tier OBSERVED + query_match_id
-        # in the producer registry) decrements n_findings_observed; anything else is a
-        # model PROPOSAL of any tier (JUDGED / INFERRED / model-cited OBSERVED) and ADDS
-        # via n_proposals_capped. Keeps `_enforce_proposal_accounting` balanced (FUP-180).
-        n_findings_emitted -= n_findings_dropped_over_cap
-        for dropped in dropped_findings:
-            if dropped.content_hash in served_content_hashes:
-                n_findings_served -= 1
-            elif (
-                dropped.evidence_tier is EvidenceTier.OBSERVED
-                and dropped.query_match_id in OBSERVED_QUERY_IDS
-            ):
-                n_findings_observed -= 1
-            else:
-                n_proposals_capped += 1
 
-    # Emit one FindingEvent per KEPT finding. Deferred from the per-file processors
-    # (FUP-180) so the cap decides membership before any event fires — the emitted
-    # FindingEvents now equal the round's findings by construction.
-    for finding in kept_findings:
-        await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
+    # 3. Reconcile the emitted-set counters to the KEPT set (post collapse + cap). The
+    #    pre-dedup loop accumulators counted what the parser admitted; the actual
+    #    FindingEvents fire only over kept_findings, so recompute from kept, classified by
+    #    ORIGIN (not evidence_tier): served (content_hash tracked above), producer-OBSERVED
+    #    (tier OBSERVED + query_match_id in the producer registry), else a model proposal.
+    #    `n_proposals_dropped` = parser proposal-emitted minus surviving proposals — covers
+    #    ALL pre-emission drops (cross-source dedup, content-hash collapse, AND the cap),
+    #    keeping `_enforce_proposal_accounting` balanced (FUP-180 review finding B).
+    parser_proposal_emitted = n_findings_emitted - n_findings_served - n_findings_observed
+    kept_served = sum(1 for f in kept_findings if f.content_hash in served_content_hashes)
+    kept_observed = sum(
+        1
+        for f in kept_findings
+        if f.content_hash not in served_content_hashes
+        and f.evidence_tier is EvidenceTier.OBSERVED
+        and f.query_match_id in OBSERVED_QUERY_IDS
+    )
+    kept_proposals = len(kept_findings) - kept_served - kept_observed
+    n_proposals_dropped = parser_proposal_emitted - kept_proposals
+    n_findings_emitted = len(kept_findings)
+    n_findings_served = kept_served
+    n_findings_observed = kept_observed
 
-    # Step 4: build AnalysisRound. `round_id` is content-derived from
-    # pass_index + file lists + finding content_hashes per the canonical
-    # recipe so re-emission of the same logical round produces the same
-    # id (idempotent under checkpoint replay).
+    # Gated-overflow anomaly: `len(kept) > soft cap` happens only when gated findings
+    # ALONE exceed it (they were all kept rather than dropped). The findings all still
+    # reach HITL — this is a loud capacity signal, not a safety gap. Best-effort, like the
+    # starvation anomaly (observability must never fail the review).
+    if len(kept_findings) > MAX_FINDINGS_PER_ROUND:
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
+                severity=AnomalySeverity.HIGH,
+                details={
+                    "n_kept": len(kept_findings),
+                    "soft_cap": MAX_FINDINGS_PER_ROUND,
+                    "pass_index": pass_index,
+                },
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
+
+    # Drop trace candidates whose source finding did not survive to the kept set (collapse
+    # or cap): trace's proposal-hash join is built from round.findings only, so an
+    # unjoinable candidate is misread as a rejected parent (FUP-180 review finding D).
+    kept_proposal_hashes = {f.proposal_hash for f in kept_findings}
+    trace_candidates = [
+        tc for tc in trace_candidates if tc.source_proposal_hash in kept_proposal_hashes
+    ]
+
+    # Step 4: build AnalysisRound FIRST — its uniqueness + round_id validators run here, so
+    # building BEFORE emission means any validator raise crashes cleanly with NO emitted
+    # FindingEvents, closing the strand class fully (FUP-180 review finding A). `round_id`
+    # is content-derived so re-emission of the same logical round is idempotent on replay.
     round_id = compute_round_id(
         pass_index=pass_index,
         files_examined=tuple(files_examined),
@@ -946,6 +985,11 @@ async def analyze(
         ended_at=ended_at,
     )
 
+    # Emit one FindingEvent per kept finding — AFTER the round validated, so the emitted
+    # FindingEvents equal the round's findings by construction (FUP-180).
+    for finding in kept_findings:
+        await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
+
     # Step 5: AnalyzeCompletedEvent. Counters from local accumulators
     # — the producer-side source of truth per spec §7 step 5.
     await analyze_event_sink.emit_analyze_completed(
@@ -961,7 +1005,7 @@ async def analyze(
             n_findings_served=n_findings_served,
             n_findings_observed=n_findings_observed,
             n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
-            n_proposals_capped=n_proposals_capped,
+            n_proposals_dropped=n_proposals_dropped,
             n_findings_dropped_over_cap=n_findings_dropped_over_cap,
             subsumed_matches=tuple(pass_subsumed_matches),
             n_proposals_rejected=n_proposals_rejected,

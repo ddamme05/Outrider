@@ -686,6 +686,11 @@ class CacheServeEvent(AuditEventBase):
     installation_id: int
     repo_id: int
     served_finding_count: int = Field(ge=0)
+    """Findings reconstructed from the cache FOR THIS FILE — a per-file fact recorded
+    when the serve happens. The downstream per-round finding cap (FUP-180) is a
+    round-level decision applied AFTER this event, so for an over-cap round the count
+    of FindingEvents actually emitted for this file may be lower than this; it is NOT a
+    post-cap emitted-count (use `AnalyzeCompletedEvent.n_findings_emitted` for that)."""
     context_summary: tuple[ContextManifestEntry, ...] = ()
     served_trace_candidates: tuple[ServedTraceCandidateRef, ...] = ()
     source_review_id: UUID
@@ -2555,23 +2560,25 @@ class AnalyzeCompletedEvent(AuditEventBase):
     no event. Default 0 (pre-#054 payloads and non-colliding passes produce none —
     the default lets historical `analyze_completed` events replay, where the
     equation reduces to its prior form)."""
-    n_proposals_capped: int = Field(ge=0, default=0)
-    """Count of model proposals admitted this pass but DROPPED by the per-round
-    finding cap (FUP-180) before any `FindingEvent` fired — a fourth proposal
-    disposition alongside emitted / rejected / superseded. A capped proposal has
-    no surviving finding, so it ADDS in `_enforce_proposal_accounting` (same side
-    as rejected). Keyed on ORIGIN, not evidence_tier: a capped proposal-origin
-    finding of ANY tier (JUDGED, INFERRED, or model-cited OBSERVED) counts here;
-    capped producer-OBSERVED / served findings do NOT (they reduce
-    `n_findings_observed` / `n_findings_served` instead). Default 0 (no cap drop,
-    or pre-FUP-180 payloads)."""
+    n_proposals_dropped: int = Field(ge=0, default=0)
+    """Count of model PROPOSALS admitted by the parser this pass but DROPPED before
+    emission (FUP-180) — a fourth proposal disposition alongside emitted / rejected /
+    superseded. Covers ALL pre-emission drop reasons: cross-source dedup
+    (`_admit_with_dedup`), content_hash collapse, AND the per-round finding cap. A
+    dropped proposal has no surviving finding, so it ADDS in
+    `_enforce_proposal_accounting` (same side as rejected). Keyed on ORIGIN, not
+    evidence_tier: a dropped proposal-origin finding of ANY tier (JUDGED, INFERRED, or
+    model-cited OBSERVED) counts here; dropped producer-OBSERVED / served findings do
+    NOT (they are simply absent from the post-cap `n_findings_observed` /
+    `n_findings_served`, which are recomputed over the kept set). Default 0 (no drop, or
+    pre-FUP-180 payloads)."""
     n_findings_dropped_over_cap: int = Field(ge=0, default=0)
-    """Total findings (ALL origins) dropped by the per-round cap this pass — the
-    degrade signal surfaced to the dashboard. TELEMETRY, outside the proposal
-    equation (its proposal subset is `n_proposals_capped`; its served/observed
-    subset is already absent from the post-cap `n_findings_*` counters), so
-    `n_proposals_capped <= n_findings_dropped_over_cap` always holds. Default 0
-    (no degrade, or pre-FUP-180 payloads)."""
+    """Total findings (ALL origins) dropped specifically by the per-round CAP this pass —
+    the degrade signal surfaced to the dashboard. TELEMETRY, outside the proposal
+    equation. Distinct from `n_proposals_dropped`: this is cap-only (a NON-gated drop,
+    since gated findings are never cap-dropped), while `n_proposals_dropped` also covers
+    dedup + collapse and is proposal-origin only — so neither subsumes the other.
+    Default 0 (no degrade, or pre-FUP-180 payloads)."""
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
     """Cross-type subsumption proof-retention records (DECISIONS.md#055): one per
     OBSERVED finding dropped because a same-span JUDGED finding of a more-specific
@@ -2655,15 +2662,16 @@ class AnalyzeCompletedEvent(AuditEventBase):
     def _enforce_proposal_accounting(self) -> Self:
         """Proposal accounting: `n_proposals_seen == (n_findings_emitted
         - n_findings_served - n_findings_observed) + n_proposals_rejected
-        + n_proposals_superseded_by_observed + n_proposals_capped`.
+        + n_proposals_superseded_by_observed + n_proposals_dropped`.
 
         Every raw LLM proposal reaches exactly one disposition: emitted as a
         finding, rejected, superseded by a deterministic OBSERVED finding that
         shared its content_hash (prefer-OBSERVED, DECISIONS.md#054), or dropped
-        by the per-round finding cap before emission (FUP-180) — the last two
-        both being proposals with no surviving finding, so both ADD. The
-        emitted-set counters are over the POST-cap kept set. Two finding classes
-        ride in `n_findings_emitted` (they
+        before emission (FUP-180) — by cross-source dedup, content_hash collapse,
+        or the per-round cap. The last two dispositions both leave no surviving
+        finding, so both ADD. The emitted-set counters (`n_findings_emitted`,
+        `n_findings_served`, `n_findings_observed`) are recomputed over the
+        POST-cap KEPT set. Two finding classes ride in `n_findings_emitted` (they
         fire real `FindingEvent`s) but have no proposal in this pass, so they
         SUBTRACT out: cache-SERVED findings via `n_findings_served`, and
         deterministic OBSERVED-tier findings via `n_findings_observed`. The
@@ -2678,7 +2686,7 @@ class AnalyzeCompletedEvent(AuditEventBase):
             (self.n_findings_emitted - self.n_findings_served - self.n_findings_observed)
             + self.n_proposals_rejected
             + self.n_proposals_superseded_by_observed
-            + self.n_proposals_capped
+            + self.n_proposals_dropped
         )
         if self.n_proposals_seen != expected:
             raise ValueError(
@@ -2688,30 +2696,15 @@ class AnalyzeCompletedEvent(AuditEventBase):
                 f"n_findings_observed({self.n_findings_observed})) + "
                 f"n_proposals_rejected({self.n_proposals_rejected}) + "
                 f"n_proposals_superseded_by_observed({self.n_proposals_superseded_by_observed}) + "
-                f"n_proposals_capped({self.n_proposals_capped}) "
+                f"n_proposals_dropped({self.n_proposals_dropped}) "
                 f"= {expected}. Cache-served AND deterministic OBSERVED findings ride in "
                 f"n_findings_emitted but outside the proposal lifecycle, so they "
                 f"subtract via n_findings_served / n_findings_observed; proposals "
                 f"superseded by a colliding OBSERVED finding (prefer-OBSERVED) OR dropped "
-                f"by the per-round cap (FUP-180) have no surviving finding and ADD via "
-                f"n_proposals_superseded_by_observed / n_proposals_capped. "
+                f"before emission by dedup/collapse/cap (FUP-180) have no surviving finding "
+                f"and ADD via n_proposals_superseded_by_observed / n_proposals_dropped. "
                 f"Response-level rejections (n_responses_rejected={self.n_responses_rejected}) "
                 f"do NOT enter this equation — only proposal-level rejections do."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_cap_drop_consistency(self) -> Self:
-        """The capped proposals are a subset of all capped findings (FUP-180):
-        `n_proposals_capped <= n_findings_dropped_over_cap`. The total degrade
-        count also covers capped served/producer-OBSERVED findings, so the
-        proposal subset can never exceed it."""
-        if self.n_proposals_capped > self.n_findings_dropped_over_cap:
-            raise ValueError(
-                f"Cap-drop accounting mismatch: n_proposals_capped="
-                f"{self.n_proposals_capped} exceeds n_findings_dropped_over_cap="
-                f"{self.n_findings_dropped_over_cap}. Capped proposals are a subset "
-                f"of all cap drops (which also include served/producer-OBSERVED)."
             )
         return self
 

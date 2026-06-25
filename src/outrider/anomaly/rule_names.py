@@ -57,11 +57,22 @@ class AnomalyRuleName(StrEnum):
     via the partial unique index from the analyze-cost-fairness migration. The
     reserve (Stage 1) reduces starvation of high-risk files; this anomaly
     surfaces the residual starvation pattern operators care about.
+
+    `GATED_FINDINGS_OVER_CAP` — emitted by `agent/nodes/analyze.py` (per round) and
+    `agent/nodes/synthesize.py` (per report) when HITL-gated (CRITICAL/HIGH) findings
+    ALONE exceed the soft finding cap (FUP-180). Gated findings are never dropped to
+    fit the soft cap, so they are all kept and reach HITL — but a review with >200
+    gated findings is a loud capacity signal worth an operator's attention (the
+    telemetry counter `n_findings_dropped_over_cap` only records NON-gated drops).
+    Severity `high`. Idempotent on `(review_id,
+    rule_name='gated_findings_over_cap')` via the partial unique index from the
+    finding-cap migration.
     """
 
     HITL_TIMEOUT = "hitl_timeout"
     CROSS_ROUND_SEVERITY_DIVERGENCE = "cross_round_severity_divergence"
     COST_BUDGET_STARVATION = "cost_budget_starvation"
+    GATED_FINDINGS_OVER_CAP = "gated_findings_over_cap"
 
 
 class AnomalySeverity(StrEnum):
