@@ -24,13 +24,13 @@
   ],
   "llm_responses": {
     "triage": [
-      "{\"file_tiers\": {\"app/profile.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision scenario (ssrf over-flag trap): get_profile interpolates user_id only into the PATH of a FIXED host (api.example.com) and handles errors -- not SSRF, the destination cannot be shifted. Deep-review to confirm no ssrf is hallucinated (the analyze-v6 destination-control rule).\"}"
+      "{\"file_tiers\": {\"app/profile.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision scenario (ssrf over-flag trap): get_profile interpolates user_id only into the PATH of a FIXED host (api.example.com) and handles errors -- not SSRF, the destination cannot be shifted. Deep-review to confirm no ssrf is hallucinated: a user value confined to the path of a fixed host cannot shift the destination.\"}"
     ],
     "analyze": [
       "{\"findings\": []}"
     ],
     "synthesize": [
-      "Precision scenario: no findings. get_profile fetches a FIXED host with the user value confined to the path and proper error handling; under the destination-control rule this is not SSRF."
+      "Precision scenario: no findings. get_profile fetches a FIXED host with the user value confined to the path and proper error handling; the destination cannot be shifted, so this is not SSRF."
     ]
   }
 }
