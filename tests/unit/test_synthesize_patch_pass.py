@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 
+from outrider.agent.nodes.finding_cap import FindingCapOverflowError
 from outrider.agent.nodes.synthesize import synthesize
 from outrider.anomaly.rule_names import AnomalyRuleName
 from outrider.audit.aggregates import ReviewLLMAggregates
@@ -471,3 +472,42 @@ async def test_synthesize_gated_overflow_emits_anomaly(monkeypatch: pytest.Monke
     assert any(
         a["rule_name"] is AnomalyRuleName.GATED_FINDINGS_OVER_CAP for a in anomaly_sink.anomalies
     )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_hard_cap_fails_loud_no_strand(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FUP-180: gated findings exceeding the hard ceiling make synthesize FAIL LOUD
+    (FindingCapOverflowError), raised after dedup but BEFORE the patch/summary LLM calls
+    + ReviewReport + SynthesizeCompletedEvent — so nothing is stranded (no completion
+    event, no LLM call fired). Symmetric to analyze's fail-loud test."""
+    monkeypatch.setattr("outrider.agent.nodes.synthesize.MAX_FINDINGS_HARD_CAP", 2)
+    findings = (
+        _make_finding(
+            finding_type=FindingType.HARDCODED_SECRET, severity=FindingSeverity.HIGH, line=2
+        ),
+        _make_finding(finding_type=FindingType.XSS, severity=FindingSeverity.HIGH, line=4),
+        _make_finding(
+            finding_type=FindingType.PATH_TRAVERSAL, severity=FindingSeverity.HIGH, line=6
+        ),
+    )
+    state = _make_multi_state(findings)
+    provider = _DispatchingProvider(_batch_json(uuid4(), "x", "y"))
+    event_sink = _StubSynthesizeEventSink()
+
+    with pytest.raises(FindingCapOverflowError):
+        await synthesize(
+            state,
+            provider=provider,  # type: ignore[arg-type]
+            synthesize_model="m",
+            patch_model="m",
+            patches_enabled=True,
+            max_suggestions=5,
+            phase_event_sink=_StubPhaseSink(),
+            synthesize_event_sink=event_sink,
+            anomaly_sink=_StubAnomalySink(),
+        )
+
+    # Clean crash: no SynthesizeCompletedEvent (no strand), and the raise fired BEFORE
+    # any patch/summary LLM call.
+    assert event_sink.completed == []
+    assert provider.requests == []
