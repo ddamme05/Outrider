@@ -54,10 +54,12 @@ logger = logging.getLogger(__name__)
 # Cap on candidates probed per source-finding bucket per trace invocation.
 # Without a cap, a hostile (or buggy) analyze pass can emit N candidates
 # per finding × M findings × 2 paths-per-candidate GitHub fetches in
-# Phase 1; at the analyze-side cap of 50 findings × 20 candidates that
-# is 2000 requests per pass, ~4000 across the depth-2 round limit —
-# enough to exhaust an installation's 5000/hr GitHub rate limit on a
-# single hostile PR. The cap is applied to insertion order (the order
+# Phase 1; at `MAX_CANDIDATES_PER_FINDING` (below, 5) × the analyze-side
+# per-round finding ceiling (`MAX_FINDINGS_PER_ROUND`=200 non-gated, up to
+# `MAX_FINDINGS_HARD_CAP`=256 gated, FUP-180) × 2 paths that is ~2000-2560
+# requests per pass, ~4000-5000 across the depth-2 round limit — enough to
+# exhaust an installation's 5000/hr GitHub rate limit on a single hostile
+# PR. The cap is applied to insertion order (the order
 # analyze emitted candidates into `state.trace_candidates`, reducer-
 # controlled) BEFORE the Haiku ranking call, so membership in the
 # probed set is reducer-deterministic — a hostile analyze-LLM cannot

@@ -676,7 +676,11 @@ class CacheServeEvent(AuditEventBase):
     Carries `node_id="analyze"` so replay node-containment binds it to the analyze
     phase (CacheLookupEvent precedent). A served file emits this event, one
     `FileExaminationEvent(parse_status="clean")`, and one `FindingEvent` per served
-    finding — and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`.
+    finding that SURVIVES the per-round finding cap — and NO `LLMCallEvent`. (Per
+    FUP-180 the round-level cap runs after the per-file serve and may drop a non-gated
+    served finding before emission, so `served_finding_count` here is the per-file
+    pre-cap count, not necessarily the emitted count.) Idempotency: event_id-PK per
+    `DECISIONS.md#026`.
     """
 
     event_type: Literal["cache_serve"] = "cache_serve"

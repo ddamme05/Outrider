@@ -18,9 +18,12 @@ counter is not a HITL gate"):
   `HITL_MAX_GATED_FINDINGS` (the most gated findings the HITL request can carry).
   A review with MORE gated findings than that can't have them all reach HITL, so
   rather than silently dropping a CRITICAL below the approval gate it raises
-  `FindingCapOverflowError` — a clean crash BEFORE any side effect (no stranded
-  audit rows). This is reachable only on adversarial / degenerate input
-  (>`HITL_MAX_GATED_FINDINGS` gated findings in one round or report).
+  `FindingCapOverflowError` BEFORE any FINDING/round/completion side effect — so no
+  `FindingEvent` / `AnalysisRound` / `AnalyzeCompletedEvent` rows are stranded. (The
+  per-file observable events that fire earlier in the analyze loop —
+  `FileExaminationEvent`, `LLMCallEvent`, cache writes, the cost-starvation anomaly —
+  are complete records of work that genuinely happened, not strands.) Reachable only
+  on adversarial / degenerate input (>`HITL_MAX_GATED_FINDINGS` gated findings).
 
 Selection within each tier is content-deterministic (replay-stable): severity
 rank then `content_hash`. The rank derives from the `FindingSeverity` enum
@@ -50,9 +53,10 @@ class FindingCapOverflowError(RuntimeError):
 
     Gated findings are never silently dropped (FUP-180): a review with more gated
     findings than HITL can carry fails LOUD rather than dropping a CRITICAL below the
-    approval gate. Raised by `cap_findings_by_severity` BEFORE any side effect, so it
-    is a clean crash (no stranded audit rows). Reachable only on adversarial /
-    degenerate input."""
+    approval gate. Raised by `cap_findings_by_severity` BEFORE any FINDING/round/
+    completion side effect (FindingEvents, AnalysisRound, AnalyzeCompletedEvent), so
+    none of those are stranded; per-file observable events earlier in the loop are
+    complete records, not strands. Reachable only on adversarial / degenerate input."""
 
     def __init__(self, n_gated: int, hard_cap: int) -> None:
         self.n_gated = n_gated
