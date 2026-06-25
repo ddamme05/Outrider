@@ -559,10 +559,10 @@ export interface components {
              */
             n_proposals_superseded_by_observed: number;
             /**
-             * N Proposals Capped
+             * N Proposals Dropped
              * @default 0
              */
-            n_proposals_capped: number;
+            n_proposals_dropped: number;
             /**
              * N Findings Dropped Over Cap
              * @default 0
