@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,7 +34,7 @@ from .metrics import (
     LatencyPerReview,
     SeverityAccuracy,
 )
-from .scorecard import GateVerdict, RowDiagnostics, Scorecard, ScorecardRow
+from .scorecard import GateVerdict, RowDiagnostics, Scorecard, ScorecardProvenance, ScorecardRow
 from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
     _MISSING_ERROR_HANDLING_FIXTURE,
@@ -502,12 +503,13 @@ def test_aggregates_sorted_by_node_then_model() -> None:
 def test_to_json_round_trips_rows_and_aggregates() -> None:
     card = Scorecard(rows=(_ok_row("s1", cost_usd=0.01), _errored_row("s2")))
     data = json.loads(card.to_json())
-    assert set(data) == {"rows", "aggregates", "triage_rows", "triage_aggregates"}
+    assert set(data) == {"rows", "aggregates", "triage_rows", "triage_aggregates", "provenance"}
     assert len(data["rows"]) == 2
     assert len(data["aggregates"]) == 1
     assert data["aggregates"][0]["n_errored"] == 1
     assert data["rows"][0]["quality_source"] == "analyze_direct"
     assert data["triage_rows"] == []  # analyze-only card -> empty triage section
+    assert data["provenance"] is None  # unset on a directly-constructed card
 
 
 def test_to_html_renders_rows_and_aggregate() -> None:
@@ -535,6 +537,88 @@ def test_to_html_escapes_markup_in_label() -> None:
     rendered = card.to_html()
     assert "a&lt;b&gt;&amp;c" in rendered
     assert "<b>" not in rendered  # raw markup must never reach the document
+
+
+# --- provenance stamping (git + prompt version + scenario set) ---------------
+
+
+def _provenance(*, git_dirty: bool = False) -> ScorecardProvenance:
+    return ScorecardProvenance(
+        git_sha="6d4caee",
+        git_dirty=git_dirty,
+        prompt_template_version="analyze-v6",
+        scenario_set=("pygoat_sql_injection", "ssrf_user_host"),
+        baseline_model=_BASELINE_MODEL,
+        candidate_models=(_CANDIDATE_MODEL,),
+        generated_at=datetime(2026, 6, 25, 17, 3, tzinfo=UTC),
+    )
+
+
+def test_to_json_includes_provenance() -> None:
+    card = Scorecard(rows=(_ok_row("fx/sqli.json"),), provenance=_provenance())
+    prov = json.loads(card.to_json())["provenance"]
+    assert prov["git_sha"] == "6d4caee"
+    assert prov["git_dirty"] is False
+    assert prov["prompt_template_version"] == "analyze-v6"
+    assert prov["scenario_set"] == ["pygoat_sql_injection", "ssrf_user_host"]
+    assert prov["candidate_models"] == [_CANDIDATE_MODEL]
+
+
+def test_to_json_provenance_is_null_when_absent() -> None:
+    # The key is always present (stable shape); absent provenance serializes as null.
+    assert json.loads(Scorecard(rows=(_ok_row("fx/sqli.json"),)).to_json())["provenance"] is None
+
+
+def test_to_html_renders_provenance() -> None:
+    card = Scorecard(rows=(_ok_row("fx/sqli.json"),), provenance=_provenance(git_dirty=True))
+    rendered = card.to_html()
+    assert "Provenance" in rendered
+    assert "6d4caee" in rendered
+    assert "analyze-v6" in rendered
+    assert "dirty tree" in rendered  # git_dirty=True surfaces the marker
+
+
+def test_to_html_no_provenance_section_when_absent() -> None:
+    rendered = Scorecard(rows=(_ok_row("fx/sqli.json"),)).to_html()
+    assert 'class="provenance"' not in rendered
+
+
+def test_build_provenance_captures_git_and_inputs() -> None:
+    # Exercises the real build_provenance + git capture the entrypoints call — the
+    # entrypoints themselves are real-model-gated (skipped here), so this is the
+    # only non-spend coverage of that path.
+    from .runner import build_provenance  # noqa: PLC0415
+
+    prov = build_provenance(
+        prompt_template_version="analyze-test",
+        scenario_labels=["a", "b"],
+        baseline_model=_BASELINE_MODEL,
+        candidate_models=[_CANDIDATE_MODEL],
+    )
+    assert prov is not None  # a non-None version -> a stamped ScorecardProvenance
+    assert prov.prompt_template_version == "analyze-test"
+    assert prov.scenario_set == ("a", "b")
+    assert prov.candidate_models == (_CANDIDATE_MODEL,)
+    assert prov.generated_at.tzinfo is not None  # AwareDatetime, never naive
+    # In-repo: the real HEAD hex (40 for SHA-1, 64 for SHA-256 object format);
+    # off-repo (no .git): the "unknown" fallback.
+    assert prov.git_sha == "unknown" or len(prov.git_sha) in (40, 64)
+
+
+def test_build_provenance_returns_none_without_version() -> None:
+    # None version is the scripted-harness path — build_scorecard calls this
+    # unconditionally and only stamps when a caller opts in with a version.
+    from .runner import build_provenance  # noqa: PLC0415
+
+    assert (
+        build_provenance(
+            prompt_template_version=None,
+            scenario_labels=["a"],
+            baseline_model=_BASELINE_MODEL,
+            candidate_models=[_CANDIDATE_MODEL],
+        )
+        is None
+    )
 
 
 # --- cost-source 3-state + errored-replay + aggregate denominator ------------
@@ -673,6 +757,7 @@ def test_real_scorecard_evidence() -> None:
 
     from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
     from outrider.llm.config import ModelConfig  # noqa: PLC0415
+    from outrider.prompts.analyze import VERSION as ANALYZE_PROMPT_VERSION  # noqa: PLC0415
 
     from .runner import ScenarioSpec, build_scorecard  # noqa: PLC0415
 
@@ -808,6 +893,7 @@ def test_real_scorecard_evidence() -> None:
         candidate_models=[candidate_model],
         measure_cost=True,
         close_providers=True,  # close the real provider inside build_scorecard's loop
+        prompt_template_version=ANALYZE_PROMPT_VERSION,  # stamps run provenance on the card
     )
 
     out_dir = Path("reports") / "scorecard"
@@ -858,6 +944,7 @@ def test_real_triage_scorecard_evidence() -> None:
     from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
     from outrider.llm.config import ModelConfig  # noqa: PLC0415
     from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
+    from outrider.prompts.triage import VERSION as TRIAGE_PROMPT_VERSION  # noqa: PLC0415
     from outrider.schemas.triage_result import (  # noqa: PLC0415
         ReviewDimension,
         ReviewTier,
@@ -960,6 +1047,7 @@ def test_real_triage_scorecard_evidence() -> None:
         baseline_model=baseline_model,
         candidate_models=[candidate_model],
         close_providers=True,  # close the real provider inside build_triage_scorecard's loop
+        prompt_template_version=TRIAGE_PROMPT_VERSION,  # stamps run provenance on the card
     )
 
     out_dir = Path("reports") / "scorecard"

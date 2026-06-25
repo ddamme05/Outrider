@@ -39,7 +39,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from outrider.agent.eval_driver import CostProbe, run_review
@@ -52,7 +55,13 @@ from outrider.schemas.triage_result import ReviewTier
 from .grading import DEFAULT_LINE_WINDOW, compare, grade
 from .metrics import CostPerReview
 from .model_comparison import run_analyze_under_model, state_from_eval_fixture
-from .scorecard import RegressionVerdict, Scorecard, ScorecardRow, TriageScorecardRow
+from .scorecard import (
+    RegressionVerdict,
+    Scorecard,
+    ScorecardProvenance,
+    ScorecardRow,
+    TriageScorecardRow,
+)
 from .triage_grading import (
     compare_triage,
     grade_triage,
@@ -355,6 +364,66 @@ async def _drive_quality[T](
     return result
 
 
+def _capture_git_state() -> tuple[str, bool]:
+    """Best-effort git SHA + dirty flag for run provenance. Eval-infra only: a
+    FIXED `git` invocation (no GitHub-sourced strings), not a shell-exec boundary
+    surface. Falls back to ("unknown", False) when git is unavailable (e.g. a CI
+    source tarball with no .git). `git_dirty` reads `git status --porcelain`, so it
+    is True for UNTRACKED files too — over-marking dirty is the safe direction."""
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607 — `git` on PATH, eval-infra provenance
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],  # noqa: S607 — `git` on PATH, eval-infra
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ("unknown", False)
+    return (sha, dirty)
+
+
+def build_provenance(
+    *,
+    prompt_template_version: str | None,
+    scenario_labels: Sequence[str],
+    baseline_model: str,
+    candidate_models: Sequence[str],
+) -> ScorecardProvenance | None:
+    """Stamp a scorecard run with its provenance so the artifact self-certifies
+    which code + prompt + scenario set produced it (closes the reflog/mtime
+    forensics gap). `prompt_template_version` is the node-relevant template
+    `VERSION` — analyze for the finding scorecard, triage for the triage one.
+
+    Returns None when `prompt_template_version` is None — the scripted-harness path
+    that builds cards without stamping, so `build_scorecard` can call this
+    unconditionally and let the caller opt in by passing a version."""
+    if prompt_template_version is None:
+        return None
+    git_sha, git_dirty = _capture_git_state()
+    return ScorecardProvenance(
+        git_sha=git_sha,
+        git_dirty=git_dirty,
+        prompt_template_version=prompt_template_version,
+        scenario_set=tuple(scenario_labels),
+        baseline_model=baseline_model,
+        candidate_models=tuple(candidate_models),
+        generated_at=datetime.now(UTC),
+    )
+
+
 def build_scorecard(
     specs: Sequence[ScenarioSpec],
     *,
@@ -370,6 +439,7 @@ def build_scorecard(
     fp_allowance: int = 0,
     baseline_recall_floor: float = 1.0,
     close_providers: bool = False,
+    prompt_template_version: str | None = None,
 ) -> Scorecard:
     """Drive the `(scenario × candidate-model)` matrix into a `Scorecard`.
 
@@ -404,6 +474,16 @@ def build_scorecard(
     # Validate + pin every candidate model BEFORE the (paid) quality pass: a
     # malformed/deprecated id raises here via ModelConfig's field-validator.
     cost_configs = {model: _cost_model_config(model) for model in candidate_models}
+
+    # Stamp run provenance BEFORE the (paid) matrix runs, so git_sha/dirty pin the
+    # checkout that actually produced the numbers — not whatever HEAD exists when the
+    # multi-minute run finishes. None version -> None provenance (the scripted path).
+    provenance = build_provenance(
+        prompt_template_version=prompt_template_version,
+        scenario_labels=scenario_labels,
+        baseline_model=baseline_model,
+        candidate_models=candidate_models,
+    )
 
     quality = asyncio.run(
         _drive_quality(
@@ -464,7 +544,7 @@ def build_scorecard(
                     # is not yet wired, so replay_source defaults to "not_applicable".
                 )
             )
-    return Scorecard(rows=tuple(rows))
+    return Scorecard(rows=tuple(rows), provenance=provenance)
 
 
 # --- Triage matrix ----------------------------------------------------------
@@ -531,6 +611,7 @@ def build_triage_scorecard(
     overtier_allowance: int = 0,
     dimension_recall_tolerance: float = 0.0,
     close_providers: bool = False,
+    prompt_template_version: str | None = None,
 ) -> Scorecard:
     """Drive the `(scenario × candidate-model)` TRIAGE matrix into a
     `Scorecard.triage_rows`. The analyze `rows` stay empty — the sibling
@@ -576,6 +657,14 @@ def build_triage_scorecard(
             scenario=spec.scenario,
         )
 
+    # Stamp provenance BEFORE the (paid) matrix runs (see build_scorecard).
+    provenance = build_provenance(
+        prompt_template_version=prompt_template_version,
+        scenario_labels=scenario_labels,
+        baseline_model=baseline_model,
+        candidate_models=candidate_models,
+    )
+
     quality = asyncio.run(
         _drive_quality(
             _gather_triage_quality(
@@ -617,12 +706,13 @@ def build_triage_scorecard(
                     comparison=outcome,
                 )
             )
-    return Scorecard(triage_rows=tuple(rows))
+    return Scorecard(triage_rows=tuple(rows), provenance=provenance)
 
 
 __all__ = [
     "ScenarioSpec",
     "TriageScenarioSpec",
+    "build_provenance",
     "build_scorecard",
     "build_triage_scorecard",
 ]
