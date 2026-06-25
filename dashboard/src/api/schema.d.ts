@@ -559,6 +559,16 @@ export interface components {
              */
             n_proposals_superseded_by_observed: number;
             /**
+             * N Proposals Capped
+             * @default 0
+             */
+            n_proposals_capped: number;
+            /**
+             * N Findings Dropped Over Cap
+             * @default 0
+             */
+            n_findings_dropped_over_cap: number;
+            /**
              * Subsumed Matches
              * @default []
              */
@@ -2762,6 +2772,11 @@ export interface components {
             overall_risk: components["schemas"]["RiskLevel"];
             /** N Findings */
             n_findings: number;
+            /**
+             * N Findings Dropped Over Cap
+             * @default 0
+             */
+            n_findings_dropped_over_cap: number;
             /** Files Examined */
             files_examined: number;
             /** Files Traced Beyond Diff */
