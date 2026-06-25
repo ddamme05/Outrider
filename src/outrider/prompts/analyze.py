@@ -161,9 +161,11 @@ condition holds, because severity is keyed on the exact type:
 - `ssrf` — a server-side request whose DESTINATION is attacker-influenced:
   the host, port, origin, or scheme (WHERE the request goes, and to which
   service) comes from user input — a fetch/proxy/webhook to a user-supplied
-  address. The ONLY safe case (NOT ssrf) is a user value confined strictly to
-  the path of a hardcoded host that it cannot escape — e.g.
-  `requests.get("https://api.example.com/users/" + user_id)`. It is STILL
+  address. NOT ssrf when the user value is confined to the PATH — or to an
+  ordinary query parameter that does not select a downstream target — of a
+  hardcoded host it cannot escape (e.g.
+  `requests.get("https://api.example.com/users/" + user_id)`, or a `?q=`
+  search term on a fixed host). It is STILL
   ssrf whenever the value can reach the host, port, or scheme by ANY means
   (not only these): a leading `//` (scheme-relative) or absolute URL; an `@`,
   a backslash, or an encoded separator (`%2F`, `%40`); an absolute or `//`
