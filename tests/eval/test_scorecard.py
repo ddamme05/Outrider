@@ -752,7 +752,7 @@ def test_real_scorecard_evidence() -> None:
         ScenarioSpec.from_fixture(
             "ssrf_user_host",
             str(mock / "ssrf_user_host.json"),
-            _gt("app/fetch.py", 6, 6, FindingType.SSRF),
+            _gt("app/fetch.py", 7, 7, FindingType.SSRF),
         ),
         ScenarioSpec.from_fixture(
             "missing_error_handling",
