@@ -57,7 +57,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v5"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v6"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -80,6 +80,12 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
+# Bumped 2026-06-25 (was "analyze-v5") to tighten the `ssrf` finding-type
+# definition: SSRF turns on control of the request DESTINATION (host / origin
+# / scheme), so a user value interpolated only into the PATH/QUERY of a
+# hardcoded host is NOT ssrf. Closes a shared Sonnet+Haiku over-flag the eval
+# scorecard surfaced (a fixed-host fetch flagged as ssrf); real-SSRF detection
+# (attacker-controlled host) is unchanged.
 # Bumped 2026-06-20 (was "analyze-v4") for the dual-mode security taxonomy
 # (DECISIONS.md#053): the 3 OBSERVED-tier 1.1.0 types + the 7 contextual
 # 1.2.0 types join the model-pickable enum vocabulary, plus a "Contextual
@@ -94,7 +100,7 @@ if TYPE_CHECKING:
 # `render_post_trace`, and the pass-1 output-schema override. Each bump keeps
 # replay attribution exact — a prompt row replays against the contract it was
 # emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v5"
+VERSION: Final[str] = "analyze-v6"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -149,11 +155,16 @@ condition holds, because severity is keyed on the exact type:
 - `insecure_randomness` — a non-cryptographic RNG (`random.*`,
   `Math.random`) used for a SECURITY value: token, password, session id,
   nonce, salt, reset code. Not for non-security sampling/jitter.
-- `ssrf` — a server-side request whose URL or host is attacker-influenced
-  (a fetch/proxy/webhook to a user-supplied address). Use `ssrf_metadata`
-  INSTEAD when the reachable target can be a cloud metadata / link-local
-  endpoint (`169.254.169.254`, `metadata.google.internal`) or an internal
-  control plane — credential theft raises the stakes.
+- `ssrf` — a server-side request whose DESTINATION is attacker-influenced:
+  the host, origin, or scheme (WHERE the request goes) comes from user
+  input — a fetch/proxy/webhook to a user-supplied address. NOT ssrf when
+  only a path or query value is interpolated into a FIXED, hardcoded host
+  (e.g. `requests.get("https://api.example.com/users/" + user_id)` still
+  reaches the same server — flag another type if warranted, but not ssrf).
+  Use `ssrf_metadata` INSTEAD when the reachable target can be a cloud
+  metadata / link-local endpoint (`169.254.169.254`,
+  `metadata.google.internal`) or an internal control plane — credential
+  theft raises the stakes.
 - `open_redirect` — a redirect target taken from user input with no
   allowlist. Use `open_redirect_authed` INSTEAD when the redirect carries
   or follows authentication (an OAuth/SSO `redirect_uri`, a post-login

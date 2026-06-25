@@ -43,17 +43,19 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v5() -> None:
+def test_version_is_named_analyze_v6() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v5" name so future renames break the test and force a
+    "analyze-v6" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v5 bump added the dual-mode security taxonomy vocabulary + guidance
-    (DECISIONS.md#053); v4 landed the cache-packing repartition (per-file
-    context → user_prompt; exemplars block in the cached prefix); v3 added
-    the sql_injection parameterized-query false-positive guidance
-    (DECISIONS.md#041); v2 landed the trace-node pass-1 arc."""
-    assert VERSION == "analyze-v5"
+    The v6 bump tightened the `ssrf` definition (destination-control, not a
+    user value in the path/query of a fixed host); v5 added the dual-mode
+    security taxonomy vocabulary + guidance (DECISIONS.md#053); v4 landed the
+    cache-packing repartition (per-file context → user_prompt; exemplars block
+    in the cached prefix); v3 added the sql_injection parameterized-query
+    false-positive guidance (DECISIONS.md#041); v2 landed the trace-node
+    pass-1 arc."""
+    assert VERSION == "analyze-v6"
 
 
 def test_system_prompt_warns_parameterized_queries_are_not_sqli() -> None:
