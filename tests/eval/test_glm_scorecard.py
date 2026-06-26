@@ -131,7 +131,11 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             if cmp is None:
                 continue
             _print_scenario_report(fixture_path, cmp, baseline_model, GLM_MODEL_ID)
-            gate_results.append((fixture_path, "recall", cmp.recall_held, "GLM recall < Anthropic"))
+            # Mirror the existing gate (test_model_comparison.py): recall counts as
+            # held ONLY when the BASELINE also cleared the recall floor — else a
+            # both-models-miss row would vacuously read green.
+            recall_ok = cmp.recall_held and cmp.baseline_valid
+            gate_results.append((fixture_path, "recall", recall_ok, "GLM recall < Anthropic"))
             assert cmp.baseline is not None  # the run completed
         # PRECISION — does GLM over-flag safe code more than Anthropic? Empty ground
         # truth, so ANY finding is a false positive; advisory gate on `fp_bounded`.
