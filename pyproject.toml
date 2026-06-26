@@ -12,6 +12,10 @@ dependencies = [
     "langgraph==1.1.6",
     "langgraph-checkpoint-postgres==3.0.5",
     "anthropic==0.100.0",
+    # GLM 5.2 via Baseten (OpenAI-compatible) — second LLM provider mode.
+    # `import openai` is confined to src/outrider/llm/ per trust boundary #8
+    # (allowlisted in scripts/check_import_boundaries.py). See GLM_PROVIDER_THOUGHTS.md.
+    "openai==2.44.0",
     # Observability — LangSmith (opt-in via LANGSMITH_TRACING=true env var).
     # LangGraph 1.1.6 emits node spans natively when the env var is set; the
     # provider-agnostic `TracingLLMProvider` decorator in `llm/tracing.py`
