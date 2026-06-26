@@ -23,9 +23,13 @@ Metric, per variant, across both models and all reps:
 - RECALL — a true-positive fixture's expected finding must be MATCHED (`not GradeResult.missed`).
 
 A variant WINS only if it cuts total false positives vs the v7 control AND loses ZERO recall
-(every expected finding matched, both models, every rep). A winner is a candidate for an
-`analyze-v8` bump ONLY after a 5-rep reconfirm; if nothing clears cleanly, the over-eagerness
-is not cheaply prompt-reducible — stop churning and move to the next roadmap item (GLM).
+(every expected finding matched, both models, every rep). This is the 5-rep RECONFIRM of the
+3-rep winners (`clean-is-common` primary, `combined` backup), with the recall guard WIDENED to
+the over-flag-prone types (`missing_input_validation` / `missing_error_handling`) — the subtle
+recall a "don't manufacture" rule most threatens. A variant that clears cleanly here is the
+`analyze-v8` candidate; if recall cracks or nothing cuts FPs, v7 stays the floor and the next
+lever is GLM. Calls run with bounded per-variant concurrency (a Semaphore-capped `gather`) so
+the larger matrix finishes in minutes, not ~20.
 
 Test-tier: candidate rules are injected by APPENDING them to
 `outrider.prompts.analyze.SYSTEM_PROMPT_STABLE_PREFIX` at runtime. Production
@@ -34,6 +38,7 @@ Test-tier: candidate rules are injected by APPENDING them to
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections import defaultdict
@@ -51,12 +56,16 @@ from .grading import DEFAULT_LINE_WINDOW, ExpectedFinding, grade
 from .model_comparison import run_analyze_under_model, state_from_eval_fixture
 from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
+    _MISSING_ERROR_HANDLING_FIXTURE,
+    _MISSING_INPUT_VALIDATION_FIXTURE,
     _N_PLUS_ONE_FIXTURE,
+    _PATH_TRAVERSAL_FIXTURE,
     _PYGOAT_AUTH_FIXTURE,
     _PYGOAT_SQL_FIXTURE,
 )
 
-_REPS = 3  # first-pass; a winner is reconfirmed at 5 reps before any v8 bump
+_REPS = 5  # reconfirm depth — recall loss can hide in a rare rep
+_CONCURRENCY = 6  # in-flight analyze calls per variant; modest to stay under the API rate limit
 
 
 def _gt(path: str, line: int, ft: FindingType) -> tuple[ExpectedFinding, ...]:
@@ -90,6 +99,20 @@ _FIXTURES: tuple[tuple[str, tuple[ExpectedFinding, ...], str], ...] = (
         _gt("accounts/auth.py", 5, FindingType.WEAK_PASSWORD_HASH),
         "tp",
     ),
+    # Borderline recall guard: missing_input_validation + missing_error_handling are the EXACT
+    # types the conservatism rule suppresses as FALSE positives, so guarding their REAL versions
+    # is the critical test that "don't manufacture" did not become "miss findings".
+    (
+        "missing_input_validation.json",
+        _GROUND_TRUTH_BY_FIXTURE[_MISSING_INPUT_VALIDATION_FIXTURE],
+        "tp",
+    ),
+    (
+        "missing_error_handling.json",
+        _GROUND_TRUTH_BY_FIXTURE[_MISSING_ERROR_HANDLING_FIXTURE],
+        "tp",
+    ),
+    ("path_traversal.json", _GROUND_TRUTH_BY_FIXTURE[_PATH_TRAVERSAL_FIXTURE], "tp"),
 )
 
 # --- candidate conservatism rules (appended to the live prefix at runtime) ----
@@ -116,9 +139,8 @@ _RULE_COMBINED = _RULE_CLEAN_IS_COMMON + _RULE_DEFENSIBLE
 # (label, appended_rule | None). None is the v7 control — the live prompt, no append.
 _VARIANTS: tuple[tuple[str, str | None], ...] = (
     ("v7-control", None),
-    ("clean-is-common", _RULE_CLEAN_IS_COMMON),
-    ("defensible-evidence", _RULE_DEFENSIBLE),
-    ("combined", _RULE_COMBINED),
+    ("clean-is-common", _RULE_CLEAN_IS_COMMON),  # 3-rep winner; primary v8 candidate
+    ("combined", _RULE_COMBINED),  # backup — trades a clean FP for a tp-extra FP
 )
 
 
@@ -172,30 +194,49 @@ async def test_conservatism_probe() -> None:
     )
 
     rows: list[dict[str, object]] = []
+    sem = asyncio.Semaphore(_CONCURRENCY)
+
+    async def _cell(
+        *,
+        variant: str,
+        model: str,
+        fixture: str,
+        ground_truth: tuple[ExpectedFinding, ...],
+        kind: str,
+        rep: int,
+    ) -> dict[str, object]:
+        # The semaphore caps in-flight analyze calls; the per-variant prompt monkeypatch
+        # (below) is active around the whole gather, so every call renders the variant prompt.
+        async with sem:
+            state = state_from_eval_fixture(mock_dir / fixture)
+            found = await run_analyze_under_model(state, provider=provider, model=model)
+        g = grade(found, ground_truth, line_window=DEFAULT_LINE_WINDOW)
+        return {
+            "variant": variant,
+            "model": model,
+            "fixture": fixture,
+            "kind": kind,
+            "rep": rep,
+            "fp": g.n_false_positives,
+            "recall_hit": not g.missed,  # clean: vacuously True; tp: expected matched
+        }
+
     try:
         for label, rule in _VARIANTS:
             prefix = live_prefix if rule is None else live_prefix + rule
+            # Variants run sequentially (each needs a different prompt patch); WITHIN a
+            # variant the cells run concurrently under the active patch — the gather completes
+            # before the `with` restores the prompt, so no in-flight call sees the wrong text.
             with mock.patch.object(analyze_prompt, "SYSTEM_PROMPT_STABLE_PREFIX", prefix):
-                for model in models:
-                    for fx, ground_truth, kind in _FIXTURES:
-                        for rep in range(_REPS):
-                            state = state_from_eval_fixture(mock_dir / fx)
-                            found = await run_analyze_under_model(
-                                state, provider=provider, model=model
-                            )
-                            g = grade(found, ground_truth, line_window=DEFAULT_LINE_WINDOW)
-                            rows.append(
-                                {
-                                    "variant": label,
-                                    "model": model,
-                                    "fixture": fx,
-                                    "kind": kind,
-                                    "rep": rep,
-                                    "fp": g.n_false_positives,
-                                    # clean: vacuously True (no expected); tp: expected matched
-                                    "recall_hit": not g.missed,
-                                }
-                            )
+                cells = [
+                    _cell(
+                        variant=label, model=model, fixture=fx, ground_truth=gt, kind=kind, rep=rep
+                    )
+                    for model in models
+                    for fx, gt, kind in _FIXTURES
+                    for rep in range(_REPS)
+                ]
+                rows.extend(await asyncio.gather(*cells))
     finally:
         await provider.aclose()
 
