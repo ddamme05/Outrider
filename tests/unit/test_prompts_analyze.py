@@ -25,6 +25,7 @@ from outrider.prompts.analyze import (
     FILE_CONTEXT_TEMPLATE,
     MAX_TOKENS,
     POST_TRACE_SYSTEM_PROMPT_SUFFIX,
+    SYSTEM_PROMPT_CALIBRATION,
     SYSTEM_PROMPT_EXEMPLARS,
     SYSTEM_PROMPT_INVARIANTS,
     SYSTEM_PROMPT_STABLE_PREFIX,
@@ -43,21 +44,24 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v7() -> None:
+def test_version_is_named_analyze_v8() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v7" name so future renames break the test and force a
+    "analyze-v8" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v7 bump adopted the destination-control `ssrf` rule + a worked DO/DON'T
-    example (an eval probe showed the v6 fixed-host over-flag was Haiku-reachable
-    and that this wording drives it to zero with no recall loss); v6 tightened the
-    `ssrf` definition to destination-control; v5 added the dual-mode security
-    taxonomy vocabulary + guidance (DECISIONS.md#053); v4 landed the
-    cache-packing repartition (per-file context → user_prompt; exemplars block
-    in the cached prefix); v3 added the sql_injection parameterized-query
-    false-positive guidance (DECISIONS.md#041); v2 landed the trace-node
-    pass-1 arc."""
-    assert VERSION == "analyze-v7"
+    The v8 bump appended SYSTEM_PROMPT_CALIBRATION — a broad "clean code is
+    common; don't manufacture findings" rule that cut analyze false positives
+    28->5 across finding types with zero recall loss in a 5-rep conservatism
+    probe; the v7 bump adopted the destination-control `ssrf` rule + a worked
+    DO/DON'T example (an eval probe showed the v6 fixed-host over-flag was
+    Haiku-reachable and that this wording drives it to zero with no recall loss);
+    v6 tightened the `ssrf` definition to destination-control; v5 added the
+    dual-mode security taxonomy vocabulary + guidance (DECISIONS.md#053); v4
+    landed the cache-packing repartition (per-file context → user_prompt;
+    exemplars block in the cached prefix); v3 added the sql_injection
+    parameterized-query false-positive guidance (DECISIONS.md#041); v2 landed
+    the trace-node pass-1 arc."""
+    assert VERSION == "analyze-v8"
 
 
 def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
@@ -196,6 +200,32 @@ def test_system_prompt_invariants_has_no_placeholders() -> None:
     )
 
 
+def test_system_prompt_calibration_has_no_placeholders() -> None:
+    """SYSTEM_PROMPT_CALIBRATION joins the never-`.format()`ed cached prefix, so
+    (like INVARIANTS) it must carry zero `{placeholder}` markers — a stray brace
+    would break a future .format() loudly or leak a template artifact into the
+    cached block."""
+    found = re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", SYSTEM_PROMPT_CALIBRATION)
+    assert found == [], (
+        f"SYSTEM_PROMPT_CALIBRATION contains unexpected placeholders: {found}. "
+        f"It must stay fully static (cacheable, never .format()ed)."
+    )
+
+
+def test_system_prompt_calibration_pins_clean_is_common_rule() -> None:
+    """The v8 calibration text is the conservatism-probe-validated `clean-is-common`
+    wording, shipped verbatim. Pin the load-bearing phrases directly (a VERSION bump
+    alone wouldn't catch a regression that softened the rule): dropping "empty findings
+    list is ... valid" or "do not manufacture" reopens the broad over-eagerness the
+    probe closed (28->5 FP). Asserted against the STABLE_PREFIX so a future refactor
+    that drops CALIBRATION from the cached block also fails here."""
+    text = " ".join(SYSTEM_PROMPT_STABLE_PREFIX.lower().split())
+    assert "most code under review is fine" in text
+    assert "an empty findings list is a valid, common, and correct result" in text
+    assert "do not manufacture a finding" in text
+    assert "return no findings" in text
+
+
 def test_system_prompt_exemplars_brace_markers_are_the_known_examples() -> None:
     """SYSTEM_PROMPT_EXEMPLARS is fully static, but its FLAG examples
     legitimately show f-string interpolation (`f"...{owner}..."`) — the
@@ -211,11 +241,18 @@ def test_system_prompt_exemplars_brace_markers_are_the_known_examples() -> None:
     )
 
 
-def test_stable_prefix_is_invariants_plus_exemplars() -> None:
+def test_stable_prefix_is_invariants_plus_exemplars_plus_calibration() -> None:
     """SYSTEM_PROMPT_STABLE_PREFIX is the cached block (cache-packing
     spec). Pin its composition so content can't silently bypass the
-    floor + stability gates below by landing outside the constant."""
-    assert SYSTEM_PROMPT_STABLE_PREFIX == SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS
+    floor + stability gates below by landing outside the constant. The
+    v8 bump appended CALIBRATION as the third component (after EXEMPLARS),
+    matching the order the conservatism probe validated (`live_prefix + rule`)."""
+    assert SYSTEM_PROMPT_STABLE_PREFIX == (
+        SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS + SYSTEM_PROMPT_CALIBRATION
+    )
+    # CALIBRATION is the tail of the cached prefix (order is contractual: it was
+    # validated appended AFTER exemplars, not interleaved).
+    assert SYSTEM_PROMPT_STABLE_PREFIX.endswith(SYSTEM_PROMPT_CALIBRATION)
 
 
 def test_stable_prefix_clears_min_cacheable_floor_conservatively() -> None:
@@ -947,6 +984,8 @@ def test_module_exports_all_documented_surfaces() -> None:
         "POST_TRACE_USER_TEMPLATE",
         # Cache-packing surfaces (analyze-v4): the exemplars block + the
         # composed cross-file stable prefix (THE cached system block).
+        # CALIBRATION (analyze-v8) is the third prefix component.
+        "SYSTEM_PROMPT_CALIBRATION",
         "SYSTEM_PROMPT_EXEMPLARS",
         "SYSTEM_PROMPT_INVARIANTS",
         "SYSTEM_PROMPT_STABLE_PREFIX",

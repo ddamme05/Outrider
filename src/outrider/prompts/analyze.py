@@ -37,10 +37,15 @@ Surfaces:
   exemplars per `FindingType`; grows the cached prefix past the
   per-model min-cacheable floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS`
   — below the floor the API silently skips caching).
-- `SYSTEM_PROMPT_STABLE_PREFIX` — INVARIANTS + EXEMPLARS; THE cached
-  block. Never `.format()`ed: INVARIANTS has zero `{placeholder}`
-  markers; EXEMPLARS' braces are allowlisted static example text.
-  Both enforced by test.
+- `SYSTEM_PROMPT_CALIBRATION` — fully static broad anti-over-eagerness
+  rule ("clean code is common; an empty findings list is valid and
+  correct; don't manufacture findings") appended to the cached prefix
+  at the v8 bump; validated by the conservatism probe. No `{placeholder}`
+  markers.
+- `SYSTEM_PROMPT_STABLE_PREFIX` — INVARIANTS + EXEMPLARS + CALIBRATION;
+  THE cached block. Never `.format()`ed: INVARIANTS and CALIBRATION have
+  zero `{placeholder}` markers; EXEMPLARS' braces are allowlisted static
+  example text. All enforced by test.
 - `FILE_CONTEXT_TEMPLATE` — diff-scoped per-file context rendered into
   the USER prompt by `render` (says "the file's CHANGED scope units";
   correct for pass-0 on PR-diff files, NOT for post-trace whole-file
@@ -57,7 +62,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v7"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v8"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -80,6 +85,15 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
+# Bumped 2026-06-26 (was "analyze-v7") to append SYSTEM_PROMPT_CALIBRATION — a broad
+# "clean code is common; don't manufacture findings" rule that targets the model's baseline
+# over-eagerness ACROSS finding types, not one type (the v7 ssrf fix had remapped, not
+# removed, the over-flag — it reappeared as lower-severity missing_input_validation /
+# missing_error_handling). A 5-rep conservatism probe over both tier models, recall-guarded
+# (incl. the over-flag-prone missing_input_validation / missing_error_handling /
+# path_traversal), cut analyze false positives 28->5 with ZERO recall loss; production
+# VERSION moved only after that reconfirm. The rule appends to the cached prefix (after
+# EXEMPLARS), so the cache key shifts once and the min-cacheable floor stays satisfied.
 # Bumped 2026-06-25 (was "analyze-v6") to adopt the destination-control `ssrf`
 # rule PLUS a worked DO/DON'T example. A prompt-reachability probe showed the v6
 # fixed-host over-flag was Haiku-specific (Haiku 5/5 FP, Sonnet 0/5) and that this
@@ -108,7 +122,7 @@ if TYPE_CHECKING:
 # `render_post_trace`, and the pass-1 output-schema override. Each bump keeps
 # replay attribution exact — a prompt row replays against the contract it was
 # emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v7"
+VERSION: Final[str] = "analyze-v8"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -674,16 +688,30 @@ do:
 """
 
 
+# Broad anti-over-eagerness calibration appended to the cached prefix at the v8 bump.
+# Validated verbatim by the 5-rep conservatism probe (the clean-is-common winner): it cut
+# analyze false positives across finding types with zero recall loss. No `{placeholder}`
+# markers, so the "never `.format()`ed" prefix invariant holds.
+SYSTEM_PROMPT_CALIBRATION: Final[str] = (
+    "\n\nBEFORE YOU FINISH — calibration: most code under review is fine. An EMPTY findings "
+    "list is a valid, common, and CORRECT result; clean code should produce no findings. Do "
+    "not manufacture a finding to have something to report. If nothing in the diff is "
+    "concretely wrong, return no findings.\n"
+)
+
+
 # See DECISIONS.md#042-analyze-prompt-cache-packs-a-cross-file-invariant-prefix
-SYSTEM_PROMPT_STABLE_PREFIX: Final[str] = SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS
+SYSTEM_PROMPT_STABLE_PREFIX: Final[str] = (
+    SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS + SYSTEM_PROMPT_CALIBRATION
+)
 """THE cached system block: byte-identical across every pass-0 and
 degraded analyze call, regardless of file. `cache_control: ephemeral`
 on this prefix caches it once per review per tier-model. Must stay
 above `llm/pricing.py::MIN_CACHEABLE_TOKENS` for the configured tier
 models (below the floor the API silently skips caching) and is never
-`.format()`ed — INVARIANTS carries zero `{placeholder}` markers
-(exact-empty, enforced by test) and EXEMPLARS' brace markers stay
-within an allowlisted CEILING of static f-string EXAMPLE variables
+`.format()`ed — INVARIANTS and CALIBRATION carry zero `{placeholder}`
+markers (exact-empty, enforced by test) and EXEMPLARS' brace markers
+stay within an allowlisted CEILING of static f-string EXAMPLE variables
 ({owner}, {x}) — the test blocks new markers, not removals."""
 
 
@@ -1036,6 +1064,7 @@ __all__ = [
     "POST_TRACE_FILE_CONTEXT_TEMPLATE",
     "POST_TRACE_SYSTEM_PROMPT_SUFFIX",
     "POST_TRACE_USER_TEMPLATE",
+    "SYSTEM_PROMPT_CALIBRATION",
     "SYSTEM_PROMPT_EXEMPLARS",
     "SYSTEM_PROMPT_INVARIANTS",
     "SYSTEM_PROMPT_STABLE_PREFIX",
