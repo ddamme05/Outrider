@@ -264,11 +264,18 @@ async def test_conservatism_probe() -> None:
         )
 
     winners = [label for label, v in verdicts.items() if v["wins"]]
+    # Primary winner = the first NON-CONTROL variant that wins, in declared _VARIANTS order
+    # (clean-is-common before combined). Naming it removes the "which winner is the v8
+    # candidate" ambiguity an unordered WINNER(S) list leaves.
+    primary_winner = next(
+        (label for label, _rule in _VARIANTS if label != "v7-control" and verdicts[label]["wins"]),
+        None,
+    )
     decision = (
-        f"WINNER(S): {winners} — fewer false positives than v7 with no recall loss across this "
-        "5-rep reconfirm (borderline guards included). The primary winner is the analyze-v8 "
-        "candidate, subject to the normal rollout (VERSION bump + contract sweep + "
-        "security-test re-pin)."
+        f"WINNER(S): {winners}; primary winner: {primary_winner} — fewer false positives than v7 "
+        "with no recall loss across this 5-rep reconfirm (borderline guards included). "
+        f"{primary_winner} is the analyze-v8 candidate, subject to the normal rollout (VERSION "
+        "bump + contract sweep + security-test re-pin)."
         if winners
         else "NO WINNER — no rule cut false positives without losing recall. The over-eagerness "
         "is not cheaply prompt-reducible; stop churning, lean on HITL + the relative gate, and "
@@ -287,6 +294,7 @@ async def test_conservatism_probe() -> None:
         "rows": rows,
         "verdicts": verdicts,
         "decision": decision,
+        "primary_winner": primary_winner,
     }
     (out_dir / "conservatism.json").write_text(
         json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8"
@@ -359,6 +367,14 @@ def test_render_html_escapes_and_self_certifies() -> None:
     assert "&lt;b&gt;x&lt;/b&gt;.json" in out  # markup escaped
     assert "<b>x</b>" not in out  # raw markup never reaches the doc
     assert 'class="miss"' in out  # the recall miss highlights its row
+
+    # When a primary_winner is present it surfaces in its own element (the Codex hygiene
+    # fix — the WINNER(S) list alone left "which winner is the v8 candidate" ambiguous).
+    won = dict(artifact)
+    won["decision"] = "WINNER(S): ['clean-is-common']; primary winner: clean-is-common"
+    won["primary_winner"] = "clean-is-common"
+    out2 = _render_html(won)
+    assert "primary winner: <code>clean-is-common</code>" in out2
 
 
 _HTML_HEAD = """<!DOCTYPE html>
@@ -435,6 +451,11 @@ def _render_html(artifact: dict[str, object]) -> str:
             f"<td>{esc(kind)}</td><td>{esc(fp)}</td><td>{esc(recall)}</td></tr>\n"
         )
 
+    primary = artifact.get("primary_winner")
+    primary_html = (
+        f'<p class="muted">primary winner: <code>{esc(primary)}</code></p>\n' if primary else ""
+    )
+
     body = (
         "<h1>Broad-conservatism probe</h1>\n"
         '<p class="muted">'
@@ -443,7 +464,7 @@ def _render_html(artifact: dict[str, object]) -> str:
         f"models {esc(artifact['models'])} · reps {esc(artifact['reps'])}<br>"
         f"clean (any finding = FP): {esc(artifact['clean_fixtures'])}<br>"
         f"recall guards: {esc(artifact['tp_fixtures'])}</p>\n"
-        f'<div class="decision">{esc(artifact["decision"])}</div>\n'
+        f'<div class="decision">{esc(artifact["decision"])}</div>\n{primary_html}'
         "<h2>Per-variant verdict (win = fewer total FP than v7 AND zero recall miss)</h2>\n"
         "<table><thead><tr><th>variant</th><th>clean FP</th><th>tp extra FP</th>"
         "<th>total FP</th><th>recall misses</th><th>wins</th></tr></thead>\n"
