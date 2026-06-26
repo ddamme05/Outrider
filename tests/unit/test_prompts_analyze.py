@@ -213,17 +213,24 @@ def test_system_prompt_calibration_has_no_placeholders() -> None:
 
 
 def test_system_prompt_calibration_pins_clean_is_common_rule() -> None:
-    """The v8 calibration text is the conservatism-probe-validated `clean-is-common`
-    wording, shipped verbatim. Pin the load-bearing phrases directly (a VERSION bump
-    alone wouldn't catch a regression that softened the rule): dropping "empty findings
-    list is ... valid" or "do not manufacture" reopens the broad over-eagerness the
-    probe closed (28->5 FP). Asserted against the STABLE_PREFIX so a future refactor
+    """The v8 calibration is the conservatism-probe-validated `clean-is-common` wording,
+    with its one diff-scoped clause generalized to "the code under review" (the prefix is
+    reused by render_post_trace in the pass-1/post-trace prompt for non-diff files). Pin the
+    load-bearing phrases directly (a VERSION bump alone wouldn't catch a softened rule):
+    dropping "empty findings list is ... valid" or "do not manufacture" reopens the broad
+    over-eagerness the probe closed (28->5 FP). Asserted against STABLE_PREFIX so a refactor
     that drops CALIBRATION from the cached block also fails here."""
     text = " ".join(SYSTEM_PROMPT_STABLE_PREFIX.lower().split())
     assert "most code under review is fine" in text
     assert "an empty findings list is a valid, common, and correct result" in text
     assert "do not manufacture a finding" in text
     assert "return no findings" in text
+    # Path-neutral: the calibration must NOT use diff-scoped wording, because the SAME
+    # prefix is reused in the post-trace pass-1 prompt for whole files OUTSIDE the PR diff
+    # (the prompt there states "NOT part of the PR diff"). A regression to "in the diff"
+    # would contradict that path — guard it directly on the CALIBRATION constant.
+    assert "if nothing in the code under review is concretely wrong" in text
+    assert "diff" not in SYSTEM_PROMPT_CALIBRATION.lower()
 
 
 def test_system_prompt_exemplars_brace_markers_are_the_known_examples() -> None:
