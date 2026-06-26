@@ -11,13 +11,19 @@ over-flagging ACROSS finding types WITHOUT losing recall. The recall gate is the
 "don't manufacture" can easily become "miss subtle issues", so unlike the SSRF probe (one
 true-positive fixture) this guards recall with a DIVERSE set of real-finding fixtures.
 
-Metric, per variant, across both models and all reps:
-- FALSE POSITIVES — every finding on a CLEAN fixture (those expect none), plus every
-  non-expected finding on a TRUE-POSITIVE fixture (the over-flag also rides along there).
-- RECALL — each true-positive fixture's expected finding-type must STILL be present.
+Scoring goes through the STRUCTURAL grader (`grade()` / `ExpectedFinding`), not a finding-type
+presence check — so a same-type finding at the wrong file/line counts as a recall MISS (it
+matches no ground truth) and a duplicate/wrong-location same-type finding counts as a false
+positive (`GradeResult.extra`). A type-only check would falsely certify "zero recall loss".
 
-A variant WINS only if it cuts total false positives vs the v7 control AND loses ZERO
-recall (every expected type caught, both models, every rep). A winner is a candidate for an
+Metric, per variant, across both models and all reps:
+- FALSE POSITIVES — `GradeResult.n_false_positives` summed over all fixtures (clean fixtures
+  carry empty ground truth, so every finding there is an `extra`; true-positive fixtures
+  count any finding that didn't structurally match the expected one).
+- RECALL — a true-positive fixture's expected finding must be MATCHED (`not GradeResult.missed`).
+
+A variant WINS only if it cuts total false positives vs the v7 control AND loses ZERO recall
+(every expected finding matched, both models, every rep). A winner is a candidate for an
 `analyze-v8` bump ONLY after a 5-rep reconfirm; if nothing clears cleanly, the over-eagerness
 is not cheaply prompt-reducible — stop churning and move to the next roadmap item (GLM).
 
@@ -33,39 +39,57 @@ import os
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest import mock
 
 import pytest
 
 import outrider.prompts.analyze as analyze_prompt
-from outrider.policy import FindingType
+from outrider.policy import FindingType, lookup_severity
 
+from .grading import DEFAULT_LINE_WINDOW, ExpectedFinding, grade
 from .model_comparison import run_analyze_under_model, state_from_eval_fixture
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
-
-    from outrider.schemas.review_finding import ReviewFinding
+from .test_model_comparison import (
+    _GROUND_TRUTH_BY_FIXTURE,
+    _N_PLUS_ONE_FIXTURE,
+    _PYGOAT_AUTH_FIXTURE,
+    _PYGOAT_SQL_FIXTURE,
+)
 
 _REPS = 3  # first-pass; a winner is reconfirmed at 5 reps before any v8 bump
 
-# Clean fixtures — these expect NO findings; ANY finding is a false positive.
-_CLEAN_FIXTURES = (
-    "safe_refactor.json",
-    "ssrf_fixed_host_safe.json",
-    "safe_parameterized_query.json",
-)
 
-# True-positive fixtures — the RECALL GUARD. The expected finding-type must survive the
-# conservatism rule; a deliberately DIVERSE spread (injection / authz / ssrf / crypto /
-# perf) so a rule that suppresses one class of real finding is caught.
-_TP_FIXTURES: tuple[tuple[str, FindingType], ...] = (
-    ("pygoat_sql_injection.json", FindingType.SQL_INJECTION),
-    ("pygoat_auth_bypass.json", FindingType.AUTH_BYPASS),
-    ("ssrf_user_host.json", FindingType.SSRF),
-    ("weak_password_hash_md5.json", FindingType.WEAK_PASSWORD_HASH),
-    ("n_plus_one_query.json", FindingType.N_PLUS_ONE_QUERY),
+def _gt(path: str, line: int, ft: FindingType) -> tuple[ExpectedFinding, ...]:
+    """A one-finding ground truth; severity comes from policy (severity-set-by-policy)."""
+    return (
+        ExpectedFinding(
+            file_path=path,
+            line_start=line,
+            line_end=line,
+            finding_type=ft,
+            severity=lookup_severity(ft),
+        ),
+    )
+
+
+# (fixture filename, structural ground truth, kind). CLEAN fixtures carry empty ground
+# truth (any finding is a false positive). TRUE-POSITIVE fixtures are the RECALL GUARD — a
+# deliberately DIVERSE spread (injection / authz / ssrf / crypto / perf) so a rule that
+# suppresses one class of real finding is caught. The three shared TPs reuse the canonical
+# `_GROUND_TRUTH_BY_FIXTURE` registry (single source of truth with the scorecard).
+_FIXTURES: tuple[tuple[str, tuple[ExpectedFinding, ...], str], ...] = (
+    ("safe_refactor.json", (), "clean"),
+    ("ssrf_fixed_host_safe.json", (), "clean"),
+    ("safe_parameterized_query.json", (), "clean"),
+    ("pygoat_sql_injection.json", _GROUND_TRUTH_BY_FIXTURE[_PYGOAT_SQL_FIXTURE], "tp"),
+    ("pygoat_auth_bypass.json", _GROUND_TRUTH_BY_FIXTURE[_PYGOAT_AUTH_FIXTURE], "tp"),
+    ("n_plus_one_query.json", _GROUND_TRUTH_BY_FIXTURE[_N_PLUS_ONE_FIXTURE], "tp"),
+    ("ssrf_user_host.json", _gt("app/fetch.py", 7, FindingType.SSRF), "tp"),
+    (
+        "weak_password_hash_md5.json",
+        _gt("accounts/auth.py", 5, FindingType.WEAK_PASSWORD_HASH),
+        "tp",
+    ),
 )
 
 # --- candidate conservatism rules (appended to the live prefix at runtime) ----
@@ -98,10 +122,6 @@ _VARIANTS: tuple[tuple[str, str | None], ...] = (
 )
 
 
-def _finding_types(findings: Iterable[ReviewFinding]) -> list[FindingType]:
-    return [f.finding_type for f in findings]
-
-
 class _NoOpExchangePersister:
     """No-op `LLMExchangePersister`: the provider is fail-closed on `persister=None`; this
     probe reads findings off the analyze return, so the exchange persist is discarded."""
@@ -118,10 +138,9 @@ async def test_conservatism_probe() -> None:
     """OPT-IN real API spend — emits reports/probe/conservatism.{json,md}.
 
     Analyze-direct only (no run_review, no cost pass, no DB). For each variant × model ×
-    fixture × rep, run the real analyze node with the candidate rule appended, then score
-    false positives (clean + non-expected) and recall (expected type present). Report-only:
-    the assertion is only that the matrix COMPLETED; the verdict is the artifact + the
-    printed decision, read by a human.
+    fixture × rep, run the real analyze node with the candidate rule appended, then grade
+    structurally for false positives + recall. Report-only: the assertion is only that the
+    matrix COMPLETED; the verdict is the artifact + the printed decision, read by a human.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -131,9 +150,20 @@ async def test_conservatism_probe() -> None:
 
     from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
     from outrider.llm.config import ModelConfig  # noqa: PLC0415
+    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
 
     cfg = ModelConfig()
-    models = (cfg.analyze_model, "claude-haiku-4-5")  # Sonnet baseline + Haiku candidate
+    baseline_model, candidate_model = cfg.analyze_model, "claude-haiku-4-5"
+    # Guard the meaningless self-comparison (e.g. OUTRIDER_MODEL_ANALYZE_MODEL=Haiku) BEFORE
+    # building the provider, so the artifact never claims two-model coverage while proving
+    # nothing about Sonnet-vs-Haiku.
+    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
+        pytest.fail(
+            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
+            "same model — the probe would prove nothing about Sonnet-vs-Haiku. Unset "
+            "OUTRIDER_MODEL_ANALYZE_MODEL (or point it at Sonnet) for the probe."
+        )
+    models = (baseline_model, candidate_model)
     mock_dir = Path("tests/eval/fixtures/mock_github")
     live_prefix = analyze_prompt.SYSTEM_PROMPT_STABLE_PREFIX
 
@@ -147,41 +177,23 @@ async def test_conservatism_probe() -> None:
             prefix = live_prefix if rule is None else live_prefix + rule
             with mock.patch.object(analyze_prompt, "SYSTEM_PROMPT_STABLE_PREFIX", prefix):
                 for model in models:
-                    for fx in _CLEAN_FIXTURES:
+                    for fx, ground_truth, kind in _FIXTURES:
                         for rep in range(_REPS):
                             state = state_from_eval_fixture(mock_dir / fx)
                             found = await run_analyze_under_model(
                                 state, provider=provider, model=model
                             )
+                            g = grade(found, ground_truth, line_window=DEFAULT_LINE_WINDOW)
                             rows.append(
                                 {
                                     "variant": label,
                                     "model": model,
                                     "fixture": fx,
-                                    "kind": "clean",
+                                    "kind": kind,
                                     "rep": rep,
-                                    "fp": len(list(found)),
-                                    "recall_hit": True,  # n/a for clean; keeps the schema uniform
-                                }
-                            )
-                    for fx, expected in _TP_FIXTURES:
-                        for rep in range(_REPS):
-                            state = state_from_eval_fixture(mock_dir / fx)
-                            found = await run_analyze_under_model(
-                                state, provider=provider, model=model
-                            )
-                            types = _finding_types(found)
-                            rows.append(
-                                {
-                                    "variant": label,
-                                    "model": model,
-                                    "fixture": fx,
-                                    "kind": "tp",
-                                    "rep": rep,
-                                    "fp": sum(
-                                        1 for t in types if t != expected
-                                    ),  # extra over-flags
-                                    "recall_hit": expected in types,
+                                    "fp": g.n_false_positives,
+                                    # clean: vacuously True (no expected); tp: expected matched
+                                    "recall_hit": not g.missed,
                                 }
                             )
     finally:
@@ -226,8 +238,8 @@ async def test_conservatism_probe() -> None:
         "analyze_base_version": analyze_prompt.VERSION,
         "models": list(models),
         "reps": _REPS,
-        "clean_fixtures": list(_CLEAN_FIXTURES),
-        "tp_fixtures": {fx: t.value for fx, t in _TP_FIXTURES},
+        "clean_fixtures": [fx for fx, _gt_, kind in _FIXTURES if kind == "clean"],
+        "tp_fixtures": {fx: gt[0].finding_type.value for fx, gt, kind in _FIXTURES if kind == "tp"},
         "rows": rows,
         "verdicts": verdicts,
         "decision": decision,
@@ -241,22 +253,27 @@ async def test_conservatism_probe() -> None:
         f"\nCONSERVATISM PROBE — REPORT ONLY: wrote {out_dir}/conservatism.{{json,md}}\n{decision}"
     )
     # Report-only: assert only that the full matrix ran (a row per cell).
-    n_fixtures = len(_CLEAN_FIXTURES) + len(_TP_FIXTURES)
-    assert len(rows) == len(_VARIANTS) * len(models) * n_fixtures * _REPS
+    assert len(rows) == len(_VARIANTS) * len(models) * len(_FIXTURES) * _REPS
 
 
-def test_conservatism_variants_are_placeholder_free() -> None:
-    """Non-paid guard (runs in the normal eval suite): every candidate rule appends to the
-    live prefix without introducing `{`/`}` placeholder markers (the prefix invariant), and
-    every recall-guard fixture maps to a real FindingType. Fails before any paid run."""
+def test_conservatism_probe_fixtures_and_rules_are_valid() -> None:
+    """Non-paid guard (runs in the normal eval suite): every candidate rule appends without a
+    `{`/`}` placeholder marker (the prefix invariant); every true-positive fixture carries a
+    non-empty structural ground truth and every clean fixture an empty one. Fails before any
+    paid run if a recall guard or a rule is malformed."""
     for _label, rule in _VARIANTS:
         if rule is None:
             continue
         assert "{" not in rule and "}" not in rule, "a rule must not add placeholder markers"
         assert rule.strip(), "a rule must be non-empty"
-    for _fx, expected in _TP_FIXTURES:
-        assert isinstance(expected, FindingType)
-    assert len(set(_CLEAN_FIXTURES)) == len(_CLEAN_FIXTURES)  # no duplicate fixtures
+    for fx, gt, kind in _FIXTURES:
+        if kind == "tp":
+            assert gt, f"{fx} is a recall guard but has empty ground truth"
+            assert all(isinstance(e, ExpectedFinding) for e in gt)
+        else:
+            assert gt == (), f"{fx} is a clean fixture but carries ground truth"
+    fixtures = [fx for fx, _gt_, _kind in _FIXTURES]
+    assert len(set(fixtures)) == len(fixtures)  # no duplicate fixtures
 
 
 def _render_md(artifact: dict[str, object]) -> str:
