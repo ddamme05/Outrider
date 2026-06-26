@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter } from "react-router";
 import { beforeEach, expect, test } from "vitest";
 
 import { useTokenStore } from "../auth/token";
+import { useNav } from "../state/nav";
 import { server } from "../test/server";
 import { Topbar } from "./Topbar";
 
@@ -40,7 +42,10 @@ function mount(replayResponder?: Parameters<typeof http.get>[1]) {
   );
 }
 
-beforeEach(() => useTokenStore.setState({ token: "k" }));
+beforeEach(() => {
+  useTokenStore.setState({ token: "k" });
+  useNav.setState({ open: false });
+});
 
 test("renders the global replay-equivalence pill from /api/metrics/replay (30d)", async () => {
   mount();
@@ -63,4 +68,15 @@ test("no pill when no reviews are verdicted (total 0) — honest, never 0%", asy
   );
   expect(await screen.findByPlaceholderText("filter reviews…")).toBeInTheDocument();
   expect(screen.queryByText(/replay/)).toBeNull();
+});
+
+test("the hamburger toggles the mobile nav drawer open via the store", async () => {
+  mount();
+  const toggle = screen.getByLabelText("Open navigation");
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+  await userEvent.click(toggle);
+
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(useNav.getState().open).toBe(true);
 });

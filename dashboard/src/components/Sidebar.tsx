@@ -1,6 +1,7 @@
 import { NavLink } from "react-router";
 
 import { useFilters } from "../state/filters";
+import { useNav } from "../state/nav";
 
 // Signal sidebar: static org/brand mark (no org-switcher — single-tenant admin
 // scope, so a dropdown would imply org-switching we don't have), icon nav, and a
@@ -14,6 +15,10 @@ function navClass({ isActive }: { isActive: boolean }): string {
 export function Sidebar() {
   const includeEval = useFilters((s) => s.includeEval);
   const setIncludeEval = useFilters((s) => s.setIncludeEval);
+  // Close the mobile drawer after a nav tap (no-op on desktop). `setOpen` is a
+  // stable store action, so the selector reference is stable across renders.
+  const setNavOpen = useNav((s) => s.setOpen);
+  const closeNav = (): void => setNavOpen(false);
 
   return (
     <nav className="sidebar">
@@ -32,7 +37,7 @@ export function Sidebar() {
       <div className="sb-divider" aria-hidden="true" />
 
       <div className="nav-label">Workspace</div>
-      <NavLink to="/" end className={navClass}>
+      <NavLink to="/" end className={navClass} onClick={closeNav}>
         <svg className="ico" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" stroke="currentColor" strokeWidth="1.3" />
           <rect x="9" y="1.5" width="5.5" height="5.5" rx="1" stroke="currentColor" strokeWidth="1.3" />
@@ -41,7 +46,7 @@ export function Sidebar() {
         </svg>
         Overview
       </NavLink>
-      <NavLink to="/reviews" className={navClass}>
+      <NavLink to="/reviews" className={navClass} onClick={closeNav}>
         <svg className="ico" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M2 3.5h12M2 8h12M2 12.5h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
         </svg>
