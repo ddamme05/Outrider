@@ -97,7 +97,12 @@ version-keyed cost aggregation.
 # v2 : replaced claude-sonnet-4-7 with claude-sonnet-4-6
 #   (the 4-7 model didn't exist in the Anthropic SDK 0.100 catalog;
 #   canonical model name correction)
-PRICING_VERSION: Final[str] = "v2"
+# v3 : added zai-org/GLM-5.2 (Baseten) for the GLM provider mode. Existing
+#   Anthropic rates unchanged; the bump records v3 on new calls so GLM-era
+#   reviews replay under the GLM-aware table. Per-MTok figures confirmed against
+#   baseten.co/pricing (1.40 in / 0.26 cached-in / 4.40 out); the Baseten pricing
+#   page is not in the docs mirror, so re-verify live if the rate table changes.
+PRICING_VERSION: Final[str] = "v3"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(
         f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
@@ -162,6 +167,17 @@ RATE_TABLE: Final[Mapping[str, ModelPricing]] = MappingProxyType(
             cache_read_per_token=Decimal("0.0000001"),  # 0.10/MTok
             out_per_token=Decimal("0.000005"),  # 5.00/MTok
         ),
+        # GLM 5.2 on Baseten (PRICING_VERSION v3). Per-MTok figures confirmed
+        # against baseten.co/pricing (not in the docs mirror — re-verify live on a
+        # rate change). cache_write_per_token=0: Baseten automatic prefix caching
+        # has no cache-write/creation token class, and GLMProvider always sets
+        # cache_write_tokens=0, so the write term is inert in compute_cost_usd.
+        "zai-org/GLM-5.2": ModelPricing(
+            in_per_token=Decimal("0.0000014"),  # 1.40/MTok
+            cache_write_per_token=Decimal("0"),  # no Baseten cache-write class
+            cache_read_per_token=Decimal("0.00000026"),  # 0.26/MTok (cached input)
+            out_per_token=Decimal("0.0000044"),  # 4.40/MTok
+        ),
     }
 )
 
@@ -185,6 +201,13 @@ MIN_CACHEABLE_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "claude-sonnet-4-6": 1024,
         "claude-haiku-4-5": 4096,
+        # Baseten documents NO minimum-cacheable-token floor for GLM 5.2
+        # ("every request participates in caching automatically") — [MB-11],
+        # not in the docs mirror. 0 = no floor. GLMProvider does not consult
+        # this value (it emits no cache_control marker and has no silently-
+        # disabled-cache diagnostic), but the key-set parity test requires an
+        # entry for every RATE_TABLE model.
+        "zai-org/GLM-5.2": 0,
     }
 )
 

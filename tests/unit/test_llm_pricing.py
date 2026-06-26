@@ -69,17 +69,24 @@ def test_rates_non_negative(model_id: str, pricing: ModelPricing) -> None:
 
 
 @pytest.mark.parametrize("model_id,pricing", list(RATE_TABLE.items()))
-def test_anthropic_ratio_sanity_gates(model_id: str, pricing: ModelPricing) -> None:
-    """Anthropic's billable shape:
-      - cache-write > input rate (premium, ~1.25× per public pricing)
-      - cache-read < input rate (discount, ~0.10× per public pricing)
+def test_billable_ratio_sanity_gates(model_id: str, pricing: ModelPricing) -> None:
+    """Per-provider billable-shape sanity over every priced model:
+      - cache-read < input rate (cache read is always a discount)
       - output > input rate (output is more expensive than input)
-    Skips the check if all four rates are zero (free promo)."""
+      - cache-write > input rate (premium) ONLY for providers that HAVE a
+        cache-write token class. Anthropic charges cache_creation at a
+        ~1.25× premium; Baseten/GLM has NO cache-write class (automatic
+        prefix caching), so cache_write_per_token=0 and the premium check
+        is N/A — GLMProvider always sets cache_write_tokens=0, so the term
+        is inert in compute_cost_usd regardless.
+    Skips entirely if the input rate is zero (free-promo edge case)."""
     if pricing.in_per_token == 0:
         pytest.skip(f"{model_id!r}: zero rate (free promo) — ratio gates not applicable")
-    assert pricing.cache_write_per_token > pricing.in_per_token, (
-        f"{model_id!r}: cache_write_per_token should be > in_per_token (premium)"
-    )
+    if pricing.cache_write_per_token > 0:
+        assert pricing.cache_write_per_token > pricing.in_per_token, (
+            f"{model_id!r}: a provider with a cache-write class must price it "
+            f"above the input rate (premium)"
+        )
     assert pricing.cache_read_per_token < pricing.in_per_token, (
         f"{model_id!r}: cache_read_per_token should be < in_per_token (discount)"
     )
@@ -245,6 +252,7 @@ def _compute_rate_table_digest() -> str:
 EXPECTED_PRICING_DIGEST: dict[str, str] = {
     "v1": "a7c01b52255f790e",  # initial — claude-sonnet-4-7 + claude-haiku-4-5
     "v2": "761941ec53c83be1",  # round-20 — replaced claude-sonnet-4-7 with claude-sonnet-4-6
+    "v3": "f8b6ddaad3f69eec",  # added zai-org/GLM-5.2 (Baseten) — GLM provider mode
 }
 
 

@@ -1,0 +1,833 @@
+"""GLMProvider tests — mirror of AnthropicProvider coverage for the openai/
+Baseten wire shape.
+
+Strategy: mock the SDK at `AsyncCompletions.create` so no real HTTP fires.
+The focus is the GLM-specific deltas the wrapper must get right:
+  - §8a: `input_tokens = prompt_tokens - cached_tokens` (Baseten prompt_tokens
+    INCLUDES cached; Anthropic's input_tokens excludes it).
+  - usage null-guards: the `*_details` objects (and `usage` itself) can be None.
+  - request-side model keying: Baseten echoes `response.model=""`, so cost +
+    the audit event key on `request.model`, never `response.model`.
+  - no `cache_control` marker (automatic caching) → `cache_write_tokens=0`.
+  - `response_format` envelope (name + strict) vs Anthropic's output_config.
+  - openai → LLMProviderError mapping with the introspected isinstance order.
+"""
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
+
+import httpx
+import openai
+import pytest
+from openai.resources.chat.completions.completions import AsyncCompletions
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
+from openai.types.chat.chat_completion import Choice
+from openai.types.completion_usage import CompletionTokensDetails, PromptTokensDetails
+from pydantic import SecretStr
+
+from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+from outrider.llm.base import (
+    LLMAuthError,
+    LLMConflictError,
+    LLMInvalidRequestError,
+    LLMInvalidResponseError,
+    LLMMissingAPIKeyError,
+    LLMPersisterError,
+    LLMPersisterNotWiredError,
+    LLMPricingMissingError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMRequest,
+    LLMResponse,
+    LLMTimeoutError,
+    LLMUnexpectedContentBlocksError,
+    LLMUnknownError,
+    LLMUpstreamError,
+)
+from outrider.llm.glm_provider import BASETEN_BASE_URL, GLM_MODEL_ID, GLMProvider
+from outrider.llm.pricing import PRICING_VERSION
+
+# ---------------------------------------------------------------------------
+# Fixtures.
+# ---------------------------------------------------------------------------
+
+_UNSET = object()
+
+
+def _entry() -> ContextManifestEntry:
+    return ContextManifestEntry(
+        file_path="src/foo.py",
+        scope_unit_name="Foo.bar",
+        line_start=1,
+        line_end=10,
+        inclusion_reason="changed_scope",
+    )
+
+
+def _request(**overrides: Any) -> LLMRequest:
+    base: dict[str, Any] = {
+        "system_prompt": "You are a code reviewer.",
+        "user_prompt": "Review this PR.",
+        "model": GLM_MODEL_ID,
+        "max_tokens": 100,
+        "temperature": 0.0,
+        "review_id": uuid4(),
+        "node_id": "analyze",
+        "prompt_template_version": "analyze@1.0.0",
+        "degraded_mode": False,
+        "context_summary": (_entry(),),
+    }
+    base.update(overrides)
+    return LLMRequest(**base)
+
+
+def _usage(
+    *,
+    prompt_tokens: int = 100,
+    completion_tokens: int = 50,
+    cached: int | None = None,
+    reasoning: int | None = None,
+) -> CompletionUsage:
+    """Build a CompletionUsage. `cached`/`reasoning` None → the *_details
+    object is omitted (None), mirroring the GLM-5.2 non-streaming example
+    where both details objects are null."""
+    ptd = PromptTokensDetails(cached_tokens=cached) if cached is not None else None
+    ctd = CompletionTokensDetails(reasoning_tokens=reasoning) if reasoning is not None else None
+    return CompletionUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        prompt_tokens_details=ptd,
+        completion_tokens_details=ctd,
+    )
+
+
+def _chat_completion(
+    text: str = "model output",
+    *,
+    model: str = "",  # Baseten echoes empty string — the default reproduces that.
+    finish_reason: str = "stop",
+    usage: Any = _UNSET,
+    choices: list[Any] | None = None,
+    reasoning_content: str | None = None,
+) -> ChatCompletion:
+    """Realistic openai ChatCompletion. `model=""` by default reproduces
+    Baseten's empty-model echo."""
+    if choices is None:
+        msg_kwargs: dict[str, Any] = {"role": "assistant", "content": text}
+        if reasoning_content is not None:
+            msg_kwargs["reasoning_content"] = reasoning_content
+        choices = [
+            Choice(
+                index=0,
+                finish_reason=finish_reason,  # type: ignore[arg-type]
+                message=ChatCompletionMessage(**msg_kwargs),
+            )
+        ]
+    return ChatCompletion(
+        id="chatcmpl-test-001",
+        created=0,
+        model=model,
+        object="chat.completion",
+        choices=choices,
+        usage=_usage() if usage is _UNSET else usage,
+    )
+
+
+@dataclass
+class _RecordingPersister:
+    """Captures persist() args so tests can inspect what the provider built."""
+
+    raise_with: Exception | None = None
+    calls: list[tuple[LLMCallEvent, LLMRequest, LLMResponse]] = field(default_factory=list)
+
+    async def persist(
+        self,
+        event: LLMCallEvent,
+        request: LLMRequest,
+        response: LLMResponse,
+    ) -> None:
+        self.calls.append((event, request, response))
+        if self.raise_with is not None:
+            raise self.raise_with
+
+
+def _api_key() -> SecretStr:
+    return SecretStr("baseten-test-key")
+
+
+def _provider(persister: _RecordingPersister | None = None, **kwargs: Any) -> GLMProvider:
+    return GLMProvider(
+        api_key=_api_key(),
+        persister=persister if persister is not None else _RecordingPersister(),
+        **kwargs,
+    )
+
+
+def _fake_request() -> httpx.Request:
+    return httpx.Request("POST", "https://inference.baseten.co/v1/chat/completions")
+
+
+def _fake_response(status_code: int = 500) -> httpx.Response:
+    return httpx.Response(status_code=status_code, request=_fake_request())
+
+
+@contextmanager
+def _patched_create(
+    return_value: ChatCompletion | None = None,
+    raise_with: Exception | None = None,
+) -> Iterator[AsyncMock]:
+    """Patch `AsyncCompletions.create` to return `return_value` OR raise
+    `raise_with`. Yields the mock so tests can inspect call kwargs."""
+    if return_value is not None and raise_with is not None:
+        raise ValueError("specify either return_value OR raise_with")
+    mock = AsyncMock()
+    if raise_with is not None:
+        mock.side_effect = raise_with
+    else:
+        mock.return_value = return_value if return_value is not None else _chat_completion()
+    with patch.object(AsyncCompletions, "create", mock):
+        yield mock
+
+
+# ---------------------------------------------------------------------------
+# Constructor — eager validation.
+# ---------------------------------------------------------------------------
+
+
+def test_constructor_empty_api_key_raises_missing() -> None:
+    with pytest.raises(LLMMissingAPIKeyError):
+        GLMProvider(api_key=SecretStr(""), persister=_RecordingPersister())
+
+
+def test_constructor_unknown_model_raises_pricing_missing() -> None:
+    with pytest.raises(LLMPricingMissingError, match="zai-org/GLM-9.9"):
+        GLMProvider(
+            api_key=_api_key(),
+            persister=_RecordingPersister(),
+            models=("zai-org/GLM-9.9",),
+        )
+
+
+def test_constructor_non_glm_model_raises() -> None:
+    """A priced-but-non-GLM model (the Anthropic models are in RATE_TABLE) is
+    rejected at construction — pricing coverage is NOT 'servable by GLM'. Closes
+    the hole where a claude-* slug could be configured and then routed to Baseten
+    by the per-call guard."""
+    with pytest.raises(LLMInvalidRequestError, match="non-GLM"):
+        GLMProvider(
+            api_key=_api_key(),
+            persister=_RecordingPersister(),
+            models=("claude-sonnet-4-6",),
+        )
+
+
+def test_constructor_default_succeeds() -> None:
+    assert _provider() is not None
+
+
+def test_constructor_disables_sdk_retry_and_points_at_baseten() -> None:
+    provider = _provider()
+    assert provider._client.max_retries == 0  # noqa: SLF001
+    assert str(provider._client.base_url).rstrip("/") == BASETEN_BASE_URL  # noqa: SLF001
+    timeout = provider._client.timeout  # noqa: SLF001
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == 300.0
+    assert timeout.connect == 5.0
+
+
+def test_constructor_repr_does_not_leak_api_key() -> None:
+    secret = "baseten-VERY-SECRET-xyz-987"  # noqa: S105 — test fixture, not a real secret
+    provider = GLMProvider(api_key=SecretStr(secret), persister=_RecordingPersister())
+    assert secret not in repr(provider)
+
+
+def test_constructor_emits_egress_notice(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="outrider.llm.privacy_notice")
+    _provider()
+    notices = [r for r in caplog.records if r.name == "outrider.llm.privacy_notice"]
+    assert any(getattr(r, "egress_destination", None) == "inference.baseten.co" for r in notices)
+
+
+# ---------------------------------------------------------------------------
+# complete() — fail-closed pre-call.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_persister_none_fails_closed_before_sdk() -> None:
+    provider = GLMProvider(api_key=_api_key(), persister=None)
+    with _patched_create() as mock, pytest.raises(LLMPersisterNotWiredError):
+        await provider.complete(_request())
+    assert mock.call_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_model",
+    [
+        "zai-org/GLM-9.9",  # unpriced AND unconfigured
+        "claude-sonnet-4-6",  # PRICED (in RATE_TABLE) but not a GLM model this provider serves
+    ],
+)
+async def test_unconfigured_request_model_refused_before_paid_sdk_call(bad_model: str) -> None:
+    """A request.model not in the provider's configured set is refused BEFORE the
+    paid SDK call — no billed call, no orphan cost. Being in RATE_TABLE is NOT
+    enough: the Anthropic models are priced too, so a claude-* slug must not reach
+    the Baseten endpoint."""
+    provider = _provider()  # configured for (GLM_MODEL_ID,)
+    with (
+        _patched_create() as mock,
+        pytest.raises(LLMInvalidRequestError, match="configured model set"),
+    ):
+        await provider.complete(_request(model=bad_model))
+    assert mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# complete() — request translation (openai envelope).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_messages_are_system_then_user() -> None:
+    provider = _provider()
+    with _patched_create() as mock:
+        await provider.complete(_request(system_prompt="SYS", user_prompt="USR"))
+    messages = mock.call_args.kwargs["messages"]
+    assert messages == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "USR"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_request_passes_model_max_tokens_temperature() -> None:
+    provider = _provider()
+    with _patched_create() as mock:
+        await provider.complete(_request(max_tokens=77, temperature=0.3))
+    kwargs = mock.call_args.kwargs
+    assert kwargs["model"] == GLM_MODEL_ID
+    assert kwargs["max_tokens"] == 77
+    assert kwargs["temperature"] == 0.3
+
+
+@pytest.mark.asyncio
+async def test_reasoning_off_by_default_via_extra_body() -> None:
+    provider = _provider()
+    with _patched_create() as mock:
+        await provider.complete(_request())
+    extra_body = mock.call_args.kwargs["extra_body"]
+    assert extra_body == {"chat_template_args": {"enable_thinking": False}}
+
+
+@pytest.mark.asyncio
+async def test_enable_thinking_flag_flows_to_extra_body() -> None:
+    provider = _provider(enable_thinking=True)
+    with _patched_create() as mock:
+        await provider.complete(_request())
+    extra_body = mock.call_args.kwargs["extra_body"]
+    assert extra_body["chat_template_args"]["enable_thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_cache_control_marker_and_stream_omitted() -> None:
+    """GLM uses automatic prefix caching — no cache_control anywhere — and
+    the non-streaming path omits `stream`."""
+    provider = _provider()
+    with _patched_create() as mock:
+        await provider.complete(_request(cache_control=True))
+    kwargs = mock.call_args.kwargs
+    assert "cache_control" not in kwargs
+    assert "stream" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_response_schema_translates_to_response_format() -> None:
+    import json as _json
+
+    provider = _provider()
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    with _patched_create() as mock:
+        await provider.complete(
+            _request(response_schema_json=_json.dumps(schema, separators=(",", ":")))
+        )
+    rf = mock.call_args.kwargs["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "outrider_analyze"
+    assert rf["json_schema"]["strict"] is True
+    assert rf["json_schema"]["schema"] == schema
+
+
+@pytest.mark.asyncio
+async def test_no_response_schema_omits_response_format() -> None:
+    provider = _provider()
+    with _patched_create() as mock:
+        await provider.complete(_request())
+    assert "response_format" not in mock.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# complete() — §8a usage normalization + null guards.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cached_subtracted_from_prompt_tokens() -> None:
+    """§8a: input_tokens = prompt_tokens - cached; cache_read = cached;
+    cache_write = 0; output = completion_tokens."""
+    provider = _provider()
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=200)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        resp = await provider.complete(_request())
+    assert resp.input_tokens == 800
+    assert resp.cache_read_tokens == 200
+    assert resp.cache_write_tokens == 0
+    assert resp.output_tokens == 500
+
+
+@pytest.mark.asyncio
+async def test_prompt_tokens_details_none_means_zero_cached() -> None:
+    """The whole prompt_tokens_details object can be null (GLM-5.2 example
+    shows it). cached → 0, input_tokens == prompt_tokens."""
+    provider = _provider()
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=None)
+    assert usage.prompt_tokens_details is None
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        resp = await provider.complete(_request())
+    assert resp.input_tokens == 1000
+    assert resp.cache_read_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_cached_greater_than_prompt_caps_cache_read_to_prompt() -> None:
+    """Defensive: a malformed cached > prompt is capped at prompt_tokens, so
+    input_tokens stays 0 AND cache_read never exceeds the prompt — input +
+    cache_read == prompt_tokens (self-consistent audited counts, no over-bill)."""
+    provider = _provider()
+    usage = _usage(prompt_tokens=100, completion_tokens=10, cached=250)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        resp = await provider.complete(_request())
+    assert resp.input_tokens == 0
+    assert resp.cache_read_tokens == 100  # capped at prompt_tokens, not 250
+    assert resp.input_tokens + resp.cache_read_tokens == 100
+
+
+@pytest.mark.asyncio
+async def test_usage_none_raises_invalid_response() -> None:
+    provider = _provider()
+    with (
+        _patched_create(return_value=_chat_completion(usage=None)),
+        pytest.raises(LLMInvalidResponseError),
+    ):
+        await provider.complete(_request())
+
+
+# ---------------------------------------------------------------------------
+# complete() — request-side model keying (response.model is "").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_response_model_empty_keys_on_request_model() -> None:
+    """Baseten echoes response.model="" — LLMResponse.model, cost, and the
+    audit event must all key on request.model (the GLM slug), not the empty
+    echo."""
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    with _patched_create(return_value=_chat_completion(model="")):
+        resp = await provider.complete(_request())
+    assert resp.model == GLM_MODEL_ID
+    event, _, _ = persister.calls[0]
+    assert event.model == GLM_MODEL_ID
+    assert event.cost_usd > 0  # cost computed from the request-keyed rate
+    assert event.pricing_version == PRICING_VERSION
+
+
+# ---------------------------------------------------------------------------
+# complete() — content extraction + reasoning strip.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_content_degrades_not_raises() -> None:
+    """Empty content (truncation) is coalesced to "" and returned with the
+    normalized finish_reason — the downstream parser degrades that file (matching
+    AnthropicProvider's empty-block path) rather than aborting the whole review
+    with a non-retryable error. "length"→"max_tokens" is what lets the analyze
+    truncation diagnostic fire downstream."""
+    provider = _provider()
+    with _patched_create(return_value=_chat_completion(text="", finish_reason="length")):
+        resp = await provider.complete(_request())
+    assert resp.text == ""
+    assert resp.finish_reason == "max_tokens"
+
+
+@pytest.mark.asyncio
+async def test_none_content_degrades_not_raises() -> None:
+    """message.content=None (a structured refusal / content_filter) coalesces to
+    "" too — degrade, never raise."""
+    provider = _provider()
+    none_choice = [
+        Choice(
+            index=0,
+            finish_reason="content_filter",
+            message=ChatCompletionMessage(role="assistant", content=None),
+        )
+    ]
+    with _patched_create(return_value=_chat_completion(choices=none_choice)):
+        resp = await provider.complete(_request())
+    assert resp.text == ""
+    assert resp.finish_reason == "refusal"
+
+
+@pytest.mark.asyncio
+async def test_multiple_choices_raises_unexpected_blocks() -> None:
+    provider = _provider()
+    two = [
+        Choice(
+            index=0,
+            finish_reason="stop",
+            message=ChatCompletionMessage(role="assistant", content="a"),
+        ),
+        Choice(
+            index=1,
+            finish_reason="stop",
+            message=ChatCompletionMessage(role="assistant", content="b"),
+        ),
+    ]
+    with (
+        _patched_create(return_value=_chat_completion(choices=two)),
+        pytest.raises(LLMUnexpectedContentBlocksError),
+    ):
+        await provider.complete(_request())
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_is_stripped_from_text() -> None:
+    """When reasoning is on, only message.content becomes LLMResponse.text;
+    message.reasoning_content is never concatenated in."""
+    provider = _provider()
+    cc = _chat_completion(text="final answer", reasoning_content="chain of thought")
+    with _patched_create(return_value=cc):
+        resp = await provider.complete(_request())
+    assert resp.text == "final answer"
+    assert "chain of thought" not in resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire_value,canonical",
+    [
+        ("length", "max_tokens"),  # load-bearing: the truncation sentinel
+        ("stop", "end_turn"),
+        ("tool_calls", "tool_use"),
+        ("content_filter", "refusal"),
+    ],
+)
+async def test_finish_reason_normalized_to_canonical_vocab(wire_value: str, canonical: str) -> None:
+    """The wrapper normalizes openai's finish_reason to Outrider's canonical
+    (Anthropic) vocabulary so the downstream truncation guard + analyze
+    cache-write gate (which key on "max_tokens") fire provider-neutrally.
+    openai "length" MUST become "max_tokens", or a truncated GLM analyze
+    response is silently cached and served incomplete."""
+    provider = _provider()
+    with _patched_create(return_value=_chat_completion(finish_reason=wire_value)):
+        resp = await provider.complete(_request())
+    assert resp.finish_reason == canonical
+
+
+def test_normalize_finish_reason_unit() -> None:
+    """Direct unit on the normalizer: mapping, None/empty → 'unknown', and an
+    unmapped (future) value passes through unmasked."""
+    from outrider.llm.glm_provider import _normalize_finish_reason
+
+    assert _normalize_finish_reason("length") == "max_tokens"
+    assert _normalize_finish_reason("novel_future_value") == "novel_future_value"
+    assert _normalize_finish_reason(None) == "unknown"
+    assert _normalize_finish_reason("") == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# complete() — openai exception mapping (isinstance order verified vs SDK MRO).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sdk_exc_factory,expected",
+    [
+        (lambda: openai.APITimeoutError(request=_fake_request()), LLMTimeoutError),
+        (lambda: openai.APIConnectionError(request=_fake_request()), LLMUpstreamError),
+        (
+            lambda: openai.RateLimitError("rl", response=_fake_response(429), body=None),
+            LLMRateLimitError,
+        ),
+        (
+            lambda: openai.AuthenticationError("auth", response=_fake_response(401), body=None),
+            LLMAuthError,
+        ),
+        (
+            lambda: openai.PermissionDeniedError("perm", response=_fake_response(403), body=None),
+            LLMAuthError,
+        ),
+        (
+            lambda: openai.ConflictError("conflict", response=_fake_response(409), body=None),
+            LLMConflictError,
+        ),
+        (
+            lambda: openai.BadRequestError("bad", response=_fake_response(400), body=None),
+            LLMInvalidRequestError,
+        ),
+        (
+            lambda: openai.UnprocessableEntityError("unp", response=_fake_response(422), body=None),
+            LLMInvalidRequestError,
+        ),
+        (
+            lambda: openai.NotFoundError("nf", response=_fake_response(404), body=None),
+            LLMInvalidRequestError,
+        ),
+        (
+            lambda: openai.InternalServerError("5xx", response=_fake_response(500), body=None),
+            LLMUpstreamError,
+        ),
+        (
+            lambda: openai.APIResponseValidationError(response=_fake_response(200), body=None),
+            LLMInvalidResponseError,
+        ),
+    ],
+)
+async def test_openai_exception_translation(
+    sdk_exc_factory: Any, expected: type[LLMProviderError]
+) -> None:
+    provider = _provider()
+    with _patched_create(raise_with=sdk_exc_factory()), pytest.raises(expected):
+        await provider.complete(_request())
+
+
+@pytest.mark.asyncio
+async def test_timeout_wins_over_connection_error() -> None:
+    """APITimeoutError IS a subclass of APIConnectionError (openai==2.44.0);
+    the ladder must test it first → LLMTimeoutError, not LLMUpstreamError."""
+    assert issubclass(openai.APITimeoutError, openai.APIConnectionError)
+    provider = _provider()
+    with (
+        _patched_create(raise_with=openai.APITimeoutError(request=_fake_request())),
+        pytest.raises(LLMTimeoutError),
+    ):
+        await provider.complete(_request())
+
+
+@pytest.mark.asyncio
+async def test_unmapped_openai_error_translates_to_unknown() -> None:
+    provider = _provider()
+
+    class _UnknownAPIError(openai.APIError):
+        def __init__(self) -> None:
+            super().__init__("weird new error", request=_fake_request(), body=None)
+
+    with _patched_create(raise_with=_UnknownAPIError()), pytest.raises(LLMUnknownError):
+        await provider.complete(_request())
+
+
+@pytest.mark.asyncio
+async def test_sdk_error_body_not_leaked_into_wrapper() -> None:
+    """openai error str() renders the response body, which can echo prompt
+    fragments. The wrapper must not carry it; `from None` drops the cause."""
+    provider = _provider()
+    sentinel = "secret_prompt_fragment_zzz9876"  # noqa: S105 — test fixture
+    sdk_exc = openai.RateLimitError(sentinel, response=_fake_response(429), body=None)
+    assert sentinel in str(sdk_exc)
+    with _patched_create(raise_with=sdk_exc), pytest.raises(LLMRateLimitError) as exc_info:
+        await provider.complete(_request())
+    wrapper = exc_info.value
+    assert sentinel not in str(wrapper)
+    assert sentinel not in repr(wrapper)
+    for arg in wrapper.args:
+        assert sentinel not in str(arg)
+    assert wrapper.__cause__ is None
+    assert wrapper.__suppress_context__ is True
+
+
+# ---------------------------------------------------------------------------
+# complete() — persister contract.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persister_receives_complete_event() -> None:
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=200)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        await provider.complete(_request())
+    assert len(persister.calls) == 1
+    event, request, response = persister.calls[0]
+    assert event.cost_usd > 0
+    assert event.input_tokens == 800
+    assert event.output_tokens == 500
+    assert event.cached_tokens == 200
+    assert event.cache_hit is True
+    assert event.model == GLM_MODEL_ID
+
+
+@pytest.mark.asyncio
+async def test_no_cache_hit_when_cached_zero() -> None:
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=None)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        await provider.complete(_request())
+    event, _, _ = persister.calls[0]
+    assert event.cache_hit is False
+    assert event.cached_tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# aclose() — idempotency.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aclose_is_idempotent() -> None:
+    provider = _provider()
+    await provider.aclose()
+    await provider.aclose()  # second call is a no-op via the _closed guard
+    assert provider._closed is True  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_complete_after_aclose_raises() -> None:
+    provider = _provider()
+    await provider.aclose()
+    with pytest.raises(LLMUnknownError, match="closed"):
+        await provider.complete(_request())
+
+
+# ---------------------------------------------------------------------------
+# complete() — persister-failure handling (metadata-only discipline).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persister_failure_wraps_as_persister_error() -> None:
+    """Post-SDK persistence failure → LLMPersisterError (terminal); the SDK
+    call had already succeeded."""
+    persister = _RecordingPersister(raise_with=RuntimeError("DB blip"))
+    provider = _provider(persister)
+    with _patched_create(), pytest.raises(LLMPersisterError):
+        await provider.complete(_request())
+    assert len(persister.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_persister_unknown_exception_drops_cause_chain() -> None:
+    """An unknown persister exception type is wrapped with `from None` and
+    rendered as `<TypeName>` only — no content-bearing repr leaks past the
+    wrapper, and the cause chain (incl. the rendered traceback) is dropped."""
+    import traceback
+
+    secret = "SECRET_LEAK_SENTINEL_xyz"  # noqa: S105 — test fixture
+    persister = _RecordingPersister(raise_with=ValueError(secret))
+    provider = _provider(persister)
+    with _patched_create(), pytest.raises(LLMPersisterError) as exc_info:
+        await provider.complete(_request())
+    exc = exc_info.value
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+    assert "<ValueError>" in str(exc)
+    assert secret not in str(exc)
+    assert secret not in repr(exc)
+    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert secret not in rendered
+
+
+@pytest.mark.asyncio
+async def test_persister_metadata_only_exception_preserves_cause_chain() -> None:
+    """A METADATA_ONLY_EXCEPTION_TYPES member preserves the cause chain via
+    `from exc` (the chain is metadata-only by contract) and renders str(exc)."""
+    from outrider.audit.persister import AuditPersisterIdempotencyConflict, FieldDigest
+
+    conflict = AuditPersisterIdempotencyConflict(
+        event_id=uuid4(),
+        mismatched_fields=("cost_usd",),
+        field_digests={"cost_usd": FieldDigest("a" * 64, "b" * 64, 10, 12)},
+    )
+    persister = _RecordingPersister(raise_with=conflict)
+    provider = _provider(persister)
+    with _patched_create(), pytest.raises(LLMPersisterError) as exc_info:
+        await provider.complete(_request())
+    exc = exc_info.value
+    assert exc.__cause__ is conflict
+    assert "cost_usd" in str(exc)
+
+
+# ---------------------------------------------------------------------------
+# complete() — non-openai exception + close-race (best-effort _closed guard).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_openai_exception_translates_to_unknown() -> None:
+    """A non-openai exception leaking from create() (e.g. an httpx error)
+    translates to LLMUnknownError with the type name only — no args leak —
+    and the cause chain is dropped."""
+    provider = _provider()
+    boom = RuntimeError("httpx_internal_url_secret")
+    with _patched_create(raise_with=boom), pytest.raises(LLMUnknownError) as exc_info:
+        await provider.complete(_request())
+    exc = exc_info.value
+    assert "RuntimeError" in str(exc)
+    assert "httpx_internal_url_secret" not in str(exc)
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+
+
+@pytest.mark.asyncio
+async def test_close_race_translates_to_unknown_with_aclose_message() -> None:
+    """If aclose() flips _closed between the Step-0 check and the SDK call,
+    the non-openai branch names the close-race specifically."""
+    provider = _provider()
+
+    def _flip_then_raise(*_args: object, **_kwargs: object) -> None:
+        provider._closed = True  # noqa: SLF001
+        raise RuntimeError("client has been closed")
+
+    mock = AsyncMock(side_effect=_flip_then_raise)
+    with (
+        patch.object(AsyncCompletions, "create", mock),
+        pytest.raises(LLMUnknownError, match="raced with aclose"),
+    ):
+        await provider.complete(_request())
+
+
+# ---------------------------------------------------------------------------
+# complete() — reasoning tokens are never double-counted into output/cost.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reasoning_tokens_not_added_to_output_or_cost() -> None:
+    """reasoning_tokens are a SUBSET of completion_tokens — output_tokens and
+    cost must equal the completion-token count, never completion + reasoning."""
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, reasoning=120)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        resp = await provider.complete(_request())
+    assert resp.output_tokens == 500  # NOT 620
+    event, _, _ = persister.calls[0]
+    assert event.output_tokens == 500
+    from outrider.llm.pricing import RATE_TABLE
+
+    glm = RATE_TABLE[GLM_MODEL_ID]
+    # input=1000 (cached=0), output=500; cost must use output=500, not 620.
+    expected = float(glm.in_per_token * 1000 + glm.out_per_token * 500)
+    assert abs(event.cost_usd - expected) < 1e-12
