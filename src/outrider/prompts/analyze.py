@@ -57,7 +57,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v6"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v7"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
@@ -80,6 +80,11 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
+# Bumped 2026-06-25 (was "analyze-v6") to adopt the destination-control `ssrf`
+# rule PLUS a worked DO/DON'T example. A prompt-reachability probe showed the v6
+# fixed-host over-flag was Haiku-specific (Haiku 5/5 FP, Sonnet 0/5) and that this
+# rule+example wording drives it to 0/10 FP across both models with zero real-SSRF
+# recall loss; production VERSION moved only after that reconfirm pass was clean.
 # Bumped 2026-06-25 (was "analyze-v5") to tighten the `ssrf` finding-type
 # definition: SSRF turns on control of the request DESTINATION (host / port /
 # origin / scheme), so a user value confined to the PATH of a hardcoded host is
@@ -103,7 +108,7 @@ if TYPE_CHECKING:
 # `render_post_trace`, and the pass-1 output-schema override. Each bump keeps
 # replay attribution exact — a prompt row replays against the contract it was
 # emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v6"
+VERSION: Final[str] = "analyze-v7"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -158,25 +163,24 @@ condition holds, because severity is keyed on the exact type:
 - `insecure_randomness` — a non-cryptographic RNG (`random.*`,
   `Math.random`) used for a SECURITY value: token, password, session id,
   nonce, salt, reset code. Not for non-security sampling/jitter.
-- `ssrf` — a server-side request whose DESTINATION is attacker-influenced:
-  the host, port, origin, or scheme (WHERE the request goes, and to which
-  service) comes from user input — a fetch/proxy/webhook to a user-supplied
-  address. NOT ssrf when the user value is confined to the PATH — or to an
-  ordinary query parameter that does not select a downstream target — of a
-  hardcoded host it cannot escape (e.g.
-  `requests.get("https://api.example.com/users/" + user_id)`, or a `?q=`
-  search term on a fixed host). It is STILL
-  ssrf whenever the value can reach the host, port, or scheme by ANY means
-  (not only these): a leading `//` (scheme-relative) or absolute URL; an `@`,
-  a backslash, or an encoded separator (`%2F`, `%40`); an absolute or `//`
-  value resolved via `urljoin` / `URL()`; a user-chosen port or scheme; a host
-  picked by a user-supplied key; or a fixed host that is itself a proxy /
-  fetcher using the value as its target (`?url=`, `?target=`). When unsure
-  whether a value can shift the destination, flag ssrf. Check the metadata
-  escalation BEFORE the safe case. Use `ssrf_metadata` INSTEAD when the
-  reachable target can be a cloud metadata / link-local endpoint
-  (`169.254.169.254`, `metadata.google.internal`) or an internal control
-  plane — credential theft raises the stakes.
+- `ssrf` — flag ONLY when the user can influence the request's scheme, host, or
+  port. A user value appended as a PATH segment or an ordinary query parameter
+  of a hardcoded `scheme://host` literal is NOT ssrf — the destination is fixed
+  and the value cannot escape it — EVEN when the value is unvalidated.
+  DO flag (user controls the host): `requests.get(request.GET["url"])`;
+  `requests.get("http://" + user_host + "/x")`; a `?url=`/`?target=` proxy.
+  Do NOT flag (host is a hardcoded literal):
+  `requests.get("https://api.example.com/users/" + user_id)`;
+  `requests.get("https://api.example.com/search?q=" + term)`.
+  It IS still ssrf whenever the value can reach the host/port/scheme by ANY means:
+  a leading `//` or absolute URL, an `@`, a backslash, an encoded `%2F`/`%40`, a
+  `urljoin`/`URL()` absolute value, a user-chosen port/scheme, a host selected by
+  a user-supplied key, or a fixed host that is itself a proxy/fetcher using the
+  value as its target (`?url=`, `?target=`). When genuinely unsure whether the
+  value can shift the host, flag ssrf. Check the metadata escalation BEFORE the
+  safe case. Use `ssrf_metadata` INSTEAD when the reachable target can be a cloud
+  metadata / link-local endpoint (`169.254.169.254`, `metadata.google.internal`)
+  or an internal control plane.
 - `open_redirect` — a redirect target taken from user input with no
   allowlist. Use `open_redirect_authed` INSTEAD when the redirect carries
   or follows authentication (an OAuth/SSO `redirect_uri`, a post-login

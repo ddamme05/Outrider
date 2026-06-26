@@ -546,7 +546,7 @@ def _provenance(*, git_dirty: bool = False) -> ScorecardProvenance:
     return ScorecardProvenance(
         git_sha="6d4caee",
         git_dirty=git_dirty,
-        prompt_template_version="analyze-v6",
+        prompt_template_version="analyze-vtest",  # fixed sample; decoupled from live VERSION
         scenario_set=("pygoat_sql_injection", "ssrf_user_host"),
         baseline_model=_BASELINE_MODEL,
         candidate_models=(_CANDIDATE_MODEL,),
@@ -559,7 +559,7 @@ def test_to_json_includes_provenance() -> None:
     prov = json.loads(card.to_json())["provenance"]
     assert prov["git_sha"] == "6d4caee"
     assert prov["git_dirty"] is False
-    assert prov["prompt_template_version"] == "analyze-v6"
+    assert prov["prompt_template_version"] == "analyze-vtest"
     assert prov["scenario_set"] == ["pygoat_sql_injection", "ssrf_user_host"]
     assert prov["candidate_models"] == [_CANDIDATE_MODEL]
 
@@ -574,7 +574,7 @@ def test_to_html_renders_provenance() -> None:
     rendered = card.to_html()
     assert "Provenance" in rendered
     assert "6d4caee" in rendered
-    assert "analyze-v6" in rendered
+    assert "analyze-vtest" in rendered
     assert "dirty tree" in rendered  # git_dirty=True surfaces the marker
 
 

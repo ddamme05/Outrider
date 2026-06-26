@@ -43,32 +43,36 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v6() -> None:
+def test_version_is_named_analyze_v7() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v6" name so future renames break the test and force a
+    "analyze-v7" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v6 bump tightened the `ssrf` definition (destination-control: a value
-    confined to the path or an ordinary query of a fixed host is not ssrf);
-    v5 added the dual-mode security taxonomy vocabulary + guidance
-    (DECISIONS.md#053); v4 landed the
+    The v7 bump adopted the destination-control `ssrf` rule + a worked DO/DON'T
+    example (an eval probe showed the v6 fixed-host over-flag was Haiku-reachable
+    and that this wording drives it to zero with no recall loss); v6 tightened the
+    `ssrf` definition to destination-control; v5 added the dual-mode security
+    taxonomy vocabulary + guidance (DECISIONS.md#053); v4 landed the
     cache-packing repartition (per-file context → user_prompt; exemplars block
     in the cached prefix); v3 added the sql_injection parameterized-query
     false-positive guidance (DECISIONS.md#041); v2 landed the trace-node
     pass-1 arc."""
-    assert VERSION == "analyze-v6"
+    assert VERSION == "analyze-v7"
 
 
 def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
-    """The `ssrf` definition (analyze-v6) must keep BOTH halves of the
+    """The `ssrf` definition (analyze-v7) must keep BOTH halves of the
     destination-control framing, pinned directly because the wording is
-    security-sensitive (a VERSION bump alone wouldn't catch a regression):
+    security-sensitive (a VERSION bump alone wouldn't catch a regression). v7
+    adopts the destination-control RULE plus a worked DO/DON'T example — the
+    eval-probe-validated wording that drove the Haiku fixed-host over-flag to
+    zero (0/10 FP, both models) with no real-SSRF recall loss:
 
-    (1) the safe case — a value confined to the PATH, or to an ordinary query
-        parameter that cannot select a downstream target, of a fixed host is
-        NOT ssrf. Dropping the path half reopens the shared Sonnet+Haiku
-        over-flag the scorecard surfaced; dropping the ordinary-query half
-        re-flags benign `?q=` params (the over-correction Codex caught).
+    (1) the safe case — a value appended as a PATH segment, or an ordinary query
+        parameter, of a hardcoded host is NOT ssrf, EVEN when unvalidated.
+        Dropping the path half reopens the Haiku fixed-host over-flag; dropping
+        the ordinary-query half re-flags benign `?q=` params; dropping the
+        "even when unvalidated" clause reopens the over-flag the probe closed.
     (2) the PRINCIPLED authority rule — the value reaching the host/port/scheme
         by ANY means is STILL ssrf, with a when-in-doubt-flag default. This is
         the red-team-hardened replacement for an enumerated token checklist: a
@@ -78,16 +82,18 @@ def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
     """
     # whitespace-normalized so phrases wrapped across lines match as substrings.
     text = " ".join(SYSTEM_PROMPT_INVARIANTS.lower().split())
-    # (1) safe case = PATH or an ordinary (non-target) query on a fixed host —
-    #     closes the path over-flag without re-flagging benign query params.
-    assert "confined to the path" in text
-    assert "ordinary query parameter that does not select a downstream target" in text
-    assert "using the value as its target" in text  # but proxy ?url= IS still ssrf
+    # (1) destination-control rule lead + the safe case (path/query of a fixed host)
+    assert "scheme, host, or port" in text  # flag ONLY when the user controls these
+    assert "appended as a path segment" in text  # the path-safe half
+    assert "ordinary query parameter" in text  # the query-safe half
+    assert "even when the value is unvalidated" in text  # v7: lack of validation != ssrf
+    assert "do not flag" in text  # the worked DON'T example Haiku responds to
+    assert "using the value as its target" in text  # but a proxy ?url= IS still ssrf
     # (2) principled, non-exhaustive authority rule — preserves real-SSRF recall
     assert "still ssrf whenever the value can reach" in text
     assert "by any means" in text
-    assert "when unsure" in text
-    assert "the host, port, origin, or scheme" in text  # port now in scope
+    assert "when genuinely unsure" in text
+    assert "host/port/scheme" in text  # host, port, scheme all in scope
     assert "before the safe case" in text  # metadata escalation evaluated first
 
 
