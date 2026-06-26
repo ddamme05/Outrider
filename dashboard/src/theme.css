@@ -2765,3 +2765,181 @@ tr.review-row:hover {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+
+/* ============================================================
+ * Mobile / narrow-viewport layer (≤768px).
+ *
+ * Desktop chrome is a fixed 248px sidebar + content grid. Below this width the
+ * sidebar lifts out of the grid into an off-canvas drawer (the Topbar hamburger
+ * toggles `.app.nav-open`; a scrim tap / Escape / nav-link tap closes it), the
+ * topbar wraps the search to a full-width second row, the gutters tighten, and
+ * the dense data grids collapse their fixed tracks or scroll as a unit. Purely
+ * additive — every rule is gated behind the breakpoint, so the desktop layout
+ * is unchanged.
+ * ============================================================ */
+
+/* The mobile-only chrome is hidden on desktop. Kept OUT of the grid flow
+ * (display:none) so .app's two-column desktop layout is never perturbed. */
+.nav-toggle {
+  display: none;
+}
+.nav-scrim {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  /* Shell collapses to a single column; the sidebar becomes a drawer. */
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 40;
+    width: min(286px, 84vw);
+    height: 100vh;
+    height: 100dvh;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    will-change: transform;
+  }
+  .app.nav-open .sidebar {
+    transform: translateX(0);
+    box-shadow: var(--shadow-pop);
+  }
+
+  /* Full-viewport scrim behind the open drawer (a real <button> so it's a
+     keyboard-reachable close target). Transparent + pointer-events:none when
+     closed so it never intercepts taps on the page beneath. */
+  .nav-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: color-mix(in srgb, #000 56%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    cursor: default;
+    transition: opacity 0.22s ease;
+  }
+  .app.nav-open .nav-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Hamburger surfaces in the topbar. */
+  .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .nav-toggle:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  .nav-toggle svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* Topbar wraps; the search field drops to a full-width second row. */
+  .topbar {
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    padding: 11px 14px;
+  }
+  .tb-title {
+    min-width: 0;
+  }
+  .topbar-right {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+  }
+  .cmdbar {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: none;
+  }
+
+  /* Tighter content gutters reclaim horizontal space. */
+  .content {
+    padding: 16px 14px;
+  }
+
+  /* Panel headers and their right-aligned chip clusters wrap rather than
+     overflow the row. */
+  .panel-h {
+    flex-wrap: wrap;
+  }
+  .panel-h .right,
+  .filter-row {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  /* Review-list rows: trim the leading fixed track for a narrow viewport. */
+  .rrow {
+    grid-template-columns: 96px 1fr auto;
+    gap: 12px;
+  }
+
+  /* The five-column audit feed stays honest (no hidden columns) but scrolls
+     horizontally as a unit; header + rows share a min-width so the columns
+     keep their alignment under the scroll. */
+  .audit-feed {
+    overflow-x: auto;
+  }
+  .afhead,
+  .afrow {
+    min-width: 560px;
+  }
+
+  /* Replay timeline: shrink the fixed leading tracks so the detail column keeps
+     usable width, and let preformatted proof blocks scroll instead of blowing
+     out the row. */
+  .tl-evrow {
+    grid-template-columns: 104px 60px 1fr;
+    gap: 10px;
+  }
+  .tl-inter .tl-evrow {
+    grid-template-columns: 104px 1fr;
+  }
+  .tl-c-pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Token gate goes fluid so it never collides with the viewport edges. */
+  .token-gate {
+    padding: 16px;
+  }
+  .token-gate__form {
+    width: 100%;
+    max-width: 360px;
+  }
+}
+
+@media (max-width: 768px) and (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .nav-scrim {
+    transition: none;
+  }
+}
