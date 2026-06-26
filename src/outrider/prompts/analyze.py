@@ -688,15 +688,19 @@ do:
 """
 
 
-# Broad anti-over-eagerness calibration appended to the cached prefix at the v8 bump.
-# Validated verbatim by the 5-rep conservatism probe (the clean-is-common winner): it cut
-# analyze false positives across finding types with zero recall loss. No `{placeholder}`
-# markers, so the "never `.format()`ed" prefix invariant holds.
+# Broad anti-over-eagerness calibration appended to the cached prefix at the v8 bump —
+# the conservatism-probe-validated clean-is-common rule (5 reps, both tier models; analyze
+# FP cut across finding types with zero recall loss). The probe text said "nothing in the
+# diff"; generalized here to "the code under review" because this prefix is REUSED by
+# render_post_trace in the pass-1/post-trace prompt for whole files OUTSIDE the PR diff, so
+# diff-scoped wording would be inaccurate there. The generalization preserves the validated
+# anti-over-eagerness content. No `{placeholder}` markers, so the never-`.format()`ed
+# prefix invariant holds.
 SYSTEM_PROMPT_CALIBRATION: Final[str] = (
     "\n\nBEFORE YOU FINISH — calibration: most code under review is fine. An EMPTY findings "
     "list is a valid, common, and CORRECT result; clean code should produce no findings. Do "
-    "not manufacture a finding to have something to report. If nothing in the diff is "
-    "concretely wrong, return no findings.\n"
+    "not manufacture a finding to have something to report. If nothing in the code under "
+    "review is concretely wrong, return no findings.\n"
 )
 
 
