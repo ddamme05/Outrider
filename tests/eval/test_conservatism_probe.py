@@ -39,6 +39,7 @@ Test-tier: candidate rules are injected by APPENDING them to
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 from collections import defaultdict
@@ -157,7 +158,7 @@ class _NoOpExchangePersister:
     reason="conservatism probe spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
 )
 async def test_conservatism_probe() -> None:
-    """OPT-IN real API spend — emits reports/probe/conservatism.{json,md}.
+    """OPT-IN real API spend — emits reports/probe/conservatism.{json,html}.
 
     Analyze-direct only (no run_review, no cost pass, no DB). For each variant × model ×
     fixture × rep, run the real analyze node with the candidate rule appended, then grade
@@ -264,8 +265,10 @@ async def test_conservatism_probe() -> None:
 
     winners = [label for label, v in verdicts.items() if v["wins"]]
     decision = (
-        f"WINNER(S): {winners} — fewer false positives than v7 with no recall loss. RECONFIRM "
-        "at 5 reps before any analyze-v8 bump (recall loss can hide in a rare rep)."
+        f"WINNER(S): {winners} — fewer false positives than v7 with no recall loss across this "
+        "5-rep reconfirm (borderline guards included). The primary winner is the analyze-v8 "
+        "candidate, subject to the normal rollout (VERSION bump + contract sweep + "
+        "security-test re-pin)."
         if winners
         else "NO WINNER — no rule cut false positives without losing recall. The over-eagerness "
         "is not cheaply prompt-reducible; stop churning, lean on HITL + the relative gate, and "
@@ -288,10 +291,10 @@ async def test_conservatism_probe() -> None:
     (out_dir / "conservatism.json").write_text(
         json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8"
     )
-    (out_dir / "conservatism.md").write_text(_render_md(artifact), encoding="utf-8")
+    (out_dir / "conservatism.html").write_text(_render_html(artifact), encoding="utf-8")
 
     print(  # noqa: T201 — operator artifact pointer
-        f"\nCONSERVATISM PROBE — REPORT ONLY: wrote {out_dir}/conservatism.{{json,md}}\n{decision}"
+        f"\nCONSERVATISM PROBE — REPORT ONLY: {out_dir}/conservatism.{{json,html}}\n{decision}"
     )
     # Report-only: assert only that the full matrix ran (a row per cell).
     assert len(rows) == len(_VARIANTS) * len(models) * len(_FIXTURES) * _REPS
@@ -317,39 +320,101 @@ def test_conservatism_probe_fixtures_and_rules_are_valid() -> None:
     assert len(set(fixtures)) == len(fixtures)  # no duplicate fixtures
 
 
-def _render_md(artifact: dict[str, object]) -> str:
-    """Human-glance markdown: per-variant verdict + a per-fixture FP/recall breakdown."""
-    lines = [
-        "# Broad-conservatism probe",
-        "",
-        f"- generated: `{artifact['generated_at']}`  ·  base: `{artifact['analyze_base_version']}`",
-        f"- models: {artifact['models']}  ·  reps: {artifact['reps']}",
-        f"- clean fixtures (any finding = FP): {artifact['clean_fixtures']}",
-        f"- recall-guard fixtures: {artifact['tp_fixtures']}",
-        "",
-        "## Decision",
-        "",
-        f"**{artifact['decision']}**",
-        "",
-        "## Per-variant verdict (win = fewer total FP than v7 control AND zero recall miss)",
-        "",
-        "| variant | clean FP | tp extra FP | total FP | recall misses | wins |",
-        "|---|---|---|---|---|---|",
-    ]
+def test_render_html_escapes_and_self_certifies() -> None:
+    """Non-paid: _render_html is only called in the gated paid test, so exercise it here — a
+    self-contained, HTML-escaped doc that surfaces the decision and highlights a recall miss,
+    so a render bug can't hide until a paid run."""
+    artifact: dict[str, object] = {
+        "generated_at": "2026-06-26T00:00:00Z",
+        "analyze_base_version": "analyze-v7",
+        "models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+        "reps": 5,
+        "clean_fixtures": ["<b>x</b>.json"],  # markup to prove escaping
+        "tp_fixtures": {"pygoat_sql_injection.json": "sql_injection"},
+        "rows": [
+            {
+                "variant": "clean-is-common",
+                "model": "claude-haiku-4-5",
+                "fixture": "missing_input_validation.json",
+                "kind": "tp",
+                "rep": 0,
+                "fp": 0,
+                "recall_hit": False,  # a recall MISS -> its row is highlighted
+            },
+        ],
+        "verdicts": {
+            "clean-is-common": {
+                "clean_fp": 0,
+                "tp_extra_fp": 0,
+                "total_fp": 0,
+                "recall_misses": 1,
+                "wins": False,
+            },
+        },
+        "decision": "NO WINNER — recall cracked",
+    }
+    out = _render_html(artifact)
+    assert out.startswith("<!DOCTYPE html>") and out.rstrip().endswith("</html>")
+    assert "analyze-v7" in out and "NO WINNER — recall cracked" in out
+    assert "&lt;b&gt;x&lt;/b&gt;.json" in out  # markup escaped
+    assert "<b>x</b>" not in out  # raw markup never reaches the doc
+    assert 'class="miss"' in out  # the recall miss highlights its row
+
+
+_HTML_HEAD = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conservatism probe</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 1120px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.45; color: #1b1f24; }
+  h1 { font-size: 1.5rem; margin: 0 0 .15rem; }
+  h2 { font-size: 1.1rem; margin: 1.6rem 0 .5rem; border-bottom: 2px solid #e3e6ea; }
+  .muted { color: #6a737d; font-size: .82rem; }
+  .decision { margin: 1rem 0; padding: .8rem 1rem; border-radius: .5rem; background: #f6f8fa;
+    border-left: 4px solid #24292f; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: .82rem; margin-bottom: .4rem; }
+  th, td { padding: .38rem .55rem; text-align: left; border-bottom: 1px solid #eceff1; }
+  th { background: #24292f; color: #fff; font-weight: 600; white-space: nowrap; }
+  td { white-space: nowrap; }
+  tbody tr:nth-child(even) { background: #f6f8fa; }
+  tr.miss td { background: #ffe3e3; }
+  .badge { display: inline-block; padding: .04rem .45rem; border-radius: .7rem; font-weight: 700; }
+  .badge.pass { background: #1a7f37; color: #fff; }
+  .badge.fail { background: #6a737d; color: #fff; }
+  code { background: #f3f4f6; padding: .05rem .25rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+"""
+_HTML_TAIL = "</body>\n</html>\n"
+
+
+def _render_html(artifact: dict[str, object]) -> str:
+    """Self-contained HTML artifact (inline CSS, escaped cells) — the human-glance probe
+    report. A true-positive RECALL MISS (the load-bearing failure) highlights its row red."""
+
+    def esc(x: object) -> str:
+        return html.escape(str(x))
+
     verdicts: dict[str, dict[str, object]] = artifact["verdicts"]  # type: ignore[assignment]
-    for label, v in verdicts.items():
-        lines.append(
-            f"| {label} | {v['clean_fp']} | {v['tp_extra_fp']} | {v['total_fp']} | "
-            f"{v['recall_misses']} | {'✅' if v['wins'] else '❌'} |"
-        )
-    lines += [
-        "",
-        "## Per-(variant, model, fixture): FP count / recall",
-        "",
-        "| variant | model | fixture | kind | FP (sum) | recall (hits/reps) |",
-        "|---|---|---|---|---|---|",
-    ]
     rows: list[dict[str, object]] = artifact["rows"]  # type: ignore[assignment]
+
+    vrows = ""
+    for label, v in verdicts.items():
+        badge = (
+            '<span class="badge pass">WIN</span>'
+            if v["wins"]
+            else '<span class="badge fail">—</span>'
+        )
+        vrows += (
+            f"<tr><td>{esc(label)}</td><td>{esc(v['clean_fp'])}</td>"
+            f"<td>{esc(v['tp_extra_fp'])}</td><td>{esc(v['total_fp'])}</td>"
+            f"<td>{esc(v['recall_misses'])}</td><td>{badge}</td></tr>\n"
+        )
+
     agg: dict[tuple[str, str, str, str], list[int]] = defaultdict(lambda: [0, 0, 0])
     for r in rows:
         key = (
@@ -361,7 +426,31 @@ def _render_md(artifact: dict[str, object]) -> str:
         agg[key][0] += cast("int", r["fp"])
         agg[key][1] += 1 if r["recall_hit"] else 0
         agg[key][2] += 1
+    brows = ""
     for (variant, model, fixture, kind), (fp, hits, reps) in agg.items():
         recall = f"{hits}/{reps}" if kind == "tp" else "—"
-        lines.append(f"| {variant} | {model} | {fixture} | {kind} | {fp} | {recall} |")
-    return "\n".join(lines) + "\n"
+        cls = ' class="miss"' if (kind == "tp" and hits < reps) else ""  # a recall miss = failure
+        brows += (
+            f"<tr{cls}><td>{esc(variant)}</td><td>{esc(model)}</td><td>{esc(fixture)}</td>"
+            f"<td>{esc(kind)}</td><td>{esc(fp)}</td><td>{esc(recall)}</td></tr>\n"
+        )
+
+    body = (
+        "<h1>Broad-conservatism probe</h1>\n"
+        '<p class="muted">'
+        f"generated <code>{esc(artifact['generated_at'])}</code> · "
+        f"base <code>{esc(artifact['analyze_base_version'])}</code> · "
+        f"models {esc(artifact['models'])} · reps {esc(artifact['reps'])}<br>"
+        f"clean (any finding = FP): {esc(artifact['clean_fixtures'])}<br>"
+        f"recall guards: {esc(artifact['tp_fixtures'])}</p>\n"
+        f'<div class="decision">{esc(artifact["decision"])}</div>\n'
+        "<h2>Per-variant verdict (win = fewer total FP than v7 AND zero recall miss)</h2>\n"
+        "<table><thead><tr><th>variant</th><th>clean FP</th><th>tp extra FP</th>"
+        "<th>total FP</th><th>recall misses</th><th>wins</th></tr></thead>\n"
+        f"<tbody>\n{vrows}</tbody></table>\n"
+        "<h2>Per-(variant, model, fixture): FP / recall</h2>\n"
+        "<table><thead><tr><th>variant</th><th>model</th><th>fixture</th><th>kind</th>"
+        "<th>FP (sum)</th><th>recall (hits/reps)</th></tr></thead>\n"
+        f"<tbody>\n{brows}</tbody></table>\n"
+    )
+    return _HTML_HEAD + body + _HTML_TAIL
