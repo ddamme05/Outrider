@@ -3,6 +3,7 @@
 # `src/outrider/llm/` per the folder-scoped `vendor-sdks-only-in-wrappers`
 # invariant (sibling modules within `llm/` may import SDK metadata).
 # See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #013/#015/#016.
+# Planned under DECISIONS.md#056: `profile_id="anthropic"` stamp + FUP-197 pre-call guard.
 """Anthropic concrete provider.
 
 Constructor performs eager validation:

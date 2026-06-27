@@ -1,5 +1,7 @@
 # Audit event hierarchy per docs/spec.md §7.2.1 + §8.2.
 # Append-only contract per docs/trust-boundaries.md §7.
+# Planned under DECISIONS.md#056: the identity triad (`profile_id`/`reasoning_enabled`/
+# `profile_contract_digest`) on LLMCall/Analyze/SynthesizeCompletedEvent.
 """Audit event class hierarchy + discriminated union.
 
 `AuditEventBase` is the shared base. The hierarchy has twenty-two
