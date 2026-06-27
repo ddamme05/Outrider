@@ -171,12 +171,13 @@ def test_resolve_host_profile() -> None:
         resolve_host_profile("deepinfra")
 
 
-def test_reasoning_enabled_effective_is_true_only_for_none_mechanism() -> None:
-    # Every off-switch mechanism stamps False (reasoning really off); NONE has no off-switch
-    # so it stamps True — the audit flag can't claim a silent off (reasoning/cache identity).
-    assert BASETEN_PROFILE.reasoning_enabled_effective is False
+def test_reasoning_forced_on_is_true_only_for_none_mechanism() -> None:
+    # forced_on is the PROFILE's half of reasoning_enabled (provider OR-combines it with the
+    # requested flag): an off-switch host is forced-on False; NONE is forced-on True. Stamping
+    # forced_on alone would mis-audit an operator-enabled off-switch run as reasoning-off.
+    assert BASETEN_PROFILE.reasoning_forced_on is False
     none_host = BASETEN_PROFILE.model_copy(update={"reasoning_mechanism": ReasoningMechanism.NONE})
-    assert none_host.reasoning_enabled_effective is True
+    assert none_host.reasoning_forced_on is True
 
 
 def test_profile_contract_digest_folds_in_shaper_contract_version(

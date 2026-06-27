@@ -88,8 +88,8 @@ def _shape_thinking_disabled(kwargs: dict[str, Any]) -> None:
 
 
 def _shape_none(_kwargs: dict[str, Any]) -> None:
-    """No off-switch — reasoning stays on. The provider stamps the EFFECTIVE state via
-    `HostProfile.reasoning_enabled_effective` (True here), so a NONE host audits as
+    """No off-switch — reasoning stays on. `HostProfile.reasoning_forced_on` is True here, so
+    the provider's `reasoning_enabled = requested or forced_on` audits this host as
     reasoning-on instead of a silent off. Carry this only when always-on cost is
     acknowledged."""
 
@@ -225,13 +225,16 @@ class HostProfile(BaseModel):
         _SHAPER_REGISTRY[self.reasoning_mechanism](kwargs)
 
     @property
-    def reasoning_enabled_effective(self) -> bool:
-        """The `reasoning_enabled` value the provider MUST stamp on the event/response.
-        Outrider always requests reasoning OFF, so every mechanism with a real off-switch is
-        effectively False; `NONE` has no off-switch (reasoning stays on) and is True, so the
-        audit flag reflects reality rather than a silent `False`. The mechanism is folded
-        into `profile_contract_digest`, so cache never colludes a NONE host with an
-        off-switch host (audit: reasoning/cache identity)."""
+    def reasoning_forced_on(self) -> bool:
+        """True iff this host has no off-switch (`NONE`), so reasoning runs regardless of the
+        requested flag. This is the PROFILE's contribution to the triad's `reasoning_enabled`,
+        NOT the stamped value: per DECISIONS.md#056 `reasoning_enabled` is `profile +
+        OUTRIDER_LLM_REASONING`, so the provider/factory computes
+        `reasoning_enabled = requested or profile.reasoning_forced_on`. Stamping this
+        predicate directly would audit an operator-enabled run on an off-switch host as
+        `False` while reasoning is actually on. The mechanism is folded into
+        `profile_contract_digest`, so cache never colludes a forced-on host with an
+        off-switch host."""
         return self.reasoning_mechanism is ReasoningMechanism.NONE
 
 
