@@ -33,32 +33,45 @@ _OPENAPI = _REPO / "dashboard" / "openapi.json"
 
 def main() -> int:
     spec = create_app(demo_mode=False).openapi()
-    with _OPENAPI.open("w", encoding="utf-8") as fh:
-        json.dump(spec, fh, indent=2)
-        fh.write("\n")
+    new_bytes = (json.dumps(spec, indent=2) + "\n").encode("utf-8")
     n_paths = len(spec.get("paths", {}))
     n_schemas = len(spec.get("components", {}).get("schemas", {}))
-    print(f"wrote {_OPENAPI.relative_to(_REPO)} ({n_paths} paths, {n_schemas} schemas)")
 
+    # ATOMIC: update BOTH mirrors or NEITHER. Writing openapi.json and then failing to regenerate
+    # schema.d.ts (npm missing / gen:types error) would leave a fresh JSON with a stale .d.ts — a
+    # half-update the openapi.json freshness test alone cannot catch. So: refuse to touch
+    # openapi.json if npm is unavailable, and revert it if gen:types fails. A fresh openapi.json
+    # then reliably implies schema.d.ts was regenerated from it.
     npm = shutil.which("npm")
     if npm is None:
         print(
-            "WARNING: npm not found; schema.d.ts NOT regenerated. "
-            "Run `cd dashboard && npm run gen:types` once npm is available.",
+            "ERROR: npm not found — refusing to update openapi.json without also regenerating "
+            "schema.d.ts (both mirrors or neither). Install npm and rerun.",
             file=sys.stderr,
         )
         return 1
+
+    backup = _OPENAPI.read_bytes() if _OPENAPI.exists() else None
+    _OPENAPI.write_bytes(new_bytes)
     try:
         # Fixed command (npm resolved via shutil.which), no untrusted input — build-script
         # subprocess, not a GitHub-input path (the §5 shell-exec boundary is src/outrider/ only).
         subprocess.run([npm, "run", "gen:types"], cwd=_REPO / "dashboard", check=True)  # noqa: S603
     except subprocess.CalledProcessError as exc:
+        if backup is not None:
+            _OPENAPI.write_bytes(backup)
+        else:
+            _OPENAPI.unlink(missing_ok=True)
         print(
-            f"WARNING: `npm run gen:types` failed ({exc}); schema.d.ts not regenerated.",
+            f"ERROR: `npm run gen:types` failed ({exc}); reverted openapi.json so the two "
+            "mirrors stay in lockstep.",
             file=sys.stderr,
         )
         return 1
-    print("regenerated dashboard/src/api/schema.d.ts")
+    print(
+        f"wrote dashboard/openapi.json ({n_paths} paths, {n_schemas} schemas) "
+        "+ regenerated dashboard/src/api/schema.d.ts"
+    )
     return 0
 
 
