@@ -101,3 +101,35 @@ def test_completion_events_carry_nullable_triad_slots(event_cls: type[AuditEvent
     for field in _TRIAD:
         assert field in event_cls.model_fields, f"{event_cls.__name__} missing {field}"
         assert event_cls.model_fields[field].default is None
+
+
+# --- coherence envelope: the triad are peers, all-present or all-None (DECISIONS.md#056) ---
+
+_PARTIAL_TRIADS: list[dict[str, Any]] = [
+    {"profile_id": "baseten"},
+    {"reasoning_enabled": False},
+    {"profile_contract_digest": "e" * 64},
+    {"profile_id": "baseten", "reasoning_enabled": False},  # digest missing
+    {"profile_id": "anthropic", "profile_contract_digest": "e" * 64},  # reasoning missing
+]
+
+
+@pytest.mark.parametrize("partial", _PARTIAL_TRIADS)
+def test_llm_response_partial_triad_rejected(partial: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError, match="all-present or all-None"):
+        _llm_response(**partial)
+
+
+@pytest.mark.parametrize("partial", _PARTIAL_TRIADS)
+def test_llm_call_event_partial_triad_rejected(partial: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError, match="all-present or all-None"):
+        _llm_call_event(**partial)
+
+
+def test_llm_response_digest_rejects_non_sha256() -> None:
+    """The provider-boundary response carries the same sha256 shape as the audit event, so a
+    malformed digest is caught before the persister cross-checks response-vs-event."""
+    with pytest.raises(ValidationError):
+        _llm_response(
+            profile_id="baseten", reasoning_enabled=False, profile_contract_digest="not-a-sha256"
+        )

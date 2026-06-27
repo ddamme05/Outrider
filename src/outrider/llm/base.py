@@ -691,7 +691,26 @@ class LLMResponse(BaseModel):
     # commit); the persister cross-checks them against the LLMCallEvent. `None` until stamped.
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
-    profile_contract_digest: str | None = None
+    # Same sha256 shape as the audit-event digest (mirrors policy.canonical.SHA256_HEX_PATTERN,
+    # inlined to avoid an llm→policy import) so the provider boundary rejects a malformed digest
+    # before the persister cross-checks response-vs-event.
+    profile_contract_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def _enforce_triad_coherence(self) -> Self:
+        """The triad are peers (DECISIONS.md#056) — all-present or all-None; the provider
+        stamps all three together. A partial triad is a provider/wrapper bug."""
+        present = (
+            self.profile_id is not None,
+            self.reasoning_enabled is not None,
+            self.profile_contract_digest is not None,
+        )
+        if not (all(present) or not any(present)):
+            raise ValueError(
+                "host-identity triad (DECISIONS.md#056) must be all-present or all-None on "
+                "LLMResponse; the provider stamps all three together."
+            )
+        return self
 
     @field_serializer("text")
     def _redact_text_field(self, value: str, info: SerializationInfo) -> str:
