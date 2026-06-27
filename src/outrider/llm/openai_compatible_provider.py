@@ -230,6 +230,10 @@ class OpenAICompatibleProvider:
         # forcing it on. After the guard, reasoning=True implies reasoning_forced_on, so this is
         # honest — reasoning_enabled=True only when the wire actually reasons (a forced-on host).
         self._reasoning_enabled = reasoning or profile.reasoning_forced_on
+        # Compute the profile's contract digest ONCE (the profile is frozen, the digest
+        # invariant) rather than re-hashing on every complete() stamp — mirrors how the
+        # anthropic path holds its digest as a module constant.
+        self._profile_contract_digest = profile.profile_contract_digest
 
         # aclose() idempotency machinery (mirror of AnthropicProvider).
         self._closed: bool = False
@@ -390,7 +394,7 @@ class OpenAICompatibleProvider:
             # holds; the LLMCallEvent below mirrors these from the response (single source).
             profile_id=self._profile.host_id,
             reasoning_enabled=self._reasoning_enabled,
-            profile_contract_digest=self._profile.profile_contract_digest,
+            profile_contract_digest=self._profile_contract_digest,
         )
 
         # Step 6: hash the prompts.
@@ -621,7 +625,7 @@ def _extract_assistant_text(response: Any) -> tuple[str, str]:
     choices = response.choices
     if len(choices) != 1:
         raise LLMUnexpectedContentBlocksError(
-            f"GLM response has {len(choices)} choice(s); V1 wrapper expects "
+            f"OpenAI-compatible response has {len(choices)} choice(s); V1 wrapper expects "
             f"exactly one. This may indicate a streaming/tool-use response "
             f"(not supported in V1) or an SDK shape change.",
             actual_block_types=[f"choices={len(choices)}"],

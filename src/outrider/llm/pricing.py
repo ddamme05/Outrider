@@ -69,11 +69,13 @@ def normalize_to_pricing_key(model: str) -> str:
       `claude-haiku-4-5`          → `claude-haiku-4-5` (unchanged)
       `claude-haiku-4-5-2025`     → `claude-haiku-4-5-2025` (wrong digit count, unchanged)
 
-    `LLMCallEvent.model` records the upstream-returned model identifier
-    (`response.model` from the SDK) for audit fidelity — which may be a
-    substituted and/or dated ID. Only the pricing-table lookup uses the
-    normalized key; the audit row preserves the literal SDK response
-    model so replay can reconstruct exactly what executed.
+    `LLMCallEvent.model` records the model identifier the provider chose to
+    bill + audit against: `response.model` (the upstream-returned id, possibly
+    substituted/dated) for `AnthropicProvider`, but `request.model` for
+    `OpenAICompatibleProvider` — which keys on the request because some hosts
+    (e.g. Baseten) echo an empty `response.model`. Only the pricing-table lookup
+    uses the normalized key; the audit row preserves the provider's chosen model
+    id so replay can reconstruct exactly what executed.
     """
     return _DATED_SUFFIX_PATTERN.sub("", model)
 

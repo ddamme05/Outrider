@@ -256,3 +256,16 @@ def test_for_host_env_override_wins_over_host_default() -> None:
 def test_for_host_unknown_host_raises() -> None:
     with pytest.raises(ValueError, match="unknown OUTRIDER_LLM_HOST 'deepinfra'"):
         ModelConfig.for_host("deepinfra")
+
+
+def test_for_host_field_lists_stay_in_lockstep() -> None:
+    """`for_host` indexes `_EnvModelOverrides` and `HOST_DEFAULT_MODELS[host]` by
+    `ModelConfig.model_fields`; a field added to one but not the others would crash at
+    `for_host()` (AttributeError / KeyError). Pin set-equality so the gap fails here instead."""
+    from outrider.llm.config import _EnvModelOverrides
+    from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
+
+    model_fields = set(ModelConfig.model_fields)
+    assert set(_EnvModelOverrides.model_fields) == model_fields
+    for host, defaults in HOST_DEFAULT_MODELS.items():
+        assert set(defaults) == model_fields, f"{host} default-model keys drifted from ModelConfig"
