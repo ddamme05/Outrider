@@ -214,7 +214,10 @@ class HostProfile(BaseModel):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def validate_model_slug(self, slug: str) -> None:
-        if re.match(self.model_slug_pattern, slug) is None:
+        # fullmatch, not match: `re.match` against a `$`-anchored pattern still admits a
+        # trailing newline (`$` matches before a final `\n`), so a slug like
+        # "zai-org/GLM-5.2\n" would slip the typo gate.
+        if re.fullmatch(self.model_slug_pattern, slug) is None:
             raise ValueError(
                 f"model {slug!r} does not match host {self.host_id!r} slug pattern "
                 f"{self.model_slug_pattern!r}"

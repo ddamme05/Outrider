@@ -121,7 +121,9 @@ class ModelConfig(BaseSettings):
     )
     @classmethod
     def _validate_model_string(cls, value: str) -> str:
-        if not _VALID_MODEL_PATTERN.match(value):
+        # fullmatch, not match: `.match` against a `$`-anchored pattern still admits a
+        # trailing newline (`$` matches before a final `\n`).
+        if not _VALID_MODEL_PATTERN.fullmatch(value):
             raise ValueError(
                 f"Model string {value!r} does not match V1 Anthropic family "
                 f"pattern {_VALID_MODEL_PATTERN.pattern!r}"

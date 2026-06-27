@@ -59,6 +59,7 @@ from pydantic import (
 from pydantic_core.core_schema import SerializationInfo
 
 from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+from outrider.policy.canonical import SHA256_HEX_PATTERN
 
 __all__ = [
     "INCLUDE_TEXT_OPT_IN",
@@ -691,10 +692,11 @@ class LLMResponse(BaseModel):
     # commit); the persister cross-checks them against the LLMCallEvent. `None` until stamped.
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
-    # Same sha256 shape as the audit-event digest (mirrors policy.canonical.SHA256_HEX_PATTERN,
-    # inlined to avoid an llm→policy import) so the provider boundary rejects a malformed digest
-    # before the persister cross-checks response-vs-event.
-    profile_contract_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    # The canonical sha256-hex shape (policy.canonical.SHA256_HEX_PATTERN — already a transitive
+    # dep here via audit.events, so reusing it is no new import edge) so the provider boundary
+    # rejects a malformed digest before the persister cross-checks response-vs-event, and a future
+    # tightening of the canonical pattern can't drift LLMResponse from the audit events.
+    profile_contract_digest: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
