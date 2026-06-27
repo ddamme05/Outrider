@@ -665,6 +665,12 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
             "cache_hit",
             "cost_usd",
             "pricing_version",
+            # Host-identity triad (DECISIONS.md#056): the provider stamps it on BOTH the
+            # response and the event; the persister cross-checks they agree — never sources
+            # one from the other. A divergence mislabels the cache/replay host-split.
+            "profile_id",
+            "reasoning_enabled",
+            "profile_contract_digest",
         }
     )
 
@@ -1797,6 +1803,11 @@ class AuditPersister:
             "latency_ms": response.latency_ms,
             "cached_tokens": response.cache_read_tokens,
             "cache_hit": response.cache_read_tokens > 0,
+            # Host-identity triad (DECISIONS.md#056) — same name on response + event, so the
+            # loop compares event.<field> against the provider-returned response.<field>.
+            "profile_id": response.profile_id,
+            "reasoning_enabled": response.reasoning_enabled,
+            "profile_contract_digest": response.profile_contract_digest,
         }
         for field_name in _stable_response_fields:
             if getattr(event, field_name) != _response_value_for[field_name]:
