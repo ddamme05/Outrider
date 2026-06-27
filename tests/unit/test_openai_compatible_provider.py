@@ -1,8 +1,9 @@
-"""GLMProvider tests — mirror of AnthropicProvider coverage for the openai/
-Baseten wire shape.
+"""OpenAICompatibleProvider tests — mirror of AnthropicProvider coverage for the
+openai wire shape, exercised on `BASETEN_PROFILE` (+ a synthetic profile proving
+the per-host axes are profile-driven).
 
 Strategy: mock the SDK at `AsyncCompletions.create` so no real HTTP fires.
-The focus is the GLM-specific deltas the wrapper must get right:
+The focus is the wire deltas the wrapper must get right:
   - §8a: `input_tokens = prompt_tokens - cached_tokens` (Baseten prompt_tokens
     INCLUDES cached; Anthropic's input_tokens excludes it).
   - usage null-guards: the `*_details` objects (and `usage` itself) can be None.
@@ -11,6 +12,7 @@ The focus is the GLM-specific deltas the wrapper must get right:
   - no `cache_control` marker (automatic caching) → `cache_write_tokens=0`.
   - `response_format` envelope (name + strict) vs Anthropic's output_config.
   - openai → LLMProviderError mapping with the introspected isinstance order.
+  - per-host axes (base_url, §8a mode, reasoning shaper) follow the HostProfile.
 """
 
 from collections.abc import Iterator
@@ -49,7 +51,20 @@ from outrider.llm.base import (
     LLMUnknownError,
     LLMUpstreamError,
 )
-from outrider.llm.glm_provider import BASETEN_BASE_URL, GLM_MODEL_ID, GLMProvider
+from outrider.llm.host_profiles import (
+    BASETEN_PROFILE,
+    HostPrivacy,
+    HostProfile,
+    JsonMode,
+    ReasoningMechanism,
+    TokenAccounting,
+)
+from outrider.llm.openai_compatible_provider import (
+    BASETEN_BASE_URL,
+    GLM_MODEL_ID,
+    GLMProvider,
+    OpenAICompatibleProvider,
+)
 from outrider.llm.pricing import PRICING_VERSION
 
 # ---------------------------------------------------------------------------
@@ -161,10 +176,14 @@ def _api_key() -> SecretStr:
     return SecretStr("baseten-test-key")
 
 
-def _provider(persister: _RecordingPersister | None = None, **kwargs: Any) -> GLMProvider:
-    return GLMProvider(
+def _provider(
+    persister: _RecordingPersister | None = None, **kwargs: Any
+) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(
         api_key=_api_key(),
+        profile=BASETEN_PROFILE,
         persister=persister if persister is not None else _RecordingPersister(),
+        models=(GLM_MODEL_ID,),
         **kwargs,
     )
 
@@ -219,7 +238,7 @@ def test_constructor_non_glm_model_raises() -> None:
     rejected at construction — pricing coverage is NOT 'servable by GLM'. Closes
     the hole where a claude-* slug could be configured and then routed to Baseten
     by the per-call guard."""
-    with pytest.raises(LLMInvalidRequestError, match="non-GLM"):
+    with pytest.raises(LLMInvalidRequestError, match="does not match host 'baseten'"):
         GLMProvider(
             api_key=_api_key(),
             persister=_RecordingPersister(),
@@ -326,15 +345,6 @@ async def test_reasoning_off_by_default_via_extra_body() -> None:
         await provider.complete(_request())
     extra_body = mock.call_args.kwargs["extra_body"]
     assert extra_body == {"chat_template_args": {"enable_thinking": False}}
-
-
-@pytest.mark.asyncio
-async def test_enable_thinking_flag_flows_to_extra_body() -> None:
-    provider = _provider(enable_thinking=True)
-    with _patched_create() as mock:
-        await provider.complete(_request())
-    extra_body = mock.call_args.kwargs["extra_body"]
-    assert extra_body["chat_template_args"]["enable_thinking"] is True
 
 
 @pytest.mark.asyncio
@@ -547,7 +557,7 @@ async def test_finish_reason_normalized_to_canonical_vocab(wire_value: str, cano
 def test_normalize_finish_reason_unit() -> None:
     """Direct unit on the normalizer: mapping, None/empty → 'unknown', and an
     unmapped (future) value passes through unmasked."""
-    from outrider.llm.glm_provider import _normalize_finish_reason
+    from outrider.llm.openai_compatible_provider import _normalize_finish_reason
 
     assert _normalize_finish_reason("length") == "max_tokens"
     assert _normalize_finish_reason("novel_future_value") == "novel_future_value"
@@ -566,6 +576,12 @@ def test_normalize_finish_reason_unit() -> None:
     [
         (lambda: openai.APITimeoutError(request=_fake_request()), LLMTimeoutError),
         (lambda: openai.APIConnectionError(request=_fake_request()), LLMUpstreamError),
+        # 408 has no dedicated openai subclass (bare APIStatusError); must map to a
+        # retryable timeout, not fall through to LLMUnknownError (terminal).
+        (
+            lambda: openai.APIStatusError("rt", response=_fake_response(408), body=None),
+            LLMTimeoutError,
+        ),
         (
             lambda: openai.RateLimitError("rl", response=_fake_response(429), body=None),
             LLMRateLimitError,
@@ -831,3 +847,96 @@ async def test_reasoning_tokens_not_added_to_output_or_cost() -> None:
     # input=1000 (cached=0), output=500; cost must use output=500, not 620.
     expected = float(glm.in_per_token * 1000 + glm.out_per_token * 500)
     assert abs(event.cost_usd - expected) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Per-host axes are profile-driven (the #056 two-hosts-one-slug separation).
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_profile() -> HostProfile:
+    """A second host serving the SAME priced slug, but with EXCLUDES-cached
+    accounting, a different base_url, and the reasoning_effort_none shaper — proves
+    the per-host axes are profile-driven (the #056 two-hosts-one-slug case)."""
+    return HostProfile(
+        host_id="synthetic",
+        base_url="https://synthetic.example/v1",
+        api_key_env="SYNTHETIC_API_KEY",
+        model_slug_pattern=r"^zai-org/GLM-\d+(\.\d+)?$",
+        json_mode=JsonMode.STRICT_JSON_SCHEMA,
+        token_accounting=TokenAccounting.PROMPT_EXCLUDES_CACHED,
+        reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
+        privacy=HostPrivacy(
+            egress_host="synthetic.example",
+            model_origin="synthetic",
+            direct_hosted=True,
+            trains_on_inputs=False,
+            retention="test profile — no real host",
+            source_url="https://synthetic.example/security",
+            verified_date="2026-06-27",
+        ),
+    )
+
+
+def _synthetic_provider(persister: _RecordingPersister | None = None) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=_synthetic_profile(),
+        persister=persister if persister is not None else _RecordingPersister(),
+        models=(GLM_MODEL_ID,),
+    )
+
+
+def test_constructor_base_url_follows_profile() -> None:
+    provider = _synthetic_provider()
+    assert str(provider._client.base_url).rstrip("/") == "https://synthetic.example/v1"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_excludes_cached_profile_does_not_subtract() -> None:
+    """A PROMPT_EXCLUDES_CACHED host treats prompt_tokens as already-uncached: the
+    same usage Baseten subtracts to input=800 passes through to input=1000 here.
+    Proves §8a is profile-driven, not a Baseten constant."""
+    provider = _synthetic_provider()
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=200)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        resp = await provider.complete(_request())
+    assert resp.input_tokens == 1000  # NOT 800 — excludes-cached passes through
+    assert resp.cache_read_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_reasoning_shaper_follows_profile() -> None:
+    """The reasoning-off wire is the host's shaper: reasoning_effort_none emits a
+    top-level `reasoning_effort="none"`, not Baseten's extra_body.chat_template_args."""
+    provider = _synthetic_provider()
+    with _patched_create() as mock:
+        await provider.complete(_request())
+    kwargs = mock.call_args.kwargs
+    assert kwargs["reasoning_effort"] == "none"
+    assert "extra_body" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_trains_on_inputs_profile_fails_closed() -> None:
+    """DECISIONS.md#056: a host declaring trains_on_inputs=True is a construction
+    hard-fail — no blanket override."""
+    base = _synthetic_profile()
+    training = base.model_copy(
+        update={"privacy": base.privacy.model_copy(update={"trains_on_inputs": True})}
+    )
+    with pytest.raises(LLMInvalidRequestError, match="trains_on_inputs"):
+        OpenAICompatibleProvider(
+            api_key=_api_key(),
+            profile=training,
+            persister=_RecordingPersister(),
+            models=(GLM_MODEL_ID,),
+        )
+
+
+def test_glm_alias_binds_baseten_profile() -> None:
+    """The transitional GLMProvider alias constructs via BASETEN_PROFILE; the wire
+    golden pins byte-equivalence with the pre-rename spike."""
+    provider = GLMProvider(api_key=_api_key(), persister=_RecordingPersister())
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert str(provider._client.base_url).rstrip("/") == BASETEN_BASE_URL  # noqa: SLF001
