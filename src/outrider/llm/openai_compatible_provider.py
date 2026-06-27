@@ -210,10 +210,24 @@ class OpenAICompatibleProvider:
         self._profile = profile
         self._models = tuple(models)
         self._persister = persister
-        # Effective reasoning state stamped on the triad (DECISIONS.md#056): the requested flag
-        # OR the host forcing it on (no off-switch). For a host with an off-switch this is the
-        # request; for a `NONE`-mechanism host it is True regardless, so the audit never claims
-        # a silent off (see `HostProfile.reasoning_forced_on`).
+        # Reasoning-ON wire is UNVERIFIED in V1 for a host with an off-switch: the shapers express
+        # reasoning-OFF only, so stamping reasoning_enabled=True while `_build_sdk_kwargs` still
+        # sends the off directive would be a wire/stamp lie the persister cross-check can't catch
+        # (both event + response share the same wrong source). Fail closed — the on-direction
+        # shaper + a per-host wire probe (docs ≠ wire, #056) is a later arc. A NONE-mechanism host
+        # forces reasoning on at the wire already (apply_reasoning_off is a no-op there), so
+        # reasoning is honestly on regardless of the request.
+        if reasoning and not profile.reasoning_forced_on:
+            raise LLMInvalidRequestError(
+                f"reasoning=True requested for host {profile.host_id!r} "
+                f"(mechanism {profile.reasoning_mechanism.value!r}), but V1 has no verified "
+                f"reasoning-ON wire for an off-switch host — the shapers express reasoning-OFF "
+                f"only. Stamping reasoning_enabled=True while sending the off directive would be a "
+                f"wire/stamp lie; fail closed until a later arc ships the on-direction shaper."
+            )
+        # Effective reasoning state stamped on the triad (DECISIONS.md#056): requested OR the host
+        # forcing it on. After the guard, reasoning=True implies reasoning_forced_on, so this is
+        # honest — reasoning_enabled=True only when the wire actually reasons (a forced-on host).
         self._reasoning_enabled = reasoning or profile.reasoning_forced_on
 
         # aclose() idempotency machinery (mirror of AnthropicProvider).

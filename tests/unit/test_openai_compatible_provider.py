@@ -988,18 +988,39 @@ async def test_provider_stamps_triad_on_response_and_event() -> None:
     assert event.profile_contract_digest == event_resp.profile_contract_digest
 
 
+def test_reasoning_true_on_off_switch_host_fails_closed() -> None:
+    """V1 has no verified reasoning-ON wire for an off-switch host (Baseten=CHAT_TEMPLATE_ARGS):
+    requesting it fails closed rather than stamp reasoning_enabled=True while the wire still
+    sends the off directive (a lie the persister cross-check can't catch)."""
+    with pytest.raises(LLMInvalidRequestError, match="no verified reasoning-ON wire"):
+        OpenAICompatibleProvider(
+            api_key=_api_key(),
+            profile=BASETEN_PROFILE,
+            persister=_RecordingPersister(),
+            models=(GLM_MODEL_ID,),
+            reasoning=True,
+        )
+
+
 @pytest.mark.asyncio
-async def test_reasoning_requested_stamps_enabled_true() -> None:
-    persister = _RecordingPersister()
+async def test_none_host_reasoning_on_wire_matches_stamp() -> None:
+    """A NONE-mechanism host forces reasoning on: the wire sends NO reasoning-off directive
+    (apply_reasoning_off is a no-op) AND the stamp is reasoning_enabled=True — wire matches
+    stamp, so the triad never claims an on state the request contradicts."""
+    none_profile = _synthetic_profile().model_copy(
+        update={"reasoning_mechanism": ReasoningMechanism.NONE}
+    )
     provider = OpenAICompatibleProvider(
         api_key=_api_key(),
-        profile=BASETEN_PROFILE,
-        persister=persister,
+        profile=none_profile,
+        persister=_RecordingPersister(),
         models=(GLM_MODEL_ID,),
-        reasoning=True,
     )
-    with _patched_create():
+    with _patched_create() as mock:
         resp = await provider.complete(_request())
+    kwargs = mock.call_args.kwargs
+    assert "extra_body" not in kwargs  # no chat_template_args off directive
+    assert "reasoning_effort" not in kwargs
     assert resp.reasoning_enabled is True
 
 
