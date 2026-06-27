@@ -146,6 +146,7 @@ class OpenAICompatibleProvider:
         profile: HostProfile,
         persister: LLMExchangePersister | None = None,
         models: tuple[str, ...],
+        reasoning: bool = False,
     ) -> None:
         # Eager api_key validation — the SDK does not error on a missing key at
         # construction, so surface it here rather than mid-review. NOTE: the openai
@@ -209,6 +210,11 @@ class OpenAICompatibleProvider:
         self._profile = profile
         self._models = tuple(models)
         self._persister = persister
+        # Effective reasoning state stamped on the triad (DECISIONS.md#056): the requested flag
+        # OR the host forcing it on (no off-switch). For a host with an off-switch this is the
+        # request; for a `NONE`-mechanism host it is True regardless, so the audit never claims
+        # a silent off (see `HostProfile.reasoning_forced_on`).
+        self._reasoning_enabled = reasoning or profile.reasoning_forced_on
 
         # aclose() idempotency machinery (mirror of AnthropicProvider).
         self._closed: bool = False
@@ -365,6 +371,11 @@ class OpenAICompatibleProvider:
             cache_write_tokens=0,  # GLM/Baseten has no cache-write token class.
             finish_reason=finish_reason,
             latency_ms=int(latency_ms),
+            # Host-identity triad (DECISIONS.md#056), stamped together so the coherence envelope
+            # holds; the LLMCallEvent below mirrors these from the response (single source).
+            profile_id=self._profile.host_id,
+            reasoning_enabled=self._reasoning_enabled,
+            profile_contract_digest=self._profile.profile_contract_digest,
         )
 
         # Step 6: hash the prompts.
@@ -417,6 +428,11 @@ class OpenAICompatibleProvider:
             degraded_mode=request.degraded_mode,
             degradation_reason=request.degradation_reason,
             response_format_digest=request.response_format_digest,
+            # Triad mirrored from the response (single source) so the persister cross-check
+            # (a later step-4 commit) is trivially consistent (DECISIONS.md#056).
+            profile_id=response.profile_id,
+            reasoning_enabled=response.reasoning_enabled,
+            profile_contract_digest=response.profile_contract_digest,
         )
         try:
             await self._persister.persist(event, request, response)
