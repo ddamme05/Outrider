@@ -8,6 +8,7 @@ reasoning shapers; `read_usage` §8a fork (incl. the `unverified` fail-loud); th
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from outrider.llm.base import LLMInvalidResponseError
 from outrider.llm.host_profiles import (
@@ -168,3 +169,66 @@ def test_resolve_host_profile() -> None:
     assert set(HOST_PROFILES) == {"baseten"}  # arc 1a ships only Baseten
     with pytest.raises(ValueError, match="unknown OpenAI-compatible host 'deepinfra'"):
         resolve_host_profile("deepinfra")
+
+
+def test_reasoning_enabled_effective_is_true_only_for_none_mechanism() -> None:
+    # Every off-switch mechanism stamps False (reasoning really off); NONE has no off-switch
+    # so it stamps True — the audit flag can't claim a silent off (reasoning/cache identity).
+    assert BASETEN_PROFILE.reasoning_enabled_effective is False
+    none_host = BASETEN_PROFILE.model_copy(update={"reasoning_mechanism": ReasoningMechanism.NONE})
+    assert none_host.reasoning_enabled_effective is True
+
+
+def test_profile_contract_digest_folds_in_shaper_contract_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A shaper-FUNCTION-body change (no DATA field change) must rotate the digest; the
+    # version is the only lever for that, so bumping it has to move the digest.
+    base = BASETEN_PROFILE.profile_contract_digest
+    monkeypatch.setattr("outrider.llm.host_profiles.SHAPER_CONTRACT_VERSION", "v999")
+    assert BASETEN_PROFILE.profile_contract_digest != base
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"prompt_tokens": -1, "raw_cached_tokens": 0, "completion_tokens": 5},
+        {"prompt_tokens": 10, "raw_cached_tokens": -1, "completion_tokens": 5},
+        {"prompt_tokens": 10, "raw_cached_tokens": 0, "completion_tokens": -1},
+    ],
+)
+def test_read_usage_rejects_negative_components(usage: dict[str, int]) -> None:
+    # A negative usage component would drive a negative token/cost — reject at the boundary.
+    with pytest.raises(LLMInvalidResponseError):
+        read_usage(accounting=TokenAccounting.PROMPT_INCLUDES_CACHED, **usage)
+
+
+def _valid_privacy_kwargs() -> dict[str, object]:
+    return {
+        "egress_host": "inference.baseten.co",
+        "model_origin": "zhipu",
+        "direct_hosted": True,
+        "trains_on_inputs": False,
+        "retention": "no storage",
+        "source_url": "https://docs.baseten.co/observability/security",
+        "verified_date": "2026-06-27",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("retention", ""),
+        ("egress_host", "   "),
+        ("source_url", "http://insecure.example"),
+        ("source_url", ""),
+        ("verified_date", "2026/06/27"),
+        ("verified_date", "June 27"),
+    ],
+)
+def test_host_privacy_rejects_malformed_provenance(field: str, bad: str) -> None:
+    # #015 publish-or-refuse needs an auditable claim — empty/malformed provenance fails loud.
+    kwargs = _valid_privacy_kwargs()
+    kwargs[field] = bad
+    with pytest.raises(ValidationError):
+        HostPrivacy(**kwargs)

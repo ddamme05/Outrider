@@ -24,7 +24,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from outrider.llm.base import LLMInvalidResponseError
 
@@ -88,8 +88,10 @@ def _shape_thinking_disabled(kwargs: dict[str, Any]) -> None:
 
 
 def _shape_none(_kwargs: dict[str, Any]) -> None:
-    """No off-switch — reasoning stays on. The profile must carry this only when the
-    cost of always-on reasoning is acknowledged."""
+    """No off-switch — reasoning stays on. The provider stamps the EFFECTIVE state via
+    `HostProfile.reasoning_enabled_effective` (True here), so a NONE host audits as
+    reasoning-on instead of a silent off. Carry this only when always-on cost is
+    acknowledged."""
 
 
 _SHAPER_REGISTRY: Final[Mapping[ReasoningMechanism, Callable[[dict[str, Any]], None]]] = (
@@ -118,7 +120,15 @@ def read_usage(
     subtract — capping cached at prompt_tokens keeps `input + cache_read == prompt_tokens`
     self-consistent. `prompt_excludes_cached`: prompt_tokens is already the uncached input.
     `unverified`: NEVER guess — raise if the response actually reports cached tokens.
+
+    A negative usage component is a malformed wire payload (normalized at this boundary per
+    trust-boundaries §5 sub-rule 6) — reject it before it drives a negative token or cost.
     """
+    if prompt_tokens < 0 or raw_cached_tokens < 0 or completion_tokens < 0:
+        raise LLMInvalidResponseError(
+            f"negative usage component: prompt={prompt_tokens} "
+            f"cached={raw_cached_tokens} completion={completion_tokens}"
+        )
     if accounting is TokenAccounting.PROMPT_INCLUDES_CACHED:
         cache_read = min(raw_cached_tokens, prompt_tokens)
         return prompt_tokens - cache_read, cache_read, completion_tokens
@@ -148,6 +158,27 @@ class HostPrivacy(BaseModel):
     retention: str
     source_url: str
     verified_date: str  # YYYY-MM-DD
+
+    @field_validator("egress_host", "model_origin", "retention")
+    @classmethod
+    def _nonempty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("privacy provenance field must be non-empty")
+        return v
+
+    @field_validator("source_url")
+    @classmethod
+    def _https_source(cls, v: str) -> str:
+        if not v.startswith("https://"):
+            raise ValueError(f"source_url must be an https:// URL, got {v!r}")
+        return v
+
+    @field_validator("verified_date")
+    @classmethod
+    def _iso_date(cls, v: str) -> str:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) is None:
+            raise ValueError(f"verified_date must be YYYY-MM-DD, got {v!r}")
+        return v
 
 
 class HostProfile(BaseModel):
@@ -193,6 +224,16 @@ class HostProfile(BaseModel):
         """Mutate `kwargs` to disable reasoning per this host's mechanism."""
         _SHAPER_REGISTRY[self.reasoning_mechanism](kwargs)
 
+    @property
+    def reasoning_enabled_effective(self) -> bool:
+        """The `reasoning_enabled` value the provider MUST stamp on the event/response.
+        Outrider always requests reasoning OFF, so every mechanism with a real off-switch is
+        effectively False; `NONE` has no off-switch (reasoning stays on) and is True, so the
+        audit flag reflects reality rather than a silent `False`. The mechanism is folded
+        into `profile_contract_digest`, so cache never colludes a NONE host with an
+        off-switch host (audit: reasoning/cache identity)."""
+        return self.reasoning_mechanism is ReasoningMechanism.NONE
+
 
 # Baseten — byte-identical to the merged GLM spike (glm_provider.py constants + §8a).
 BASETEN_PROFILE: Final[HostProfile] = HostProfile(
@@ -209,8 +250,9 @@ BASETEN_PROFILE: Final[HostProfile] = HostProfile(
         direct_hosted=True,
         trains_on_inputs=False,
         retention=(
-            "Baseten does not store model inputs or outputs by default (SOC 2 Type II, "
-            "HIPAA); a DPA is available via the Trust Center."
+            "Baseten does not store inputs or outputs for synchronous inference by default "
+            "(SOC 2 Type II, HIPAA); async inference has temporary input storage, which "
+            "Outrider does not use. A DPA is available via the Trust Center."
         ),
         source_url="https://docs.baseten.co/observability/security",
         verified_date="2026-06-27",
