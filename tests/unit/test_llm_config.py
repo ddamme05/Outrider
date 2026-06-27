@@ -208,3 +208,51 @@ def test_config_is_frozen() -> None:
 def test_config_extra_forbid() -> None:
     with pytest.raises(ValidationError):
         ModelConfig(unknown_field="x")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# Host-aware selection — ModelConfig.for_host (DECISIONS.md#056).
+# ---------------------------------------------------------------------------
+
+
+def test_for_host_anthropic_matches_default_construction() -> None:
+    """`for_host("anthropic")` is byte-identical to `ModelConfig()`: same per-node
+    defaults, same claude-family validation path."""
+    assert ModelConfig.for_host("anthropic").model_dump() == ModelConfig().model_dump()
+
+
+def test_for_host_baseten_uses_glm_slugs() -> None:
+    cfg = ModelConfig.for_host("baseten")
+    assert cfg.analyze_model == "zai-org/GLM-5.2"
+    assert {
+        cfg.triage_model,
+        cfg.analyze_model,
+        cfg.standard_analyze_model,
+        cfg.synthesize_model,
+        cfg.trace_model,
+        cfg.patch_model,
+    } == {"zai-org/GLM-5.2"}
+
+
+def test_for_host_baseten_skips_claude_validation() -> None:
+    """The GLM slug would fail ModelConfig's claude-family field validator; `for_host`
+    must NOT run it for a non-anthropic host (the provider validates the slug)."""
+    with pytest.raises(ValidationError):
+        ModelConfig(analyze_model="zai-org/GLM-5.2")  # claude validator rejects it
+    # for_host("baseten") holds the same slug without raising.
+    assert ModelConfig.for_host("baseten").analyze_model == "zai-org/GLM-5.2"
+
+
+def test_for_host_env_override_wins_over_host_default() -> None:
+    """`OUTRIDER_MODEL_*` set by the operator beats the host default, both branches."""
+    with _env(OUTRIDER_MODEL_TRIAGE_MODEL="claude-sonnet-4-6"):
+        assert ModelConfig.for_host("anthropic").triage_model == "claude-sonnet-4-6"
+    # On a non-anthropic host the override is taken verbatim (no claude validation),
+    # so a GLM-shaped override survives.
+    with _env(OUTRIDER_MODEL_TRIAGE_MODEL="zai-org/GLM-4.6"):
+        assert ModelConfig.for_host("baseten").triage_model == "zai-org/GLM-4.6"
+
+
+def test_for_host_unknown_host_raises() -> None:
+    with pytest.raises(ValueError, match="unknown OUTRIDER_LLM_HOST 'deepinfra'"):
+        ModelConfig.for_host("deepinfra")

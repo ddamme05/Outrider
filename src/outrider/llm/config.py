@@ -1,6 +1,7 @@
 # Per-node LLM model selection, env-backed.
 # See specs/2026-05-05-llm-provider-wrapper.md and docs/spec.md §4.2.
-# Planned under DECISIONS.md#056: host-aware selection via the `OUTRIDER_LLM_HOST` merge.
+# Host-aware selection via `ModelConfig.for_host` (DECISIONS.md#056); the lifespan
+# OUTRIDER_LLM_HOST read that drives it lands with the provider-factory wiring.
 """ModelConfig — env-backed per-node LLM model selection.
 
 Backs the `model-strings-from-config-not-hardcoded` invariant: every LLM
@@ -32,6 +33,8 @@ from anthropic.resources.messages import DEPRECATED_MODELS
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
+
 __all__ = ["ModelConfig"]
 
 # V1 Anthropic family pattern.
@@ -45,6 +48,26 @@ __all__ = ["ModelConfig"]
 # previous regex rejected the dated form
 # even though the SDK catalog publishes it as the precise model id.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
+
+
+class _EnvModelOverrides(BaseSettings):
+    """Operator-set `OUTRIDER_MODEL_*` overrides ONLY — each unset field is `None`.
+
+    Separate from `ModelConfig` so the host-aware merge in `ModelConfig.for_host` can tell a
+    field the operator set (a value) from one that falls back to the host default (`None`);
+    an unset var must be `None`, not a required-field construction error (DECISIONS.md#056).
+    `settings_customise_sources` is class-level and cannot take a caller-seeded instance, so
+    the merge is a pure two-step in `for_host`, not a sources hook.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="OUTRIDER_MODEL_", extra="forbid", frozen=True)
+
+    triage_model: str | None = None
+    analyze_model: str | None = None
+    standard_analyze_model: str | None = None
+    synthesize_model: str | None = None
+    trace_model: str | None = None
+    patch_model: str | None = None
 
 
 class ModelConfig(BaseSettings):
@@ -111,3 +134,35 @@ class ModelConfig(BaseSettings):
                 f"current model"
             )
         return value
+
+    @classmethod
+    def for_host(cls, host: str) -> "ModelConfig":
+        """Build the per-node `ModelConfig` for `host` via a pure two-step merge: the env
+        override if the operator set it, else `HOST_DEFAULT_MODELS[host]`, field by field
+        (DECISIONS.md#056). Env wins; host defaults fill; this never reads `OUTRIDER_LLM_HOST`.
+
+        The `anthropic` host keeps the claude-family regex + `DEPRECATED_MODELS` validation
+        byte-identical (`model_validate` runs the field-validator on the merged dict); every
+        other host holds its native slugs, validated downstream by the provider's
+        `HostProfile.validate_model_slug` (the claude field-validator here would wrongly
+        reject `zai-org/GLM-5.2`).
+        """
+        try:
+            defaults = HOST_DEFAULT_MODELS[host]
+        except KeyError:
+            raise ValueError(
+                f"unknown OUTRIDER_LLM_HOST {host!r}; known hosts: {sorted(HOST_DEFAULT_MODELS)}"
+            ) from None
+        overrides = _EnvModelOverrides()
+        merged: dict[str, str] = {}
+        for field in cls.model_fields:
+            override = getattr(overrides, field)
+            merged[field] = override if override is not None else defaults[field]
+        if host == "anthropic":
+            # Validating path: model_validate runs the claude regex + DEPRECATED_MODELS
+            # field-validator on the merged dict (no env re-read), byte-identical to ModelConfig().
+            return cls.model_validate(merged)
+        # Native-slug host: the provider validates the slug downstream; the claude
+        # field-validator would wrongly reject it, so construct without validation.
+        # (model_construct with **dict trips a known pydantic-settings/mypy arg-type quirk.)
+        return cls.model_construct(**merged)  # type: ignore[arg-type]
