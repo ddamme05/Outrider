@@ -92,7 +92,7 @@ from outrider.llm.base import (
     _canonical_prompt_hash,
     _canonical_system_prompt_hash,
 )
-from outrider.llm.host_profiles import BASETEN_PROFILE, HostProfile, read_usage
+from outrider.llm.host_profiles import BASETEN_PROFILE, HostProfile, JsonMode, read_usage
 from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
@@ -108,6 +108,13 @@ __all__ = ["BASETEN_BASE_URL", "GLM_MODEL_ID", "GLMProvider", "OpenAICompatibleP
 # the canonical source is `BASETEN_PROFILE.base_url` + its slug pattern.
 BASETEN_BASE_URL: Final[str] = "https://inference.baseten.co/v1"
 GLM_MODEL_ID: Final[str] = "zai-org/GLM-5.2"
+
+# json_mode values whose request wire is the `response_format.json_schema` envelope this
+# provider builds. STRICT_JSON_SCHEMA and SOFT_FENCED differ in how the HOST enforces the
+# schema (constrained decoding vs soft/fenced), not in the request shape. JSON_OBJECT needs
+# a different `response_format` wire and is rejected at construction until implemented
+# (DECISIONS.md#056) — fail closed rather than send the wrong shape to a future host.
+_JSON_SCHEMA_MODES: Final = frozenset({JsonMode.STRICT_JSON_SCHEMA, JsonMode.SOFT_FENCED})
 
 
 _PRIVACY_NOTICE_LOGGER = logging.getLogger("outrider.llm.privacy_notice")
@@ -160,6 +167,17 @@ class OpenAICompatibleProvider:
                 f"to construct OpenAICompatibleProvider (no blanket override — DECISIONS.md#056)."
             )
 
+        # Structured-output wire: only the json_schema envelope is built (see
+        # `_JSON_SCHEMA_MODES`). A JSON_OBJECT host needs a different `response_format`
+        # shape that isn't wired yet — fail closed at construction rather than silently
+        # send the wrong wire on the first schema-bearing call (DECISIONS.md#056).
+        if profile.json_mode not in _JSON_SCHEMA_MODES:
+            raise LLMInvalidRequestError(
+                f"host {profile.host_id!r} declares json_mode={profile.json_mode.value!r}, "
+                f"which OpenAICompatibleProvider does not yet build a request shape for "
+                f"(only the json_schema envelope is implemented). DECISIONS.md#056."
+            )
+
         # Restrict configured models to the host's slug family BEFORE the pricing check.
         # Pricing coverage is necessary but NOT sufficient: RATE_TABLE also holds the
         # Anthropic models, so a claude-* slug would otherwise be accepted here and then
@@ -210,20 +228,31 @@ class OpenAICompatibleProvider:
         # Egress privacy notice (#013/#015) — surfaced from the profile's posture, not
         # enforced. Code/prompts egress to the host; model-provenance vs data-residency
         # is an operator concern.
+        # The notice carries the FULL auditable claim (#013/#015/#056): egress + origin,
+        # the no-training posture, AND the provenance (source_url + verified_date) that make
+        # the claim checkable + stale-detectable — not just egress.
         priv = profile.privacy
         _PRIVACY_NOTICE_LOGGER.info(
             "privacy_notice openai_compatible_provider host=%s egress=%s model_origin=%s "
-            "direct_hosted=%s retention=%s",
+            "direct_hosted=%s trains_on_inputs=%s retention=%s source_url=%s verified=%s",
             profile.host_id,
             priv.egress_host,
             priv.model_origin,
             priv.direct_hosted,
+            priv.trains_on_inputs,
             priv.retention,
+            priv.source_url,
+            priv.verified_date,
             extra={
                 "privacy_notice": True,
                 "egress_destination": priv.egress_host,
                 "model_origin": priv.model_origin,
                 "host": profile.host_id,
+                "direct_hosted": priv.direct_hosted,
+                "trains_on_inputs": priv.trains_on_inputs,
+                "retention": priv.retention,
+                "source_url": priv.source_url,
+                "verified_date": priv.verified_date,
             },
         )
 

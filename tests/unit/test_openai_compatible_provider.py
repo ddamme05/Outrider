@@ -272,7 +272,13 @@ def test_constructor_emits_egress_notice(caplog: pytest.LogCaptureFixture) -> No
     caplog.set_level(logging.INFO, logger="outrider.llm.privacy_notice")
     _provider()
     notices = [r for r in caplog.records if r.name == "outrider.llm.privacy_notice"]
-    assert any(getattr(r, "egress_destination", None) == "inference.baseten.co" for r in notices)
+    notice = next(
+        r for r in notices if getattr(r, "egress_destination", None) == "inference.baseten.co"
+    )
+    # The notice is the FULL auditable claim: no-training posture + provenance, not just egress.
+    assert getattr(notice, "trains_on_inputs", None) is False
+    assert getattr(notice, "source_url", "").startswith("https://")
+    assert getattr(notice, "verified_date", None) == "2026-06-27"
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +935,19 @@ async def test_trains_on_inputs_profile_fails_closed() -> None:
         OpenAICompatibleProvider(
             api_key=_api_key(),
             profile=training,
+            persister=_RecordingPersister(),
+            models=(GLM_MODEL_ID,),
+        )
+
+
+def test_json_object_profile_rejected_at_construction() -> None:
+    """A JSON_OBJECT host needs a `response_format` wire that isn't built yet — construction
+    fails closed rather than send a json_schema envelope to it (DECISIONS.md#056)."""
+    json_object_host = _synthetic_profile().model_copy(update={"json_mode": JsonMode.JSON_OBJECT})
+    with pytest.raises(LLMInvalidRequestError, match="json_mode='json_object'"):
+        OpenAICompatibleProvider(
+            api_key=_api_key(),
+            profile=json_object_host,
             persister=_RecordingPersister(),
             models=(GLM_MODEL_ID,),
         )
