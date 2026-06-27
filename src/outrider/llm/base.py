@@ -687,6 +687,11 @@ class LLMResponse(BaseModel):
     cache_write_tokens: int = Field(ge=0)
     finish_reason: str
     latency_ms: int = Field(ge=0)
+    # Host-identity triad (DECISIONS.md#056) — the provider stamps these (a later step-4
+    # commit); the persister cross-checks them against the LLMCallEvent. `None` until stamped.
+    profile_id: str | None = None
+    reasoning_enabled: bool | None = None
+    profile_contract_digest: str | None = None
 
     @field_serializer("text")
     def _redact_text_field(self, value: str, info: SerializationInfo) -> str:

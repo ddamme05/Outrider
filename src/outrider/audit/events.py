@@ -428,6 +428,16 @@ class LLMCallEvent(AuditEventBase):
     # — replay/ops distinguish them by THIS field, and the analyze cache key
     # folds the same value so the two surfaces cannot drift.
     response_format_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
+    # Host-identity triad (DECISIONS.md#056), additive + nullable: `profile_id` the active
+    # HostProfile.host_id (or "anthropic"); `reasoning_enabled` the provider-level flag;
+    # `profile_contract_digest` sha256 over the profile's wire-affecting fields +
+    # SHAPER_CONTRACT_VERSION. All three None = an UNQUALIFIED pre-#056 row (read-tolerant per
+    # DECISIONS#032; never slug→host inferred). Fresh writes stamp all three — the write-time
+    # fail-closed validator + the stamping land in later step-4 commits. Replay then splits the
+    # populations the analyze cache key splits (the FUP-096 shape).
+    profile_id: str | None = None
+    reasoning_enabled: bool | None = None
+    profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_degradation_reason_consistency(self) -> Self:
@@ -2665,6 +2675,13 @@ class AnalyzeCompletedEvent(AuditEventBase):
     (none exist in production yet — analyze hasn't shipped — so the default is a
     forward-compat hedge), so persister / replay / dashboard readers tolerate its
     absence. `specs/2026-06-08-analyze-tiered-model-routing.md`."""
+    # Host-identity triad (DECISIONS.md#056), additive + nullable — set by graph config
+    # (`build_graph` closes the triad for these zero-LLM-call completion paths, a later
+    # step-4 commit). All three None = an UNQUALIFIED pre-#056 row (read-tolerant per
+    # DECISIONS#032). Same shape + SHAPER_CONTRACT_VERSION digest as LLMCallEvent's triad.
+    profile_id: str | None = None
+    reasoning_enabled: bool | None = None
+    profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
@@ -2992,6 +3009,13 @@ class SynthesizeCompletedEvent(AuditEventBase):
     `model-strings-from-config-not-hardcoded`. Replay needs this to
     know which model produced the canonicalized summary text the hash
     binds."""
+    # Host-identity triad (DECISIONS.md#056), additive + nullable — set by graph config
+    # (`build_graph` closes the triad for these zero-LLM-call completion paths, a later
+    # step-4 commit). All three None = an UNQUALIFIED pre-#056 row (read-tolerant per
+    # DECISIONS#032). Same shape + SHAPER_CONTRACT_VERSION digest as LLMCallEvent's triad.
+    profile_id: str | None = None
+    reasoning_enabled: bool | None = None
+    profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
 
 class ReplayVerdictEvent(AuditEventBase):
