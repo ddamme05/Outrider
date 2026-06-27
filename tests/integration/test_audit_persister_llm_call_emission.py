@@ -504,6 +504,13 @@ async def test_persist_raises_when_event_response_format_digest_disagrees_with_r
         ("cache_hit", {"cache_hit": True}),  # response.cache_read_tokens is 0
         ("cost_usd", {"cost_usd": 0.999}),  # canonical is 0.00035 for the default fixture
         ("pricing_version", {"pricing_version": "v0-pre-release"}),  # PRICING_VERSION is v2
+        # Host-identity triad (DECISIONS.md#056): the same cross-check loop catches a triad
+        # field the provider stamped on the event but not (matching) on the response — a
+        # divergence that would mislabel the cache/replay host-split. (model_copy skips the
+        # coherence validator, so a single-field override is sufficient to force the mismatch.)
+        ("profile_id", {"profile_id": "baseten"}),
+        ("reasoning_enabled", {"reasoning_enabled": True}),
+        ("profile_contract_digest", {"profile_contract_digest": "b" * 64}),
     ],
 )
 async def test_persist_raises_when_event_response_field_disagrees(
