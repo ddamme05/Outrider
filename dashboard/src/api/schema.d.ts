@@ -4,61 +4,6 @@
  */
 
 export interface paths {
-    "/webhooks/github": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Receive Pull Request Webhook
-         * @description Receive a GitHub pull_request webhook, seed a review, dispatch the graph.
-         */
-        post: operations["receive_pull_request_webhook_webhooks_github_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/reviews/{review_id}/decide": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Decide
-         * @description Accept a HITL approval submission for `review_id`.
-         *
-         *     Flow (M12 step-order is load-bearing):
-         *       1. Auth (via `require_admin_api_key` Depends). 401 on failure.
-         *       2. State preflight via `ReviewStatusReader.fetch_for_decide`.
-         *          409 if: hitl_request is None / status not in the HITL set /
-         *          hitl_decision already landed.
-         *       3. Mismatch check: payload `finding_id` set must equal the
-         *          gated set on `hitl_request.findings_requiring_approval`.
-         *          422 with `{"missing": [...], "extras": [...]}` on mismatch.
-         *       4. Construct typed `HITLDecision` server-side (server-set
-         *          `reviewer_id`, server-derived `original_severity` from the
-         *          preflight map for SEVERITY_OVERRIDE outcomes, server-set
-         *          `decided_at=datetime.now(UTC)`).
-         *       5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI
-         *          `BackgroundTasks`; return 202 immediately.
-         */
-        post: operations["decide_reviews__review_id__decide_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/reviews": {
         parameters: {
             query?: never;
@@ -281,6 +226,104 @@ export interface paths {
          *     then maps each finding to the agent shape. Every audit read is `is_eval`-scoped.
          */
         get: operations["get_agent_view_api_reviews__review_id__agent_view_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive Pull Request Webhook
+         * @description Receive a GitHub pull_request webhook, seed a review, dispatch the graph.
+         */
+        post: operations["receive_pull_request_webhook_webhooks_github_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reviews/{review_id}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide
+         * @description Accept a HITL approval submission for `review_id`.
+         *
+         *     Flow (M12 step-order is load-bearing):
+         *       1. Auth (via `require_admin_api_key` Depends). 401 on failure.
+         *       2. State preflight via `ReviewStatusReader.fetch_for_decide`.
+         *          409 if: hitl_request is None / status not in the HITL set /
+         *          hitl_decision already landed.
+         *       3. Mismatch check: payload `finding_id` set must equal the
+         *          gated set on `hitl_request.findings_requiring_approval`.
+         *          422 with `{"missing": [...], "extras": [...]}` on mismatch.
+         *       4. Construct typed `HITLDecision` server-side (server-set
+         *          `reviewer_id`, server-derived `original_severity` from the
+         *          preflight map for SEVERITY_OVERRIDE outcomes, server-set
+         *          `decided_at=datetime.now(UTC)`).
+         *       5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI
+         *          `BackgroundTasks`; return 202 immediately.
+         */
+        post: operations["decide_reviews__review_id__decide_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/slack/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Slack Install
+         * @description Admin-authed install start: validate channel → sign state → redirect to Slack.
+         */
+        get: operations["slack_install_slack_install_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/slack/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Slack Oauth Callback
+         * @description Public OAuth callback: verify state → exchange code → encrypt → persist.
+         *
+         *     Identity is read from the VERIFIED state, never from the query params. Failure
+         *     modes fail closed: denied/bad/expired/forged → 4xx with nothing persisted.
+         */
+        get: operations["slack_oauth_callback_slack_oauth_callback_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -602,6 +645,12 @@ export interface components {
             analyze_model: string;
             /** Standard Analyze Model */
             standard_analyze_model?: string | null;
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Reasoning Enabled */
+            reasoning_enabled?: boolean | null;
+            /** Profile Contract Digest */
+            profile_contract_digest?: string | null;
         };
         /**
          * AnalyzeResponseRejectedEvent
@@ -754,7 +803,11 @@ export interface components {
          *     Carries `node_id="analyze"` so replay node-containment binds it to the analyze
          *     phase (CacheLookupEvent precedent). A served file emits this event, one
          *     `FileExaminationEvent(parse_status="clean")`, and one `FindingEvent` per served
-         *     finding — and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`.
+         *     finding that SURVIVES the per-round finding cap — and NO `LLMCallEvent`. (Per
+         *     FUP-180 the round-level cap runs after the per-file serve and may drop a non-gated
+         *     served finding before emission, so `served_finding_count` here is the per-file
+         *     pre-cap count, not necessarily the emitted count.) Idempotency: event_id-PK per
+         *     `DECISIONS.md#026`.
          */
         CacheServeEvent: {
             /**
@@ -1094,7 +1147,7 @@ export interface components {
          *     untrusted model output to it.
          * @enum {string}
          */
-        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api" | "command_injection" | "unsafe_deserialization" | "tls_verify_disabled";
+        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api" | "command_injection" | "unsafe_deserialization" | "tls_verify_disabled" | "weak_crypto" | "weak_password_hash" | "insecure_randomness" | "ssrf" | "ssrf_metadata" | "open_redirect" | "open_redirect_authed";
         /**
          * FindingView
          * @description One finding, assembled from the permanent audit record + content.
@@ -1426,6 +1479,12 @@ export interface components {
             degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope") | null;
             /** Response Format Digest */
             response_format_digest?: string | null;
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Reasoning Enabled */
+            reasoning_enabled?: boolean | null;
+            /** Profile Contract Digest */
+            profile_contract_digest?: string | null;
         };
         /**
          * MetricBucket
@@ -2797,6 +2856,12 @@ export interface components {
             policy_version: string;
             /** Synthesize Model */
             synthesize_model: string;
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Reasoning Enabled */
+            reasoning_enabled?: boolean | null;
+            /** Profile Contract Digest */
+            profile_contract_digest?: string | null;
         };
         /**
          * TimelineFindingContentView
@@ -2982,76 +3047,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    receive_pull_request_webhook_webhooks_github_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-hub-signature-256"?: string | null;
-                "x-github-event"?: string | null;
-                "x-github-delivery"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    decide_reviews__review_id__decide_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                review_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HITLDecisionPayload"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["_DecideResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_reviews_api_reviews_get: {
         parameters: {
             query?: {
@@ -3324,6 +3319,141 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentReviewView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    receive_pull_request_webhook_webhooks_github_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-hub-signature-256"?: string | null;
+                "x-github-event"?: string | null;
+                "x-github-delivery"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_reviews__review_id__decide_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HITLDecisionPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["_DecideResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    slack_install_slack_install_get: {
+        parameters: {
+            query: {
+                installation_id: number;
+                channel_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    slack_oauth_callback_slack_oauth_callback_get: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

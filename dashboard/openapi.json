@@ -6,141 +6,6 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/webhooks/github": {
-      "post": {
-        "summary": "Receive Pull Request Webhook",
-        "description": "Receive a GitHub pull_request webhook, seed a review, dispatch the graph.",
-        "operationId": "receive_pull_request_webhook_webhooks_github_post",
-        "parameters": [
-          {
-            "name": "x-hub-signature-256",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Hub-Signature-256"
-            }
-          },
-          {
-            "name": "x-github-event",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Github-Event"
-            }
-          },
-          {
-            "name": "x-github-delivery",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Github-Delivery"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Receive Pull Request Webhook Webhooks Github Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/reviews/{review_id}/decide": {
-      "post": {
-        "tags": [
-          "hitl"
-        ],
-        "summary": "Decide",
-        "description": "Accept a HITL approval submission for `review_id`.\n\nFlow (M12 step-order is load-bearing):\n  1. Auth (via `require_admin_api_key` Depends). 401 on failure.\n  2. State preflight via `ReviewStatusReader.fetch_for_decide`.\n     409 if: hitl_request is None / status not in the HITL set /\n     hitl_decision already landed.\n  3. Mismatch check: payload `finding_id` set must equal the\n     gated set on `hitl_request.findings_requiring_approval`.\n     422 with `{\"missing\": [...], \"extras\": [...]}` on mismatch.\n  4. Construct typed `HITLDecision` server-side (server-set\n     `reviewer_id`, server-derived `original_severity` from the\n     preflight map for SEVERITY_OVERRIDE outcomes, server-set\n     `decided_at=datetime.now(UTC)`).\n  5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI\n     `BackgroundTasks`; return 202 immediately.",
-        "operationId": "decide_reviews__review_id__decide_post",
-        "parameters": [
-          {
-            "name": "review_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Review Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HITLDecisionPayload"
-              }
-            }
-          }
-        },
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/_DecideResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/reviews": {
       "get": {
         "tags": [
@@ -613,6 +478,271 @@
                 "schema": {
                   "$ref": "#/components/schemas/AgentReviewView"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/github": {
+      "post": {
+        "summary": "Receive Pull Request Webhook",
+        "description": "Receive a GitHub pull_request webhook, seed a review, dispatch the graph.",
+        "operationId": "receive_pull_request_webhook_webhooks_github_post",
+        "parameters": [
+          {
+            "name": "x-hub-signature-256",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Hub-Signature-256"
+            }
+          },
+          {
+            "name": "x-github-event",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Github-Event"
+            }
+          },
+          {
+            "name": "x-github-delivery",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Github-Delivery"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Receive Pull Request Webhook Webhooks Github Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{review_id}/decide": {
+      "post": {
+        "tags": [
+          "hitl"
+        ],
+        "summary": "Decide",
+        "description": "Accept a HITL approval submission for `review_id`.\n\nFlow (M12 step-order is load-bearing):\n  1. Auth (via `require_admin_api_key` Depends). 401 on failure.\n  2. State preflight via `ReviewStatusReader.fetch_for_decide`.\n     409 if: hitl_request is None / status not in the HITL set /\n     hitl_decision already landed.\n  3. Mismatch check: payload `finding_id` set must equal the\n     gated set on `hitl_request.findings_requiring_approval`.\n     422 with `{\"missing\": [...], \"extras\": [...]}` on mismatch.\n  4. Construct typed `HITLDecision` server-side (server-set\n     `reviewer_id`, server-derived `original_severity` from the\n     preflight map for SEVERITY_OVERRIDE outcomes, server-set\n     `decided_at=datetime.now(UTC)`).\n  5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI\n     `BackgroundTasks`; return 202 immediately.",
+        "operationId": "decide_reviews__review_id__decide_post",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HITLDecisionPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_DecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/slack/install": {
+      "get": {
+        "tags": [
+          "slack-oauth"
+        ],
+        "summary": "Slack Install",
+        "description": "Admin-authed install start: validate channel \u2192 sign state \u2192 redirect to Slack.",
+        "operationId": "slack_install_slack_install_get",
+        "parameters": [
+          {
+            "name": "installation_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Installation Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/slack/oauth/callback": {
+      "get": {
+        "tags": [
+          "slack-oauth"
+        ],
+        "summary": "Slack Oauth Callback",
+        "description": "Public OAuth callback: verify state \u2192 exchange code \u2192 encrypt \u2192 persist.\n\nIdentity is read from the VERIFIED state, never from the query params. Failure\nmodes fail closed: denied/bad/expired/forged \u2192 4xx with nothing persisted.",
+        "operationId": "slack_oauth_callback_slack_oauth_callback_get",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -1163,6 +1293,40 @@
               }
             ],
             "title": "Standard Analyze Model"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reasoning_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Enabled"
+          },
+          "profile_contract_digest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Contract Digest"
           }
         },
         "additionalProperties": false,
@@ -1451,7 +1615,7 @@
           "source_cache_created_at"
         ],
         "title": "CacheServeEvent",
-        "description": "Per-file analyze-cache SERVE record \u2014 the serve-flip counterpart to\n`CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).\n\nEmitted (in place of `CacheLookupEvent`) when `cache_mode=\"serve\"` and a live\ncache entry is served: the LLM call is skipped and the cached findings are\nreconstructed onto this review. Carries the serve DECISION + identity;\nserved-finding CONTENT rides the re-emitted `FindingEvent` stream (the\ncontent/metadata split \u2014 replay equivalence is verified through those\nFindingEvents, not this event, so it survives the source review / cache row\nbeing purged, per `DECISIONS.md#014` point 4).\n\n`cache_key` is the composed thirteen-field digest \u2014 the canonical fingerprint of\nevery key component (`compute_analyze_cache_key`) and the join to the prior\n`CacheLookupEvent` telemetry; carrying the digest carries the components'\nidentity, and replay never recomputes the analyze key, so the individual\ncomponents are not re-listed. `(installation_id, repo_id)` is the tenant scope\n(load-bearing, never dropped). `served_trace_candidates` carries the\nmetadata-only identity of each served trace candidate (their only audit\ntrace; `reason` excluded \u2014 content tier). `source_review_id` /\n`source_cache_created_at` are non-load-bearing provenance pointers.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the analyze\nphase (CacheLookupEvent precedent). A served file emits this event, one\n`FileExaminationEvent(parse_status=\"clean\")`, and one `FindingEvent` per served\nfinding \u2014 and NO `LLMCallEvent`. Idempotency: event_id-PK per `DECISIONS.md#026`."
+        "description": "Per-file analyze-cache SERVE record \u2014 the serve-flip counterpart to\n`CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).\n\nEmitted (in place of `CacheLookupEvent`) when `cache_mode=\"serve\"` and a live\ncache entry is served: the LLM call is skipped and the cached findings are\nreconstructed onto this review. Carries the serve DECISION + identity;\nserved-finding CONTENT rides the re-emitted `FindingEvent` stream (the\ncontent/metadata split \u2014 replay equivalence is verified through those\nFindingEvents, not this event, so it survives the source review / cache row\nbeing purged, per `DECISIONS.md#014` point 4).\n\n`cache_key` is the composed thirteen-field digest \u2014 the canonical fingerprint of\nevery key component (`compute_analyze_cache_key`) and the join to the prior\n`CacheLookupEvent` telemetry; carrying the digest carries the components'\nidentity, and replay never recomputes the analyze key, so the individual\ncomponents are not re-listed. `(installation_id, repo_id)` is the tenant scope\n(load-bearing, never dropped). `served_trace_candidates` carries the\nmetadata-only identity of each served trace candidate (their only audit\ntrace; `reason` excluded \u2014 content tier). `source_review_id` /\n`source_cache_created_at` are non-load-bearing provenance pointers.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the analyze\nphase (CacheLookupEvent precedent). A served file emits this event, one\n`FileExaminationEvent(parse_status=\"clean\")`, and one `FindingEvent` per served\nfinding that SURVIVES the per-round finding cap \u2014 and NO `LLMCallEvent`. (Per\nFUP-180 the round-level cap runs after the per-file serve and may drop a non-gated\nserved finding before emission, so `served_finding_count` here is the per-file\npre-cap count, not necessarily the emitted count.) Idempotency: event_id-PK per\n`DECISIONS.md#026`."
       },
       "ContextManifestEntry": {
         "properties": {
@@ -1933,7 +2097,14 @@
           "deprecated_api",
           "command_injection",
           "unsafe_deserialization",
-          "tls_verify_disabled"
+          "tls_verify_disabled",
+          "weak_crypto",
+          "weak_password_hash",
+          "insecure_randomness",
+          "ssrf",
+          "ssrf_metadata",
+          "open_redirect",
+          "open_redirect_authed"
         ],
         "title": "FindingType",
         "description": "The constrained enum the LLM classifies findings under.\n\nThe retry/normalize/anomaly path that turns a model-produced string\ninto a FindingType enum value (or anomalies if no safe match) is the\nanalyze node's responsibility per `finding-type-enum-constrained`.\nThis enum is the type system; the analyze node is what bridges from\nuntrusted model output to it."
@@ -2555,6 +2726,40 @@
               }
             ],
             "title": "Response Format Digest"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reasoning_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Enabled"
+          },
+          "profile_contract_digest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Contract Digest"
           }
         },
         "additionalProperties": false,
@@ -5259,6 +5464,40 @@
           "synthesize_model": {
             "type": "string",
             "title": "Synthesize Model"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reasoning_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Enabled"
+          },
+          "profile_contract_digest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Contract Digest"
           }
         },
         "additionalProperties": false,
