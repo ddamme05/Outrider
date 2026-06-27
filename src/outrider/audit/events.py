@@ -367,6 +367,24 @@ class ReviewPhaseEvent(AuditEventBase):
     phase_key: str | None = None
 
 
+def _triad_all_set_or_all_none(
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+) -> bool:
+    """The host-identity triad (DECISIONS.md#056) are peers — set together or absent
+    together. True for all-three-present OR all-three-None; a partial triad (a write that
+    stamped some-but-not-all, or a corrupt row) is incoherent. The stricter fresh-write
+    guard (all-present on new events) lands in a later step-4 commit; this is the always-on
+    coherence envelope that holds for historical (all-None) rows too."""
+    present = (
+        profile_id is not None,
+        reasoning_enabled is not None,
+        profile_contract_digest is not None,
+    )
+    return all(present) or not any(present)
+
+
 class LLMCallEvent(AuditEventBase):
     """Metadata for one LLM call. Content lives in `llm_call_content` per #016.
 
@@ -438,6 +456,20 @@ class LLMCallEvent(AuditEventBase):
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
+
+    @model_validator(mode="after")
+    def _enforce_triad_coherence(self) -> Self:
+        if not _triad_all_set_or_all_none(
+            self.profile_id, self.reasoning_enabled, self.profile_contract_digest
+        ):
+            raise ValueError(
+                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
+                f"got profile_id={self.profile_id!r}, "
+                f"reasoning_enabled={self.reasoning_enabled!r}, "
+                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
+                "all-present guard lands in a later step-4 commit."
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_degradation_reason_consistency(self) -> Self:
@@ -2684,6 +2716,20 @@ class AnalyzeCompletedEvent(AuditEventBase):
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
+    def _enforce_triad_coherence(self) -> Self:
+        if not _triad_all_set_or_all_none(
+            self.profile_id, self.reasoning_enabled, self.profile_contract_digest
+        ):
+            raise ValueError(
+                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
+                f"got profile_id={self.profile_id!r}, "
+                f"reasoning_enabled={self.reasoning_enabled!r}, "
+                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
+                "all-present guard lands in a later step-4 commit."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
         """Proposal accounting: `n_proposals_seen == (n_findings_emitted
         - n_findings_served - n_findings_observed) + n_proposals_rejected
@@ -3016,6 +3062,20 @@ class SynthesizeCompletedEvent(AuditEventBase):
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
+
+    @model_validator(mode="after")
+    def _enforce_triad_coherence(self) -> Self:
+        if not _triad_all_set_or_all_none(
+            self.profile_id, self.reasoning_enabled, self.profile_contract_digest
+        ):
+            raise ValueError(
+                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
+                f"got profile_id={self.profile_id!r}, "
+                f"reasoning_enabled={self.reasoning_enabled!r}, "
+                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
+                "all-present guard lands in a later step-4 commit."
+            )
+        return self
 
 
 class ReplayVerdictEvent(AuditEventBase):
