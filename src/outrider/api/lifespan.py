@@ -1,4 +1,5 @@
 # See specs/2026-05-16-audit-persister.md.
+# Planned under DECISIONS.md#056: host/profile selector + build_graph identity closure.
 """FastAPI lifespan — durable dependency construction + teardown.
 
 Constructs at startup, in dependency order:

@@ -1,4 +1,5 @@
 # Per specs/2026-06-11-file-hash-analyze-cache.md — the analyze-cache key.
+# Planned under DECISIONS.md#056: identity-triad components join the analyze cache key.
 """Cache-key composition for the file-hash analyze cache (lever #8).
 
 One pure function: every input that could change a per-file analyze

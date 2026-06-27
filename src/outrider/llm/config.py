@@ -1,5 +1,6 @@
 # Per-node LLM model selection, env-backed.
 # See specs/2026-05-05-llm-provider-wrapper.md and docs/spec.md §4.2.
+# Planned under DECISIONS.md#056: host-aware selection via the `OUTRIDER_LLM_HOST` merge.
 """ModelConfig — env-backed per-node LLM model selection.
 
 Backs the `model-strings-from-config-not-hardcoded` invariant: every LLM

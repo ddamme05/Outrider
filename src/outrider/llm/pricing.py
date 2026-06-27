@@ -1,5 +1,6 @@
 # Per-model token-cost rate table.
 # See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #016 Amended 2026-05-05.
+# Planned under DECISIONS.md#056: host-qualified `(profile_id, model)` re-key + signatures.
 """Per-model token-cost rate table + `PRICING_VERSION` constant.
 
 Backs `LLMCallEvent.cost_usd` provider-side computation per the canonical
