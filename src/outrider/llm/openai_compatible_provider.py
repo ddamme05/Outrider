@@ -135,8 +135,9 @@ class OpenAICompatibleProvider:
     Construction is eager + fail-closed: non-empty api_key; every configured model
     matches the profile's slug pattern AND is priced; `profile.privacy.trains_on_inputs`
     is a hard-fail (no blanket override). The egress privacy notice is surfaced from
-    `profile.privacy`. Reasoning is OFF on every call in V1 via the profile's off-shaper;
-    operator-controlled reasoning + the identity triad land in the step-4 substrate.
+    `profile.privacy`. The identity triad is stamped on every response + event (DECISIONS.md#056);
+    reasoning is OFF on every call EXCEPT a `NONE`-mechanism host (no off-switch — reasoning on by
+    nature), and `reasoning=True` on an off-switch host fails closed (V1 has no verified on-wire).
     """
 
     def __init__(
