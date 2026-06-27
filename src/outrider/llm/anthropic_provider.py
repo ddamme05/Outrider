@@ -41,6 +41,7 @@ Constructor performs eager validation:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -137,6 +138,14 @@ _READ_TIMEOUT_SECONDS: Final[float] = 300.0
 # the read timeout) exceeds this and the wrapper releases without waiting.
 _ACLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
+# Host-identity triad for the anthropic native path (DECISIONS.md#056). Anthropic has no
+# HostProfile (native SDK, not OpenAI-compatible), so its `profile_contract_digest` is a stable
+# CONSTANT — distinct from any HostProfile digest so the analyze cache + audit replay separate
+# anthropic calls from GLM-host calls. Computed from a fixed string at module load (self-
+# documenting input vs an opaque literal); a value change is an intentional contract bump.
+_ANTHROPIC_PROFILE_ID: Final[str] = "anthropic"
+_ANTHROPIC_CONTRACT_DIGEST: Final[str] = hashlib.sha256(b"outrider:anthropic-native:v1").hexdigest()
+
 
 def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     """Read ZDR attestation per DECISIONS#015 — operator-attestation only,
@@ -198,6 +207,7 @@ class AnthropicProvider:
         model_config: ModelConfig,
         persister: LLMExchangePersister | None = None,
         zdr_enabled: bool | None = None,
+        reasoning: bool = False,
     ) -> None:
         # Eager api_key validation — SDK doesn't error on missing key,
         # so we surface eagerly per AC#13.
@@ -206,6 +216,17 @@ class AnthropicProvider:
                 "AnthropicProvider requires a non-empty api_key; "
                 "the Anthropic SDK does not error on missing keys at "
                 "construction, so the wrapper validates eagerly."
+            )
+
+        # Reasoning fails loud on the anthropic native path (DECISIONS.md#056): V1 has no
+        # reasoning toggle here, so OUTRIDER_LLM_REASONING=true must NOT silently no-op into a
+        # stamped reasoning_enabled=True. It is meaningful only for a host whose HostProfile
+        # declares a reasoning mechanism.
+        if reasoning:
+            raise LLMInvalidRequestError(
+                "AnthropicProvider does not support reasoning (OUTRIDER_LLM_REASONING=true) in "
+                "V1 — the native path has no reasoning toggle. Set it only for an "
+                "OpenAI-compatible host whose HostProfile declares a reasoning mechanism."
             )
 
         # Eager pricing-coverage validation — eliminates step 8's
@@ -238,6 +259,9 @@ class AnthropicProvider:
         self._model_config = model_config
         self._persister = persister
         self._zdr_enabled = _resolve_zdr_attestation(zdr_enabled)
+        # Always False on the native path (the fail-loud guard above rejects a True request);
+        # stamped on every LLMResponse + LLMCallEvent as the triad's reasoning_enabled.
+        self._reasoning_enabled = False
         # `_closed` makes `aclose()` idempotent under both sequential AND
         # concurrent calls. A future code path calling `aclose()` outside
         # the lifespan teardown (e.g., a V2-style graceful-shutdown hook
@@ -421,6 +445,12 @@ class AnthropicProvider:
             cache_write_tokens=(usage.cache_creation_input_tokens or 0),
             finish_reason=sdk_response.stop_reason or "unknown",
             latency_ms=int(latency_ms),
+            # Host-identity triad (DECISIONS.md#056): the anthropic native path is a constant
+            # (profile_id="anthropic", reasoning off, constant digest). Stamped together so the
+            # coherence envelope holds; the LLMCallEvent below mirrors these from the response.
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=self._reasoning_enabled,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
         # Step 7: hash the prompts.
@@ -549,6 +579,11 @@ class AnthropicProvider:
             cached_tokens=response.cache_read_tokens,
             cost_usd=float(cost_decimal),
             pricing_version=PRICING_VERSION,
+            # Triad mirrored from the response (single source) so the persister cross-check
+            # (a later step-4 commit) is trivially consistent (DECISIONS.md#056).
+            profile_id=response.profile_id,
+            reasoning_enabled=response.reasoning_enabled,
+            profile_contract_digest=response.profile_contract_digest,
             latency_ms=response.latency_ms,
             prompt_hash=prompt_hash,
             cache_hit=(response.cache_read_tokens > 0),

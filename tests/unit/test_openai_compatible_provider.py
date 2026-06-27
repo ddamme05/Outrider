@@ -959,3 +959,61 @@ def test_glm_alias_binds_baseten_profile() -> None:
     provider = GLMProvider(api_key=_api_key(), persister=_RecordingPersister())
     assert isinstance(provider, OpenAICompatibleProvider)
     assert str(provider._client.base_url).rstrip("/") == BASETEN_BASE_URL  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Identity-triad stamping (DECISIONS.md#056, step 4).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_stamps_triad_on_response_and_event() -> None:
+    """The provider stamps `(profile_id, reasoning_enabled, profile_contract_digest)` from the
+    profile on BOTH the LLMResponse and the persisted LLMCallEvent (event mirrors response)."""
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    with _patched_create():
+        resp = await provider.complete(_request())
+    assert resp.profile_id == "baseten"
+    assert resp.reasoning_enabled is False
+    assert resp.profile_contract_digest == BASETEN_PROFILE.profile_contract_digest
+    event, _req, event_resp = persister.calls[0]
+    assert (event.profile_id, event.reasoning_enabled, event.profile_contract_digest) == (
+        "baseten",
+        False,
+        BASETEN_PROFILE.profile_contract_digest,
+    )
+    # Event triad is sourced from the response (single source) — they match exactly.
+    assert event.profile_id == event_resp.profile_id
+    assert event.profile_contract_digest == event_resp.profile_contract_digest
+
+
+@pytest.mark.asyncio
+async def test_reasoning_requested_stamps_enabled_true() -> None:
+    persister = _RecordingPersister()
+    provider = OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=BASETEN_PROFILE,
+        persister=persister,
+        models=(GLM_MODEL_ID,),
+        reasoning=True,
+    )
+    with _patched_create():
+        resp = await provider.complete(_request())
+    assert resp.reasoning_enabled is True
+
+
+def test_none_mechanism_host_forces_reasoning_enabled_true() -> None:
+    """A host with no off-switch (reasoning_forced_on) stamps reasoning_enabled=True even when
+    reasoning is NOT requested — the audit never claims a silent off."""
+    none_profile = _synthetic_profile().model_copy(
+        update={"reasoning_mechanism": ReasoningMechanism.NONE}
+    )
+    provider = OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=none_profile,
+        persister=_RecordingPersister(),
+        models=(GLM_MODEL_ID,),
+        reasoning=False,
+    )
+    assert provider._reasoning_enabled is True  # noqa: SLF001

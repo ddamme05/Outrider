@@ -1694,3 +1694,45 @@ async def test_null_finish_reason_coalesces_to_unknown() -> None:
     with _patched_create(return_value=_sdk_message(stop_reason=None)):
         response = await provider.complete(_request())
     assert response.finish_reason == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Identity-triad stamping (DECISIONS.md#056, step 4).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stamps_native_triad() -> None:
+    """The native path stamps a constant triad — profile_id='anthropic', reasoning off, the
+    constant `_ANTHROPIC_CONTRACT_DIGEST` — on BOTH the response and the persisted event."""
+    from outrider.llm.anthropic_provider import _ANTHROPIC_CONTRACT_DIGEST
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    with _patched_create():
+        resp = await provider.complete(_request())
+    assert (resp.profile_id, resp.reasoning_enabled, resp.profile_contract_digest) == (
+        "anthropic",
+        False,
+        _ANTHROPIC_CONTRACT_DIGEST,
+    )
+    event, _req, _resp = persister.calls[0]
+    assert (event.profile_id, event.reasoning_enabled, event.profile_contract_digest) == (
+        "anthropic",
+        False,
+        _ANTHROPIC_CONTRACT_DIGEST,
+    )
+
+
+def test_anthropic_reasoning_requested_fails_loud() -> None:
+    """OUTRIDER_LLM_REASONING=true under anthropic must fail loud — the native path has no
+    reasoning toggle, so it can't be silently no-op'd into a stamped reasoning_enabled."""
+    with pytest.raises(LLMInvalidRequestError, match="does not support reasoning"):
+        AnthropicProvider(
+            api_key=_api_key(),
+            model_config=_model_config(),
+            persister=_RecordingPersister(),
+            reasoning=True,
+        )
