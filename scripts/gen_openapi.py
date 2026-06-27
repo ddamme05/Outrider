@@ -29,6 +29,15 @@ from outrider.main import create_app
 
 _REPO = Path(__file__).resolve().parent.parent
 _OPENAPI = _REPO / "dashboard" / "openapi.json"
+_SCHEMA_DTS = _REPO / "dashboard" / "src" / "api" / "schema.d.ts"
+
+
+def _restore(path: Path, backup: bytes | None) -> None:
+    """Restore `path` to its pre-run bytes, or remove it if it did not exist before the run."""
+    if backup is not None:
+        path.write_bytes(backup)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -51,20 +60,22 @@ def main() -> int:
         )
         return 1
 
-    backup = _OPENAPI.read_bytes() if _OPENAPI.exists() else None
+    # Back up BOTH mirrors: gen:types may truncate / partially write schema.d.ts before erroring,
+    # so on failure we revert BOTH to the pre-run bytes (reverting only openapi.json would leave a
+    # half-written .d.ts — the gap that breaks the "both mirrors or neither" guarantee).
+    openapi_backup = _OPENAPI.read_bytes() if _OPENAPI.exists() else None
+    schema_backup = _SCHEMA_DTS.read_bytes() if _SCHEMA_DTS.exists() else None
     _OPENAPI.write_bytes(new_bytes)
     try:
         # Fixed command (npm resolved via shutil.which), no untrusted input — build-script
         # subprocess, not a GitHub-input path (the §5 shell-exec boundary is src/outrider/ only).
         subprocess.run([npm, "run", "gen:types"], cwd=_REPO / "dashboard", check=True)  # noqa: S603
     except subprocess.CalledProcessError as exc:
-        if backup is not None:
-            _OPENAPI.write_bytes(backup)
-        else:
-            _OPENAPI.unlink(missing_ok=True)
+        _restore(_OPENAPI, openapi_backup)
+        _restore(_SCHEMA_DTS, schema_backup)
         print(
-            f"ERROR: `npm run gen:types` failed ({exc}); reverted openapi.json so the two "
-            "mirrors stay in lockstep.",
+            f"ERROR: `npm run gen:types` failed ({exc}); reverted BOTH openapi.json and "
+            "schema.d.ts so the two mirrors stay in lockstep.",
             file=sys.stderr,
         )
         return 1
