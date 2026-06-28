@@ -503,7 +503,9 @@ def match(query_match_id: str, source: bytes) -> tuple[QueryMatchSpan, ...]:
     # no predicate and pass through unchanged. The predicate reads only the
     # QueryMatchSpan + source bytes (no raw node), so the AST firewall is
     # unaffected; its contract_token rides into QUERY_REGISTRY_DIGEST so a
-    # threshold/logic change invalidates cached analyze rows. See
+    # threshold (parameter) change invalidates cached analyze rows -- a
+    # predicate-LOGIC change instead needs a manual VALUE_PREDICATE_CONTRACT_VERSION
+    # bump (the token, not the function source, is hashed). See
     # DECISIONS.md#057 + docs/trust-boundaries.md §1.
     predicate = VALUE_PREDICATES.get(query_match_id)
     if predicate is not None:
