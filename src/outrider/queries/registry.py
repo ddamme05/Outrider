@@ -198,8 +198,8 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             title="Broken or legacy cipher construction",
             description=(
                 "A construction of a broken or legacy cipher (DES, 3DES, RC2/ARC2, "
-                "RC4/ARC4, Blowfish, CAST, IDEA) is cryptographically weak. Use a "
-                "modern authenticated cipher such as AES-GCM."
+                "RC4/ARC4, Blowfish) is cryptographically weak. Use a modern "
+                "authenticated cipher such as AES-GCM."
             ),
         ),
         ObservedQuery(
@@ -326,6 +326,19 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
 
 
 _QUERY_BODIES, _COMPILED_QUERIES = _load_and_compile()
+
+# Every value-predicate MUST key a REGISTERED query id. A typo'd or stale key
+# would silently no-op — the query then over-fires with no value filter (an
+# OBSERVED over-claim) AND its contract_token never enters the digest (the
+# digest loop iterates registered bodies). Fail loud at module load (FUP-193
+# audit sweep). _COMPILED_QUERIES already includes the OBSERVED + deprecated ids.
+_unknown_predicate_ids = set(VALUE_PREDICATES) - set(_COMPILED_QUERIES)
+if _unknown_predicate_ids:
+    raise ValueError(
+        f"value-predicate(s) keyed to unregistered query id(s): "
+        f"{sorted(_unknown_predicate_ids)}. Every VALUE_PREDICATES key must be a "
+        f"registered query id; queries/value_predicates.py and the registry disagree."
+    )
 
 
 def _registry_digest(

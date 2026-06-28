@@ -91,3 +91,13 @@ def test_contract_token_change_moves_registry_digest() -> None:
     }
     moved = registry._registry_digest(registry._QUERY_BODIES, registry._OBSERVED_QUERIES, drifted)
     assert moved != base, "a predicate token change must move the registry digest"
+
+
+def test_every_value_predicate_keys_a_registered_observed_query() -> None:
+    """A value-predicate keyed to an unregistered query id would silently no-op
+    (the query over-fires with no value filter) and never enter the digest. The
+    registry fails loud at module load; pin the invariant here too."""
+    for qid in registry.VALUE_PREDICATES:
+        assert qid in registry.OBSERVED_QUERY_IDS, (
+            f"value-predicate {qid!r} does not key a registered OBSERVED query"
+        )

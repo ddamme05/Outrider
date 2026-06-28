@@ -1,5 +1,4 @@
 # Value-predicate surface for OBSERVED queries per FUP-193.
-# (Architectural rationale drafted for a DECISIONS entry, pending approval.)
 """Deterministic value-predicates for OBSERVED-tier queries.
 
 Tree-sitter's native query predicates (`#eq?`, `#any-of?`, `#match?`) compare
