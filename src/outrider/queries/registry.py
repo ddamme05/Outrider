@@ -192,11 +192,11 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             filename="weak_crypto_broken_cipher.scm",
             finding_type=FindingType.WEAK_CRYPTO,
             query_class=QueryClass.SIGNAL_ONLY,
-            title="Broken cipher (DES / RC4 / Blowfish) construction",
+            title="Broken or legacy cipher construction",
             description=(
-                "A construction of a broken cipher (DES, RC4/ARC4, Blowfish) is "
-                "cryptographically weak. Use a modern authenticated cipher such "
-                "as AES-GCM."
+                "A construction of a broken or legacy cipher (DES, 3DES, RC2/ARC2, "
+                "RC4/ARC4, Blowfish, CAST, IDEA) is cryptographically weak. Use a "
+                "modern authenticated cipher such as AES-GCM."
             ),
         ),
         ObservedQuery(
