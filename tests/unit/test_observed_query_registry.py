@@ -24,9 +24,10 @@ from outrider.queries.observed import QueryClass
 
 
 def test_observed_query_count() -> None:
-    """The OBSERVED seed library has ten queries (8 from the v1 library +
-    weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193 step 1)."""
-    assert len(registry.OBSERVED_QUERY_IDS) == 10
+    """The OBSERVED seed library has eleven queries (8 from the v1 library +
+    weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193 step 1; +
+    weak_asymmetric_key_size, FUP-193 the value-predicate slice)."""
+    assert len(registry.OBSERVED_QUERY_IDS) == 11
     assert set(registry.OBSERVED_QUERIES) == set(registry.OBSERVED_QUERY_IDS)
 
 
@@ -93,7 +94,7 @@ def test_digest_folds_observed_metadata() -> None:
     round-3 cache-identity guard. Without this, a metadata edit could serve
     a stale cached analyze outcome."""
     bodies = dict(registry._QUERY_BODIES)
-    base = registry._registry_digest(bodies, registry._OBSERVED_QUERIES)
+    base = registry._registry_digest(bodies, registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES)
 
     oid = next(iter(registry._OBSERVED_QUERIES))
     orig = registry._OBSERVED_QUERIES[oid]
@@ -107,13 +108,17 @@ def test_digest_folds_observed_metadata() -> None:
     )
     for drifted in drifts:
         mutated = {**registry._OBSERVED_QUERIES, oid: drifted}
-        assert registry._registry_digest(bodies, mutated) != base, (
+        assert registry._registry_digest(bodies, mutated, registry.VALUE_PREDICATES) != base, (
             "digest did not change when OBSERVED metadata changed; stale-cache risk"
         )
 
 
 def test_digest_stable_under_no_change() -> None:
     """Recomputing the digest over the same inputs is deterministic."""
-    a = registry._registry_digest(dict(registry._QUERY_BODIES), registry._OBSERVED_QUERIES)
-    b = registry._registry_digest(dict(registry._QUERY_BODIES), registry._OBSERVED_QUERIES)
+    a = registry._registry_digest(
+        dict(registry._QUERY_BODIES), registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES
+    )
+    b = registry._registry_digest(
+        dict(registry._QUERY_BODIES), registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES
+    )
     assert a == b == registry.QUERY_REGISTRY_DIGEST

@@ -41,9 +41,12 @@ from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.ast_facts.models import QueryCaptureSpan, QueryMatchSpan
 from outrider.policy.severity import FindingType
 from outrider.queries.observed import ObservedQuery, QueryClass
+from outrider.queries.value_predicates import VALUE_PREDICATES
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from outrider.queries.value_predicates import ValuePredicate
 
 # ---------------------------------------------------------------------------
 # Compiled language and parser (module-level singletons)
@@ -211,6 +214,19 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "as GCM, or CBC with a random IV and a MAC."
             ),
         ),
+        ObservedQuery(
+            query_match_id="python.weak_asymmetric_key_size",
+            filename="weak_asymmetric_key_size.scm",
+            finding_type=FindingType.WEAK_CRYPTO,
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Weak asymmetric key size (RSA/DSA < 2048 bits)",
+            description=(
+                "An RSA or DSA key is generated with fewer than 2048 bits, which "
+                "is below current guidance and factorable by well-resourced "
+                "attackers. Use at least 2048 bits (3072+ for long-term keys), or "
+                "an elliptic-curve key."
+            ),
+        ),
     )
 }
 
@@ -312,9 +328,14 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
 _QUERY_BODIES, _COMPILED_QUERIES = _load_and_compile()
 
 
-def _registry_digest(bodies: dict[str, str], observed: Mapping[str, ObservedQuery]) -> str:
+def _registry_digest(
+    bodies: dict[str, str],
+    observed: Mapping[str, ObservedQuery],
+    value_predicates: Mapping[str, ValuePredicate],
+) -> str:
     """Length-prefixed SHA-256 over the sorted (id, body) pairs PLUS the
-    routing-and-output metadata of OBSERVED queries.
+    routing-and-output metadata of OBSERVED queries PLUS any value-predicate
+    contract token.
 
     The analyze-cache key component that pins query SEMANTICS AND emitted
     output. A pattern edit that keeps its id changes this digest — AND so
@@ -324,6 +345,13 @@ def _registry_digest(bodies: dict[str, str], observed: Mapping[str, ObservedQuer
     here keeps cached OBSERVED findings from being served under metadata
     that no longer produced them (specs/2026-06-11-file-hash-analyze-cache.md
     + FUP-166; the Cost Lever 3 round-3 review; `DECISIONS.md#048`).
+
+    A value-predicate's `contract_token` is folded the same way (FUP-193):
+    the token encodes the predicate identity and every parameter that changes
+    its verdict (e.g. the key-size threshold), so a threshold or logic change
+    moves the digest exactly as a `.scm` edit would, invalidating cached analyze
+    rows produced under the old verdict.
+
     Length-prefixing makes the field boundaries unambiguous — the
     `llm/base.py::_canonical_prompt_hash` precedent. Covers deprecated
     ledger bodies too: strictly safer, and ledger changes are rare.
@@ -345,13 +373,22 @@ def _registry_digest(bodies: dict[str, str], observed: Mapping[str, ObservedQuer
                 field_bytes = field.encode("utf-8")
                 h.update(f"{len(field_bytes)}:".encode())
                 h.update(field_bytes)
+        # A value-predicate alters which matches survive (and the cached
+        # payload) without touching the .scm body — fold its contract token.
+        vp = value_predicates.get(query_id)
+        if vp is not None:
+            token_bytes = vp.contract_token.encode("utf-8")
+            h.update(f"{len(token_bytes)}:".encode())
+            h.update(token_bytes)
     return h.hexdigest()
 
 
 # Code-pinned at module load from the actual compiled sources — never
 # injectable, so the recorded digest cannot drift from the queries that
 # actually ran (the TRIVIAL_FILTER_VERSION adjacency precedent).
-QUERY_REGISTRY_DIGEST: Final[str] = _registry_digest(_QUERY_BODIES, _OBSERVED_QUERIES)
+QUERY_REGISTRY_DIGEST: Final[str] = _registry_digest(
+    _QUERY_BODIES, _OBSERVED_QUERIES, VALUE_PREDICATES
+)
 
 
 def _all_known_ids() -> set[str]:
@@ -438,6 +475,19 @@ def match(query_match_id: str, source: bytes) -> tuple[QueryMatchSpan, ...]:
                 captures=capture_tuple,
             )
         )
+
+    # Value-predicate filter: an OBSERVED query may carry a deterministic
+    # post-structure filter (queries/value_predicates.py) that drops matches
+    # whose captured literal fails a numeric test tree-sitter's native
+    # predicates cannot express (e.g. RSA key size >= 2048). Most queries have
+    # no predicate and pass through unchanged. The predicate reads only the
+    # QueryMatchSpan + source bytes (no raw node), so the AST firewall is
+    # unaffected; its contract_token rides into QUERY_REGISTRY_DIGEST so a
+    # threshold/logic change invalidates cached analyze rows. See
+    # FUP-193 + docs/trust-boundaries.md §1.
+    predicate = VALUE_PREDICATES.get(query_match_id)
+    if predicate is not None:
+        raw_matches = [m for m in raw_matches if predicate.evaluate(m, source)]
 
     # Sort matches by (byte_start, byte_end) with captures-projection tiebreaker
     # per Internal contracts (Pydantic models lack a default `__lt__`).

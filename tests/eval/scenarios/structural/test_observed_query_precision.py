@@ -97,6 +97,15 @@ _CASES: tuple[tuple[str, str, str], ...] = (
         "AES.new(key, expected=AES.MODE_ECB)\nCipher(algorithms.AES(key), default=modes.ECB())\n"
         "if mode == AES.MODE_ECB:\n    raise ValueError()\nlog.info(AES.MODE_ECB)\n",
     ),
+    (
+        "python.weak_asymmetric_key_size",
+        # Canonical weak form: a 1024-bit RSA key (value-predicate keeps < 2048).
+        "RSA.generate(1024)\n",
+        # The secure boundary (2048, value-predicate DROPS — strict `<`), a strong
+        # size, a non-literal size (cannot be evaluated → not flagged), and a
+        # non-key-gen call must all NOT produce an OBSERVED finding.
+        "RSA.generate(2048)\nRSA.generate(4096)\nRSA.generate(bits)\nRSA.encrypt(data)\n",
+    ),
 )
 
 # Each advertised weak-crypto form, pinned individually — the shared precision
@@ -219,6 +228,60 @@ def test_weak_crypto_each_advertised_variant_fires(query_id: str, variant: str) 
     """
     matches = registry.match(query_id, variant.encode())
     assert len(matches) >= 1, f"{query_id} must match the advertised variant {variant!r}"
+
+
+# FUP-193 value-predicate: weak_asymmetric_key_size fires iff the captured key
+# size is a LITERAL below 2048. The structural .scm match is identical for every
+# integer argument; the registry value-predicate (queries/value_predicates.py)
+# is what flips the verdict on the value, so the shared `>=1` precision case is
+# vacuous for a threshold — each form is pinned individually here. A revert of
+# the value-predicate (every integer matches) flips the False rows to match,
+# and a revert of the first-arg anchor flips the `e=`-exponent row.
+_KEY_SIZE_CASES: tuple[tuple[str, bool], ...] = (
+    # WEAK literals (< 2048) — the value-predicate keeps these.
+    ("RSA.generate(1024)\n", True),  # weak positional
+    ("RSA.generate(2047)\n", True),  # just under the floor
+    ("DSA.generate(512)\n", True),  # weak DSA
+    ("RSA.generate(bits=1024)\n", True),  # weak keyword `bits`
+    ("RSA.generate(0x400)\n", True),  # hex literal 1024 -> weak
+    ("rsa.generate_private_key(public_exponent=65537, key_size=1024)\n", True),  # cryptography
+    ("dsa.generate_private_key(key_size=1024)\n", True),
+    ("Crypto.PublicKey.RSA.generate(1024)\n", True),  # qualified object
+    # SECURE / boundary — the value-predicate DROPS these (strict `<`, so 2048 is
+    # the floor and is NOT flagged).
+    ("RSA.generate(2048)\n", False),
+    ("RSA.generate(4096)\n", False),
+    ("RSA.generate(bits=2048)\n", False),
+    ("rsa.generate_private_key(key_size=2048)\n", False),
+    ("RSA.generate(2_048)\n", False),  # underscore literal 2048
+    ("RSA.generate(0x800)\n", False),  # hex literal 2048
+    # The `e=` exponent (17) must never be read as the key size — the first-arg
+    # anchor pins @_keysize to 4096, which is secure, so this drops.
+    ("RSA.generate(4096, randfunc, 17)\n", False),
+    # NON-LITERAL size: cannot be evaluated -> not flagged (the OBSERVED proof
+    # must prove its claim; a variable size is not deterministic evidence).
+    ("RSA.generate(bits)\n", False),
+    ("RSA.generate(KEY_SIZE)\n", False),
+    # WRONG SHAPE: not an RSA/DSA key generation.
+    ("RSA.encrypt(data)\n", False),
+    ("foo.generate(1024)\n", False),
+)
+
+
+@pytest.mark.parametrize(
+    ("src", "should_match"),
+    _KEY_SIZE_CASES,
+    ids=[s.strip() for s, _ in _KEY_SIZE_CASES],
+)
+def test_weak_asymmetric_key_size_value_predicate(src: str, should_match: bool) -> None:
+    """The value-predicate fires iff the key size is a literal below 2048: weak
+    literals match, the 2048 floor and stronger sizes drop, the `e=` exponent is
+    never mistaken for the key size, and a non-literal size is never flagged."""
+    matches = registry.match("python.weak_asymmetric_key_size", src.encode())
+    if should_match:
+        assert len(matches) >= 1, f"{src!r} should fire (weak literal key size)"
+    else:
+        assert len(matches) == 0, f"{src!r} must NOT fire (secure / non-literal / wrong shape)"
 
 
 def test_every_observed_query_has_a_precision_case() -> None:
