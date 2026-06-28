@@ -94,9 +94,10 @@ def test_contract_token_change_moves_registry_digest() -> None:
 
 
 def test_every_value_predicate_keys_a_registered_observed_query() -> None:
-    """A value-predicate keyed to an unregistered query id would silently no-op
-    (the query over-fires with no value filter) and never enter the digest. The
-    registry fails loud at module load; pin the invariant here too."""
+    """A value-predicate keyed to a non-OBSERVED query id (unregistered, or a
+    structural/deprecated id outside the OBSERVED producer's iteration) would
+    silently no-op — the query over-fires with no value filter. The registry
+    fails loud at module load; pin the OBSERVED-only invariant here too."""
     for qid in registry.VALUE_PREDICATES:
         assert qid in registry.OBSERVED_QUERY_IDS, (
             f"value-predicate {qid!r} does not key a registered OBSERVED query"
