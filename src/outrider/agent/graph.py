@@ -232,6 +232,13 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     cache_mode: CacheMode = CacheMode.SHADOW,
     resolve_slack_target: SlackTargetResolver | None = None,
     dashboard_base_url: str | None = None,
+    # Host-identity triad (DECISIONS.md#056) closed into the per-node completion events (Analyze /
+    # Synthesize), which can emit on zero-LLM-call cache-serve/skip paths and so cannot source it
+    # from a provider response. Lifespan supplies these from the resolved profile; default None =
+    # unqualified (pre-#056 / tests).
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
 ) -> _CompiledTriageGraph:
     """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
 
@@ -248,6 +255,15 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError("provider must not be None")
     if model_config is None:
         raise BuildGraphError("model_config must not be None")
+    # Host-identity triad (DECISIONS.md#056): peers — all three present (a qualified host) or all
+    # None (unqualified). Lifespan supplies them from one resolved profile; a partial set is a
+    # wiring bug, caught here before it reaches the completion events' coherence validator.
+    _triad = (profile_id, reasoning_enabled, profile_contract_digest)
+    if any(v is not None for v in _triad) and not all(v is not None for v in _triad):
+        raise BuildGraphError(
+            "host-identity triad must be all-present or all-None; got a partial set "
+            "(profile_id / reasoning_enabled / profile_contract_digest)"
+        )
     if phase_event_sink is None:
         raise BuildGraphError("phase_event_sink must not be None")
     if file_examination_sink is None:
@@ -445,6 +461,9 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         provider=provider,
         analyze_model=model_config.analyze_model,
         standard_analyze_model=model_config.standard_analyze_model,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
@@ -504,6 +523,9 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         provider=provider,
         synthesize_model=model_config.synthesize_model,
         patch_model=model_config.patch_model,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
         patches_enabled=patch_config.patches_enabled,
         max_suggestions=patch_config.max_patch_suggestions_per_review,
         phase_event_sink=phase_event_sink,

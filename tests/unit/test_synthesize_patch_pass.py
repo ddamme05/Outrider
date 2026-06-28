@@ -511,3 +511,31 @@ async def test_synthesize_hard_cap_fails_loud_no_strand(monkeypatch: pytest.Monk
     # any patch/summary LLM call.
     assert event_sink.completed == []
     assert provider.requests == []
+
+
+@pytest.mark.asyncio
+async def test_synthesize_completed_event_carries_host_identity_triad() -> None:
+    """The triad closed in at build_graph (DECISIONS.md#056) rides the SynthesizeCompletedEvent."""
+    finding = _make_high_finding(line=2)
+    state = _make_state(finding, content_head="a = 1\nreturn x\nc = 3\n")
+    sink = _StubSynthesizeEventSink()
+    await synthesize(
+        state,
+        provider=_DispatchingProvider(  # type: ignore[arg-type]
+            _batch_json(finding.finding_id, "return x", "return sanitize(x)")
+        ),
+        synthesize_model="stub-synthesize-model",
+        patch_model="stub-patch-model",
+        profile_id="anthropic",
+        reasoning_enabled=False,
+        profile_contract_digest="b" * 64,
+        patches_enabled=True,
+        max_suggestions=5,
+        phase_event_sink=_StubPhaseSink(),
+        synthesize_event_sink=sink,
+        anomaly_sink=_StubAnomalySink(),
+    )
+    completed = sink.completed[0]
+    assert completed.profile_id == "anthropic"
+    assert completed.reasoning_enabled is False
+    assert completed.profile_contract_digest == "b" * 64

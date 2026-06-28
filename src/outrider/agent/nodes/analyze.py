@@ -333,6 +333,11 @@ async def analyze(
     provider: LLMProvider,
     analyze_model: str,
     standard_analyze_model: str,
+    # Host-identity triad (DECISIONS.md#056) closed in at build_graph for the AnalyzeCompletedEvent
+    # (default None = unqualified until lifespan wiring; the event validator enforces coherence).
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
@@ -998,6 +1003,11 @@ async def analyze(
         policy_version=active_policy_version,
         analyze_model=analyze_model,
         standard_analyze_model=standard_model_used,
+        # Host-identity triad (DECISIONS.md#056), closed in at build_graph (None until lifespan
+        # wiring; coherence enforced by the event validator).
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
     )
 
     # All validation done. Side effects now, in order:
