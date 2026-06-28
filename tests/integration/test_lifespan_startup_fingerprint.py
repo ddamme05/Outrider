@@ -59,7 +59,7 @@ async def test_happy_path_matches_active_version_seed(
     stub_provider = make_stub_llm_provider()
     lifespan = build_lifespan(
         engine_factory=_build_engine_factory(migrated_db),
-        provider_factory=lambda _persister, _model_config: stub_provider,
+        provider_factory=lambda _persister, _model_config, _host, _reasoning: stub_provider,
         checkpointer_factory=in_memory_checkpointer_factory,  # type: ignore[arg-type]
     )
 
@@ -81,7 +81,7 @@ async def test_missing_row_raises_startup_error(
     with patch("outrider.api.lifespan.ACTIVE_POLICY_VERSION", "9.9.9"):
         lifespan = build_lifespan(
             engine_factory=_build_engine_factory(migrated_db),
-            provider_factory=lambda _persister, _model_config: stub_provider,
+            provider_factory=lambda _persister, _model_config, _host, _reasoning: stub_provider,
         )
 
         app = FastAPI()
@@ -174,7 +174,7 @@ async def test_policy_mismatch_raises_startup_error(
     with patch("outrider.api.lifespan.ACTIVE_POLICY_VERSION", "9.9.9"):
         lifespan = build_lifespan(
             engine_factory=_build_engine_factory(migrated_db),
-            provider_factory=lambda _persister, _model_config: stub_provider,
+            provider_factory=lambda _persister, _model_config, _host, _reasoning: stub_provider,
         )
 
         app = FastAPI()

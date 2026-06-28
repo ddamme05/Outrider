@@ -308,3 +308,39 @@ def resolve_host_profile(host_id: str) -> HostProfile:
         raise ValueError(
             f"unknown OpenAI-compatible host {host_id!r}; known hosts: {sorted(HOST_PROFILES)}"
         ) from None
+
+
+# The native Anthropic host's identity. Anthropic stays OUTSIDE the HostProfile registry
+# (#056, string-selected), so its identity lives here as constants, not a HostProfile.
+# Centralized so the provider's stamp AND the lifespan's build_graph completion-event
+# closure share ONE source (no drift — Codex guardrail). The digest is distinct from any
+# HostProfile digest so cache + replay separate anthropic from GLM-host calls; computed
+# from a fixed string at load (self-documenting; a value change is an intentional bump).
+ANTHROPIC_PROFILE_ID: Final[str] = "anthropic"
+ANTHROPIC_CONTRACT_DIGEST: Final[str] = hashlib.sha256(b"outrider:anthropic-native:v1").hexdigest()
+
+
+def resolve_host_identity(host: str, *, reasoning: bool) -> tuple[str, bool, str]:
+    """The host-identity triad `(profile_id, reasoning_enabled, profile_contract_digest)`
+    for a host (DECISIONS.md#056). The SINGLE source for both a provider's stamp and the
+    lifespan's `build_graph` completion-event closure, so the two cannot drift —
+    `test_provider_identity` pins provider-stamped == this.
+
+    `anthropic` is the native path (no profile, no reasoning toggle in V1, so a requested
+    `reasoning` fails closed). Every other host resolves through `resolve_host_profile`,
+    combining the operator's `reasoning` flag with the profile's `reasoning_forced_on`
+    exactly as the provider does (`requested or forced_on`).
+    """
+    if host == ANTHROPIC_PROFILE_ID:
+        if reasoning:
+            raise ValueError(
+                "OUTRIDER_LLM_REASONING is on but OUTRIDER_LLM_HOST is 'anthropic', which "
+                "has no reasoning toggle in V1 — unset it or select a reasoning-capable host."
+            )
+        return (ANTHROPIC_PROFILE_ID, False, ANTHROPIC_CONTRACT_DIGEST)
+    profile = resolve_host_profile(host)
+    return (
+        profile.host_id,
+        reasoning or profile.reasoning_forced_on,
+        profile.profile_contract_digest,
+    )

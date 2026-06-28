@@ -46,7 +46,7 @@ async def test_lifespan_calls_provider_aclose_on_shutdown(
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister, _model_config: stub_provider,
+        provider_factory=lambda _persister, _model_config, _host, _reasoning: stub_provider,
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
         checkpointer_factory=in_memory_checkpointer_factory,
     )
@@ -75,7 +75,7 @@ async def test_lifespan_calls_engine_dispose_on_shutdown(
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister, _model_config: stub_provider,
+        provider_factory=lambda _persister, _model_config, _host, _reasoning: stub_provider,
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
         checkpointer_factory=in_memory_checkpointer_factory,
     )

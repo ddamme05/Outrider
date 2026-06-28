@@ -59,7 +59,9 @@ async def test_lifespan_wires_review_budget_into_build_graph(
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister, _model_config: make_stub_llm_provider(),
+        provider_factory=lambda _persister, _model_config, _host, _reasoning: (
+            make_stub_llm_provider()
+        ),  # noqa: E501
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
         checkpointer_factory=in_memory_checkpointer_factory,
     )

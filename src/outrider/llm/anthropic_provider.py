@@ -41,7 +41,6 @@ Constructor performs eager validation:
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -78,6 +77,7 @@ from outrider.llm.base import (
     _canonical_system_prompt_hash,
 )
 from outrider.llm.config import ModelConfig
+from outrider.llm.host_profiles import ANTHROPIC_CONTRACT_DIGEST, ANTHROPIC_PROFILE_ID
 from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
@@ -139,13 +139,14 @@ _READ_TIMEOUT_SECONDS: Final[float] = 300.0
 # the read timeout) exceeds this and the wrapper releases without waiting.
 _ACLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
-# Host-identity triad for the anthropic native path (DECISIONS.md#056). Anthropic has no
-# HostProfile (native SDK, not OpenAI-compatible), so its `profile_contract_digest` is a stable
-# CONSTANT — distinct from any HostProfile digest so the analyze cache + audit replay separate
-# anthropic calls from GLM-host calls. Computed from a fixed string at module load (self-
-# documenting input vs an opaque literal); a value change is an intentional contract bump.
-_ANTHROPIC_PROFILE_ID: Final[str] = "anthropic"
-_ANTHROPIC_CONTRACT_DIGEST: Final[str] = hashlib.sha256(b"outrider:anthropic-native:v1").hexdigest()
+# Host-identity triad constants for the anthropic native path (DECISIONS.md#056) are
+# centralized in `host_profiles` (the single identity source the lifespan's
+# resolve_host_identity + this provider's stamp share, so they can't drift — Codex
+# guardrail). Re-bound under these private names so this module's stamping and the
+# downstream `from anthropic_provider import _ANTHROPIC_*` importers are unchanged (an
+# assignment, not an import-alias, so the names are explicitly defined/exportable).
+_ANTHROPIC_PROFILE_ID: Final[str] = ANTHROPIC_PROFILE_ID
+_ANTHROPIC_CONTRACT_DIGEST: Final[str] = ANTHROPIC_CONTRACT_DIGEST
 
 
 def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:

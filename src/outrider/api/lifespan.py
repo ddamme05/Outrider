@@ -97,7 +97,13 @@ from outrider.github.publisher import GitHubKitPublisher
 from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.base import LLMProvider
 from outrider.llm.config import ModelConfig
+from outrider.llm.host_profiles import (
+    ANTHROPIC_PROFILE_ID,
+    resolve_host_identity,
+    resolve_host_profile,
+)
 from outrider.llm.logging import register_filter_on_all_handlers
+from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
 from outrider.llm.tracing import wrap_provider_if_tracing
 from outrider.notify.config import SlackOAuthSettings
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
@@ -238,7 +244,11 @@ CheckpointerFactory = Callable[[], "AbstractAsyncContextManager[Any]"]
 # read once at the lifespan boundary must stay single-instance through
 # the whole graph; constructing the same Settings class twice defeats
 # the "lifespan-validated once" guarantee.
-ProviderFactory = Callable[[AuditPersister, ModelConfig], LLMProvider]
+# `host` + `reasoning` are RESOLVED ONCE in the lifespan body (from OUTRIDER_LLM_HOST /
+# OUTRIDER_LLM_REASONING) and passed IN — the factory must not re-read the env, or the
+# single-authority guarantee breaks (#056, Codex guardrail). The same resolved host feeds
+# `ModelConfig.for_host`, the factory's provider selection, and `resolve_host_identity`.
+ProviderFactory = Callable[[AuditPersister, ModelConfig, str, bool], LLMProvider]
 # `SeverityPolicyFingerprintCheck` is the injectable seam for §0c's
 # fingerprint check. Production runs `_verify_severity_policy_fingerprint`
 # (real DB query against severity_policies); lifespan tests that inject a
@@ -350,38 +360,66 @@ def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
 def _default_provider_factory(
     persister: AuditPersister,
     model_config: ModelConfig,
+    host: str,
+    reasoning: bool,
 ) -> LLMProvider:
-    """Production provider factory: reads ANTHROPIC_API_KEY env, constructs
-    AnthropicProvider with the supplied (lifespan-built) `ModelConfig`, and
-    applies LangSmith tracing at this composition-root boundary.
+    """Production provider factory: selects the provider for `host` (DECISIONS.md#056)
+    and applies LangSmith tracing at this composition-root boundary.
 
-    Privacy startup notice fires inside the provider's `__init__` (per
-    DECISIONS#015 point 4), once per lifespan startup. The `persister`
-    arg is injected so the wrapper's fail-closed-pre-call gate is
-    satisfied at construction. The `model_config` arg is injected so
-    the provider and the compiled graph share ONE instance — the prior
-    shape constructed an independent `ModelConfig()` here AND a separate
-    one in the lifespan body for `build_graph(...)`, defeating the
-    single-source guarantee.
+    `host` + `reasoning` are passed IN (resolved once in the lifespan body) — this
+    factory never re-reads OUTRIDER_LLM_HOST, so host selection stays single-authority.
+    `host == "anthropic"` → `AnthropicProvider` (reads `ANTHROPIC_API_KEY`); any other
+    host → `OpenAICompatibleProvider` bound to `resolve_host_profile(host)`, reading the
+    profile's declared `api_key_env`. The `model_config` (built via `for_host(host)`) is
+    shared with the compiled graph so the provider and graph never diverge.
 
-    Tracing is applied HERE, not inside the provider (DECISIONS.md#035):
-    `wrap_provider_if_tracing` returns the provider wrapped in a
-    `TracingLLMProvider` when tracing is enabled, else the provider unchanged.
-    The "is tracing on?" decision lives once, at this construction site — the
-    concrete provider stays tracing-agnostic. Returns `LLMProvider` because the
-    return is the (possibly wrapped) Protocol, not the concrete provider.
+    Privacy startup notice fires inside the provider's `__init__` (DECISIONS#015 point 4).
+    Tracing is applied HERE, not inside the provider (DECISIONS.md#035): the "is tracing
+    on?" decision lives once, at this construction site.
     """
-    try:
-        api_key_raw = os.environ["ANTHROPIC_API_KEY"]
-    except KeyError as exc:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY env var is required for the FastAPI lifespan."
-        ) from exc
-    provider = AnthropicProvider(
-        api_key=SecretStr(api_key_raw),
-        model_config=model_config,
-        persister=persister,
-    )
+    provider: LLMProvider
+    if host == ANTHROPIC_PROFILE_ID:
+        try:
+            api_key_raw = os.environ["ANTHROPIC_API_KEY"]
+        except KeyError as exc:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY env var is required for the FastAPI lifespan."
+            ) from exc
+        provider = AnthropicProvider(
+            api_key=SecretStr(api_key_raw),
+            model_config=model_config,
+            persister=persister,
+            reasoning=reasoning,
+        )
+    else:
+        profile = resolve_host_profile(host)
+        try:
+            api_key_raw = os.environ[profile.api_key_env]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"{profile.api_key_env} env var is required for OUTRIDER_LLM_HOST={host!r}."
+            ) from exc
+        # The distinct configured model slugs (for_host filled them) — the provider
+        # validates every request.model against this set before any paid call.
+        models = tuple(
+            sorted(
+                {
+                    model_config.triage_model,
+                    model_config.analyze_model,
+                    model_config.standard_analyze_model,
+                    model_config.synthesize_model,
+                    model_config.trace_model,
+                    model_config.patch_model,
+                }
+            )
+        )
+        provider = OpenAICompatibleProvider(
+            api_key=SecretStr(api_key_raw),
+            profile=profile,
+            persister=persister,
+            models=models,
+            reasoning=reasoning,
+        )
     return wrap_provider_if_tracing(provider)
 
 
@@ -579,15 +617,35 @@ def build_lifespan(
                 return
             # ───────────────────────────────────────────────────────────────────
 
-            # Step 5: ModelConfig built ONCE here and shared with both
-            # the provider (step 5b) AND build_graph (step 8). Reading
-            # OUTRIDER_MODEL_* twice would defeat the lifespan's
-            # "validated once, reused" guarantee.
-            model_config = ModelConfig()
+            # Step 5: host selection (DECISIONS.md#056). OUTRIDER_LLM_HOST +
+            # OUTRIDER_LLM_REASONING are read ONCE here (single authority) and
+            # threaded to ModelConfig.for_host, the provider factory, AND the
+            # identity triad — so the model config, the provider's stamp, and
+            # build_graph's completion-event closure all derive from one host.
+            llm_host = os.environ.get("OUTRIDER_LLM_HOST", ANTHROPIC_PROFILE_ID).strip()
+            llm_reasoning = os.environ.get("OUTRIDER_LLM_REASONING", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+
+            # ModelConfig built ONCE and shared with both the provider (step 5b)
+            # AND build_graph (step 8). for_host applies OUTRIDER_MODEL_* over the
+            # host's defaults; reading it twice would defeat the "validated once"
+            # guarantee.
+            model_config = ModelConfig.for_host(llm_host)
 
             # Step 5b: provider; lifespan teardown awaits aclose.
-            provider = provider_factory(persister, model_config)
+            provider = provider_factory(persister, model_config, llm_host, llm_reasoning)
             stack.push_async_callback(provider.aclose)
+
+            # Step 5c: the host-identity triad for build_graph's completion-event
+            # closure. resolve_host_identity is the SAME source the provider stamps
+            # from, so per-node completion events (zero-LLM cache-serve/skip paths)
+            # carry the identical triad as the provider's per-call LLMCallEvents.
+            profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
+                llm_host, reasoning=llm_reasoning
+            )
 
             # Step 6: GitHub App settings (env-driven). Reads
             # OUTRIDER_GITHUB_APP_ID + _APP_PRIVATE_KEY + _WEBHOOK_SECRET.
@@ -785,6 +843,12 @@ def build_lifespan(
                 cache_mode=cache_config.mode,
                 dashboard_base_url=_dashboard_settings.dashboard_base_url,
                 resolve_slack_target=slack_resolver,
+                # Host-identity triad (DECISIONS.md#056 step 4d): closes the triad
+                # into the analyze + synthesize completion events and the analyze
+                # cache key, so production reviews are host-qualified end-to-end.
+                profile_id=profile_id,
+                reasoning_enabled=reasoning_enabled,
+                profile_contract_digest=profile_contract_digest,
             )
 
             # Step 9: `run_graph` closure for the V1 dispatcher to call

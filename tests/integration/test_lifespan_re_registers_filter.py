@@ -61,7 +61,7 @@ def _make_test_lifespan(
 
     return build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister, _model_config: stub_provider,
+        provider_factory=lambda _persister, _model_config, _host, _reasoning: stub_provider,
         severity_policy_fingerprint_check=noop_fingerprint,  # type: ignore[arg-type]
         checkpointer_factory=checkpointer_factory,  # type: ignore[arg-type]
     )
