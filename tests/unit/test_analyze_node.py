@@ -1903,3 +1903,20 @@ async def test_analyze_standard_model_recorded_even_when_equals_deep_inert(
     event = routed_deps["analyze_event_sink"].completed[0]
     # A STANDARD LLM call ran → the field is the model used, even though it equals DEEP.
     assert event.standard_analyze_model == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_analyze_completed_event_carries_host_identity_triad(deps: dict[str, Any]) -> None:
+    """The triad closed in at build_graph (DECISIONS.md#056) rides the AnalyzeCompletedEvent."""
+    state = _build_review_state()
+    await analyze(
+        state,
+        **deps,
+        profile_id="baseten",
+        reasoning_enabled=False,
+        profile_contract_digest="a" * 64,
+    )
+    completed = deps["analyze_event_sink"].completed[0]
+    assert completed.profile_id == "baseten"
+    assert completed.reasoning_enabled is False
+    assert completed.profile_contract_digest == "a" * 64

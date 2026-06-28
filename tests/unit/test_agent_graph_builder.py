@@ -312,6 +312,33 @@ def test_build_graph_happy_path_returns_compiled_graph() -> None:
     assert callable(graph.ainvoke)
 
 
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"profile_id": "baseten"},
+        {"reasoning_enabled": False},
+        {"profile_contract_digest": "a" * 64},
+        {"profile_id": "baseten", "reasoning_enabled": False},
+    ],
+)
+def test_build_graph_rejects_partial_identity_triad(partial: dict[str, object]) -> None:
+    """The host-identity triad (DECISIONS.md#056) is peers — build_graph rejects a partial set
+    before it can reach the per-node completion events' coherence validator."""
+    with pytest.raises(BuildGraphError, match="all-present or all-None"):
+        build_graph(**{**_valid_args(), **partial})
+
+
+def test_build_graph_accepts_full_and_absent_triad() -> None:
+    """All-None (unqualified / pre-#056) and all-present (qualified) both construct."""
+    build_graph(**_valid_args())  # absent
+    build_graph(
+        **_valid_args(),
+        profile_id="baseten",
+        reasoning_enabled=False,
+        profile_contract_digest="a" * 64,
+    )
+
+
 # ---------------------------------------------------------------------------
 # None rejections (3 sibling tests)
 # ---------------------------------------------------------------------------

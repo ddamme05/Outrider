@@ -496,6 +496,11 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     provider: LLMProvider,
     synthesize_model: str,
     patch_model: str,
+    # Host-identity triad (DECISIONS.md#056) closed in at build_graph for the
+    # SynthesizeCompletedEvent (default None = unqualified until lifespan wiring).
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
     patches_enabled: bool,
     max_suggestions: int,
     phase_event_sink: PhaseEventSink,
@@ -731,6 +736,11 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             # (checked at `_enforce_synthesize_input_invariants` entry).
             policy_version=state.triage_result.policy_version,
             synthesize_model=synthesize_model,
+            # Host-identity triad (DECISIONS.md#056), closed in at build_graph (None until lifespan
+            # wiring; coherence enforced by the event validator).
+            profile_id=profile_id,
+            reasoning_enabled=reasoning_enabled,
+            profile_contract_digest=profile_contract_digest,
         )
     )
 
