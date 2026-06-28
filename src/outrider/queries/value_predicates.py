@@ -16,11 +16,15 @@ happened in `registry.match()` before the QueryMatchSpan was built.
 Proof boundary: the predicate keeps the OBSERVED proof DETERMINISTIC. It fires
 only on a literal it can evaluate (the `.scm` captures an `(integer)` node, so a
 non-literal size never reaches the predicate) and the comparison is a pure
-function of the source — never model judgment. The predicate's identity AND its
-parameters ride into `QUERY_REGISTRY_DIGEST` via `contract_token`, so a
-threshold or logic change auto-invalidates the analyze cache (parallel to a
-`.scm` body edit and the `SHAPER_CONTRACT_VERSION` precedent in
-`llm/host_profiles.py`).
+function of the source — never model judgment. The predicate's identity and its
+token-encoded *parameters* ride into `QUERY_REGISTRY_DIGEST` via `contract_token`,
+so a **threshold** (or any parameter in the token) change auto-invalidates the
+analyze cache. The digest hashes the *token*, NOT the function source, so a change
+to the predicate's evaluation **logic** that is not encoded in a token parameter
+(e.g. flipping `<` to `<=`, or the parse base) does NOT auto-invalidate — it
+requires a manual `VALUE_PREDICATE_CONTRACT_VERSION` bump. This is the
+`SHAPER_CONTRACT_VERSION` manual-version discipline (`llm/host_profiles.py`), NOT
+the automatic verbatim-body hashing the `.scm` bodies get.
 """
 
 from __future__ import annotations
@@ -72,11 +76,14 @@ def _capture_text(match: QueryMatchSpan, source: bytes, name: str) -> str:
 
     Raises `ValueError` if the capture is absent — a predicate registered for a
     query that does not bind the expected capture is a wiring bug, caught loud
-    at first match rather than silently dropping every finding.
+    at first match rather than silently dropping every finding. Decodes
+    `strict`: `source` is already-validated UTF-8 (the analyze node decodes file
+    content upstream), so a decode error is impossible in practice and would
+    signal a corrupted byte envelope — fail loud rather than mask it with U+FFFD.
     """
     for capture in match.captures:
         if capture.name == name:
-            return source[capture.byte_start : capture.byte_end].decode("utf-8", errors="replace")
+            return source[capture.byte_start : capture.byte_end].decode("utf-8")
     raise ValueError(
         f"value-predicate expected a capture named {name!r} but the match "
         f"bound only {sorted(c.name for c in match.captures)!r}; the query and "
