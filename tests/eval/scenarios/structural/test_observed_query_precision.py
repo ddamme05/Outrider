@@ -74,13 +74,17 @@ _CASES: tuple[tuple[str, str, str], ...] = (
         # individually by test_weak_crypto_each_advertised_variant_fires.
         "DES.new(key)\n",
         # Strong cipher (bare AND qualified), an import-only DES (an import is not
-        # use), a lowercase non-crypto `des` (name-based + case-sensitive), and a
-        # QUALIFIED `.new` whose attribute is NOT a cipher name must all NOT fire —
-        # the qualified pattern binds the cipher NAME, not any dotted `.new`.
+        # use), a lowercase non-crypto `des` (name-based + case-sensitive), a
+        # QUALIFIED `.new` whose attribute is NOT a cipher name, AND the common
+        # English-word names CAST/IDEA (deliberately EXCLUDED from the #any-of?
+        # list — too collision-prone for a name-based OBSERVED finding, so a
+        # `config.IDEA.new(x)` never over-claims; the JUDGED path covers the real
+        # IDEA/CAST cipher in context) must all NOT fire.
         "from Crypto.Cipher import DES\nimport hashlib\nAES.new(key, AES.MODE_GCM)\n"
         "Crypto.Cipher.AES.new(key, AES.MODE_GCM)\n"
         "des = make_factory()\ndes.new(rows=3)\n"
-        "models.User.new(data)\norm.Session.new(bind)\n",
+        "models.User.new(data)\norm.Session.new(bind)\n"
+        "config.IDEA.new(payload)\nast.CAST.new(node)\n",
     ),
     (
         "python.weak_crypto_ecb_mode",
@@ -102,9 +106,11 @@ _CASES: tuple[tuple[str, str, str], ...] = (
         # Canonical weak form: a 1024-bit RSA key (value-predicate keeps < 2048).
         "RSA.generate(1024)\n",
         # The secure boundary (2048, value-predicate DROPS — strict `<`), a strong
-        # size, a non-literal size (cannot be evaluated → not flagged), and a
-        # non-key-gen call must all NOT produce an OBSERVED finding.
-        "RSA.generate(2048)\nRSA.generate(4096)\nRSA.generate(bits)\nRSA.encrypt(data)\n",
+        # size, a non-literal size (cannot be evaluated → not flagged), a non-key-gen
+        # call, AND a non-RSA/DSA keyword call (the object guard — generate(bits=)
+        # is not RSA/DSA-exclusive) must all NOT produce an OBSERVED finding.
+        "RSA.generate(2048)\nRSA.generate(4096)\nRSA.generate(bits)\nRSA.encrypt(data)\n"
+        "foo.generate(bits=1024)\ndh.generate_private_key(key_size=1024)\n",
     ),
 )
 
@@ -122,8 +128,6 @@ _WEAK_CRYPTO_VARIANTS: tuple[tuple[str, str], ...] = (
     ("python.weak_crypto_broken_cipher", "DES3.new(key)\n"),
     ("python.weak_crypto_broken_cipher", "ARC2.new(key)\n"),
     ("python.weak_crypto_broken_cipher", "RC2.new(key)\n"),
-    ("python.weak_crypto_broken_cipher", "CAST.new(key)\n"),
-    ("python.weak_crypto_broken_cipher", "IDEA.new(key)\n"),
     # FUP-193 step-1.5: the qualified-call form (the cipher imported under its
     # dotted path) — the cipher name is the immediate attribute of the object.
     ("python.weak_crypto_broken_cipher", "Crypto.Cipher.DES.new(key)\n"),
@@ -246,7 +250,12 @@ _KEY_SIZE_CASES: tuple[tuple[str, bool], ...] = (
     ("RSA.generate(0x400)\n", True),  # hex literal 1024 -> weak
     ("rsa.generate_private_key(public_exponent=65537, key_size=1024)\n", True),  # cryptography
     ("dsa.generate_private_key(key_size=1024)\n", True),
-    ("Crypto.PublicKey.RSA.generate(1024)\n", True),  # qualified object
+    ("Crypto.PublicKey.RSA.generate(1024)\n", True),  # qualified object, positional
+    ("Crypto.PublicKey.RSA.generate(bits=1024)\n", True),  # qualified object, keyword
+    (  # cryptography qualified module path
+        "cryptography.hazmat.primitives.asymmetric.rsa.generate_private_key(key_size=1024)\n",
+        True,
+    ),
     # SECURE / boundary — the value-predicate DROPS these (strict `<`, so 2048 is
     # the floor and is NOT flagged).
     ("RSA.generate(2048)\n", False),
@@ -265,6 +274,16 @@ _KEY_SIZE_CASES: tuple[tuple[str, bool], ...] = (
     # WRONG SHAPE: not an RSA/DSA key generation.
     ("RSA.encrypt(data)\n", False),
     ("foo.generate(1024)\n", False),
+    # OVER-CLAIM GUARD: the keyword forms MUST pin the library to RSA/DSA — a
+    # benign object's .generate(bits=) / .generate_private_key(key_size=) call is
+    # NOT a proven RSA/DSA key and must NOT fire. This was the convergent audit
+    # finding (5 lenses): `generate`/`bits=`/`key_size=` are not RSA/DSA-exclusive
+    # names. A revert of the keyword object guard flips every row below to fire.
+    ("foo.generate(bits=1024)\n", False),
+    ("token.generate(bits=128)\n", False),
+    ("nonce.generate(bits=96)\n", False),
+    ("dh.generate_private_key(key_size=1024)\n", False),  # Diffie-Hellman, not RSA/DSA
+    ("ec.generate_private_key(key_size=256)\n", False),  # elliptic curve, not RSA/DSA
 )
 
 
