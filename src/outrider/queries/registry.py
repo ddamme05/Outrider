@@ -327,17 +327,20 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
 
 _QUERY_BODIES, _COMPILED_QUERIES = _load_and_compile()
 
-# Every value-predicate MUST key a REGISTERED query id. A typo'd or stale key
-# would silently no-op — the query then over-fires with no value filter (an
-# OBSERVED over-claim) AND its contract_token never enters the digest (the
-# digest loop iterates registered bodies). Fail loud at module load (FUP-193
-# audit sweep). _COMPILED_QUERIES already includes the OBSERVED + deprecated ids.
-_unknown_predicate_ids = set(VALUE_PREDICATES) - set(_COMPILED_QUERIES)
+# Every value-predicate MUST key an OBSERVED query id. A typo'd or stale key
+# would silently no-op — the OBSERVED producer iterates only OBSERVED_QUERIES, so
+# a predicate keyed to a structural or deprecated id (both in _COMPILED_QUERIES)
+# would pass a registered-id check yet never run in the producer path, AND its
+# contract_token would still fold into the digest under a non-OBSERVED key. Scope
+# the guard to OBSERVED ids so it matches the producer + the test invariant
+# (FUP-193 audit sweep + code-review fold).
+_unknown_predicate_ids = set(VALUE_PREDICATES) - set(_OBSERVED_QUERIES)
 if _unknown_predicate_ids:
     raise ValueError(
-        f"value-predicate(s) keyed to unregistered query id(s): "
+        f"value-predicate(s) keyed to non-OBSERVED query id(s): "
         f"{sorted(_unknown_predicate_ids)}. Every VALUE_PREDICATES key must be a "
-        f"registered query id; queries/value_predicates.py and the registry disagree."
+        f"registered OBSERVED query id; queries/value_predicates.py and the "
+        f"registry disagree."
     )
 
 
@@ -360,10 +363,14 @@ def _registry_digest(
     + FUP-166; the Cost Lever 3 round-3 review; `DECISIONS.md#048`).
 
     A value-predicate's `contract_token` is folded the same way (DECISIONS.md#057):
-    the token encodes the predicate identity and every parameter that changes
-    its verdict (e.g. the key-size threshold), so a threshold or logic change
-    moves the digest exactly as a `.scm` edit would, invalidating cached analyze
-    rows produced under the old verdict.
+    the token encodes the predicate identity and every verdict-changing *parameter*
+    (e.g. the key-size threshold), so a threshold change invalidates cached analyze
+    rows. NOTE the asymmetry vs the `.scm` bodies: the body bytes are hashed
+    verbatim (any edit auto-moves the digest), but only the predicate's *token* is
+    hashed, not its function source — a change to the predicate's evaluation LOGIC
+    that is not encoded in a token parameter requires a manual
+    `VALUE_PREDICATE_CONTRACT_VERSION` bump (the `SHAPER_CONTRACT_VERSION`
+    discipline), not an automatic move.
 
     Length-prefixing makes the field boundaries unambiguous — the
     `llm/base.py::_canonical_prompt_hash` precedent. Covers deprecated
