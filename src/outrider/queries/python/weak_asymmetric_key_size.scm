@@ -1,3 +1,5 @@
+; See DECISIONS.md#057 (OBSERVED value-predicate mechanism).
+;
 ; Weak RSA/DSA asymmetric key size (< 2048 bits). The .scm matches the
 ; key-generation call shape and captures the integer-LITERAL key size as
 ; @_keysize; the registry value-predicate (queries/value_predicates.py) then
