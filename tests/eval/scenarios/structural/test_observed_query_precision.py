@@ -84,9 +84,11 @@ _CASES: tuple[tuple[str, str, str], ...] = (
         # Single canonical form; both ECB construction forms are pinned by
         # test_weak_crypto_each_advertised_variant_fires.
         "AES.new(key, AES.MODE_ECB)\n",
-        # Strong mode, plus a guard/denylist reference and a log of the constant
-        # (neither is a cipher construction) must NOT fire.
+        # Strong mode (positional AND keyword), plus a guard/denylist reference and
+        # a log of the constant (neither is a cipher construction) must NOT fire —
+        # the keyword path matches the ECB value, not merely the presence of a kwarg.
         "AES.new(key, AES.MODE_GCM)\nCipher(algorithms.AES(key), modes.GCM(iv))\n"
+        "AES.new(key, mode=AES.MODE_GCM)\nCipher(algorithms.AES(key), mode=modes.GCM(iv))\n"
         "if mode == AES.MODE_ECB:\n    raise ValueError()\nlog.info(AES.MODE_ECB)\n",
     ),
 )
@@ -102,6 +104,11 @@ _WEAK_CRYPTO_VARIANTS: tuple[tuple[str, str], ...] = (
     ("python.weak_crypto_broken_cipher", "Blowfish.new(key)\n"),
     ("python.weak_crypto_ecb_mode", "AES.new(key, AES.MODE_ECB)\n"),
     ("python.weak_crypto_ecb_mode", "Cipher(algorithms.AES(key), modes.ECB())\n"),
+    # FUP-193 step-1.5 recall: the keyword-argument mode form (very common real
+    # code) — the mode lives in a `keyword_argument` node the positional patterns
+    # above miss. Both the `MODE_ECB` constant and the `modes.ECB()` call forms.
+    ("python.weak_crypto_ecb_mode", "AES.new(key, mode=AES.MODE_ECB)\n"),
+    ("python.weak_crypto_ecb_mode", "Cipher(algorithms.AES(key), mode=modes.ECB())\n"),
 )
 
 
