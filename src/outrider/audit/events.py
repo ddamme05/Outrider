@@ -650,10 +650,10 @@ class CacheLookupEvent(AuditEventBase):
     rejection, no max_tokens truncation), a concurrent live row wins
     the insert, and a store failure is contained, not retried.
     The accumulated would-hit rate is the evidence the serve
-    flip is gated on. `cache_key` is the sixteen-field digest (prompt
-    digest + fifteen explicit scope/version/identity components, the last
-    three the host-identity triad per DECISIONS.md#056) from
-    `cache/key.py::compute_analyze_cache_key`; the serve-stage
+    flip is gated on. `cache_key` is the seventeen-field digest (the recipe
+    version + prompt digest + fifteen explicit scope/version/identity
+    components, the last three the host-identity triad per DECISIONS.md#056)
+    from `cache/key.py::compute_analyze_cache_key`; the serve-stage
     `CacheServeEvent` (flip arc) carries the full self-contained replay
     payload — this shadow event deliberately stays thin.
 

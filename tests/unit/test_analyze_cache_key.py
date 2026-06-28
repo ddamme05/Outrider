@@ -18,7 +18,7 @@ from outrider.ast_facts.parameterized_calls import (
     ParameterizedCallScan,
     scan_digest,
 )
-from outrider.cache import compute_analyze_cache_key
+from outrider.cache import ANALYZE_CACHE_KEY_VERSION, compute_analyze_cache_key
 from outrider.llm.base import _canonical_prompt_hash
 from outrider.policy.subsumption import SUBSUMES_DIGEST
 from outrider.queries.registry import QUERY_REGISTRY_DIGEST, _registry_digest
@@ -113,22 +113,24 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_prompt_digest_plus_fifteen_framed_components() -> None:
+def test_golden_recipe_seventeen_framed_fields() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: sixteen length-prefixed fields — `_canonical_prompt_hash` output
-    first (one recipe, two consumers; never forks from
-    `LLMCallEvent.prompt_hash`), then the fifteen explicit
+    test: seventeen length-prefixed fields — `ANALYZE_CACHE_KEY_VERSION`
+    (the recipe-structure version, DECISIONS.md#056) first, then
+    `_canonical_prompt_hash` output (one recipe, two consumers; never forks
+    from `LLMCallEvent.prompt_hash`), then the fifteen explicit
     scope/version/identity components in declaration order, each framed
     `{len(bytes)}:` on UTF-8 bytes. The host-identity triad
-    (DECISIONS.md#056) folds last: `profile_id`, then `reasoning_enabled`
-    rendered `true`/`false`, then `profile_contract_digest`. Any change to
-    the framing, the component order, or the prompt component's recipe fails
-    this test — deliberately: that change is a cache-wide invalidation and
-    must be made here too."""
+    (DECISIONS.md#056) is the last three of those fifteen: `profile_id`, then
+    `reasoning_enabled` rendered `true`/`false`, then `profile_contract_digest`.
+    Any change to the framing, the component order, or the prompt component's
+    recipe fails this test — deliberately: that change is a cache-wide
+    invalidation and must bump `ANALYZE_CACHE_KEY_VERSION` and be made here too."""
     import hashlib
 
     expected = hashlib.sha256()
     for component in (
+        ANALYZE_CACHE_KEY_VERSION,
         _canonical_prompt_hash(
             system_prompt=_BASE_KWARGS["system_prompt"],
             user_prompt=_BASE_KWARGS["user_prompt"],
@@ -245,6 +247,16 @@ def test_analyze_parser_version_pinned() -> None:
     OBSERVED finding under a same-span JUDGED subsumer — again changing what a
     cache row may serve."""
     assert ANALYZE_PARSER_VERSION == "analyze-parser-v4"
+
+
+def test_analyze_cache_key_version_pinned() -> None:
+    """The recipe-structure version (DECISIONS.md#056), distinct from
+    ANALYZE_PARSER_VERSION (admitted-findings semantics): bump on ANY change to
+    the cache-key component set, order, or framing. v1 was the implicit original
+    recipe (no constant); v2 is the host-identity re-key (#056 folded the triad
+    in). It folds FIRST in `compute_analyze_cache_key`, so a bump re-keys the
+    whole cache — the explicit, replay-durable marker #056 mandates."""
+    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v2"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:
