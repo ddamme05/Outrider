@@ -84,11 +84,14 @@ _CASES: tuple[tuple[str, str, str], ...] = (
         # Single canonical form; both ECB construction forms are pinned by
         # test_weak_crypto_each_advertised_variant_fires.
         "AES.new(key, AES.MODE_ECB)\n",
-        # Strong mode (positional AND keyword), plus a guard/denylist reference and
-        # a log of the constant (neither is a cipher construction) must NOT fire —
-        # the keyword path matches the ECB value, not merely the presence of a kwarg.
+        # Strong mode (positional AND keyword), a guard/denylist reference and a log
+        # of the constant (neither is a cipher construction), AND an ECB-valued
+        # NON-`mode=` keyword must all NOT fire. The keyword path binds `name="mode"`,
+        # so the proof is "constructed in ECB MODE", not merely "an ECB constant
+        # appears in some keyword" — the proof-boundary tightening (Codex review).
         "AES.new(key, AES.MODE_GCM)\nCipher(algorithms.AES(key), modes.GCM(iv))\n"
         "AES.new(key, mode=AES.MODE_GCM)\nCipher(algorithms.AES(key), mode=modes.GCM(iv))\n"
+        "AES.new(key, expected=AES.MODE_ECB)\nCipher(algorithms.AES(key), default=modes.ECB())\n"
         "if mode == AES.MODE_ECB:\n    raise ValueError()\nlog.info(AES.MODE_ECB)\n",
     ),
 )
