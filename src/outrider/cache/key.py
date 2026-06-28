@@ -1,5 +1,6 @@
 # Per specs/2026-06-11-file-hash-analyze-cache.md — the analyze-cache key.
-# Planned under DECISIONS.md#056: identity-triad components join the analyze cache key.
+# Per DECISIONS.md#056: the host-identity triad (profile_id, reasoning_enabled,
+# profile_contract_digest) joins the key, splitting the analyze cache by host.
 """Cache-key composition for the file-hash analyze cache (lever #8).
 
 One pure function: every input that could change a per-file analyze
@@ -43,10 +44,13 @@ def compute_analyze_cache_key(
     parameterized_call_scan_digest: str,
     observed_producer_version: str,
     subsumes_digest: str,
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
 ) -> str:
-    """The analyze-cache key: thirteen length-prefixed fields — the canonical
-    prompt digest plus twelve explicit scope/version components — as one
-    SHA-256 hex digest. `subsumes_digest` (DECISIONS.md#055) pins the
+    """The analyze-cache key: sixteen length-prefixed fields — the canonical
+    prompt digest plus fifteen explicit scope/version/identity components — as
+    one SHA-256 hex digest. `subsumes_digest` (DECISIONS.md#055) pins the
     `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
     admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
     edge edit changes the admitted finding set without touching the prompt,
@@ -67,12 +71,27 @@ def compute_analyze_cache_key(
     out-of-scope region admit different finding sets (the veto disables
     on any whole-file parse error), so they must never share an entry.
 
+    The host-identity triad — `profile_id`, `reasoning_enabled`,
+    `profile_contract_digest` (DECISIONS.md#056) — splits the cache by
+    provider host: identical prompt bytes sent to different hosts
+    (Baseten-GLM vs Anthropic), or to one host with reasoning on vs off,
+    are different output populations and must never share an entry. All
+    three `None` is an UNQUALIFIED (pre-#056) caller; each folds an empty
+    component, which never collides with a real host (`host_id`/digest are
+    non-empty, and `reasoning_enabled` renders `true`/`false`).
+
     Component order is part of the recipe — changing it is a cache-wide
     invalidation and must be deliberate. `active_policy_version` is the
     THREADED write-time value analyze stamps findings with (never the
     module constant read here); same for every version argument.
     """
     prompt_digest = _canonical_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt)
+    # Host-identity triad (DECISIONS.md#056): None => UNQUALIFIED, folded as an
+    # empty component; reasoning renders true/false. Never collides with a real
+    # host (host_id/digest are non-empty).
+    reasoning_component = (
+        "" if reasoning_enabled is None else ("true" if reasoning_enabled else "false")
+    )
     h = hashlib.sha256()
     for component in (
         prompt_digest,
@@ -88,6 +107,9 @@ def compute_analyze_cache_key(
         parameterized_call_scan_digest,
         observed_producer_version,
         subsumes_digest,
+        profile_id if profile_id is not None else "",
+        reasoning_component,
+        profile_contract_digest if profile_contract_digest is not None else "",
     ):
         component_bytes = component.encode("utf-8")
         h.update(f"{len(component_bytes)}:".encode())
