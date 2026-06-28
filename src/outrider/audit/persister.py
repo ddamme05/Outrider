@@ -1964,6 +1964,7 @@ class AuditPersister:
             # raising here rolls back the freshly-inserted audit row.
             canonical_cost_usd = float(
                 compute_cost_usd(
+                    response.profile_id,
                     response.model,
                     input_tokens=response.input_tokens,
                     cache_write_tokens=response.cache_write_tokens,

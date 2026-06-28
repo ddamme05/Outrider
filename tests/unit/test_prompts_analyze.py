@@ -277,9 +277,11 @@ def test_stable_prefix_clears_min_cacheable_floor_conservatively() -> None:
     from outrider.llm.pricing import min_cacheable_tokens
 
     cfg = ModelConfig()
+    # min_cacheable_tokens is host-qualified per DECISIONS.md#056: both analyze
+    # tiers are Claude/Anthropic models, so the profile_id is "anthropic".
     strictest_floor = max(
-        min_cacheable_tokens(cfg.analyze_model),
-        min_cacheable_tokens(cfg.standard_analyze_model),
+        min_cacheable_tokens("anthropic", cfg.analyze_model),
+        min_cacheable_tokens("anthropic", cfg.standard_analyze_model),
     )
     conservative_tokens = len(SYSTEM_PROMPT_STABLE_PREFIX) // 5
     assert conservative_tokens >= int(strictest_floor * 1.1), (

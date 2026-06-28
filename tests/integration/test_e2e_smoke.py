@@ -140,6 +140,10 @@ class _ScriptedLLMProvider:
         return None
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
+        from outrider.llm.anthropic_provider import (
+            _ANTHROPIC_CONTRACT_DIGEST,
+            _ANTHROPIC_PROFILE_ID,
+        )
         from outrider.llm.base import LLMResponse
 
         self.calls.append(request)
@@ -161,6 +165,9 @@ class _ScriptedLLMProvider:
             cache_write_tokens=0,
             finish_reason="end_turn",
             latency_ms=42,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 

@@ -33,6 +33,10 @@ from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameteriz
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
 from outrider.audit.events import compute_finding_content_hash
 from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
+from outrider.llm.anthropic_provider import (
+    _ANTHROPIC_CONTRACT_DIGEST,
+    _ANTHROPIC_PROFILE_ID,
+)
 from outrider.llm.base import LLMRequest, LLMResponse, _canonical_prompt_hash
 from outrider.policy import EvidenceTier, FindingType
 from outrider.policy.canonical import compute_served_finding_id
@@ -122,6 +126,9 @@ class _StubLLMProvider:
             cache_write_tokens=0,
             finish_reason=self._finish_reason,
             latency_ms=10,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 

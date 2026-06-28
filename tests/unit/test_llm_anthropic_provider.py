@@ -1315,9 +1315,10 @@ async def test_step8_keyerror_fallback_on_unknown_response_model() -> None:
     # Error message names BOTH response.model and request.model for debug
     assert "claude-haiku-99-99-substituted" in str(err)
     assert "claude-sonnet-4-6" in str(err)
-    # Structured attribute carries the normalized pricing key — for an
-    # un-dated model that's the same as the literal response.model
-    assert err.missing_models == ("claude-haiku-99-99-substituted",)
+    # Structured attribute carries the host-qualified pricing key str
+    # (DECISIONS.md#056) — `str((profile_id, normalized_model))`. For an
+    # un-dated model the normalized model equals the literal response.model.
+    assert err.missing_models == (str(("anthropic", "claude-haiku-99-99-substituted")),)
 
 
 @pytest.mark.asyncio
@@ -1355,10 +1356,11 @@ async def test_step8_keyerror_message_names_normalized_pricing_key() -> None:
     assert "claude-fake-99-99" in msg, (
         f"error message must name the normalized pricing key; got: {msg}"
     )
-    # Structured attribute carries the normalized key (the actual
-    # missing RATE_TABLE entry), NOT the dated literal.
-    assert err.missing_models == ("claude-fake-99-99",), (
-        f"missing_models must hold the normalized pricing key for an "
+    # Structured attribute carries the host-qualified pricing key str
+    # (DECISIONS.md#056) — `str((profile_id, normalized_model))`, where the
+    # dated literal normalizes to the undated base, NOT the dated literal.
+    assert err.missing_models == (str(("anthropic", "claude-fake-99-99")),), (
+        f"missing_models must hold the host-qualified pricing key str for an "
         f"operator to add the right RATE_TABLE entry; got: "
         f"{err.missing_models}"
     )
@@ -1393,13 +1395,14 @@ async def test_persister_receives_complete_llm_call_event() -> None:
     # AC#18: cost_usd populated on event already
     assert event.cost_usd > 0
     # AC#19: four-class computation
-    from outrider.llm.pricing import RATE_TABLE
+    from outrider.llm.pricing import RATE_TABLE, pricing_key
 
+    sonnet_key = pricing_key("anthropic", "claude-sonnet-4-6")
     expected_decimal = (
-        RATE_TABLE["claude-sonnet-4-6"].in_per_token * 1000
-        + RATE_TABLE["claude-sonnet-4-6"].cache_write_per_token * 100
-        + RATE_TABLE["claude-sonnet-4-6"].cache_read_per_token * 200
-        + RATE_TABLE["claude-sonnet-4-6"].out_per_token * 500
+        RATE_TABLE[sonnet_key].in_per_token * 1000
+        + RATE_TABLE[sonnet_key].cache_write_per_token * 100
+        + RATE_TABLE[sonnet_key].cache_read_per_token * 200
+        + RATE_TABLE[sonnet_key].out_per_token * 500
     )
     # Provider casts Decimal to float; allow tiny float-precision tolerance
     assert abs(event.cost_usd - float(expected_decimal)) < 1e-9
@@ -1449,16 +1452,16 @@ async def test_cost_computed_against_response_model_not_request_model() -> None:
     assert event.model == "claude-haiku-4-5"
     assert response.model == "claude-haiku-4-5"
     # cost computed at HAIKU rates, not SONNET rates
-    from outrider.llm.pricing import RATE_TABLE
+    from outrider.llm.pricing import RATE_TABLE, pricing_key
 
-    haiku_rates = RATE_TABLE["claude-haiku-4-5"]
+    haiku_rates = RATE_TABLE[pricing_key("anthropic", "claude-haiku-4-5")]
     expected_haiku_cost = float(haiku_rates.in_per_token * 1000 + haiku_rates.out_per_token * 500)
     assert abs(event.cost_usd - expected_haiku_cost) < 1e-9, (
         f"cost should match response.model (haiku) rates, got {event.cost_usd}, "
         f"expected {expected_haiku_cost}"
     )
     # Sanity: sonnet rates would have produced a meaningfully different cost
-    sonnet_rates = RATE_TABLE["claude-sonnet-4-6"]
+    sonnet_rates = RATE_TABLE[pricing_key("anthropic", "claude-sonnet-4-6")]
     sonnet_cost = float(sonnet_rates.in_per_token * 1000 + sonnet_rates.out_per_token * 500)
     assert abs(event.cost_usd - sonnet_cost) > 1e-6, (
         "test fixture invariant: haiku and sonnet rates must differ enough "

@@ -2102,6 +2102,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # once at the aggregate event. Matches sum(LLMCallEvent.cost_usd)
     # modulo a single float-cast step rather than per-file FP drift.
     cost_decimal = compute_cost_usd(
+        response.profile_id,
         analyze_model,
         input_tokens=response.input_tokens,
         cache_write_tokens=response.cache_write_tokens,
@@ -2625,6 +2626,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     response: LLMResponse = await provider.complete(request)
 
     cost_decimal = compute_cost_usd(
+        response.profile_id,
         analyze_model,
         input_tokens=response.input_tokens,
         cache_write_tokens=response.cache_write_tokens,

@@ -388,6 +388,17 @@ class _FixtureScriptedProvider:
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.audit.events import LLMCallEvent
+
+        # The fixture mirrors AnthropicProvider (claude-family ModelConfig
+        # defaults; the GLM scorecard uses the real provider, not this double).
+        # Stamp the same host-identity triad it would (DECISIONS.md#056) so the
+        # persister can host-qualify cost + cross-check event-vs-response, and so
+        # pricing keys on `("anthropic", model)`. Lazy import keeps the SDK off
+        # eval_driver's module-load path.
+        from outrider.llm.anthropic_provider import (
+            _ANTHROPIC_CONTRACT_DIGEST,
+            _ANTHROPIC_PROFILE_ID,
+        )
         from outrider.llm.base import (
             LLMResponse,
             _canonical_prompt_hash,
@@ -436,7 +447,7 @@ class _FixtureScriptedProvider:
                 # input_tokens` holds by construction.
                 system_tokens = probe.token_estimator(request.system_prompt)
                 try:
-                    floor = min_cacheable_tokens(request.model)
+                    floor = min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, request.model)
                 except KeyError as exc:
                     # Same loud-failure contract as the pricing KeyError
                     # below — a bare KeyError mid-complete() hides the cause.
@@ -447,6 +458,17 @@ class _FixtureScriptedProvider:
                         f"a priced+floored model. Use a priced model in the "
                         f"eval's ModelConfig."
                     ) from exc
+                if floor is None:
+                    # `None` is the #056 unknown-floor sentinel (a priced host with
+                    # no documented threshold). The deterministic cache model needs a
+                    # concrete floor; anthropic models always have one, so this only
+                    # fires under an env override to a floorless host.
+                    raise EvalDriverError(
+                        f"eval fixture model {request.model!r} "
+                        f"(node_id={request.node_id!r}) has a None (unknown) "
+                        f"cacheable floor — the cache model needs a concretely "
+                        f"floored model."
+                    )
                 if system_tokens >= floor:
                     entry = (
                         request.model,
@@ -475,6 +497,9 @@ class _FixtureScriptedProvider:
             cache_write_tokens=cache_write_tokens,
             finish_reason="end_turn",
             latency_ms=1,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
         # Emit LLMCallEvent + llm_call_content BEFORE returning, exactly as the real
         # LLMProvider contract requires (mirrors AnthropicProvider Step 9). FUP-093:
@@ -485,7 +510,8 @@ class _FixtureScriptedProvider:
         # shape fails loudly here rather than landing a silently-wrong audit row.
         try:
             cost = compute_cost_usd(
-                model=response.model,
+                response.profile_id,
+                response.model,
                 input_tokens=response.input_tokens,
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
@@ -539,6 +565,12 @@ class _FixtureScriptedProvider:
             # the persister's event-request cross-check rejects every scripted
             # analyze call (the request carries the pinned schema).
             response_format_digest=request.response_format_digest,
+            # Host-identity triad (DECISIONS.md#056) mirrored from response.* —
+            # the single-source pattern the real providers use, so the persister's
+            # event-vs-response cross-check compares two copies of one source.
+            profile_id=response.profile_id,
+            reasoning_enabled=response.reasoning_enabled,
+            profile_contract_digest=response.profile_contract_digest,
         )
         await self._persister.persist(event, request, response)
         return response
