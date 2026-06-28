@@ -863,10 +863,12 @@ async def test_reasoning_tokens_not_added_to_output_or_cost() -> None:
 def _synthetic_profile() -> HostProfile:
     """A second profile serving the SAME priced slug, but with EXCLUDES-cached
     accounting, a different base_url, and the reasoning_effort_none shaper — proves
-    the per-host *axes* (base_url, §8a mode, reasoning shaper) are profile-driven,
-    independent of the host-qualified pricing key. host_id stays "baseten" so the
-    (profile_id, model) pricing key resolves (DECISIONS.md#056); the wire axes below
-    are what diverge."""
+    the per-host *wire axes* (base_url, §8a mode, reasoning shaper) are profile-driven.
+    host_id stays "baseten" here only so the (profile_id, model) pricing key resolves
+    against the production RATE_TABLE without injection; the two-host cost + audit
+    SEPARATION (#056's distinct-host claim) is proven separately in
+    test_two_hosts_one_slug_get_separate_cost_and_audit, which injects a synthetic
+    host_id + rate (the production table never carries synthetic rows)."""
     return HostProfile(
         host_id="baseten",
         base_url="https://synthetic.example/v1",
@@ -962,6 +964,66 @@ def test_glm_alias_binds_baseten_profile() -> None:
     provider = GLMProvider(api_key=_api_key(), persister=_RecordingPersister())
     assert isinstance(provider, OpenAICompatibleProvider)
     assert str(provider._client.base_url).rstrip("/") == BASETEN_BASE_URL  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_two_hosts_one_slug_get_separate_cost_and_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DECISIONS.md#056 two-host separation: the SAME slug served by two hosts bills
+    at two rates and audits under two profile_ids. A test-injected synthetic host is
+    priced distinctly from Baseten on `GLM_MODEL_ID` (the production RATE_TABLE never
+    carries synthetic rows — #056), proving host-qualified (profile_id, model) COST +
+    AUDIT identity, not merely profile-driven wire axes. Cache separation by profile_id
+    is pinned in test_analyze_cache_key's per-component sensitivity."""
+    from decimal import Decimal
+    from types import MappingProxyType
+
+    import outrider.llm.openai_compatible_provider as provider_mod
+    import outrider.llm.pricing as pricing_mod
+    from outrider.llm.pricing import ModelPricing
+
+    # A synthetic host on the SAME slug, priced exactly 2x Baseten (test-only
+    # injection — patched into BOTH the pricing module and the provider's imported
+    # reference so the construction coverage check and compute_cost_usd agree).
+    synthetic_rates = ModelPricing(
+        in_per_token=Decimal("0.0000028"),  # 2x Baseten's 1.40/MTok
+        cache_write_per_token=Decimal("0"),
+        cache_read_per_token=Decimal("0.00000052"),
+        out_per_token=Decimal("0.0000088"),  # 2x Baseten's 4.40/MTok
+    )
+    patched = MappingProxyType(
+        {**pricing_mod.RATE_TABLE, ("synthetic", GLM_MODEL_ID): synthetic_rates}
+    )
+    monkeypatch.setattr(pricing_mod, "RATE_TABLE", patched)
+    monkeypatch.setattr(provider_mod, "RATE_TABLE", patched)
+
+    synthetic_host = _synthetic_profile().model_copy(update={"host_id": "synthetic"})
+    baseten_persister = _RecordingPersister()
+    synthetic_persister = _RecordingPersister()
+    baseten = _provider(baseten_persister)
+    synthetic = OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=synthetic_host,
+        persister=synthetic_persister,
+        models=(GLM_MODEL_ID,),
+    )
+    # cached=0 neutralizes the §8a accounting difference, so cost differs by RATE only.
+    usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=0)
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        await baseten.complete(_request())
+    with _patched_create(return_value=_chat_completion(usage=usage)):
+        await synthetic.complete(_request())
+
+    (b_event, _, _) = baseten_persister.calls[0]
+    (s_event, _, _) = synthetic_persister.calls[0]
+    # Same slug, two hosts → distinct COST (the (profile_id, model) pricing key)...
+    assert b_event.model == s_event.model == GLM_MODEL_ID
+    assert s_event.cost_usd != b_event.cost_usd
+    assert s_event.cost_usd == pytest.approx(b_event.cost_usd * 2, rel=1e-9)
+    # ...and distinct AUDIT identity (the triad's profile_id).
+    assert b_event.profile_id == "baseten"
+    assert s_event.profile_id == "synthetic"
 
 
 # ---------------------------------------------------------------------------
