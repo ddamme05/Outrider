@@ -791,11 +791,13 @@ export interface components {
          *     FindingEvents, not this event, so it survives the source review / cache row
          *     being purged, per `DECISIONS.md#014` point 4).
          *
-         *     `cache_key` is the composed thirteen-field digest — the canonical fingerprint of
-         *     every key component (`compute_analyze_cache_key`) and the join to the prior
-         *     `CacheLookupEvent` telemetry; carrying the digest carries the components'
-         *     identity, and replay never recomputes the analyze key, so the individual
-         *     components are not re-listed. `(installation_id, repo_id)` is the tenant scope
+         *     `cache_key` is the composed seventeen-field digest — the canonical fingerprint
+         *     of every key component (`compute_analyze_cache_key`), host-qualified by the
+         *     identity triad (DECISIONS.md#056) so a serve never crosses host/reasoning
+         *     boundaries — and the join to the prior `CacheLookupEvent` telemetry; carrying
+         *     the digest carries the components' identity, and replay never recomputes the
+         *     analyze key, so the individual components are not re-listed.
+         *     `(installation_id, repo_id)` is the tenant scope
          *     (load-bearing, never dropped). `served_trace_candidates` carries the
          *     metadata-only identity of each served trace candidate (their only audit
          *     trace; `reason` excluded — content tier). `source_review_id` /
