@@ -459,11 +459,21 @@ async def test_full_review_reaches_publish_and_replays_equivalent(engine: AsyncE
         triage_response=_triage_response(), analyze_response=_analyze_response()
     )
 
+    from outrider.llm.anthropic_provider import (
+        _ANTHROPIC_CONTRACT_DIGEST,
+        _ANTHROPIC_PROFILE_ID,
+    )
+
     graph = build_graph(
         db_factory=session_factory,
         github_factory=_stub_github_factory,
         provider=provider,
         model_config=ModelConfig(),
+        # Anthropic triad (the scripted provider stamps anthropic) so completion events
+        # are host-qualified like production — the persister fresh-write guard requires it.
+        profile_id=_ANTHROPIC_PROFILE_ID,
+        reasoning_enabled=False,
+        profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         phase_event_sink=persister,
         file_examination_sink=persister,
         analyze_event_sink=persister,

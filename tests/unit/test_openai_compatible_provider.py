@@ -58,6 +58,7 @@ from outrider.llm.host_profiles import (
     JsonMode,
     ReasoningMechanism,
     TokenAccounting,
+    resolve_host_identity,
 )
 from outrider.llm.openai_compatible_provider import (
     BASETEN_BASE_URL,
@@ -1051,6 +1052,23 @@ async def test_provider_stamps_triad_on_response_and_event() -> None:
     # Event triad is sourced from the response (single source) — they match exactly.
     assert event.profile_id == event_resp.profile_id
     assert event.profile_contract_digest == event_resp.profile_contract_digest
+
+
+@pytest.mark.asyncio
+async def test_stamped_triad_matches_resolve_host_identity() -> None:
+    """Drift guard (Codex): the triad OpenAICompatibleProvider stamps MUST equal what the
+    lifespan resolves via resolve_host_identity('baseten', reasoning=False) — the single
+    source build_graph closes into the completion events. The provider derives its stamp
+    separately (from its profile); this pins the two paths equal so they can't drift."""
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    with _patched_create():
+        resp = await provider.complete(_request())
+    assert (
+        resp.profile_id,
+        resp.reasoning_enabled,
+        resp.profile_contract_digest,
+    ) == resolve_host_identity("baseten", reasoning=False)
 
 
 def test_reasoning_true_on_off_switch_host_fails_closed() -> None:

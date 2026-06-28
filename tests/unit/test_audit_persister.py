@@ -33,6 +33,7 @@ from outrider.audit.persister import (
     AuditPersisterReviewNotFoundError,
     AuditPersisterSchemaInvariantError,
     AuditPersisterTraceIdempotencyLookupError,
+    AuditPersisterUnqualifiedFreshWriteError,
     FieldDigest,
     _compute_content_field_digests,
     _compute_field_digests,
@@ -574,6 +575,7 @@ def test_metadata_only_exception_types_lists_every_persister_exception() -> None
         AuditPersisterTraceIdempotencyLookupError,
         AuditPersisterHITLRequestIdempotencyLookupError,
         AuditPersisterHITLDecisionIdempotencyLookupError,
+        AuditPersisterUnqualifiedFreshWriteError,
     }
     assert set(METADATA_ONLY_EXCEPTION_TYPES) == expected
 
@@ -994,6 +996,7 @@ def test_every_metadata_only_exception_type_is_actually_metadata_only() -> None:
             "param_name",  # AuditPersisterConfigError
             "invariant",  # AuditPersisterSchemaInvariantError
             "field_name",  # AuditPersister{Event,Response}FieldMismatchError
+            "event_type",  # AuditPersisterUnqualifiedFreshWriteError (renders a class name)
         }
     )
 

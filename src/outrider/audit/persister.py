@@ -1090,6 +1090,24 @@ class AuditPersisterHITLDecisionIdempotencyLookupError(AuditPersisterNaturalKeyL
 # AND added here — that's the explicit contributor contract documented
 # above. Structurally enforced by
 # `test_every_persister_exception_is_metadata_only_listed`.
+class AuditPersisterUnqualifiedFreshWriteError(ValueError):
+    """A FRESH write of a replay-bearing triad-bearing event arrived without a
+    host-identity triad (DECISIONS.md#056). Fresh writes are fail-closed (triad
+    non-null); only historical re-emits/reads tolerate the unqualified all-None
+    sentinel. A `None` triad on a fresh insert means the provider/graph that built
+    the event did not stamp the host — a producer bug, surfaced loudly here rather
+    than landing an unqualified row that breaks replay's per-host split."""
+
+    def __init__(self, *, event_type: str) -> None:
+        super().__init__(
+            f"fresh {event_type} write has an unqualified host-identity triad "
+            "(profile_id / reasoning_enabled / profile_contract_digest are not all "
+            "present). DECISIONS.md#056 requires fresh writes be triad-non-null; the "
+            "provider/graph must stamp the host before this event is persisted."
+        )
+        self.event_type = event_type
+
+
 METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterConfigError,
     AuditPersisterReviewNotFoundError,
@@ -1108,6 +1126,8 @@ METADATA_ONLY_EXCEPTION_TYPES = (
     AuditPersisterTraceIdempotencyLookupError,
     AuditPersisterHITLRequestIdempotencyLookupError,
     AuditPersisterHITLDecisionIdempotencyLookupError,
+    # #056 step 4d: its __str__ names only the event-type class name (metadata).
+    AuditPersisterUnqualifiedFreshWriteError,
 )
 
 
@@ -1475,6 +1495,31 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
             f"natural-key idempotency mode is only defined for "
             f"{sorted(_IDENTITY_SUBSETS)} in V1 (per DECISIONS.md#026)."
         ) from None
+
+
+def _assert_fresh_triad_qualified(event: object) -> None:
+    """Fail closed on a fresh, unqualified triad-bearing write (DECISIONS.md#056).
+
+    The three replay-bearing events that carry the host-identity triad — LLMCallEvent,
+    AnalyzeCompletedEvent, SynthesizeCompletedEvent — must be host-qualified on a fresh
+    write; every other event is a no-op. Called only on the FRESH-insert branch of each
+    persist path (never on an idempotent re-emit/conflict), so historical all-None rows —
+    written before #056 and never re-inserted — keep the always-on coherence envelope.
+    Lazy import keeps these runtime-only event classes off the type-checking import."""
+    from outrider.audit.events import (
+        AnalyzeCompletedEvent,
+        LLMCallEvent,
+        SynthesizeCompletedEvent,
+    )
+
+    if not isinstance(event, LLMCallEvent | AnalyzeCompletedEvent | SynthesizeCompletedEvent):
+        return
+    if (
+        event.profile_id is None
+        or event.reasoning_enabled is None
+        or event.profile_contract_digest is None
+    ):
+        raise AuditPersisterUnqualifiedFreshWriteError(event_type=type(event).__name__)
 
 
 def _serialize_event_payload(
@@ -1977,6 +2022,12 @@ class AuditPersister:
             if event.pricing_version != PRICING_VERSION:
                 raise AuditPersisterEventResponseFieldMismatchError(field_name="pricing_version")
 
+            # Fresh-write fail-closed: a brand-new LLMCallEvent must be host-qualified
+            # (DECISIONS.md#056). Reachable only on the freshly-inserted audit branch,
+            # so a historical re-emit (audit_row_already_existed) is untouched. Raising
+            # rolls back the freshly-inserted audit row.
+            _assert_fresh_triad_qualified(event)
+
             # Step 3 (freshly-inserted audit branch): INSERT llm_call_content.
             # Reachable ONLY when the audit row was newly inserted this
             # transaction (audit_row_already_existed == False). From this
@@ -2327,6 +2378,12 @@ class AuditPersister:
                         mismatched_fields=_diff_field_names(existing_payload, payload),
                         field_digests=_compute_field_digests(existing_payload, payload),
                     )
+            else:
+                # Fresh insert (not an idempotent conflict): a brand-new
+                # AnalyzeCompletedEvent / SynthesizeCompletedEvent must be host-qualified
+                # (DECISIONS.md#056). No-op for the other non-phase events. Raising rolls
+                # back the freshly-inserted row.
+                _assert_fresh_triad_qualified(event)
 
     async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
         """Co-insert the `FindingEvent` audit row + the `findings` content row.

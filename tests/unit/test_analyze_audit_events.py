@@ -109,6 +109,33 @@ def test_analyze_completed_admits_zero_counters() -> None:
     assert event.pass_index == 0
 
 
+def test_fresh_write_triad_guard_rejects_unqualified_completion_event() -> None:
+    """The persister fresh-write fail-closed guard (DECISIONS.md#056, Codex guardrail 1):
+    an unqualified (all-None triad) AnalyzeCompletedEvent on a FRESH write raises, a
+    qualified one passes, and a non-triad value is a no-op. This is the helper the persist
+    paths call on every fresh insert of the three replay-bearing events."""
+    from outrider.audit.persister import (
+        AuditPersisterUnqualifiedFreshWriteError,
+        _assert_fresh_triad_qualified,
+    )
+
+    # _completed_kwargs defaults the triad to None (an unqualified, pre-#056-shaped event).
+    unqualified = AnalyzeCompletedEvent(**_completed_kwargs())
+    with pytest.raises(AuditPersisterUnqualifiedFreshWriteError, match="AnalyzeCompletedEvent"):
+        _assert_fresh_triad_qualified(unqualified)
+
+    qualified = AnalyzeCompletedEvent(
+        **_completed_kwargs(
+            profile_id="anthropic",
+            reasoning_enabled=False,
+            profile_contract_digest="e" * 64,
+        )
+    )
+    _assert_fresh_triad_qualified(qualified)  # qualified → no raise
+
+    _assert_fresh_triad_qualified("not a triad-bearing event")  # non-triad → no-op
+
+
 def test_analyze_completed_subsumed_matches_defaults_empty() -> None:
     """Backward-compat (DECISIONS.md#055): historical payloads without
     subsumed_matches replay with the default-empty tuple — additive telemetry."""

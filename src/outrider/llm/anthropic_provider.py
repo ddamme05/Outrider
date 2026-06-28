@@ -383,6 +383,22 @@ class AnthropicProvider:
                 "per DECISIONS#016 single-transaction-insert contract."
             )
 
+        # Step 1b (FUP-197): pre-flight model check BEFORE the paid SDK call — parity
+        # with OpenAICompatibleProvider. A request.model not priced under the anthropic
+        # host would otherwise reach the SDK and only fail at the step-8 cost lookup
+        # AFTER the billed call (orphan/unpriced-cost row). The constructor validates
+        # CONFIGURED models; this guards a request.model that bypassed config (a routing
+        # bug). RATE_TABLE membership under "anthropic" is sufficient here — anthropic
+        # serves exactly its priced models (unlike the OpenAI-compatible provider, whose
+        # configured set is narrower than RATE_TABLE).
+        if pricing_key(_ANTHROPIC_PROFILE_ID, request.model) not in RATE_TABLE:
+            raise LLMInvalidRequestError(
+                f"AnthropicProvider.complete(): request.model={request.model!r} maps to "
+                f"pricing key {pricing_key(_ANTHROPIC_PROFILE_ID, request.model)!r}, which is "
+                f"not in RATE_TABLE — refusing the paid SDK call before an unpriced/orphan "
+                f"cost row results. Add the model to RATE_TABLE + the provider's ModelConfig."
+            )
+
         # Step 2 + 3: translate request to SDK shape.
         sdk_kwargs = _build_sdk_kwargs(request)
 
