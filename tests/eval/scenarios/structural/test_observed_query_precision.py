@@ -70,14 +70,17 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     (
         "python.weak_crypto_broken_cipher",
         # Single canonical form so `>=1` is non-vacuous; every advertised cipher
-        # variant (DES/ARC4/RC4/Blowfish) is pinned individually by
-        # test_weak_crypto_each_advertised_variant_fires.
+        # variant (bare + the other ciphers + the qualified form) is pinned
+        # individually by test_weak_crypto_each_advertised_variant_fires.
         "DES.new(key)\n",
-        # Strong cipher, an import-only DES (an import is not use), and a
-        # lowercase non-crypto `des` (the signal is name-based + case-sensitive)
-        # must all NOT fire.
+        # Strong cipher (bare AND qualified), an import-only DES (an import is not
+        # use), a lowercase non-crypto `des` (name-based + case-sensitive), and a
+        # QUALIFIED `.new` whose attribute is NOT a cipher name must all NOT fire —
+        # the qualified pattern binds the cipher NAME, not any dotted `.new`.
         "from Crypto.Cipher import DES\nimport hashlib\nAES.new(key, AES.MODE_GCM)\n"
-        "des = make_factory()\ndes.new(rows=3)\n",
+        "Crypto.Cipher.AES.new(key, AES.MODE_GCM)\n"
+        "des = make_factory()\ndes.new(rows=3)\n"
+        "models.User.new(data)\norm.Session.new(bind)\n",
     ),
     (
         "python.weak_crypto_ecb_mode",
@@ -105,8 +108,22 @@ _WEAK_CRYPTO_VARIANTS: tuple[tuple[str, str], ...] = (
     ("python.weak_crypto_broken_cipher", "ARC4.new(key)\n"),
     ("python.weak_crypto_broken_cipher", "RC4.new(key)\n"),
     ("python.weak_crypto_broken_cipher", "Blowfish.new(key)\n"),
+    # FUP-193 step-1.5: the other weak/legacy PyCryptodome block/stream ciphers
+    # (64-bit-block or broken) — each pinned so one can't silently regress.
+    ("python.weak_crypto_broken_cipher", "DES3.new(key)\n"),
+    ("python.weak_crypto_broken_cipher", "ARC2.new(key)\n"),
+    ("python.weak_crypto_broken_cipher", "RC2.new(key)\n"),
+    ("python.weak_crypto_broken_cipher", "CAST.new(key)\n"),
+    ("python.weak_crypto_broken_cipher", "IDEA.new(key)\n"),
+    # FUP-193 step-1.5: the qualified-call form (the cipher imported under its
+    # dotted path) — the cipher name is the immediate attribute of the object.
+    ("python.weak_crypto_broken_cipher", "Crypto.Cipher.DES.new(key)\n"),
+    ("python.weak_crypto_broken_cipher", "ciphers.DES3.new(key)\n"),
     ("python.weak_crypto_ecb_mode", "AES.new(key, AES.MODE_ECB)\n"),
     ("python.weak_crypto_ecb_mode", "Cipher(algorithms.AES(key), modes.ECB())\n"),
+    # FUP-193 step-1.5: the qualified ECB construction form already worked (the
+    # ctor is `.new` regardless of object depth) — pinned so it stays covered.
+    ("python.weak_crypto_ecb_mode", "Crypto.Cipher.AES.new(key, mode=AES.MODE_ECB)\n"),
     # FUP-193 step-1.5 recall: the keyword-argument mode form (very common real
     # code) — the mode lives in a `keyword_argument` node the positional patterns
     # above miss. Both the `MODE_ECB` constant and the `modes.ECB()` call forms.
