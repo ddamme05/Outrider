@@ -240,8 +240,10 @@ class AnthropicProvider:
         configured_models = {
             model_config.triage_model,
             model_config.analyze_model,
+            model_config.standard_analyze_model,
             model_config.synthesize_model,
             model_config.trace_model,
+            model_config.patch_model,
         }
         missing = sorted(
             m for m in configured_models if pricing_key(_ANTHROPIC_PROFILE_ID, m) not in RATE_TABLE

@@ -2100,10 +2100,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
 
     # Cost: Decimal per file, summed in Decimal arithmetic, float-cast
     # once at the aggregate event. Matches sum(LLMCallEvent.cost_usd)
-    # modulo a single float-cast step rather than per-file FP drift.
+    # modulo a single float-cast step rather than per-file FP drift —
+    # priced on (response.profile_id, response.model), the SAME host+model the
+    # provider/persister bill against, so SDK model substitution can't drift the
+    # aggregate from the per-call event costs.
     cost_decimal = compute_cost_usd(
         response.profile_id,
-        analyze_model,
+        response.model,
         input_tokens=response.input_tokens,
         cache_write_tokens=response.cache_write_tokens,
         cache_read_tokens=response.cache_read_tokens,
@@ -2627,7 +2630,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
 
     cost_decimal = compute_cost_usd(
         response.profile_id,
-        analyze_model,
+        response.model,
         input_tokens=response.input_tokens,
         cache_write_tokens=response.cache_write_tokens,
         cache_read_tokens=response.cache_read_tokens,
