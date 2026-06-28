@@ -1729,6 +1729,43 @@ async def test_anthropic_stamps_native_triad() -> None:
     )
 
 
+async def test_stamped_triad_matches_resolve_host_identity() -> None:
+    """Drift guard (Codex): the triad AnthropicProvider stamps MUST equal what the lifespan
+    resolves via resolve_host_identity('anthropic', reasoning=False) — the single source
+    build_graph closes into the completion events. Divergence would split host identity
+    between the per-call LLMCallEvents and the per-node completion events."""
+    from outrider.llm.host_profiles import resolve_host_identity
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    with _patched_create():
+        resp = await provider.complete(_request())
+    assert (
+        resp.profile_id,
+        resp.reasoning_enabled,
+        resp.profile_contract_digest,
+    ) == resolve_host_identity("anthropic", reasoning=False)
+
+
+async def test_unpriced_request_model_rejected_before_sdk_call() -> None:
+    """FUP-197: a request.model not priced under the anthropic host is rejected BEFORE the
+    paid SDK call (parity with OpenAICompatibleProvider) — no billed call, no orphan row.
+    The constructor validates CONFIGURED models; this guards a request.model that bypassed
+    config (a routing bug)."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    with (
+        _patched_create() as mock_create,
+        pytest.raises(LLMInvalidRequestError, match="not in RATE_TABLE"),
+    ):
+        await provider.complete(_request(model="claude-opus-4-7"))
+    mock_create.assert_not_called()
+
+
 def test_anthropic_reasoning_requested_fails_loud() -> None:
     """OUTRIDER_LLM_REASONING=true under anthropic must fail loud — the native path has no
     reasoning toggle, so it can't be silently no-op'd into a stamped reasoning_enabled."""

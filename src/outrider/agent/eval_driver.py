@@ -871,11 +871,20 @@ def _build_eval_graph(
         if fixture.total_review_budget_tokens is not None
         else DEFAULT_REVIEW_BUDGET_TOKENS
     )
+    # Qualify the eval completion events like production (#056 step 4d): the fixture
+    # mirrors AnthropicProvider, so close the anthropic triad into build_graph — else the
+    # persister's fresh-write guard rejects the unqualified AnalyzeCompletedEvent /
+    # SynthesizeCompletedEvent (and the eval cache key would stay host-unqualified).
+    from outrider.llm.host_profiles import ANTHROPIC_CONTRACT_DIGEST, ANTHROPIC_PROFILE_ID
+
     return build_graph(
         db_factory=session_factory,
         github_factory=_github_factory_for(fixture),
         provider=provider,
         model_config=model_config or ModelConfig(),
+        profile_id=ANTHROPIC_PROFILE_ID,
+        reasoning_enabled=False,
+        profile_contract_digest=ANTHROPIC_CONTRACT_DIGEST,
         phase_event_sink=persister,
         file_examination_sink=persister,
         analyze_event_sink=persister,
