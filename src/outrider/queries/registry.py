@@ -30,6 +30,7 @@ Sort order per Internal contracts:
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
@@ -344,6 +345,15 @@ if _unknown_predicate_ids:
     )
 
 
+# Fields of `ObservedQuery` EXCLUDED from the digest fold (FUP-181). The digest
+# derives the folded set from the model (not a hardcoded tuple), so a FUTURE
+# output- or routing-affecting field auto-folds into the cache key. `query_match_id`
+# is the key (already folded as the id); `filename` is an impl detail — the .scm
+# BODY is folded, so renaming a .scm must NOT move the digest. A new field not in
+# this set folds by default; `test_digest_excluded_fields_pinned` guards the set.
+_DIGEST_EXCLUDED_OBSERVED_FIELDS: Final[frozenset[str]] = frozenset({"query_match_id", "filename"})
+
+
 def _registry_digest(
     bodies: dict[str, str],
     observed: Mapping[str, ObservedQuery],
@@ -355,9 +365,11 @@ def _registry_digest(
 
     The analyze-cache key component that pins query SEMANTICS AND emitted
     output. A pattern edit that keeps its id changes this digest — AND so
-    does a change to an OBSERVED query's class / finding_type / title /
-    description, each of which alters routing or the emitted finding (and
-    the cached payload) while living OUTSIDE the `.scm` body. Folding them
+    does a change to ANY OBSERVED output/routing field (today class /
+    finding_type / title / description, but derived from the model minus
+    `_DIGEST_EXCLUDED_OBSERVED_FIELDS` so a future field auto-folds, FUP-181),
+    each of which alters routing or the emitted finding (and the cached
+    payload) while living OUTSIDE the `.scm` body. Folding them
     here keeps cached OBSERVED findings from being served under metadata
     that no longer produced them (specs/2026-06-11-file-hash-analyze-cache.md
     + FUP-166; the Cost Lever 3 round-3 review; `DECISIONS.md#048`).
@@ -384,12 +396,21 @@ def _registry_digest(
         h.update(qid_bytes)
         h.update(f"{len(body_bytes)}:".encode())
         h.update(body_bytes)
-        # OBSERVED queries fold their routing-and-output metadata: a change
-        # to any of these alters emitted findings / routing without touching
-        # the .scm body, so it must move the digest (invalidate stale cache).
+        # OBSERVED queries fold their routing-and-output metadata: a change to
+        # any of these alters emitted findings / routing without touching the
+        # .scm body, so it must move the digest (invalidate stale cache). Derived
+        # from the model (NOT a hardcoded tuple) so a future field auto-folds
+        # (FUP-181); excludes `_DIGEST_EXCLUDED_OBSERVED_FIELDS`. Sorted +
+        # field-named + length-prefixed for an order-stable, unambiguous fold;
+        # json.dumps serializes any field type (enum->value, str, future int/list)
+        # deterministically.
         oq = observed.get(query_id)
         if oq is not None:
-            for field in (oq.query_class.value, oq.finding_type.value, oq.title, oq.description):
+            dumped = oq.model_dump(mode="json")
+            for field_name in sorted(dumped):
+                if field_name in _DIGEST_EXCLUDED_OBSERVED_FIELDS:
+                    continue
+                field = f"{field_name}={json.dumps(dumped[field_name], sort_keys=True)}"
                 field_bytes = field.encode("utf-8")
                 h.update(f"{len(field_bytes)}:".encode())
                 h.update(field_bytes)
