@@ -359,7 +359,7 @@ def _registry_digest(
     that no longer produced them (specs/2026-06-11-file-hash-analyze-cache.md
     + FUP-166; the Cost Lever 3 round-3 review; `DECISIONS.md#048`).
 
-    A value-predicate's `contract_token` is folded the same way (FUP-193):
+    A value-predicate's `contract_token` is folded the same way (DECISIONS.md#057):
     the token encodes the predicate identity and every parameter that changes
     its verdict (e.g. the key-size threshold), so a threshold or logic change
     moves the digest exactly as a `.scm` edit would, invalidating cached analyze
@@ -497,7 +497,7 @@ def match(query_match_id: str, source: bytes) -> tuple[QueryMatchSpan, ...]:
     # QueryMatchSpan + source bytes (no raw node), so the AST firewall is
     # unaffected; its contract_token rides into QUERY_REGISTRY_DIGEST so a
     # threshold/logic change invalidates cached analyze rows. See
-    # FUP-193 + docs/trust-boundaries.md §1.
+    # DECISIONS.md#057 + docs/trust-boundaries.md §1.
     predicate = VALUE_PREDICATES.get(query_match_id)
     if predicate is not None:
         raw_matches = [m for m in raw_matches if predicate.evaluate(m, source)]
