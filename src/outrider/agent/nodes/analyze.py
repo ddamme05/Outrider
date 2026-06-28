@@ -606,6 +606,9 @@ async def analyze(
                 analyze_cache_store=analyze_cache_store,
                 cache_scope=cache_scope,
                 cache_mode=cache_mode,
+                profile_id=profile_id,
+                reasoning_enabled=reasoning_enabled,
+                profile_contract_digest=profile_contract_digest,
             )
 
             if file_outcome.parser_result is not None:
@@ -1574,6 +1577,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_scope: CacheScope | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
 ) -> _FileOutcome:
     """Process one triage-kept file through parse → outcome → cost
     gate → trivial-scope classification → LLM call → parser → audit
@@ -1890,6 +1896,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
             observed_producer_version=OBSERVED_PRODUCER_VERSION,
             subsumes_digest=SUBSUMES_DIGEST,
+            profile_id=profile_id,
+            reasoning_enabled=reasoning_enabled,
+            profile_contract_digest=profile_contract_digest,
         )
         try:
             # Self-hit exclusion: a crash/retry re-execution of this node

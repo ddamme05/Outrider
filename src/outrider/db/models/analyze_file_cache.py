@@ -26,8 +26,9 @@ Two foreign keys, mirroring `findings`:
     an installation hard-deletes; RESTRICT prevents a silent CASCADE
     that would skip the purge-audit row.
 
-`cache_key` (the thirteen-field digest — prompt digest + twelve explicit
-components — from `cache/key.py::compute_analyze_cache_key`) is the
+`cache_key` (the sixteen-field digest — prompt digest + fifteen explicit
+components, the last three the host-identity triad per DECISIONS.md#056 —
+from `cache/key.py::compute_analyze_cache_key`) is the
 primary key — the write path's conflict arbiter for concurrent same-key
 reviews (`ON CONFLICT DO UPDATE ... WHERE` the existing row is expired:
 live rows keep first-writer-wins; an expired-but-unswept row is

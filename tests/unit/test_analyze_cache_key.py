@@ -39,6 +39,12 @@ _BASE_KWARGS = {
     "parameterized_call_scan_digest": "d" * 64,
     "observed_producer_version": OBSERVED_PRODUCER_VERSION,
     "subsumes_digest": SUBSUMES_DIGEST,
+    # Host-identity triad (DECISIONS.md#056): the base case is QUALIFIED
+    # (a Baseten-host, reasoning-off run) so the golden recipe exercises the
+    # real fold; the unqualified all-None path has its own pin below.
+    "profile_id": "baseten",
+    "reasoning_enabled": False,
+    "profile_contract_digest": "1" * 64,
 }
 
 
@@ -70,15 +76,22 @@ def test_key_is_deterministic_64_hex() -> None:
         # A SUBSUMES relation edit changes the admitted set (DECISIONS.md#055),
         # so its digest must change the key — "f"*64 is a distinct-from-live probe.
         ("subsumes_digest", "f" * 64),
+        # Host-identity triad (DECISIONS.md#056): a different host, a flipped
+        # reasoning state, or a different profile contract is a different output
+        # population for identical prompt bytes, so each must change the key.
+        ("profile_id", "fireworks"),
+        ("reasoning_enabled", True),
+        ("profile_contract_digest", "2" * 64),
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the fourteen inputs is load-bearing: changing any one of
+    """Each of the seventeen inputs is load-bearing: changing any one of
     them alone produces a different key (the correct-by-construction
     invalidation property the spec pins). `observed_producer_version`
     (Cost Lever 3) pins the deterministic OBSERVED producer's admission
-    logic, and `subsumes_digest` (DECISIONS.md#055) pins the cross-type
-    SUBSUMES relation, so a rule change invalidates cached outcomes."""
+    logic, `subsumes_digest` (DECISIONS.md#055) pins the cross-type
+    SUBSUMES relation, and the host-identity triad (DECISIONS.md#056)
+    splits the cache by provider host, so each change invalidates entries."""
     base = compute_analyze_cache_key(**_BASE_KWARGS)
     varied = compute_analyze_cache_key(**{**_BASE_KWARGS, field: changed})
     assert varied != base, field
@@ -100,15 +113,18 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_prompt_digest_plus_twelve_framed_components() -> None:
+def test_golden_recipe_prompt_digest_plus_fifteen_framed_components() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: thirteen length-prefixed fields — `_canonical_prompt_hash` output
+    test: sixteen length-prefixed fields — `_canonical_prompt_hash` output
     first (one recipe, two consumers; never forks from
-    `LLMCallEvent.prompt_hash`), then the twelve explicit scope/version
-    components in declaration order, each framed `{len(bytes)}:` on
-    UTF-8 bytes. Any change to the framing, the component order, or the
-    prompt component's recipe fails this test — deliberately: that
-    change is a cache-wide invalidation and must be made here too."""
+    `LLMCallEvent.prompt_hash`), then the fifteen explicit
+    scope/version/identity components in declaration order, each framed
+    `{len(bytes)}:` on UTF-8 bytes. The host-identity triad
+    (DECISIONS.md#056) folds last: `profile_id`, then `reasoning_enabled`
+    rendered `true`/`false`, then `profile_contract_digest`. Any change to
+    the framing, the component order, or the prompt component's recipe fails
+    this test — deliberately: that change is a cache-wide invalidation and
+    must be made here too."""
     import hashlib
 
     expected = hashlib.sha256()
@@ -129,12 +145,35 @@ def test_golden_recipe_prompt_digest_plus_twelve_framed_components() -> None:
         _BASE_KWARGS["parameterized_call_scan_digest"],
         _BASE_KWARGS["observed_producer_version"],
         _BASE_KWARGS["subsumes_digest"],
+        _BASE_KWARGS["profile_id"],
+        "true" if _BASE_KWARGS["reasoning_enabled"] else "false",
+        _BASE_KWARGS["profile_contract_digest"],
     ):
         component_bytes = component.encode("utf-8")
         expected.update(f"{len(component_bytes)}:".encode())
         expected.update(component_bytes)
 
     assert compute_analyze_cache_key(**_BASE_KWARGS) == expected.hexdigest()
+
+
+def test_unqualified_triad_is_stable_and_distinct_from_qualified() -> None:
+    """An UNQUALIFIED (pre-#056) caller passes the whole triad as None. The
+    three components fold as empty strings — deterministic and stable across
+    calls — and the resulting key differs from the qualified base, so an
+    unqualified row never collides with a real host's row. The empty fold is
+    also distinct from a host whose `profile_id` happened to be empty, which
+    cannot occur (`host_id` is non-empty), so no real host aliases here."""
+    unqualified = {
+        **_BASE_KWARGS,
+        "profile_id": None,
+        "reasoning_enabled": None,
+        "profile_contract_digest": None,
+    }
+    first = compute_analyze_cache_key(**unqualified)
+    second = compute_analyze_cache_key(**unqualified)
+    assert first == second
+    assert re.fullmatch(r"[0-9a-f]{64}", first)
+    assert first != compute_analyze_cache_key(**_BASE_KWARGS)
 
 
 def test_parameterized_call_scan_digest_closes_fup_171() -> None:
