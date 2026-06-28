@@ -301,10 +301,12 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert event.is_eval is False  # threaded from state, not hardcoded
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
-    # The written key is exactly the recomputed full key (prompt digest
-    # + fifteen explicit components) over the request actually sent. This
-    # path drives analyze() without the host-identity triad (#056), so the
-    # triad folds UNQUALIFIED (all None) on both the node and the recompute.
+    # The written key is exactly the recomputed full key (recipe version +
+    # prompt digest + fifteen explicit components) over the request actually
+    # sent. `ANALYZE_CACHE_KEY_VERSION` folds internally, so the recompute below
+    # need not pass it. This path drives analyze() without the host-identity
+    # triad (#056), so the triad folds UNQUALIFIED (all None) on both the node
+    # and the recompute.
     [request] = provider.calls
     # FUP-096: the request that produced the cached payload rode with the
     # pinned schema — the key's response_format_digest describes it truly.

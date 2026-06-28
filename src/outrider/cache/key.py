@@ -24,8 +24,21 @@ derive from attacker-influenced content.
 from __future__ import annotations
 
 import hashlib
+from typing import Final
 
 from outrider.llm.base import _canonical_prompt_hash
+
+# The analyze cache-key RECIPE version (DECISIONS.md#056). Distinct from
+# ANALYZE_PARSER_VERSION, which versions admitted-findings SEMANTICS: this
+# versions the cache-key RECIPE STRUCTURE — the component set, their order, and
+# the length-prefix framing. Bump on ANY recipe change (add/remove/reorder a
+# component, change the framing). v1 was the implicit original recipe (no
+# constant existed); v2 is the host-identity re-key (#056 folded the triad into
+# the key). The recipe change self-invalidates old rows on its own, but the
+# explicit version is the legible, replay-durable marker #056 mandates ("the
+# analyze cache-keyed version bumps") and gives future non-parser recipe changes
+# a home without overloading ANALYZE_PARSER_VERSION's admission-only scope.
+ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v2"
 
 
 def compute_analyze_cache_key(
@@ -48,8 +61,9 @@ def compute_analyze_cache_key(
     reasoning_enabled: bool | None,
     profile_contract_digest: str | None,
 ) -> str:
-    """The analyze-cache key: sixteen length-prefixed fields — the canonical
-    prompt digest plus fifteen explicit scope/version/identity components — as
+    """The analyze-cache key: seventeen length-prefixed fields — the recipe
+    version (`ANALYZE_CACHE_KEY_VERSION`) first, then the canonical prompt
+    digest, then the fifteen explicit scope/version/identity components — as
     one SHA-256 hex digest. `subsumes_digest` (DECISIONS.md#055) pins the
     `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
     admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
@@ -80,10 +94,13 @@ def compute_analyze_cache_key(
     component, which never collides with a real host (`host_id`/digest are
     non-empty, and `reasoning_enabled` renders `true`/`false`).
 
-    Component order is part of the recipe — changing it is a cache-wide
-    invalidation and must be deliberate. `active_policy_version` is the
-    THREADED write-time value analyze stamps findings with (never the
-    module constant read here); same for every version argument.
+    `ANALYZE_CACHE_KEY_VERSION` leads as the recipe-structure version: any
+    change to the component set, their order, or the framing bumps it (the
+    explicit, replay-durable marker #056 requires). Component order is itself
+    part of the recipe — changing it is a cache-wide invalidation and must be
+    deliberate. `active_policy_version` is the THREADED write-time value analyze
+    stamps findings with (never the module constant read here); same for every
+    version argument.
     """
     # Host-identity triad (DECISIONS.md#056) are peers — all-present (a QUALIFIED
     # host call) or all-None (an UNQUALIFIED pre-#056 caller). A partial triad is
@@ -109,6 +126,7 @@ def compute_analyze_cache_key(
     )
     h = hashlib.sha256()
     for component in (
+        ANALYZE_CACHE_KEY_VERSION,
         prompt_digest,
         str(installation_id),
         str(repo_id),
