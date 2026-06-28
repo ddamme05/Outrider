@@ -26,10 +26,11 @@ threshold or logic change auto-invalidates the analyze cache (parallel to a
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from outrider.ast_facts.models import QueryMatchSpan
 
@@ -102,12 +103,17 @@ def _evaluate_weak_asymmetric_key_size(match: QueryMatchSpan, source: bytes) -> 
 
 # query_match_id -> ValuePredicate. Only queries listed here are value-filtered;
 # every other query's matches pass through `registry.match()` unchanged.
-VALUE_PREDICATES: Final[dict[str, ValuePredicate]] = {
-    "python.weak_asymmetric_key_size": ValuePredicate(
-        evaluate=_evaluate_weak_asymmetric_key_size,
-        contract_token=(
-            f"weak_asymmetric_key_size:min_secure_bits={_RSA_DSA_MIN_SECURE_BITS}"
-            f":{VALUE_PREDICATE_CONTRACT_VERSION}"
+# MappingProxyType (the OBSERVED_QUERIES precedent): the public table is read-only,
+# so an in-process mutation cannot drift the live `match()` filter from the
+# import-pinned QUERY_REGISTRY_DIGEST (FUP-193 review).
+VALUE_PREDICATES: Final[Mapping[str, ValuePredicate]] = MappingProxyType(
+    {
+        "python.weak_asymmetric_key_size": ValuePredicate(
+            evaluate=_evaluate_weak_asymmetric_key_size,
+            contract_token=(
+                f"weak_asymmetric_key_size:min_secure_bits={_RSA_DSA_MIN_SECURE_BITS}"
+                f":{VALUE_PREDICATE_CONTRACT_VERSION}"
+            ),
         ),
-    ),
-}
+    }
+)

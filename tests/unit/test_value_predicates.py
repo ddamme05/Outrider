@@ -101,3 +101,11 @@ def test_every_value_predicate_keys_a_registered_observed_query() -> None:
         assert qid in registry.OBSERVED_QUERY_IDS, (
             f"value-predicate {qid!r} does not key a registered OBSERVED query"
         )
+
+
+def test_value_predicates_mapping_is_read_only() -> None:
+    """MappingProxyType blocks in-process mutation (the OBSERVED_QUERIES
+    precedent): the live match() filter cannot drift from the import-pinned
+    QUERY_REGISTRY_DIGEST via a mutation of the predicate table."""
+    with pytest.raises(TypeError):
+        registry.VALUE_PREDICATES["python.x"] = None  # type: ignore[index]
