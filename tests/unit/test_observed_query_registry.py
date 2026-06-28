@@ -171,3 +171,23 @@ def test_digest_folds_every_non_excluded_field() -> None:
         mutated = {**registry._OBSERVED_QUERIES, oid: drifted}
         digest = registry._registry_digest(bodies, mutated, registry.VALUE_PREDICATES)
         assert digest != base, f"mutating non-excluded field {field!r} did not move the digest"
+
+
+def test_observed_sweep_parses_source_once() -> None:
+    """FUP-182: a clean file is parsed ONCE across the OBSERVED sweep, not once per
+    query. match() memoizes the parse, so firing every OBSERVED query against
+    byte-identical source is a single tree-sitter parse (one cache miss) and the
+    rest cache hits; a different source is a fresh parse (the memo is per-source,
+    not a global parse-once)."""
+    registry._parse_cached.cache_clear()
+    src = b"RSA.generate(1024)\nDES.new(key)\nyaml.load(data)\n"
+    for qid in registry.OBSERVED_QUERY_IDS:
+        registry.match(qid, src)
+    info = registry._parse_cached.cache_info()
+    assert info.misses == 1, f"OBSERVED sweep parsed {info.misses} times, want 1"
+    assert info.hits == len(registry.OBSERVED_QUERY_IDS) - 1
+
+    # A distinct source is a distinct parse — the memo is keyed by source bytes.
+    registry.match(next(iter(registry.OBSERVED_QUERY_IDS)), b"DES.new(other)\n")
+    assert registry._parse_cached.cache_info().misses == 2
+    registry._parse_cached.cache_clear()

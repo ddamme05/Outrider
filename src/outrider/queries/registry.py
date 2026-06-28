@@ -31,12 +31,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
 
 import tree_sitter_python
-from tree_sitter import Language, Parser, Query, QueryCursor
+from tree_sitter import Language, Parser, Query, QueryCursor, Tree
 
 from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.ast_facts.models import QueryCaptureSpan, QueryMatchSpan
@@ -55,6 +56,22 @@ if TYPE_CHECKING:
 
 _PY_LANGUAGE: Final = Language(tree_sitter_python.language())
 _PARSER: Final = Parser(_PY_LANGUAGE)
+
+# Parse memo (FUP-182). `match()` -- and every OBSERVED / structural / trivial-scope
+# sweep that calls it -- re-parsed byte-identical source per query: up to ~12
+# full-file parses of one file per review. Memoize the parse so a clean file is
+# parsed ONCE across all sweeps (the firewall keeps the parse inside `queries/`,
+# so this registry-internal cache is the only place cross-sweep sharing can live).
+# Bounded LRU so trees don't accumulate; sized for moderate concurrency (V1.5
+# parallel-analyze may tune it to its file fan-out). A tree-sitter `Tree` is
+# immutable after parse, so reuse across QueryCursor runs -- including concurrent
+# reads -- is safe; `lru_cache`'s own lock makes the memo itself thread-safe.
+_PARSE_CACHE_SIZE: Final = 16
+
+
+@lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _parse_cached(source: bytes) -> Tree:
+    return _PARSER.parse(source)
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +504,7 @@ def match(query_match_id: str, source: bytes) -> tuple[QueryMatchSpan, ...]:
             f"(known ids: {sorted(_all_known_ids())})"
         )
     query = _COMPILED_QUERIES[query_match_id]
-    tree = _PARSER.parse(source)
+    tree = _parse_cached(source)
 
     raw_matches: list[QueryMatchSpan] = []
     for _pattern_index, captures in QueryCursor(query).matches(tree.root_node):
