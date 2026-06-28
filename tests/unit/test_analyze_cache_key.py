@@ -176,6 +176,37 @@ def test_unqualified_triad_is_stable_and_distinct_from_qualified() -> None:
     assert first != compute_analyze_cache_key(**_BASE_KWARGS)
 
 
+@pytest.mark.parametrize(
+    ("profile_id", "reasoning_enabled", "profile_contract_digest"),
+    [
+        ("baseten", None, None),
+        (None, False, None),
+        (None, None, "1" * 64),
+        ("baseten", False, None),
+        ("baseten", None, "1" * 64),
+        (None, False, "1" * 64),
+    ],
+)
+def test_partial_triad_raises(
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+) -> None:
+    """The triad are peers (DECISIONS.md#056): all-present or all-None. A
+    partial triad is incoherent — no valid #056 audit event can represent it,
+    so the cache helper rejects it rather than minting a key no event matches.
+    `build_graph` rejects partials upstream; this keeps the all-or-none
+    invariant total at the exported cache boundary too (the gap Codex flagged)."""
+    partial = {
+        **_BASE_KWARGS,
+        "profile_id": profile_id,
+        "reasoning_enabled": reasoning_enabled,
+        "profile_contract_digest": profile_contract_digest,
+    }
+    with pytest.raises(ValueError, match="all-present or all-None"):
+        compute_analyze_cache_key(**partial)
+
+
 def test_parameterized_call_scan_digest_closes_fup_171() -> None:
     """FUP-171 end-to-end: the veto's per-file outcome is now keyed. Two
     reviews with byte-identical prompts (and every other component equal)

@@ -85,10 +85,25 @@ def compute_analyze_cache_key(
     THREADED write-time value analyze stamps findings with (never the
     module constant read here); same for every version argument.
     """
+    # Host-identity triad (DECISIONS.md#056) are peers — all-present (a QUALIFIED
+    # host call) or all-None (an UNQUALIFIED pre-#056 caller). A partial triad is
+    # incoherent: no valid #056 audit event can represent it (LLMResponse and the
+    # three completion events enforce the same all-or-none envelope), so folding
+    # one here would mint a cache key no event matches. build_graph rejects partials
+    # upstream; this guards direct callers of the exported helper, keeping the
+    # invariant total across every triad boundary.
+    _triad = (profile_id, reasoning_enabled, profile_contract_digest)
+    if any(v is not None for v in _triad) and not all(v is not None for v in _triad):
+        raise ValueError(
+            "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
+            f"got a partial set: profile_id={profile_id!r}, "
+            f"reasoning_enabled={reasoning_enabled!r}, "
+            f"profile_contract_digest={'<set>' if profile_contract_digest is not None else None}"
+        )
     prompt_digest = _canonical_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt)
-    # Host-identity triad (DECISIONS.md#056): None => UNQUALIFIED, folded as an
-    # empty component; reasoning renders true/false. Never collides with a real
-    # host (host_id/digest are non-empty).
+    # Triad fold: None => UNQUALIFIED, folded as an empty component; reasoning
+    # renders true/false. Never collides with a real host (host_id/digest are
+    # non-empty).
     reasoning_component = (
         "" if reasoning_enabled is None else ("true" if reasoning_enabled else "false")
     )
