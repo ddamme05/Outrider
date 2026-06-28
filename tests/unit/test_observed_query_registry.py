@@ -122,3 +122,52 @@ def test_digest_stable_under_no_change() -> None:
         dict(registry._QUERY_BODIES), registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES
     )
     assert a == b == registry.QUERY_REGISTRY_DIGEST
+
+
+def test_digest_excluded_fields_pinned() -> None:
+    """FUP-181: the digest derives its OBSERVED fold from `ObservedQuery`'s model
+    fields minus an explicit exclusion set, so a NEW output/routing field enters
+    the cache key by DEFAULT. Pin the exclusion set (growing it removes a field
+    from the cache key — a conscious cache-identity decision) and assert it names
+    only real, non-output fields. The folds-metadata test above proves the
+    non-excluded fields actually move the digest."""
+    from outrider.queries.observed import ObservedQuery
+
+    excluded = registry._DIGEST_EXCLUDED_OBSERVED_FIELDS
+    model_fields = set(ObservedQuery.model_fields)
+    assert excluded == {"query_match_id", "filename"}, (
+        "digest exclusion set changed — adding a field here drops it from the "
+        "cache key; confirm it truly affects neither emitted output nor routing"
+    )
+    assert excluded <= model_fields, (
+        f"excluded names not on ObservedQuery: {excluded - model_fields}"
+    )
+
+
+def test_digest_folds_every_non_excluded_field() -> None:
+    """FUP-181 robustness: mutating ANY non-excluded ObservedQuery field moves the
+    digest — proves the model-derived fold covers each field, not just a hardcoded
+    subset, so a future field can't silently miss the cache key."""
+    bodies = dict(registry._QUERY_BODIES)
+    base = registry._registry_digest(bodies, registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES)
+    oid = next(iter(registry._OBSERVED_QUERIES))
+    orig = registry._OBSERVED_QUERIES[oid]
+    folded_fields = set(registry._OBSERVED_QUERIES[oid].model_fields) - (
+        registry._DIGEST_EXCLUDED_OBSERVED_FIELDS
+    )
+    other_ft = next(ft for ft in FindingType if ft is not orig.finding_type)
+    # A distinct, type-valid mutation per folded field.
+    mutations = {
+        "finding_type": other_ft,
+        "query_class": QueryClass.SKIP_SAFE,
+        "title": orig.title + " (edited)",
+        "description": orig.description + " edited",
+    }
+    assert folded_fields <= set(mutations), (
+        f"new folded field(s) {folded_fields - set(mutations)} need a mutation case here"
+    )
+    for field in folded_fields:
+        drifted = orig.model_copy(update={field: mutations[field]})
+        mutated = {**registry._OBSERVED_QUERIES, oid: drifted}
+        digest = registry._registry_digest(bodies, mutated, registry.VALUE_PREDICATES)
+        assert digest != base, f"mutating non-excluded field {field!r} did not move the digest"
