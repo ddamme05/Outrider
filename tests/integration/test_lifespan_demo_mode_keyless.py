@@ -67,7 +67,9 @@ async def test_demo_mode_boots_keyless_and_constructs_no_review_half(
 
     calls = {"provider": 0, "checkpointer": 0, "build_graph": 0}
 
-    def spy_provider_factory(_persister: object, _model_config: object) -> Any:
+    def spy_provider_factory(
+        _persister: object, _model_config: object, _host: object, _reasoning: object
+    ) -> Any:
         calls["provider"] += 1
         raise AssertionError("provider_factory must not be called in demo mode")
 
@@ -132,7 +134,7 @@ async def test_demo_mode_off_with_same_env_fails_at_truncation_gate(
 
     lifespan = build_lifespan(
         engine_factory=lambda: engine,
-        provider_factory=lambda _p, _m: make_stub_llm_provider(),
+        provider_factory=lambda _p, _m, _h, _r: make_stub_llm_provider(),
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,
         checkpointer_factory=in_memory_checkpointer_factory,
     )
@@ -170,7 +172,7 @@ async def test_demo_and_production_wire_identical_app_state_keys(
         engine = _mock_engine()
         lifespan = build_lifespan(
             engine_factory=lambda: engine,
-            provider_factory=lambda _p, _m: make_stub_llm_provider(),
+            provider_factory=lambda _p, _m, _h, _r: make_stub_llm_provider(),
             severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,
             checkpointer_factory=in_memory_checkpointer_factory,
         )
