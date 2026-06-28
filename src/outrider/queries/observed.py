@@ -46,10 +46,14 @@ class ObservedQuery(BaseModel):
 
     `title`/`description` are DETERMINISTIC static text (not generated, not
     interpolated with attacker-controlled source — the matched code rides
-    in `ReviewFinding.evidence`, which is data, not a format string). Every
-    field affects routing OR emitted output, so all of them enter the
-    analyze cache-key digest (`queries.registry._registry_digest`): a
-    metadata edit invalidates stale cached analyze outcomes.
+    in `ReviewFinding.evidence`, which is data, not a format string). The
+    output/routing fields (`finding_type`, `query_class`, `title`,
+    `description`) enter the analyze cache-key digest
+    (`queries.registry._registry_digest`, derived from the model minus
+    `_DIGEST_EXCLUDED_OBSERVED_FIELDS` per FUP-181), so a metadata edit
+    invalidates stale cached analyze outcomes. `query_match_id` is the digest
+    KEY (folded as the id, not as a field); `filename` is excluded — an impl
+    detail, since the `.scm` BODY is folded, not its name.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
