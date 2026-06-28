@@ -379,6 +379,11 @@ class _ScriptedProvider:
         return None
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
+        from outrider.llm.anthropic_provider import (
+            _ANTHROPIC_CONTRACT_DIGEST,
+            _ANTHROPIC_PROFILE_ID,
+        )
+
         self.calls.append(request)
         return LLMResponse(
             text=self.response_text,
@@ -389,6 +394,9 @@ class _ScriptedProvider:
             cache_write_tokens=0,
             finish_reason="end_turn",
             latency_ms=10,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 

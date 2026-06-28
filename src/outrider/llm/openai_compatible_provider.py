@@ -97,7 +97,7 @@ from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
     compute_cost_usd,
-    normalize_to_pricing_key,
+    pricing_key,
 )
 
 __all__ = ["BASETEN_BASE_URL", "GLM_MODEL_ID", "GLMProvider", "OpenAICompatibleProvider"]
@@ -198,7 +198,7 @@ class OpenAICompatibleProvider:
 
         # Eager pricing-coverage validation — eliminates a KeyError between SDK success
         # and the persister write.
-        missing = sorted(m for m in models if normalize_to_pricing_key(m) not in RATE_TABLE)
+        missing = sorted(m for m in models if pricing_key(profile.host_id, m) not in RATE_TABLE)
         if missing:
             raise LLMPricingMissingError(
                 f"OpenAICompatibleProvider construction: configured model(s) {missing!r} "
@@ -411,19 +411,20 @@ class OpenAICompatibleProvider:
             # LLMResponse + the audit event carry (response.*), not the raw
             # locals — so the billed counts can't drift from the audited ones.
             cost_decimal = compute_cost_usd(
-                model=model_id,
+                self._profile.host_id,
+                model_id,
                 input_tokens=response.input_tokens,
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
                 output_tokens=response.output_tokens,
             )
         except KeyError as exc:
-            pricing_key = normalize_to_pricing_key(model_id)
+            missing_key = pricing_key(self._profile.host_id, model_id)
             raise LLMPricingMissingError(
-                f"Model {model_id!r} normalizes to pricing key {pricing_key!r}, "
+                f"Model {model_id!r} maps to host-qualified pricing key {missing_key!r}, "
                 f"which is not in RATE_TABLE at complete() step 7. Add the key "
                 f"to RATE_TABLE + bump PRICING_VERSION to fix.",
-                missing_models=[pricing_key],
+                missing_models=[str(missing_key)],
             ) from exc
 
         # Step 8: build LLMCallEvent + persist.

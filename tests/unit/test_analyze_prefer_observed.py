@@ -21,6 +21,10 @@ from uuid import UUID
 import pytest
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.llm.anthropic_provider import (
+    _ANTHROPIC_CONTRACT_DIGEST,
+    _ANTHROPIC_PROFILE_ID,
+)
 from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.policy import EvidenceTier
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -77,6 +81,9 @@ class _JudgedProvider:
             cache_write_tokens=0,
             finish_reason="end_turn",
             latency_ms=10,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 

@@ -23,6 +23,10 @@ import pytest
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
+from outrider.llm.anthropic_provider import (
+    _ANTHROPIC_CONTRACT_DIGEST,
+    _ANTHROPIC_PROFILE_ID,
+)
 from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ChangedFile, PRContext, ReviewState
@@ -54,6 +58,9 @@ class _StubLLMProvider:
             cache_write_tokens=0,
             finish_reason="end_turn",
             latency_ms=10,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 

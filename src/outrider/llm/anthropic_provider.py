@@ -84,6 +84,7 @@ from outrider.llm.pricing import (
     compute_cost_usd,
     min_cacheable_tokens,
     normalize_to_pricing_key,
+    pricing_key,
 )
 
 __all__ = ["AnthropicProvider"]
@@ -243,7 +244,7 @@ class AnthropicProvider:
             model_config.trace_model,
         }
         missing = sorted(
-            m for m in configured_models if normalize_to_pricing_key(m) not in RATE_TABLE
+            m for m in configured_models if pricing_key(_ANTHROPIC_PROFILE_ID, m) not in RATE_TABLE
         )
         if missing:
             raise LLMPricingMissingError(
@@ -495,7 +496,7 @@ class AnthropicProvider:
                 # be a substituted id outside the table.
                 try:
                     floor_text = (
-                        f"{min_cacheable_tokens(response.model)} tokens for "
+                        f"{min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, response.model)} tokens for "
                         f"{normalize_to_pricing_key(response.model)}"
                     )
                 except KeyError:
@@ -546,24 +547,25 @@ class AnthropicProvider:
         # entry rather than the un-normalized literal.
         try:
             cost_decimal: Decimal = compute_cost_usd(
-                model=response.model,
+                _ANTHROPIC_PROFILE_ID,
+                response.model,
                 input_tokens=response.input_tokens,
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
                 output_tokens=response.output_tokens,
             )
         except KeyError as exc:
-            pricing_key = normalize_to_pricing_key(response.model)
+            missing_key = pricing_key(_ANTHROPIC_PROFILE_ID, response.model)
             raise LLMPricingMissingError(
-                f"Model {response.model!r} normalizes to pricing key "
-                f"{pricing_key!r}, which is not in RATE_TABLE at "
+                f"Model {response.model!r} maps to host-qualified pricing key "
+                f"{missing_key!r}, which is not in RATE_TABLE at "
                 f"complete() step 8 (request.model={request.model!r}). "
                 f"Constructor's eager validation covers configured models "
                 f"only — this can fire if the SDK substitutes the model "
                 f"in its response (alias resolution, deprecation routing). "
-                f"Add the normalized key to RATE_TABLE + bump "
+                f"Add the key to RATE_TABLE + bump "
                 f"PRICING_VERSION to fix.",
-                missing_models=[pricing_key],
+                missing_models=[str(missing_key)],
             ) from exc
 
         # Step 9: build LLMCallEvent + await persister.persist().

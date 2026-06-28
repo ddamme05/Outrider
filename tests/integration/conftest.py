@@ -340,6 +340,10 @@ def llm_call_event_factory() -> LLMCallEventFactory:
     from datetime import UTC, datetime
 
     from outrider.audit.events import LLMCallEvent
+    from outrider.llm.anthropic_provider import (
+        _ANTHROPIC_CONTRACT_DIGEST,
+        _ANTHROPIC_PROFILE_ID,
+    )
     from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
     from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 
@@ -354,6 +358,7 @@ def llm_call_event_factory() -> LLMCallEventFactory:
     default_model = "claude-haiku-4-5"
     canonical_cost_usd = float(
         compute_cost_usd(
+            "anthropic",
             default_model,
             input_tokens=default_input_tokens,
             cache_write_tokens=0,
@@ -390,6 +395,11 @@ def llm_call_event_factory() -> LLMCallEventFactory:
             degraded_mode=False,
             is_eval=is_eval,
             timestamp=datetime.now(UTC),
+            # Host-qualified per #056 — matches llm_response_factory's triad so the
+            # persister's event-vs-response cross-check passes by construction.
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
     return _build
@@ -425,9 +435,15 @@ def llm_request_factory() -> LLMRequestFactory:
 @pytest.fixture
 def llm_response_factory() -> LLMResponseFactory:
     """Factory: `factory(**kwargs) -> LLMResponse`."""
+    from outrider.llm.anthropic_provider import (
+        _ANTHROPIC_CONTRACT_DIGEST,
+        _ANTHROPIC_PROFILE_ID,
+    )
     from outrider.llm.base import LLMResponse
 
     def _build(*, text_value: str = "the completion text") -> LLMResponse:
+        # Host-qualified per #056 (claude → anthropic) so the response can be
+        # priced + persister-cross-checked like a real AnthropicProvider response.
         return LLMResponse(
             text=text_value,
             model="claude-haiku-4-5",
@@ -437,6 +453,9 @@ def llm_response_factory() -> LLMResponseFactory:
             cache_write_tokens=0,
             finish_reason="end_turn",
             latency_ms=250,
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
     return _build

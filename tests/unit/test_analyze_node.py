@@ -51,6 +51,7 @@ from outrider.agent.nodes.analyze import (
 from outrider.agent.nodes.finding_cap import FindingCapOverflowError
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
+from outrider.llm.anthropic_provider import _ANTHROPIC_CONTRACT_DIGEST, _ANTHROPIC_PROFILE_ID
 from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity
 from outrider.schemas import ReviewState
@@ -225,6 +226,13 @@ class _StubLLMProvider:
             cache_write_tokens=0,
             finish_reason="end_turn",
             latency_ms=250,
+            # Host-identity triad (DECISIONS.md#056): the analyze node + persister
+            # price from `response.profile_id`, so the stub must stamp the same
+            # triad the real AnthropicProvider does (default models are claude →
+            # priced under "anthropic"). All-three-present or all-None.
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 
@@ -1574,6 +1582,10 @@ class _ConfigurableTokensStubProvider:
             cache_write_tokens=spec["cache_write_tokens"],
             finish_reason="end_turn",
             latency_ms=250,
+            # Host-identity triad (DECISIONS.md#056): see `_StubLLMProvider`.
+            profile_id=_ANTHROPIC_PROFILE_ID,
+            reasoning_enabled=False,
+            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
         )
 
 
@@ -1672,9 +1684,12 @@ async def test_total_cost_usd_is_decimal_sum_then_float_cast(deps: dict[str, Any
     from outrider.llm.pricing import compute_cost_usd
 
     model = "claude-sonnet-4-6"  # matches the `analyze_model` in default deps
+    # profile_id is now the FIRST positional arg (DECISIONS.md#056); claude models
+    # price under "anthropic", matching the stub's stamped triad.
     expected_decimal_sum = sum(
         (
             compute_cost_usd(
+                _ANTHROPIC_PROFILE_ID,
                 model,
                 input_tokens=s["input_tokens"],
                 cache_write_tokens=s["cache_write_tokens"],

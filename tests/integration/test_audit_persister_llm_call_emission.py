@@ -86,11 +86,16 @@ def _make_llm_call_event(
     `_make_llm_response()` fixture (100/50 tokens on claude-haiku-4-5)."""
     from uuid import UUID
 
+    from outrider.llm.anthropic_provider import (
+        _ANTHROPIC_CONTRACT_DIGEST,
+        _ANTHROPIC_PROFILE_ID,
+    )
     from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
     from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 
     canonical_cost = float(
         compute_cost_usd(
+            _ANTHROPIC_PROFILE_ID,
             "claude-haiku-4-5",
             input_tokens=100,
             cache_write_tokens=0,
@@ -116,6 +121,12 @@ def _make_llm_call_event(
         system_prompt_hash=_canonical_system_prompt_hash(system_prompt),
         degraded_mode=False,
         timestamp=datetime.now(UTC),
+        # Host-qualified per #056 so the persister's event-vs-response triad
+        # cross-check has a coherent base (the field-mismatch tests override one
+        # triad member to force a divergence).
+        profile_id=_ANTHROPIC_PROFILE_ID,
+        reasoning_enabled=False,
+        profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
     )
 
 
@@ -138,6 +149,11 @@ def _make_llm_request(review_id_str: str, user_prompt: str = _DEFAULT_USER_PROMP
 
 def _make_llm_response(text_value: str = "the completion text") -> LLMResponse:
     """Construct a representative LLMResponse."""
+    from outrider.llm.anthropic_provider import (
+        _ANTHROPIC_CONTRACT_DIGEST,
+        _ANTHROPIC_PROFILE_ID,
+    )
+
     return LLMResponse(
         text=text_value,
         model="claude-haiku-4-5",
@@ -147,6 +163,9 @@ def _make_llm_response(text_value: str = "the completion text") -> LLMResponse:
         cache_write_tokens=0,
         finish_reason="end_turn",
         latency_ms=250,
+        profile_id=_ANTHROPIC_PROFILE_ID,
+        reasoning_enabled=False,
+        profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
     )
 
 

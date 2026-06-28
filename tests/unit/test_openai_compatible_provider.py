@@ -847,9 +847,9 @@ async def test_reasoning_tokens_not_added_to_output_or_cost() -> None:
     assert resp.output_tokens == 500  # NOT 620
     event, _, _ = persister.calls[0]
     assert event.output_tokens == 500
-    from outrider.llm.pricing import RATE_TABLE
+    from outrider.llm.pricing import RATE_TABLE, pricing_key
 
-    glm = RATE_TABLE[GLM_MODEL_ID]
+    glm = RATE_TABLE[pricing_key("baseten", GLM_MODEL_ID)]
     # input=1000 (cached=0), output=500; cost must use output=500, not 620.
     expected = float(glm.in_per_token * 1000 + glm.out_per_token * 500)
     assert abs(event.cost_usd - expected) < 1e-12
@@ -861,11 +861,14 @@ async def test_reasoning_tokens_not_added_to_output_or_cost() -> None:
 
 
 def _synthetic_profile() -> HostProfile:
-    """A second host serving the SAME priced slug, but with EXCLUDES-cached
+    """A second profile serving the SAME priced slug, but with EXCLUDES-cached
     accounting, a different base_url, and the reasoning_effort_none shaper — proves
-    the per-host axes are profile-driven (the #056 two-hosts-one-slug case)."""
+    the per-host *axes* (base_url, §8a mode, reasoning shaper) are profile-driven,
+    independent of the host-qualified pricing key. host_id stays "baseten" so the
+    (profile_id, model) pricing key resolves (DECISIONS.md#056); the wire axes below
+    are what diverge."""
     return HostProfile(
-        host_id="synthetic",
+        host_id="baseten",
         base_url="https://synthetic.example/v1",
         api_key_env="SYNTHETIC_API_KEY",
         model_slug_pattern=r"^zai-org/GLM-\d+(\.\d+)?$",

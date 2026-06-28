@@ -70,7 +70,8 @@ def _price(model: str, input_tokens: int, output_tokens: int) -> float:
     """Re-price one call analytically (no cache) through the production table."""
     return float(
         compute_cost_usd(
-            model=model,
+            "anthropic",
+            model,
             input_tokens=input_tokens,
             cache_write_tokens=0,
             cache_read_tokens=0,
@@ -248,7 +249,7 @@ def test_cache_packing_cross_file_proof() -> None:
         "is below the model's min-cacheable floor (the silent no-op the spec gates on)"
     )
     assert first["cache_read_tokens"] == 0
-    assert first["cache_write_tokens"] >= min_cacheable_tokens(first["model"])
+    assert first["cache_write_tokens"] >= (min_cacheable_tokens("anthropic", first["model"]) or 0)
     for c in rest:
         assert c["cache_write_tokens"] == 0, (
             "a later analyze call re-WROTE the cache — the system prompt varied "
@@ -273,7 +274,7 @@ def test_cache_packing_cross_file_proof() -> None:
     print("Cache-packing proof (3-file STANDARD review, model_cache probe):")
     print(
         f"  model {model}; stable prefix ~{prefix_tokens} est tokens (floor "
-        f"{min_cacheable_tokens(model)}); 1 write + {len(rest)} reads"
+        f"{min_cacheable_tokens('anthropic', model)}); 1 write + {len(rest)} reads"
     )
     print(
         f"  analyze input cost: uncached ${uncached:.6f} -> cache-modeled ${cached:.6f} "
