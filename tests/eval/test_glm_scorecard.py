@@ -189,21 +189,24 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             + "\n"
             + "=" * 72
         )
-        # Persist the structured artifact (json + html) alongside the printed report,
-        # reusing the same Scorecard serializers test_scorecard.py writes to
-        # reports/scorecard/. One row per completed scenario; survives pytest capture.
-        report_dir = Path("reports/scorecard")
-        report_dir.mkdir(parents=True, exist_ok=True)
-        card = Scorecard(rows=tuple(rows))
-        (report_dir / "glm-vs-anthropic-scorecard.json").write_text(
-            card.to_json(), encoding="utf-8"
-        )
-        (report_dir / "glm-vs-anthropic-scorecard.html").write_text(
-            card.to_html(), encoding="utf-8"
-        )
-        print(  # noqa: T201 — operator artifact pointer
-            f"\n[scorecard written to {report_dir}/glm-vs-anthropic-scorecard.json + .html]"
-        )
     finally:
-        await baseline_provider.aclose()
-        await candidate_provider.aclose()
+        # Persist in `finally` so a paid run's partial rows survive a mid-loop failure
+        # too (the printed report shows only on success); nested so the provider close
+        # runs regardless of the write. `if rows` avoids writing an empty artifact.
+        try:
+            if rows:
+                report_dir = Path("reports/scorecard")
+                report_dir.mkdir(parents=True, exist_ok=True)
+                card = Scorecard(rows=tuple(rows))
+                (report_dir / "glm-vs-anthropic-scorecard.json").write_text(
+                    card.to_json(), encoding="utf-8"
+                )
+                (report_dir / "glm-vs-anthropic-scorecard.html").write_text(
+                    card.to_html(), encoding="utf-8"
+                )
+                print(  # noqa: T201 — operator artifact pointer
+                    f"\n[scorecard written to {report_dir}/glm-vs-anthropic-scorecard.json + .html]"
+                )
+        finally:
+            await baseline_provider.aclose()
+            await candidate_provider.aclose()
