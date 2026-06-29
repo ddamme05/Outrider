@@ -12,9 +12,9 @@ publish is unreachable from it. Together they cover intake→triage→analyze→
 hitl→resume→publish under the baseten triad:
 
   * test_graph_gates_at_hitl_under_baseten_host — single-pass: intake→triage→analyze→
-    (trace, no loop)→synthesize→hitl(GATED). Proves the triad flows through analyze +
-    synthesize (synthesize sums the baseten-stamped LLMCallEvents into ReviewMetrics) and
-    the HITL gate holds identically under a non-anthropic host.
+    synthesize→hitl(GATED). Proves the triad flows through analyze + synthesize (synthesize
+    sums the baseten-stamped LLMCallEvents into ReviewMetrics) and the HITL gate holds
+    identically under a non-anthropic host. (`_analyze_router` skips the trace node — see below.)
   * test_resume_reaches_publish_under_baseten_host — resume: the explicit
     Command(resume=...) drives hitl→publish, so PUBLISH runs under the baseten triad.
 
@@ -24,11 +24,12 @@ the BASETEN triad, and the audit persister ENFORCES host-qualification on fresh 
 unqualified event). So if the triad failed to flow through any covered node, the run would
 RAISE — a completed run / a posted comment is the proof the triad reached that node.
 
-Not covered (intentionally): the analyze⇄trace LOOP. The trace NODE runs in both tests (it
-examines the findings and proceeds with no candidates), but no fixture here has trace
-candidates, so analyze never re-enters. The trace node's ranking call goes through the SAME
-host-stamping provider path as analyze, so it carries no host-qualification risk beyond what
-these tests already prove (FUP-194).
+Not covered (intentionally): the trace NODE (and so the analyze⇄trace loop). Both fixtures
+emit `"trace_candidates": []`, so `_analyze_router` (graph.py) routes analyze→synthesize
+directly — the trace node is SKIPPED, not run-and-empty. Covering it under baseten needs a
+fixture whose analyze output carries trace candidates; once it runs, trace's ranking call
+goes through the SAME host-stamping provider path as analyze, so it carries no
+host-qualification risk beyond what these tests already prove (deferred — FUP-194).
 
 Driver-backed: needs `--is-eval` + the postgres-test DB (same as every run_review / resume test).
 """
