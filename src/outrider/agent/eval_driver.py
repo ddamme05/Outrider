@@ -380,25 +380,32 @@ class _FixtureScriptedProvider:
         *,
         persister: LLMExchangePersister,
         probe: CostProbe | None = None,
+        host: str | None = None,
     ) -> None:
         self._responses = responses
         self._counts: dict[str, int] = {}
         self._persister = persister
         self._probe = probe
+        # Host-identity triad stamped on every response/event (DECISIONS.md#056).
+        # Default None -> anthropic: resolve_host_identity("anthropic", False) returns
+        # the SAME (ANTHROPIC_PROFILE_ID, False, ANTHROPIC_CONTRACT_DIGEST) the
+        # AnthropicProvider stamps, so the default path is byte-identical. host="baseten"
+        # stamps the baseten triad so a full-graph eval can run a non-anthropic host.
+        # host_profiles is SDK-free, so this import stays off the SDK module-load path.
+        from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID, resolve_host_identity
+
+        self._profile_id, self._reasoning_enabled, self._profile_contract_digest = (
+            resolve_host_identity(host or ANTHROPIC_PROFILE_ID, reasoning=False)
+        )
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.audit.events import LLMCallEvent
 
-        # The fixture mirrors AnthropicProvider (claude-family ModelConfig
-        # defaults; the GLM scorecard uses the real provider, not this double).
-        # Stamp the same host-identity triad it would (DECISIONS.md#056) so the
-        # persister can host-qualify cost + cross-check event-vs-response, and so
-        # pricing keys on `("anthropic", model)`. Lazy import keeps the SDK off
-        # eval_driver's module-load path.
-        from outrider.llm.anthropic_provider import (
-            _ANTHROPIC_CONTRACT_DIGEST,
-            _ANTHROPIC_PROFILE_ID,
-        )
+        # Stamp the host-identity triad resolved in __init__ (DECISIONS.md#056) on the
+        # response + event so the persister host-qualifies cost + cross-checks
+        # event-vs-response, and pricing keys on `(profile_id, model)`. Default host is
+        # anthropic (the fixture mirrors AnthropicProvider's claude-family ModelConfig);
+        # a baseten-host run stamps the baseten triad + keys pricing on `("baseten", model)`.
         from outrider.llm.base import (
             LLMResponse,
             _canonical_prompt_hash,
@@ -447,7 +454,7 @@ class _FixtureScriptedProvider:
                 # input_tokens` holds by construction.
                 system_tokens = probe.token_estimator(request.system_prompt)
                 try:
-                    floor = min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, request.model)
+                    floor = min_cacheable_tokens(self._profile_id, request.model)
                 except KeyError as exc:
                     # Same loud-failure contract as the pricing KeyError
                     # below — a bare KeyError mid-complete() hides the cause.
@@ -497,9 +504,9 @@ class _FixtureScriptedProvider:
             cache_write_tokens=cache_write_tokens,
             finish_reason="end_turn",
             latency_ms=1,
-            profile_id=_ANTHROPIC_PROFILE_ID,
-            reasoning_enabled=False,
-            profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
+            profile_id=self._profile_id,
+            reasoning_enabled=self._reasoning_enabled,
+            profile_contract_digest=self._profile_contract_digest,
         )
         # Emit LLMCallEvent + llm_call_content BEFORE returning, exactly as the real
         # LLMProvider contract requires (mirrors AnthropicProvider Step 9). FUP-093:
@@ -851,6 +858,7 @@ def _build_eval_graph(
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
     model_config: ModelConfig | None = None,
+    host: str | None = None,
 ) -> Any:
     """Build the seven-node graph wired with the eval doubles.
 
@@ -861,7 +869,8 @@ def _build_eval_graph(
 
     `model_config` lets a caller (the eval scorecard runner) vary per-node models
     in-process without mutating `OUTRIDER_MODEL_*` env between runs; default `None`
-    reads the env exactly as production does (`ModelConfig()`).
+    reads the env exactly as production does — `ModelConfig.for_host(host)` (host
+    defaulting to anthropic, which is byte-identical to the old `ModelConfig()`).
     """
     # Budget seam (Stage 1c): the fixture's budget, or build_graph's default 200k
     # when unset. A starvation scenario sets a tight value so the analyze cost gate
@@ -871,20 +880,27 @@ def _build_eval_graph(
         if fixture.total_review_budget_tokens is not None
         else DEFAULT_REVIEW_BUDGET_TOKENS
     )
-    # Qualify the eval completion events like production (#056 step 4d): the fixture
-    # mirrors AnthropicProvider, so close the anthropic triad into build_graph — else the
-    # persister's fresh-write guard rejects the unqualified AnalyzeCompletedEvent /
-    # SynthesizeCompletedEvent (and the eval cache key would stay host-unqualified).
-    from outrider.llm.host_profiles import ANTHROPIC_CONTRACT_DIGEST, ANTHROPIC_PROFILE_ID
+    # Qualify the eval completion events like production (#056 step 4d): close the
+    # host-identity triad into build_graph — else the persister's fresh-write guard
+    # rejects the unqualified AnalyzeCompletedEvent / SynthesizeCompletedEvent (and the
+    # eval cache key would stay host-unqualified). Default host is anthropic and stays
+    # byte-identical (resolve_host_identity + ModelConfig.for_host on "anthropic"
+    # reproduce the prior constants + ModelConfig()); host="baseten" runs the FULL graph
+    # under the baseten triad — the e2e coverage the GLM scorecard (analyze-only) lacks.
+    from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID, resolve_host_identity
 
+    host_id = host or ANTHROPIC_PROFILE_ID
+    profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
+        host_id, reasoning=False
+    )
     return build_graph(
         db_factory=session_factory,
         github_factory=_github_factory_for(fixture),
         provider=provider,
-        model_config=model_config or ModelConfig(),
-        profile_id=ANTHROPIC_PROFILE_ID,
-        reasoning_enabled=False,
-        profile_contract_digest=ANTHROPIC_CONTRACT_DIGEST,
+        model_config=model_config or ModelConfig.for_host(host_id),
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
         phase_event_sink=persister,
         file_examination_sink=persister,
         analyze_event_sink=persister,
@@ -934,6 +950,7 @@ async def _drive(
     cache_mode: CacheMode = CacheMode.SHADOW,
     analyze_observed_skip_enforced: bool = False,
     model_config: ModelConfig | None = None,
+    host: str | None = None,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -954,9 +971,12 @@ async def _drive(
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister, probe=probe)
+        provider = _FixtureScriptedProvider(
+            fixture.llm_responses, persister=persister, probe=probe, host=host
+        )
         graph = _build_eval_graph(
             fixture=fixture,
+            host=host,
             session_factory=session_factory,
             persister=persister,
             provider=provider,
@@ -1016,10 +1036,11 @@ async def _arun_review(
     *,
     probe: CostProbe | None = None,
     model_config: ModelConfig | None = None,
+    host: str | None = None,
 ) -> EvalRunResult:
     async with ephemeral_database(base_url=base_url) as db_url:
         await run_alembic_upgrade_head(db_url)
-        return await _drive(fixture, db_url, probe=probe, model_config=model_config)
+        return await _drive(fixture, db_url, probe=probe, model_config=model_config, host=host)
 
 
 def run_review(
@@ -1027,6 +1048,7 @@ def run_review(
     *,
     probe: CostProbe | None = None,
     model_config: ModelConfig | None = None,
+    host: str | None = None,
 ) -> EvalRunResult:
     """Drive the real 7-node graph against a JSON PR fixture; return the result.
 
@@ -1040,6 +1062,11 @@ def run_review(
     Pass a `model_config` to run under a specific per-node model matrix (the eval
     scorecard runner's cost pass); default `None` reads `OUTRIDER_MODEL_*` from env
     exactly as production does.
+
+    Pass `host` to drive the FULL graph under a non-anthropic provider host (e.g.
+    "baseten"): the scripted provider + the completion events stamp that host's
+    identity triad, `ModelConfig.for_host(host)` selects its models, and pricing keys
+    on `(host, model)`. Default `None` -> anthropic (byte-identical to before).
     """
     require_eval_mode()
     try:
@@ -1054,7 +1081,9 @@ def run_review(
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
 
-    return asyncio.run(_arun_review(fixture, base_url, probe=probe, model_config=model_config))
+    return asyncio.run(
+        _arun_review(fixture, base_url, probe=probe, model_config=model_config, host=host)
+    )
 
 
 # ---------------------------------------------------------------------------
