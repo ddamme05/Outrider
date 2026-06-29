@@ -1,22 +1,23 @@
-"""Graph execution under OUTRIDER_LLM_HOST=baseten (GLM-5.2): the host-qualified triad
-flows through the non-analyze nodes the GLM scorecard never runs.
+"""Graph execution under OUTRIDER_LLM_HOST=baseten (GLM-5.2): the non-analyze nodes run on a
+Baseten-built graph the GLM scorecard never reaches.
 
 The GLM scorecard proves analyze-QUALITY on real Baseten calls, but it runs analyze in
 ISOLATION (no triage/trace/synthesize/hitl/publish). These two tests drive the REAL graph
-via the eval drivers under host="baseten", so the non-analyze nodes run under a
-non-anthropic identity triad (DECISIONS.md#056) — the coverage FUP-194 flagged as missing.
+via the eval drivers under host="baseten", so the non-analyze nodes run on a graph built
+with the non-anthropic host identity (DECISIONS.md#056) — the coverage FUP-194 flagged as
+missing.
 
 Split across two tests because `run_review`'s single pass STOPS at the HITL gate on a
 CRITICAL finding (boundary #6: nothing reaches GitHub without an explicit decision), so
 publish is unreachable from it. Together they cover intake→triage→analyze→synthesize→
-hitl→resume→publish under the baseten triad:
+hitl→resume→publish on the Baseten-built graph:
 
   * test_graph_gates_at_hitl_under_baseten_host — single-pass: intake→triage→analyze→
     synthesize→hitl(GATED). Proves the triad flows through analyze + synthesize (synthesize
     sums the baseten-stamped LLMCallEvents into ReviewMetrics) and the HITL gate holds
     identically under a non-anthropic host. (`_analyze_router` skips the trace node — see below.)
   * test_resume_reaches_publish_under_baseten_host — resume: the explicit
-    Command(resume=...) drives hitl→publish, so PUBLISH runs under the baseten triad.
+    Command(resume=...) drives hitl→publish, so PUBLISH runs on the Baseten-built graph.
 
 Why this proves host-qualification: every LLM call stamps the BASETEN triad on its
 `LLMCallEvent`, and analyze + synthesize additionally stamp it on their
