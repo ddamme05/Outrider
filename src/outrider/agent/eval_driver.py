@@ -885,8 +885,10 @@ def _build_eval_graph(
     # rejects the unqualified AnalyzeCompletedEvent / SynthesizeCompletedEvent (and the
     # eval cache key would stay host-unqualified). Default host is anthropic and stays
     # byte-identical (resolve_host_identity + ModelConfig.for_host on "anthropic"
-    # reproduce the prior constants + ModelConfig()); host="baseten" runs the FULL graph
-    # under the baseten triad — the e2e coverage the GLM scorecard (analyze-only) lacks.
+    # reproduce the prior constants + ModelConfig()); host="baseten" builds the graph with
+    # the baseten identity (its analyze/synthesize completion events + provider calls carry
+    # the triad; publish/hitl emit none) — the e2e coverage the GLM scorecard (analyze-only)
+    # lacks.
     from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID, resolve_host_identity
 
     host_id = host or ANTHROPIC_PROFILE_ID
@@ -1063,10 +1065,12 @@ def run_review(
     scorecard runner's cost pass); default `None` reads `OUTRIDER_MODEL_*` from env
     exactly as production does.
 
-    Pass `host` to drive the FULL graph under a non-anthropic provider host (e.g.
-    "baseten"): the scripted provider + the completion events stamp that host's
-    identity triad, `ModelConfig.for_host(host)` selects its models, and pricing keys
-    on `(host, model)`. Default `None` -> anthropic (byte-identical to before).
+    Pass `host` to run the graph under a non-anthropic provider host (e.g. "baseten"):
+    the scripted provider stamps that host's identity triad on every LLM call, and
+    analyze/synthesize stamp it on their completion events; `ModelConfig.for_host(host)`
+    selects its models, and pricing keys on `(host, model)`. (Single pass — a critical
+    finding still gates at hitl; see `run_review_with_resume` to reach publish.) Default
+    `None` -> anthropic (byte-identical to before).
     """
     require_eval_mode()
     try:
@@ -1194,10 +1198,12 @@ async def run_review_with_resume(
     approval is supplied explicitly through `Command(resume=...)`, and publish runs
     only after it (boundary #6 preserved).
 
-    `host` (default anthropic) selects the identity triad the scripted provider and
-    every per-node completion event stamp (DECISIONS.md#056); a non-anthropic host is
-    how the publish + resume nodes — which `run_review`'s single pass cannot reach,
-    because it stops at the HITL gate — get exercised under a non-anthropic triad.
+    `host` (default anthropic) selects the identity the graph is built with: the scripted
+    provider stamps that host's triad on every LLM call, and analyze/synthesize stamp it on
+    their completion events (DECISIONS.md#056). A non-anthropic host is how the publish +
+    resume nodes — which `run_review`'s single pass cannot reach, because it stops at the
+    HITL gate — get exercised on a non-anthropic-built graph (publish makes no LLM call, so
+    this is reachability, not triad-bearing proof).
 
     Fail-closed: `require_eval_mode()` + `_validate_eval_db_url` (a per-test eval
     DB, not the shared base) run before any DB or checkpointer work.
