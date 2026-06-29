@@ -265,6 +265,25 @@ BASETEN_PROFILE: Final[HostProfile] = HostProfile(
     ),
 )
 
+# ADD-A-HOST CHECKLIST (e.g. Fireworks / DeepInfra — arc 1b/2). The registries below
+# (HOST_PROFILES, HOST_DEFAULT_MODELS) + pricing's RATE_TABLE / MIN_CACHEABLE_TOKENS are
+# the ONLY host enumerations in src/, and the error strings auto-derive their host lists
+# from them, so this is genuinely "add-a-profile":
+#   1. Here: define a frozen HostProfile (host_id, base_url, api_key_env, model_slug_pattern,
+#      json_mode, token_accounting, reasoning_mechanism, privacy w/ source_url + verified_date)
+#      and register it in HOST_PROFILES; add a HOST_DEFAULT_MODELS[host_id] row (all six
+#      _MODEL_FIELDS). If the host needs a reasoning-off shape not already in
+#      ReasoningMechanism, add the enum value + a shaper + a _SHAPER_REGISTRY entry + bump
+#      SHAPER_CONTRACT_VERSION.
+#   2. pricing.py: add the RATE_TABLE (host_id, model) row + a MIN_CACHEABLE_TOKENS row
+#      (None = unknown floor, 0 = documented no-floor), bump PRICING_VERSION, update the
+#      pricing-digest test.
+#   3. .env: point OUTRIDER_LLM_HOST at the new host_id + set its api_key_env.
+#   4. STRICT-JSON hosts ONLY (Fireworks/DeepInfra constrained decoding): ANALYZE_RESPONSE_SCHEMA
+#      is hand-trimmed to Anthropic's subset (nullable `anyOf`, partial `required`) and sent
+#      verbatim with strict:True. A strict compiler REJECTS that shape — add a per-host schema
+#      adapter (prototyped + verified in spikes/fireworks/probe.py::_fireworks_adapt) before the
+#      first paid call. Baseten's SOFT_FENCED path needs no adapter.
 HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
     {BASETEN_PROFILE.host_id: BASETEN_PROFILE}
 )
