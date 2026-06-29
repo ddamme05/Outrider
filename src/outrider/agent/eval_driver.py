@@ -1173,7 +1173,7 @@ def _validate_eval_db_url(db_url: str) -> None:
 
 
 async def run_review_with_resume(
-    fixture_path: str | os.PathLike[str], *, db_url: str
+    fixture_path: str | os.PathLike[str], *, db_url: str, host: str | None = None
 ) -> ResumedRunResult:
     """Drive the graph through the HITL interrupt, restart, resume, and publish.
 
@@ -1193,6 +1193,11 @@ async def run_review_with_resume(
     resume-identity invariant). The base `run_review` never approves; here the
     approval is supplied explicitly through `Command(resume=...)`, and publish runs
     only after it (boundary #6 preserved).
+
+    `host` (default anthropic) selects the identity triad the scripted provider and
+    every per-node completion event stamp (DECISIONS.md#056); a non-anthropic host is
+    how the publish + resume nodes — which `run_review`'s single pass cannot reach,
+    because it stops at the HITL gate — get exercised under a non-anthropic triad.
 
     Fail-closed: `require_eval_mode()` + `_validate_eval_db_url` (a per-test eval
     DB, not the shared base) run before any DB or checkpointer work.
@@ -1222,7 +1227,7 @@ async def run_review_with_resume(
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister)
+        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister, host=host)
 
         # Phase A (process 1): drive to the interrupt on saver A, then CLOSE it.
         async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_a:
@@ -1234,6 +1239,7 @@ async def run_review_with_resume(
                 provider=provider,
                 publisher=publisher,
                 checkpointer=saver_a,
+                host=host,
             )
             result_a = await graph_a.ainvoke(_seed_state(fixture, review_id), config=thread_config)
 
@@ -1259,6 +1265,7 @@ async def run_review_with_resume(
                 provider=provider,
                 publisher=publisher,
                 checkpointer=saver_b,
+                host=host,
             )
             result_b = await graph_b.ainvoke(
                 Command(resume=decision.model_dump(mode="json")), config=thread_config
