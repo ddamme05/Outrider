@@ -18,11 +18,16 @@ hitl→resume→publish under the baseten triad:
   * test_resume_reaches_publish_under_baseten_host — resume: the explicit
     Command(resume=...) drives hitl→publish, so PUBLISH runs under the baseten triad.
 
-Why completion is the proof: the scripted provider + every per-node completion event stamp
-the BASETEN triad, and the audit persister ENFORCES host-qualification on fresh writes
-(`_assert_fresh_triad_qualified` raises `AuditPersisterUnqualifiedFreshWriteError` on an
-unqualified event). So if the triad failed to flow through any covered node, the run would
-RAISE — a completed run / a posted comment is the proof the triad reached that node.
+Why this proves host-qualification: every LLM call stamps the BASETEN triad on its
+`LLMCallEvent`, and analyze + synthesize additionally stamp it on their
+`AnalyzeCompletedEvent` / `SynthesizeCompletedEvent` (DECISIONS.md#056). The audit persister
+ENFORCES host-qualification on those fresh writes (`_assert_fresh_triad_qualified` raises
+`AuditPersisterUnqualifiedFreshWriteError` on an unqualified triad-bearing event), so if the
+triad failed to flow through analyze or synthesize the run would RAISE — a completed run is
+the proof it cleared the guard there. Publish is NOT a triad-bearing node: it makes no LLM
+calls and emits no triad event (publish.py:10), so a posted comment proves only that resume
+drove the BASETEN-BUILT graph through to publish — host-qualification is already proven
+upstream by the single-pass test, not re-proven at publish.
 
 Not covered (intentionally): the trace NODE (and so the analyze⇄trace loop). Both fixtures
 emit `"trace_candidates": []`, so `_analyze_router` (graph.py) routes analyze→synthesize
@@ -72,16 +77,18 @@ def test_graph_gates_at_hitl_under_baseten_host() -> None:
 
 
 async def test_resume_reaches_publish_under_baseten_host(eval_db: str) -> None:
-    """Resume past the HITL gate so PUBLISH runs under host='baseten'.
+    """Resume past the HITL gate so PUBLISH runs on a graph both legs built with host='baseten'.
 
     The publish + resume nodes are exactly what `run_review`'s single pass cannot reach
     (it stops at the gate). The explicit `Command(resume=...)` supplies the approval, and
-    publish runs only after it (boundary #6) — under the baseten triad. A posted comment is
-    the proof publish executed and its completion events cleared host-qualification."""
+    publish runs only after it (boundary #6). A posted comment proves resume drove the
+    BASETEN-BUILT graph through to publish; publish itself makes no LLM calls and emits no
+    triad event (publish.py:10), so this asserts reachability, not that publish cleared the
+    host-qualification guard — that guard is proven upstream by the single-pass test."""
     resumed = await run_review_with_resume(_RESUME_FIXTURE, db_url=eval_db, host="baseten")
 
     assert resumed.hitl_gated is True  # the CRITICAL finding gated; resume approved it
     # Boundary #6 positive half: the gated finding reached GitHub ONLY after the resume
-    # decision — publish RAN under the baseten triad and posted its comment(s).
+    # decision — publish RAN on the Baseten-built graph and posted its comment(s).
     assert len(resumed.published_comments) >= 1
     assert resumed.review_status == "completed"
