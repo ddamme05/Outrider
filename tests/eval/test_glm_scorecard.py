@@ -32,6 +32,7 @@ analyze calls. Cost-per-review (the third scorecard column) is a separate
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -39,6 +40,7 @@ import pytest
 from outrider.llm.glm_provider import GLM_MODEL_ID
 
 from .model_comparison import compare_models_on_scenario, state_from_eval_fixture
+from .scorecard import Scorecard, ScorecardRow
 from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
     _SAFE_CODE_FIXTURES,
@@ -104,6 +106,11 @@ async def test_glm_vs_anthropic_scorecard() -> None:
     # ERRORED row + returns None on a retryable provider failure so a transient does not
     # discard the rest of the paid run.
     gate_results: list[tuple[str, str, bool, str]] = []
+    # One ScorecardRow per COMPLETED scenario, collected so the paid run persists a
+    # structured artifact (json + html) via the same Scorecard serializers
+    # test_scorecard.py writes to reports/scorecard/ — the report survives pytest
+    # stdout capture regardless of -s.
+    rows: list[ScorecardRow] = []
 
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
@@ -131,6 +138,15 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             if cmp is None:
                 continue
             _print_scenario_report(fixture_path, cmp, baseline_model, GLM_MODEL_ID)
+            rows.append(
+                ScorecardRow.from_comparison(
+                    node="analyze",
+                    scenario=fixture_path,
+                    model=GLM_MODEL_ID,
+                    baseline_model=baseline_model,
+                    comparison=cmp,
+                )
+            )
             # Mirror the existing gate (test_model_comparison.py): recall counts as
             # held ONLY when the BASELINE also cleared the recall floor — else a
             # both-models-miss row would vacuously read green.
@@ -144,6 +160,15 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             if cmp is None:
                 continue
             _print_scenario_report(fixture_path, cmp, baseline_model, GLM_MODEL_ID)
+            rows.append(
+                ScorecardRow.from_comparison(
+                    node="analyze",
+                    scenario=fixture_path,
+                    model=GLM_MODEL_ID,
+                    baseline_model=baseline_model,
+                    comparison=cmp,
+                )
+            )
             gate_results.append((fixture_path, "precision", cmp.fp_bounded, "GLM over-flags"))
             assert cmp.baseline is not None  # the run completed
         # REPORT-ONLY summary — pytest "passed" means the run completed, NOT a verdict.
@@ -163,6 +188,21 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             + "\n  plus over-flag patterns on safe code."
             + "\n"
             + "=" * 72
+        )
+        # Persist the structured artifact (json + html) alongside the printed report,
+        # reusing the same Scorecard serializers test_scorecard.py writes to
+        # reports/scorecard/. One row per completed scenario; survives pytest capture.
+        report_dir = Path("reports/scorecard")
+        report_dir.mkdir(parents=True, exist_ok=True)
+        card = Scorecard(rows=tuple(rows))
+        (report_dir / "glm-vs-anthropic-scorecard.json").write_text(
+            card.to_json(), encoding="utf-8"
+        )
+        (report_dir / "glm-vs-anthropic-scorecard.html").write_text(
+            card.to_html(), encoding="utf-8"
+        )
+        print(  # noqa: T201 — operator artifact pointer
+            f"\n[scorecard written to {report_dir}/glm-vs-anthropic-scorecard.json + .html]"
         )
     finally:
         await baseline_provider.aclose()
