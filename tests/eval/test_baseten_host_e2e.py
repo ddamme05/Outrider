@@ -72,8 +72,9 @@ def test_graph_gates_at_hitl_under_baseten_host() -> None:
     assert baseten.published_comments == ()
 
     # synthesize SUMmed the baseten-stamped LLMCallEvent rows into ReviewMetrics: its
-    # presence proves the completion events flowed past the persister's host-qualification
-    # guard under the baseten triad (an unqualified fresh write would have raised).
+    # presence proves the baseten-stamped analyze/synthesize completion events (+ provider
+    # calls) flowed past the persister's host-qualification guard (an unqualified fresh
+    # write would have raised).
     assert baseten.review_metrics is not None
 
 
