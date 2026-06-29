@@ -282,8 +282,10 @@ BASETEN_PROFILE: Final[HostProfile] = HostProfile(
 #   4. STRICT-JSON hosts ONLY (Fireworks/DeepInfra constrained decoding): ANALYZE_RESPONSE_SCHEMA
 #      is hand-trimmed to Anthropic's subset (nullable `anyOf`, partial `required`) and sent
 #      verbatim with strict:True. A strict compiler REJECTS that shape — add a per-host schema
-#      adapter (prototyped + verified in spikes/fireworks/probe.py::_fireworks_adapt) before the
-#      first paid call. Baseten's SOFT_FENCED path needs no adapter.
+#      adapter (rewrite nullable `anyOf` -> `type:[X,"null"]` + complete every object's
+#      `required`) and confirm the host's strict compiler accepts it on a CAPTURED WIRE before
+#      shipping (#056: a new host ships only on captured wire evidence + the scorecard).
+#      Baseten's SOFT_FENCED path needs no adapter.
 HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
     {BASETEN_PROFILE.host_id: BASETEN_PROFILE}
 )
