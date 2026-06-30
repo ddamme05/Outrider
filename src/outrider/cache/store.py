@@ -193,7 +193,9 @@ class AnalyzeCacheStore:
         `profile_id` / `reasoning_enabled` are the host-triad telemetry columns
         (DECISIONS.md#056 / FUP-194), denormalized for group-by-host queries; the
         caller passes the SAME values it folded into `cache_key`. Default None =
-        the anthropic-default (unqualified) host."""
+        UNQUALIFIED (no triad supplied — pre-#056 / test wiring), distinct from the
+        anthropic host, which stamps profile_id="anthropic" (key.py: all-None never
+        collides with a real host)."""
         expires = min(
             datetime.now(UTC) + timedelta(days=CACHE_TTL_DAYS),
             scope.retention_expires_at,

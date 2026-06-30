@@ -10,15 +10,16 @@ into the cache KEY (correctness/isolation); these denormalize the two
 human-meaningful triad components for observability, mirroring `model` and the
 other denormalized key-component columns:
 
-  - profile_id        — the host profile (NULL = anthropic-default, outside the
-                        registry; a non-null value names a registry host, e.g.
-                        "baseten")
+  - profile_id        — the resolved host ("anthropic" for the native host,
+                        "baseten" etc. for a registry host)
   - reasoning_enabled — whether the cached analysis ran with reasoning on
 
-Both nullable: a pre-#056 / anthropic-default (unqualified) row folds the triad
-as all-None, so NULL is the correct "anthropic-default host" partition — no
-backfill. The opaque `profile_contract_digest` is NOT denormalized (no
-human-meaningful group-by; it stays in the cache_key for correctness only).
+Both nullable: NULL = UNQUALIFIED (no host-identity triad supplied — a pre-#056
+row or test wiring), NOT the anthropic host — a real anthropic run stamps
+"anthropic". No backfill: pre-#056 rows predate host-qualification, so there is
+no host to assign — NULL is genuinely correct for them. The opaque
+`profile_contract_digest` is NOT denormalized (no human-meaningful group-by; it
+stays in the cache_key for correctness only).
 Plain ADD COLUMN ... NULL — metadata-only, no table rewrite. Touches only
 `analyze_file_cache`; no append-only table involved.
 """

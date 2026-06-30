@@ -210,9 +210,9 @@ async def test_expired_row_is_refreshed_by_a_new_write(migrated_db: str) -> None
 @pytest.mark.asyncio
 async def test_host_triad_telemetry_columns_roundtrip_and_refresh(migrated_db: str) -> None:
     """profile_id + reasoning_enabled (FUP-194 telemetry) round-trip to queryable
-    columns; an unqualified (default) write stores NULL (the anthropic-default
-    partition); and an expired-row refresh by a different host updates them via the
-    on-conflict set_."""
+    columns; an unqualified (default) write stores NULL (UNQUALIFIED — no triad
+    supplied, distinct from a real anthropic run which stamps "anthropic"); and an
+    expired-row refresh by a different host updates them via the on-conflict set_."""
     engine = create_async_engine(migrated_db)
     try:
         review_id = await _seed_review(engine)
