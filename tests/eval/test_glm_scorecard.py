@@ -25,8 +25,8 @@ Run (both keys resolve from .env via 1Password):
     uv run pytest tests/eval/test_glm_scorecard.py --is-eval -v -s
 
 Cost: 2 analyze calls/scenario (Anthropic baseline + GLM candidate) over the recall
-(`_GROUND_TRUTH_BY_FIXTURE`, 15 fixtures) + safe-code (`_SAFE_CODE_FIXTURES`, 4 fixtures)
-sets — 19 scenarios x 2 models = ~38 small analyze calls. Cost-per-review (the third
+(`_GROUND_TRUTH_BY_FIXTURE`, 16 fixtures) + safe-code (`_SAFE_CODE_FIXTURES`, 4 fixtures)
+sets — 20 scenarios x 2 models = ~40 small analyze calls. Cost-per-review (the third
 scorecard column) is a separate
 `build_scorecard` pass; this gate measures quality + yield first.
 """

@@ -116,12 +116,18 @@ _WEAK_PASSWORD_HASH_FIXTURE = "tests/eval/fixtures/mock_github/weak_password_has
 _COMMAND_INJECTION_FIXTURE = "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json"
 _WEAK_CRYPTO_FIXTURE = "tests/eval/fixtures/mock_github/weak_crypto_cast.json"
 _INSECURE_RANDOMNESS_FIXTURE = "tests/eval/fixtures/mock_github/insecure_random_token.json"
+# Dangerous-eval command_injection reached INDIRECTLY (getattr(builtins, "eval")), so the
+# OBSERVED command_injection_eval_exec query (which pins function: (identifier) to eval/exec)
+# does not fire — the model must REASON about the indirection, not lean on the structural
+# backstop. A second command_injection fixture, by a distinct mechanism from the subprocess one.
+_COMMAND_INJECTION_EVAL_FIXTURE = "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json"
 # The OBSERVED-free invariant (recall is pure model signal) is asserted directly by
 # test_judged_fixture_has_no_observed_floor for each of these — not left to a comment.
 _JUDGED_TYPE_FIXTURES = (
     _SSRF_FIXTURE,
     _WEAK_PASSWORD_HASH_FIXTURE,
     _COMMAND_INJECTION_FIXTURE,
+    _COMMAND_INJECTION_EVAL_FIXTURE,
     _WEAK_CRYPTO_FIXTURE,
     _INSECURE_RANDOMNESS_FIXTURE,
 )
@@ -272,6 +278,15 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             file_path="ops/net.py",
             line_start=5,
             line_end=5,
+            finding_type=FindingType.COMMAND_INJECTION,
+            severity=lookup_severity(FindingType.COMMAND_INJECTION),
+        ),
+    ),
+    _COMMAND_INJECTION_EVAL_FIXTURE: (
+        ExpectedFinding(
+            file_path="app/calc.py",
+            line_start=6,
+            line_end=6,
             finding_type=FindingType.COMMAND_INJECTION,
             severity=lookup_severity(FindingType.COMMAND_INJECTION),
         ),
@@ -1041,11 +1056,11 @@ def test_holdout_sets_are_registered_and_disjoint() -> None:
 @pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
-    """END-TO-END zero-spend over EACH recall fixture (all fifteen in `_GROUND_TRUTH_BY_FIXTURE` —
+    """END-TO-END zero-spend over EACH recall fixture (all sixteen in `_GROUND_TRUTH_BY_FIXTURE` —
     SQLi, auth-bypass, missing-error-handling, N+1, path-traversal, missing-input-validation,
     four held-out SQLi forms: f-string / str.format / concatenation / ORM raw() f-string, plus
-    five JUDGED-only types: ssrf / weak-password-hash / command-injection / weak-crypto /
-    insecure-randomness):
+    six JUDGED-only rows: ssrf / weak-password-hash / command-injection (subprocess + indirect
+    eval) / weak-crypto / insecure-randomness):
     a scripted "Sonnet" that returns the known finding scores recall 1.0; a scripted "Haiku"
     that misses it scores 0.0 and FAILS the gate. The STATE is the real vulnerable code (built
     by state_from_eval_fixture); only the provider is faked — so the real run differs only by
