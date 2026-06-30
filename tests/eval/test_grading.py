@@ -356,11 +356,13 @@ def test_default_line_window_is_declared() -> None:
 
 def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFixture[str]) -> None:
     """The scorecard aggregate block (FUP-196 + the best-metrics set) over two scenarios:
-    yield rate (per model, over ALL scenarios), mean recall (recall dimension only — safe
-    fixtures have vacuous recall), overall precision + FP rate, and per-finding-type recall.
-    Baseline catches the known SQL_INJECTION and stays clean on the safe fixture; candidate
-    MISSES the finding, OVER-FLAGS the safe fixture, and one candidate response was
-    structurally REJECTED (the yield signal)."""
+    yield rate (per model, over ALL scenarios), mean recall + mean severity accuracy (recall
+    dimension only — safe fixtures have vacuous recall), the safe-code OVER-FLAG RATE
+    (fp_per_safe_scenario — precision-as-a-ratio and F1 are dropped as dishonest on these
+    populations), the all-rows extras diagnostic count, and per-finding-type recall. Baseline
+    catches the known SQL_INJECTION and stays clean on the safe fixture; candidate MISSES the
+    finding, OVER-FLAGS the safe fixture, and one candidate response was structurally REJECTED
+    (the yield signal)."""
     from .test_model_comparison import _print_aggregate_metrics
 
     expected_sqli = _expected(severity=FindingSeverity.CRITICAL)
@@ -390,16 +392,25 @@ def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFi
     # Partition header + both model rows.
     assert "AGGREGATE — baseline (base-model): 2 scenarios (1 recall / 1 safe)" in out
     assert "AGGREGATE — candidate (cand-model): 2 scenarios (1 recall / 1 safe)" in out
-    # Baseline: full recall, clean precision, no rejected responses, per-type recall 1.00.
+    # Baseline: full recall, no rejected responses, no over-flag, per-type recall 1.00. Its
+    # one legit finding matched, so the all-rows diagnostic shows 0 extras over 1 finding.
     assert "yield_rate=1.00 (2/2 parsed)" in out
-    assert "mean_recall=1.00   precision=1.00" in out
+    assert "mean_recall=1.00   mean_severity_acc=1.00   [recall rows only]" in out
+    assert "fp_per_safe_scenario=0.00 (0 fp over 1 safe)" in out
+    assert "all_row_extras=0/1 findings" in out
     assert "sql_injection=1.00" in out
-    # Candidate: missed the finding (recall 0 + per-type 0), 1 safe-code FP (precision 0),
-    # 1 of 2 responses rejected (yield 0.50).
+    # Candidate: missed the finding (recall 0 + per-type 0), 1 safe-code FP (headline over-flag
+    # rate 1.00), 1 of 2 responses rejected (yield 0.50). The safe FP is the only extra, so the
+    # all-rows diagnostic shows 1 extra over 1 finding. severity_acc is 1.00 on the miss
+    # (n_matched=0 → vacuously 1.0), NOT a precision claim — there is no precision number now.
     assert "yield_rate=0.50 (1/2 parsed)" in out
-    assert "mean_recall=0.00   precision=0.00" in out
+    assert "mean_recall=0.00   mean_severity_acc=1.00   [recall rows only]" in out
+    assert "fp_per_safe_scenario=1.00 (1 fp over 1 safe)" in out
+    assert "all_row_extras=1/1 findings" in out
     assert "sql_injection=0.00" in out
-    assert "fp_per_safe_scenario=1.00" in out
+    # The dropped metrics must NOT reappear: no precision ratio, no F1 in the output.
+    assert "precision=" not in out
+    assert "F1=" not in out
 
 
 def test_aggregate_metrics_empty_results_is_noop(capsys: pytest.CaptureFixture[str]) -> None:

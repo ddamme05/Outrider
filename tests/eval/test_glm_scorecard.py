@@ -24,8 +24,9 @@ Run (both keys resolve from .env via 1Password):
     uv run pytest tests/eval/test_glm_scorecard.py --is-eval -v -s
 
 Cost: 2 analyze calls/scenario (Anthropic baseline + GLM candidate) over the recall
-(`_GROUND_TRUTH_BY_FIXTURE`) + safe-code (`_SAFE_CODE_FIXTURES`) fixtures — ~24 small
-analyze calls. Cost-per-review (the third scorecard column) is a separate
+(`_GROUND_TRUTH_BY_FIXTURE`, 15 fixtures) + safe-code (`_SAFE_CODE_FIXTURES`, 4 fixtures)
+sets — 19 scenarios x 2 models = ~38 small analyze calls. Cost-per-review (the third
+scorecard column) is a separate
 `build_scorecard` pass; this gate measures quality + yield first.
 """
 
@@ -113,9 +114,9 @@ async def test_glm_vs_anthropic_scorecard() -> None:
     # stdout capture regardless of -s.
     rows: list[ScorecardRow] = []
     # (fixture, dimension, comparison) per COMPLETED scenario, fed to
-    # `_print_aggregate_metrics` for the cross-scenario metric block (yield rate, mean
-    # recall, FP rate, F1, per-finding-type recall). Recall is meaningful only on the
-    # "recall" dimension; the aggregate partitions on it.
+    # `_print_aggregate_metrics` for the cross-scenario metric block (yield rate, mean recall
+    # + severity, the safe-code over-flag rate, an all-rows extras diagnostic, per-finding-type
+    # recall). Recall is meaningful only on the "recall" dimension; the aggregate partitions on it.
     comparisons: list[tuple[str, str, ModelComparison]] = []
 
     async def _compare_or_errored(
@@ -181,7 +182,8 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             assert cmp.baseline is not None  # the run completed
         # Cross-scenario aggregate metric block (FUP-196 + best-metrics set) — printed
         # before the report-only gate summary so the scorecard leads with the numbers a
-        # human adjudicates GLM on (yield rate, mean recall, FP rate, F1, per-type recall).
+        # human adjudicates GLM on (yield rate, mean recall + severity, the safe-code
+        # over-flag rate, an all-rows extras diagnostic, per-type recall).
         _print_aggregate_metrics(
             comparisons, _GROUND_TRUTH_BY_FIXTURE, baseline_model, GLM_MODEL_ID
         )
