@@ -32,6 +32,7 @@ scorecard column) is a separate
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -118,6 +119,9 @@ async def test_glm_vs_anthropic_scorecard() -> None:
     # + severity, the safe-code over-flag rate, an all-rows extras diagnostic, per-finding-type
     # recall). Recall is meaningful only on the "recall" dimension; the aggregate partitions on it.
     comparisons: list[tuple[str, str, ModelComparison]] = []
+    # The structured aggregate (headline metrics) — persisted alongside the Scorecard so the
+    # numbers a human adjudicates GLM on survive into the durable artifact, not just stdout.
+    aggregate: dict[str, object] | None = None
 
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
@@ -184,7 +188,7 @@ async def test_glm_vs_anthropic_scorecard() -> None:
         # before the report-only gate summary so the scorecard leads with the numbers a
         # human adjudicates GLM on (yield rate, mean recall + severity, the safe-code
         # over-flag rate, an all-rows extras diagnostic, per-type recall).
-        _print_aggregate_metrics(
+        aggregate = _print_aggregate_metrics(
             comparisons, _GROUND_TRUTH_BY_FIXTURE, baseline_model, GLM_MODEL_ID
         )
         # REPORT-ONLY summary — pytest "passed" means the run completed, NOT a verdict.
@@ -210,9 +214,10 @@ async def test_glm_vs_anthropic_scorecard() -> None:
         # too (the printed report shows only on success); nested so the provider close
         # runs regardless of the write. `if rows` avoids writing an empty artifact.
         try:
-            if rows:
-                report_dir = Path("reports/scorecard")
+            report_dir = Path("reports/scorecard")
+            if rows or aggregate is not None:
                 report_dir.mkdir(parents=True, exist_ok=True)
+            if rows:
                 card = Scorecard(rows=tuple(rows))
                 (report_dir / "glm-vs-anthropic-scorecard.json").write_text(
                     card.to_json(), encoding="utf-8"
@@ -222,6 +227,15 @@ async def test_glm_vs_anthropic_scorecard() -> None:
                 )
                 print(  # noqa: T201 — operator artifact pointer
                     f"\n[scorecard written to {report_dir}/glm-vs-anthropic-scorecard.json + .html]"
+                )
+            if aggregate is not None:
+                # Persist the headline aggregate so it survives into the durable artifact (the
+                # printed block is otherwise lost to stdout capture — /code-review finding).
+                (report_dir / "glm-vs-anthropic-aggregate.json").write_text(
+                    json.dumps(aggregate, indent=2), encoding="utf-8"
+                )
+                print(  # noqa: T201 — operator artifact pointer
+                    f"\n[aggregate metrics written to {report_dir}/glm-vs-anthropic-aggregate.json]"
                 )
         finally:
             await baseline_provider.aclose()

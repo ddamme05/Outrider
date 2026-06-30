@@ -922,54 +922,51 @@ def _print_scenario_report(
             )
 
 
-def _print_aggregate_metrics(
+def _compute_aggregate_metrics(
     results: list[tuple[str, str, ModelComparison]],
     ground_truth_by_fixture: dict[str, tuple[ExpectedFinding, ...]],
     baseline_model: str,
     candidate_model: str,
-) -> None:
-    """Aggregate the per-scenario comparisons into the scorecard metric block (FUP-196 + the
-    best-metrics set): per model — structured-output YIELD rate, mean recall + mean severity
-    accuracy (recall fixtures, non-empty ground truth), the safe-code OVER-FLAG RATE
-    (fp_per_safe_scenario — the precision instrument), and per-finding-type recall.
+) -> dict[str, object]:
+    """Pure compute behind _print_aggregate_metrics: roll the per-scenario comparisons into a
+    JSON-serializable per-model metric structure (FUP-196 + the best-metrics set) so the
+    headline numbers can be BOTH printed for the operator AND persisted into the scorecard
+    artifact (they are otherwise stdout-only and lost to pytest capture).
 
-    `results` is `(fixture_path, dimension, cmp)`. The two headline axes are measured on
-    DISJOINT row populations and are intentionally NOT collapsed into one score: recall is
-    meaningful only on the 'recall' dimension (non-empty ground truth) and is averaged there;
-    over-flagging is measured only on the safe ('dim != recall') rows, where ground truth is
-    empty so EVERY finding is an unambiguous false positive. Precision-as-a-ratio and F1 are
-    deliberately NOT reported: on vulnerable fixtures the single-entry ground truth under-
-    specifies, so a legitimate second finding counts as a false positive (see
-    _SAFE_CODE_FIXTURES and test_real_model_comparison_evidence), and on safe fixtures
-    n_matched is structurally 0 so the precision ratio is degenerate (0/N) — neither
-    population yields an honest precision, and an F1 built on either is meaningless. The
-    all-rows extras/findings tally is printed only as a labeled diagnostic. (mean_recall is
-    PRODUCT recall — model output plus the OBSERVED structural backstop per DECISIONS#048 —
-    not model-only recall; the per-type line and the per-scenario detail disambiguate.)"""
-    import operator  # noqa: PLC0415
+    The two headline axes are measured on DISJOINT row populations and are intentionally NOT
+    collapsed into one score: recall over the 'recall' rows (non-empty ground truth), over-
+    flagging over the 'precision'/safe rows (empty ground truth → every finding an unambiguous
+    FP). Precision-as-a-ratio and F1 are deliberately NOT reported — on vulnerable fixtures the
+    single-entry ground truth under-specifies (a legit second finding scores as an FP, see
+    _SAFE_CODE_FIXTURES and test_real_model_comparison_evidence), and on safe rows n_matched is
+    structurally 0 so the ratio is degenerate; the all-rows extras tally survives only as a
+    labeled diagnostic count. (mean_recall is PRODUCT recall — model output plus the OBSERVED
+    structural backstop per DECISIONS#048 — not model-only recall.)"""
     import statistics  # noqa: PLC0415
     from collections import Counter  # noqa: PLC0415
 
-    if not results:
-        return
-    # The two headline axes live on DISJOINT row partitions: recall on the "recall" rows
-    # (non-empty ground truth), over-flag on the safe rows. `dim != "recall"` is the safe set
-    # because the GLM caller (test_glm_scorecard.py) feeds only "recall" + "precision" dims —
-    # no "regression" rows reach here; `dim == "precision"` is the faithful long-term predicate
-    # if that ever changes.
     recall_rows = [(fx, cmp) for fx, dim, cmp in results if dim == "recall"]
-    safe_rows = [(fx, cmp) for fx, dim, cmp in results if dim != "recall"]
+    # Safe rows are the 'precision' dimension EXACTLY (not `dim != "recall"`): the GLM caller
+    # feeds only recall+precision, but a future caller adding a third dimension (e.g.
+    # 'regression') must NOT have those rows silently bucketed as safe — their false positives
+    # would corrupt the headline over-flag instrument.
+    safe_rows = [(fx, cmp) for fx, dim, cmp in results if dim == "precision"]
     n_total = len(results)
+    # Ground-truth expected-by-type is MODEL-INVARIANT — compute once, outside the per-model fn.
+    expected_by_type: Counter[str] = Counter()
+    for fx, _cmp in recall_rows:
+        for ef in ground_truth_by_fixture.get(fx, ()):
+            expected_by_type[ef.finding_type.value] += 1
 
-    print("\n" + "=" * 72)  # noqa: T201 — operator aggregate metric block
-    for label, model, grade_attr, rejected_attr in (
-        ("baseline", baseline_model, "baseline", "baseline_n_rejected"),
-        ("candidate", candidate_model, "candidate", "candidate_n_rejected"),
-    ):
-        grade_of = operator.attrgetter(grade_attr)
-        rejected_of = operator.attrgetter(rejected_attr)
-        n_rejected = sum(bool(rejected_of(cmp)) for _, _, cmp in results)
-        yield_rate = (n_total - n_rejected) / n_total
+    def _per_model(
+        grade_of: Callable[[ModelComparison], GradeResult],
+        n_rejected_of: Callable[[ModelComparison], int],
+    ) -> dict[str, object]:
+        # Per-file rejection count is preserved (a multi-file scenario distinguishes one
+        # rejected file from all); yield_rate stays SCENARIO-level (fraction with no rejection).
+        n_rejected_files = sum(n_rejected_of(cmp) for _, _, cmp in results)
+        n_rejected_scenarios = sum(1 for _, _, cmp in results if n_rejected_of(cmp) > 0)
+        yield_rate = (n_total - n_rejected_scenarios) / n_total
         recall_grades = [grade_of(cmp) for _, cmp in recall_rows]
         mean_recall = (
             statistics.fmean(g.recall.value for g in recall_grades) if recall_grades else 0.0
@@ -979,44 +976,100 @@ def _print_aggregate_metrics(
             if recall_grades
             else 0.0
         )
-        # All-rows extras/findings tally — the suite-wide over-flag VOLUME, kept ONLY as a
-        # labeled diagnostic COUNT (never a precision ratio): on vulnerable fixtures the
-        # single-entry ground truth under-specifies, so a legitimate extra scores as an FP
-        # here — unreliable as the over-flag verdict (see _SAFE_CODE_FIXTURES).
-        all_grades = [grade_of(cmp) for _, _, cmp in results]
-        total_findings = sum(g.precision.denominator for g in all_grades)
-        total_fp = sum(g.n_false_positives for g in all_grades)
-        # HEADLINE over-flag instrument — safe rows only (empty ground truth → every finding
-        # an unambiguous FP), as a mean-FP-per-scenario RATE (>=0, not a [0,1] ratio: a
-        # safe-row precision ratio is degenerate since n_matched is structurally 0).
-        # Precision-as-a-ratio and F1 are deliberately NOT computed — see the docstring.
+        # HEADLINE over-flag instrument — safe rows only (empty ground truth → every finding an
+        # unambiguous FP), a mean-FP-per-scenario RATE (>=0, not a [0,1] ratio: a safe-row
+        # precision ratio is degenerate since n_matched is structurally 0).
         safe_fp = sum(grade_of(cmp).n_false_positives for _, cmp in safe_rows)
         fp_per_safe = safe_fp / len(safe_rows) if safe_rows else 0.0
-        expected_by_type: Counter[str] = Counter()
+        # All-rows over-flag VOLUME — a labeled diagnostic COUNT only (never a precision ratio):
+        # on vulnerable fixtures a legit extra scores as an FP, so this is not the verdict.
+        total_findings = sum(grade_of(cmp).precision.denominator for _, _, cmp in results)
+        total_fp = sum(grade_of(cmp).n_false_positives for _, _, cmp in results)
+        # Per-type recall: clamp the numerator to >=0 and iterate the UNION of expected+missed
+        # types, so a desync between the passed ground truth and the graded comparisons surfaces
+        # (a missed type with no ground-truth expectation reads None) instead of printing a
+        # negative recall or silently dropping the miss.
         missed_by_type: Counter[str] = Counter()
-        for fx, cmp in recall_rows:
-            for ef in ground_truth_by_fixture.get(fx, ()):
-                expected_by_type[ef.finding_type.value] += 1
+        for _, cmp in recall_rows:
             for m in grade_of(cmp).missed:
                 missed_by_type[m.finding_type.value] += 1
-        per_type = ", ".join(
-            f"{t}={(expected_by_type[t] - missed_by_type[t]) / expected_by_type[t]:.2f}"
-            for t in sorted(expected_by_type)
+        per_type_recall: dict[str, float | None] = {}
+        for t in sorted(set(expected_by_type) | set(missed_by_type)):
+            expected = expected_by_type[t]
+            per_type_recall[t] = (
+                None if expected == 0 else max(0, expected - missed_by_type[t]) / expected
+            )
+        return {
+            "yield_rate": yield_rate,
+            "n_rejected_scenarios": n_rejected_scenarios,
+            "n_rejected_files": n_rejected_files,
+            "mean_recall": mean_recall,
+            "mean_severity_acc": mean_sev,
+            "fp_per_safe_scenario": fp_per_safe,
+            "safe_fp": safe_fp,
+            "all_row_extras": total_fp,
+            "all_row_findings": total_findings,
+            "per_type_recall": per_type_recall,
+        }
+
+    return {
+        "scenarios": {"total": n_total, "recall": len(recall_rows), "safe": len(safe_rows)},
+        "baseline": {
+            "model": baseline_model,
+            **_per_model(lambda c: c.baseline, lambda c: c.baseline_n_rejected),
+        },
+        "candidate": {
+            "model": candidate_model,
+            **_per_model(lambda c: c.candidate, lambda c: c.candidate_n_rejected),
+        },
+    }
+
+
+def _print_aggregate_metrics(
+    results: list[tuple[str, str, ModelComparison]],
+    ground_truth_by_fixture: dict[str, tuple[ExpectedFinding, ...]],
+    baseline_model: str,
+    candidate_model: str,
+) -> dict[str, object] | None:
+    """Print the cross-scenario aggregate block for the operator AND return the structured
+    metrics so the caller can PERSIST them into the scorecard artifact (otherwise the headline
+    numbers are stdout-only and lost to pytest capture). Returns None on an empty run. See
+    _compute_aggregate_metrics for the methodology (disjoint recall/over-flag populations;
+    precision-ratio and F1 deliberately not reported)."""
+    if not results:
+        return None
+    metrics = _compute_aggregate_metrics(
+        results, ground_truth_by_fixture, baseline_model, candidate_model
+    )
+    scenarios = metrics["scenarios"]
+    assert isinstance(scenarios, dict)
+    print("\n" + "=" * 72)  # noqa: T201 — operator aggregate metric block
+    for label in ("baseline", "candidate"):
+        m = metrics[label]
+        assert isinstance(m, dict)
+        per_type = m["per_type_recall"]
+        assert isinstance(per_type, dict)
+        per_type_str = ", ".join(
+            f"{t}={'n/a(desync)' if v is None else format(v, '.2f')}" for t, v in per_type.items()
         )
         print(  # noqa: T201 — operator aggregate metric block
-            f"AGGREGATE — {label} ({model}): {n_total} scenarios "
-            f"({len(recall_rows)} recall / {len(safe_rows)} safe)"
-            f"\n  yield_rate={yield_rate:.2f} ({n_total - n_rejected}/{n_total} parsed)"
-            f"\n  mean_recall={mean_recall:.2f}   mean_severity_acc={mean_sev:.2f}"
-            f"   [recall rows only]"
-            f"\n  fp_per_safe_scenario={fp_per_safe:.2f} ({safe_fp} fp over {len(safe_rows)} safe)"
+            f"AGGREGATE — {label} ({m['model']}): {scenarios['total']} scenarios "
+            f"({scenarios['recall']} recall / {scenarios['safe']} safe)"
+            f"\n  yield_rate={m['yield_rate']:.2f} "
+            f"({scenarios['total'] - m['n_rejected_scenarios']}/{scenarios['total']} scenarios "
+            f"parsed; {m['n_rejected_files']} file-level rejection(s))"
+            f"\n  mean_recall={m['mean_recall']:.2f}   "
+            f"mean_severity_acc={m['mean_severity_acc']:.2f}   [recall rows only]"
+            f"\n  fp_per_safe_scenario={m['fp_per_safe_scenario']:.2f} "
+            f"({m['safe_fp']} fp over {scenarios['safe']} safe)"
             f"   [HEADLINE over-flag instrument — safe rows, empty ground truth]"
             f"\n  diagnostic (all rows; precision unreliable on vuln fixtures — single-entry GT "
             f"undercounts, see _SAFE_CODE_FIXTURES — NOT the over-flag verdict): "
-            f"all_row_extras={total_fp}/{total_findings} findings"
-            f"\n  per-type recall: {per_type or '(none)'}"
+            f"all_row_extras={m['all_row_extras']}/{m['all_row_findings']} findings"
+            f"\n  per-type recall: {per_type_str or '(none)'}"
         )
     print("=" * 72)  # noqa: T201 — operator aggregate metric block
+    return metrics
 
 
 async def _run_scenario_isolating_transients(
