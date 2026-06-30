@@ -400,6 +400,14 @@ class LLMCallEvent(AuditEventBase):
 
     event_type: Literal["llm_call"] = "llm_call"
     model: str
+    # The provider's normalized stop reason (`end_turn`/`refusal`/`max_tokens`/…),
+    # mirrored from `LLMResponse.finish_reason` and cross-checked in the persister
+    # (DECISIONS.md#016 Amended 2026-06-30, same response↔event allowlist as the host
+    # triad). Lets metadata-only replay distinguish a refusal (`"refusal"`) from a
+    # zero-output success. Default `"unknown"` matches `LLMResponse`'s fallback AND keeps
+    # pre-field append-only rows deserializing; the persister cross-check enforces the
+    # real value on every production call.
+    finish_reason: str = "unknown"
     # The four nodes that actually make LLM calls per spec §4.1. Mirrors
     # `LLMRequest.node_id` (`llm/base.py`) verbatim — the wrapper passes
     # `request.node_id` through unchanged, so the event field must admit

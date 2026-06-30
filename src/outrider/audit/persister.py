@@ -665,6 +665,10 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
             "cache_hit",
             "cost_usd",
             "pricing_version",
+            # Provider's normalized stop reason, stamped on BOTH the response and the event
+            # (DECISIONS.md#016 Amended 2026-06-30). A divergence would mislabel a refusal
+            # as a zero-output success on metadata-only replay.
+            "finish_reason",
             # Host-identity triad (DECISIONS.md#056): the provider stamps it on BOTH the
             # response and the event; the persister cross-checks they agree — never sources
             # one from the other. A divergence mislabels the cache/replay host-split.
@@ -1848,6 +1852,7 @@ class AuditPersister:
             "latency_ms": response.latency_ms,
             "cached_tokens": response.cache_read_tokens,
             "cache_hit": response.cache_read_tokens > 0,
+            "finish_reason": response.finish_reason,
             # Host-identity triad (DECISIONS.md#056) — same name on response + event, so the
             # loop compares event.<field> against the provider-returned response.<field>.
             "profile_id": response.profile_id,

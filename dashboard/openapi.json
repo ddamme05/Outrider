@@ -2630,6 +2630,11 @@
             "type": "string",
             "title": "Model"
           },
+          "finish_reason": {
+            "type": "string",
+            "title": "Finish Reason",
+            "default": "unknown"
+          },
           "node_id": {
             "type": "string",
             "enum": [

@@ -378,6 +378,10 @@ def llm_call_event_factory() -> LLMCallEventFactory:
         return LLMCallEvent(
             review_id=review_id,
             model=default_model,
+            # Matches llm_response_factory's finish_reason so the persister's
+            # response-vs-event cross-check passes by construction
+            # (DECISIONS.md#016 Amended 2026-06-30).
+            finish_reason="end_turn",
             node_id="triage",
             input_tokens=default_input_tokens,
             output_tokens=default_output_tokens,
