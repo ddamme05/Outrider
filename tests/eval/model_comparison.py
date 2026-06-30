@@ -51,7 +51,14 @@ if TYPE_CHECKING:
 class _NullSink:
     """No-op audit sink — the comparison reads findings from analyze's RETURN, not the
     audit stream, so every emit is discarded. Duck-types every sink analyze touches
-    (phase / file-examination / analyze-event)."""
+    (phase / file-examination / analyze-event). ONE exception: it COUNTS
+    `emit_analyze_response_rejected` calls so the structured-output YIELD signal (FUP-196 —
+    a rejected/unparseable response vs a valid-empty one) is recoverable; all else discarded."""
+
+    def __init__(self) -> None:
+        # Structured-output rejections (fence/schema fail → zero findings) this run emitted.
+        # >0 means the model produced UNPARSEABLE output, distinct from a valid-empty one.
+        self.n_analyze_rejected = 0
 
     async def emit_phase(self, event: Any) -> None:  # noqa: ARG002
         return None
@@ -66,7 +73,7 @@ class _NullSink:
         return None
 
     async def emit_analyze_response_rejected(self, event: Any) -> None:  # noqa: ARG002
-        return None
+        self.n_analyze_rejected += 1
 
     async def emit_analyze_completed(self, event: Any) -> None:  # noqa: ARG002
         return None
@@ -196,12 +203,14 @@ def state_from_eval_fixture(
 
 async def run_analyze_under_model(
     state: ReviewState, *, provider: LLMProvider, model: str
-) -> tuple[ReviewFinding, ...]:
+) -> tuple[tuple[ReviewFinding, ...], bool]:
     """Run one analyze pass over `state` with `model` for BOTH tiers (so the scenario's
-    file is analyzed by `model` regardless of its triage tier), returning the findings.
-    Provider-injected; audit emits are discarded. `model` is passed as both
-    `analyze_model` and `standard_analyze_model` so a STANDARD-tier scenario file routes
-    to it (the thing the flip changes)."""
+    file is analyzed by `model` regardless of its triage tier). Returns `(findings,
+    rejected)` — `rejected` is True iff analyze emitted any AnalyzeResponseRejectedEvent
+    (the model's structured output failed to parse), the YIELD signal (FUP-196).
+    Provider-injected; non-rejection audit emits are discarded. `model` is passed as both
+    `analyze_model` and `standard_analyze_model` so a STANDARD-tier scenario file routes to
+    it (the thing the flip changes)."""
     sink = _NullSink()
     result = await analyze(
         state,
@@ -215,7 +224,8 @@ async def run_analyze_under_model(
         import_path_resolver=_NoOpImportPathResolver(),
     )
     rounds = result["analysis_rounds"]
-    return tuple(rounds[0].findings) if rounds else ()
+    findings = tuple(rounds[0].findings) if rounds else ()
+    return findings, sink.n_analyze_rejected > 0
 
 
 async def compare_models_on_scenario(
@@ -237,10 +247,10 @@ async def compare_models_on_scenario(
     `*_model`); for the machinery test they are distinct scripted providers so a recall
     divergence can be injected deterministically. All three declared gate thresholds
     (`recall_tolerance`, `fp_allowance`, `baseline_recall_floor`) forward to `compare()`."""
-    baseline_findings = await run_analyze_under_model(
+    baseline_findings, baseline_rejected = await run_analyze_under_model(
         state, provider=baseline_provider, model=baseline_model
     )
-    candidate_findings = await run_analyze_under_model(
+    candidate_findings, candidate_rejected = await run_analyze_under_model(
         state, provider=candidate_provider, model=candidate_model
     )
     baseline_grade = grade(baseline_findings, ground_truth, line_window=line_window)
@@ -251,4 +261,6 @@ async def compare_models_on_scenario(
         recall_tolerance=recall_tolerance,
         fp_allowance=fp_allowance,
         baseline_recall_floor=baseline_recall_floor,
+        baseline_rejected=baseline_rejected,
+        candidate_rejected=candidate_rejected,
     )

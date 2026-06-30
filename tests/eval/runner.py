@@ -217,7 +217,9 @@ async def _graded_analyze(
 ) -> GradeResult:
     """Run one analyze pass under `model` over the spec's held-fixed state and
     grade it against the spec's ground truth."""
-    findings = await run_analyze_under_model(spec.state, provider=provider, model=model)
+    # `_` discards the structured-output rejection flag — build_scorecard's Scorecard does
+    # not surface yield yet (the GLM scorecard's compare_models_on_scenario does, FUP-196).
+    findings, _ = await run_analyze_under_model(spec.state, provider=provider, model=model)
     return grade(findings, spec.ground_truth, line_window=line_window)
 
 

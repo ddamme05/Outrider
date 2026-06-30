@@ -462,17 +462,34 @@ def _build_state() -> ReviewState:
 @pytest.mark.asyncio
 async def test_run_analyze_under_model_returns_findings() -> None:
     """A finding-emitting scripted run yields a ReviewFinding the grader can match; an
-    empty-response run yields none. Pins that the comparison's inputs are real."""
-    finds = await run_analyze_under_model(
+    empty-response run yields none. Pins that the comparison's inputs are real.
+    `rejected` is False for both (the structured output parsed)."""
+    finds, finds_rejected = await run_analyze_under_model(
         _build_state(), provider=_ScriptedProvider(_FINDS_RESPONSE), model="claude-sonnet-4-6"
     )
     assert len(finds) >= 1, "the scripted finding response did not admit a finding"
     assert finds[0].finding_type == FindingType.SQL_INJECTION
+    assert finds_rejected is False
 
-    misses = await run_analyze_under_model(
+    misses, misses_rejected = await run_analyze_under_model(
         _build_state(), provider=_ScriptedProvider(_MISSES_RESPONSE), model="claude-haiku-4-5"
     )
     assert misses == ()
+    assert misses_rejected is False  # valid-empty, NOT a rejection
+
+
+async def test_run_analyze_under_model_flags_rejected_structured_output() -> None:
+    """FUP-196 yield signal: a malformed (unparseable) response is REJECTED — the run
+    reports rejected=True with zero findings, distinct from a valid-empty response. This is
+    the structured-output conformance signal the GLM scorecard needs (a FORMAT miss, where
+    the model emitted garbage, vs a CAPABILITY miss, where it validly found nothing)."""
+    finds, rejected = await run_analyze_under_model(
+        _build_state(),
+        provider=_ScriptedProvider("not JSON — the model failed to emit structured output"),
+        model="claude-haiku-4-5",  # any priced model; the rejection is about the RESPONSE
+    )
+    assert finds == ()
+    assert rejected is True
 
 
 # ---------------------------------------------------------------------------
