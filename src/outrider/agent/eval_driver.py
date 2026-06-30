@@ -528,7 +528,7 @@ class _FixtureScriptedProvider:
             # Mirror the real provider's named pricing error (it raises
             # LLMPricingMissingError) so a misconfigured eval ModelConfig surfaces a
             # clear cause instead of a bare KeyError mid-complete(). ModelConfig
-            # defaults (claude-haiku-4-5 / claude-sonnet-4-6) are priced; this only
+            # defaults (claude-haiku-4-5 / claude-sonnet-5) are priced; this only
             # fires under an env override to a valid-but-unpriced model.
             raise EvalDriverError(
                 f"eval fixture model {response.model!r} (node_id={request.node_id!r}) is "
