@@ -1,0 +1,36 @@
+{
+  "installation_id": 5314,
+  "owner": "acme",
+  "repo": "ops-tools",
+  "pr_number": 54,
+  "base_sha": "1717171717171717171717171717171717171717",
+  "head_sha": "2828282828282828282828282828282828282828",
+  "pr_title": "Add repo_status helper",
+  "pr_body": "Adds repo_status, which shells out to git for the working-tree status.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "ops/status.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n import subprocess\n+\n+\n+def repo_status():\n+    return subprocess.run([\"git\", \"status\"], check=True)\n",
+      "previous_path": null,
+      "content_base": "import subprocess\n",
+      "content_head": "import subprocess\n\n\ndef repo_status():\n    return subprocess.run([\"git\", \"status\"], check=True)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"ops/status.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision scenario (command-injection over-flag trap): repo_status runs a FIXED argv (['git', 'status']) with no shell and no caller input, so there is nothing to inject. Deep-review to confirm no command_injection is hallucinated: a fixed argv with shell=False cannot be injected.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": []}"
+    ],
+    "synthesize": [
+      "Precision scenario: no findings. repo_status runs a fixed argv with shell=False and no caller-supplied input, so there is nothing to inject -- not command injection."
+    ]
+  }
+}

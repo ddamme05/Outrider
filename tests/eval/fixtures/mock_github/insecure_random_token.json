@@ -1,0 +1,36 @@
+{
+  "installation_id": 5313,
+  "owner": "acme",
+  "repo": "accounts",
+  "pr_number": 53,
+  "base_sha": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+  "head_sha": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+  "pr_title": "Add session id generator",
+  "pr_body": "Adds make_session_id to mint a numeric session identifier on login.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "accounts/session.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n import random\n+\n+\n+def make_session_id():\n+    return random.randint(100000, 999999)\n",
+      "previous_path": null,
+      "content_base": "import random\n",
+      "content_head": "import random\n\n\ndef make_session_id():\n    return random.randint(100000, 999999)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"accounts/session.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (insecure_randomness recall, single-finding, JUDGED-only): make_session_id mints a session identifier with random.randint. The random module is a non-cryptographic PRNG (Mersenne Twister) whose output is predictable, so a session id derived from it is guessable. There is no OBSERVED query for this class, so it is the model-dependent (JUDGED) path.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"insecure_randomness\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Predictable session id from non-cryptographic PRNG\", \"description\": \"make_session_id mints a security-sensitive session identifier with random.randint, which draws from the predictable Mersenne Twister PRNG; an attacker who observes a few ids can predict future ones. Use secrets.randbelow / secrets.token_hex instead.\", \"evidence\": \"    return random.randint(100000, 999999)\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one insecure_randomness finding -- make_session_id derives a session identifier from the predictable random module; there is no OBSERVED query for this class, so it is the JUDGED path."
+    ]
+  }
+}

@@ -101,6 +101,20 @@ _N_PLUS_ONE_FIXTURE = "tests/eval/fixtures/mock_github/n_plus_one_query.json"
 _PATH_TRAVERSAL_FIXTURE = "tests/eval/fixtures/mock_github/path_traversal.json"
 _MISSING_INPUT_VALIDATION_FIXTURE = "tests/eval/fixtures/mock_github/missing_input_validation.json"
 
+# JUDGED finding-TYPE coverage (broadening, FUP-196): five vulnerability classes whose
+# recall is purely MODEL-DEPENDENT — none triggers an OBSERVED structural query, so a
+# miss here is a real model miss, not one a structural backstop would hide. SSRF and
+# weak-password-hash have no query at all; command-injection and weak-crypto DO have
+# OBSERVED queries, so these fixtures use forms the queries deliberately DON'T match
+# (subprocess list-form without `shell=True`; the CAST cipher the broken-cipher query
+# excludes by design), keeping them on the JUDGED path. Each verified to yield NOTHING
+# from the OBSERVED producer under an empty model (the no-structural-floor check).
+_SSRF_FIXTURE = "tests/eval/fixtures/mock_github/ssrf_user_host.json"
+_WEAK_PASSWORD_HASH_FIXTURE = "tests/eval/fixtures/mock_github/weak_password_hash_md5.json"  # noqa: S105 (fixture path label, not a password)
+_COMMAND_INJECTION_FIXTURE = "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json"
+_WEAK_CRYPTO_FIXTURE = "tests/eval/fixtures/mock_github/weak_crypto_cast.json"
+_INSECURE_RANDOMNESS_FIXTURE = "tests/eval/fixtures/mock_github/insecure_random_token.json"
+
 # Recall HOLD-OUTS — real SQLi across injection forms. Hold-out strength is PROMPT-VERSION-
 # RELATIVE: under analyze-v3 (the DECISIONS#041 evidence runs) all four were named-but-never-
 # exemplified. From analyze-v4 onward, SYSTEM_PROMPT_EXEMPLARS DEMONSTRATES f-string, `+`
@@ -220,6 +234,55 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             severity=lookup_severity(FindingType.SQL_INJECTION),
         ),
     ),
+    # JUDGED finding-TYPE coverage (broadening): five model-dependent classes beyond the
+    # SQLi-heavy set above. Each line/type is verified against analyze's admit path (the
+    # scripted finding surfaces at exactly this span) and against the OBSERVED producer
+    # (empty model → no finding, so recall here is pure model signal).
+    _SSRF_FIXTURE: (
+        ExpectedFinding(
+            file_path="app/fetch.py",
+            line_start=7,
+            line_end=7,
+            finding_type=FindingType.SSRF,
+            severity=lookup_severity(FindingType.SSRF),
+        ),
+    ),
+    _WEAK_PASSWORD_HASH_FIXTURE: (
+        ExpectedFinding(
+            file_path="accounts/auth.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.WEAK_PASSWORD_HASH,
+            severity=lookup_severity(FindingType.WEAK_PASSWORD_HASH),
+        ),
+    ),
+    _COMMAND_INJECTION_FIXTURE: (
+        ExpectedFinding(
+            file_path="ops/net.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.COMMAND_INJECTION,
+            severity=lookup_severity(FindingType.COMMAND_INJECTION),
+        ),
+    ),
+    _WEAK_CRYPTO_FIXTURE: (
+        ExpectedFinding(
+            file_path="vault/cipher.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.WEAK_CRYPTO,
+            severity=lookup_severity(FindingType.WEAK_CRYPTO),
+        ),
+    ),
+    _INSECURE_RANDOMNESS_FIXTURE: (
+        ExpectedFinding(
+            file_path="accounts/session.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.INSECURE_RANDOMNESS,
+            severity=lookup_severity(FindingType.INSECURE_RANDOMNESS),
+        ),
+    ),
 }
 
 # Safe-code scenarios — the PRECISION instrument (distinct from the recall fixtures above).
@@ -232,6 +295,12 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
 _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     "tests/eval/fixtures/mock_github/safe_refactor.json",
     "tests/eval/fixtures/mock_github/eval_in_test_fixture.json",
+    # Over-flag TRAPS paired with the new JUDGED recall types: a fixed-host fetch (user
+    # value confined to the URL path, not the host) and a fixed-argv subprocess (shell=False,
+    # no caller input). Both look superficially like SSRF / command-injection but are safe;
+    # any finding is a clean false positive — the precision counterpart to the recall fixtures.
+    "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json",
+    "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json",
 )
 
 # Regression-track fixtures — safe, correctly-parameterized queries in several idioms (cursor
