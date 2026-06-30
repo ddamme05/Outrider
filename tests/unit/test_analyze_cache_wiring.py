@@ -354,6 +354,10 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert write["query_registry_digest"] == QUERY_REGISTRY_DIGEST
     assert write["active_policy_version"] == ACTIVE_POLICY_VERSION
     assert write["analyze_parser_version"] == ANALYZE_PARSER_VERSION
+    # Host-triad telemetry columns (FUP-194) — same source as the key above
+    # (here the unqualified anthropic-default: all None).
+    assert write["profile_id"] is None
+    assert write["reasoning_enabled"] is None
 
 
 @pytest.mark.asyncio

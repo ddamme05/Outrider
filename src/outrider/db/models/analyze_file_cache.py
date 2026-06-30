@@ -33,8 +33,10 @@ primary key — the write path's conflict arbiter for concurrent same-key
 reviews (`ON CONFLICT DO UPDATE ... WHERE` the existing row is expired:
 live rows keep first-writer-wins; an expired-but-unswept row is
 refreshed in place). The key-component columns are denormalized for
-observability (stale-rate by version, Stage-B telemetry queries); the
-key itself remains the only lookup identity.
+observability (stale-rate by version + host, Stage-B telemetry queries) —
+incl. the host `profile_id` + `reasoning_enabled` (DECISIONS.md#056 / FUP-194),
+but NOT the opaque `profile_contract_digest`; the key itself remains the only
+lookup identity.
 """
 
 from datetime import datetime
@@ -83,6 +85,12 @@ class AnalyzeFileCache(Base):
     active_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
     analyze_parser_version: Mapped[str] = mapped_column(Text, nullable=False)
     prompt_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # Host-identity triad (DECISIONS.md#056) denormalized for group-by-host telemetry
+    # (FUP-194): NULL profile_id = the anthropic-default host (outside the profile
+    # registry); a non-null value names a registry host (e.g. "baseten"). The opaque
+    # profile_contract_digest stays in the key only — no human-meaningful group-by.
+    profile_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reasoning_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("NOW()"), nullable=False

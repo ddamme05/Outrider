@@ -182,11 +182,18 @@ class AnalyzeCacheStore:
         active_policy_version: str,
         analyze_parser_version: str,
         prompt_hash: str,
+        profile_id: str | None = None,
+        reasoning_enabled: bool | None = None,
     ) -> None:
         """Insert, or refresh an EXPIRED row in place; live rows are
         untouched (first writer wins). The retention bound is computed
         here so no caller can write a row that outlives its source.
-        DB errors raise `CacheStoreError`."""
+        DB errors raise `CacheStoreError`.
+
+        `profile_id` / `reasoning_enabled` are the host-triad telemetry columns
+        (DECISIONS.md#056 / FUP-194), denormalized for group-by-host queries; the
+        caller passes the SAME values it folded into `cache_key`. Default None =
+        the anthropic-default (unqualified) host."""
         expires = min(
             datetime.now(UTC) + timedelta(days=CACHE_TTL_DAYS),
             scope.retention_expires_at,
@@ -205,6 +212,8 @@ class AnalyzeCacheStore:
             active_policy_version=active_policy_version,
             analyze_parser_version=analyze_parser_version,
             prompt_hash=prompt_hash,
+            profile_id=profile_id,
+            reasoning_enabled=reasoning_enabled,
             is_eval=scope.is_eval,
             retention_expires_at=expires,
         )
@@ -233,6 +242,8 @@ class AnalyzeCacheStore:
                 "active_policy_version": statement.excluded.active_policy_version,
                 "analyze_parser_version": statement.excluded.analyze_parser_version,
                 "prompt_hash": statement.excluded.prompt_hash,
+                "profile_id": statement.excluded.profile_id,
+                "reasoning_enabled": statement.excluded.reasoning_enabled,
                 "is_eval": statement.excluded.is_eval,
                 "retention_expires_at": statement.excluded.retention_expires_at,
                 "created_at": func.now(),
