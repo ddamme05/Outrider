@@ -408,6 +408,7 @@ def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFi
     assert baseline["all_row_extras"] == 0
     assert baseline["all_row_findings"] == 1
     assert baseline["per_type_recall"] == {"sql_injection": 1.0}
+    assert baseline["safe_overflags"] == []  # clean on the safe fixture
     # Candidate: missed the finding (recall 0 + per-type 0), one safe-code FP (over-flag rate
     # 1.0), one rejected response (yield 0.5). severity_acc is 1.0 on the miss (n_matched=0 →
     # vacuously 1.0), NOT a precision claim — there is no precision number now.
@@ -418,6 +419,14 @@ def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFi
     assert candidate["fp_per_safe_scenario"] == 1.0
     assert candidate["all_row_extras"] == 1
     assert candidate["per_type_recall"] == {"sql_injection": 0.0}
+    # The safe-fixture FP is named in the persisted detail (the source-of-record fix): which
+    # fixture + what finding, for either model — not just a count.
+    assert candidate["safe_overflags"] == [
+        {
+            "fixture": "safe_fx.json",
+            "findings": [{"finding_type": "sql_injection", "line_start": 10, "title": "t"}],
+        }
+    ]
     # The dropped metrics never reappear: no precision/F1 key in the structure (robust, not
     # capsys-dependent), and the printed block leads with the headline.
     assert "precision" not in baseline and "f1" not in baseline

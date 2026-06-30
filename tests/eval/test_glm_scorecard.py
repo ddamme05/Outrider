@@ -45,9 +45,7 @@ from .model_comparison import compare_models_on_scenario, state_from_eval_fixtur
 from .scorecard import Scorecard, ScorecardRow
 from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
-    _MISSING_ERROR_HANDLING_FIXTURE,
     _SAFE_CODE_FIXTURES,
-    _SSRF_FIXED_HOST_SAFE_FIXTURE,
     _WEAK_CRYPTO_FIXTURE,
     _CapturingExchangePersister,
     _NoOpExchangePersister,
@@ -254,15 +252,17 @@ async def test_glm_vs_anthropic_scorecard() -> None:
 @pytest.mark.asyncio
 async def test_glm_failed_row_diagnostic() -> None:
     """OPT-IN, real spend — DIAGNOSTIC, not a gate. Reruns GLM N times (`OUTRIDER_DIAG_RUNS`,
-    default 5) on the scorecard's THREE failed rows — the two recall misses
-    (`missing_error_handling`, `weak_crypto`/CAST) and the one safe-code over-flag
-    (`ssrf_fixed_host_safe`) — to separate a STOCHASTIC failure (k of N runs) from a SYSTEMATIC
-    one (every run), capturing GLM's raw response on each failing run so the failure mode
-    (emitted nothing / wrong type / wrong span / over-flag) is inspectable rather than opaque.
-    GLM-only (Sonnet passes all three); cost = len(fixtures) × N analyze calls (default 3 × 5
-    = 15). Set `OUTRIDER_DIAG_FIXTURES` (comma-separated paths; recall fixtures resolve their
-    ground truth from `_GROUND_TRUTH_BY_FIXTURE`, others are treated as safe) to target others.
-    Report-only: pytest 'passed' means the run COMPLETED, not a verdict."""
+    default 5) on the scorecard's CURRENTLY-failing row(s) to separate a STOCHASTIC failure (k
+    of N runs) from a SYSTEMATIC one (every run), capturing GLM's raw response on each failing
+    run so the failure mode (emitted nothing / wrong type / wrong span / over-flag) is
+    inspectable rather than opaque. As of the latest run the only live GLM failure is
+    `weak_crypto`/CAST (a stochastic obscure-cipher miss); `missing_error_handling` was
+    single-run noise and the `ssrf_fixed_host_safe` over-flag was a fixture-quality bug, both
+    resolved — so they are NOT in the default (it would spend on stale rows). Override
+    `OUTRIDER_DIAG_FIXTURES` (comma-separated paths; recall fixtures resolve their ground truth
+    from `_GROUND_TRUTH_BY_FIXTURE`, others are treated as safe) to re-check those or target new
+    failures. GLM-only (Sonnet passes); cost = len(fixtures) × N (default 1 × 5 = 5). Report-
+    only: pytest 'passed' means the run COMPLETED, not a verdict."""
     baseten_key = os.environ.get("BASETEN_API_KEY")
     if not baseten_key or baseten_key.startswith("op://"):
         pytest.skip(
@@ -279,7 +279,7 @@ async def test_glm_failed_row_diagnostic() -> None:
     fixtures = (
         [f.strip() for f in env_fixtures.split(",") if f.strip()]
         if env_fixtures
-        else [_MISSING_ERROR_HANDLING_FIXTURE, _WEAK_CRYPTO_FIXTURE, _SSRF_FIXED_HOST_SAFE_FIXTURE]
+        else [_WEAK_CRYPTO_FIXTURE]
     )
     capturing = _CapturingExchangePersister()
     provider = GLMProvider(api_key=SecretStr(baseten_key), persister=capturing)
