@@ -619,9 +619,15 @@ def _extract_assistant_text(response: Any) -> tuple[str, str]:
     `message.content` is `Optional[str]` — None/empty on a refusal or a
     truncated (`length`) response. It is coalesced to "" (NOT fail-loud) so the
     downstream parser + the normalized finish_reason (`max_tokens` → the analyze
-    truncation diagnostic) degrade that file gracefully, exactly like
-    AnthropicProvider's empty-TextBlock path — rather than aborting the whole
-    review with a non-retryable error. Only an unexpected CHOICE count fails loud.
+    truncation diagnostic) degrade that file gracefully — for the truncation /
+    empty-content case this mirrors `AnthropicProvider`'s single-empty-`TextBlock`
+    path (both return ""). NOTE the refusal divergence (post Sonnet 5 migration):
+    `AnthropicProvider` now HARD-HALTS on `stop_reason="refusal"` (raises
+    `LLMRefusalError`), whereas a `content_filter` here normalizes to
+    `finish_reason="refusal"` and still degrades the single file — a deliberate
+    graceful-degradation choice for this provider, but a cross-provider refusal
+    asymmetry tracked for reconciliation (FUP-203). Only an unexpected CHOICE
+    count fails loud.
     """
     choices = response.choices
     if len(choices) != 1:
