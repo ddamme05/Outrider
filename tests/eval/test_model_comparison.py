@@ -634,6 +634,7 @@ async def test_run_analyze_under_model_returns_findings() -> None:
     assert misses_n_rejected == 0  # valid-empty, NOT a rejection
 
 
+@pytest.mark.asyncio
 async def test_run_analyze_under_model_flags_rejected_structured_output() -> None:
     """FUP-196 yield signal: a malformed (unparseable) response is REJECTED — the run
     reports n_rejected=1 (the single file's response failed to parse) with zero findings,
@@ -1221,11 +1222,11 @@ def _compute_aggregate_metrics(
                         "line_start": f.line_start,
                         "title": f.title,
                     }
-                    for f in grade_of(cmp).extra
+                    for f in g.extra
                 ],
             }
             for fx, cmp in safe_rows
-            if grade_of(cmp).extra
+            if (g := grade_of(cmp)).extra
         ]
         return {
             "yield_rate": yield_rate,
