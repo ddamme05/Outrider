@@ -303,6 +303,9 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
 # fixtures can't give: on a vulnerable file a model's "extra" is often a legitimate second
 # finding the single-entry ground truth didn't encode (the real run showed exactly this), so
 # precision there is unreliable; on safe code there is nothing legitimate to find.
+# The fixed-host SSRF over-flag trap — named because the GLM scorecard flagged it (the one
+# safe-code false positive), so the miss-diagnostic targets it directly.
+_SSRF_FIXED_HOST_SAFE_FIXTURE = "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json"
 _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     "tests/eval/fixtures/mock_github/safe_refactor.json",
     "tests/eval/fixtures/mock_github/eval_in_test_fixture.json",
@@ -310,7 +313,7 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     # value confined to the URL path, not the host) and a fixed-argv subprocess (shell=False,
     # no caller input). Both look superficially like SSRF / command-injection but are safe;
     # any finding is a clean false positive — the precision counterpart to the recall fixtures.
-    "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json",
+    _SSRF_FIXED_HOST_SAFE_FIXTURE,
     "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json",
 )
 
@@ -505,40 +508,48 @@ class _CapturingExchangePersister:
         self.completions.append(getattr(response, "text", ""))
 
 
-async def diagnose_recall_stability(
+async def diagnose_scenario_stability(
     fixture_path: str,
     *,
+    expected: tuple[ExpectedFinding, ...],
     provider: LLMProvider,
     model: str,
     capturing: _CapturingExchangePersister,
     runs: int,
 ) -> dict[str, object]:
-    """Rerun ONE recall scenario `runs` times under `provider`, returning the catch count and
-    the raw model response captured on each MISS — so a STOCHASTIC miss (caught k of N runs) is
-    distinguishable from a SYSTEMATIC one (0 of N), and a miss is explainable rather than just a
-    0. `capturing` is the provider's persister; its `.completions` accumulate, snapshotted per
-    run. The scenario's single ground-truth finding comes from `_GROUND_TRUTH_BY_FIXTURE`."""
-    (expected,) = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
-    catches = 0
-    misses_raw: list[str] = []
+    """Rerun ONE scenario `runs` times under `provider`, capturing the raw model response on
+    each FAILING run so the failure mode is inspectable, and return the pass count + a verdict.
+    A run FAILS differently by fixture kind: a recall fixture (non-empty `expected`) fails on a
+    MISS (recall < 1.0); a safe fixture (empty `expected`) fails on a FALSE POSITIVE (any
+    finding emitted). This separates a STOCHASTIC failure (k of N runs) from a SYSTEMATIC one
+    (every run), and the captured raw response tells WHY (emitted nothing / wrong type / wrong
+    span / over-flag). `capturing` is the provider's persister; only a real provider populates
+    it (the scripted test double does not persist)."""
+    is_safe = not expected
+    passes = 0
+    failures_raw: list[str] = []
     for _ in range(runs):
         captured_before = len(capturing.completions)
         findings, _n_rejected = await run_analyze_under_model(
             state_from_eval_fixture(fixture_path), provider=provider, model=model
         )
-        if grade(findings, (expected,)).recall.value >= 1.0:
-            catches += 1
-        else:
+        graded = grade(findings, expected)
+        failed = graded.n_false_positives > 0 if is_safe else graded.recall.value < 1.0
+        if failed:
             this_run = capturing.completions[captured_before:]
-            misses_raw.append(" | ".join(this_run) if this_run else "<no captured response>")
+            failures_raw.append(" | ".join(this_run) if this_run else "<no captured response>")
+        else:
+            passes += 1
     return {
         "fixture": fixture_path,
+        "kind": "safe" if is_safe else "recall",
         "runs": runs,
-        "catches": catches,
-        "misses_raw": misses_raw,
+        "passes": passes,
+        "n_failures": len(failures_raw),
         "verdict": (
-            "systematic" if catches == 0 else "stochastic" if catches < runs else "caught-all"
+            "systematic" if passes == 0 else "stochastic" if passes < runs else "clean-all"
         ),
+        "failures_raw": failures_raw,
     }
 
 
@@ -663,14 +674,14 @@ def test_judged_fixture_scripted_analyze_matches_ground_truth(fixture_path: str)
 
 
 # ---------------------------------------------------------------------------
-# diagnose_recall_stability — separate a stochastic miss from a systematic one
+# diagnose_scenario_stability — separate a stochastic failure from a systematic one
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_capturing_persister_records_completion() -> None:
     """_CapturingExchangePersister records each call's raw completion text — the mechanism the
-    miss-diagnostic uses to show WHAT the model emitted on a recall miss."""
+    miss-diagnostic uses to show WHAT the model emitted on a failed row."""
 
     class _FakeResponse:
         text = "<<raw model output>>"
@@ -681,37 +692,68 @@ async def test_capturing_persister_records_completion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_diagnose_recall_stability_counts_catches() -> None:
-    """A scripted model that catches the known finding every run reports catches==runs and
-    verdict 'caught-all' with no recorded misses."""
-    catching = _judged_response_for(_GROUND_TRUTH_BY_FIXTURE[_SSRF_FIXTURE][0])
-    result = await diagnose_recall_stability(
+async def test_diagnose_scenario_stability_recall_clean() -> None:
+    """A recall scenario whose scripted model catches the known finding every run reports
+    passes==runs and verdict 'clean-all' with no recorded failures."""
+    expected = _GROUND_TRUTH_BY_FIXTURE[_SSRF_FIXTURE]
+    result = await diagnose_scenario_stability(
         _SSRF_FIXTURE,
-        provider=_ScriptedProvider(catching),
+        expected=expected,
+        provider=_ScriptedProvider(_judged_response_for(expected[0])),
         model="claude-haiku-4-5",
         capturing=_CapturingExchangePersister(),
         runs=3,
     )
-    assert result["catches"] == 3
-    assert result["verdict"] == "caught-all"
-    assert result["misses_raw"] == []
+    assert result["kind"] == "recall"
+    assert result["passes"] == 3
+    assert result["verdict"] == "clean-all"
+    assert result["failures_raw"] == []
 
 
 @pytest.mark.asyncio
-async def test_diagnose_recall_stability_flags_systematic_miss() -> None:
-    """A scripted model that emits nothing every run reports catches==0 and verdict 'systematic';
-    the raw slot reads the no-capture sentinel because _ScriptedProvider does not persist (only
-    a real provider populates the capturing persister)."""
-    result = await diagnose_recall_stability(
+async def test_diagnose_scenario_stability_recall_systematic_miss() -> None:
+    """A recall scenario whose scripted model emits nothing every run reports passes==0 and
+    verdict 'systematic'; the raw slot reads the no-capture sentinel because _ScriptedProvider
+    does not persist (only a real provider populates the capturing persister)."""
+    result = await diagnose_scenario_stability(
         _SSRF_FIXTURE,
+        expected=_GROUND_TRUTH_BY_FIXTURE[_SSRF_FIXTURE],
         provider=_ScriptedProvider(_MISSES_RESPONSE),
         model="claude-haiku-4-5",
         capturing=_CapturingExchangePersister(),
         runs=3,
     )
-    assert result["catches"] == 0
+    assert result["passes"] == 0
     assert result["verdict"] == "systematic"
-    assert result["misses_raw"] == ["<no captured response>"] * 3
+    assert result["failures_raw"] == ["<no captured response>"] * 3
+
+
+@pytest.mark.asyncio
+async def test_diagnose_scenario_stability_safe_overflag() -> None:
+    """A SAFE scenario (empty expected) whose scripted model emits a finding every run FAILS on
+    the false positive each run → passes==0, verdict 'systematic', kind 'safe' — the over-flag
+    counterpart to a recall miss."""
+    overflag = _judged_response_for(
+        ExpectedFinding(
+            file_path="app/profile.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.SSRF,
+            severity=lookup_severity(FindingType.SSRF),
+        )
+    )
+    result = await diagnose_scenario_stability(
+        _SSRF_FIXED_HOST_SAFE_FIXTURE,
+        expected=(),
+        provider=_ScriptedProvider(overflag),
+        model="claude-haiku-4-5",
+        capturing=_CapturingExchangePersister(),
+        runs=3,
+    )
+    assert result["kind"] == "safe"
+    assert result["passes"] == 0
+    assert result["verdict"] == "systematic"
+    assert result["n_failures"] == 3
 
 
 # ---------------------------------------------------------------------------
