@@ -69,9 +69,11 @@ async def test_glm_vs_anthropic_scorecard() -> None:
     """OPT-IN, real spend — the Anthropic-vs-GLM candidate scorecard.
 
     REPORT-ONLY: asserts only that the run COMPLETED. The per-scenario verdicts are
-    printed; the human adjudicates whether GLM's recall/yield clears the bar to (a)
-    productionize GLM mode (FUP-194) and (b) accept the shared-API soft path vs
-    self-deploy for strict JSON (FUP-196). Two dimensions:
+    printed; the human adjudicates GLM's recall/precision quality and default-host
+    readiness (FUP-194, still open). The structured-output yield/conformance question
+    (FUP-196 — shared-API soft path vs self-deploy) is DECIDED: soft path accepted per
+    DECISIONS.md#059, so the `yield_rate` here is now regression monitoring against that
+    decision (a future drop is the #059 trigger), not an open adjudication. Two dimensions:
 
     - RECALL over known-vulnerability fixtures (`_GROUND_TRUTH_BY_FIXTURE`): does GLM
       catch the known finding? A non-conforming GLM JSON response parses to no findings
