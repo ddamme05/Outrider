@@ -1193,6 +1193,25 @@ def _compute_aggregate_metrics(
             per_type_recall[t] = (
                 None if expected == 0 else max(0, expected - missed_by_type[t]) / expected
             )
+        # Per-safe-fixture over-flag DETAIL (FP findings) — persisted so the artifact can name
+        # WHICH fixtures a model flagged + WHAT, for BOTH models (the per-row Scorecard records
+        # only the candidate's FP detail + a baseline COUNT, so the baseline's safe FPs were
+        # otherwise stdout-only). The honest precision instrument is the safe rows.
+        safe_overflags = [
+            {
+                "fixture": fx,
+                "findings": [
+                    {
+                        "finding_type": f.finding_type.value,
+                        "line_start": f.line_start,
+                        "title": f.title,
+                    }
+                    for f in grade_of(cmp).extra
+                ],
+            }
+            for fx, cmp in safe_rows
+            if grade_of(cmp).extra
+        ]
         return {
             "yield_rate": yield_rate,
             "n_rejected_scenarios": n_rejected_scenarios,
@@ -1201,6 +1220,7 @@ def _compute_aggregate_metrics(
             "mean_severity_acc": mean_sev,
             "fp_per_safe_scenario": fp_per_safe,
             "safe_fp": safe_fp,
+            "safe_overflags": safe_overflags,
             "all_row_extras": total_fp,
             "all_row_findings": total_findings,
             "per_type_recall": per_type_recall,
