@@ -339,6 +339,27 @@ def test_build_graph_accepts_full_and_absent_triad() -> None:
     )
 
 
+def test_build_graph_rejects_nonanthropic_model_config_without_triad() -> None:
+    """FUP-194: a non-anthropic model_config (GLM-on-baseten slugs) with NO host-identity
+    triad would silently stamp UNQUALIFIED completion events — build_graph fails loud at
+    build instead of fail-late at the persister's fresh-write guard."""
+    with pytest.raises(
+        BuildGraphError, match="non-anthropic model_config requires the host-identity triad"
+    ):
+        build_graph(**{**_valid_args(), "model_config": ModelConfig.for_host("baseten")})
+
+
+def test_build_graph_accepts_nonanthropic_model_config_with_triad() -> None:
+    """The same baseten model_config WITH the full triad constructs — a qualified host."""
+    graph = build_graph(
+        **{**_valid_args(), "model_config": ModelConfig.for_host("baseten")},
+        profile_id="baseten",
+        reasoning_enabled=False,
+        profile_contract_digest="a" * 64,
+    )
+    assert callable(graph.ainvoke)
+
+
 # ---------------------------------------------------------------------------
 # None rejections (3 sibling tests)
 # ---------------------------------------------------------------------------

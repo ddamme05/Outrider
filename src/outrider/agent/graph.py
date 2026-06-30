@@ -264,6 +264,33 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             "host-identity triad must be all-present or all-None; got a partial set "
             "(profile_id / reasoning_enabled / profile_contract_digest)"
         )
+    # Host/triad coherence (FUP-194 / DECISIONS.md#056): a non-anthropic-family
+    # model_config (e.g. GLM-on-baseten slugs) MUST carry the host-identity triad, or its
+    # zero-LLM completion events stamp UNQUALIFIED — fail loud at build, not fail-late at
+    # the persister's fresh-write guard. `profile_id is None` is the all-None sentinel
+    # (the all-or-none guard above already proved the triad coherent).
+    from outrider.llm.config import is_anthropic_family_model  # noqa: PLC0415
+
+    non_anthropic_models = sorted(
+        {
+            m
+            for m in (
+                model_config.triage_model,
+                model_config.analyze_model,
+                model_config.standard_analyze_model,
+                model_config.synthesize_model,
+                model_config.trace_model,
+                model_config.patch_model,
+            )
+            if not is_anthropic_family_model(m)
+        }
+    )
+    if non_anthropic_models and profile_id is None:
+        raise BuildGraphError(
+            "non-anthropic model_config requires the host-identity triad "
+            "(profile_id / reasoning_enabled / profile_contract_digest); got None. "
+            f"non-anthropic model slug(s): {non_anthropic_models}"
+        )
     if phase_event_sink is None:
         raise BuildGraphError("phase_event_sink must not be None")
     if file_examination_sink is None:
