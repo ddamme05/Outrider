@@ -86,9 +86,11 @@ class AnalyzeFileCache(Base):
     analyze_parser_version: Mapped[str] = mapped_column(Text, nullable=False)
     prompt_hash: Mapped[str] = mapped_column(Text, nullable=False)
     # Host-identity triad (DECISIONS.md#056) denormalized for group-by-host telemetry
-    # (FUP-194): NULL profile_id = the anthropic-default host (outside the profile
-    # registry); a non-null value names a registry host (e.g. "baseten"). The opaque
-    # profile_contract_digest stays in the key only — no human-meaningful group-by.
+    # (FUP-194): profile_id is the RESOLVED host — "anthropic" for the native host,
+    # "baseten" etc. for a registry host. NULL = UNQUALIFIED (no triad supplied: a
+    # pre-#056 row or test wiring), NOT the anthropic host — a real anthropic run stamps
+    # "anthropic" (key.py: all-None is the unqualified caller, distinct from a real host).
+    # The opaque profile_contract_digest stays in the key only — no group-by value.
     profile_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     reasoning_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
