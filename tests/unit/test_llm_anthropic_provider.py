@@ -1776,3 +1776,76 @@ def test_anthropic_reasoning_requested_fails_loud() -> None:
             persister=_RecordingPersister(),
             reasoning=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Sonnet 5 migration — adaptive-thinking request shape + refusal gate.
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_thinking_model_omits_temperature_and_disables_thinking() -> None:
+    """Sonnet 5+ (adaptive-thinking generation): non-default sampling params 400,
+    so `temperature` is OMITTED; adaptive thinking is disabled so the response
+    stays a single text block (`_extract_single_text_block`)."""
+    from outrider.llm.anthropic_provider import _build_sdk_kwargs
+
+    kwargs = _build_sdk_kwargs(_request(model="claude-sonnet-5", temperature=0.0))
+    assert "temperature" not in kwargs
+    assert kwargs["thinking"] == {"type": "disabled"}
+
+
+def test_legacy_model_sends_temperature_and_no_thinking_kwarg() -> None:
+    """Current-generation models keep the legacy shape: `temperature` is sent and
+    no `thinking` kwarg is passed (thinking off by default)."""
+    from outrider.llm.anthropic_provider import _build_sdk_kwargs
+
+    for model in ("claude-haiku-4-5", "claude-sonnet-4-6"):
+        kwargs = _build_sdk_kwargs(_request(model=model, temperature=0.3))
+        assert kwargs["temperature"] == 0.3
+        assert "thinking" not in kwargs
+
+
+def test_adaptive_thinking_model_keeps_structured_output() -> None:
+    """The disabled-thinking branch composes with constrained decoding: an
+    adaptive-thinking model with a response schema still gets `output_config`
+    AND disabled thinking AND no temperature."""
+    import json as _json
+
+    from outrider.llm.anthropic_provider import _build_sdk_kwargs
+
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    kwargs = _build_sdk_kwargs(
+        _request(
+            model="claude-sonnet-5",
+            response_schema_json=_json.dumps(schema, separators=(",", ":")),
+        )
+    )
+    assert kwargs["thinking"] == {"type": "disabled"}
+    assert "temperature" not in kwargs
+    assert kwargs["output_config"]["format"]["type"] == "json_schema"
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_llm_refusal_on_refusal_stop_reason() -> None:
+    """A safety-classifier decline (HTTP 200, stop_reason='refusal', empty
+    content) halts the review as `LLMRefusalError` — not a misleading
+    unexpected-content-blocks shape error, and not a silent empty result.
+    Outrider asks the model to find vulnerabilities; a decline must fail loud."""
+    from outrider.llm.base import LLMRefusalError
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    refused = _sdk_message(stop_reason="refusal", content_blocks=[])
+    with (
+        _patched_create(return_value=refused),
+        pytest.raises(LLMRefusalError, match="refusal") as exc_info,
+    ):
+        # A priced legacy model — the refusal gate fires on stop_reason,
+        # independent of which model was used.
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    # No stop_details on the stub → category is None; the error still raises.
+    assert exc_info.value.category is None
+    # Raised before persist (consistent with the content-shape fail-loud path).
+    assert persister.calls == []

@@ -76,6 +76,7 @@ __all__ = [
     "LLMProvider",
     "LLMProviderError",
     "LLMRateLimitError",
+    "LLMRefusalError",
     "LLMRequest",
     "LLMResponse",
     "LLMTimeoutError",
@@ -305,6 +306,32 @@ class LLMUnexpectedContentBlocksError(LLMProviderError):
         actual_block_types: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.actual_block_types: tuple[str, ...] = tuple(actual_block_types or ())
+        super().__init__(*args)
+
+
+class LLMRefusalError(LLMProviderError):
+    """The model declined the request: a successful HTTP 200 carrying
+    `stop_reason="refusal"` (a safety-classifier decline, GA on the
+    adaptive-thinking generation — Opus 4.7+ / Sonnet 5+). A pre-output
+    refusal has an empty `content` array; a non-streaming refusal returns
+    no usable text.
+
+    Outrider asks the model to find vulnerabilities, so a refusal MUST halt
+    the review loudly rather than silently read as an empty/no-findings
+    response (output-boundary #6: the model proposes, deterministic systems
+    dispose — a decline is not a finding-set of zero). Caught at the wrapper
+    BEFORE `_extract_single_text_block` so the empty content array surfaces
+    as a refusal, not a misleading "unexpected content blocks" shape error.
+    Terminal — retrying the same prompt will not help.
+
+    Carries `category: str | None` (the `stop_details` refusal category,
+    e.g. `"cyber"`) for structured caller inspection.
+    """
+
+    retry_at_layer: ClassVar[RetryLayer] = "none"
+
+    def __init__(self, *args: object, category: str | None = None) -> None:
+        self.category: str | None = category
         super().__init__(*args)
 
 

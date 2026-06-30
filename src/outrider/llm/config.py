@@ -35,7 +35,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
 
-__all__ = ["ModelConfig", "is_anthropic_family_model"]
+__all__ = ["ModelConfig", "is_anthropic_family_model", "model_uses_adaptive_thinking"]
 
 # V1 Anthropic family pattern.
 # Three accepted shapes per Anthropic SDK 0.100 model catalog:
@@ -56,6 +56,42 @@ def is_anthropic_family_model(slug: str) -> bool:
     `build_graph` to detect a non-anthropic `model_config` that must carry the
     host-identity triad (DECISIONS.md#056)."""
     return bool(_VALID_MODEL_PATTERN.fullmatch(slug))
+
+
+def model_uses_adaptive_thinking(slug: str) -> bool:
+    """True iff `slug` is an Anthropic model of the adaptive-thinking generation
+    (Sonnet 5+, Opus 4.7+). Two API behaviors define that generation, and both
+    are what `AnthropicProvider._build_sdk_kwargs` shapes the request for:
+
+      - non-default sampling params (`temperature` / `top_p` / `top_k`) are
+        rejected with a 400, so the wrapper OMITS them; and
+      - adaptive thinking is ON by default, so the wrapper sends
+        `thinking={"type": "disabled"}` to keep the single-text-block response
+        contract (`_extract_single_text_block`).
+
+    Current-generation models (Haiku 4.5, Sonnet 4.6, Opus 4.6) return False:
+    they accept `temperature` and have thinking off by default, so the wrapper
+    keeps the legacy request shape. Non-anthropic / malformed slugs return False
+    (they take the OpenAI-compatible path, not this one). Extend the per-family
+    version boundaries when a new adaptive-thinking model lands (e.g. a next-gen
+    Haiku). Lives in config.py — the model-string knowledge boundary — so the
+    provider branches on the model without hardcoding a slug
+    (`model-strings-from-config-not-hardcoded`)."""
+    if not is_anthropic_family_model(slug):
+        return False
+    # claude-{family}-{major}[-{minor}][-{YYYYMMDD}] — split and read major/minor.
+    parts = slug.split("-")
+    family = parts[1]
+    major = int(parts[2])
+    # parts[3], when present, is the minor (1-2 digits) OR an 8-digit dated
+    # suffix with no minor (e.g. claude-sonnet-5-20260615); only the short form
+    # is a minor.
+    minor = int(parts[3]) if len(parts) > 3 and len(parts[3]) <= 2 else 0
+    if family == "sonnet":
+        return major >= 5
+    if family == "opus":
+        return (major, minor) >= (4, 7)
+    return False  # haiku: no adaptive-thinking model yet
 
 
 class _EnvModelOverrides(BaseSettings):
