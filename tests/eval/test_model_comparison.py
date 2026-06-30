@@ -19,6 +19,8 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from outrider.llm.base import LLMProvider
+
 import pytest
 
 from outrider.llm.base import (
@@ -34,7 +36,7 @@ from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
 
-from .grading import ExpectedFinding, GradeResult, ModelComparison
+from .grading import ExpectedFinding, GradeResult, ModelComparison, grade
 from .model_comparison import (
     compare_models_on_scenario,
     run_analyze_under_model,
@@ -490,6 +492,56 @@ class _NoOpExchangePersister:
         return None
 
 
+class _CapturingExchangePersister:
+    """Like `_NoOpExchangePersister` but RECORDS each call's raw completion text, so a
+    diagnostic can SEE what the model actually emitted on a recall miss (the comparison path
+    otherwise discards the raw response). Only the REAL providers call `persist`; the scripted
+    provider does not, so `completions` populates only on a real run."""
+
+    def __init__(self) -> None:
+        self.completions: list[str] = []
+
+    async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
+        self.completions.append(getattr(response, "text", ""))
+
+
+async def diagnose_recall_stability(
+    fixture_path: str,
+    *,
+    provider: LLMProvider,
+    model: str,
+    capturing: _CapturingExchangePersister,
+    runs: int,
+) -> dict[str, object]:
+    """Rerun ONE recall scenario `runs` times under `provider`, returning the catch count and
+    the raw model response captured on each MISS — so a STOCHASTIC miss (caught k of N runs) is
+    distinguishable from a SYSTEMATIC one (0 of N), and a miss is explainable rather than just a
+    0. `capturing` is the provider's persister; its `.completions` accumulate, snapshotted per
+    run. The scenario's single ground-truth finding comes from `_GROUND_TRUTH_BY_FIXTURE`."""
+    (expected,) = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
+    catches = 0
+    misses_raw: list[str] = []
+    for _ in range(runs):
+        captured_before = len(capturing.completions)
+        findings, _n_rejected = await run_analyze_under_model(
+            state_from_eval_fixture(fixture_path), provider=provider, model=model
+        )
+        if grade(findings, (expected,)).recall.value >= 1.0:
+            catches += 1
+        else:
+            this_run = capturing.completions[captured_before:]
+            misses_raw.append(" | ".join(this_run) if this_run else "<no captured response>")
+    return {
+        "fixture": fixture_path,
+        "runs": runs,
+        "catches": catches,
+        "misses_raw": misses_raw,
+        "verdict": (
+            "systematic" if catches == 0 else "stochastic" if catches < runs else "caught-all"
+        ),
+    }
+
+
 def _build_state() -> ReviewState:
     changed_file = ChangedFile(
         path="src/example.py",
@@ -608,6 +660,58 @@ def test_judged_fixture_scripted_analyze_matches_ground_truth(fixture_path: str)
     assert scripted[0]["finding_type"] == expected.finding_type.value
     assert scripted[0]["line_start"] == expected.line_start
     assert scripted[0]["line_end"] == expected.line_end
+
+
+# ---------------------------------------------------------------------------
+# diagnose_recall_stability — separate a stochastic miss from a systematic one
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capturing_persister_records_completion() -> None:
+    """_CapturingExchangePersister records each call's raw completion text — the mechanism the
+    miss-diagnostic uses to show WHAT the model emitted on a recall miss."""
+
+    class _FakeResponse:
+        text = "<<raw model output>>"
+
+    persister = _CapturingExchangePersister()
+    await persister.persist(object(), object(), _FakeResponse())
+    assert persister.completions == ["<<raw model output>>"]
+
+
+@pytest.mark.asyncio
+async def test_diagnose_recall_stability_counts_catches() -> None:
+    """A scripted model that catches the known finding every run reports catches==runs and
+    verdict 'caught-all' with no recorded misses."""
+    catching = _judged_response_for(_GROUND_TRUTH_BY_FIXTURE[_SSRF_FIXTURE][0])
+    result = await diagnose_recall_stability(
+        _SSRF_FIXTURE,
+        provider=_ScriptedProvider(catching),
+        model="claude-haiku-4-5",
+        capturing=_CapturingExchangePersister(),
+        runs=3,
+    )
+    assert result["catches"] == 3
+    assert result["verdict"] == "caught-all"
+    assert result["misses_raw"] == []
+
+
+@pytest.mark.asyncio
+async def test_diagnose_recall_stability_flags_systematic_miss() -> None:
+    """A scripted model that emits nothing every run reports catches==0 and verdict 'systematic';
+    the raw slot reads the no-capture sentinel because _ScriptedProvider does not persist (only
+    a real provider populates the capturing persister)."""
+    result = await diagnose_recall_stability(
+        _SSRF_FIXTURE,
+        provider=_ScriptedProvider(_MISSES_RESPONSE),
+        model="claude-haiku-4-5",
+        capturing=_CapturingExchangePersister(),
+        runs=3,
+    )
+    assert result["catches"] == 0
+    assert result["verdict"] == "systematic"
+    assert result["misses_raw"] == ["<no captured response>"] * 3
 
 
 # ---------------------------------------------------------------------------
