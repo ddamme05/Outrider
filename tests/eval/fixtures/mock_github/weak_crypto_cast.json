@@ -1,0 +1,36 @@
+{
+  "installation_id": 5312,
+  "owner": "acme",
+  "repo": "vault",
+  "pr_number": 52,
+  "base_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+  "head_sha": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+  "pr_title": "Add token encryption helper",
+  "pr_body": "Adds encrypt_token to encrypt session tokens at rest.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "vault/cipher.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n from Crypto.Cipher import CAST\n+\n+\n+def encrypt_token(data, key):\n+    cipher = CAST.new(key)\n+    return cipher.encrypt(data)\n",
+      "previous_path": null,
+      "content_base": "from Crypto.Cipher import CAST\n",
+      "content_head": "from Crypto.Cipher import CAST\n\n\ndef encrypt_token(data, key):\n    cipher = CAST.new(key)\n    return cipher.encrypt(data)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"vault/cipher.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (weak_crypto recall, single-finding, JUDGED-only): encrypt_token builds a CAST cipher to protect session tokens. CAST-128 is a legacy 64-bit-block cipher. The OBSERVED broken-cipher query deliberately excludes CAST/IDEA as too collision-prone for a name-based match, so this is the model-dependent (JUDGED) weak-crypto path.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"weak_crypto\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Weak cipher: CAST-128 used to encrypt session tokens\", \"description\": \"encrypt_token constructs a CAST cipher (CAST-128, a legacy 64-bit-block cipher vulnerable to birthday-bound collisions on large plaintexts) to protect session tokens. Use AES-256-GCM (authenticated encryption) instead.\", \"evidence\": \"    cipher = CAST.new(key)\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one weak_crypto finding -- encrypt_token protects session tokens with the legacy 64-bit-block CAST-128 cipher; CAST is excluded from the OBSERVED broken-cipher query, so this is the JUDGED path."
+    ]
+  }
+}

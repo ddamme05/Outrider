@@ -1,0 +1,36 @@
+{
+  "installation_id": 5311,
+  "owner": "acme",
+  "repo": "ops-tools",
+  "pr_number": 51,
+  "base_sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "head_sha": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+  "pr_title": "Add ping_host diagnostics helper",
+  "pr_body": "Adds ping_host so operators can ping a caller-supplied host from the dashboard.",
+  "author": "contributor",
+  "total_additions": 4,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "ops/net.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1 +1,5 @@\n import subprocess\n+\n+\n+def ping_host(host):\n+    return subprocess.Popen([\"bash\", \"-c\", \"ping -c1 \" + host]).wait()\n",
+      "previous_path": null,
+      "content_base": "import subprocess\n",
+      "content_head": "import subprocess\n\n\ndef ping_host(host):\n    return subprocess.Popen([\"bash\", \"-c\", \"ping -c1 \" + host]).wait()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"ops/net.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (command_injection recall, single-finding, JUDGED-only): ping_host concatenates a caller-supplied host into a 'bash -c' command run via subprocess.Popen list-form. There is no shell=True keyword and no os.system call, so the OBSERVED structural queries do not fire -- this is a model-dependent (JUDGED) command injection.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"command_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Command injection via bash -c with caller-supplied host\", \"description\": \"ping_host builds 'ping -c1 ' + host and runs it through bash -c via subprocess.Popen, so a host like '; rm -rf /' executes arbitrary commands. Pass the host as an argv element to a fixed binary (no shell), or validate it against a strict allowlist.\", \"evidence\": \"    return subprocess.Popen([\\\"bash\\\", \\\"-c\\\", \\\"ping -c1 \\\" + host]).wait()\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one command_injection finding -- ping_host runs a caller-supplied host through 'bash -c', so the caller can execute arbitrary commands; the list-form Popen dodges the OBSERVED shell=True query, so this is the JUDGED path."
+    ]
+  }
+}
