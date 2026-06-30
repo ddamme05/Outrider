@@ -50,7 +50,7 @@ def _env(**kvs: str) -> Iterator[None]:
 def test_defaults_match_canonical_spec() -> None:
     cfg = ModelConfig()
     assert cfg.triage_model == "claude-haiku-4-5"
-    assert cfg.analyze_model == "claude-sonnet-4-6"
+    assert cfg.analyze_model == "claude-sonnet-5"
     # STANDARD-tier analyze defaults to Haiku (the eval-gated cost flip, DECISIONS.md#041);
     # DEEP-tier files stay on analyze_model (Sonnet).
     assert cfg.standard_analyze_model == "claude-haiku-4-5"
@@ -93,7 +93,7 @@ def test_each_field_independently_overridable() -> None:
         cfg = ModelConfig()
         # Other fields keep defaults
         assert cfg.triage_model == "claude-haiku-4-5"
-        assert cfg.analyze_model == "claude-sonnet-4-6"
+        assert cfg.analyze_model == "claude-sonnet-5"
         assert cfg.trace_model == "claude-haiku-4-5"
 
 

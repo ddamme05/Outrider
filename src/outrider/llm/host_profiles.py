@@ -305,7 +305,7 @@ _MODEL_FIELDS: Final[tuple[str, ...]] = (
 _ANTHROPIC_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "triage_model": "claude-haiku-4-5",
-        "analyze_model": "claude-sonnet-4-6",
+        "analyze_model": "claude-sonnet-5",
         "standard_analyze_model": "claude-haiku-4-5",
         "synthesize_model": "claude-haiku-4-5",
         "trace_model": "claude-haiku-4-5",

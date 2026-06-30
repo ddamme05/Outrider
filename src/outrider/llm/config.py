@@ -129,12 +129,13 @@ class ModelConfig(BaseSettings):
         frozen=True,
     )
 
-    # corrected to current Anthropic
-    # model family per SDK 0.100 docs. Previous defaults named
-    # `claude-sonnet-4-7` which doesn't exist in the SDK; current
-    # active models are Opus 4.7, Sonnet 4.6, Haiku 4.5.
+    # Model strings match the current Anthropic SDK catalog. DEEP-tier analyze
+    # runs Sonnet 5 (the adaptive-thinking generation — see
+    # `model_uses_adaptive_thinking`; the wrapper omits sampling params and
+    # disables thinking for it). triage/trace/patch/synthesize + STANDARD-tier
+    # analyze run Haiku 4.5.
     triage_model: str = "claude-haiku-4-5"
-    analyze_model: str = "claude-sonnet-4-6"
+    analyze_model: str = "claude-sonnet-5"
     # See DECISIONS.md#041 — the DEEP-tier model is `analyze_model`; STANDARD-tier files
     # route here. Defaults to Haiku (1/3 of Sonnet's per-token price) after the eval
     # quality gate (PR #51) showed Haiku holds STANDARD-tier recall and does not over-flag
