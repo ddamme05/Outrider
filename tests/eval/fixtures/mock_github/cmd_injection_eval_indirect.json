@@ -1,0 +1,36 @@
+{
+  "installation_id": 5315,
+  "owner": "acme",
+  "repo": "eval-svc",
+  "pr_number": 55,
+  "base_sha": "3939393939393939393939393939393939393939",
+  "head_sha": "4040404040404040404040404040404040404040",
+  "pr_title": "Add run_expr endpoint",
+  "pr_body": "Adds run_expr, which evaluates a caller-supplied expression.",
+  "author": "contributor",
+  "total_additions": 5,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/calc.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -1 +1,6 @@\n import builtins\n+\n+\n+def run_expr(request):\n+    expr = request.GET[\"expr\"]\n+    return getattr(builtins, \"eval\")(expr)\n",
+      "previous_path": null,
+      "content_base": "import builtins\n",
+      "content_head": "import builtins\n\n\ndef run_expr(request):\n    expr = request.GET[\"expr\"]\n    return getattr(builtins, \"eval\")(expr)\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/calc.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"True-positive scenario (command_injection recall, single-finding, JUDGED-only): run_expr passes a caller-supplied expression (request.GET['expr']) to eval, reached INDIRECTLY via getattr(builtins, 'eval') so the call's function is not the literal 'eval'/'exec' identifier -- the OBSERVED command_injection_eval_exec query (which pins function: (identifier)) does NOT fire. The dynamic code execution of attacker input is the same, so a model must REASON about the indirection rather than rely on the structural query.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"command_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Arbitrary code execution: caller-supplied expression reaches eval via getattr indirection\", \"description\": \"run_expr reads request.GET['expr'] and passes it to eval obtained through getattr(builtins, 'eval'), so an attacker supplies arbitrary Python to execute (e.g. __import__('os').system('...')). The getattr indirection hides it from a name-based eval/exec match, but it is the same dynamic-execution sink. Do not eval caller input; parse with ast.literal_eval or a restricted grammar.\", \"evidence\": \"    return getattr(builtins, \\\"eval\\\")(expr)\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "True-positive: one command_injection finding -- run_expr evaluates a caller-supplied expression via getattr(builtins, 'eval'), executing arbitrary attacker code; the getattr indirection dodges the OBSERVED eval/exec query, so this is the JUDGED path."
+    ]
+  }
+}
