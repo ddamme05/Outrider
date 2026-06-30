@@ -10,6 +10,7 @@ Pure — no DB, no LLM, no spend.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from outrider.audit.events import compute_finding_content_hash
@@ -25,6 +26,9 @@ from .grading import (
     finding_matches,
     grade,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 # severity -> finding_type, so the `severity-set-by-policy` validator on ReviewFinding is
 # satisfied (severity must equal SEVERITY_POLICY[finding_type]).
@@ -343,3 +347,65 @@ def test_gate_precision_catches_overflag_on_safe_code() -> None:
 
 def test_default_line_window_is_declared() -> None:
     assert DEFAULT_LINE_WINDOW == 2
+
+
+# ---------------------------------------------------------------------------
+# _print_aggregate_metrics — the scorecard cross-scenario metric block
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFixture[str]) -> None:
+    """The scorecard aggregate block (FUP-196 + the best-metrics set) over two scenarios:
+    yield rate (per model, over ALL scenarios), mean recall (recall dimension only — safe
+    fixtures have vacuous recall), overall precision + FP rate, and per-finding-type recall.
+    Baseline catches the known SQL_INJECTION and stays clean on the safe fixture; candidate
+    MISSES the finding, OVER-FLAGS the safe fixture, and one candidate response was
+    structurally REJECTED (the yield signal)."""
+    from .test_model_comparison import _print_aggregate_metrics
+
+    expected_sqli = _expected(severity=FindingSeverity.CRITICAL)
+    # Recall scenario: baseline catches it (recall 1.0); candidate emits nothing (recall 0.0),
+    # and that empty output was a REJECTED structured response (not a valid-empty one).
+    recall_cmp = compare(
+        grade((_finding(severity=FindingSeverity.CRITICAL),), (expected_sqli,)),
+        grade((), (expected_sqli,)),
+        candidate_rejected=True,
+    )
+    # Safe scenario: EMPTY ground truth; baseline clean, candidate over-flags with one finding.
+    safe_cmp = compare(
+        grade((), ()),
+        grade((_finding(severity=FindingSeverity.CRITICAL),), ()),
+    )
+    results = [
+        ("recall_fx.json", "recall", recall_cmp),
+        ("safe_fx.json", "precision", safe_cmp),
+    ]
+    ground_truth_by_fixture: dict[str, tuple[ExpectedFinding, ...]] = {
+        "recall_fx.json": (expected_sqli,)
+    }
+
+    _print_aggregate_metrics(results, ground_truth_by_fixture, "base-model", "cand-model")
+    out = capsys.readouterr().out
+
+    # Partition header + both model rows.
+    assert "AGGREGATE — baseline (base-model): 2 scenarios (1 recall / 1 safe)" in out
+    assert "AGGREGATE — candidate (cand-model): 2 scenarios (1 recall / 1 safe)" in out
+    # Baseline: full recall, clean precision, no rejected responses, per-type recall 1.00.
+    assert "yield_rate=1.00 (2/2 parsed)" in out
+    assert "mean_recall=1.00   precision=1.00" in out
+    assert "sql_injection=1.00" in out
+    # Candidate: missed the finding (recall 0 + per-type 0), 1 safe-code FP (precision 0),
+    # 1 of 2 responses rejected (yield 0.50).
+    assert "yield_rate=0.50 (1/2 parsed)" in out
+    assert "mean_recall=0.00   precision=0.00" in out
+    assert "sql_injection=0.00" in out
+    assert "fp_per_safe_scenario=1.00" in out
+
+
+def test_aggregate_metrics_empty_results_is_noop(capsys: pytest.CaptureFixture[str]) -> None:
+    """No completed scenarios (every paid call errored) prints nothing — the aggregate is
+    a report add-on, never a hard failure on an empty run."""
+    from .test_model_comparison import _print_aggregate_metrics
+
+    _print_aggregate_metrics([], {}, "base-model", "cand-model")
+    assert capsys.readouterr().out == ""

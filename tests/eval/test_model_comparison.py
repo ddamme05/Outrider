@@ -828,9 +828,13 @@ def _print_scenario_report(
     print(  # noqa: T201 — operator evidence output
         f"\n[{fixture_path}]"
         f"\n  baseline ({baseline_model}): "
-        f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} fp={b.n_false_positives}"
+        f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} "
+        f"sev={b.severity_accuracy.value:.2f} fp={b.n_false_positives} "
+        f"yield={'REJECTED' if cmp.baseline_rejected else 'parsed'}"
         f"\n  candidate ({candidate_model}): "
-        f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} fp={c.n_false_positives}"
+        f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} "
+        f"sev={c.severity_accuracy.value:.2f} fp={c.n_false_positives} "
+        f"yield={'REJECTED' if cmp.candidate_rejected else 'parsed'}"
         f"\n  recall_held={cmp.recall_held} baseline_valid={cmp.baseline_valid} "
         f"fp_bounded={cmp.fp_bounded}"
     )
@@ -844,6 +848,82 @@ def _print_scenario_report(
             print(  # noqa: T201 — operator diagnostic
                 f"    {label} MISSED: {m.finding_type.value} {m.file_path}:{m.line_start}"
             )
+
+
+def _print_aggregate_metrics(
+    results: list[tuple[str, str, ModelComparison]],
+    ground_truth_by_fixture: dict[str, tuple[ExpectedFinding, ...]],
+    baseline_model: str,
+    candidate_model: str,
+) -> None:
+    """Aggregate the per-scenario comparisons into the scorecard metric block (FUP-196 + the
+    best-metrics set): structured-output YIELD rate, mean recall (recall fixtures), overall
+    precision + FP rate (the safe-code instrument), mean severity accuracy, F1, and per-
+    finding-type recall — per model. `results` is `(fixture_path, dimension, cmp)`; recall is
+    meaningful only on the 'recall' dimension (non-empty ground truth), so it is averaged
+    there, while FP rate is the precision instrument over the 'safe' rows."""
+    import operator  # noqa: PLC0415
+    import statistics  # noqa: PLC0415
+    from collections import Counter  # noqa: PLC0415
+
+    if not results:
+        return
+    recall_rows = [(fx, cmp) for fx, dim, cmp in results if dim == "recall"]
+    safe_rows = [(fx, cmp) for fx, dim, cmp in results if dim != "recall"]
+    n_total = len(results)
+
+    print("\n" + "=" * 72)  # noqa: T201 — operator aggregate metric block
+    for label, model, grade_attr, rejected_attr in (
+        ("baseline", baseline_model, "baseline", "baseline_rejected"),
+        ("candidate", candidate_model, "candidate", "candidate_rejected"),
+    ):
+        grade_of = operator.attrgetter(grade_attr)
+        rejected_of = operator.attrgetter(rejected_attr)
+        n_rejected = sum(bool(rejected_of(cmp)) for _, _, cmp in results)
+        yield_rate = (n_total - n_rejected) / n_total
+        recall_grades = [grade_of(cmp) for _, cmp in recall_rows]
+        mean_recall = (
+            statistics.fmean(g.recall.value for g in recall_grades) if recall_grades else 0.0
+        )
+        mean_sev = (
+            statistics.fmean(g.severity_accuracy.value for g in recall_grades)
+            if recall_grades
+            else 0.0
+        )
+        all_grades = [grade_of(cmp) for _, _, cmp in results]
+        total_findings = sum(g.precision.denominator for g in all_grades)
+        total_fp = sum(g.n_false_positives for g in all_grades)
+        precision = (total_findings - total_fp) / total_findings if total_findings else 1.0
+        safe_fp = sum(grade_of(cmp).n_false_positives for _, cmp in safe_rows)
+        fp_per_safe = safe_fp / len(safe_rows) if safe_rows else 0.0
+        f1 = (
+            0.0
+            if (mean_recall + precision) == 0
+            else 2 * mean_recall * precision / (mean_recall + precision)
+        )
+        expected_by_type: Counter[str] = Counter()
+        missed_by_type: Counter[str] = Counter()
+        for fx, cmp in recall_rows:
+            for ef in ground_truth_by_fixture.get(fx, ()):
+                expected_by_type[ef.finding_type.value] += 1
+            for m in grade_of(cmp).missed:
+                missed_by_type[m.finding_type.value] += 1
+        per_type = ", ".join(
+            f"{t}={(expected_by_type[t] - missed_by_type[t]) / expected_by_type[t]:.2f}"
+            for t in sorted(expected_by_type)
+        )
+        print(  # noqa: T201 — operator aggregate metric block
+            f"AGGREGATE — {label} ({model}): {n_total} scenarios "
+            f"({len(recall_rows)} recall / {len(safe_rows)} safe)"
+            f"\n  yield_rate={yield_rate:.2f} ({n_total - n_rejected}/{n_total} parsed)   "
+            f"F1={f1:.2f}"
+            f"\n  mean_recall={mean_recall:.2f}   precision={precision:.2f}   "
+            f"mean_severity_acc={mean_sev:.2f}"
+            f"\n  fp_rate={total_fp}/{total_findings} findings   "
+            f"fp_per_safe_scenario={fp_per_safe:.2f} ({safe_fp} fp over {len(safe_rows)} safe)"
+            f"\n  per-type recall: {per_type or '(none)'}"
+        )
+    print("=" * 72)  # noqa: T201 — operator aggregate metric block
 
 
 async def _run_scenario_isolating_transients(
