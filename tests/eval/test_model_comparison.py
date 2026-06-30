@@ -114,6 +114,15 @@ _WEAK_PASSWORD_HASH_FIXTURE = "tests/eval/fixtures/mock_github/weak_password_has
 _COMMAND_INJECTION_FIXTURE = "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json"
 _WEAK_CRYPTO_FIXTURE = "tests/eval/fixtures/mock_github/weak_crypto_cast.json"
 _INSECURE_RANDOMNESS_FIXTURE = "tests/eval/fixtures/mock_github/insecure_random_token.json"
+# The OBSERVED-free invariant (recall is pure model signal) is asserted directly by
+# test_judged_fixture_has_no_observed_floor for each of these — not left to a comment.
+_JUDGED_TYPE_FIXTURES = (
+    _SSRF_FIXTURE,
+    _WEAK_PASSWORD_HASH_FIXTURE,
+    _COMMAND_INJECTION_FIXTURE,
+    _WEAK_CRYPTO_FIXTURE,
+    _INSECURE_RANDOMNESS_FIXTURE,
+)
 
 # Recall HOLD-OUTS — real SQLi across injection forms. Hold-out strength is PROMPT-VERSION-
 # RELATIVE: under analyze-v3 (the DECISIONS#041 evidence runs) all four were named-but-never-
@@ -560,6 +569,45 @@ async def test_run_analyze_under_model_flags_rejected_structured_output() -> Non
     )
     assert finds == ()
     assert n_rejected == 1  # single-file scenario → exactly one rejected response
+
+
+# ---------------------------------------------------------------------------
+# JUDGED-only fixture invariants — recall is pure model signal (FUP-196)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture_path", _JUDGED_TYPE_FIXTURES)
+@pytest.mark.asyncio
+async def test_judged_fixture_has_no_observed_floor(fixture_path: str) -> None:
+    """Each model-dependent recall fixture yields NOTHING from the OBSERVED structural producer
+    under an EMPTY model — so its scorecard recall is pure model signal, not a structural
+    backstop. Locks the JUDGED-only property the fixtures were authored for (forms the .scm
+    queries deliberately don't match): if a future query broadens to match one, this fails by
+    NAME, instead of surfacing as a confusing recall==0 in a type-named regression test."""
+    findings, n_rejected = await run_analyze_under_model(
+        state_from_eval_fixture(fixture_path),
+        provider=_ScriptedProvider(_MISSES_RESPONSE),
+        model="claude-haiku-4-5",
+    )
+    assert findings == (), (
+        f"{fixture_path} produced an OBSERVED finding under an empty model — it is no longer "
+        "JUDGED-only, so its scorecard recall would be structural rather than model signal"
+    )
+    assert n_rejected == 0  # a valid-empty response, not a rejection
+
+
+@pytest.mark.parametrize("fixture_path", _JUDGED_TYPE_FIXTURES)
+def test_judged_fixture_scripted_analyze_matches_ground_truth(fixture_path: str) -> None:
+    """Each fixture's scripted analyze finding (documentation the scorecard itself does not
+    read — it runs the real provider) agrees with its `_GROUND_TRUTH_BY_FIXTURE` entry on type
+    + line, so the inert block can't silently drift from the ground truth a maintainer reads."""
+    with open(fixture_path, encoding="utf-8") as fh:
+        scripted = json.loads(json.load(fh)["llm_responses"]["analyze"][0])["findings"]
+    assert len(scripted) == 1, f"{fixture_path}: expected exactly one scripted analyze finding"
+    (expected,) = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
+    assert scripted[0]["finding_type"] == expected.finding_type.value
+    assert scripted[0]["line_start"] == expected.line_start
+    assert scripted[0]["line_end"] == expected.line_end
 
 
 # ---------------------------------------------------------------------------
