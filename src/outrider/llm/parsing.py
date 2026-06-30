@@ -2,10 +2,12 @@
 
 Defends against the well-known LLM-output-discipline gap: prompt
 instructions like "do not wrap the JSON in markdown fences" are
-advisory, not enforcement. Anthropic Haiku in particular sometimes
-wraps responses in ```json ... ``` despite the system prompt. Without a
-runtime defense, `Model.model_validate_json(response.text)` raises a
-`ValidationError` on the first backtick, crashing the consuming node.
+advisory, not enforcement. Some hosts wrap responses in ```json ... ```
+despite the system prompt — Anthropic Haiku is the canonical case, but
+any OpenAI-compatible host can too (e.g. GLM-on-Baseten, whose profile is
+JsonMode.SOFT_FENCED). Without a runtime defense,
+`Model.model_validate_json(response.text)` raises a `ValidationError` on
+the first backtick, crashing the consuming node.
 
 This module owns the narrow normalization step that nodes apply
 between the raw LLM text and `model_validate_json`. The policy
