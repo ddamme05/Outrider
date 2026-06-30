@@ -13,7 +13,7 @@ from contextlib import contextmanager
 import pytest
 from pydantic import ValidationError
 
-from outrider.llm.config import ModelConfig
+from outrider.llm.config import ModelConfig, is_anthropic_family_model
 
 
 @contextmanager
@@ -141,6 +141,23 @@ def test_rejects_almost_valid_string() -> None:
 def test_admits_anthropic_family_strings(model: str) -> None:
     cfg = ModelConfig(triage_model=model)
     assert cfg.triage_model == model
+
+
+@pytest.mark.parametrize(
+    ("slug", "expected"),
+    [
+        ("claude-haiku-4-5", True),
+        ("claude-sonnet-4-6", True),
+        ("claude-opus-4-7-20251001", True),
+        ("zai-org/GLM-5.2", False),
+        ("accounts/fireworks/models/glm-5p2", False),
+        ("stub-model", False),
+    ],
+)
+def test_is_anthropic_family_model(slug: str, expected: bool) -> None:
+    """The public predicate build_graph uses to flag a non-anthropic model_config that
+    must carry the host-identity triad (FUP-194). Mirrors `_VALID_MODEL_PATTERN`."""
+    assert is_anthropic_family_model(slug) is expected
 
 
 def test_rejects_dated_form_with_wrong_date_length() -> None:

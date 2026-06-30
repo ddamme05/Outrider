@@ -35,7 +35,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
 
-__all__ = ["ModelConfig"]
+__all__ = ["ModelConfig", "is_anthropic_family_model"]
 
 # V1 Anthropic family pattern.
 # Three accepted shapes per Anthropic SDK 0.100 model catalog:
@@ -48,6 +48,14 @@ __all__ = ["ModelConfig"]
 # previous regex rejected the dated form
 # even though the SDK catalog publishes it as the precise model id.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
+
+
+def is_anthropic_family_model(slug: str) -> bool:
+    """True iff `slug` is an Anthropic claude-family model id (the native host's
+    slug shape). The canonical predicate over `_VALID_MODEL_PATTERN`, reused by
+    `build_graph` to detect a non-anthropic `model_config` that must carry the
+    host-identity triad (DECISIONS.md#056)."""
+    return bool(_VALID_MODEL_PATTERN.fullmatch(slug))
 
 
 class _EnvModelOverrides(BaseSettings):

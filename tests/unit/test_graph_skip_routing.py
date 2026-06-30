@@ -188,12 +188,15 @@ class _StubGitHubPublisher:
 
 
 class _StubModelConfig:
-    triage_model = "stub-model"
-    analyze_model = "stub-analyze-model"
-    standard_analyze_model = "stub-standard-analyze-model"
-    trace_model = "stub-trace-model"
-    synthesize_model = "stub-synthesize-model"
-    patch_model = "stub-patch-model"
+    # Anthropic-family slugs (mirroring the real ModelConfig defaults) so build_graph's
+    # host/triad coherence guard (FUP-194) does not require a triad for this
+    # introspection-only fixture; these strings are never asserted on.
+    triage_model = "claude-haiku-4-5"
+    analyze_model = "claude-sonnet-4-6"
+    standard_analyze_model = "claude-haiku-4-5"
+    trace_model = "claude-haiku-4-5"
+    synthesize_model = "claude-haiku-4-5"
+    patch_model = "claude-haiku-4-5"
 
 
 def _stub_db_factory() -> Any:
