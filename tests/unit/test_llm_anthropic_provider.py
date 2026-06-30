@@ -1878,25 +1878,32 @@ async def test_complete_refusal_propagates_stop_details_category() -> None:
 @pytest.mark.asyncio
 async def test_cache_silently_disabled_suppressed_for_unknown_floor_model(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
     _reset_noncacheable_warned_set: None,
 ) -> None:
-    """An unknown-floor model (the DECISIONS.md#056 None sentinel, e.g.
-    `claude-sonnet-5`) suppresses the silently-disabled-cache diagnostic: a cache
-    miss can't be attributed to a below-floor prompt when the floor is
-    undocumented, so the provider stays silent (per the `min_cacheable_tokens`
-    contract) rather than logging a confusing 'None tokens' warning."""
+    """A None min-cacheable floor (the DECISIONS.md#056 unknown-floor sentinel — a
+    host with an undocumented threshold) suppresses the silently-disabled-cache
+    diagnostic: a cache miss can't be attributed to a below-floor prompt when the
+    floor is undocumented, so the provider stays silent (per the
+    `min_cacheable_tokens` contract) rather than logging a confusing 'None tokens'
+    warning. No current Anthropic model returns None (Sonnet 5's floor is the
+    documented 1024), so the None return is forced here to cover the defensive
+    branch that protects any future undocumented-floor host."""
+    import outrider.llm.anthropic_provider as ap
+
+    monkeypatch.setattr(ap, "min_cacheable_tokens", lambda profile_id, model: None)
     provider = AnthropicProvider(
         api_key=_api_key(), model_config=_model_config(), persister=_RecordingPersister()
     )
     caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
     with _patched_create(
         return_value=_sdk_message(
-            model="claude-sonnet-5",  # MIN_CACHEABLE_TOKENS floor is None
+            model="claude-sonnet-4-6",
             cache_creation_input_tokens=0,
             cache_read_input_tokens=0,
         )
     ):
-        await provider.complete(_request(cache_control=True, model="claude-sonnet-5"))
+        await provider.complete(_request(cache_control=True, model="claude-sonnet-4-6"))
     warning_records = [
         r
         for r in caplog.records

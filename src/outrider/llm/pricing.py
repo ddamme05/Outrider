@@ -253,11 +253,12 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
 MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxyType(
     {
         ("anthropic", "claude-sonnet-4-6"): 1024,
-        # Sonnet 5's documented min-cacheable floor is not yet pinned in the docs
-        # mirror; None = the DECISIONS.md#056 unknown-floor sentinel (skip the
-        # silently-disabled-cache diagnostic until verified live). Caching and cost
-        # are unaffected — only the below-floor warning is suppressed.
-        ("anthropic", "claude-sonnet-5"): None,
+        # Verified against the live prompt-caching page 2026-06-30 (FUP-202): Sonnet 5's
+        # min-cacheable floor is 1024 (same as Sonnet 4.6 / Opus 4.8). Runtime-enforced,
+        # so re-verify live on a model bump. The None unknown-floor sentinel
+        # (DECISIONS.md#056) is still handled by the provider diagnostic for any future
+        # host with an undocumented floor, but no current Anthropic model needs it.
+        ("anthropic", "claude-sonnet-5"): 1024,
         ("anthropic", "claude-haiku-4-5"): 4096,
         # Baseten documents NO minimum-cacheable-token floor for GLM 5.2
         # ("every request participates in caching automatically") — [MB-11],

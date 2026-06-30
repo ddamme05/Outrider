@@ -278,14 +278,11 @@ def test_stable_prefix_clears_min_cacheable_floor_conservatively() -> None:
 
     cfg = ModelConfig()
     # min_cacheable_tokens is host-qualified per DECISIONS.md#056: both analyze
-    # tiers are Claude/Anthropic models, so the profile_id is "anthropic". A None
-    # floor is the unknown-floor sentinel (Sonnet 5's documented floor isn't pinned
-    # yet — FUP-202) — you can't assert clearance against an unknown floor, so
-    # exclude it. Haiku 4.5's 4096 is the strictest KNOWN floor AND the highest
-    # documented Anthropic floor (floors run 1024–4096), so clearing it with margin
-    # also clears any realistic Sonnet 5 floor — the DEEP tier is only left uncovered
-    # if Sonnet 5's real floor exceeds every current model's, which FUP-202 catches
-    # when it pins the value.
+    # tiers are Claude/Anthropic models, so the profile_id is "anthropic". The None
+    # filter is defensive (the DECISIONS.md#056 unknown-floor sentinel — no current
+    # Anthropic model returns it; Sonnet 5's floor is the documented 1024). Haiku
+    # 4.5's 4096 is the strictest KNOWN floor and the binding one; clearing it with
+    # margin also clears the DEEP-tier Sonnet 5 floor (1024).
     known_floors = [
         f
         for f in (
