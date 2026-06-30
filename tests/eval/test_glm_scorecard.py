@@ -45,6 +45,7 @@ from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
     _SAFE_CODE_FIXTURES,
     _NoOpExchangePersister,
+    _print_aggregate_metrics,
     _print_scenario_report,
     _run_scenario_isolating_transients,
 )
@@ -111,6 +112,11 @@ async def test_glm_vs_anthropic_scorecard() -> None:
     # test_scorecard.py writes to reports/scorecard/ — the report survives pytest
     # stdout capture regardless of -s.
     rows: list[ScorecardRow] = []
+    # (fixture, dimension, comparison) per COMPLETED scenario, fed to
+    # `_print_aggregate_metrics` for the cross-scenario metric block (yield rate, mean
+    # recall, FP rate, F1, per-finding-type recall). Recall is meaningful only on the
+    # "recall" dimension; the aggregate partitions on it.
+    comparisons: list[tuple[str, str, ModelComparison]] = []
 
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
@@ -152,6 +158,7 @@ async def test_glm_vs_anthropic_scorecard() -> None:
             # both-models-miss row would vacuously read green.
             recall_ok = cmp.recall_held and cmp.baseline_valid
             gate_results.append((fixture_path, "recall", recall_ok, "GLM recall < Anthropic"))
+            comparisons.append((fixture_path, "recall", cmp))
             assert cmp.baseline is not None  # the run completed
         # PRECISION — does GLM over-flag safe code more than Anthropic? Empty ground
         # truth, so ANY finding is a false positive; advisory gate on `fp_bounded`.
@@ -170,7 +177,14 @@ async def test_glm_vs_anthropic_scorecard() -> None:
                 )
             )
             gate_results.append((fixture_path, "precision", cmp.fp_bounded, "GLM over-flags"))
+            comparisons.append((fixture_path, "precision", cmp))
             assert cmp.baseline is not None  # the run completed
+        # Cross-scenario aggregate metric block (FUP-196 + best-metrics set) — printed
+        # before the report-only gate summary so the scorecard leads with the numbers a
+        # human adjudicates GLM on (yield rate, mean recall, FP rate, F1, per-type recall).
+        _print_aggregate_metrics(
+            comparisons, _GROUND_TRUTH_BY_FIXTURE, baseline_model, GLM_MODEL_ID
+        )
         # REPORT-ONLY summary — pytest "passed" means the run completed, NOT a verdict.
         flagged = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
         green = len(gate_results) - len(flagged)
