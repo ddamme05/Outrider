@@ -217,6 +217,12 @@ class ModelComparison:
     baseline_valid: bool
     recall_held: bool
     fp_bounded: bool
+    # Structured-output yield (FUP-196): did the model emit PARSEABLE structured output, or
+    # was its response REJECTED (fence/schema fail → zero findings)? Distinguishes a
+    # capability miss (valid output, no finding) from a format miss (rejected) — the two are
+    # otherwise indistinguishable to recall/precision on safe code (both → empty findings).
+    baseline_rejected: bool = False
+    candidate_rejected: bool = False
 
     @property
     def passes(self) -> bool:
@@ -230,6 +236,8 @@ def compare(
     recall_tolerance: float = 0.0,
     fp_allowance: int = 0,
     baseline_recall_floor: float = 1.0,
+    baseline_rejected: bool = False,
+    candidate_rejected: bool = False,
 ) -> ModelComparison:
     """Apply the quality gate. The candidate (cheaper) model passes iff ALL hold:
       - the BASELINE's own recall clears `baseline_recall_floor` (default 1.0 — the strong
@@ -251,4 +259,6 @@ def compare(
         baseline_valid=baseline_valid,
         recall_held=recall_held,
         fp_bounded=fp_bounded,
+        baseline_rejected=baseline_rejected,
+        candidate_rejected=candidate_rejected,
     )
