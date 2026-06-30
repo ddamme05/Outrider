@@ -278,11 +278,20 @@ def test_stable_prefix_clears_min_cacheable_floor_conservatively() -> None:
 
     cfg = ModelConfig()
     # min_cacheable_tokens is host-qualified per DECISIONS.md#056: both analyze
-    # tiers are Claude/Anthropic models, so the profile_id is "anthropic".
-    strictest_floor = max(
-        min_cacheable_tokens("anthropic", cfg.analyze_model),
-        min_cacheable_tokens("anthropic", cfg.standard_analyze_model),
-    )
+    # tiers are Claude/Anthropic models, so the profile_id is "anthropic". A None
+    # floor is the unknown-floor sentinel (Sonnet 5's documented floor isn't pinned
+    # yet) — you can't assert clearance against an unknown floor, so exclude it;
+    # Haiku 4.5's 4096 is the strictest KNOWN floor and the binding one anyway.
+    known_floors = [
+        f
+        for f in (
+            min_cacheable_tokens("anthropic", cfg.analyze_model),
+            min_cacheable_tokens("anthropic", cfg.standard_analyze_model),
+        )
+        if f is not None
+    ]
+    assert known_floors, "no known cacheable floor among the analyze tiers — gate is vacuous"
+    strictest_floor = max(known_floors)
     conservative_tokens = len(SYSTEM_PROMPT_STABLE_PREFIX) // 5
     assert conservative_tokens >= int(strictest_floor * 1.1), (
         f"stable prefix conservatively estimates {conservative_tokens} tokens; "

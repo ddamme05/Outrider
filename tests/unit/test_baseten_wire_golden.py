@@ -77,10 +77,10 @@ GOLDEN_EVENT_TOKENS: dict[str, int] = {"input_tokens": 70, "output_tokens": 50, 
 # 70·$1.40 + 30·$0.26 + 50·$4.40 per MTok = $0.0003258 (GLM-5.2 RATE_TABLE). An intentional
 # rate change must update this literal explicitly.
 GOLDEN_COST_USD: float = 0.0003258
-# Pinned literal, NOT the live PRICING_VERSION constant — the host-qualified pricing re-key
-# (arc 1a step 4) bumped this from "v3" to "v4" with NO rate-value change; updating it here is
-# the acknowledgment the golden forces.
-GOLDEN_PRICING_VERSION = "v4"
+# Pinned literal, NOT the live PRICING_VERSION constant — the golden forces an explicit
+# acknowledgment on every bump: v3→v4 (host-qualified re-key) and v4→v5 (Sonnet 5 added to
+# RATE_TABLE). GLM/Baseten rates are unchanged across all of these; a call made now stamps v5.
+GOLDEN_PRICING_VERSION = "v5"
 
 _FIXED_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000000aa")
 

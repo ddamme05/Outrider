@@ -128,7 +128,15 @@ version-keyed cost aggregation.
 #   at two rates), and compute_cost_usd / min_cacheable_tokens take a profile_id.
 #   No rate VALUES changed — the bump records v4 so a host-qualified call replays
 #   under the host-aware table rather than the v3 model-only one.
-PRICING_VERSION: Final[str] = "v4"
+# v5 (Sonnet 5 migration): added ("anthropic", "claude-sonnet-5") at its
+#   2026-06-30 INTRODUCTORY rate ($2.00 in / $10.00 out per MTok; cache read
+#   $0.20 = 0.10× input, cache write $2.50 = 1.25× input). Introductory pricing
+#   runs through 2026-08-31; STANDARD pricing ($3.00 in / $15.00 out) takes effect
+#   2026-09-01 and needs a v6 bump then (FUP-201). The prior claude-sonnet-4-6
+#   rates are RETAINED for historical replay + the GLM-vs-Anthropic scorecard
+#   baseline. Anthropic pricing values are runtime-enforced and can drift between
+#   snapshots — verify live before the v6 bump.
+PRICING_VERSION: Final[str] = "v5"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(
         f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
@@ -158,6 +166,9 @@ class ModelPricing(NamedTuple):
 
 # Anthropic per-token rates as of the V1 PRICING_VERSION bump.
 # Sources :
+#   - claude-sonnet-5: $2.00/MTok input, $10.00/MTok output, $0.20/MTok cache read,
+#     $2.50/MTok cache write — 2026-06-30 INTRODUCTORY rate (through 2026-08-31;
+#     standard $3.00/$15.00 from 2026-09-01, see PRICING_VERSION v5 note).
 #   - claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output,
 #     $0.30/MTok cache read, $3.75/MTok cache write (1.25× input premium).
 #   - claude-haiku-4-5: $1.00/MTok input, $5.00/MTok output,
@@ -184,6 +195,14 @@ class ModelPricing(NamedTuple):
 # under `"baseten"`. Build the key via `pricing_key(profile_id, model)`.
 RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
     {
+        ("anthropic", "claude-sonnet-5"): ModelPricing(
+            # 2026-06-30 INTRODUCTORY rate (through 2026-08-31; $3.00/$15.00 standard
+            # from 2026-09-01 — see the PRICING_VERSION v5 note + FUP-201).
+            in_per_token=Decimal("0.000002"),  # 2.00/MTok (intro)
+            cache_write_per_token=Decimal("0.0000025"),  # 2.50/MTok (1.25× input)
+            cache_read_per_token=Decimal("0.0000002"),  # 0.20/MTok (0.10× input)
+            out_per_token=Decimal("0.00001"),  # 10.00/MTok (intro)
+        ),
         ("anthropic", "claude-sonnet-4-6"): ModelPricing(
             in_per_token=Decimal("0.000003"),  # 3.00/MTok
             cache_write_per_token=Decimal("0.00000375"),  # 3.75/MTok (1.25× input)
@@ -234,6 +253,11 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
 MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxyType(
     {
         ("anthropic", "claude-sonnet-4-6"): 1024,
+        # Sonnet 5's documented min-cacheable floor is not yet pinned in the docs
+        # mirror; None = the DECISIONS.md#056 unknown-floor sentinel (skip the
+        # silently-disabled-cache diagnostic until verified live). Caching and cost
+        # are unaffected — only the below-floor warning is suppressed.
+        ("anthropic", "claude-sonnet-5"): None,
         ("anthropic", "claude-haiku-4-5"): 4096,
         # Baseten documents NO minimum-cacheable-token floor for GLM 5.2
         # ("every request participates in caching automatically") — [MB-11],

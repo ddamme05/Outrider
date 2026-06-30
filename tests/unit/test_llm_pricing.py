@@ -263,6 +263,9 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     # v4 (#056): host-qualified re-key — keys are now (profile_id, model) tuples.
     # The digest changed because the keys changed (no rate VALUES changed).
     "v4": "da7b949a35b966ee",
+    # v5 (Sonnet 5 migration): added ("anthropic", "claude-sonnet-5") at intro
+    # rates; claude-sonnet-4-6 retained for historical replay + scorecard baseline.
+    "v5": "e7a9702ea9b8d626",
 }
 
 

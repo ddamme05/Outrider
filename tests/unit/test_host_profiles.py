@@ -154,7 +154,7 @@ def test_profile_contract_digest_is_deterministic_and_rotates_on_wire_change() -
 def test_host_default_models_anthropic_matches_canonical_tiers() -> None:
     assert HOST_DEFAULT_MODELS["anthropic"] == {
         "triage_model": "claude-haiku-4-5",
-        "analyze_model": "claude-sonnet-4-6",
+        "analyze_model": "claude-sonnet-5",
         "standard_analyze_model": "claude-haiku-4-5",
         "synthesize_model": "claude-haiku-4-5",
         "trace_model": "claude-haiku-4-5",
