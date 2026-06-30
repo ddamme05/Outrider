@@ -367,11 +367,11 @@ def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFi
 
     expected_sqli = _expected(severity=FindingSeverity.CRITICAL)
     # Recall scenario: baseline catches it (recall 1.0); candidate emits nothing (recall 0.0),
-    # and that empty output was a REJECTED structured response (not a valid-empty one).
+    # and that empty output was a REJECTED structured response (n_rejected=1), not valid-empty.
     recall_cmp = compare(
         grade((_finding(severity=FindingSeverity.CRITICAL),), (expected_sqli,)),
         grade((), (expected_sqli,)),
-        candidate_rejected=True,
+        candidate_n_rejected=1,
     )
     # Safe scenario: EMPTY ground truth; baseline clean, candidate over-flags with one finding.
     safe_cmp = compare(

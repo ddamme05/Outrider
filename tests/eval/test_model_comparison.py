@@ -532,33 +532,34 @@ def _build_state() -> ReviewState:
 async def test_run_analyze_under_model_returns_findings() -> None:
     """A finding-emitting scripted run yields a ReviewFinding the grader can match; an
     empty-response run yields none. Pins that the comparison's inputs are real.
-    `rejected` is False for both (the structured output parsed)."""
-    finds, finds_rejected = await run_analyze_under_model(
+    `n_rejected` is 0 for both (the structured output parsed)."""
+    finds, finds_n_rejected = await run_analyze_under_model(
         _build_state(), provider=_ScriptedProvider(_FINDS_RESPONSE), model="claude-sonnet-4-6"
     )
     assert len(finds) >= 1, "the scripted finding response did not admit a finding"
     assert finds[0].finding_type == FindingType.SQL_INJECTION
-    assert finds_rejected is False
+    assert finds_n_rejected == 0
 
-    misses, misses_rejected = await run_analyze_under_model(
+    misses, misses_n_rejected = await run_analyze_under_model(
         _build_state(), provider=_ScriptedProvider(_MISSES_RESPONSE), model="claude-haiku-4-5"
     )
     assert misses == ()
-    assert misses_rejected is False  # valid-empty, NOT a rejection
+    assert misses_n_rejected == 0  # valid-empty, NOT a rejection
 
 
 async def test_run_analyze_under_model_flags_rejected_structured_output() -> None:
     """FUP-196 yield signal: a malformed (unparseable) response is REJECTED — the run
-    reports rejected=True with zero findings, distinct from a valid-empty response. This is
-    the structured-output conformance signal the GLM scorecard needs (a FORMAT miss, where
-    the model emitted garbage, vs a CAPABILITY miss, where it validly found nothing)."""
-    finds, rejected = await run_analyze_under_model(
+    reports n_rejected=1 (the single file's response failed to parse) with zero findings,
+    distinct from a valid-empty response (n_rejected=0). This is the structured-output
+    conformance signal the GLM scorecard needs (a FORMAT miss, where the model emitted
+    garbage, vs a CAPABILITY miss, where it validly found nothing)."""
+    finds, n_rejected = await run_analyze_under_model(
         _build_state(),
         provider=_ScriptedProvider("not JSON — the model failed to emit structured output"),
         model="claude-haiku-4-5",  # any priced model; the rejection is about the RESPONSE
     )
     assert finds == ()
-    assert rejected is True
+    assert n_rejected == 1  # single-file scenario → exactly one rejected response
 
 
 # ---------------------------------------------------------------------------
@@ -901,11 +902,11 @@ def _print_scenario_report(
         f"\n  baseline ({baseline_model}): "
         f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} "
         f"sev={b.severity_accuracy.value:.2f} fp={b.n_false_positives} "
-        f"yield={'REJECTED' if cmp.baseline_rejected else 'parsed'}"
+        f"yield={'REJECTED' if cmp.baseline_n_rejected else 'parsed'}"
         f"\n  candidate ({candidate_model}): "
         f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} "
         f"sev={c.severity_accuracy.value:.2f} fp={c.n_false_positives} "
-        f"yield={'REJECTED' if cmp.candidate_rejected else 'parsed'}"
+        f"yield={'REJECTED' if cmp.candidate_n_rejected else 'parsed'}"
         f"\n  recall_held={cmp.recall_held} baseline_valid={cmp.baseline_valid} "
         f"fp_bounded={cmp.fp_bounded}"
     )
@@ -962,8 +963,8 @@ def _print_aggregate_metrics(
 
     print("\n" + "=" * 72)  # noqa: T201 — operator aggregate metric block
     for label, model, grade_attr, rejected_attr in (
-        ("baseline", baseline_model, "baseline", "baseline_rejected"),
-        ("candidate", candidate_model, "candidate", "candidate_rejected"),
+        ("baseline", baseline_model, "baseline", "baseline_n_rejected"),
+        ("candidate", candidate_model, "candidate", "candidate_n_rejected"),
     ):
         grade_of = operator.attrgetter(grade_attr)
         rejected_of = operator.attrgetter(rejected_attr)
