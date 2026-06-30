@@ -47,13 +47,14 @@ from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
     _MISSING_ERROR_HANDLING_FIXTURE,
     _SAFE_CODE_FIXTURES,
+    _SSRF_FIXED_HOST_SAFE_FIXTURE,
     _WEAK_CRYPTO_FIXTURE,
     _CapturingExchangePersister,
     _NoOpExchangePersister,
     _print_aggregate_metrics,
     _print_scenario_report,
     _run_scenario_isolating_transients,
-    diagnose_recall_stability,
+    diagnose_scenario_stability,
 )
 
 if TYPE_CHECKING:
@@ -251,14 +252,17 @@ async def test_glm_vs_anthropic_scorecard() -> None:
     reason="real-model GLM diagnostic spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
 )
 @pytest.mark.asyncio
-async def test_glm_recall_miss_diagnostic() -> None:
+async def test_glm_failed_row_diagnostic() -> None:
     """OPT-IN, real spend — DIAGNOSTIC, not a gate. Reruns GLM N times (`OUTRIDER_DIAG_RUNS`,
-    default 5) on the scorecard's known recall MISSES to separate a STOCHASTIC miss (caught
-    some runs) from a SYSTEMATIC one (never caught), capturing GLM's raw response on each miss
-    so a 0 is explainable rather than opaque. GLM-only (Sonnet catches both); cost =
-    len(fixtures) × N analyze calls (default 2 × 5 = 10). Set `OUTRIDER_DIAG_FIXTURES`
-    (comma-separated `_GROUND_TRUTH_BY_FIXTURE` paths) to target others. Report-only: pytest
-    'passed' means the run COMPLETED, not a verdict."""
+    default 5) on the scorecard's THREE failed rows — the two recall misses
+    (`missing_error_handling`, `weak_crypto`/CAST) and the one safe-code over-flag
+    (`ssrf_fixed_host_safe`) — to separate a STOCHASTIC failure (k of N runs) from a SYSTEMATIC
+    one (every run), capturing GLM's raw response on each failing run so the failure mode
+    (emitted nothing / wrong type / wrong span / over-flag) is inspectable rather than opaque.
+    GLM-only (Sonnet passes all three); cost = len(fixtures) × N analyze calls (default 3 × 5
+    = 15). Set `OUTRIDER_DIAG_FIXTURES` (comma-separated paths; recall fixtures resolve their
+    ground truth from `_GROUND_TRUTH_BY_FIXTURE`, others are treated as safe) to target others.
+    Report-only: pytest 'passed' means the run COMPLETED, not a verdict."""
     baseten_key = os.environ.get("BASETEN_API_KEY")
     if not baseten_key or baseten_key.startswith("op://"):
         pytest.skip(
@@ -275,15 +279,19 @@ async def test_glm_recall_miss_diagnostic() -> None:
     fixtures = (
         [f.strip() for f in env_fixtures.split(",") if f.strip()]
         if env_fixtures
-        else [_MISSING_ERROR_HANDLING_FIXTURE, _WEAK_CRYPTO_FIXTURE]
+        else [_MISSING_ERROR_HANDLING_FIXTURE, _WEAK_CRYPTO_FIXTURE, _SSRF_FIXED_HOST_SAFE_FIXTURE]
     )
     capturing = _CapturingExchangePersister()
     provider = GLMProvider(api_key=SecretStr(baseten_key), persister=capturing)
     results: list[dict[str, object]] = []
     try:
         for fixture_path in fixtures:
-            result = await diagnose_recall_stability(
+            # Recall fixtures carry ground truth; anything else (the safe trap) is empty-GT, so
+            # the diagnostic captures on a false positive instead of a miss.
+            expected = _GROUND_TRUTH_BY_FIXTURE.get(fixture_path, ())
+            result = await diagnose_scenario_stability(
                 fixture_path,
+                expected=expected,
                 provider=provider,
                 model=GLM_MODEL_ID,
                 capturing=capturing,
@@ -291,20 +299,21 @@ async def test_glm_recall_miss_diagnostic() -> None:
             )
             results.append(result)
             print(  # noqa: T201 — operator diagnostic
-                f"\n[{fixture_path}] GLM caught {result['catches']}/{runs} → {result['verdict']}"
+                f"\n[{fixture_path}] ({result['kind']}) GLM passed {result['passes']}/{runs} "
+                f"→ {result['verdict']}"
             )
-            misses_raw = result["misses_raw"]
-            assert isinstance(misses_raw, list)
-            for i, raw in enumerate(misses_raw, 1):
+            failures_raw = result["failures_raw"]
+            assert isinstance(failures_raw, list)
+            for i, raw in enumerate(failures_raw, 1):
                 snippet = raw if len(raw) <= 800 else raw[:800] + " …[truncated]"
-                print(f"  miss {i} raw response: {snippet}")  # noqa: T201 — operator diagnostic
+                print(f"  failure {i} raw response: {snippet}")  # noqa: T201 — operator diagnostic
         print(  # noqa: T201 — operator interpretation
             "\n"
             + "=" * 72
-            + "\nGLM MISS DIAGNOSTIC — REPORT ONLY. 'systematic' (0/N) is a real recall gap;"
+            + "\nGLM FAILED-ROW DIAGNOSTIC — REPORT ONLY. 'systematic' (0/N pass) is a real gap;"
             + "\n'stochastic' (0<k<N) is sampling noise — raise OUTRIDER_DIAG_RUNS to tighten."
-            + "\nRead the captured raw response to see whether GLM emitted nothing, a different"
-            + "\nfinding_type, or the right finding at a wrong line (a window miss)."
+            + "\nRead the captured raw response to classify the failure: emitted nothing, a"
+            + "\ndifferent finding_type, the right finding at a wrong line, or an over-flag."
             + "\n"
             + "=" * 72
         )
@@ -314,14 +323,14 @@ async def test_glm_recall_miss_diagnostic() -> None:
             if results:
                 report_dir = Path("reports/scorecard")
                 report_dir.mkdir(parents=True, exist_ok=True)
-                (report_dir / "glm-recall-miss-diagnostic.json").write_text(
+                (report_dir / "glm-failed-row-diagnostic.json").write_text(
                     json.dumps(
                         {"model": GLM_MODEL_ID, "runs": runs, "scenarios": results}, indent=2
                     ),
                     encoding="utf-8",
                 )
                 print(  # noqa: T201 — operator artifact pointer
-                    f"\n[diagnostic written to {report_dir}/glm-recall-miss-diagnostic.json]"
+                    f"\n[diagnostic written to {report_dir}/glm-failed-row-diagnostic.json]"
                 )
         finally:
             await provider.aclose()
