@@ -2390,6 +2390,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 prompt_hash=_canonical_prompt_hash(
                     system_prompt=parts.system_prompt, user_prompt=parts.user_prompt
                 ),
+                # Host-triad telemetry columns (FUP-194): the SAME values folded into
+                # cache_key above, so the denormalized columns match the key.
+                profile_id=profile_id,
+                reasoning_enabled=reasoning_enabled,
             )
         except CacheStoreError:
             # Contained: the review's findings are already emitted; a

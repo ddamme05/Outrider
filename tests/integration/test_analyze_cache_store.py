@@ -208,6 +208,64 @@ async def test_expired_row_is_refreshed_by_a_new_write(migrated_db: str) -> None
 
 
 @pytest.mark.asyncio
+async def test_host_triad_telemetry_columns_roundtrip_and_refresh(migrated_db: str) -> None:
+    """profile_id + reasoning_enabled (FUP-194 telemetry) round-trip to queryable
+    columns; an unqualified (default) write stores NULL (the anthropic-default
+    partition); and an expired-row refresh by a different host updates them via the
+    on-conflict set_."""
+    engine = create_async_engine(migrated_db)
+    try:
+        review_id = await _seed_review(engine)
+        store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
+        scope = await store.resolve_scope(review_id)
+        assert scope is not None
+
+        async def _cols(key: str) -> tuple[str | None, bool | None]:
+            async with engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        text(
+                            "SELECT profile_id, reasoning_enabled FROM analyze_file_cache "
+                            "WHERE cache_key = :k"
+                        ),
+                        {"k": key},
+                    )
+                ).one()
+            return (row.profile_id, row.reasoning_enabled)
+
+        # Qualified host write -> columns populated for group-by-host telemetry.
+        await store.write(
+            **_write_kwargs("k-host", scope, review_id),
+            profile_id="baseten",
+            reasoning_enabled=False,
+        )
+        assert await _cols("k-host") == ("baseten", False)
+
+        # Unqualified (default) write -> NULL columns.
+        await store.write(**_write_kwargs("k-null", scope, review_id))
+        assert await _cols("k-null") == (None, None)
+
+        # Expired-row refresh by a different host updates the columns (on-conflict set_).
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE analyze_file_cache "
+                    "SET retention_expires_at = NOW() - INTERVAL '1 second' "
+                    "WHERE cache_key = :k"
+                ),
+                {"k": "k-null"},
+            )
+        await store.write(
+            **_write_kwargs("k-null", scope, review_id),
+            profile_id="baseten",
+            reasoning_enabled=True,
+        )
+        assert await _cols("k-null") == ("baseten", True)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_review_purge_cascades_cache_rows(migrated_db: str) -> None:
     """No-resurrection, CASCADE layer: deleting the source review takes
     its cache rows with it."""
