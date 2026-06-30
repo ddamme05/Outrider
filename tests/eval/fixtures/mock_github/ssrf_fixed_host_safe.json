@@ -6,31 +6,31 @@
   "base_sha": "9999999999999999999999999999999999999999",
   "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "pr_title": "Add get_profile helper",
-  "pr_body": "Adds get_profile, which fetches a user's profile from the fixed upstream API by id.",
+  "pr_body": "Adds get_profile, which validates a numeric id and fetches a user's profile from the fixed upstream API.",
   "author": "contributor",
-  "total_additions": 9,
+  "total_additions": 11,
   "total_deletions": 0,
   "files": [
     {
       "path": "app/profile.py",
       "status": "modified",
-      "additions": 9,
+      "additions": 11,
       "deletions": 0,
-      "patch": "@@ -1 +1,10 @@\n import requests\n+\n+\n+def get_profile(user_id):\n+    try:\n+        resp = requests.get(\"https://api.example.com/users/\" + user_id)\n+        resp.raise_for_status()\n+        return resp.json()\n+    except requests.RequestException:\n+        return None\n",
+      "patch": "@@ -1 +1,12 @@\n import requests\n+\n+\n+def get_profile(user_id):\n+    if not user_id.isdigit():\n+        raise ValueError(\"user_id must be a numeric id\")\n+    try:\n+        resp = requests.get(\"https://api.example.com/users/\" + user_id)\n+        resp.raise_for_status()\n+        return resp.json()\n+    except requests.RequestException:\n+        return None\n",
       "previous_path": null,
       "content_base": "import requests\n",
-      "content_head": "import requests\n\n\ndef get_profile(user_id):\n    try:\n        resp = requests.get(\"https://api.example.com/users/\" + user_id)\n        resp.raise_for_status()\n        return resp.json()\n    except requests.RequestException:\n        return None\n"
+      "content_head": "import requests\n\n\ndef get_profile(user_id):\n    if not user_id.isdigit():\n        raise ValueError(\"user_id must be a numeric id\")\n    try:\n        resp = requests.get(\"https://api.example.com/users/\" + user_id)\n        resp.raise_for_status()\n        return resp.json()\n    except requests.RequestException:\n        return None\n"
     }
   ],
   "llm_responses": {
     "triage": [
-      "{\"file_tiers\": {\"app/profile.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision scenario (ssrf over-flag trap): get_profile interpolates user_id only into the PATH of a FIXED host (api.example.com) and handles errors -- not SSRF, the destination cannot be shifted. Deep-review to confirm no ssrf is hallucinated: a user value confined to the path of a fixed host cannot shift the destination.\"}"
+      "{\"file_tiers\": {\"app/profile.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Precision scenario (ssrf over-flag trap): get_profile validates user_id is numeric (isdigit), then interpolates it into the PATH of a FIXED host (api.example.com) with error handling -- not SSRF (the destination cannot be shifted), and the numeric guard leaves nothing to flag on the path (a numeric id cannot contain traversal/query/fragment characters, so no input-validation concern). Deep-review to confirm no finding is hallucinated.\"}"
     ],
     "analyze": [
       "{\"findings\": []}"
     ],
     "synthesize": [
-      "Precision scenario: no findings. get_profile fetches a FIXED host with the user value confined to the path and proper error handling; the destination cannot be shifted, so this is not SSRF."
+      "Precision scenario: no findings. get_profile validates user_id is numeric, then fetches a FIXED host with the validated value confined to the path and proper error handling; the destination cannot be shifted (not SSRF) and the numeric guard removes any path input-validation concern."
     ]
   }
 }
