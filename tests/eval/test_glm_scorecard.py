@@ -45,11 +45,15 @@ from .model_comparison import compare_models_on_scenario, state_from_eval_fixtur
 from .scorecard import Scorecard, ScorecardRow
 from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
+    _MISSING_ERROR_HANDLING_FIXTURE,
     _SAFE_CODE_FIXTURES,
+    _WEAK_CRYPTO_FIXTURE,
+    _CapturingExchangePersister,
     _NoOpExchangePersister,
     _print_aggregate_metrics,
     _print_scenario_report,
     _run_scenario_isolating_transients,
+    diagnose_recall_stability,
 )
 
 if TYPE_CHECKING:
@@ -240,3 +244,84 @@ async def test_glm_vs_anthropic_scorecard() -> None:
         finally:
             await baseline_provider.aclose()
             await candidate_provider.aclose()
+
+
+@pytest.mark.skipif(
+    os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
+    reason="real-model GLM diagnostic spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
+)
+@pytest.mark.asyncio
+async def test_glm_recall_miss_diagnostic() -> None:
+    """OPT-IN, real spend — DIAGNOSTIC, not a gate. Reruns GLM N times (`OUTRIDER_DIAG_RUNS`,
+    default 5) on the scorecard's known recall MISSES to separate a STOCHASTIC miss (caught
+    some runs) from a SYSTEMATIC one (never caught), capturing GLM's raw response on each miss
+    so a 0 is explainable rather than opaque. GLM-only (Sonnet catches both); cost =
+    len(fixtures) × N analyze calls (default 2 × 5 = 10). Set `OUTRIDER_DIAG_FIXTURES`
+    (comma-separated `_GROUND_TRUTH_BY_FIXTURE` paths) to target others. Report-only: pytest
+    'passed' means the run COMPLETED, not a verdict."""
+    baseten_key = os.environ.get("BASETEN_API_KEY")
+    if not baseten_key or baseten_key.startswith("op://"):
+        pytest.skip(
+            "BASETEN_API_KEY (resolved, not an op:// ref) is required for the GLM diagnostic; "
+            "run under `op run --env-file=.env -- ...`"
+        )
+
+    from pydantic import SecretStr  # noqa: PLC0415
+
+    from outrider.llm.glm_provider import GLMProvider  # noqa: PLC0415
+
+    runs = int(os.environ.get("OUTRIDER_DIAG_RUNS", "5"))
+    env_fixtures = os.environ.get("OUTRIDER_DIAG_FIXTURES")
+    fixtures = (
+        [f.strip() for f in env_fixtures.split(",") if f.strip()]
+        if env_fixtures
+        else [_MISSING_ERROR_HANDLING_FIXTURE, _WEAK_CRYPTO_FIXTURE]
+    )
+    capturing = _CapturingExchangePersister()
+    provider = GLMProvider(api_key=SecretStr(baseten_key), persister=capturing)
+    results: list[dict[str, object]] = []
+    try:
+        for fixture_path in fixtures:
+            result = await diagnose_recall_stability(
+                fixture_path,
+                provider=provider,
+                model=GLM_MODEL_ID,
+                capturing=capturing,
+                runs=runs,
+            )
+            results.append(result)
+            print(  # noqa: T201 — operator diagnostic
+                f"\n[{fixture_path}] GLM caught {result['catches']}/{runs} → {result['verdict']}"
+            )
+            misses_raw = result["misses_raw"]
+            assert isinstance(misses_raw, list)
+            for i, raw in enumerate(misses_raw, 1):
+                snippet = raw if len(raw) <= 800 else raw[:800] + " …[truncated]"
+                print(f"  miss {i} raw response: {snippet}")  # noqa: T201 — operator diagnostic
+        print(  # noqa: T201 — operator interpretation
+            "\n"
+            + "=" * 72
+            + "\nGLM MISS DIAGNOSTIC — REPORT ONLY. 'systematic' (0/N) is a real recall gap;"
+            + "\n'stochastic' (0<k<N) is sampling noise — raise OUTRIDER_DIAG_RUNS to tighten."
+            + "\nRead the captured raw response to see whether GLM emitted nothing, a different"
+            + "\nfinding_type, or the right finding at a wrong line (a window miss)."
+            + "\n"
+            + "=" * 72
+        )
+        assert results  # the run completed
+    finally:
+        try:
+            if results:
+                report_dir = Path("reports/scorecard")
+                report_dir.mkdir(parents=True, exist_ok=True)
+                (report_dir / "glm-recall-miss-diagnostic.json").write_text(
+                    json.dumps(
+                        {"model": GLM_MODEL_ID, "runs": runs, "scenarios": results}, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                print(  # noqa: T201 — operator artifact pointer
+                    f"\n[diagnostic written to {report_dir}/glm-recall-miss-diagnostic.json]"
+                )
+        finally:
+            await provider.aclose()
