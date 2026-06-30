@@ -313,8 +313,8 @@ class LLMRefusalError(LLMProviderError):
     """The model declined the request: a successful HTTP 200 carrying
     `stop_reason="refusal"` (a safety-classifier decline, GA on the
     adaptive-thinking generation — Opus 4.7+ / Sonnet 5+). A pre-output
-    refusal has an empty `content` array; a non-streaming refusal returns
-    no usable text.
+    refusal has an empty `content` array; a mid-stream refusal may carry
+    partial text, which the wrapper discards.
 
     Outrider asks the model to find vulnerabilities, so a refusal MUST halt
     the review loudly rather than silently read as an empty/no-findings

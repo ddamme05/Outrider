@@ -452,13 +452,16 @@ class AnthropicProvider:
 
         # Step 5: refusal gate, then response-shape validation.
         # A safety-classifier decline returns HTTP 200 with
-        # stop_reason="refusal" (GA on the adaptive-thinking generation) and,
-        # pre-output, an EMPTY content array — which `_extract_single_text_block`
-        # would otherwise mis-report as an "unexpected content blocks" shape
-        # error. Outrider asks the model to find vulnerabilities, so a refusal
-        # must halt the review loudly (output-boundary #6: a decline is not a
-        # zero-finding result) rather than read as empty output. `stop_details`
-        # is populated only on a refusal; guard the attribute access.
+        # stop_reason="refusal" (GA on the adaptive-thinking generation). A
+        # pre-output refusal carries an EMPTY content array (which
+        # `_extract_single_text_block` would otherwise mis-report as an
+        # "unexpected content blocks" shape error); a mid-stream refusal can
+        # instead carry partial text, which this gate discards. Either way the
+        # gate keys on stop_reason, not on content shape. Outrider asks the
+        # model to find vulnerabilities, so a refusal must halt the review
+        # loudly (output-boundary #6: a decline is not a zero-finding result)
+        # rather than read as empty/partial output. `stop_details` is populated
+        # only on a refusal; guard the attribute access.
         if sdk_response.stop_reason == "refusal":
             stop_details = getattr(sdk_response, "stop_details", None)
             category = getattr(stop_details, "category", None)
@@ -528,31 +531,41 @@ class AnthropicProvider:
                 # hardcoded prose, so a floor change can't strand a stale
                 # number in the operator-facing message. Defensive lookup:
                 # `response.model` is SDK-returned and could (in principle)
-                # be a substituted id outside the table.
+                # be a substituted id outside the table → KeyError.
+                floor_text: str | None
                 try:
-                    floor_text = (
-                        f"{min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, response.model)} tokens for "
-                        f"{normalize_to_pricing_key(response.model)}"
-                    )
+                    floor = min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, response.model)
                 except KeyError:
                     floor_text = "see llm/pricing.py::MIN_CACHEABLE_TOKENS"
-                _LOGGER.warning(
-                    "anthropic_provider cache_control=True but neither "
-                    "cache_creation_input_tokens nor cache_read_input_tokens "
-                    "fired; system prompt likely below the model's "
-                    "min-cacheable threshold (%s — see Anthropic "
-                    "prompt-caching docs). cache_control=True will produce "
-                    "no cost savings on this prompt until it grows past the "
-                    "threshold or cache_control is removed.",
-                    floor_text,
-                    extra={
-                        "model": response.model,
-                        "request_model": request.model,
-                        "system_prompt_hash": system_prompt_hash,
-                        "review_id": str(request.review_id),
-                        "node_id": request.node_id,
-                    },
-                )
+                else:
+                    # None = the DECISIONS.md#056 unknown-floor sentinel: the model is
+                    # priced but its min-cacheable threshold is undocumented, so a cache
+                    # miss can't be attributed to a below-floor prompt. Suppress the
+                    # diagnostic (per the `min_cacheable_tokens` contract) rather than
+                    # log a confusing "None tokens" message.
+                    floor_text = (
+                        None
+                        if floor is None
+                        else f"{floor} tokens for {normalize_to_pricing_key(response.model)}"
+                    )
+                if floor_text is not None:
+                    _LOGGER.warning(
+                        "anthropic_provider cache_control=True but neither "
+                        "cache_creation_input_tokens nor cache_read_input_tokens "
+                        "fired; system prompt likely below the model's "
+                        "min-cacheable threshold (%s — see Anthropic "
+                        "prompt-caching docs). cache_control=True will produce "
+                        "no cost savings on this prompt until it grows past the "
+                        "threshold or cache_control is removed.",
+                        floor_text,
+                        extra={
+                            "model": response.model,
+                            "request_model": request.model,
+                            "system_prompt_hash": system_prompt_hash,
+                            "review_id": str(request.review_id),
+                            "node_id": request.node_id,
+                        },
+                    )
 
         # Step 8: compute cost_usd from pricing table.
         # KeyError unreachable in production thanks to constructor's eager

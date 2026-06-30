@@ -1849,3 +1849,59 @@ async def test_complete_raises_llm_refusal_on_refusal_stop_reason() -> None:
     assert exc_info.value.category is None
     # Raised before persist (consistent with the content-shape fail-loud path).
     assert persister.calls == []
+
+
+@pytest.mark.asyncio
+async def test_complete_refusal_propagates_stop_details_category() -> None:
+    """When the SDK populates `stop_details.category` on a refusal, the gate
+    surfaces it on `LLMRefusalError.category` for operator inspection — the real
+    populated-category path that the empty-stub refusal test cannot exercise."""
+    from types import SimpleNamespace
+
+    from outrider.llm.base import LLMRefusalError
+
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=_RecordingPersister()
+    )
+    refused = _sdk_message(stop_reason="refusal", content_blocks=[])
+    # pydantic v2 does not validate on assignment by default; attach a populated
+    # stop_details the way a real RefusalStopDetails carries `.category`.
+    refused.stop_details = SimpleNamespace(category="cyber")  # type: ignore[attr-defined]
+    with (
+        _patched_create(return_value=refused),
+        pytest.raises(LLMRefusalError) as exc_info,
+    ):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    assert exc_info.value.category == "cyber"
+
+
+@pytest.mark.asyncio
+async def test_cache_silently_disabled_suppressed_for_unknown_floor_model(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """An unknown-floor model (the DECISIONS.md#056 None sentinel, e.g.
+    `claude-sonnet-5`) suppresses the silently-disabled-cache diagnostic: a cache
+    miss can't be attributed to a below-floor prompt when the floor is
+    undocumented, so the provider stays silent (per the `min_cacheable_tokens`
+    contract) rather than logging a confusing 'None tokens' warning."""
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=_RecordingPersister()
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    with _patched_create(
+        return_value=_sdk_message(
+            model="claude-sonnet-5",  # MIN_CACHEABLE_TOKENS floor is None
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+    ):
+        await provider.complete(_request(cache_control=True, model="claude-sonnet-5"))
+    warning_records = [
+        r
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider"
+        and r.levelno == logging.WARNING
+        and "min-cacheable threshold" in r.getMessage()
+    ]
+    assert warning_records == [], "unknown-floor (None) model must suppress the cache diagnostic"

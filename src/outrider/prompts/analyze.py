@@ -65,7 +65,11 @@ Surfaces:
 - `VERSION = "analyze-v8"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
-- `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift.
+- `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift on
+  models that honor it. NOTE: the adaptive-thinking generation (the DEEP-tier
+  `claude-sonnet-5` default) rejects non-default sampling, so the wrapper omits
+  temperature for it and that tier runs at the model's default sampling
+  (`config.model_uses_adaptive_thinking` / `AnthropicProvider._build_sdk_kwargs`).
 - `AnalyzePromptParts` — frozen dataclass result. NOT a NamedTuple, so
   positional unpacking `(sys, usr) = render(...)` fails loud rather
   than silently masking a field swap.
