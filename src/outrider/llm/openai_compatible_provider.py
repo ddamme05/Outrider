@@ -433,6 +433,9 @@ class OpenAICompatibleProvider:
             timestamp=datetime.now(UTC),
             is_eval=request.is_eval,
             model=model_id,
+            # Mirror the normalized finish_reason onto the event (DECISIONS.md#016 Amended
+            # 2026-06-30); the persister cross-checks event.finish_reason == response's.
+            finish_reason=response.finish_reason,
             node_id=request.node_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

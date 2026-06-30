@@ -1450,6 +1450,11 @@ export interface components {
             /** Model */
             model: string;
             /**
+             * Finish Reason
+             * @default unknown
+             */
+            finish_reason: string;
+            /**
              * Node Id
              * @enum {string}
              */

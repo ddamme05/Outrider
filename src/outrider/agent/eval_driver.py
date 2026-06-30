@@ -552,6 +552,8 @@ class _FixtureScriptedProvider:
             timestamp=datetime.now(UTC),
             is_eval=request.is_eval,
             model=response.model,
+            # DECISIONS.md#016 Amended 2026-06-30: mirror finish_reason; persister cross-checks it.
+            finish_reason=response.finish_reason,
             node_id=request.node_id,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,

@@ -1826,18 +1826,23 @@ def test_adaptive_thinking_model_keeps_structured_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_raises_llm_refusal_on_refusal_stop_reason() -> None:
-    """A safety-classifier decline (HTTP 200, stop_reason='refusal', empty
-    content) halts the review as `LLMRefusalError` — not a misleading
-    unexpected-content-blocks shape error, and not a silent empty result.
-    Outrider asks the model to find vulnerabilities; a decline must fail loud."""
+async def test_complete_persists_then_raises_llm_refusal_on_refusal_stop_reason() -> None:
+    """A safety-classifier decline (HTTP 200, stop_reason='refusal') is a COMPLETED
+    exchange: per DECISIONS.md#016 Amended 2026-06-30 the wrapper PERSISTS it
+    (finish_reason='refusal', completion='', cost from usage) and THEN raises the
+    terminal `LLMRefusalError`. Outrider asks the model to find vulnerabilities, so a
+    decline must halt loudly rather than read as an empty/no-findings result — and the
+    refused, paid call must still land in the audit."""
     from outrider.llm.base import LLMRefusalError
 
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(), model_config=_model_config(), persister=persister
     )
-    refused = _sdk_message(stop_reason="refusal", content_blocks=[])
+    # Pre-output refusal: empty content, 0 tokens (Anthropic does not bill it).
+    refused = _sdk_message(
+        stop_reason="refusal", content_blocks=[], input_tokens=0, output_tokens=0
+    )
     with (
         _patched_create(return_value=refused),
         pytest.raises(LLMRefusalError, match="refusal") as exc_info,
@@ -1847,8 +1852,29 @@ async def test_complete_raises_llm_refusal_on_refusal_stop_reason() -> None:
         await provider.complete(_request(model="claude-sonnet-4-6"))
     # No stop_details on the stub → category is None; the error still raises.
     assert exc_info.value.category is None
-    # Raised before persist (consistent with the content-shape fail-loud path).
-    assert persister.calls == []
+    # The refused exchange is persisted BEFORE the raise (audit + cost completeness).
+    assert len(persister.calls) == 1
+    event, _req, resp = persister.calls[0]
+    assert event.finish_reason == "refusal"
+    assert resp.text == ""  # completion="" — no partial text extracted
+    assert event.cost_usd == 0.0  # pre-output refusal: 0 tokens → 0 cost
+
+
+@pytest.mark.asyncio
+async def test_complete_mirrors_finish_reason_onto_event() -> None:
+    """A successful call mirrors the provider's finish_reason onto the persisted
+    `LLMCallEvent` (DECISIONS.md#016 Amended 2026-06-30) — the value the persister
+    cross-checks against `LLMResponse.finish_reason`."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    with _patched_create(return_value=_sdk_message(stop_reason="end_turn")):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    assert len(persister.calls) == 1
+    event, _req, resp = persister.calls[0]
+    assert event.finish_reason == "end_turn"
+    assert event.finish_reason == resp.finish_reason
 
 
 @pytest.mark.asyncio

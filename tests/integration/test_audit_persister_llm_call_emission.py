@@ -107,6 +107,9 @@ def _make_llm_call_event(
     return LLMCallEvent(
         review_id=UUID(review_id_str),
         model="claude-haiku-4-5",
+        # Must match `_make_llm_response`'s finish_reason for the persister's
+        # response<->event cross-check (DECISIONS.md#016 Amended 2026-06-30).
+        finish_reason="end_turn",
         node_id="triage",
         input_tokens=100,
         output_tokens=50,
@@ -521,6 +524,10 @@ async def test_persist_raises_when_event_response_format_digest_disagrees_with_r
         ("latency_ms", {"latency_ms": 99999}),
         ("cached_tokens", {"cached_tokens": 9999}),
         ("cache_hit", {"cache_hit": True}),  # response.cache_read_tokens is 0
+        # DECISIONS.md#016 Amended 2026-06-30: the same loop catches a finish_reason the
+        # provider stamped on the event but not (matching) on the response — e.g. a
+        # refusal mislabeled as a success. `_make_llm_response` returns "end_turn".
+        ("finish_reason", {"finish_reason": "refusal"}),
         ("cost_usd", {"cost_usd": 0.999}),  # canonical is 0.00035 for the default fixture
         ("pricing_version", {"pricing_version": "v0-pre-release"}),  # PRICING_VERSION is v2
         # Host-identity triad (DECISIONS.md#056): the same cross-check loop catches a triad

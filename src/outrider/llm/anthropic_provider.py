@@ -450,28 +450,31 @@ class AnthropicProvider:
             ) from None
         latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
 
-        # Step 5: refusal gate, then response-shape validation.
-        # A safety-classifier decline returns HTTP 200 with
-        # stop_reason="refusal" (GA on the adaptive-thinking generation). A
-        # pre-output refusal carries an EMPTY content array (which
-        # `_extract_single_text_block` would otherwise mis-report as an
-        # "unexpected content blocks" shape error); a mid-stream refusal can
-        # instead carry partial text, which this gate discards. Either way the
-        # gate keys on stop_reason, not on content shape. Outrider asks the
-        # model to find vulnerabilities, so a refusal must halt the review
-        # loudly (output-boundary #6: a decline is not a zero-finding result)
-        # rather than read as empty/partial output. `stop_details` is populated
+        # Step 5: refusal gate (capture → persist → raise), then shape validation.
+        # A safety-classifier decline returns HTTP 200 with stop_reason="refusal"
+        # (GA on the adaptive-thinking generation) — a COMPLETED exchange (the model
+        # responded), so per DECISIONS.md#016 Amended 2026-06-30 it is persisted and
+        # costed like any other call, and the terminal `LLMRefusalError` is raised AFTER
+        # the step-9 persist (vs transport errors, which raise at step 4 with no completed
+        # exchange to record). `completion=""` — a pre-output refusal carries an empty
+        # content array and a mid-stream refusal's partial text is NOT extracted; the
+        # refusal is carried durably by `finish_reason="refusal"`. Outrider asks the model
+        # to find vulnerabilities, so a decline must halt the review loudly (output-
+        # boundary #6: a decline is not a zero-finding result). `stop_details` is populated
         # only on a refusal; guard the attribute access.
+        pending_refusal: LLMRefusalError | None = None
         if sdk_response.stop_reason == "refusal":
             stop_details = getattr(sdk_response, "stop_details", None)
             category = getattr(stop_details, "category", None)
-            raise LLMRefusalError(
+            pending_refusal = LLMRefusalError(
                 f"Anthropic declined the request (stop_reason='refusal', "
                 f"category={category!r}) for model {request.model!r}; review halts. "
                 f"A refusal is terminal — retrying the same prompt will not help.",
                 category=category,
             )
-        text = _extract_single_text_block(sdk_response)
+            text = ""
+        else:
+            text = _extract_single_text_block(sdk_response)
 
         # Step 6: construct LLMResponse from SDK response.
         usage = sdk_response.usage
@@ -520,6 +523,9 @@ class AnthropicProvider:
             request.cache_control
             and response.cache_read_tokens == 0
             and response.cache_write_tokens == 0
+            # A refusal produces 0/0 cache tokens because the model declined, NOT because
+            # the prompt is below the cache floor — skip the spurious below-floor warning.
+            and pending_refusal is None
         ):
             cache_warn_key = (
                 normalize_to_pricing_key(response.model),
@@ -623,6 +629,10 @@ class AnthropicProvider:
             is_eval=request.is_eval,
             # Canonical metadata-only fields per spec.md §8.3.
             model=response.model,
+            # Mirror the provider's normalized stop reason onto the event so a refusal is
+            # distinguishable from a zero-output success on metadata-only replay
+            # (DECISIONS.md#016 Amended 2026-06-30); the persister cross-checks it.
+            finish_reason=response.finish_reason,
             node_id=request.node_id,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
@@ -701,7 +711,10 @@ class AnthropicProvider:
                 f"The audit row did not land; calling node halts the review."
             ) from None
 
-        # Step 10: return response.
+        # Step 10: a captured refusal raises AFTER the exchange is persisted (the
+        # completed-but-declined exchange is now in the audit + cost); else return.
+        if pending_refusal is not None:
+            raise pending_refusal
         return response
 
     async def aclose(self) -> None:
