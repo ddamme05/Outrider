@@ -67,6 +67,7 @@ from outrider.llm.base import (
     LLMPricingMissingError,
     LLMProviderError,
     LLMRateLimitError,
+    LLMRefusalError,
     LLMRequest,
     LLMResponse,
     LLMTimeoutError,
@@ -76,7 +77,7 @@ from outrider.llm.base import (
     _canonical_prompt_hash,
     _canonical_system_prompt_hash,
 )
-from outrider.llm.config import ModelConfig
+from outrider.llm.config import ModelConfig, model_uses_adaptive_thinking
 from outrider.llm.host_profiles import ANTHROPIC_CONTRACT_DIGEST, ANTHROPIC_PROFILE_ID
 from outrider.llm.pricing import (
     PRICING_VERSION,
@@ -449,7 +450,24 @@ class AnthropicProvider:
             ) from None
         latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
 
-        # Step 5: validate response shape.
+        # Step 5: refusal gate, then response-shape validation.
+        # A safety-classifier decline returns HTTP 200 with
+        # stop_reason="refusal" (GA on the adaptive-thinking generation) and,
+        # pre-output, an EMPTY content array — which `_extract_single_text_block`
+        # would otherwise mis-report as an "unexpected content blocks" shape
+        # error. Outrider asks the model to find vulnerabilities, so a refusal
+        # must halt the review loudly (output-boundary #6: a decline is not a
+        # zero-finding result) rather than read as empty output. `stop_details`
+        # is populated only on a refusal; guard the attribute access.
+        if sdk_response.stop_reason == "refusal":
+            stop_details = getattr(sdk_response, "stop_details", None)
+            category = getattr(stop_details, "category", None)
+            raise LLMRefusalError(
+                f"Anthropic declined the request (stop_reason='refusal', "
+                f"category={category!r}) for model {request.model!r}; review halts. "
+                f"A refusal is terminal — retrying the same prompt will not help.",
+                category=category,
+            )
         text = _extract_single_text_block(sdk_response)
 
         # Step 6: construct LLMResponse from SDK response.
@@ -829,10 +847,23 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": request.model,
         "max_tokens": request.max_tokens,
-        "temperature": request.temperature,
         "system": system_param,
         "messages": [{"role": "user", "content": request.user_prompt}],
     }
+    if model_uses_adaptive_thinking(request.model):
+        # Adaptive-thinking generation (Sonnet 5+, Opus 4.7+): non-default
+        # `temperature`/`top_p`/`top_k` are rejected with a 400, so OMIT the
+        # sampling param entirely (the model runs at its default sampling).
+        # Adaptive thinking is ON by default and would add a `thinking` block,
+        # breaking the single-text-block contract — disable it explicitly so the
+        # response stays one TextBlock (`_extract_single_text_block`). With
+        # structured output (`output_config.format` below) the single block is
+        # the schema-valid JSON; disabling thinking keeps that shape.
+        kwargs["thinking"] = {"type": "disabled"}
+    else:
+        # Current-generation models (Haiku 4.5, Sonnet 4.6, Opus 4.6) accept
+        # `temperature` and have thinking off by default — keep the legacy shape.
+        kwargs["temperature"] = request.temperature
     if request.response_schema_json is not None:
         # Constrained decoding (specs/2026-06-12-constrained-decoding.md,
         # FUP-096): `output_config.format` per the pinned structured-outputs
@@ -857,8 +888,12 @@ def _extract_single_text_block(message: Message) -> str:
 
     Per AC#10, multi-block responses (extended thinking, tool use, etc.)
     fail loud rather than silently flatten or drop. V1's single-text-block
-    assumption is robust as long as the wrapper never passes the
-    `thinking` kwarg (which we don't).
+    assumption holds because the wrapper either passes no `thinking` kwarg
+    (current-generation models — thinking off by default) or explicitly
+    disables it (adaptive-thinking models via `thinking={"type":"disabled"}`
+    in `_build_sdk_kwargs`); both yield a single `TextBlock`. A refusal
+    (stop_reason="refusal", empty content) is caught upstream as
+    `LLMRefusalError` before reaching here.
     """
     if len(message.content) != 1 or not isinstance(message.content[0], TextBlock):
         actual_types = [type(b).__name__ for b in message.content]

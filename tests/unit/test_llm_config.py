@@ -13,7 +13,11 @@ from contextlib import contextmanager
 import pytest
 from pydantic import ValidationError
 
-from outrider.llm.config import ModelConfig, is_anthropic_family_model
+from outrider.llm.config import (
+    ModelConfig,
+    is_anthropic_family_model,
+    model_uses_adaptive_thinking,
+)
 
 
 @contextmanager
@@ -158,6 +162,34 @@ def test_is_anthropic_family_model(slug: str, expected: bool) -> None:
     """The public predicate build_graph uses to flag a non-anthropic model_config that
     must carry the host-identity triad (FUP-194). Mirrors `_VALID_MODEL_PATTERN`."""
     assert is_anthropic_family_model(slug) is expected
+
+
+@pytest.mark.parametrize(
+    ("slug", "expected"),
+    [
+        # Adaptive-thinking generation: Sonnet 5+, Opus 4.7+.
+        ("claude-sonnet-5", True),
+        ("claude-sonnet-5-20260615", True),  # dated pin, no minor
+        ("claude-opus-4-7", True),
+        ("claude-opus-4-8", True),
+        ("claude-opus-4-7-20251020", True),
+        # Current generation: accepts temperature, thinking off by default.
+        ("claude-sonnet-4-6", False),
+        ("claude-haiku-4-5", False),
+        ("claude-opus-4-6", False),
+        ("claude-haiku-4-5-20251001", False),
+        ("claude-haiku-5", False),  # no next-gen Haiku yet
+        # Non-anthropic / malformed → legacy shape (False).
+        ("zai-org/GLM-5.2", False),
+        ("stub-model", False),
+    ],
+)
+def test_model_uses_adaptive_thinking(slug: str, expected: bool) -> None:
+    """The generation predicate `AnthropicProvider._build_sdk_kwargs` reads to
+    shape the request: omit sampling params + disable adaptive thinking for
+    Sonnet 5+ / Opus 4.7+; keep the legacy shape (temperature, no `thinking`
+    kwarg) for current-gen and non-anthropic models."""
+    assert model_uses_adaptive_thinking(slug) is expected
 
 
 def test_rejects_dated_form_with_wrong_date_length() -> None:

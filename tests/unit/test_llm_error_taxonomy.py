@@ -4,9 +4,10 @@ Covers:
   - Direct instantiation of `LLMProviderError` raises (abstract-by-construction)
   - `__init_subclass__` enforces `retry_at_layer` presence at class-def
   - `__init_subclass__` enforces `retry_at_layer` value membership
-  - All 13 concrete subclasses have correct `retry_at_layer`
+  - All 14 concrete subclasses have correct `retry_at_layer`
     (round-21 added `LLMConflictError` for 409, in the SDK's
-    default-retry set alongside 408/429/5xx)
+    default-retry set alongside 408/429/5xx; the Sonnet 5 migration
+    added `LLMRefusalError` for stop_reason="refusal" — terminal)
   - `LLMUnknownError` exists for the Anthropic-fall-through path
   - Anthropic exception → Outrider mapping table is complete and well-typed
 """
@@ -26,6 +27,7 @@ from outrider.llm.base import (
     LLMPricingMissingError,
     LLMProviderError,
     LLMRateLimitError,
+    LLMRefusalError,
     LLMTimeoutError,
     LLMUnexpectedContentBlocksError,
     LLMUnknownError,
@@ -55,6 +57,7 @@ def test_concrete_subclasses_are_instantiable() -> None:
         LLMInvalidRequestError,
         LLMInvalidResponseError,
         LLMUnexpectedContentBlocksError,
+        LLMRefusalError,
         LLMMissingAPIKeyError,
         LLMPersisterNotWiredError,
         LLMPersisterError,
@@ -122,6 +125,7 @@ def test_subclass_with_wrong_case_retry_at_layer_value_raises() -> None:
         (LLMInvalidRequestError, "none"),
         (LLMInvalidResponseError, "none"),
         (LLMUnexpectedContentBlocksError, "none"),
+        (LLMRefusalError, "none"),
         (LLMMissingAPIKeyError, "none"),
         (LLMPersisterNotWiredError, "none"),
         (LLMPersisterError, "none"),
@@ -204,6 +208,7 @@ def test_terminal_subclasses_are_none_layer() -> None:
         LLMInvalidRequestError,
         LLMInvalidResponseError,
         LLMUnexpectedContentBlocksError,
+        LLMRefusalError,
         LLMMissingAPIKeyError,
         LLMPersisterNotWiredError,
         LLMPersisterError,
@@ -230,6 +235,7 @@ def test_all_subclasses_inherit_from_provider_error() -> None:
         LLMInvalidRequestError,
         LLMInvalidResponseError,
         LLMUnexpectedContentBlocksError,
+        LLMRefusalError,
         LLMMissingAPIKeyError,
         LLMPersisterNotWiredError,
         LLMPersisterError,
@@ -295,3 +301,19 @@ def test_unexpected_content_blocks_error_carries_structured_block_types() -> Non
 def test_unexpected_content_blocks_error_default_block_types_empty_tuple() -> None:
     err = LLMUnexpectedContentBlocksError("simple message")
     assert err.actual_block_types == ()
+
+
+def test_refusal_error_carries_structured_category() -> None:
+    """A refusal (stop_reason="refusal") carries the `stop_details` category
+    (e.g. "cyber") for structured caller inspection; terminal (`retry_at_layer`
+    "none") — retrying the same prompt won't help."""
+    err = LLMRefusalError("model declined", category="cyber")
+    assert err.category == "cyber"
+    assert err.retry_at_layer == "none"
+
+
+def test_refusal_error_default_category_is_none() -> None:
+    """Backward-compat: positional message works; `category` defaults to None
+    (a pre-output refusal may carry no `stop_details`)."""
+    err = LLMRefusalError("model declined")
+    assert err.category is None
