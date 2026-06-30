@@ -450,7 +450,7 @@ def test_synthesize_call_site_hashes_raw_response_text_not_stripped() -> None:
     Pins the regression Codex 2026-05-28 caught. Hashing stripped would
     break identity binding to `llm_call_content.completion` (which
     persists raw — see `audit/persister.py::_persist_llm_call_event`)
-    the moment Anthropic wraps a response in ```json``` fences.
+    the moment a host wraps a response in ```json``` fences.
 
     Non-vacuous regression gate: source inspection catches a swap of
     `response.text` ↔ `summary_text` at the call site. A behavior-level

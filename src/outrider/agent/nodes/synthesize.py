@@ -62,8 +62,8 @@ Order of operations (failure-path-significant):
      Haiku default per DECISIONS.md#043).
   7. Call provider.complete() (raises LLMProviderError subclasses
      on transport failure).
-  8. Parse summary via strip_outer_json_fence (Anthropic occasionally
-     wraps despite prompt instruction — vendor-payloads-normalized-
+  8. Parse summary via strip_outer_json_fence (some hosts occasionally
+     wrap despite prompt instruction — vendor-payloads-normalized-
      at-boundary).
   9. Compute summary_content_hash.
   10. Construct ReviewReport (schema validators run: max_length=2000
@@ -198,7 +198,7 @@ def _compute_summary_content_hash(text: str) -> str:
     LLM-content TTL window, an audit reader recomputes this hash over
     the stored `completion` row to prove identity; if the inputs
     differ (e.g., hash over stripped, completion stores raw), the
-    binding breaks the moment Anthropic wraps a response in a fence.
+    binding breaks the moment a host wraps a response in a fence.
 
     The displayed summary on `ReviewReport.summary` IS the
     `strip_outer_json_fence(response.text).strip()` form — clean for
@@ -660,7 +660,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # llm_call_content rows BEFORE returning per LLMProvider contract.
     response = await provider.complete(request)
 
-    # Step 8: normalize the Anthropic envelope (sometimes wraps in ```json```
+    # Step 8: normalize the markdown-fence envelope (some hosts wrap in ```json```
     # despite the prompt instruction — vendor-payloads-normalized-at-
     # boundary). For prose output this is harmless when no fence is
     # present and removes the wrapper when one is.
@@ -670,7 +670,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     # `response.text` (matches what the LLM provider persists into
     # `llm_call_content.completion` — see _compute_summary_content_hash
     # docstring). Hashing the stripped text would break identity-binding
-    # the moment Anthropic wraps a response in ```json``` fences.
+    # the moment a host wraps a response in ```json``` fences.
     summary_content_hash = _compute_summary_content_hash(response.text)
 
     # Step 10: construct the final ReviewReport. Schema validators

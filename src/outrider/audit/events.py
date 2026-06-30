@@ -2982,7 +2982,7 @@ class SynthesizeCompletedEvent(AuditEventBase):
     Binds to `llm_call_content.completion` which persists raw — NOT
     the post-`strip_outer_json_fence` display text used by
     `ReviewReport.summary`. Hashing stripped would break replay
-    identity the moment Anthropic wraps a response in ```json```
+    identity the moment a host wraps a response in ```json```
     fences. Identity check for replay-conditional reconstruction:
     within the LLM-content TTL window, an audit reader can join on
     this hash to fetch the prose from `llm_call_content`; outside it,
