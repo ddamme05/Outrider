@@ -6,8 +6,8 @@ Enforces the HARD-STOP vendor-SDK + shell-exec boundaries from
 
   - `tree_sitter` / `tree_sitter_python` — only in `ast_facts/` + `queries/`
     (+ the two ast_facts test files). AST firewall (§4).
-  - `anthropic` / `openai` — only in `llm/`; `langsmith` — only in `llm/tracing.py`
-    (the tracing decorator's single home, DECISIONS.md#035). LLM provider boundary (§8).
+  - `anthropic` / `openai` — only in `llm/`; `langsmith` — forbidden in all project code
+    (its tracing importer was removed, DECISIONS.md#058; stays transitive). Boundary §8.
   - `githubkit` — only in `github/` + `api/webhooks/`. GitHub SDK boundary (§5 + §8).
   - `slack_sdk` — only in `notify/`. Slack notification boundary (vendor-sdks-only-in-wrappers).
   - no `subprocess` import / `os.system` / `os.popen` anywhere in `src/outrider/`.
@@ -78,13 +78,15 @@ VENDOR_RULES: tuple[_VendorRule, ...] = (
         allowed_prefixes=("src/outrider/llm/",),
     ),
     _VendorRule(
-        # langsmith is pinned tighter than the folder: DECISIONS.md#035 places the
-        # tracing decorator (its only legit importer, lazily) in llm/tracing.py.
-        name="LLM tracing boundary",
-        doc_ref="docs/trust-boundaries.md §8 + DECISIONS.md#035",
+        # langsmith has NO legitimate project importer: the tracing decorator that was its
+        # only one was removed (DECISIONS.md#058, supersedes #035). langsmith remains
+        # installed TRANSITIVELY (langchain-core, via langgraph), so this rule forbids ALL
+        # project imports — empty allowlist — to keep accidental direct use off the surface.
+        name="LangSmith forbidden (no project import)",
+        doc_ref="docs/trust-boundaries.md §8 + DECISIONS.md#058",
         modules=("langsmith",),
         scan_globs=("src/outrider/**/*.py",),
-        allowed_prefixes=("src/outrider/llm/tracing.py",),
+        allowed_prefixes=(),
     ),
     _VendorRule(
         name="GitHub SDK boundary",

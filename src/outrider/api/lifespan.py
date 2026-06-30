@@ -104,7 +104,6 @@ from outrider.llm.host_profiles import (
 )
 from outrider.llm.logging import register_filter_on_all_handlers
 from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
-from outrider.llm.tracing import wrap_provider_if_tracing
 from outrider.notify.config import SlackOAuthSettings
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.policy.versions import (
@@ -363,8 +362,7 @@ def _default_provider_factory(
     host: str,
     reasoning: bool,
 ) -> LLMProvider:
-    """Production provider factory: selects the provider for `host` (DECISIONS.md#056)
-    and applies LangSmith tracing at this composition-root boundary.
+    """Production provider factory: selects the provider for `host` (DECISIONS.md#056).
 
     `host` + `reasoning` are passed IN (resolved once in the lifespan body) — this
     factory never re-reads OUTRIDER_LLM_HOST, so host selection stays single-authority.
@@ -374,8 +372,6 @@ def _default_provider_factory(
     shared with the compiled graph so the provider and graph never diverge.
 
     Privacy startup notice fires inside the provider's `__init__` (DECISIONS#015 point 4).
-    Tracing is applied HERE, not inside the provider (DECISIONS.md#035): the "is tracing
-    on?" decision lives once, at this construction site.
     """
     provider: LLMProvider
     if host == ANTHROPIC_PROFILE_ID:
@@ -420,7 +416,7 @@ def _default_provider_factory(
             models=models,
             reasoning=reasoning,
         )
-    return wrap_provider_if_tracing(provider)
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -968,8 +964,7 @@ def build_lifespan(
             sweep_task: asyncio.Task[None] | None = None
             # Accept the common truthy spellings — "1"/"true"/"yes" (any case) — so an
             # operator who writes OUTRIDER_SWEEP_DISABLED=true doesn't silently keep the
-            # sweep running. (LANGSMITH_TRACING's literal-"true" parse is intentionally left
-            # as-is — it matches LangSmith's own convention.)
+            # sweep running.
             _sweep_disabled = os.environ.get("OUTRIDER_SWEEP_DISABLED", "").strip().lower() in (
                 "1",
                 "true",

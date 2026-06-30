@@ -399,7 +399,7 @@ def test_build_graph_rejects_provider_none() -> None:
 
 def test_build_graph_rejects_provider_missing_aclose() -> None:
     """A provider with `complete` but no `aclose` fails the runtime-checkable
-    Protocol gate (aclose formalized per DECISIONS.md#035) and the error names
+    Protocol gate (aclose formalized per DECISIONS.md#035, retained #058) and the error names
     the ACTUAL missing member (`aclose`), not a hardcoded `complete`. This pins
     the gap that let a `complete`-only eval-driver double regress past the gate.
     """

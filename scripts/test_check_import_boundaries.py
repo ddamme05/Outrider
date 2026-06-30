@@ -121,21 +121,22 @@ _check(
     "provider",
 )
 _check(
-    "langsmith from-import outside llm/ -> flagged (DECISIONS#035)",
+    "langsmith from-import outside llm/ -> flagged (forbidden everywhere, #058)",
     {"src/outrider/audit/x.py": "from langsmith import traceable\n"},
     1,
-    "tracing",
+    "LangSmith",
 )
 _check(
-    "langsmith in llm/tracing.py -> allowed (exact file, production from-import form, #035)",
+    "langsmith in llm/ (even the old tracing.py home) -> flagged (empty allowlist, #058)",
     {"src/outrider/llm/tracing.py": "from langsmith import traceable\n"},
-    0,
+    1,
+    "LangSmith",
 )
 _check(
-    "langsmith elsewhere in llm/ -> flagged (#035 pins it to tracing.py, not the folder)",
+    "langsmith anywhere in project code -> flagged (no legit importer post-#058)",
     {"src/outrider/llm/provider.py": "import langsmith\n"},
     1,
-    "tracing",
+    "LangSmith",
 )
 _check(
     "anthropic in a TEST -> NOT flagged (surface, tests not scanned)",

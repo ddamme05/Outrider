@@ -303,11 +303,9 @@ class AnthropicProvider:
             ),
         )
 
-        # NB: LLM-call tracing is NOT applied here. This provider is
-        # tracing-agnostic per DECISIONS.md#035 — the composition root applies
-        # `llm.tracing.wrap_provider_if_tracing(...)`, which wraps this provider
-        # in a `TracingLLMProvider` when tracing is enabled. No env read, no
-        # observability-SDK import in core transport.
+        # No observability-SDK import in core transport (vendor-sdks-only-in-wrappers).
+        # LLM-call tracing was removed in DECISIONS.md#058 (LangSmith dropped as a direct
+        # dep); `langsmith` is now forbidden in all project code by the import-lint.
 
         # Privacy startup notice — canonical text per DECISIONS#015
         # point 4. Operator-attestation only; never a per-request header.
