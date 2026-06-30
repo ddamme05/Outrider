@@ -203,14 +203,15 @@ def state_from_eval_fixture(
 
 async def run_analyze_under_model(
     state: ReviewState, *, provider: LLMProvider, model: str
-) -> tuple[tuple[ReviewFinding, ...], bool]:
+) -> tuple[tuple[ReviewFinding, ...], int]:
     """Run one analyze pass over `state` with `model` for BOTH tiers (so the scenario's
     file is analyzed by `model` regardless of its triage tier). Returns `(findings,
-    rejected)` — `rejected` is True iff analyze emitted any AnalyzeResponseRejectedEvent
-    (the model's structured output failed to parse), the YIELD signal (FUP-196).
-    Provider-injected; non-rejection audit emits are discarded. `model` is passed as both
-    `analyze_model` and `standard_analyze_model` so a STANDARD-tier scenario file routes to
-    it (the thing the flip changes)."""
+    n_rejected)` — `n_rejected` is the COUNT of AnalyzeResponseRejectedEvents analyze
+    emitted (one per file whose structured output failed to parse), the YIELD signal
+    (FUP-196). A count, not a bool, so a multi-file scenario distinguishes "one file
+    rejected" from "all files rejected" (single-file scenarios → 0 or 1). Provider-injected;
+    non-rejection audit emits are discarded. `model` is passed as both `analyze_model` and
+    `standard_analyze_model` so a STANDARD-tier scenario file routes to it (the flip)."""
     sink = _NullSink()
     result = await analyze(
         state,
@@ -225,7 +226,7 @@ async def run_analyze_under_model(
     )
     rounds = result["analysis_rounds"]
     findings = tuple(rounds[0].findings) if rounds else ()
-    return findings, sink.n_analyze_rejected > 0
+    return findings, sink.n_analyze_rejected
 
 
 async def compare_models_on_scenario(
@@ -247,10 +248,10 @@ async def compare_models_on_scenario(
     `*_model`); for the machinery test they are distinct scripted providers so a recall
     divergence can be injected deterministically. All three declared gate thresholds
     (`recall_tolerance`, `fp_allowance`, `baseline_recall_floor`) forward to `compare()`."""
-    baseline_findings, baseline_rejected = await run_analyze_under_model(
+    baseline_findings, baseline_n_rejected = await run_analyze_under_model(
         state, provider=baseline_provider, model=baseline_model
     )
-    candidate_findings, candidate_rejected = await run_analyze_under_model(
+    candidate_findings, candidate_n_rejected = await run_analyze_under_model(
         state, provider=candidate_provider, model=candidate_model
     )
     baseline_grade = grade(baseline_findings, ground_truth, line_window=line_window)
@@ -261,6 +262,6 @@ async def compare_models_on_scenario(
         recall_tolerance=recall_tolerance,
         fp_allowance=fp_allowance,
         baseline_recall_floor=baseline_recall_floor,
-        baseline_rejected=baseline_rejected,
-        candidate_rejected=candidate_rejected,
+        baseline_n_rejected=baseline_n_rejected,
+        candidate_n_rejected=candidate_n_rejected,
     )
