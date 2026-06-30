@@ -16,8 +16,9 @@ The number that matters: GLM's recall (does it catch the known finding?) and pre
 (does it over-flag safe code?) vs Anthropic — and, implicitly, GLM's structured-output
 YIELD. A GLM analyze response whose JSON doesn't conform parses (after
 `strip_outer_json_fence`) to no findings → recall 0 on that scenario, so the recall
-dimension also surfaces the conformance signal that decides FUP-196 (shared-API soft
-vs self-deploy strict).
+dimension also surfaces the conformance signal that decided FUP-196 (shared-API soft
+vs self-deploy strict): the soft path was accepted on this evidence — see
+DECISIONS.md#059.
 
 Run (both keys resolve from .env via 1Password):
   OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
