@@ -386,37 +386,50 @@ def test_aggregate_metrics_yield_recall_fp_and_per_type(capsys: pytest.CaptureFi
         "recall_fx.json": (expected_sqli,)
     }
 
-    _print_aggregate_metrics(results, ground_truth_by_fixture, "base-model", "cand-model")
+    metrics = _print_aggregate_metrics(results, ground_truth_by_fixture, "base-model", "cand-model")
     out = capsys.readouterr().out
 
-    # Partition header + both model rows.
+    # Assert on the STRUCTURED return (robust to print-format changes); the printed block is
+    # smoke-checked separately below.
+    assert metrics is not None
+    assert metrics["scenarios"] == {"total": 2, "recall": 1, "safe": 1}
+    baseline = metrics["baseline"]
+    candidate = metrics["candidate"]
+    assert isinstance(baseline, dict)
+    assert isinstance(candidate, dict)
+    # Baseline: full recall, no rejected responses, no over-flag; its one legit finding
+    # matched, so the all-rows diagnostic is 0 extras over 1 finding.
+    assert baseline["model"] == "base-model"
+    assert baseline["yield_rate"] == 1.0
+    assert baseline["n_rejected_files"] == 0
+    assert baseline["mean_recall"] == 1.0
+    assert baseline["mean_severity_acc"] == 1.0
+    assert baseline["fp_per_safe_scenario"] == 0.0
+    assert baseline["all_row_extras"] == 0
+    assert baseline["all_row_findings"] == 1
+    assert baseline["per_type_recall"] == {"sql_injection": 1.0}
+    # Candidate: missed the finding (recall 0 + per-type 0), one safe-code FP (over-flag rate
+    # 1.0), one rejected response (yield 0.5). severity_acc is 1.0 on the miss (n_matched=0 →
+    # vacuously 1.0), NOT a precision claim — there is no precision number now.
+    assert candidate["yield_rate"] == 0.5
+    assert candidate["n_rejected_files"] == 1
+    assert candidate["mean_recall"] == 0.0
+    assert candidate["mean_severity_acc"] == 1.0
+    assert candidate["fp_per_safe_scenario"] == 1.0
+    assert candidate["all_row_extras"] == 1
+    assert candidate["per_type_recall"] == {"sql_injection": 0.0}
+    # The dropped metrics never reappear: no precision/F1 key in the structure (robust, not
+    # capsys-dependent), and the printed block leads with the headline.
+    assert "precision" not in baseline and "f1" not in baseline
     assert "AGGREGATE — baseline (base-model): 2 scenarios (1 recall / 1 safe)" in out
-    assert "AGGREGATE — candidate (cand-model): 2 scenarios (1 recall / 1 safe)" in out
-    # Baseline: full recall, no rejected responses, no over-flag, per-type recall 1.00. Its
-    # one legit finding matched, so the all-rows diagnostic shows 0 extras over 1 finding.
-    assert "yield_rate=1.00 (2/2 parsed)" in out
-    assert "mean_recall=1.00   mean_severity_acc=1.00   [recall rows only]" in out
-    assert "fp_per_safe_scenario=0.00 (0 fp over 1 safe)" in out
-    assert "all_row_extras=0/1 findings" in out
-    assert "sql_injection=1.00" in out
-    # Candidate: missed the finding (recall 0 + per-type 0), 1 safe-code FP (headline over-flag
-    # rate 1.00), 1 of 2 responses rejected (yield 0.50). The safe FP is the only extra, so the
-    # all-rows diagnostic shows 1 extra over 1 finding. severity_acc is 1.00 on the miss
-    # (n_matched=0 → vacuously 1.0), NOT a precision claim — there is no precision number now.
-    assert "yield_rate=0.50 (1/2 parsed)" in out
-    assert "mean_recall=0.00   mean_severity_acc=1.00   [recall rows only]" in out
-    assert "fp_per_safe_scenario=1.00 (1 fp over 1 safe)" in out
-    assert "all_row_extras=1/1 findings" in out
-    assert "sql_injection=0.00" in out
-    # The dropped metrics must NOT reappear: no precision ratio, no F1 in the output.
-    assert "precision=" not in out
     assert "F1=" not in out
 
 
 def test_aggregate_metrics_empty_results_is_noop(capsys: pytest.CaptureFixture[str]) -> None:
-    """No completed scenarios (every paid call errored) prints nothing — the aggregate is
-    a report add-on, never a hard failure on an empty run."""
+    """No completed scenarios (every paid call errored) prints nothing and returns None — the
+    aggregate is a report add-on, never a hard failure on an empty run, and there is nothing
+    to persist."""
     from .test_model_comparison import _print_aggregate_metrics
 
-    _print_aggregate_metrics([], {}, "base-model", "cand-model")
+    assert _print_aggregate_metrics([], {}, "base-model", "cand-model") is None
     assert capsys.readouterr().out == ""
