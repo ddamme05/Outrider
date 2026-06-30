@@ -374,7 +374,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     # module docstring — these catch missing-member, not wrong-signature.
     if not isinstance(provider, LLMProvider):
         # Compute the actually-missing member(s) rather than naming one — the
-        # Protocol surface is {complete, aclose} (aclose added DECISIONS.md#035),
+        # Protocol surface is {complete, aclose} (aclose added DECISIONS.md#035, retained #058),
         # so a hardcoded "missing complete" misdiagnoses an aclose-only gap.
         missing = [m for m in ("complete", "aclose") if not hasattr(provider, m)]
         raise BuildGraphError(

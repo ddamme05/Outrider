@@ -39,7 +39,6 @@ def _baseten_production_env(monkeypatch: pytest.MonkeyPatch) -> None:
     supplies OUTRIDER_GITHUB_* + OUTRIDER_ADMIN_API_KEY; this adds the rest."""
     monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret")
     monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")  # don't spawn the real sweep loop
-    monkeypatch.setenv("LANGSMITH_TRACING", "")  # no tracing wrapper around the provider
     monkeypatch.setenv("OUTRIDER_LLM_HOST", "baseten")
 
 

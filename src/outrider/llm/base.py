@@ -778,13 +778,12 @@ class LLMProvider(Protocol):
     async def aclose(self) -> None:
         """Release transport resources (e.g. drain the connection pool).
 
-        Wired into the FastAPI lifespan teardown; idempotent. Formalized on
-        the Protocol per DECISIONS.md#035 so the composition root can
-        `aclose()` whatever the provider factory returns — including a
-        `TracingLLMProvider` decorator, which forwards this to the provider it
-        wraps. The lifespan has always depended on this method
-        (`api/lifespan.py` push_async_callback(provider.aclose)); the Protocol
-        now declares the contract it relied on.
+        Wired into the FastAPI lifespan teardown; idempotent. Formalized on the
+        Protocol per DECISIONS.md#035 (retained under #058 after the tracing
+        decorator that originally motivated it was removed) — the lifespan has
+        always depended on this method (`api/lifespan.py`
+        push_async_callback(provider.aclose)); the Protocol declares the contract
+        it relied on.
         """
         ...
 

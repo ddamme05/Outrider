@@ -584,7 +584,7 @@ class _FixtureScriptedProvider:
 
     async def aclose(self) -> None:
         # Owns no transport resources (no SDK client); satisfies the
-        # `LLMProvider.aclose` member formalized in DECISIONS.md#035 so this
+        # `LLMProvider.aclose` member formalized in DECISIONS.md#035 (retained #058) so this
         # double passes build_graph's runtime isinstance(provider, LLMProvider).
         return None
 
