@@ -468,6 +468,24 @@ async def test_response_model_empty_keys_on_request_model() -> None:
     assert event.pricing_version == PRICING_VERSION
 
 
+@pytest.mark.asyncio
+async def test_complete_mirrors_normalized_finish_reason_onto_event() -> None:
+    """The persisted LLMCallEvent.finish_reason mirrors the NORMALIZED
+    LLMResponse.finish_reason (DECISIONS.md#016 Amended 2026-06-30), not the raw
+    openai token: a "content_filter" decline normalizes to "refusal" on both
+    surfaces, so the persister cross-check sees a matching pair and the
+    metadata-only replay stream can tell a GLM decline from a zero-output
+    success. Unlike AnthropicProvider (which hard-halts via LLMRefusalError),
+    this provider degrades the single file on a refusal — FUP-203."""
+    persister = _RecordingPersister()
+    provider = _provider(persister)
+    with _patched_create(return_value=_chat_completion(finish_reason="content_filter")):
+        resp = await provider.complete(_request())
+    assert resp.finish_reason == "refusal"  # content_filter → canonical vocabulary
+    event, _, _ = persister.calls[0]
+    assert event.finish_reason == resp.finish_reason
+
+
 # ---------------------------------------------------------------------------
 # complete() — content extraction + reasoning strip.
 # ---------------------------------------------------------------------------

@@ -110,11 +110,13 @@ def test_min_cacheable_keys_mirror_rate_table() -> None:
 
 def test_min_cacheable_floors_match_anthropic_contract() -> None:
     """Values from the LIVE prompt-caching page ("Cache limitations",
-    platform.claude.com, verified 2026-06-10): Sonnet 4.6 → 1024,
-    Haiku 4.5 → 4096. Floors are runtime API behavior — the live page
-    governs; the pinned aegis-docs mirror still carries Sonnet 4.6 at a
-    stale 2048 (pre-snapshot-drift value)."""
+    platform.claude.com): Sonnet 4.6 → 1024 (verified 2026-06-10),
+    Sonnet 5 → 1024 (verified 2026-06-30, FUP-202), Haiku 4.5 → 4096.
+    Floors are runtime API behavior — the live page governs; the pinned
+    aegis-docs mirror still carries Sonnet 4.6 at a stale 2048
+    (pre-snapshot-drift value)."""
     assert min_cacheable_tokens("anthropic", "claude-sonnet-4-6") == 1024
+    assert min_cacheable_tokens("anthropic", "claude-sonnet-5") == 1024
     assert min_cacheable_tokens("anthropic", "claude-haiku-4-5") == 4096
 
 

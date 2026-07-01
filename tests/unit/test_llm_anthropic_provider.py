@@ -1861,6 +1861,37 @@ async def test_complete_persists_then_raises_llm_refusal_on_refusal_stop_reason(
 
 
 @pytest.mark.asyncio
+async def test_complete_persists_mid_stream_refusal_with_billed_cost() -> None:
+    """A mid-stream refusal (stop_reason='refusal' AFTER partial generation) carries
+    non-zero usage — Anthropic bills the partial output. The wrapper still discards the
+    partial text (completion=''), but persists the REAL cost from usage, NOT zero —
+    with finish_reason='refusal' as the only signal distinguishing this billed row from
+    a paid zero-finding success (DECISIONS.md#016 Amended 2026-06-30). This is the
+    output-bearing branch the pre-output (0-token) refusal test cannot exercise."""
+    from outrider.llm.base import LLMRefusalError
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    # Partial output was generated and billed before the classifier flipped the stop reason.
+    refused = _sdk_message(
+        stop_reason="refusal", content_blocks=[], input_tokens=100, output_tokens=50
+    )
+    with (
+        _patched_create(return_value=refused),
+        pytest.raises(LLMRefusalError, match="refusal"),
+    ):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    assert len(persister.calls) == 1
+    event, _req, resp = persister.calls[0]
+    assert event.finish_reason == "refusal"
+    assert resp.text == ""  # partial text discarded — completion=""
+    assert event.output_tokens == 50  # the billed partial output
+    assert event.cost_usd > 0.0  # real cost for the billed partial, NOT zeroed
+
+
+@pytest.mark.asyncio
 async def test_complete_mirrors_finish_reason_onto_event() -> None:
     """A successful call mirrors the provider's finish_reason onto the persisted
     `LLMCallEvent` (DECISIONS.md#016 Amended 2026-06-30) — the value the persister
