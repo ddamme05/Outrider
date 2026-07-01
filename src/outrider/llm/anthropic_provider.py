@@ -674,6 +674,15 @@ class AnthropicProvider:
             # failure path. SDK call has succeeded (billing accounted);
             # no audit row landed → calling node halts the review.
             #
+            # If a refusal was captured (`pending_refusal`), this
+            # LLMPersisterError supersedes it — step 10's `raise pending_refusal`
+            # is never reached. The node still halts terminally (both are
+            # retry_at_layer="none"), but the surfaced cause becomes the
+            # unaudited-call, not the decline; the refusal is lost from the
+            # error. Acceptable while no caller distinguishes the two; revisit
+            # if a retry-on-persister-failure policy is ever added (it must not
+            # re-issue a refused prompt).
+            #
             # The wrapper handles two exception classes asymmetrically
             # per DECISIONS#016 logs-stay-metadata-only:
             #
