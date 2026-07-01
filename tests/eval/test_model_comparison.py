@@ -1364,6 +1364,104 @@ async def test_scenario_isolation_terminal_failure_reraises() -> None:
     assert gate == []
 
 
+async def _run_real_analyze_evidence(
+    *,
+    provider: LLMProvider,
+    baseline_model: str,
+    candidate_model: str,
+) -> None:
+    """Drive the analyze node under `baseline_model` and `candidate_model` over the recall /
+    precision / regression-track fixture corpus, printing a per-scenario report and a
+    REPORT-ONLY gate summary. Shared by the two opt-in real-model evidence tests (the
+    STANDARD->Haiku flip run and the Sonnet 5 migration run); the mechanics are
+    model-agnostic, so each caller supplies its own baseline/candidate and owns the
+    rationale in its docstring. Does NOT close the provider — the caller owns provider
+    lifecycle (wrap the call in `try: ... finally: await provider.aclose()`).
+
+    (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
+    non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (the baseline emitted a
+    sql_injection FP itself) vs "REPRODUCED" (only the candidate did); recall/precision use plain
+    "FAILED". Empty label for green verdicts (never printed). A scenario whose provider call
+    dies (timeout, rate limit, 5xx) records "ERRORED — rerun" and the run CONTINUES — one
+    transient API failure must not discard the rest of a paid evidence run (a 30s TTFT spike
+    cost a full run on 2026-06-10)."""
+    gate_results: list[tuple[str, str, bool, str]] = []
+
+    async def _compare_or_errored(
+        fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
+    ) -> ModelComparison | None:
+        async def _compare() -> ModelComparison:
+            return await compare_models_on_scenario(
+                state_from_eval_fixture(fixture_path),
+                ground_truth,
+                baseline_provider=provider,
+                baseline_model=baseline_model,
+                candidate_provider=provider,
+                candidate_model=candidate_model,
+            )
+
+        return await _run_scenario_isolating_transients(
+            fixture_path, dimension, gate_results, _compare
+        )
+
+    # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see caller docstring).
+    for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
+        cmp = await _compare_or_errored(fixture_path, ground_truth, "recall")
+        if cmp is None:
+            continue
+        _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        gate_results.append(
+            (fixture_path, "recall", cmp.recall_held and cmp.baseline_valid, "FAILED")
+        )
+        assert cmp.baseline is not None  # the run completed
+    # PRECISION dimension — safe code, empty ground truth so ANY finding is a real FP;
+    # gate on fp_bounded (candidate must not over-flag clean code more than baseline).
+    for fixture_path in _SAFE_CODE_FIXTURES:
+        cmp = await _compare_or_errored(fixture_path, (), "precision")
+        if cmp is None:
+            continue
+        _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
+        assert cmp.baseline is not None  # the run completed
+    # REGRESSION-TRACK dimension — TYPE-SCOPED to sql_injection FPs (`_sqli_fp_count`), read
+    # with an ABSOLUTE baseline-clean gate. The caveat is type-specific (DECISIONS#041: a model
+    # mislabels a parameterized query as SQLi), so an unrelated baseline over-flag must NOT
+    # blind the track. `_regression_verdict` carries the 3-state logic (INCONCLUSIVE /
+    # REPRODUCED / clean). Runs over the DEMONSTRATED idioms (`_REGRESSION_FIXTURES`) AND the
+    # HOLD-OUTS (`_REGRESSION_HOLDOUT_FIXTURES`, placeholder styles the prompt never shows) —
+    # CLEAN on the hold-outs is the anti-overfit evidence. The fixture path names the set.
+    for fixture_path in _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES:
+        cmp = await _compare_or_errored(fixture_path, (), "regression")
+        if cmp is None:
+            continue
+        _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        verdict, ok, fail_label = _regression_verdict(
+            _sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate)
+        )
+        print(f"  REGRESSION-TRACK verdict: {verdict}")  # noqa: T201 — operator diagnostic
+        gate_results.append((fixture_path, "regression", ok, fail_label))
+        assert cmp.baseline is not None  # the run completed
+    # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
+    # Each non-green line carries its own label (recall/precision -> "FAILED"; regression ->
+    # "INCONCLUSIVE …" or "REPRODUCED …"; transient provider failures -> "ERRORED (…) —
+    # rerun", which is an unmeasured scenario, not a gate verdict) so a skimmer can't
+    # misread an inconclusive regression or an errored scenario as a candidate failure.
+    failed = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
+    green = len(gate_results) - len(failed)
+    print(  # noqa: T201 — operator gate summary
+        "\n"
+        + "=" * 72
+        + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
+        + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
+        + f"\n  {green}/{len(gate_results)} dimension-verdicts green "
+        + "(recall→recall; safe-code→relative FP; "
+        + "regression-track→absolute baseline-clean, sql_injection-scoped)."
+        + "".join(f"\n  {dim.upper()} {label}: {fx}" for fx, dim, label in failed)
+        + "\n"
+        + "=" * 72
+    )
+
+
 @pytest.mark.skipif(
     os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
     reason="real-model comparison spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
@@ -1444,88 +1542,77 @@ async def test_real_model_comparison_evidence() -> None:
     provider = AnthropicProvider(
         api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
     )
-    # (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
-    # non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (the baseline emitted a
-    # sql_injection FP itself) vs "REPRODUCED" (only the candidate did); recall/precision use plain
-    # "FAILED". Empty label for green verdicts (never printed). A scenario whose provider call
-    # dies (timeout, rate limit, 5xx) records "ERRORED — rerun" and the run CONTINUES — one
-    # transient API failure must not discard the rest of a paid evidence run (a 30s TTFT spike
-    # cost a full run on 2026-06-10).
-    gate_results: list[tuple[str, str, bool, str]] = []
-
-    async def _compare_or_errored(
-        fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
-    ) -> ModelComparison | None:
-        async def _compare() -> ModelComparison:
-            return await compare_models_on_scenario(
-                state_from_eval_fixture(fixture_path),
-                ground_truth,
-                baseline_provider=provider,
-                baseline_model=baseline_model,
-                candidate_provider=provider,
-                candidate_model=candidate_model,
-            )
-
-        return await _run_scenario_isolating_transients(
-            fixture_path, dimension, gate_results, _compare
-        )
-
     try:
-        # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see docstring).
-        for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
-            cmp = await _compare_or_errored(fixture_path, ground_truth, "recall")
-            if cmp is None:
-                continue
-            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
-            gate_results.append(
-                (fixture_path, "recall", cmp.recall_held and cmp.baseline_valid, "FAILED")
-            )
-            assert cmp.baseline is not None  # the run completed
-        # PRECISION dimension — safe code, empty ground truth so ANY finding is a real FP;
-        # gate on fp_bounded (Haiku must not over-flag clean code more than Sonnet).
-        for fixture_path in _SAFE_CODE_FIXTURES:
-            cmp = await _compare_or_errored(fixture_path, (), "precision")
-            if cmp is None:
-                continue
-            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
-            gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
-            assert cmp.baseline is not None  # the run completed
-        # REGRESSION-TRACK dimension — TYPE-SCOPED to sql_injection FPs (`_sqli_fp_count`), read
-        # with an ABSOLUTE baseline-clean gate. The caveat is type-specific (DECISIONS#041: Haiku
-        # mislabels a parameterized query as SQLi), so an unrelated baseline over-flag must NOT
-        # blind the track. `_regression_verdict` carries the 3-state logic (INCONCLUSIVE /
-        # REPRODUCED / clean). Runs over the DEMONSTRATED idioms (`_REGRESSION_FIXTURES`) AND the
-        # HOLD-OUTS (`_REGRESSION_HOLDOUT_FIXTURES`, placeholder styles the prompt never shows) —
-        # CLEAN on the hold-outs is the anti-overfit evidence. The fixture path names the set.
-        for fixture_path in _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES:
-            cmp = await _compare_or_errored(fixture_path, (), "regression")
-            if cmp is None:
-                continue
-            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
-            verdict, ok, fail_label = _regression_verdict(
-                _sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate)
-            )
-            print(f"  REGRESSION-TRACK verdict: {verdict}")  # noqa: T201 — operator diagnostic
-            gate_results.append((fixture_path, "regression", ok, fail_label))
-            assert cmp.baseline is not None  # the run completed
-        # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
-        # Each non-green line carries its own label (recall/precision -> "FAILED"; regression ->
-        # "INCONCLUSIVE …" or "REPRODUCED …"; transient provider failures -> "ERRORED (…) —
-        # rerun", which is an unmeasured scenario, not a gate verdict) so a skimmer can't
-        # misread an inconclusive regression or an errored scenario as a Haiku failure.
-        failed = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
-        green = len(gate_results) - len(failed)
-        print(  # noqa: T201 — operator gate summary
-            "\n"
-            + "=" * 72
-            + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
-            + "\nthat the gate passed. Adjudicate the per-scenario verdicts above."
-            + f"\n  {green}/{len(gate_results)} dimension-verdicts green "
-            + "(recall→recall; safe-code→relative FP; "
-            + "regression-track→absolute baseline-clean, sql_injection-scoped)."
-            + "".join(f"\n  {dim.upper()} {label}: {fx}" for fx, dim, label in failed)
-            + "\n"
-            + "=" * 72
+        await _run_real_analyze_evidence(
+            provider=provider,
+            baseline_model=baseline_model,
+            candidate_model=candidate_model,
+        )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.skipif(
+    os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
+    reason="real-model comparison spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
+)
+@pytest.mark.asyncio
+async def test_real_sonnet5_migration_evidence() -> None:
+    """OPT-IN, real API spend — the evidence REPORT for the Sonnet 4.6 -> Sonnet 5 DEEP-tier
+    analyze migration (feat/sonnet-5-migration): did the new default HOLD or IMPROVE analyze
+    quality versus the prior default?
+
+    REPORT-ONLY and ANALYZE-NODE-ONLY, same contract as `test_real_model_comparison_evidence`:
+    pytest "passed" means the run COMPLETED, not that the gate passed; the per-scenario verdicts
+    print and the human adjudicates. This drives ONLY the analyze node over the curated fixture
+    corpus — it does NOT exercise triage/trace/synthesize/hitl/publish on the real model, nor the
+    full 7-node graph. It is a migration-risk probe, not a full-graph quality gate.
+
+    baseline = claude-sonnet-4-6 (the prior DEEP default); candidate = ModelConfig.analyze_model
+    (the shipped default, now claude-sonnet-5). Both are priced in `pricing.py` (v5 retains the
+    4.6 rate). Same three dimensions and deterministic scoring as the Haiku-flip evidence test
+    (recall / safe-code precision / sql_injection regression-track). Read recall, safe-code FP,
+    severity accuracy, and per-type regression to decide the merge:
+    - matches/beats 4.6 on recall AND no new safe-code FPs -> the default flip is validated;
+    - loses only on a narrow stochastic row -> diagnose that row before blocking;
+    - regresses a core finding type OR over-flags safe code -> keep the plumbing, hold the flip.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY is required for the real-model comparison")
+
+    from pydantic import SecretStr  # noqa: PLC0415
+
+    from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
+    from outrider.llm.config import ModelConfig  # noqa: PLC0415
+    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
+
+    cfg = ModelConfig()
+    # baseline = the PRIOR DEEP default (Sonnet 4.6, explicit pre-migration string); candidate =
+    # the shipped default (`cfg.analyze_model`, now Sonnet 5). Reading candidate from cfg keeps
+    # the probe honest if the default is ever re-pinned.
+    baseline_model = "claude-sonnet-4-6"
+    candidate_model = cfg.analyze_model
+    # Belt-and-suspenders: a meaningless self-comparison (e.g. analyze_model env-overridden back
+    # to 4.6) proves nothing. Normalized so a dated pin (…-20251001) can't sneak past. Checked
+    # BEFORE constructing the provider so a guard-fire can't leak an unclosed client.
+    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
+        pytest.fail(
+            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
+            "same model — the migration comparison would prove nothing about Sonnet-5-vs-4.6. "
+            "Unset OUTRIDER_MODEL_ANALYZE_MODEL (or point it at Sonnet 5) for the evidence run."
+        )
+    # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete() is
+    # fail-closed on persister=None. The comparison reads findings from analyze's return, so a
+    # no-op persister is the right wiring here.
+    provider = AnthropicProvider(
+        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+    )
+    try:
+        await _run_real_analyze_evidence(
+            provider=provider,
+            baseline_model=baseline_model,
+            candidate_model=candidate_model,
         )
     finally:
         await provider.aclose()
