@@ -13,7 +13,7 @@ LLM, GitHub read+write, persistence, and replay are all real.
 
 What it proves (exit 0 = all structural checks hold):
   - a real installation token mints + fetches the real PR diff (intake)
-  - real Claude drives triage/analyze/synthesize over that diff
+  - the real host-selected model drives triage/analyze/synthesize over that diff
   - a real review posts to GitHub (publish) UNLESS a CRITICAL/HIGH finding
     trips the HITL gate (which pauses before publish — the gate working)
   - the audit stream persists + reconstructs FULL (replay-equivalent)
@@ -25,13 +25,17 @@ Guardrails (per the demo constraints + smoke_publish.py precedent):
     auto-post. The run reports "PAUSED at HITL" and leaves the review
     awaiting approval rather than commenting on GitHub.
 
-Run (needs ANTHROPIC_API_KEY + the GitHub App env + a reachable Postgres):
+Run (needs the host LLM key + the GitHub App env + a reachable Postgres):
   op run --env-file=.env -- uv run python scripts/live_github_demo.py \\
     --owner ddamme05 --repo outrider-smoke-test --pr 1 --installation-id <ID>
 
-Env required (read by GitHubAppSettings + AnthropicProvider + DB):
-  OUTRIDER_GITHUB_APP_ID, OUTRIDER_GITHUB_APP_PRIVATE_KEY,
-  OUTRIDER_GITHUB_WEBHOOK_SECRET, ANTHROPIC_API_KEY, DATABASE_URL.
+Host is selected by OUTRIDER_LLM_HOST (default `anthropic`; `baseten` = GLM-5.2, all
+nodes). The required LLM key is host-dependent: ANTHROPIC_API_KEY for anthropic, else the
+profile's key (BASETEN_API_KEY for baseten). Keep OUTRIDER_LLM_REASONING off for baseten.
+
+Env required (read by GitHubAppSettings + the host provider + DB):
+  OUTRIDER_GITHUB_APP_ID, OUTRIDER_GITHUB_APP_PRIVATE_KEY, OUTRIDER_GITHUB_WEBHOOK_SECRET,
+  DATABASE_URL, and the host LLM key (ANTHROPIC_API_KEY or BASETEN_API_KEY).
 
 Exit codes: 0 = all structural checks passed; 1 = a check failed; 2 = setup/
 config error (missing env, DB unreachable, PR not found, or a review already
@@ -91,6 +95,12 @@ from outrider.github.config import GitHubAppSettings  # noqa: E402
 from outrider.github.publisher import GitHubKitPublisher  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
+from outrider.llm.host_profiles import (  # noqa: E402
+    ANTHROPIC_PROFILE_ID,
+    resolve_host_identity,
+    resolve_host_profile,
+)
+from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider  # noqa: E402
 from outrider.notify.config import SlackSettings  # noqa: E402
 from outrider.notify.resolver import PerInstallSlackResolver  # noqa: E402
 from outrider.notify.token_crypto import (  # noqa: E402
@@ -278,7 +288,25 @@ async def _maybe_wire_slack(
 
 async def _run(args: argparse.Namespace) -> int:
     # --- setup gates ---
-    for var in ("ANTHROPIC_API_KEY", "DATABASE_URL"):
+    # Host selection (DECISIONS.md#056) read ONCE, mirroring api/lifespan.py Step 5, and
+    # threaded to the required-key gate, ModelConfig.for_host, the provider, and the
+    # build_graph identity triad — so the whole demo runs on one host. Default: anthropic.
+    llm_host = os.environ.get("OUTRIDER_LLM_HOST", ANTHROPIC_PROFILE_ID).strip()
+    llm_reasoning = os.environ.get("OUTRIDER_LLM_REASONING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    # The required LLM key is host-dependent: ANTHROPIC_API_KEY for the native host, else the
+    # profile's api_key_env (e.g. BASETEN_API_KEY). Gating on it means the op:// / not-set
+    # checks below cover the actual key the run will use — a GLM run fails clean at setup, not
+    # mid-review, if BASETEN_API_KEY is missing or left as an unresolved op:// reference.
+    llm_key_env = (
+        "ANTHROPIC_API_KEY"
+        if llm_host == ANTHROPIC_PROFILE_ID
+        else resolve_host_profile(llm_host).api_key_env
+    )
+    for var in (llm_key_env, "DATABASE_URL"):
         value = os.environ.get(var)
         if not value:
             _say(f"  {var} is not set — this runner needs it. Aborting.")
@@ -333,18 +361,51 @@ async def _run(args: argparse.Namespace) -> int:
     review_id = uuid.uuid4()
 
     # --- real deps, constructed exactly as the lifespan does ---
-    model_config = ModelConfig()
+    # Step 5b (DECISIONS.md#056): host-aware model config + provider, mirroring
+    # api/lifespan.py::_default_provider_factory. for_host fills every node's model from the
+    # host defaults (anthropic -> claude tiers; baseten -> zai-org/GLM-5.2); the provider
+    # branch selects AnthropicProvider vs OpenAICompatibleProvider on the same host.
+    model_config = ModelConfig.for_host(llm_host)
     persister = AuditPersister(
         session_factory=session_factory,
         retention_settings=retention_settings,
     )
-    provider = AnthropicProvider(
-        api_key=SecretStr(os.environ["ANTHROPIC_API_KEY"]),
-        model_config=model_config,
-        persister=persister,
+    if llm_host == ANTHROPIC_PROFILE_ID:
+        provider = AnthropicProvider(
+            api_key=SecretStr(os.environ["ANTHROPIC_API_KEY"]),
+            model_config=model_config,
+            persister=persister,
+            reasoning=llm_reasoning,
+        )
+    else:
+        profile = resolve_host_profile(llm_host)
+        provider = OpenAICompatibleProvider(
+            api_key=SecretStr(os.environ[profile.api_key_env]),
+            profile=profile,
+            persister=persister,
+            models=tuple(
+                sorted(
+                    {
+                        model_config.triage_model,
+                        model_config.analyze_model,
+                        model_config.standard_analyze_model,
+                        model_config.synthesize_model,
+                        model_config.trace_model,
+                        model_config.patch_model,
+                    }
+                )
+            ),
+            reasoning=llm_reasoning,
+        )
+    # Step 5c: the host-identity triad build_graph stamps onto zero-LLM completion events —
+    # it MUST match the provider's per-call stamp (resolve_host_identity is the shared source),
+    # and build_graph fails loud if the model_config slug family disagrees with it.
+    profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
+        llm_host, reasoning=llm_reasoning
     )
     github_factory = make_installation_client_factory(github_settings)
 
+    _say(f"  Host ................. {llm_host}  (reasoning={llm_reasoning})")
     _say(
         f"  Models ............... {model_config.analyze_model} (analyze) + "
         f"{model_config.triage_model} (triage/synthesize)"
@@ -423,6 +484,11 @@ async def _run(args: argparse.Namespace) -> int:
             github_factory=github_factory,
             provider=provider,
             model_config=model_config,
+            # Host-identity triad (DECISIONS.md#056) — required for a non-anthropic host, or
+            # build_graph raises BuildGraphError on slug/host incoherence. Matches the provider.
+            profile_id=profile_id,
+            reasoning_enabled=reasoning_enabled,
+            profile_contract_digest=profile_contract_digest,
             phase_event_sink=persister,
             file_examination_sink=persister,
             analyze_event_sink=persister,
@@ -463,7 +529,7 @@ async def _run(args: argparse.Namespace) -> int:
             is_eval=False,
         )
 
-        _say("  Calling real Claude over the real diff ...")
+        _say("  Calling the real model over the real diff ...")
         result = await graph.ainvoke(
             seed_state, config={"configurable": {"thread_id": str(review_id)}}
         )
@@ -600,7 +666,7 @@ async def _report_and_verify(
             )
         ).all()
 
-    _say("  Real Claude produced:")
+    _say("  The real model produced:")
     if findings:
         for ft, sev in findings:
             _say(f"    - {ft} ({sev})")
@@ -778,7 +844,7 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "accept an 'empty' / non-posting publish outcome as a pass. By default a "
             "non-interrupted run must post a real GitHub review (the C2 happy-path proof); "
-            "this relaxes that to allow runs where Claude produces no inline-eligible findings"
+            "this relaxes that to allow runs where the model produces no inline-eligible findings"
         ),
     )
     parser.add_argument(
