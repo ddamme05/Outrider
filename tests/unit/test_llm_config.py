@@ -173,6 +173,7 @@ def test_is_anthropic_family_model(slug: str, expected: bool) -> None:
         ("claude-opus-4-7", True),
         ("claude-opus-4-8", True),
         ("claude-opus-4-7-20251020", True),
+        ("claude-opus-4-100", True),  # 3-digit minor read as a minor, not an 8-digit date
         # Current generation: accepts temperature, thinking off by default.
         ("claude-sonnet-4-6", False),
         ("claude-haiku-4-5", False),

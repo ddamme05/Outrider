@@ -83,10 +83,12 @@ def model_uses_adaptive_thinking(slug: str) -> bool:
     parts = slug.split("-")
     family = parts[1]
     major = int(parts[2])
-    # parts[3], when present, is the minor (1-2 digits) OR an 8-digit dated
-    # suffix with no minor (e.g. claude-sonnet-5-20260615); only the short form
-    # is a minor.
-    minor = int(parts[3]) if len(parts) > 3 and len(parts[3]) <= 2 else 0
+    # parts[3], when present, is the minor OR an 8-digit dated suffix with no
+    # minor (e.g. claude-sonnet-5-20260615) — the greedy `(-\d+)?` group in
+    # `_VALID_MODEL_PATTERN` captures a bare date into this slot. A date is
+    # exactly 8 digits, so anything shorter is the minor (a 3-digit minor must
+    # not be misread as a date). Only opus reads minor; sonnet keys on major.
+    minor = int(parts[3]) if len(parts) > 3 and len(parts[3]) < 8 else 0
     if family == "sonnet":
         return major >= 5
     if family == "opus":
