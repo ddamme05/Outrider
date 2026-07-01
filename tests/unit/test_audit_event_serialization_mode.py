@@ -18,6 +18,10 @@ def _build_llm_call() -> LLMCallEvent:
     return LLMCallEvent(
         review_id=uuid4(),
         model="claude-sonnet-4-6",
+        # Non-default value so the round-trip test pins finish_reason through
+        # dump/validate (DECISIONS.md#016 Amended 2026-06-30) — its metadata-only-replay
+        # purpose is distinguishing a "refusal" from a zero-output success.
+        finish_reason="refusal",
         node_id="analyze",
         input_tokens=1000,
         output_tokens=200,
@@ -86,3 +90,6 @@ def test_replay_merges_row_sequence_into_payload() -> None:
     assert isinstance(reconstructed, LLMCallEvent)
     assert reconstructed.sequence_number == row_sequence
     assert reconstructed.event_id == original.event_id
+    # finish_reason survives the JSON dump → merge → validate round-trip (would default
+    # to "unknown" if the field were dropped from the payload).
+    assert reconstructed.finish_reason == "refusal"
