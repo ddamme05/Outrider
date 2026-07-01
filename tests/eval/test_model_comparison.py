@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -1101,35 +1102,38 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
 
 def _print_scenario_report(
     fixture_path: str, cmp: ModelComparison, baseline_model: str, candidate_model: str
-) -> None:
+) -> str:
     """Print one scenario's recall/precision/fp + the raw gate flags + each model's
     extra/missed detail, so a verdict is interpretable: is an extra noise, or a legitimate
     finding the ground truth didn't encode? The caller picks which flag is the gate for the
-    scenario's dimension."""
+    scenario's dimension. Returns the same text it prints so a caller can ALSO persist the
+    evidence to a report file (stdout is otherwise lost to pytest capture — the same reason
+    `_compute_aggregate_metrics` exists on the scorecard side)."""
     b, c = cmp.baseline, cmp.candidate
-    print(  # noqa: T201 — operator evidence output
-        f"\n[{fixture_path}]"
-        f"\n  baseline ({baseline_model}): "
+    lines = [
+        f"\n[{fixture_path}]",
+        f"  baseline ({baseline_model}): "
         f"recall={b.recall.value:.2f} precision={b.precision.value:.2f} "
         f"sev={b.severity_accuracy.value:.2f} fp={b.n_false_positives} "
-        f"yield={'REJECTED' if cmp.baseline_n_rejected else 'parsed'}"
-        f"\n  candidate ({candidate_model}): "
+        f"yield={'REJECTED' if cmp.baseline_n_rejected else 'parsed'}",
+        f"  candidate ({candidate_model}): "
         f"recall={c.recall.value:.2f} precision={c.precision.value:.2f} "
         f"sev={c.severity_accuracy.value:.2f} fp={c.n_false_positives} "
-        f"yield={'REJECTED' if cmp.candidate_n_rejected else 'parsed'}"
-        f"\n  recall_held={cmp.recall_held} baseline_valid={cmp.baseline_valid} "
-        f"fp_bounded={cmp.fp_bounded}"
-    )
+        f"yield={'REJECTED' if cmp.candidate_n_rejected else 'parsed'}",
+        f"  recall_held={cmp.recall_held} baseline_valid={cmp.baseline_valid} "
+        f"fp_bounded={cmp.fp_bounded}",
+    ]
     for label, g in (("baseline", b), ("candidate", c)):
         for x in g.extra:
-            print(  # noqa: T201 — operator diagnostic
+            lines.append(
                 f"    {label} extra (finding not in ground truth): "
                 f"{x.finding_type.value} {x.file_path}:{x.line_start} — {x.title}"
             )
         for m in g.missed:
-            print(  # noqa: T201 — operator diagnostic
-                f"    {label} MISSED: {m.finding_type.value} {m.file_path}:{m.line_start}"
-            )
+            lines.append(f"    {label} MISSED: {m.finding_type.value} {m.file_path}:{m.line_start}")
+    report = "\n".join(lines)
+    print(report)  # noqa: T201 — operator evidence output
+    return report
 
 
 def _compute_aggregate_metrics(
@@ -1386,6 +1390,7 @@ async def _run_real_analyze_evidence(
     transient API failure must not discard the rest of a paid evidence run (a 30s TTFT spike
     cost a full run on 2026-06-10)."""
     gate_results: list[tuple[str, str, bool, str]] = []
+    report_chunks: list[str] = []  # per-scenario texts + summary, persisted to reports/ below
 
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
@@ -1409,7 +1414,9 @@ async def _run_real_analyze_evidence(
         cmp = await _compare_or_errored(fixture_path, ground_truth, "recall")
         if cmp is None:
             continue
-        _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        report_chunks.append(
+            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        )
         gate_results.append(
             (fixture_path, "recall", cmp.recall_held and cmp.baseline_valid, "FAILED")
         )
@@ -1420,7 +1427,9 @@ async def _run_real_analyze_evidence(
         cmp = await _compare_or_errored(fixture_path, (), "precision")
         if cmp is None:
             continue
-        _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        report_chunks.append(
+            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        )
         gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
         assert cmp.baseline is not None  # the run completed
     # REGRESSION-TRACK dimension — TYPE-SCOPED to sql_injection FPs (`_sqli_fp_count`), read
@@ -1434,11 +1443,15 @@ async def _run_real_analyze_evidence(
         cmp = await _compare_or_errored(fixture_path, (), "regression")
         if cmp is None:
             continue
-        _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        report_chunks.append(
+            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+        )
         verdict, ok, fail_label = _regression_verdict(
             _sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate)
         )
-        print(f"  REGRESSION-TRACK verdict: {verdict}")  # noqa: T201 — operator diagnostic
+        verdict_line = f"  REGRESSION-TRACK verdict: {verdict}"
+        print(verdict_line)  # noqa: T201 — operator diagnostic
+        report_chunks.append(verdict_line)
         gate_results.append((fixture_path, "regression", ok, fail_label))
         assert cmp.baseline is not None  # the run completed
     # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
@@ -1448,7 +1461,7 @@ async def _run_real_analyze_evidence(
     # misread an inconclusive regression or an errored scenario as a candidate failure.
     failed = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
     green = len(gate_results) - len(failed)
-    print(  # noqa: T201 — operator gate summary
+    summary = (
         "\n"
         + "=" * 72
         + "\nGATE SUMMARY — REPORT ONLY: pytest 'passed' means the run COMPLETED, NOT"
@@ -1459,6 +1472,27 @@ async def _run_real_analyze_evidence(
         + "".join(f"\n  {dim.upper()} {label}: {fx}" for fx, dim, label in failed)
         + "\n"
         + "=" * 72
+    )
+    print(summary)  # noqa: T201 — operator gate summary
+    report_chunks.append(summary)
+    # Persist the operator evidence like the scorecard does (`reports/` is gitignored) — stdout is
+    # otherwise lost to pytest capture. Overwrites the latest run per model pair; a pinned run can
+    # be copied to a dated reports/model_comparison/*.md.
+    report_body = "\n".join(report_chunks).lstrip("\n")
+    out_dir = Path("reports") / "model_comparison"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    slug = f"{baseline_model}_vs_{candidate_model}".replace("/", "-")
+    out_path = out_dir / f"{slug}.md"
+    out_path.write_text(
+        f"# Real-model analyze evidence — {candidate_model} (candidate) "
+        f"vs {baseline_model} (baseline)\n\n"
+        "Report-only, analyze-node-only. Regenerated each run.\n\n"
+        f"```\n{report_body}\n```\n",
+        encoding="utf-8",
+    )
+    print(  # noqa: T201 — operator artifact pointer
+        f"\nEVIDENCE — REPORT ONLY: wrote {out_path} "
+        f"(baseline={baseline_model}, candidate={candidate_model})"
     )
 
 
