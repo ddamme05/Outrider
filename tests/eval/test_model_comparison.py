@@ -524,6 +524,76 @@ class _CapturingExchangePersister:
         self.completions.append(getattr(response, "text", ""))
 
 
+class _TokenRecordingExchangePersister:
+    """Like `_NoOpExchangePersister` but RECORDS each real analyze call's token usage
+    (model + input/output/cached tokens), tagged with the scenario currently under
+    comparison, so a real run can size analyze `MAX_TOKENS` against MEASURED Sonnet 5
+    output tokens (FUP-207) rather than the launch-doc's ~30%-denser estimate. Only the
+    REAL providers call `persist`; the scripted provider does not, so `records` populates
+    only on a real run. `current_fixture` is set by the evidence runner before each scenario
+    so output tokens correlate with that scenario's emitted-finding count."""
+
+    def __init__(self) -> None:
+        self.current_fixture: str = ""
+        # (fixture, model, input_tokens, output_tokens, cached_tokens) per analyze call.
+        self.records: list[tuple[str, str, int, int, int]] = []
+
+    async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
+        self.records.append(
+            (
+                self.current_fixture,
+                getattr(event, "model", ""),
+                getattr(event, "input_tokens", 0),
+                getattr(event, "output_tokens", 0),
+                getattr(event, "cached_tokens", 0),
+            )
+        )
+
+
+def _format_token_sizing(
+    records: list[tuple[str, str, int, int, int]],
+    emitted: dict[tuple[str, str], int],
+    baseline_model: str,
+    candidate_model: str,
+) -> str:
+    """Roll recorded per-call token usage into a per-model OUTPUT-token sizing block for
+    FUP-207: max output tokens seen, the per-response ENVELOPE overhead (median output where
+    the model emitted 0 findings), and the MARGINAL tokens-per-finding (median over
+    findings-bearing scenarios of (output - envelope) / n_findings). Analyze `MAX_TOKENS`
+    should hold the target finding count as `envelope + target × marginal`. The harness only
+    MEASURES; the sizing edit is the FUP-207 exit. Records are aggregated per (fixture, model)
+    so a multi-file scenario's calls sum before the per-finding divide."""
+    import statistics  # noqa: PLC0415
+    from collections import defaultdict  # noqa: PLC0415
+
+    out_by: dict[tuple[str, str], int] = defaultdict(int)
+    for fixture, model, _in, out, _cached in records:
+        out_by[(fixture, model)] += out
+
+    lines = ["", "=" * 72, "OUTPUT-TOKEN SIZING (FUP-207) — MEASURED, report-only:"]
+    for model in (baseline_model, candidate_model):
+        keys = [k for k in out_by if k[1] == model]
+        if not keys:
+            lines.append(f"  {model}: no recorded analyze calls")
+            continue
+        outs = [out_by[k] for k in keys]
+        envelope_samples = [out_by[k] for k in keys if emitted.get(k, 0) == 0]
+        envelope = int(statistics.median(envelope_samples)) if envelope_samples else 0
+        per_finding = [(out_by[k] - envelope) / emitted[k] for k in keys if emitted.get(k, 0) > 0]
+        marginal = statistics.median(per_finding) if per_finding else 0.0
+        lines.append(
+            f"  {model}: scenarios={len(keys)} "
+            f"output[min/median/max]={min(outs)}/{int(statistics.median(outs))}/{max(outs)} "
+            f"envelope~{envelope} marginal~{marginal:.0f} tok/finding"
+        )
+    lines.append(
+        "  → size analyze MAX_TOKENS = envelope + target_findings × marginal (candidate = "
+        "the DEEP model); recompute the docstring's '~N findings' at that rate."
+    )
+    lines.append("=" * 72)
+    return "\n".join(lines)
+
+
 async def diagnose_scenario_stability(
     fixture_path: str,
     *,
@@ -1373,6 +1443,7 @@ async def _run_real_analyze_evidence(
     provider: LLMProvider,
     baseline_model: str,
     candidate_model: str,
+    token_recorder: _TokenRecordingExchangePersister | None = None,
 ) -> None:
     """Drive the analyze node under `baseline_model` and `candidate_model` over the recall /
     precision / regression-track fixture corpus, printing a per-scenario report and a
@@ -1381,6 +1452,10 @@ async def _run_real_analyze_evidence(
     model-agnostic, so each caller supplies its own baseline/candidate and owns the
     rationale in its docstring. Does NOT close the provider — the caller owns provider
     lifecycle (wrap the call in `try: ... finally: await provider.aclose()`).
+
+    When `token_recorder` is passed (it MUST be the same object as the provider's
+    `persister`), the run appends a MEASURED per-model OUTPUT-token sizing block (FUP-207)
+    to the report — otherwise the token half is skipped and behavior is unchanged.
 
     (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
     non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (the baseline emitted a
@@ -1391,10 +1466,14 @@ async def _run_real_analyze_evidence(
     cost a full run on 2026-06-10)."""
     gate_results: list[tuple[str, str, bool, str]] = []
     report_chunks: list[str] = []  # per-scenario texts + summary, persisted to reports/ below
+    emitted: dict[tuple[str, str], int] = {}  # (fixture, model) -> emitted-finding count (FUP-207)
 
     async def _compare_or_errored(
         fixture_path: str, ground_truth: tuple[ExpectedFinding, ...], dimension: str
     ) -> ModelComparison | None:
+        if token_recorder is not None:
+            token_recorder.current_fixture = fixture_path  # tag this compare's records
+
         async def _compare() -> ModelComparison:
             return await compare_models_on_scenario(
                 state_from_eval_fixture(fixture_path),
@@ -1405,9 +1484,17 @@ async def _run_real_analyze_evidence(
                 candidate_model=candidate_model,
             )
 
-        return await _run_scenario_isolating_transients(
+        cmp = await _run_scenario_isolating_transients(
             fixture_path, dimension, gate_results, _compare
         )
+        if token_recorder is not None and cmp is not None:
+            emitted[(fixture_path, baseline_model)] = cmp.baseline.n_matched + len(
+                cmp.baseline.extra
+            )
+            emitted[(fixture_path, candidate_model)] = cmp.candidate.n_matched + len(
+                cmp.candidate.extra
+            )
+        return cmp
 
     # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see caller docstring).
     for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
@@ -1475,6 +1562,12 @@ async def _run_real_analyze_evidence(
     )
     print(summary)  # noqa: T201 — operator gate summary
     report_chunks.append(summary)
+    if token_recorder is not None:
+        sizing = _format_token_sizing(
+            token_recorder.records, emitted, baseline_model, candidate_model
+        )
+        print(sizing)  # noqa: T201 — operator sizing evidence
+        report_chunks.append(sizing)
     # Persist the operator evidence like the scorecard does (`reports/` is gitignored) — stdout is
     # otherwise lost to pytest capture. Overwrites the latest run per model pair; a pinned run can
     # be copied to a dated reports/model_comparison/*.md.
@@ -1572,15 +1665,18 @@ async def test_real_model_comparison_evidence() -> None:
         )
     # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete()
     # is fail-closed on persister=None (raises before the SDK call). The comparison reads
-    # findings from analyze's return, so a no-op persister is the right wiring here.
+    # findings from analyze's return, so a token-recording persister (observe-only,
+    # FUP-207) is the right wiring here.
+    token_recorder = _TokenRecordingExchangePersister()
     provider = AnthropicProvider(
-        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+        api_key=SecretStr(api_key), model_config=cfg, persister=token_recorder
     )
     try:
         await _run_real_analyze_evidence(
             provider=provider,
             baseline_model=baseline_model,
             candidate_model=candidate_model,
+            token_recorder=token_recorder,
         )
     finally:
         await provider.aclose()
@@ -1638,15 +1734,17 @@ async def test_real_sonnet5_migration_evidence() -> None:
         )
     # persister MUST be a real LLMExchangePersister, not None: AnthropicProvider.complete() is
     # fail-closed on persister=None. The comparison reads findings from analyze's return, so a
-    # no-op persister is the right wiring here.
+    # token-recording persister (observe-only, FUP-207) is the right wiring here.
+    token_recorder = _TokenRecordingExchangePersister()
     provider = AnthropicProvider(
-        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+        api_key=SecretStr(api_key), model_config=cfg, persister=token_recorder
     )
     try:
         await _run_real_analyze_evidence(
             provider=provider,
             baseline_model=baseline_model,
             candidate_model=candidate_model,
+            token_recorder=token_recorder,
         )
     finally:
         await provider.aclose()
