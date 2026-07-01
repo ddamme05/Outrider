@@ -64,7 +64,12 @@ Surfaces:
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
 - `VERSION = "analyze-v8"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
-- `MAX_TOKENS = 8192` — fits up to ~50 findings per response.
+- `MAX_TOKENS = 8192` — the output-token cap, distinct from the schema's
+  50-finding runaway ceiling (`AnalyzeResponseRaw.findings` max_length). At the
+  measured Sonnet 5 rate (~284 output tok/finding, the ~30%-denser tokenizer;
+  ~221 on Sonnet 4.6) it holds ~28 findings — intentionally below the 50 ceiling,
+  since real responses run ~10% of the cap (largest observed ~800 tok / 3
+  findings) and an over-cap file truncates gracefully via the max_tokens path.
 - `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift on
   models that honor it. NOTE: the adaptive-thinking generation (the DEEP-tier
   `claude-sonnet-5` default) rejects non-default sampling, so the wrapper omits
