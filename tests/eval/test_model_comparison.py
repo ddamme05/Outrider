@@ -572,17 +572,25 @@ def _format_token_sizing(
 
     lines = ["", "=" * 72, "OUTPUT-TOKEN SIZING (FUP-207) — MEASURED, report-only:"]
     for model in (baseline_model, candidate_model):
-        keys = [k for k in out_by if k[1] == model]
+        # Only COMPLETED comparisons contribute: a scenario whose provider call errored
+        # mid-comparison persists a token record but leaves `emitted` unfilled, and counting
+        # that orphan as a 0-finding envelope sample would skew the block (its output tokens
+        # aren't a real zero-finding response). Filter to keys present in `emitted`.
+        keys = [k for k in out_by if k[1] == model and k in emitted]
+        dropped = sum(1 for k in out_by if k[1] == model and k not in emitted)
         if not keys:
-            lines.append(f"  {model}: no recorded analyze calls")
+            lines.append(f"  {model}: no completed analyze calls")
             continue
         outs = [out_by[k] for k in keys]
-        envelope_samples = [out_by[k] for k in keys if emitted.get(k, 0) == 0]
+        envelope_samples = [out_by[k] for k in keys if emitted[k] == 0]
         envelope = int(statistics.median(envelope_samples)) if envelope_samples else 0
-        per_finding = [(out_by[k] - envelope) / emitted[k] for k in keys if emitted.get(k, 0) > 0]
+        per_finding = [(out_by[k] - envelope) / emitted[k] for k in keys if emitted[k] > 0]
         marginal = statistics.median(per_finding) if per_finding else 0.0
+        scenarios_label = f"scenarios={len(keys)}"
+        if dropped:
+            scenarios_label += f" ({dropped} errored, excluded)"
         lines.append(
-            f"  {model}: scenarios={len(keys)} "
+            f"  {model}: {scenarios_label} "
             f"output[min/median/max]={min(outs)}/{int(statistics.median(outs))}/{max(outs)} "
             f"envelope~{envelope} marginal~{marginal:.0f} tok/finding"
         )
@@ -592,6 +600,24 @@ def _format_token_sizing(
     )
     lines.append("=" * 72)
     return "\n".join(lines)
+
+
+def test_format_token_sizing_excludes_errored_scenarios() -> None:
+    """A scenario whose provider call errored mid-comparison persists a token record but
+    leaves `emitted` unfilled (only completed comparisons fill it). That orphan must NOT be
+    counted as a 0-finding envelope sample — doing so would skew the block. Reverting the
+    `k in emitted` filter turns envelope~8 into envelope~254 here, so this pins the fix."""
+    baseline, candidate = "claude-sonnet-4-6", "claude-sonnet-5"
+    records = [
+        ("fx_a.json", candidate, 100, 600, 0),  # completed, 2 findings
+        ("fx_b.json", candidate, 100, 8, 0),  # completed, 0 findings -> the real envelope
+        ("fx_err.json", candidate, 100, 500, 0),  # ORPHAN -- errored, no `emitted` entry
+    ]
+    emitted = {("fx_a.json", candidate): 2, ("fx_b.json", candidate): 0}  # fx_err absent
+    block = _format_token_sizing(records, emitted, baseline, candidate)
+
+    assert "scenarios=2 (1 errored, excluded)" in block  # orphan excluded + surfaced
+    assert "envelope~8" in block  # NOT the 500-tok orphan (would be ~254 unfiltered)
 
 
 async def diagnose_scenario_stability(
