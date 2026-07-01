@@ -254,7 +254,7 @@ MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxy
     {
         ("anthropic", "claude-sonnet-4-6"): 1024,
         # Verified against the live prompt-caching page 2026-06-30 (FUP-202): Sonnet 5's
-        # min-cacheable floor is 1024 (same as Sonnet 4.6 / Opus 4.8). Runtime-enforced,
+        # min-cacheable floor is 1024 — matching Sonnet 4.6's floor in this table. Runtime-enforced,
         # so re-verify live on a model bump. The None unknown-floor sentinel
         # (DECISIONS.md#056) is still handled by the provider diagnostic for any future
         # host with an undocumented floor, but no current Anthropic model needs it.
