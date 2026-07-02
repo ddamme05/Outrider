@@ -785,12 +785,7 @@ async def _resolve_via_probes(
 
         # Deduplicate while preserving order — two candidates can verify
         # against the same path (shared parent module).
-        seen: set[str] = set()
-        unique_real_paths: list[str] = []
-        for path in level_real:
-            if path not in seen:
-                seen.add(path)
-                unique_real_paths.append(path)
+        unique_real_paths = list(dict.fromkeys(level_real))
 
         if len(unique_real_paths) == 1:
             return _ProbeOutcome(
@@ -836,12 +831,7 @@ async def _fetch_paths_into_memo(
     of probes, and ExceptionGroup unwrapping would make which-error-
     propagates nondeterministic.
     """
-    to_fetch: list[str] = []
-    seen: set[str] = set()
-    for path in paths:
-        if path not in probe_memo and path not in seen:
-            seen.add(path)
-            to_fetch.append(path)
+    to_fetch = [path for path in dict.fromkeys(paths) if path not in probe_memo]
     if not to_fetch:
         return
 
@@ -1039,25 +1029,16 @@ async def _phase_two_content_fetch(
     # Phase-2 race window: Phase 1 probe confirmed the path existed at
     # head_sha, but the file can disappear between probe and Phase 2
     # (force-push, file deletion in a concurrent push to the same SHA
-    # — rare but real). Treat 404 here as a soft miss to match
-    # Phase 1's 404→not-real probe contract; aborting the
-    # whole trace pass on a single race would defeat the M8 design.
-    # Non-404 errors (5xx / 403 / timeout) still propagate per the
-    # transient-failure contract. Same duck-typed status pattern as
-    # `_probe_single_path` and `github/publisher.py:355`.
-    try:
-        content_bytes = await fetch_file_content_at(
-            gh_client,
-            owner=owner,
-            repo=repo,
-            path=target_file,
-            ref=head_sha,
-        )
-    except Exception as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status == 404:
-            return None
-        raise
+    # — rare but real). `_probe_single_path` carries the shared
+    # 404→soft-miss / non-404→propagate contract, so the race lands as
+    # None here rather than aborting the pass, matching the M8 design.
+    content_bytes = await _probe_single_path(
+        target_file,
+        gh_client=gh_client,
+        owner=owner,
+        repo=repo,
+        head_sha=head_sha,
+    )
     if content_bytes is None:
         return None
     try:
