@@ -847,6 +847,15 @@ async def _fetch_paths_into_memo(
         probe_budget.exhausted_logged = True
     if not funded:
         return
+    # Charged for fetches ISSUED, not fetches memoized: gather
+    # (return_exceptions=True) dispatches every funded probe to GitHub
+    # even when a sibling fails, so rate-limit accounting must count
+    # all of them. On a non-404 abort the successful tail is never
+    # memoized while its budget stays consumed — deliberate, and moot
+    # today (the per-pass budget dies with the aborted pass). If
+    # fallback-level transients are ever softened to soft-misses
+    # (FUP-211), do the softening inside `_probe_single_path` (return
+    # None) and keep this decrement where it is.
     probe_budget.remaining -= len(funded)
 
     results = await asyncio.gather(
