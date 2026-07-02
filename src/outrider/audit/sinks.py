@@ -526,6 +526,23 @@ class TraceEventSink(Protocol):
         """
         ...
 
+    async def get_trace_decisions(self, *, review_id: UUID) -> tuple[TraceDecisionEvent, ...]:
+        """Return every persisted `TraceDecisionEvent` for the review.
+
+        Read-side recovery surface for the audit-ahead-of-state crash
+        window: a decision row persisted by a run that crashed after
+        `emit_trace_decision` but before the node's state delta merged
+        is invisible to the trace node's state-side `already_traced`
+        gate. The node consults this method once per pass and ADOPTS
+        the persisted row for any pending finding it covers instead of
+        re-probing — re-deciding under changed resolver semantics
+        (deploy between crash and resume) would trip the natural-key
+        identity guard and abort the resumed review. Read-only; the
+        append-only guarantee is untouched. Test recorders may return
+        `()` (no recovery path exercised).
+        """
+        ...
+
 
 @runtime_checkable
 class HITLEventSink(Protocol):

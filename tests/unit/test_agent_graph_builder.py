@@ -152,11 +152,15 @@ class _StubPublishEventSink:
 
 
 class _StubTraceEventSink:
-    """Satisfies TraceEventSink Protocol structurally (1 emit method
-    returning the canonical persisted event per M7 b)."""
+    """Satisfies TraceEventSink Protocol structurally (emit returning
+    the canonical persisted event per M7 b, plus the read-side
+    recovery query returning no persisted decisions)."""
 
     async def emit_trace_decision(self, event: TraceDecisionEvent) -> TraceDecisionEvent:
         return event
+
+    async def get_trace_decisions(self, *, review_id: UUID) -> tuple[TraceDecisionEvent, ...]:
+        return ()
 
 
 class _StubHITLEventSink:

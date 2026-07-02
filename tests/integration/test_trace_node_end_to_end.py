@@ -40,7 +40,7 @@ import pytest  # noqa: TC002 — used at runtime as parameter type
 
 from outrider.agent.nodes import trace as trace_module
 from outrider.agent.nodes.trace import trace
-from outrider.audit.events import compute_finding_content_hash
+from outrider.audit.events import TraceDecisionEvent, compute_finding_content_hash
 from outrider.llm.base import LLMResponse
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import (
@@ -544,11 +544,12 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
         github_factory=_stub_github_factory,  # type: ignore[arg-type]
     )
 
-    # Phase 1 probed both paths; Phase 2 did NOT fire (target in PR
-    # files — already analyzed at pass 0, no re-fetch needed). Set
-    # semantics on the probe pair survives a parallel-probes refactor.
-    assert set(call_log) == {target_path, "middleware/auth/__init__.py"}
-    assert len(call_log) == 2  # Phase 2 didn't fire
+    # Phase 1 served the module-form path from the probe memo (seeded
+    # with the PR file's head content — zero GitHub round-trips for
+    # in-PR paths per FUP-209 review) and fetch-probed only the
+    # package-form sibling; Phase 2 did NOT fire (target in PR files —
+    # already analyzed at pass 0, no re-fetch needed).
+    assert call_log == ["middleware/auth/__init__.py"]
 
     decisions = state_delta["trace_decisions"]
     fetched_files = state_delta["trace_fetched_files"]
@@ -562,6 +563,83 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
     decision = decisions[0]  # type: ignore[index]
     assert decision.resolution_status == "resolved"
     assert decision.target_file == target_path
+
+
+# ---------------------------------------------------------------------------
+# Crash-resume recovery: audit-ahead-of-state adoption (FUP-209 review).
+# ---------------------------------------------------------------------------
+
+
+async def test_persisted_decision_adopted_on_resume_without_reprobe(
+    persister_setup: PersisterTestSetup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A decision row persisted by a run that crashed after emit but
+    before its state delta merged is ADOPTED on the re-run: no Phase 1
+    re-probe (whose outcome could differ under newer resolver semantics
+    and trip the natural-key identity guard, aborting the resumed
+    review), the adopted decision lands in the state delta (lockstep
+    repair), and Phase 2 still fetches a resolved target so the lost
+    fetched-file state repairs too."""
+    review_id = persister_setup.review_id
+    proposal_hash = "d" * 64
+    finding = _build_finding(review_id=review_id, proposal_hash=proposal_hash)
+    candidate = _build_candidate(
+        source_proposal_hash=proposal_hash,
+        import_string="middleware.auth",
+    )
+    state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
+
+    # The pre-crash run persisted this decision; state never learned it
+    # (state.trace_decisions is empty, so the step-5 gate can't skip).
+    prior_event = TraceDecisionEvent(
+        review_id=review_id,
+        is_eval=False,
+        source_finding_id=finding.finding_id,
+        target_file="middleware/auth.py",
+        reason="pre-crash reason",
+        resolution_status="resolved",
+        proposed_import_strings=("middleware.auth",),
+        resolved_candidate_paths=("middleware/auth.py",),
+    )
+    await persister_setup.persister.emit_trace_decision(prior_event)
+
+    call_log: list[str] = []
+
+    async def fake_fetch(*_args: object, path: str, **_kwargs: object) -> bytes | None:
+        call_log.append(path)
+        if path == "middleware/auth.py":
+            return b"def authenticate(): ..."
+        return None
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
+
+    provider = _MockLLMProvider(ranked_candidate_ids=(candidate.candidate_id,))
+
+    state_delta = await trace(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        trace_model="claude-haiku-test",
+        phase_event_sink=persister_setup.persister,
+        trace_sink=persister_setup.persister,
+        github_factory=_stub_github_factory,  # type: ignore[arg-type]
+    )
+
+    # No Phase 1 probes fired — the persisted decision was adopted. The
+    # single fetch is Phase 2's content fetch of the resolved target.
+    assert call_log == ["middleware/auth.py"]
+
+    decisions = state_delta["trace_decisions"]
+    assert len(decisions) == 1  # type: ignore[arg-type]
+    decision = decisions[0]  # type: ignore[index]
+    assert decision.resolution_status == "resolved"
+    assert decision.target_file == "middleware/auth.py"
+    # Adopted verbatim from the persisted row, not re-derived.
+    assert decision.reason == "pre-crash reason"
+
+    fetched_files = state_delta["trace_fetched_files"]
+    assert len(fetched_files) == 1  # type: ignore[arg-type]
+    assert state_delta["last_trace_pass_fetched_count"] == 1
 
 
 # ---------------------------------------------------------------------------

@@ -25,12 +25,15 @@ emitting logically-identical proposals produce DISTINCT
 edge on the candidate provenance trail. Per `DECISIONS.md#024`
 (Accepted 2026-05-24, Amended 2026-05-24 for M8) trace candidates are
 dotted Python import strings (V1; no file-path fallback); the trace
-node's V1 resolver per M8 uses
-`_candidate_paths_for` + `coordinates.validate_diff_path` +
-`github.fetch.fetch_file_content_at` two-phase probes (the filesystem-
-aware `coordinates.resolve_candidate_paths` is the V1.5+ future
-shape). Dedup of actual file fetches is handled by the
-`state.trace_fetched_files` reducer's `append_with_dedup_by(path)`.
+node's V1 resolver per M8 + FUP-209 uses a suffix-strip probe ladder
+(`agent/nodes/trace.py`: module-form paths first, then symbol-form
+fallback levels gated by symbol verification; every path through
+`coordinates.validate_diff_path`, fetch-probed via
+`github.fetch.fetch_file_content_at`; the filesystem-aware
+`coordinates.resolve_candidate_paths` is the V1.5+ future shape and
+does NOT yet carry the symbol-form fallback). Dedup of actual file
+fetches is handled by the `state.trace_fetched_files` reducer's
+`append_with_dedup_by(path)`.
 """
 
 from __future__ import annotations

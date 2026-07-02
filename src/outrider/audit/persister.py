@@ -2936,6 +2936,33 @@ class AuditPersister:
             )
         return result
 
+    async def get_trace_decisions(self, *, review_id: UUID) -> tuple[TraceDecisionEvent, ...]:
+        """Load every persisted trace_decision event for `review_id`.
+
+        Read-side recovery surface per the `TraceEventSink` Protocol:
+        the trace node adopts persisted decisions for findings whose
+        rows landed before a crash that lost the state delta, instead
+        of re-probing them into the natural-key identity guard.
+        SELECT-only — the append-only guarantee is untouched. Rows
+        reconstruct through `TraceDecisionEvent.model_validate`, the
+        same payload-recovery shape as the natural-key no-op path.
+        Ordered by timestamp for deterministic iteration (the partial
+        unique index guarantees at most one row per source_finding_id,
+        so order never affects adoption outcomes).
+        """
+        async with self._session_factory() as session:
+            payloads = (
+                await session.scalars(
+                    select(AuditEventRow.payload)
+                    .where(
+                        AuditEventRow.review_id == review_id,
+                        AuditEventRow.event_type == "trace_decision",
+                    )
+                    .order_by(AuditEventRow.timestamp)
+                )
+            ).all()
+        return tuple(TraceDecisionEvent.model_validate(payload) for payload in payloads)
+
     async def emit_hitl_request(self, event: HITLRequestEvent) -> HITLRequestEvent:
         """Persist a HITLRequestEvent row under natural-key idempotency
         on `(review_id)` (single-shot per review per the HITL Non-goals).

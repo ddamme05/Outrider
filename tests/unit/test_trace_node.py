@@ -5,10 +5,11 @@ Covers:
   - `TraceJoinIntegrityError` raises on duplicate proposal_hash across
     findings in `state.analysis_rounds` (M5 last-resort guard).
   - `_candidate_paths_for(import_string)` constructs module + package
-    paths deterministically (Phase 1 tier-1 probe-path construction per
-    M8), with `_parent_module_paths_for` as the symbol-form tier-2
-    fallback and `_resolve_via_probes` enforcing tier precedence
-    (FUP-209).
+    paths deterministically (the single module→path mapping rule per
+    M8), with `_tier_paths_for` delegating suffix-strip ladder levels
+    to it and `_resolve_via_probes` enforcing the bucket-level ladder:
+    shallowest-level-wins, symbol verification on stripped-level hits,
+    pass-level probe memo + budget (FUP-209).
   - Bucket dropping for already-traced findings (M1 + #025 point 5
     within-graph re-entry idempotency).
 
@@ -31,15 +32,18 @@ if TYPE_CHECKING:
 
 from outrider.agent.nodes import trace as trace_module
 from outrider.agent.nodes.trace import (
+    MAX_PROBE_FETCHES_PER_PASS,
     TraceJoinIntegrityError,
     _aggregate_candidate_reasons,
     _bucket_candidates_by_finding,
     _build_proposal_hash_join,
     _candidate_paths_for,
     _dedupe_by_import_string,
-    _parent_module_paths_for,
+    _ProbeBudget,
     _ProbeOutcome,
     _resolve_via_probes,
+    _symbol_in_content,
+    _tier_paths_for,
 )
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
@@ -235,34 +239,49 @@ def test_bucket_drops_candidates_whose_proposal_hash_has_no_finding() -> None:
 
 
 def test_candidate_paths_for_emits_module_and_package_forms() -> None:
-    """`foo.bar` → exactly two tier-1 candidate paths: `foo/bar.py` and
-    `foo/bar/__init__.py`. Pinned per M8 — this is Phase 1's
-    module-form probe-path construction; downstream probes fetch-test
-    each, falling back to `_parent_module_paths_for` only when neither
-    is real (FUP-209)."""
+    """`foo.bar` → exactly two module-form candidate paths:
+    `foo/bar.py` and `foo/bar/__init__.py`. Pinned per M8 — this is THE
+    module→path mapping rule; the ladder's deeper levels reach it via
+    `_tier_paths_for` (FUP-209)."""
     assert _candidate_paths_for("foo.bar") == ("foo/bar.py", "foo/bar/__init__.py")
     assert _candidate_paths_for("single") == ("single.py", "single/__init__.py")
     assert _candidate_paths_for("a.b.c") == ("a/b/c.py", "a/b/c/__init__.py")
 
 
-def test_parent_module_paths_for_drops_trailing_symbol() -> None:
-    """Tier-2 reads the trailing component as a symbol in the parent
-    module: `svc.queries.run_query` → `svc/queries.py` +
-    `svc/queries/__init__.py`. Single-segment strings have no parent
-    module → empty tuple (never probed)."""
-    assert _parent_module_paths_for("svc.queries.run_query") == (
-        "svc/queries.py",
-        "svc/queries/__init__.py",
-    )
-    assert _parent_module_paths_for("svc.queries") == ("svc.py", "svc/__init__.py")
-    assert _parent_module_paths_for("single") == ()
+def test_tier_paths_delegate_to_candidate_paths() -> None:
+    """Every ladder level is exactly `_candidate_paths_for` of the
+    stripped prefix — the mapping rule must not fork (a divergence
+    would let tier-k silently probe differently-shaped paths than
+    tier-0). Stripping the whole string yields () (never probed)."""
+    for import_string in ("a.b.c.d", "svc.queries.run_query"):
+        parts = import_string.split(".")
+        assert _tier_paths_for(import_string, 0) == _candidate_paths_for(import_string)
+        for strip_level in range(1, len(parts)):
+            assert _tier_paths_for(import_string, strip_level) == _candidate_paths_for(
+                ".".join(parts[:-strip_level])
+            )
+    assert _tier_paths_for("single", 1) == ()
+    assert _tier_paths_for("a.b", 2) == ()
+
+
+def test_symbol_in_content_word_boundary() -> None:
+    """Symbol verification admits definitions, from-import re-exports,
+    and `__all__` entries; rejects absent names, substring-only matches
+    (word boundary), and non-UTF-8 content."""
+    assert _symbol_in_content("run_query", b"def run_query(): ...\n")
+    assert _symbol_in_content("run_query", b"from .queries import run_query\n")
+    assert _symbol_in_content("run_query", b"__all__ = ['run_query']\n")
+    assert not _symbol_in_content("ghost", b"")
+    assert not _symbol_in_content("query", b"def run_query(): ...\n")
+    assert not _symbol_in_content("x", "é".encode("utf-16"))
 
 
 # ---------------------------------------------------------------------------
-# FUP-209: `_resolve_via_probes` two-tier precedence. Real models emit
-# symbol-form candidates (`module.function`); tier 2 makes them resolve
-# to the parent module, and tier precedence keeps module-form candidates
-# from regressing to ambiguous against their parent package.
+# FUP-209: `_resolve_via_probes` suffix-strip ladder. Real models emit
+# symbol-form candidates (`module.function`, `module.Class.method`); the
+# ladder resolves them to the defining module. Bucket-level barriers
+# (shallowest level wins) + symbol verification + pass-level memo/budget
+# came out of the FUP-209 review round.
 # ---------------------------------------------------------------------------
 
 
@@ -284,23 +303,27 @@ def _fake_fetch_for(
 async def _probe_outcome_for(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    import_string: str,
+    import_strings: tuple[str, ...],
     real_files: dict[str, bytes],
+    probe_memo: dict[str, bytes | None] | None = None,
+    budget: int = MAX_PROBE_FETCHES_PER_PASS,
 ) -> tuple[_ProbeOutcome, list[str]]:
-    """Run `_resolve_via_probes` for one candidate against a fake repo
+    """Run `_resolve_via_probes` for one bucket against a fake repo
     snapshot; return (outcome, probed-paths log)."""
     fake_fetch, probed = _fake_fetch_for(real_files)
     monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
-    candidate = _build_candidate(
-        source_proposal_hash="1" * 64,
-        import_string=import_string,
+    candidates = tuple(
+        _build_candidate(source_proposal_hash="1" * 64, import_string=import_string)
+        for import_string in import_strings
     )
     outcome = await _resolve_via_probes(
-        candidates=(candidate,),
+        candidates=candidates,
         gh_client=object(),  # type: ignore[arg-type]  # opaque pass-through to the fake
         owner="o",
         repo="r",
         head_sha="a" * 40,
+        probe_memo=probe_memo if probe_memo is not None else {},
+        probe_budget=_ProbeBudget(remaining=budget),
     )
     return outcome, probed
 
@@ -309,17 +332,17 @@ async def test_symbol_form_candidate_resolves_via_parent_module_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FUP-209 core fix: `svc.queries.run_query` (symbol-form, as real
-    models emit) misses both tier-1 module paths, falls back to the
-    parent module, and resolves `svc/queries.py`."""
+    models emit) misses both level-0 module paths, falls back one strip
+    level, and resolves `svc/queries.py` (which names the symbol)."""
     outcome, probed = await _probe_outcome_for(
         monkeypatch,
-        import_string="svc.queries.run_query",
+        import_strings=("svc.queries.run_query",),
         real_files={"svc/queries.py": b"def run_query(): ...\n"},
     )
     assert outcome.resolution_status == "resolved"
     assert outcome.target_file == "svc/queries.py"
     assert outcome.resolved_candidate_paths == ("svc/queries.py",)
-    # Tier-1 probed first (both module-form paths), tier-2 after.
+    # Level 0 probed first (both module-form paths), level 1 after.
     assert probed == [
         "svc/queries/run_query.py",
         "svc/queries/run_query/__init__.py",
@@ -333,27 +356,44 @@ async def test_symbol_form_candidate_resolves_parent_package_init(
 ) -> None:
     """Symbol defined in (or re-exported from) a package's `__init__.py`:
     `svc.queries.run_query` with `svc/queries/` a package resolves to
-    `svc/queries/__init__.py` via tier 2."""
+    `svc/queries/__init__.py` at strip level 1."""
     outcome, _ = await _probe_outcome_for(
         monkeypatch,
-        import_string="svc.queries.run_query",
+        import_strings=("svc.queries.run_query",),
         real_files={"svc/queries/__init__.py": b"def run_query(): ...\n"},
     )
     assert outcome.resolution_status == "resolved"
     assert outcome.target_file == "svc/queries/__init__.py"
 
 
+async def test_method_form_candidate_resolves_two_strip_levels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`app.services.UserService.authenticate` (method on a class — a
+    real emission shape) needs strip level 2 to reach `app/services.py`;
+    the level-2 hit verifies against the FIRST stripped component
+    (`UserService`), the immediate child of the kept prefix."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("app.services.UserService.authenticate",),
+        real_files={"app/services.py": b"class UserService:\n    def authenticate(self): ...\n"},
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "app/services.py"
+    assert len(probed) == 6  # 2 paths per level x 3 levels
+
+
 async def test_module_form_candidate_never_probes_parent_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression pin against flat (non-tiered) parent probing: a
+    """Regression pin against flat (non-laddered) parent probing: a
     module-form candidate `app.models` in a normal package layout
     (`app/__init__.py` exists) must resolve to `app/models.py` — NOT go
     ambiguous against the parent `__init__.py` — and must not pay the
-    tier-2 probes at all."""
+    deeper-level probes at all."""
     outcome, probed = await _probe_outcome_for(
         monkeypatch,
-        import_string="app.models",
+        import_strings=("app.models",),
         real_files={
             "app/models.py": b"class QueryBuilder: ...\n",
             "app/__init__.py": b"",
@@ -364,17 +404,66 @@ async def test_module_form_candidate_never_probes_parent_package(
     assert probed == ["app/models.py", "app/models/__init__.py"]
 
 
+async def test_sibling_fallback_cannot_demote_module_form_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FUP-209 review (bucket pooling regression): the ladder level is a
+    BUCKET-level barrier. `app.models` resolves at level 0, so the
+    hallucinated sibling `app.ghost` never reaches its fallback levels —
+    the parent `__init__.py` cannot pool into the aggregate and flip a
+    clean resolution to ambiguous."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("app.models", "app.ghost"),
+        real_files={
+            "app/models.py": b"class QueryBuilder: ...\n",
+            "app/__init__.py": b"",
+        },
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "app/models.py"
+    # Level 0 of BOTH candidates probed; no deeper level for either.
+    assert probed == [
+        "app/models.py",
+        "app/models/__init__.py",
+        "app/ghost.py",
+        "app/ghost/__init__.py",
+    ]
+
+
+async def test_hallucinated_module_under_real_package_stays_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FUP-209 review (false parent resolution): existence alone would
+    resolve any hallucinated `pkg.ghost` to `pkg/__init__.py` — which
+    exists in essentially every package. Symbol verification rejects
+    the level-1 hit (the fetched parent must actually name the stripped
+    component), keeping hallucinated and PR-deleted module candidates
+    unresolved, exactly as before the fallback existed."""
+    outcome, _ = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("pkg.ghost",),
+        real_files={
+            "pkg/__init__.py": b"",
+            "pkg/real_module.py": b"def real(): ...\n",
+        },
+    )
+    assert outcome.resolution_status == "unresolved"
+    assert outcome.target_file is None
+    assert outcome.resolved_candidate_paths == ()
+
+
 async def test_full_string_module_wins_over_symbol_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When BOTH readings exist (`svc/queries/run_query.py` is a real
-    module AND `svc/queries.py` is real), tier precedence resolves the
+    module AND `svc/queries.py` is real), level precedence resolves the
     full-string module — mirroring Python's own import resolution —
     rather than reporting ambiguous. Deliberate FUP-209 choice; the
     parent paths are never probed."""
     outcome, probed = await _probe_outcome_for(
         monkeypatch,
-        import_string="svc.queries.run_query",
+        import_strings=("svc.queries.run_query",),
         real_files={
             "svc/queries/run_query.py": b"def run_query(): ...\n",
             "svc/queries.py": b"def run_query(): ...\n",
@@ -391,11 +480,11 @@ async def test_full_string_module_wins_over_symbol_reading(
 async def test_tier_one_module_and_package_both_real_is_ambiguous(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ambiguity within a tier is still a real outcome: both `x/y.py`
+    """Ambiguity within a level is still a real outcome: both `x/y.py`
     and `x/y/__init__.py` real → ambiguous, no target_file."""
     outcome, _ = await _probe_outcome_for(
         monkeypatch,
-        import_string="x.y",
+        import_strings=("x.y",),
         real_files={"x/y.py": b"", "x/y/__init__.py": b""},
     )
     assert outcome.resolution_status == "ambiguous"
@@ -403,18 +492,81 @@ async def test_tier_one_module_and_package_both_real_is_ambiguous(
     assert set(outcome.resolved_candidate_paths) == {"x/y.py", "x/y/__init__.py"}
 
 
-async def test_symbol_form_candidate_with_no_real_paths_stays_unresolved(
+async def test_two_symbol_candidates_on_distinct_parents_are_ambiguous(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both tiers miss → unresolved, exactly as before the fallback."""
+    """The live FUP-209 shape: two symbol-form candidates for ONE
+    finding, resolving to two different (verified) parent modules, is
+    genuinely ambiguous under M8's single-target-per-finding contract —
+    pinned so the outcome is deliberate, not accidental."""
+    outcome, _ = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("svc.queries.run_query", "svc.utils.normalize_owner"),
+        real_files={
+            "svc/queries.py": b"def run_query(): ...\n",
+            "svc/utils.py": b"def normalize_owner(): ...\n",
+        },
+    )
+    assert outcome.resolution_status == "ambiguous"
+    assert outcome.target_file is None
+    assert set(outcome.resolved_candidate_paths) == {"svc/queries.py", "svc/utils.py"}
+
+
+async def test_shared_parent_probes_once_and_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FUP-209 review (probe memo): sibling symbol-form candidates on
+    the SAME module fetch the shared parent paths once (no byte-identical
+    duplicate GitHub round-trips), and the deduped verified hit is a
+    single real path → resolved, not ambiguous."""
     outcome, probed = await _probe_outcome_for(
         monkeypatch,
-        import_string="svc.queries.run_query",
-        real_files={},
+        import_strings=("svc.queries.run_query", "svc.queries.other_func"),
+        real_files={"svc/queries.py": b"def run_query(): ...\ndef other_func(): ...\n"},
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "svc/queries.py"
+    assert len(probed) == len(set(probed))  # no duplicate fetches
+    assert len(probed) == 6  # 4 level-0 paths + 2 shared level-1 paths
+
+
+async def test_probe_budget_exhaustion_resolves_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FUP-209 review (hostile fetch bound): once the pass budget is
+    consumed, no further probe fetches are issued and unfunded paths
+    count as not-real — the candidate lands unresolved instead of
+    burning GitHub rate limit."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("svc.queries.run_query",),
+        real_files={"svc/queries.py": b"def run_query(): ...\n"},
+        budget=2,
     )
     assert outcome.resolution_status == "unresolved"
-    assert outcome.target_file is None
-    assert len(probed) == 4
+    assert len(probed) == 2  # only level 0 funded; deeper levels unfunded
+
+
+async def test_seeded_memo_path_resolves_without_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FUP-209 review (in-PR seeding): a parent path whose head content
+    is already in the memo (seeded from `pr_context.changed_files`)
+    resolves without a GitHub round-trip for that path."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("svc.queries.run_query",),
+        real_files={},
+        probe_memo={"svc/queries.py": b"def run_query(): ...\n"},
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "svc/queries.py"
+    assert "svc/queries.py" not in probed  # served from the memo
+    assert probed == [
+        "svc/queries/run_query.py",
+        "svc/queries/run_query/__init__.py",
+        "svc/queries/__init__.py",
+    ]
 
 
 # ---------------------------------------------------------------------------

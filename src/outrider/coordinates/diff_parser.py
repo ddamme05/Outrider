@@ -239,6 +239,14 @@ def resolve_candidate_paths(
     `TraceCandidate.import_string` field validator); validation failures map
     to the empty-list return per this function's existing "treats as does-
     not-exist" contract.
+
+    V1.5 swap caution (FUP-209): this surface is module-form only. The
+    V1 trace resolver (`agent/nodes/trace.py::_resolve_via_probes`)
+    additionally resolves symbol-form candidates (`svc.queries.run_query`,
+    `app.views.UserView.get`) via a suffix-strip ladder with symbol
+    verification. Replacing the probe resolver with this function
+    without reproducing that ladder regresses symbol-form resolution
+    to `unresolved`.
     """
     try:
         normalized = is_valid_import_string(import_string)
