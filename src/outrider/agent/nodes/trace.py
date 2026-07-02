@@ -82,17 +82,22 @@ MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 # module shape.
 MAX_SUFFIX_STRIP_LEVELS: Final[int] = 2
 
-# Hard ceiling on Phase 1 probe fetches per trace pass. The deterministic
+# Hard ceiling on trace GitHub fetches per pass — Phase 1 probes AND
+# Phase 2 content fetches draw from the same budget (a probes-only cap
+# would leave up to one uncapped content fetch per resolved finding on
+# top, and the stated ceiling wouldn't be real). The deterministic
 # control that keeps a hostile analyze pass (max findings × max
 # candidates, all misses — every miss pays the full ladder) from
 # exhausting the installation's 5000/hr GitHub rate limit: without it
-# the ladder worst case is ~6000-7680 requests/pass. 1024/pass ×
-# depth-2 rounds ≈ 2048/review, ~40% of the hourly budget. Legitimate
-# passes sit far below (a handful of findings with candidates; the
-# probe memo dedupes shared-parent paths; in-PR paths are pre-seeded
-# and cost zero fetches). On exhaustion, remaining paths count as
-# not-real (candidates land `unresolved`) and a WARN is logged once
-# per pass. Per-installation cross-review budget tracking stays
+# the ladder worst case is ~6000-7680 requests/pass before content
+# fetches. 1024/pass × depth-2 rounds ≈ 2048/review, ~40% of the
+# hourly budget. Legitimate passes sit far below (a handful of
+# findings with candidates; the probe memo dedupes shared-parent
+# paths; in-PR paths are pre-seeded and cost zero fetches). On
+# exhaustion, unfunded probe paths count as not-real (candidates land
+# `unresolved`) and unfunded Phase 2 fetches are skipped (the decision
+# stays `resolved`; no fetched file lands this pass); a WARN is logged
+# once per pass. Per-installation cross-review budget tracking stays
 # FUP-077.
 MAX_PROBE_FETCHES_PER_PASS: Final[int] = 1024
 
@@ -455,6 +460,7 @@ async def trace(
                 owner=state.pr_context.owner,
                 repo=state.pr_context.repo,
                 head_sha=head_sha,
+                probe_budget=probe_budget,
             )
             if fetched_file is not None:
                 accumulated_fetched_files.append(fetched_file)
@@ -981,13 +987,17 @@ async def _phase_two_content_fetch(
     owner: str,
     repo: str,
     head_sha: str,
+    probe_budget: _ProbeBudget,
 ) -> TraceFetchedFile | None:
     """Phase 2 per M8 — fetch the resolved target_file at head SHA.
 
     Constructs `TraceFetchedFile` with `content_head` from the fetched
-    bytes. Returns None if the fetch returns None (the target was
+    bytes. Returns None if the pass fetch budget is exhausted (Phase 2
+    draws from the same `MAX_PROBE_FETCHES_PER_PASS` budget as Phase 1
+    probes — the decision stays `resolved` in audit; no fetched file
+    lands this pass), if the fetch returns None (the target was
     resolved by Phase 1 but disappeared between probe and Phase 2 —
-    races, force-pushes; rare but defensive) OR if the bytes don't
+    races, force-pushes; rare but defensive), OR if the bytes don't
     decode as UTF-8 (a `.py`-named path that's actually a binary
     blob — compiled `.pyc` misnamed, vendor-injected bytes-as-`.py`,
     generated-stub binary). The decode-failure case is logged at WARN
@@ -1003,6 +1013,18 @@ async def _phase_two_content_fetch(
     No `source_import_string` / `source_proposal_hash` per Q3 revision;
     cross-reference recovers via `state.trace_decisions`.
     """
+    if probe_budget.remaining <= 0:
+        if not probe_budget.exhausted_logged:
+            logger.warning(
+                "trace: pass fetch budget exhausted (MAX_PROBE_FETCHES_PER_PASS=%d); "
+                "Phase 2 content fetch skipped for %s — decision stays resolved, "
+                "no fetched file this pass",
+                MAX_PROBE_FETCHES_PER_PASS,
+                target_file,
+            )
+            probe_budget.exhausted_logged = True
+        return None
+    probe_budget.remaining -= 1
     # Phase-2 race window: Phase 1 probe confirmed the path existed at
     # head_sha, but the file can disappear between probe and Phase 2
     # (force-push, file deletion in a concurrent push to the same SHA

@@ -566,6 +566,67 @@ async def test_resolved_but_target_in_pr_files_skips_phase_two_fetch(
 
 
 # ---------------------------------------------------------------------------
+# Shared pass fetch budget: Phase 2 draws from the same ceiling as
+# Phase 1 probes (FUP-209 review F2 — a probes-only budget left content
+# fetches uncapped and the stated rate-limit ceiling wasn't real).
+# ---------------------------------------------------------------------------
+
+
+async def test_phase_two_fetch_skipped_when_pass_budget_exhausted(
+    persister_setup: PersisterTestSetup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the pass budget sized to exactly the Phase 1 probes, the
+    resolved decision still lands (audit unchanged) but the Phase 2
+    content fetch is skipped: no TraceFetchedFile, zero router signal —
+    the same graceful unfunded degradation Phase 1 uses."""
+    review_id = persister_setup.review_id
+    proposal_hash = "e" * 64
+    finding = _build_finding(review_id=review_id, proposal_hash=proposal_hash)
+    candidate = _build_candidate(
+        source_proposal_hash=proposal_hash,
+        import_string="middleware.auth",
+    )
+    state = _build_state(review_id=review_id, finding=finding, candidate=candidate)
+
+    call_log: list[str] = []
+
+    async def fake_fetch(*_args: object, path: str, **_kwargs: object) -> bytes | None:
+        call_log.append(path)
+        if path == "middleware/auth.py":
+            return b"def authenticate(): ..."
+        return None
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
+    # Exactly the two level-0 probe fetches — nothing left for Phase 2.
+    monkeypatch.setattr(trace_module, "MAX_PROBE_FETCHES_PER_PASS", 2)
+
+    provider = _MockLLMProvider(ranked_candidate_ids=(candidate.candidate_id,))
+
+    state_delta = await trace(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        trace_model="claude-haiku-test",
+        phase_event_sink=persister_setup.persister,
+        trace_sink=persister_setup.persister,
+        github_factory=_stub_github_factory,  # type: ignore[arg-type]
+    )
+
+    # Both budget units went to Phase 1; Phase 2 never fetched.
+    assert call_log == ["middleware/auth.py", "middleware/auth/__init__.py"]
+
+    decisions = state_delta["trace_decisions"]
+    assert len(decisions) == 1  # type: ignore[arg-type]
+    decision = decisions[0]  # type: ignore[index]
+    assert decision.resolution_status == "resolved"
+    assert decision.target_file == "middleware/auth.py"
+
+    fetched_files = state_delta["trace_fetched_files"]
+    assert len(fetched_files) == 0  # type: ignore[arg-type]
+    assert state_delta["last_trace_pass_fetched_count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Crash-resume recovery: audit-ahead-of-state adoption (FUP-209 review).
 # ---------------------------------------------------------------------------
 
