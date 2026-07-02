@@ -1385,11 +1385,13 @@ def test_step10_response_level_rejection_collects_no_trace_candidates() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 10, from-import candidate correction (FUP-209 follow-up): the analyzed
-# file's own imports are deterministic ground truth for a symbol's module;
-# a hallucinated module prefix is rewritten to the importing module at
-# admission. Live instance: `svc.utils.normalize_owner` proposed while the
-# file says `from svc.db import normalize_owner`.
+# Step 10, from-import candidate correction (FUP-209 follow-up): when the
+# analyzed file's own imports contradict a candidate's module prefix, a
+# corrected module-form SIBLING is emitted alongside the original — never
+# instead of it (the trailing-name match is a heuristic; a coincidental
+# collision must not clobber a valid candidate). Live instance:
+# `svc.utils.normalize_owner` proposed while the file says
+# `from svc.db import normalize_owner`.
 # ---------------------------------------------------------------------------
 
 
@@ -1421,68 +1423,93 @@ def _candidate_response(import_string_raw: str) -> str:
     )
 
 
-def test_hallucinated_module_corrected_against_from_imports() -> None:
+def test_hallucinated_module_emits_corrected_sibling() -> None:
     """The live FUP-209 shape: the model proposes `svc.utils.normalize_owner`
-    while the file from-imports `normalize_owner` from `svc.db`. The
-    candidate is rewritten to the importing module (module-form, the
-    DECISIONS#024 canonical shape) and the correction is counted."""
+    while the file from-imports `normalize_owner` from `svc.db`. A
+    corrected module-form sibling is emitted ALONGSIDE the original
+    (original first — insertion order feeds the bucket cap) and the
+    correction is counted."""
     result = _call_parser(
         _candidate_response("svc.utils.normalize_owner"),
         included_scope_units=(_build_scope_unit(),),
         file_content="x" * 200,
         import_refs=(_from_import_ref("svc.db", ("normalize_owner", "run_query")),),
     )
-    assert len(result.trace_candidates) == 1
-    assert result.trace_candidates[0].import_string == "svc.db"
+    assert [c.import_string for c in result.trace_candidates] == [
+        "svc.utils.normalize_owner",
+        "svc.db",
+    ]
     assert result.counters.n_trace_candidates_module_corrected == 1
+    assert result.counters.n_trace_candidates_emitted == 2  # original + sibling
 
 
-def test_consistent_symbol_form_candidate_not_corrected() -> None:
+def test_coincidental_trailing_name_collision_preserves_original() -> None:
+    """Review pin: `myproject.settings` proposed while the file has
+    `from django.conf import settings` — a coincidental trailing-name
+    collision. The valid original MUST survive (the probe ladder resolves
+    whichever path exists); the django.conf sibling rides along and
+    simply misses if not in-repo."""
+    result = _call_parser(
+        _candidate_response("myproject.settings"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("django.conf", ("settings",)),),
+    )
+    assert [c.import_string for c in result.trace_candidates] == [
+        "myproject.settings",
+        "django.conf",
+    ]
+
+
+def test_consistent_symbol_form_candidate_gets_no_sibling() -> None:
     """`svc.db.run_query` under `from svc.db import run_query` — the prefix
     already matches the importing module; the trace ladder handles the
-    symbol form, so no rewrite and no count."""
+    symbol form, so no sibling and no count."""
     result = _call_parser(
         _candidate_response("svc.db.run_query"),
         included_scope_units=(_build_scope_unit(),),
         file_content="x" * 200,
         import_refs=(_from_import_ref("svc.db", ("normalize_owner", "run_query")),),
     )
-    assert result.trace_candidates[0].import_string == "svc.db.run_query"
+    assert [c.import_string for c in result.trace_candidates] == ["svc.db.run_query"]
     assert result.counters.n_trace_candidates_module_corrected == 0
 
 
-def test_module_form_submodule_import_not_corrected() -> None:
+def test_module_form_submodule_import_gets_no_sibling() -> None:
     """`svc.db` under `from svc import db`: trailing 'db' maps to module
     'svc', but the candidate IS the imported submodule (prefix equals the
-    mapped module) — rewriting to 'svc' would retarget the probe at the
-    package instead of the module. Unchanged."""
+    mapped module) — a 'svc' sibling would probe the package instead of
+    the module for no benefit. No sibling."""
     result = _call_parser(
         _candidate_response("svc.db"),
         included_scope_units=(_build_scope_unit(),),
         file_content="x" * 200,
         import_refs=(_from_import_ref("svc", ("db",)),),
     )
-    assert result.trace_candidates[0].import_string == "svc.db"
+    assert [c.import_string for c in result.trace_candidates] == ["svc.db"]
     assert result.counters.n_trace_candidates_module_corrected == 0
 
 
-def test_bare_symbol_candidate_corrected() -> None:
+def test_bare_symbol_candidate_gets_corrected_sibling() -> None:
     """A bare-symbol candidate (`normalize_owner`) probes a repo-root
-    module and dead-ends; the from-import map rewrites it to the
-    importing module."""
+    module and dead-ends; the from-import map emits the importing module
+    as a sibling."""
     result = _call_parser(
         _candidate_response("normalize_owner"),
         included_scope_units=(_build_scope_unit(),),
         file_content="x" * 200,
         import_refs=(_from_import_ref("svc.db", ("normalize_owner",)),),
     )
-    assert result.trace_candidates[0].import_string == "svc.db"
+    assert [c.import_string for c in result.trace_candidates] == [
+        "normalize_owner",
+        "svc.db",
+    ]
     assert result.counters.n_trace_candidates_module_corrected == 1
 
 
-def test_unmatched_candidate_not_corrected() -> None:
+def test_unmatched_candidate_gets_no_sibling() -> None:
     """A candidate whose trailing component matches no from-imported name
-    passes through untouched (also the empty-import_refs default: failed
+    passes through alone (also the empty-import_refs default: failed
     or degraded parses disable correction)."""
     result = _call_parser(
         _candidate_response("pkg.ghost"),
@@ -1490,7 +1517,7 @@ def test_unmatched_candidate_not_corrected() -> None:
         file_content="x" * 200,
         import_refs=(_from_import_ref("svc.db", ("run_query",)),),
     )
-    assert result.trace_candidates[0].import_string == "pkg.ghost"
+    assert [c.import_string for c in result.trace_candidates] == ["pkg.ghost"]
     assert result.counters.n_trace_candidates_module_corrected == 0
 
 
@@ -1507,13 +1534,14 @@ def test_relative_and_star_imports_do_not_correct() -> None:
             _from_import_ref("svc.legacy", (), kind="star"),
         ),
     )
-    assert result.trace_candidates[0].import_string == "svc.utils.run_query"
+    assert [c.import_string for c in result.trace_candidates] == ["svc.utils.run_query"]
     assert result.counters.n_trace_candidates_module_corrected == 0
 
 
 def test_later_from_import_shadows_earlier() -> None:
     """Two from-imports binding the same name: the later one wins,
-    matching Python's runtime shadowing semantics."""
+    matching Python's runtime shadowing semantics — the sibling carries
+    the later module."""
     result = _call_parser(
         _candidate_response("wrong.place.helper"),
         included_scope_units=(_build_scope_unit(),),
@@ -1523,21 +1551,80 @@ def test_later_from_import_shadows_earlier() -> None:
             _from_import_ref("second.mod", ("helper",), line=2),
         ),
     )
-    assert result.trace_candidates[0].import_string == "second.mod"
+    assert [c.import_string for c in result.trace_candidates] == [
+        "wrong.place.helper",
+        "second.mod",
+    ]
 
 
-def test_invalid_import_ref_module_keeps_model_form() -> None:
+def test_invalid_import_ref_module_emits_no_sibling() -> None:
     """Defensive: an ImportRef whose module isn't a valid dotted identifier
-    (producer-bug shape) must not poison admission — the model's canonical
-    form is kept and nothing is counted as corrected."""
+    (producer-bug shape) is dropped at map build — the model's canonical
+    form passes through alone and nothing is counted as corrected."""
     result = _call_parser(
         _candidate_response("svc.utils.run_query"),
         included_scope_units=(_build_scope_unit(),),
         file_content="x" * 200,
         import_refs=(_from_import_ref("123bad", ("run_query",)),),
     )
-    assert result.trace_candidates[0].import_string == "svc.utils.run_query"
+    assert [c.import_string for c in result.trace_candidates] == ["svc.utils.run_query"]
     assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+def test_invalid_module_does_not_resurrect_shadowed_valid_module() -> None:
+    """Validation runs AFTER shadowing resolves: a later producer-bug ref
+    shadowing a valid earlier one drops the name entirely rather than
+    resurrecting the shadowed module — the file's runtime binding is the
+    later (broken) one, so no sibling is trustworthy."""
+    result = _call_parser(
+        _candidate_response("wrong.place.helper"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(
+            _from_import_ref("first.mod", ("helper",), line=1),
+            _from_import_ref("123bad", ("helper",), line=2),
+        ),
+    )
+    assert [c.import_string for c in result.trace_candidates] == ["wrong.place.helper"]
+    assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+def test_nfd_imported_name_still_matches_nfc_candidate() -> None:
+    """Map keys are NFC-normalized: a decomposed-Unicode imported name
+    (NFD from the wire) still matches the canonicalized (NFC) candidate
+    trailing component."""
+    nfd_name = "cafe\u0301"  # e + combining acute (NFD)
+    nfc_name = "caf\u00e9"  # composed (NFC)
+    result = _call_parser(
+        _candidate_response(f"wrong.mod.{nfc_name}"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("real.mod", (nfd_name,)),),
+    )
+    assert [c.import_string for c in result.trace_candidates] == [
+        f"wrong.mod.{nfc_name}",
+        "real.mod",
+    ]
+    assert result.counters.n_trace_candidates_module_corrected == 1
+
+
+def test_from_import_map_digest_properties() -> None:
+    """The cache-key component over the from-import map: deterministic,
+    ref-order-independent for the same resolved map, sensitive to a
+    module change, and empty-map-distinct (no from-imports ≠ any
+    populated map)."""
+    from outrider.agent.nodes.analyze_parser import from_import_map_digest
+
+    ref_a = _from_import_ref("svc.db", ("run_query",), line=1)
+    ref_b = _from_import_ref("svc.utils", ("helper",), line=2)
+    base = from_import_map_digest((ref_a, ref_b))  # type: ignore[arg-type]
+    assert base == from_import_map_digest((ref_a, ref_b))  # type: ignore[arg-type]
+    assert base == from_import_map_digest((ref_b, ref_a))  # type: ignore[arg-type]
+    changed = from_import_map_digest(
+        (_from_import_ref("svc.other", ("run_query",), line=1), ref_b)  # type: ignore[arg-type]
+    )
+    assert changed != base
+    assert from_import_map_digest(()) != base
 
 
 def test_counters_reflect_admitted_and_rejected_mix() -> None:

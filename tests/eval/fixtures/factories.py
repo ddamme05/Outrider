@@ -239,7 +239,7 @@ class TraceDecisionEventFactory:
             "resolution_status": "resolved",
             # Per DECISIONS.md#024 (Accepted 2026-05-24): trace candidates are
             # dotted Python import strings; resolver outputs are file paths.
-            # Parallel tuples carry the LLM-proposed + resolver-output halves.
+            # Parallel tuples carry the admitted-candidate + resolver-output halves.
             "proposed_import_strings": ("bar", "baz"),
             "resolved_candidate_paths": ("src/bar.py",),
         }

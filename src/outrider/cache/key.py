@@ -34,11 +34,14 @@ from outrider.llm.base import _canonical_prompt_hash
 # the length-prefix framing. Bump on ANY recipe change (add/remove/reorder a
 # component, change the framing). v1 was the implicit original recipe (no
 # constant existed); v2 is the host-identity re-key (#056 folded the triad into
-# the key). The recipe change self-invalidates old rows on its own, but the
-# explicit version is the legible, replay-durable marker #056 mandates ("the
-# analyze cache-keyed version bumps") and gives future non-parser recipe changes
-# a home without overloading ANALYZE_PARSER_VERSION's admission-only scope.
-ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v2"
+# the key); v3 folds `from_import_map_digest` — candidate correction (#024
+# from-import amendment) makes cached trace_candidates depend on module-level
+# imports the rendered prompt doesn't carry. The recipe change self-invalidates
+# old rows on its own, but the explicit version is the legible, replay-durable
+# marker #056 mandates ("the analyze cache-keyed version bumps") and gives
+# future non-parser recipe changes a home without overloading
+# ANALYZE_PARSER_VERSION's admission-only scope.
+ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v3"
 
 
 def compute_analyze_cache_key(
@@ -57,14 +60,21 @@ def compute_analyze_cache_key(
     parameterized_call_scan_digest: str,
     observed_producer_version: str,
     subsumes_digest: str,
+    from_import_map_digest: str,
     profile_id: str | None,
     reasoning_enabled: bool | None,
     profile_contract_digest: str | None,
 ) -> str:
-    """The analyze-cache key: seventeen length-prefixed fields — the recipe
+    """The analyze-cache key: eighteen length-prefixed fields — the recipe
     version (`ANALYZE_CACHE_KEY_VERSION`) first, then the canonical prompt
-    digest, then the fifteen explicit scope/version/identity components — as
-    one SHA-256 hex digest. `subsumes_digest` (DECISIONS.md#055) pins the
+    digest, then the sixteen explicit scope/version/identity components — as
+    one SHA-256 hex digest. `from_import_map_digest`
+    (#024 from-import correction) pins the analyzed file's from-import
+    name→module map: corrected sibling candidates depend on module-level
+    imports the rendered prompt doesn't carry (scope bodies + hunks only),
+    so two reviews with byte-identical prompts but different from-imports
+    admit different trace_candidates and must never share an entry.
+    `subsumes_digest` (DECISIONS.md#055) pins the
     `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
     admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
     edge edit changes the admitted finding set without touching the prompt,
@@ -140,6 +150,7 @@ def compute_analyze_cache_key(
         parameterized_call_scan_digest,
         observed_producer_version,
         subsumes_digest,
+        from_import_map_digest,
         profile_id if profile_id is not None else "",
         reasoning_component,
         profile_contract_digest if profile_contract_digest is not None else "",
