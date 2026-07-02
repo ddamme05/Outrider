@@ -137,6 +137,9 @@ class _StubTraceEventSink:
     async def emit_trace_decision(self, event: Any) -> Any:
         return event
 
+    async def get_trace_decisions(self, *, review_id: Any) -> tuple[Any, ...]:
+        return ()
+
 
 class _StubHITLEventSink:
     async def emit_hitl_request(self, event: Any) -> Any:

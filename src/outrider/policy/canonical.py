@@ -308,11 +308,13 @@ def compute_proposal_hash(
     produce DISTINCT hashes — preserving per-source-file audit
     provenance on the candidate trail. Per DECISIONS.md#024 (Accepted
     2026-05-24, Amended 2026-05-24 for M8), trace candidates are dotted
-    Python import strings, not file paths; V1 trace per M8 resolves each
-    candidate via two-phase GitHub fetch (`_candidate_paths_for` +
-    `coordinates.validate_diff_path` + `github.fetch.fetch_file_content_at`).
-    The filesystem-aware `coordinates.resolve_candidate_paths` is the
-    V1.5+ future shape.
+    Python import strings, not file paths; V1 trace per M8 + FUP-209
+    resolves each candidate via a suffix-strip probe ladder in
+    `agent/nodes/trace.py` (module-form paths first, then symbol-form
+    fallback levels gated by symbol verification; every path through
+    `coordinates.validate_diff_path`, fetch-probed via
+    `github.fetch.fetch_file_content_at`). The filesystem-aware
+    `coordinates.resolve_candidate_paths` is the V1.5+ future shape.
     """
     if line_end < line_start:
         # Fail loud on a transposed range. The sole V1 caller passes a
