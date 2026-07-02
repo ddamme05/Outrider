@@ -1234,9 +1234,12 @@ class TraceDecisionEvent(AuditEventBase):
     (c) ambiguous → len(resolved_candidate_paths) > 1 AND target_file is None
 
     Two parallel tuples:
-    - `proposed_import_strings`: the LLM-proposed dotted Python import strings
-      (any cardinality). Per DECISIONS.md#024 trace candidates are import
-      strings, not file paths.
+    - `proposed_import_strings`: the ADMITTED dotted Python import strings
+      (any cardinality) — canonicalized and, when the analyzed file's
+      from-imports contradict a candidate's module prefix, import-corrected
+      at parse admission (#024 from-import correction amendment); the raw
+      model strings live in the stored LLM exchange. Per DECISIONS.md#024
+      trace candidates are import strings, not file paths.
     - `resolved_candidate_paths`: the resolution outputs — file paths
       the import strings resolved to (any cardinality, including zero /
       one / multiple). V1 source per M8: GitHub fetch-probes (paths
@@ -1332,7 +1335,7 @@ class TraceDecisionEvent(AuditEventBase):
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         """Per-element audit-shadow `is_valid_import_string` on every
-        LLM-proposed import string + deterministic sort. Defense in depth
+        admitted import string + deterministic sort. Defense in depth
         against a direct emitter (replay path, test fixture, future
         callsite) bypassing `TraceCandidate.import_string`'s field
         validator. The upstream singleton field validates one import
@@ -1341,7 +1344,7 @@ class TraceDecisionEvent(AuditEventBase):
         non-canonical strings cannot persist into `audit_events`.
         Sorted ordering matches `_SET_SEMANTIC_IDENTITY_FIELDS` treating
         this field as set-semantic at persister-identity compare —
-        canonical bytes on disk + identity-stable across LLM proposal
+        canonical bytes on disk + identity-stable across proposal
         ordering noise.
         """
         return tuple(sorted(is_valid_import_string(value) for value in values))
@@ -1388,7 +1391,7 @@ class TraceDecisionEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_proposed_import_strings_unique(self) -> Self:
-        """`proposed_import_strings` is set-semantic: each LLM-proposed
+        """`proposed_import_strings` is set-semantic: each admitted
         import string is one consideration, not many. Duplicates would
         let the same logical trace decision hash differently (any future
         content-derived id over this field) and confuse audit-stream

@@ -17,8 +17,11 @@ redelivery, checkpoint replay, retry) is a no-op.
 
 Field shape per #024 amendment to #017:
 
-- `proposed_import_strings: tuple[str, ...]` — the LLM-proposed dotted
-  Python import strings (any cardinality).
+- `proposed_import_strings: tuple[str, ...]` — the ADMITTED dotted
+  Python import strings (any cardinality): canonicalized and, when the
+  analyzed file's from-imports contradict a candidate's module prefix,
+  import-corrected at parse admission (#024 from-import correction
+  amendment); raw model strings live in the stored LLM exchange.
 - `resolved_candidate_paths: tuple[str, ...]` — the resolution outputs
   (any cardinality). V1 source per M8: GitHub fetch-probes via
   `_resolve_via_probes` (paths whose `fetch_file_content_at` returned
@@ -119,7 +122,7 @@ class TraceDecision(BaseModel):
         construction (replay path, test fixture) bypassing the
         upstream singleton validator. Sorted ordering mirrors
         `TraceDecisionEvent._enforce_canonical_proposed_import_strings`
-        — state ↔ audit lockstep across replay (LLM proposal ordering
+        — state ↔ audit lockstep across replay (proposal ordering
         is non-deterministic; sorting canonicalizes both layers).
         Returns the sorted tuple of NFC-normalized canonical forms.
         """
@@ -163,7 +166,7 @@ class TraceDecision(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_proposed_import_strings_unique(self) -> Self:
-        """`proposed_import_strings` is set-semantic — each LLM-proposed
+        """`proposed_import_strings` is set-semantic — each admitted
         candidate is one consideration, not many. Duplicates would
         confuse audit-stream consumers and any future content-derived
         identifier over the tuple. Per #024 amendment: split uniqueness

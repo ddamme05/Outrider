@@ -2941,9 +2941,12 @@ export interface components {
          *     (c) ambiguous → len(resolved_candidate_paths) > 1 AND target_file is None
          *
          *     Two parallel tuples:
-         *     - `proposed_import_strings`: the LLM-proposed dotted Python import strings
-         *       (any cardinality). Per DECISIONS.md#024 trace candidates are import
-         *       strings, not file paths.
+         *     - `proposed_import_strings`: the ADMITTED dotted Python import strings
+         *       (any cardinality) — canonicalized and, when the analyzed file's
+         *       from-imports contradict a candidate's module prefix, import-corrected
+         *       at parse admission (#024 from-import correction amendment); the raw
+         *       model strings live in the stored LLM exchange. Per DECISIONS.md#024
+         *       trace candidates are import strings, not file paths.
          *     - `resolved_candidate_paths`: the resolution outputs — file paths
          *       the import strings resolved to (any cardinality, including zero /
          *       one / multiple). V1 source per M8: GitHub fetch-probes (paths
