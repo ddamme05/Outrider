@@ -414,6 +414,7 @@ async def _run(args: argparse.Namespace) -> int:
         f"  Target ............... {owner}/{repo} PR #{args.pr} "
         f"(installation {args.installation_id})"
     )
+    _say(f"  Review id ............ {review_id}  (the audit-trail key for this run)")
 
     try:
         pr_context, repo_id = await _fetch_pr_seed(
@@ -643,6 +644,44 @@ async def _seed_review_row(
         )
 
 
+def _say_post_hitl_verification(review_id: uuid.UUID) -> None:
+    """Emit the exact audit queries that reconstruct the publish leg after resume.
+
+    A HITL-gated run pauses at the gate; the resume -> publish leg then runs
+    server-side (dashboard /decide -> `Command(resume)` inside the uvicorn
+    process), so it never lands in THIS script's log. These two queries recover
+    the publish routing and the host identity straight from the append-only
+    audit trail once the reviewer approves in the dashboard. Field names are
+    verified against `audit/events.py` (PublishRoutingEvent / LLMCallEvent);
+    `event_type` is the top-level column, not a payload key. The routing ORDER BY
+    casts the line via the expression `(payload->>'line_start')::int`, never the
+    SELECT alias `line` — casting the alias raises `column "line" does not exist`.
+    """
+    rid = str(review_id)
+    _say()
+    _say("  ── After you approve in the dashboard, verify the publish leg ──")
+    _say("  Publish routing (inline_comment / review_body / dashboard_only):")
+    _say(
+        (
+            "    SELECT payload->>'destination' AS route, payload->>'file_path' AS file,\n"
+            "           payload->>'line_start' AS line, payload->>'reason' AS reason\n"
+            "    FROM audit_events WHERE review_id = 'REVIEW_ID'\n"
+            "      AND event_type = 'publish_routing'\n"
+            "    ORDER BY route, file, (payload->>'line_start')::int;"
+        ).replace("REVIEW_ID", rid)
+    )
+    _say("  Host identity (provider + model, from the audit trail):")
+    _say(
+        (
+            "    SELECT DISTINCT payload->>'profile_id' AS host, payload->>'model' AS model,\n"
+            "           payload->>'reasoning_enabled' AS reasoning,\n"
+            "           payload->>'pricing_version' AS pricing\n"
+            "    FROM audit_events WHERE review_id = 'REVIEW_ID'\n"
+            "      AND event_type = 'llm_call' ORDER BY model;"
+        ).replace("REVIEW_ID", rid)
+    )
+
+
 async def _report_and_verify(
     engine: AsyncEngine,
     session_factory: async_sessionmaker[Any],
@@ -682,6 +721,7 @@ async def _report_and_verify(
             "  Outcome .............. PAUSED at HITL gate (a CRITICAL/HIGH finding "
             "interrupted before publish — the gate working as designed; no comment posted)"
         )
+        _say_post_hitl_verification(review_id)
     elif publish_result is None:
         _say("  Outcome .............. graph ended before publish (no publish_result in state)")
     else:
