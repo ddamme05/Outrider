@@ -2146,8 +2146,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # scan object keyed the cache entry, so admission and key never fork.
         parameterized_call_scan=parameterized_call_scan,
         # From-import candidate correction: the file's own imports are the
-        # deterministic ground truth for a symbol's module; a hallucinated
-        # module prefix on a trace candidate is rewritten at admission.
+        # deterministic ground truth for a symbol's module; a candidate
+        # whose module prefix they contradict gains a corrected
+        # module-form sibling at admission (emitted alongside the
+        # original, never instead).
         import_refs=parse_result.imports,
     )
     if parser_result.counters.n_trace_candidates_module_corrected:
