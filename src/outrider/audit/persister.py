@@ -2950,13 +2950,19 @@ class AuditPersister:
         unique index guarantees at most one row per source_finding_id,
         so order never affects adoption outcomes).
         """
+        # The discriminator string MUST match TraceDecisionEvent's
+        # event_type Literal default. A future rename of the Literal
+        # value would silently disable this query if the filter were a
+        # hardcoded string. Pulled via `model_fields[...].default` so
+        # the magic string lives in one place: the schema declaration.
+        trace_event_type: str = TraceDecisionEvent.model_fields["event_type"].default
         async with self._session_factory() as session:
             payloads = (
                 await session.scalars(
                     select(AuditEventRow.payload)
                     .where(
                         AuditEventRow.review_id == review_id,
-                        AuditEventRow.event_type == "trace_decision",
+                        AuditEventRow.event_type == trace_event_type,
                     )
                     .order_by(AuditEventRow.timestamp)
                 )
