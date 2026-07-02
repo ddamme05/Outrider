@@ -77,9 +77,10 @@ MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 # reads the whole import_string as a module; level k strips the trailing
 # k components (symbol-form fallback: `svc.queries.run_query` needs
 # strip 1; `app.views.UserView.get` — method on a class — needs strip
-# 2). Depth 2 covers the module.symbol and module.Class.method emission
-# shapes real models produce; deeper nesting is not a real Python
-# module shape.
+# 2). Depth 2 covers the common module.symbol and module.Class.method
+# emission shapes; deeper chains (e.g. nested-class methods,
+# `pkg.mod.Outer.Inner.method`) are real Python but rare, and degrade
+# gracefully to `unresolved`. The cap is a deliberate probe-cost bound.
 MAX_SUFFIX_STRIP_LEVELS: Final[int] = 2
 
 # Hard ceiling on trace GitHub fetches per pass — Phase 1 probes AND
@@ -351,7 +352,11 @@ async def trace(
     # persister's natural-key identity guard, aborting the resumed
     # review. Adopt the persisted row instead — it is canonical per
     # M7 (b) — and skip probe + emit for that finding; the loud guard
-    # keeps firing for genuine same-run nondeterminism.
+    # keeps firing for concurrent-run / cross-run divergence (V1.5
+    # parallel-analyze, webhook redispatch) that this pass-start
+    # snapshot can miss. (Within one continuous run the guard cannot
+    # fire for a finding: `already_traced` blocks cross-pass re-entry
+    # and the bucket loop visits each finding once.)
     persisted_decisions: dict[UUID, TraceDecisionEvent] = {}
     if ranked_by_finding:
         persisted_decisions = {
@@ -673,11 +678,17 @@ class _ProbeOutcome:
 
 @dataclass(slots=True)
 class _ProbeBudget:
-    """Mutable per-pass Phase 1 fetch budget (`MAX_PROBE_FETCHES_PER_PASS`).
+    """Mutable per-pass fetch budget (`MAX_PROBE_FETCHES_PER_PASS`),
+    shared by Phase 1 probes and Phase 2 content fetches.
 
-    Consumed in deterministic bucket/candidate/path order, so which
-    probes get funded is reducer-deterministic. `exhausted_logged`
-    keeps the WARN to one line per pass.
+    Cross-bucket funding order is reducer-deterministic (buckets
+    process in sorted `source_finding_id` order). Intra-bucket funding
+    under starvation follows the Haiku ranking's candidate order —
+    PR-author-influenceable per the ordering rationale at the flatten
+    step — so the funded SUBSET is not reducer-deterministic; an
+    accepted tradeoff, since starvation only changes outcomes for
+    passes already past the 1024-fetch hostile threshold.
+    `exhausted_logged` keeps the WARN to one line per pass.
     """
 
     remaining: int
