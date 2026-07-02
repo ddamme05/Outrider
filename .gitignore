@@ -105,5 +105,9 @@ spikes/**/__pycache__/
 spikes/**/*.jsonl
 spikes/**/.local/
 
+# Local model-provider exploration spikes (Fireworks/GLM probes) — kept local.
+spikes/fireworks/
+spikes/glm/
+
 # --- Local dashboard feature write-ups (not a project artifact) ---
 stuff/
