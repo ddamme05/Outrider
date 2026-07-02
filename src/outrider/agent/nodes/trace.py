@@ -53,18 +53,20 @@ logger = logging.getLogger(__name__)
 
 # Cap on candidates probed per source-finding bucket per trace invocation.
 # Without a cap, a hostile (or buggy) analyze pass can emit N candidates
-# per finding × M findings × 2 paths-per-candidate GitHub fetches in
-# Phase 1; at `MAX_CANDIDATES_PER_FINDING` (below, 5) × the analyze-side
-# per-round finding ceiling (`MAX_FINDINGS_PER_ROUND`=200 non-gated, up to
-# `MAX_FINDINGS_HARD_CAP`=256 gated, FUP-180) × 2 paths that is ~2000-2560
-# requests per pass, ~4000-5000 across the depth-2 round limit — enough to
-# exhaust an installation's 5000/hr GitHub rate limit on a single hostile
-# PR. The cap is applied to insertion order (the order
+# per finding × M findings × up to 4 paths-per-candidate GitHub fetches
+# in Phase 1 (2 module-form probes + 2 parent-module fallback probes
+# when the module form misses, FUP-209); at `MAX_CANDIDATES_PER_FINDING`
+# (below, 5) × the analyze-side per-round finding ceiling
+# (`MAX_FINDINGS_PER_ROUND`=200 non-gated, up to
+# `MAX_FINDINGS_HARD_CAP`=256 gated, FUP-180) × 4 paths that is
+# ~4000-5120 requests per pass, ~8000-10240 across the depth-2 round
+# limit — enough to exhaust an installation's 5000/hr GitHub rate limit
+# on a single hostile PR. The cap is applied to insertion order (the order
 # analyze emitted candidates into `state.trace_candidates`, reducer-
 # controlled) BEFORE the Haiku ranking call, so membership in the
 # probed set is reducer-deterministic — a hostile analyze-LLM cannot
 # use ranking to smuggle attacker-chosen candidates past the cap.
-# `MAX_CANDIDATES_PER_FINDING × n_findings × 2` bounds GitHub fetches
+# `MAX_CANDIDATES_PER_FINDING × n_findings × 4` bounds GitHub fetches
 # per pass. The Haiku ranking step orders the post-cap bucket
 # (informs intra-bucket probe order; reserved for future probe-behavior
 # changes per spec M6 where order will gate early-exit). The full pre-
@@ -609,57 +611,47 @@ async def _resolve_via_probes(
     """Phase 1 per M8 — probe each candidate's possible paths via
     GitHub fetches at head SHA.
 
-    For each candidate import_string (`foo.bar`), construct the two
-    candidate paths (`foo/bar.py` AND `foo/bar/__init__.py`),
-    validate each via `coordinates.validate_diff_path`, then fetch-probe
-    via `github.fetch.fetch_file_content_at`. A path is "real" if the
+    Per-candidate probing is two-tier (FUP-209). Tier 1 reads the whole
+    import_string as a module: `foo.bar` → `foo/bar.py` AND
+    `foo/bar/__init__.py`. Only when NO tier-1 path is real does tier 2
+    read the trailing component as a symbol and probe the parent module:
+    `foo.py` AND `foo/__init__.py`. The fallback exists because real
+    models emit symbol-form candidates (`svc.queries.run_query`) despite
+    the prompt's module-form instruction; the tier precedence mirrors
+    Python's own resolution (a real module wins over the symbol reading)
+    and keeps module-form candidates from going ambiguous merely because
+    the parent package's `__init__.py` exists. Every path in either tier
+    is validated via `coordinates.validate_diff_path` then fetch-probed
+    via `github.fetch.fetch_file_content_at`; a path is "real" if the
     fetch returns content (not None).
 
-    Aggregate outcomes:
+    Aggregate outcomes (across all candidates in the bucket):
       - 1 real path → resolved
       - 0 real paths → unresolved
       - 2+ real paths → ambiguous
 
     Probe failures (non-404 errors) propagate per M8 transient semantics;
     404 / None content is admitted as "candidate did not resolve."
-
-    Path-validation failures (a candidate path that fails `validate_diff_path`
-    — extremely rare given the import_string field validator already
-    rejects shell metacharacters) are treated as probe negatives.
     """
     real_paths: list[str] = []
 
     for candidate in candidates:
-        for candidate_path in _candidate_paths_for(candidate.import_string):
-            try:
-                safe_path = validate_diff_path(candidate_path)
-            except CoordinateError:
-                continue
-            try:
-                content = await fetch_file_content_at(
-                    gh_client,
-                    owner=owner,
-                    repo=repo,
-                    path=safe_path,
-                    ref=head_sha,
-                )
-            except Exception as exc:
-                # 404 is the COMMON probe outcome: the LLM proposed a
-                # path that doesn't exist in this repo. Treat as
-                # "candidate did not resolve" (i.e., None content). All
-                # other HTTP errors (5xx / 403 / timeout / connection)
-                # propagate per M8 transient semantics — they signal
-                # GitHub-side issues that should abort the trace pass
-                # rather than silently miss a real path. Duck-typed
-                # `status_code` access mirrors the pattern at
-                # `github/publisher.py:355` (avoids importing the
-                # SDK-exception class outside the wrapper).
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status == 404:
-                    continue
-                raise
-            if content is not None:
-                real_paths.append(safe_path)
+        candidate_real = await _probe_path_batch(
+            _candidate_paths_for(candidate.import_string),
+            gh_client=gh_client,
+            owner=owner,
+            repo=repo,
+            head_sha=head_sha,
+        )
+        if not candidate_real:
+            candidate_real = await _probe_path_batch(
+                _parent_module_paths_for(candidate.import_string),
+                gh_client=gh_client,
+                owner=owner,
+                repo=repo,
+                head_sha=head_sha,
+            )
+        real_paths.extend(candidate_real)
 
     # Deduplicate while preserving order — two candidates could resolve
     # to the same path.
@@ -689,11 +681,62 @@ async def _resolve_via_probes(
     )
 
 
-def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
-    """Construct candidate paths from a dotted Python import string.
+async def _probe_path_batch(
+    candidate_paths: tuple[str, ...],
+    *,
+    gh_client: InstallationGitHubClient,
+    owner: str,
+    repo: str,
+    head_sha: str,
+) -> list[str]:
+    """Fetch-probe one tier of candidate paths; return the real ones.
 
-    `foo.bar` → `('foo/bar.py', 'foo/bar/__init__.py')`. Used by Phase 1
-    probes per M8. Does NOT consult the filesystem; the existence test
+    Path-validation failures (a candidate path that fails
+    `validate_diff_path` — extremely rare given the import_string field
+    validator already rejects shell metacharacters) are treated as
+    probe negatives.
+    """
+    real_paths: list[str] = []
+    for candidate_path in candidate_paths:
+        try:
+            safe_path = validate_diff_path(candidate_path)
+        except CoordinateError:
+            continue
+        try:
+            content = await fetch_file_content_at(
+                gh_client,
+                owner=owner,
+                repo=repo,
+                path=safe_path,
+                ref=head_sha,
+            )
+        except Exception as exc:
+            # 404 is the COMMON probe outcome: the LLM proposed a
+            # path that doesn't exist in this repo. Treat as
+            # "candidate did not resolve" (i.e., None content). All
+            # other HTTP errors (5xx / 403 / timeout / connection)
+            # propagate per M8 transient semantics — they signal
+            # GitHub-side issues that should abort the trace pass
+            # rather than silently miss a real path. Duck-typed
+            # `status_code` access mirrors the pattern at
+            # `github/publisher.py:355` (avoids importing the
+            # SDK-exception class outside the wrapper).
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 404:
+                continue
+            raise
+        if content is not None:
+            real_paths.append(safe_path)
+    return real_paths
+
+
+def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
+    """Construct tier-1 (module-form) paths from a dotted import string.
+
+    `foo.bar` → `('foo/bar.py', 'foo/bar/__init__.py')` — the whole
+    string read as a module. Used by Phase 1 probes per M8;
+    `_parent_module_paths_for` is the tier-2 symbol-form fallback
+    (FUP-209). Does NOT consult the filesystem; the existence test
     is the subsequent fetch-probe.
 
     Defensive: the schema validator already requires valid dotted
@@ -704,6 +747,23 @@ def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
     parts = import_string.split(".")
     base = "/".join(parts)
     return (f"{base}.py", f"{base}/__init__.py")
+
+
+def _parent_module_paths_for(import_string: str) -> tuple[str, ...]:
+    """Construct tier-2 (symbol-form) fallback paths (FUP-209).
+
+    Reads the trailing dotted component as a symbol defined in the
+    parent module: `svc.queries.run_query` → `('svc/queries.py',
+    'svc/queries/__init__.py')`. Single-segment strings have no parent
+    → empty tuple. Probed by `_resolve_via_probes` ONLY when no tier-1
+    path is real, so a resolvable module-form candidate never pays the
+    extra probes and never goes ambiguous against its parent package.
+    """
+    parts = import_string.split(".")
+    if len(parts) < 2:
+        return ()
+    parent = "/".join(parts[:-1])
+    return (f"{parent}.py", f"{parent}/__init__.py")
 
 
 async def _phase_two_content_fetch(
