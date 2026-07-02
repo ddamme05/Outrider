@@ -264,15 +264,33 @@ def test_tier_paths_delegate_to_candidate_paths() -> None:
     assert _tier_paths_for("a.b", 2) == ()
 
 
-def test_symbol_in_content_word_boundary() -> None:
-    """Symbol verification admits definitions, from-import re-exports,
-    and `__all__` entries; rejects absent names, substring-only matches
-    (word boundary), and non-UTF-8 content."""
+def test_symbol_in_content_admits_binding_contexts() -> None:
+    """Symbol verification admits defining contexts only: def / async
+    def / class, module-level bindings and annotations, import lines,
+    and parenthesized multi-line from-import continuations."""
     assert _symbol_in_content("run_query", b"def run_query(): ...\n")
+    assert _symbol_in_content("run_query", b"async def run_query(): ...\n")
+    assert _symbol_in_content("UserService", b"class UserService:\n    ...\n")
     assert _symbol_in_content("run_query", b"from .queries import run_query\n")
-    assert _symbol_in_content("run_query", b"__all__ = ['run_query']\n")
+    assert _symbol_in_content("run_query", b"import run_query\n")
+    multiline_import = b"from .queries import (\n    run_query,\n    other,\n)\n"
+    assert _symbol_in_content("run_query", multiline_import)
+    assert _symbol_in_content("DEFAULT_TIMEOUT", b"DEFAULT_TIMEOUT = 30\n")
+    assert _symbol_in_content("session", b"session: Session = make_session()\n")
+
+
+def test_symbol_in_content_rejects_incidental_uses() -> None:
+    """FUP-209 review F1: incidental appearances are NOT bindings — a
+    bare word-boundary match falsely resolved candidates with common
+    trailing names (get/data/id) to modules that never define them.
+    Attribute access, comments, string literals, substrings, absent
+    names, equality comparisons, and non-UTF-8 content all reject."""
+    assert not _symbol_in_content("get", b"session.get(url)\n")
+    assert not _symbol_in_content("data", b"# process data\n")
+    assert not _symbol_in_content("id", b'x = {"id": 1}\n')
     assert not _symbol_in_content("ghost", b"")
     assert not _symbol_in_content("query", b"def run_query(): ...\n")
+    assert not _symbol_in_content("flag", b"if flag == other:\n    ...\n")
     assert not _symbol_in_content("x", "é".encode("utf-16"))
 
 
