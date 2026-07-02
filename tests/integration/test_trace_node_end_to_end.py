@@ -353,11 +353,17 @@ async def test_unresolved_candidate_emits_decision_without_fetched_file(
         github_factory=_stub_github_factory,  # type: ignore[arg-type]
     )
 
-    # Phase 1 probed both candidate paths; Phase 2 did NOT fire
-    # (unresolved → no target_file to fetch). Set semantics on the
-    # probe pair survives a parallel-probes refactor.
-    assert set(call_log) == {"missing/module.py", "missing/module/__init__.py"}
-    assert len(call_log) == 2  # Phase 2 didn't fire
+    # Phase 1 probed both tiers — the module-form pair missed, so the
+    # symbol-form parent fallback probed too (FUP-209) — and Phase 2 did
+    # NOT fire (unresolved → no target_file to fetch). Set semantics on
+    # the probe paths survives a parallel-probes refactor.
+    assert set(call_log) == {
+        "missing/module.py",
+        "missing/module/__init__.py",
+        "missing.py",
+        "missing/__init__.py",
+    }
+    assert len(call_log) == 4  # Phase 2 didn't fire
 
     decisions = state_delta["trace_decisions"]
     fetched_files = state_delta["trace_fetched_files"]
