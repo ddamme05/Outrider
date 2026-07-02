@@ -2942,11 +2942,14 @@ export interface components {
          *
          *     Two parallel tuples:
          *     - `proposed_import_strings`: the ADMITTED dotted Python import strings
-         *       (any cardinality) — canonicalized and, when the analyzed file's
-         *       from-imports contradict a candidate's module prefix, import-corrected
-         *       at parse admission (#024 from-import correction amendment); the raw
-         *       model strings live in the stored LLM exchange. Per DECISIONS.md#024
-         *       trace candidates are import strings, not file paths.
+         *       (any cardinality) — canonicalized, plus corrected module-form
+         *       siblings emitted when the analyzed file's from-imports contradict a
+         *       candidate's module prefix (#024 from-import correction amendment;
+         *       the model's original always survives alongside). Raw model strings
+         *       live in the stored LLM exchange, recoverable within the content
+         *       retention window (`DECISIONS.md#012`/`#014`) — after the purge only
+         *       the admitted forms persist. Per DECISIONS.md#024 trace candidates
+         *       are import strings, not file paths.
          *     - `resolved_candidate_paths`: the resolution outputs — file paths
          *       the import strings resolved to (any cardinality, including zero /
          *       one / multiple). V1 source per M8: GitHub fetch-probes (paths

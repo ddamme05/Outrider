@@ -18,10 +18,12 @@ redelivery, checkpoint replay, retry) is a no-op.
 Field shape per #024 amendment to #017:
 
 - `proposed_import_strings: tuple[str, ...]` — the ADMITTED dotted
-  Python import strings (any cardinality): canonicalized and, when the
-  analyzed file's from-imports contradict a candidate's module prefix,
-  import-corrected at parse admission (#024 from-import correction
-  amendment); raw model strings live in the stored LLM exchange.
+  Python import strings (any cardinality): canonicalized, plus corrected
+  module-form siblings emitted when the analyzed file's from-imports
+  contradict a candidate's module prefix (#024 from-import correction
+  amendment; the model's original always survives alongside). Raw model
+  strings live in the stored LLM exchange, recoverable within the
+  content retention window.
 - `resolved_candidate_paths: tuple[str, ...]` — the resolution outputs
   (any cardinality). V1 source per M8: GitHub fetch-probes via
   `_resolve_via_probes` (paths whose `fetch_file_content_at` returned

@@ -111,6 +111,7 @@ from outrider.agent.nodes.analyze_parser import (
     ParserResult,
     ProposalRejection,
     ResponseRejection,
+    from_import_map_digest,
     parse_analyze_response,
 )
 from outrider.agent.nodes.cache_config import CacheMode
@@ -1896,6 +1897,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
             observed_producer_version=OBSERVED_PRODUCER_VERSION,
             subsumes_digest=SUBSUMES_DIGEST,
+            # Candidate correction's per-file input (#024 from-import
+            # amendment): corrected siblings depend on imports the
+            # rendered prompt doesn't carry.
+            from_import_map_digest=from_import_map_digest(parse_result.imports),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,

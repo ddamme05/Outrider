@@ -1235,11 +1235,14 @@ class TraceDecisionEvent(AuditEventBase):
 
     Two parallel tuples:
     - `proposed_import_strings`: the ADMITTED dotted Python import strings
-      (any cardinality) — canonicalized and, when the analyzed file's
-      from-imports contradict a candidate's module prefix, import-corrected
-      at parse admission (#024 from-import correction amendment); the raw
-      model strings live in the stored LLM exchange. Per DECISIONS.md#024
-      trace candidates are import strings, not file paths.
+      (any cardinality) — canonicalized, plus corrected module-form
+      siblings emitted when the analyzed file's from-imports contradict a
+      candidate's module prefix (#024 from-import correction amendment;
+      the model's original always survives alongside). Raw model strings
+      live in the stored LLM exchange, recoverable within the content
+      retention window (`DECISIONS.md#012`/`#014`) — after the purge only
+      the admitted forms persist. Per DECISIONS.md#024 trace candidates
+      are import strings, not file paths.
     - `resolved_candidate_paths`: the resolution outputs — file paths
       the import strings resolved to (any cardinality, including zero /
       one / multiple). V1 source per M8: GitHub fetch-probes (paths
@@ -2668,7 +2671,12 @@ class AnalyzeCompletedEvent(AuditEventBase):
     otherwise be invisible — a model emitting N duplicate candidate_ids
     indicates either prompt confusion or a model behavior worth tracking.
     Reviewers periodically suggest deduping here; that would erase the
-    signal, hence the explicit contract."""
+    signal, hence the explicit contract. Since the #024 from-import
+    correction amendment, the count also includes parser-emitted
+    corrected module-form SIBLINGS (one per correction; never replacing
+    the model's candidate), so it is model-proposals PLUS corrections —
+    the node's INFO log carries the per-file correction count when
+    disentangling matters."""
     n_trace_candidates_dropped_malformed: int = Field(ge=0, default=0)
     """Count of raw `trace_candidates` entries the parser DROPPED because
     `coordinates.is_valid_import_string` rejected the `import_string_raw`

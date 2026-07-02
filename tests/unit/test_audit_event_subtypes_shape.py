@@ -620,7 +620,7 @@ def test_hitl_decision_event_rejects_multiple_decisions_for_same_finding() -> No
 
 
 def test_trace_decision_event_rejects_duplicate_proposed_import_strings() -> None:
-    """`proposed_import_strings` is set-semantic — each LLM-proposed
+    """`proposed_import_strings` is set-semantic — each admitted
     candidate is one proposal, not many. Per #024 amendment to #017's
     uniqueness validator (split into two — one per tuple)."""
     kwargs = _trace_decision_kwargs()

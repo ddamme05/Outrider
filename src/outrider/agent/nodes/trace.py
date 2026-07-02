@@ -68,11 +68,12 @@ logger = logging.getLogger(__name__)
 # The Haiku ranking step orders the post-cap bucket (informs
 # intra-bucket probe order; reserved for future probe-behavior changes
 # per spec M6 where order will gate early-exit). The full pre-cap
-# admitted candidate list (canonicalized + from-import-corrected at
-# parse admission per #024) lives in `state.trace_candidates` for
-# forensic inspection; the raw model strings live in the stored LLM
-# exchange. `TraceDecisionEvent.proposed_import_strings` carries
-# ONLY the deduped+capped bucket per finding.
+# admitted candidate list (canonicalized, plus corrected module-form
+# siblings per #024's from-import amendment) lives in
+# `state.trace_candidates` for forensic inspection; raw model strings
+# live in the stored LLM exchange (recoverable within the content
+# retention window). `TraceDecisionEvent.proposed_import_strings`
+# carries ONLY the deduped+capped bucket per finding.
 MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 
 # Suffix-strip ladder depth for Phase 1 resolution (FUP-209). Level 0
@@ -379,7 +380,7 @@ async def trace(
         # `state.trace_candidates` (reducer-deduped per source finding);
         # operators wanting the full admitted proposal set for forensic
         # inspection read it from there (raw model strings: the stored
-        # LLM exchange).
+        # LLM exchange, within the content retention window).
         bucket = ranked_by_finding[finding_id]
 
         existing_event = persisted_decisions.get(finding_id)

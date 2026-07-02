@@ -39,6 +39,7 @@ _BASE_KWARGS = {
     "parameterized_call_scan_digest": "d" * 64,
     "observed_producer_version": OBSERVED_PRODUCER_VERSION,
     "subsumes_digest": SUBSUMES_DIGEST,
+    "from_import_map_digest": "9" * 64,
     # Host-identity triad (DECISIONS.md#056): the base case is QUALIFIED
     # (a Baseten-host, reasoning-off run) so the golden recipe exercises the
     # real fold; the unqualified all-None path has its own pin below.
@@ -76,6 +77,10 @@ def test_key_is_deterministic_64_hex() -> None:
         # A SUBSUMES relation edit changes the admitted set (DECISIONS.md#055),
         # so its digest must change the key — "f"*64 is a distinct-from-live probe.
         ("subsumes_digest", "f" * 64),
+        # A from-import change alters the corrected trace-candidate siblings
+        # (#024 from-import amendment) without touching the rendered prompt,
+        # so the map digest must change the key — "8"*64 is a probe.
+        ("from_import_map_digest", "8" * 64),
         # Host-identity triad (DECISIONS.md#056): a different host, a flipped
         # reasoning state, or a different profile contract is a different output
         # population for identical prompt bytes, so each must change the key.
@@ -85,13 +90,15 @@ def test_key_is_deterministic_64_hex() -> None:
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the seventeen inputs is load-bearing: changing any one of
+    """Each of the eighteen inputs is load-bearing: changing any one of
     them alone produces a different key (the correct-by-construction
     invalidation property the spec pins). `observed_producer_version`
     (Cost Lever 3) pins the deterministic OBSERVED producer's admission
     logic, `subsumes_digest` (DECISIONS.md#055) pins the cross-type
-    SUBSUMES relation, and the host-identity triad (DECISIONS.md#056)
-    splits the cache by provider host, so each change invalidates entries."""
+    SUBSUMES relation, `from_import_map_digest` (#024 from-import
+    amendment) pins candidate correction's per-file input, and the
+    host-identity triad (DECISIONS.md#056) splits the cache by provider
+    host, so each change invalidates entries."""
     base = compute_analyze_cache_key(**_BASE_KWARGS)
     varied = compute_analyze_cache_key(**{**_BASE_KWARGS, field: changed})
     assert varied != base, field
@@ -113,15 +120,15 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_seventeen_framed_fields() -> None:
+def test_golden_recipe_eighteen_framed_fields() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: seventeen length-prefixed fields — `ANALYZE_CACHE_KEY_VERSION`
+    test: eighteen length-prefixed fields — `ANALYZE_CACHE_KEY_VERSION`
     (the recipe-structure version, DECISIONS.md#056) first, then
     `_canonical_prompt_hash` output (one recipe, two consumers; never forks
-    from `LLMCallEvent.prompt_hash`), then the fifteen explicit
+    from `LLMCallEvent.prompt_hash`), then the sixteen explicit
     scope/version/identity components in declaration order, each framed
     `{len(bytes)}:` on UTF-8 bytes. The host-identity triad
-    (DECISIONS.md#056) is the last three of those fifteen: `profile_id`, then
+    (DECISIONS.md#056) is the last three of those sixteen: `profile_id`, then
     `reasoning_enabled` rendered `true`/`false`, then `profile_contract_digest`.
     Any change to the framing, the component order, or the prompt component's
     recipe fails this test — deliberately: that change is a cache-wide
@@ -147,6 +154,7 @@ def test_golden_recipe_seventeen_framed_fields() -> None:
         _BASE_KWARGS["parameterized_call_scan_digest"],
         _BASE_KWARGS["observed_producer_version"],
         _BASE_KWARGS["subsumes_digest"],
+        _BASE_KWARGS["from_import_map_digest"],
         _BASE_KWARGS["profile_id"],
         "true" if _BASE_KWARGS["reasoning_enabled"] else "false",
         _BASE_KWARGS["profile_contract_digest"],
@@ -257,9 +265,12 @@ def test_analyze_cache_key_version_pinned() -> None:
     ANALYZE_PARSER_VERSION (admitted-findings semantics): bump on ANY change to
     the cache-key component set, order, or framing. v1 was the implicit original
     recipe (no constant); v2 is the host-identity re-key (#056 folded the triad
-    in). It folds FIRST in `compute_analyze_cache_key`, so a bump re-keys the
-    whole cache — the explicit, replay-durable marker #056 mandates."""
-    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v2"
+    in); v3 folds `from_import_map_digest` (#024 from-import amendment —
+    corrected trace-candidate siblings depend on module-level imports the
+    rendered prompt doesn't carry). It folds FIRST in
+    `compute_analyze_cache_key`, so a bump re-keys the whole cache — the
+    explicit, replay-durable marker #056 mandates."""
+    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v3"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:

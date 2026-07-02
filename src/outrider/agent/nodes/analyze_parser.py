@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -81,10 +82,13 @@ if TYPE_CHECKING:
 # finding under a same-span JUDGED subsumer, again changing the admitted set;
 # this version pins the mechanism, while the SUBSUMES relation's CONTENT is
 # keyed separately via SUBSUMES_DIGEST in the cache key for future edge edits.
-# v5: from-import candidate correction — a trace candidate whose trailing
-# component the analyzed file visibly from-imports is rewritten to the
-# importing module (`_correct_against_from_imports`), changing the
-# `trace_candidates` stored in cache rows.
+# v5: from-import candidate correction — a trace candidate whose module
+# prefix the analyzed file's from-imports contradict gains a corrected
+# module-form sibling (`_correct_against_from_imports`, emitted alongside
+# the original — never instead), changing the `trace_candidates` stored
+# in cache rows. The map itself is a cache-key input
+# (`from_import_map_digest`) because corrected siblings depend on imports
+# the rendered prompt doesn't carry.
 # Code-pinned adjacent to what it versions, never injectable (the
 # TRIVIAL_FILTER_VERSION precedent).
 ANALYZE_PARSER_VERSION: Final = "analyze-parser-v5"
@@ -176,11 +180,10 @@ class ParserCounters:
     rationale). Default=0 so existing fixture-driven constructions
     don't break; the parser sets it explicitly when emitting."""
     n_trace_candidates_module_corrected: int = 0
-    """Count of admitted trace candidates whose module prefix was
-    rewritten against the analyzed file's from-imports
-    (`_correct_against_from_imports`). NOT mirrored to
-    `AnalyzeCompletedEvent` — node-log telemetry only; the model's
-    original string is recoverable from the stored LLM exchange."""
+    """Count of corrected module-form SIBLING candidates emitted
+    alongside originals whose module prefix the analyzed file's
+    from-imports contradict (`_correct_against_from_imports`). NOT
+    mirrored to `AnalyzeCompletedEvent` — node-log telemetry only."""
     n_findings_observed: int = 0
     """Deterministic OBSERVED-tier findings the analyze NODE merged into
     `admitted_findings` after parsing (Cost Lever 3). The parser never sets
@@ -383,10 +386,11 @@ def parse_analyze_response(
     n_proposals_seen = 0
     n_trace_candidates_dropped_malformed = 0
     n_trace_candidates_module_corrected = 0
-    # Built once per response: the analyzed file's from-import name→module
-    # map, the deterministic ground truth candidate admission corrects
-    # hallucinated module prefixes against.
-    from_import_modules = _build_from_import_map(import_refs)
+    # Built once per response (pass 0 only — candidate collection is
+    # pass-0-gated below): the analyzed file's from-import name→module
+    # map, the deterministic ground truth candidate admission emits
+    # corrected siblings against.
+    from_import_modules = _build_from_import_map(import_refs) if pass_index == 0 else {}
     for raw_proposal in raw.findings:
         n_proposals_seen += 1
 
@@ -883,40 +887,79 @@ def _build_from_import_map(import_refs: tuple[ImportRef, ...]) -> dict[str, str]
     direct imports bind module paths (nothing to correct against),
     relative modules can't be rewritten into absolute dotted candidates
     without package context, and star imports name no symbols.
+
+    Keys are NFC-normalized so lookups from canonicalized candidate
+    strings (`is_valid_import_string` NFC-normalizes) can't miss on a
+    decomposed-Unicode imported name. Values are validated through
+    `is_valid_import_string` AFTER shadowing resolves (last write wins,
+    THEN invalid modules drop) so a later producer-bug-shaped ref can't
+    resurrect an earlier shadowed module.
     """
     mapping: dict[str, str] = {}
     for ref in import_refs:
         if ref.import_kind != "from":
             continue
         for name in ref.names:
-            mapping[name] = ref.module
-    return mapping
+            mapping[unicodedata.normalize("NFC", name)] = ref.module
+    validated: dict[str, str] = {}
+    for name, module in mapping.items():
+        try:
+            validated[name] = is_valid_import_string(module)
+        except ValueError:
+            continue
+    return validated
+
+
+def from_import_map_digest(import_refs: tuple[ImportRef, ...]) -> str:
+    """SHA-256 over the validated from-import name→module map — the
+    analyze-cache-key component pinning candidate correction's per-file
+    input (the `scan_digest` / FUP-171 precedent).
+
+    Corrected sibling candidates depend on module-level imports the
+    rendered prompt does NOT carry (scope-unit bodies + hunks only), so
+    two reviews with byte-identical prompts but different from-imports
+    admit different trace_candidates and must never share a cache entry.
+    Hashes the POST-validation map — exactly the input the correction
+    consumes — as sorted `{name}={module};` pairs with a count header
+    (collision-safe: `is_valid_import_string` output contains neither
+    `=` nor `;`, and the header delimits the set). The empty map (no
+    from-imports, failed/degraded parse) digests distinctly from any
+    populated map.
+    """
+    mapping = _build_from_import_map(import_refs)
+    body = ";".join(f"{name}={module}" for name, module in sorted(mapping.items()))
+    payload = f"{len(mapping)}:{body}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _correct_against_from_imports(
     import_string: str,
     from_import_modules: Mapping[str, str],
-) -> str:
-    """Deterministically correct a candidate's module prefix against the
-    analyzed file's own from-imports.
+) -> str | None:
+    """Suggest the from-import-recorded module for a candidate whose
+    module prefix disagrees with the analyzed file's own imports.
 
     Real models sometimes hallucinate the module for a symbol the file
     visibly imports (live instance: `svc.utils.normalize_owner` proposed
     while the file says `from svc.db import normalize_owner`). When the
     trailing component matches a from-imported name AND the candidate's
-    prefix disagrees with the recorded importing module, the import wins
-    — deterministic ast_facts parse output, not model output — and the
-    candidate is rewritten to the importing module (module-form, the
-    DECISIONS.md#024 canonical candidate shape). Consistent candidates
-    pass through untouched: a symbol-form candidate whose prefix already
-    matches the import, a module-form candidate that IS the from-imported
-    submodule (`svc.db` under `from svc import db` — prefix equals the
-    mapped module), and the importing module itself.
+    prefix disagrees with the recorded importing module, that module —
+    deterministic ast_facts parse output, not model output — is returned
+    as a SUGGESTION (module-form, the DECISIONS.md#024 canonical shape).
+    The caller emits it ALONGSIDE the original candidate, never instead:
+    the trailing-name match is a heuristic, and a name collision
+    (`myproject.settings` vs `from django.conf import settings`) must
+    not clobber a valid candidate — the probe ladder resolves whichever
+    exists. Returns None (no suggestion) for consistent candidates: a
+    symbol-form prefix already matching the import, a module-form
+    candidate that IS the from-imported submodule (`svc.db` under
+    `from svc import db` — prefix equals the mapped module), and the
+    importing module itself.
     """
     prefix, _, trailing = import_string.rpartition(".")
     module = from_import_modules.get(trailing)
     if module is None or prefix == module or import_string == module:
-        return import_string
+        return None
     return module
 
 
@@ -933,9 +976,10 @@ def _collect_trace_candidates_for(
     or proposal-level-rejected — the audit-trail join is preserved
     across both outcomes per spec §6 step 10).
 
-    After canonicalization, each import string is corrected against the
-    file's from-imports (`_correct_against_from_imports`); the third
-    return element counts applied corrections.
+    After canonicalization, each candidate whose module prefix the
+    file's from-imports contradict gains a corrected module-form
+    SIBLING (`_correct_against_from_imports` — emitted alongside, never
+    instead); the third return element counts emitted siblings.
 
     Returns a list (caller extends its accumulator). Response-level
     rejections never reach this helper because no proposals exist at
@@ -980,36 +1024,52 @@ def _collect_trace_candidates_for(
             # audit row.
             n_dropped_malformed += 1
             continue
-        admitted_import = canonical_import
-        corrected = _correct_against_from_imports(canonical_import, from_import_modules)
-        if corrected != canonical_import:
-            try:
-                admitted_import = is_valid_import_string(corrected)
-                n_module_corrected += 1
-            except ValueError:
-                # Defensive: an ImportRef.module that isn't a valid
-                # dotted identifier (producer-bug shape) — keep the
-                # model's canonical form rather than dropping.
-                admitted_import = canonical_import
         try:
             candidate = TraceCandidate(
                 candidate_id=compute_candidate_id(
                     source_proposal_hash=proposal_hash,
-                    import_string=admitted_import,
+                    import_string=canonical_import,
                     reason=raw_cand.reason,
                 ),
                 source_proposal_hash=proposal_hash,
                 reason=raw_cand.reason,
-                import_string=admitted_import,
+                import_string=canonical_import,
             )
         except ValidationError:
-            # Defense-in-depth: should not fire given `admitted_import`
+            # Defense-in-depth: should not fire given `canonical_import`
             # just passed `is_valid_import_string` AND the candidate_id
             # is computed canonically. If it does, drop AND count as
             # malformed (same forensic bucket).
             n_dropped_malformed += 1
             continue
         out.append(candidate)
+
+        # Non-destructive from-import correction: when the file's own
+        # imports contradict the candidate's module prefix, EMIT a
+        # corrected module-form SIBLING alongside the original (never
+        # instead of it — the trailing-name match is a heuristic and a
+        # coincidental collision must not clobber a valid candidate;
+        # the probe ladder resolves whichever path exists). Map values
+        # are pre-validated at `_build_from_import_map`, so sibling
+        # construction shares the original's defensive except.
+        suggested_module = _correct_against_from_imports(canonical_import, from_import_modules)
+        if suggested_module is not None:
+            try:
+                sibling = TraceCandidate(
+                    candidate_id=compute_candidate_id(
+                        source_proposal_hash=proposal_hash,
+                        import_string=suggested_module,
+                        reason=raw_cand.reason,
+                    ),
+                    source_proposal_hash=proposal_hash,
+                    reason=raw_cand.reason,
+                    import_string=suggested_module,
+                )
+            except ValidationError:
+                n_dropped_malformed += 1
+                continue
+            out.append(sibling)
+            n_module_corrected += 1
     return out, n_dropped_malformed, n_module_corrected
 
 

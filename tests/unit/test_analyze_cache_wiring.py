@@ -27,7 +27,7 @@ import pytest
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.analyze_observed import OBSERVED_PRODUCER_VERSION
-from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION
+from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION, from_import_map_digest
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
@@ -333,6 +333,9 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         parameterized_call_scan_digest=scan_digest(scan_parameterized_calls(_HEAD.encode("utf-8"))),
         observed_producer_version=OBSERVED_PRODUCER_VERSION,
         subsumes_digest=SUBSUMES_DIGEST,
+        # _HEAD carries only a direct `import os` — no from-imports — so the
+        # node's digest over the parsed imports equals the empty-map digest.
+        from_import_map_digest=from_import_map_digest(()),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,
