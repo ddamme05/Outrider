@@ -61,27 +61,33 @@ from outrider.schemas import ReviewFinding, TraceCandidate
 from outrider.schemas.llm.analyze import AnalyzeResponseRaw
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from uuid import UUID
 
-    from outrider.ast_facts.models import ScopeUnit
+    from outrider.ast_facts.models import ImportRef, ScopeUnit
     from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
 # Versions the analyze node's admitted-findings semantics for the
 # analyze-cache key (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166):
-# bump on ANY change to what ends up in `admitted_findings` — the parser's
-# §6 admission flow (rejection rules, span gates, schema construction) AND
-# the node's post-parse OBSERVED merge — so cached findings can never be
-# served under rules that no longer produce them. v3 (DECISIONS.md#054):
+# bump on ANY change to what ends up in `admitted_findings` OR
+# `trace_candidates` — the parser's §6 admission flow (rejection rules,
+# span gates, schema construction, candidate admission) AND the node's
+# post-parse OBSERVED merge — so cached payloads can never be served
+# under rules that no longer produce them. v3 (DECISIONS.md#054):
 # prefer-OBSERVED evicts a JUDGED proposal colliding with an OBSERVED
 # finding, so a pre-v3 cache row would serve the stale JUDGED survivor.
 # v4 (DECISIONS.md#055): cross-type subsumption drops an admitted OBSERVED
 # finding under a same-span JUDGED subsumer, again changing the admitted set;
 # this version pins the mechanism, while the SUBSUMES relation's CONTENT is
 # keyed separately via SUBSUMES_DIGEST in the cache key for future edge edits.
+# v5: from-import candidate correction — a trace candidate whose trailing
+# component the analyzed file visibly from-imports is rewritten to the
+# importing module (`_correct_against_from_imports`), changing the
+# `trace_candidates` stored in cache rows.
 # Code-pinned adjacent to what it versions, never injectable (the
 # TRIVIAL_FILTER_VERSION precedent).
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v4"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v5"
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend
@@ -169,6 +175,12 @@ class ParserCounters:
     F1 audit-fold; sister field on AnalyzeCompletedEvent has the full
     rationale). Default=0 so existing fixture-driven constructions
     don't break; the parser sets it explicitly when emitting."""
+    n_trace_candidates_module_corrected: int = 0
+    """Count of admitted trace candidates whose module prefix was
+    rewritten against the analyzed file's from-imports
+    (`_correct_against_from_imports`). NOT mirrored to
+    `AnalyzeCompletedEvent` — node-log telemetry only; the model's
+    original string is recoverable from the stored LLM exchange."""
     n_findings_observed: int = 0
     """Deterministic OBSERVED-tier findings the analyze NODE merged into
     `admitted_findings` after parsing (Cost Lever 3). The parser never sets
@@ -233,6 +245,7 @@ def parse_analyze_response(
     valid_trace_path_elements: frozenset[str] = frozenset(),
     finish_reason: str = "unknown",
     parameterized_call_scan: ParameterizedCallScan | None = None,
+    import_refs: tuple[ImportRef, ...] = (),
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -369,6 +382,11 @@ def parse_analyze_response(
     trace_candidates: list[TraceCandidate] = []
     n_proposals_seen = 0
     n_trace_candidates_dropped_malformed = 0
+    n_trace_candidates_module_corrected = 0
+    # Built once per response: the analyzed file's from-import name→module
+    # map, the deterministic ground truth candidate admission corrects
+    # hallucinated module prefixes against.
+    from_import_modules = _build_from_import_map(import_refs)
     for raw_proposal in raw.findings:
         n_proposals_seen += 1
 
@@ -407,10 +425,13 @@ def parse_analyze_response(
         # execute. Gate at the parser boundary instead.
         proposal_trace_candidates: list[TraceCandidate] = []
         if pass_index == 0:
-            proposal_trace_candidates, n_dropped = _collect_trace_candidates_for(
-                raw_proposal, proposal_hash=proposal_hash
+            proposal_trace_candidates, n_dropped, n_corrected = _collect_trace_candidates_for(
+                raw_proposal,
+                proposal_hash=proposal_hash,
+                from_import_modules=from_import_modules,
             )
             n_trace_candidates_dropped_malformed += n_dropped
+            n_trace_candidates_module_corrected += n_corrected
 
         # Step 2: evidence_tier enum admission (runs first per the
         # bidirectional-validator requirement above).
@@ -742,6 +763,7 @@ def parse_analyze_response(
             n_responses_rejected=0,
             n_trace_candidates_emitted=len(trace_candidates),
             n_trace_candidates_dropped_malformed=n_trace_candidates_dropped_malformed,
+            n_trace_candidates_module_corrected=n_trace_candidates_module_corrected,
         ),
     )
 
@@ -854,17 +876,66 @@ def _build_proposal_rejection(
     )
 
 
+def _build_from_import_map(import_refs: tuple[ImportRef, ...]) -> dict[str, str]:
+    """Map each from-imported NAME in the analyzed file to its importing
+    module, later imports shadowing earlier ones (Python runtime
+    semantics). Only absolute `from M import name` refs participate:
+    direct imports bind module paths (nothing to correct against),
+    relative modules can't be rewritten into absolute dotted candidates
+    without package context, and star imports name no symbols.
+    """
+    mapping: dict[str, str] = {}
+    for ref in import_refs:
+        if ref.import_kind != "from":
+            continue
+        for name in ref.names:
+            mapping[name] = ref.module
+    return mapping
+
+
+def _correct_against_from_imports(
+    import_string: str,
+    from_import_modules: Mapping[str, str],
+) -> str:
+    """Deterministically correct a candidate's module prefix against the
+    analyzed file's own from-imports.
+
+    Real models sometimes hallucinate the module for a symbol the file
+    visibly imports (live instance: `svc.utils.normalize_owner` proposed
+    while the file says `from svc.db import normalize_owner`). When the
+    trailing component matches a from-imported name AND the candidate's
+    prefix disagrees with the recorded importing module, the import wins
+    — deterministic ast_facts parse output, not model output — and the
+    candidate is rewritten to the importing module (module-form, the
+    DECISIONS.md#024 canonical candidate shape). Consistent candidates
+    pass through untouched: a symbol-form candidate whose prefix already
+    matches the import, a module-form candidate that IS the from-imported
+    submodule (`svc.db` under `from svc import db` — prefix equals the
+    mapped module), and the importing module itself.
+    """
+    prefix, _, trailing = import_string.rpartition(".")
+    module = from_import_modules.get(trailing)
+    if module is None or prefix == module or import_string == module:
+        return import_string
+    return module
+
+
 def _collect_trace_candidates_for(
     raw: AnalyzeFindingProposalRaw,
     *,
     proposal_hash: str,
-) -> tuple[list[TraceCandidate], int]:
+    from_import_modules: Mapping[str, str],
+) -> tuple[list[TraceCandidate], int, int]:
     """Build the `TraceCandidate` list from a raw proposal's
     `trace_candidates`. Each candidate's `candidate_id` is content-
     derived via `compute_candidate_id`, `source_proposal_hash` is the
     parent proposal's hash (same value whether the parent was admitted
     or proposal-level-rejected — the audit-trail join is preserved
     across both outcomes per spec §6 step 10).
+
+    After canonicalization, each import string is corrected against the
+    file's from-imports (`_correct_against_from_imports`); the third
+    return element counts applied corrections.
 
     Returns a list (caller extends its accumulator). Response-level
     rejections never reach this helper because no proposals exist at
@@ -892,6 +963,7 @@ def _collect_trace_candidates_for(
     # (identifier-shaped) in the same DECISIONS-aligned commit.
     out: list[TraceCandidate] = []
     n_dropped_malformed = 0
+    n_module_corrected = 0
     for raw_cand in raw.trace_candidates:
         try:
             canonical_import = is_valid_import_string(raw_cand.import_string_raw)
@@ -908,26 +980,37 @@ def _collect_trace_candidates_for(
             # audit row.
             n_dropped_malformed += 1
             continue
+        admitted_import = canonical_import
+        corrected = _correct_against_from_imports(canonical_import, from_import_modules)
+        if corrected != canonical_import:
+            try:
+                admitted_import = is_valid_import_string(corrected)
+                n_module_corrected += 1
+            except ValueError:
+                # Defensive: an ImportRef.module that isn't a valid
+                # dotted identifier (producer-bug shape) — keep the
+                # model's canonical form rather than dropping.
+                admitted_import = canonical_import
         try:
             candidate = TraceCandidate(
                 candidate_id=compute_candidate_id(
                     source_proposal_hash=proposal_hash,
-                    import_string=canonical_import,
+                    import_string=admitted_import,
                     reason=raw_cand.reason,
                 ),
                 source_proposal_hash=proposal_hash,
                 reason=raw_cand.reason,
-                import_string=canonical_import,
+                import_string=admitted_import,
             )
         except ValidationError:
-            # Defense-in-depth: should not fire given `canonical_import`
+            # Defense-in-depth: should not fire given `admitted_import`
             # just passed `is_valid_import_string` AND the candidate_id
             # is computed canonically. If it does, drop AND count as
             # malformed (same forensic bucket).
             n_dropped_malformed += 1
             continue
         out.append(candidate)
-    return out, n_dropped_malformed
+    return out, n_dropped_malformed, n_module_corrected
 
 
 # Max length matches `Field(max_length=500)` on

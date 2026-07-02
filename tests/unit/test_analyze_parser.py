@@ -230,6 +230,7 @@ def test_parser_counters_field_set() -> None:
         "n_responses_rejected",
         "n_trace_candidates_emitted",
         "n_trace_candidates_dropped_malformed",
+        "n_trace_candidates_module_corrected",
         "n_findings_observed",
         "n_proposals_superseded_by_observed",
     }
@@ -306,6 +307,13 @@ def test_parse_analyze_response_signature() -> None:
         # veto. Defaults to None (veto disabled — the degraded-mode
         # value); the node supplies a scan for clean outcomes only.
         "parameterized_call_scan",
+        # `import_refs` added 2026-07-02 (FUP-209 follow-up): the
+        # analyzed file's ast_facts ImportRef tuple, ground truth for
+        # from-import candidate correction — a trace candidate whose
+        # trailing component the file visibly from-imports is rewritten
+        # to the importing module at admission. Defaults to `()`
+        # (correction disabled — the degraded/failed-parse value).
+        "import_refs",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -1374,6 +1382,162 @@ def test_step10_response_level_rejection_collects_no_trace_candidates() -> None:
     result = _call_parser("not valid json {{{")
     assert result.response_rejection is not None
     assert result.trace_candidates == ()
+
+
+# ---------------------------------------------------------------------------
+# Step 10, from-import candidate correction (FUP-209 follow-up): the analyzed
+# file's own imports are deterministic ground truth for a symbol's module;
+# a hallucinated module prefix is rewritten to the importing module at
+# admission. Live instance: `svc.utils.normalize_owner` proposed while the
+# file says `from svc.db import normalize_owner`.
+# ---------------------------------------------------------------------------
+
+
+def _from_import_ref(
+    module: str,
+    names: tuple[str, ...],
+    *,
+    kind: str = "from",
+    line: int = 1,
+) -> object:
+    from outrider.ast_facts.models import ImportRef
+
+    return ImportRef(
+        file_path="src/x.py",
+        line=line,
+        import_kind=kind,  # type: ignore[arg-type]
+        module=module,
+        names=names,
+        is_simple_direct=False,
+    )
+
+
+def _candidate_response(import_string_raw: str) -> str:
+    return _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[{"import_string_raw": import_string_raw, "reason": "r"}],
+        )
+    )
+
+
+def test_hallucinated_module_corrected_against_from_imports() -> None:
+    """The live FUP-209 shape: the model proposes `svc.utils.normalize_owner`
+    while the file from-imports `normalize_owner` from `svc.db`. The
+    candidate is rewritten to the importing module (module-form, the
+    DECISIONS#024 canonical shape) and the correction is counted."""
+    result = _call_parser(
+        _candidate_response("svc.utils.normalize_owner"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("svc.db", ("normalize_owner", "run_query")),),
+    )
+    assert len(result.trace_candidates) == 1
+    assert result.trace_candidates[0].import_string == "svc.db"
+    assert result.counters.n_trace_candidates_module_corrected == 1
+
+
+def test_consistent_symbol_form_candidate_not_corrected() -> None:
+    """`svc.db.run_query` under `from svc.db import run_query` — the prefix
+    already matches the importing module; the trace ladder handles the
+    symbol form, so no rewrite and no count."""
+    result = _call_parser(
+        _candidate_response("svc.db.run_query"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("svc.db", ("normalize_owner", "run_query")),),
+    )
+    assert result.trace_candidates[0].import_string == "svc.db.run_query"
+    assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+def test_module_form_submodule_import_not_corrected() -> None:
+    """`svc.db` under `from svc import db`: trailing 'db' maps to module
+    'svc', but the candidate IS the imported submodule (prefix equals the
+    mapped module) — rewriting to 'svc' would retarget the probe at the
+    package instead of the module. Unchanged."""
+    result = _call_parser(
+        _candidate_response("svc.db"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("svc", ("db",)),),
+    )
+    assert result.trace_candidates[0].import_string == "svc.db"
+    assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+def test_bare_symbol_candidate_corrected() -> None:
+    """A bare-symbol candidate (`normalize_owner`) probes a repo-root
+    module and dead-ends; the from-import map rewrites it to the
+    importing module."""
+    result = _call_parser(
+        _candidate_response("normalize_owner"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("svc.db", ("normalize_owner",)),),
+    )
+    assert result.trace_candidates[0].import_string == "svc.db"
+    assert result.counters.n_trace_candidates_module_corrected == 1
+
+
+def test_unmatched_candidate_not_corrected() -> None:
+    """A candidate whose trailing component matches no from-imported name
+    passes through untouched (also the empty-import_refs default: failed
+    or degraded parses disable correction)."""
+    result = _call_parser(
+        _candidate_response("pkg.ghost"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("svc.db", ("run_query",)),),
+    )
+    assert result.trace_candidates[0].import_string == "pkg.ghost"
+    assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+def test_relative_and_star_imports_do_not_correct() -> None:
+    """Relative modules can't be rewritten into absolute dotted candidates
+    without package context, and star imports name no symbols — neither
+    participates in the correction map."""
+    result = _call_parser(
+        _candidate_response("svc.utils.run_query"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(
+            _from_import_ref(".db", ("run_query",), kind="relative"),
+            _from_import_ref("svc.legacy", (), kind="star"),
+        ),
+    )
+    assert result.trace_candidates[0].import_string == "svc.utils.run_query"
+    assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+def test_later_from_import_shadows_earlier() -> None:
+    """Two from-imports binding the same name: the later one wins,
+    matching Python's runtime shadowing semantics."""
+    result = _call_parser(
+        _candidate_response("wrong.place.helper"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(
+            _from_import_ref("first.mod", ("helper",), line=1),
+            _from_import_ref("second.mod", ("helper",), line=2),
+        ),
+    )
+    assert result.trace_candidates[0].import_string == "second.mod"
+
+
+def test_invalid_import_ref_module_keeps_model_form() -> None:
+    """Defensive: an ImportRef whose module isn't a valid dotted identifier
+    (producer-bug shape) must not poison admission — the model's canonical
+    form is kept and nothing is counted as corrected."""
+    result = _call_parser(
+        _candidate_response("svc.utils.run_query"),
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+        import_refs=(_from_import_ref("123bad", ("run_query",)),),
+    )
+    assert result.trace_candidates[0].import_string == "svc.utils.run_query"
+    assert result.counters.n_trace_candidates_module_corrected == 0
 
 
 def test_counters_reflect_admitted_and_rejected_mix() -> None:

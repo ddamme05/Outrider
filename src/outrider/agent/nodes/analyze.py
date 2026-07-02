@@ -2140,7 +2140,18 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # FUP-162 veto facts, hoisted above the cache key (FUP-171): the SAME
         # scan object keyed the cache entry, so admission and key never fork.
         parameterized_call_scan=parameterized_call_scan,
+        # From-import candidate correction: the file's own imports are the
+        # deterministic ground truth for a symbol's module; a hallucinated
+        # module prefix on a trace candidate is rewritten at admission.
+        import_refs=parse_result.imports,
     )
+    if parser_result.counters.n_trace_candidates_module_corrected:
+        logger.info(
+            "analyze: corrected %d trace candidate module prefix(es) against "
+            "the from-imports of %s",
+            parser_result.counters.n_trace_candidates_module_corrected,
+            changed_file.path,
+        )
 
     # Deterministic OBSERVED-tier findings (Cost Lever 3): augment the LLM's
     # JUDGED findings with structural security-query matches. Clean-parse only
@@ -2678,6 +2689,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         # itself returns empty for any error-bearing tree, so a partially
         # erroring file disables the veto rather than trusting recovery.
         parameterized_call_scan=scan_parameterized_calls(content_bytes),
+        # Correction is a no-op here (candidate collection is pass-0-only)
+        # but threading the imports keeps both call sites uniform.
+        import_refs=parse_result.imports,
     )
 
     for proposal_rej in parser_result.proposal_rejections:
