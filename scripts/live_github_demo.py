@@ -297,6 +297,20 @@ async def _run(args: argparse.Namespace) -> int:
         "true",
         "yes",
     }
+    # Validate the host + reasoning config up front — before the first llm_host consumer (the
+    # key-env gate below) — so an unknown/empty OUTRIDER_LLM_HOST, or the anthropic+reasoning
+    # combo, fails clean at setup (exit 2) instead of a bare ValueError traceback mid-run.
+    # resolve_host_identity is the precondition build_graph's triad depends on; it rejects
+    # unknown hosts (via resolve_host_profile) AND the anthropic-has-no-reasoning-toggle case.
+    try:
+        resolve_host_identity(llm_host, reasoning=llm_reasoning)
+    except ValueError as exc:
+        _say(f"  Invalid LLM host/reasoning config: {exc}")
+        _say(
+            f"  OUTRIDER_LLM_HOST defaults to {ANTHROPIC_PROFILE_ID!r}; set a supported "
+            "host or unset the override. Aborting."
+        )
+        return 2
     # The required LLM key is host-dependent: ANTHROPIC_API_KEY for the native host, else the
     # profile's api_key_env (e.g. BASETEN_API_KEY). Gating on it means the op:// / not-set
     # checks below cover the actual key the run will use — a GLM run fails clean at setup, not
