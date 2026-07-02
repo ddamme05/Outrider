@@ -704,8 +704,9 @@ async def _resolve_via_probes(
     to ambiguous (a hallucinated candidate's parent-package
     `__init__.py` cannot pollute level 0).
 
-    A level-k hit (k >= 1) must pass symbol verification: the first
-    stripped component must appear as a word in the fetched module text
+    A level-k hit (k >= 1) must pass symbol verification: the fetched
+    module text must name the first stripped component in a defining
+    context — def/class, module-level binding, or import
     (`_symbol_in_content`). Existence alone would resolve any
     hallucinated `pkg.ghost` to `pkg/__init__.py` — which exists in
     essentially every package — so verification keeps hallucinated and
@@ -895,25 +896,44 @@ async def _probe_single_path(
 
 
 def _symbol_in_content(symbol: str, content: bytes) -> bool:
-    """Word-boundary check that `symbol` appears in the module text.
+    """Context-restricted check that the module text binds `symbol`.
 
     Guards the suffix-strip fallback against existence-only false
-    resolution: a level-k hit counts only if the first stripped
-    component appears in the fetched text — true for definitions,
-    `from .x import name` re-exports, and `__all__` entries; false for
-    hallucinated names against empty or unrelated modules. Deliberately
-    textual, not parsed: scope-level extraction would put an ast_facts
-    parse on every fallback probe for a yes/no gate. Wildcard
-    re-exports (`from .x import *`) don't name the symbol and reject —
-    the same `unresolved` outcome as before the fallback existed, never
-    a regression. Non-UTF-8 content rejects (a binary blob is not the
-    module the candidate names).
+    resolution: a level-k hit counts only if the fetched text names the
+    first stripped component in a DEFINING context — `def`/`async def`/
+    `class` statements, a module-level binding or annotation
+    (`name = …`, `name: T`), an import line naming it, or a bare name
+    on its own line (a parenthesized multi-line from-import
+    continuation). Incidental uses reject: attribute access
+    (`session.get(url)`), comments (`# process data`), and string
+    literals (`{"id": 1}`) are not bindings — a bare anywhere-in-text
+    word match would falsely resolve candidates with common trailing
+    names (`get`/`data`/`id`) to modules that never define them.
+    Deliberately textual, not parsed: scope-level extraction would put
+    an ast_facts parse on every fallback probe for a yes/no gate.
+    Wildcard re-exports (`from .x import *`) don't name the symbol and
+    reject — the same `unresolved` outcome as before the fallback
+    existed, never a regression. Non-UTF-8 content rejects (a binary
+    blob is not the module the candidate names).
     """
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return False
-    return re.search(rf"\b{re.escape(symbol)}\b", text) is not None
+    escaped = re.escape(symbol)
+    binding_contexts = re.compile(
+        # def SYMBOL / async def SYMBOL / class SYMBOL
+        rf"^\s*(?:async\s+)?def\s+{escaped}\b"
+        rf"|^\s*class\s+{escaped}\b"
+        # SYMBOL: T (annotation) | SYMBOL = … (binding); rejects == and :=
+        rf"|^\s*{escaped}\s*(?::(?!=)|=(?!=))"
+        # import SYMBOL | from x import … SYMBOL (single-line forms)
+        rf"|^\s*(?:from\s+\S+\s+)?import\b[^\n]*\b{escaped}\b"
+        # bare name line — parenthesized multi-line from-import continuation
+        rf"|^\s*{escaped}\s*,?\s*$",
+        re.MULTILINE,
+    )
+    return binding_contexts.search(text) is not None
 
 
 def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
