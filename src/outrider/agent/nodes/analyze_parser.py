@@ -1049,9 +1049,7 @@ def _collect_trace_candidates_for(
         # corrected module-form SIBLING alongside the original (never
         # instead of it — the trailing-name match is a heuristic and a
         # coincidental collision must not clobber a valid candidate;
-        # the probe ladder resolves whichever path exists). Map values
-        # are pre-validated at `_build_from_import_map`, so sibling
-        # construction shares the original's defensive except.
+        # the probe ladder resolves whichever path exists).
         suggested_module = _correct_against_from_imports(canonical_import, from_import_modules)
         if suggested_module is not None:
             try:
@@ -1066,7 +1064,14 @@ def _collect_trace_candidates_for(
                     import_string=suggested_module,
                 )
             except ValidationError:
-                n_dropped_malformed += 1
+                # Defensive-only (map values are pre-validated at
+                # `_build_from_import_map`; the other inputs already
+                # constructed the original). Deliberately NOT counted:
+                # `n_trace_candidates_dropped_malformed` means "raw model
+                # candidate rejected for malformed import_string_raw",
+                # and the sibling is synthetic — the raw candidate
+                # survived above. Dropping just the sibling degrades to
+                # exactly the pre-correction behavior.
                 continue
             out.append(sibling)
             n_module_corrected += 1
