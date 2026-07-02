@@ -838,7 +838,7 @@ async def _fetch_paths_into_memo(
     funded = to_fetch[: probe_budget.remaining] if probe_budget.remaining > 0 else []
     if len(funded) < len(to_fetch) and not probe_budget.exhausted_logged:
         logger.warning(
-            "trace: probe budget exhausted (MAX_PROBE_FETCHES_PER_PASS=%d); "
+            "trace: pass fetch budget exhausted (MAX_PROBE_FETCHES_PER_PASS=%d); "
             "%d probe path(s) skipped this pass — affected candidates "
             "resolve as unresolved",
             MAX_PROBE_FETCHES_PER_PASS,
