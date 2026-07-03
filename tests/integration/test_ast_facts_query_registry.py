@@ -19,9 +19,12 @@ import pytest
 
 from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.ast_facts.models import QueryCaptureSpan, QueryMatchSpan
+from outrider.queries import registry
 from outrider.queries.registry import (
     _DEPRECATED_QUERY_ID_TO_BODY,
+    _GRAMMARS_BY_QUERY_LANGUAGE,
     _QUERY_ID_TO_FILENAME,
+    _STRUCTURAL_QUERY_FILES_BY_LANGUAGE,
     _compile_and_validate,
     get_query_source,
     match,
@@ -46,18 +49,35 @@ def test_registry_loads_at_module_import() -> None:
 def test_every_registered_id_matches_canonical_fixture(
     canonical_python_source: bytes,
 ) -> None:
-    """Each registered query produces ≥1 match against the canonical
-    fixture — the determinism check that `audit/replay.py` will rely on."""
+    """Each structural query produces ≥1 match against its LANGUAGE'S
+    canonical fixture, under every grammar of that language — the
+    determinism check that `audit/replay.py` will rely on. Languages are
+    iterated explicitly so a future language's structural queries can
+    never run against another language's fixture bytes or the default
+    grammar (which would raise on the first non-python structural query):
+    a language that ships structural queries without a canonical fixture
+    wired here fails loud instead."""
+    fixture_by_language: dict[str, bytes] = {"python": canonical_python_source}
     # Defensive non-empty check (consistent with sibling tests in this
-    # file). Without this guard the loop body never fires when the
+    # file). Without this guard the loops below never fire when the
     # registry is empty, and the test passes vacuously.
     assert _QUERY_ID_TO_FILENAME, "registry must have at least one id"
-    for query_id in _QUERY_ID_TO_FILENAME:
-        spans = match(query_id, canonical_python_source)
-        assert spans, (
-            f"query {query_id!r} produced no matches against canonical "
-            f"fixture (registered queries should fire on it)"
+    for language, files in _STRUCTURAL_QUERY_FILES_BY_LANGUAGE.items():
+        if not files:
+            continue  # ships no structural queries (javascript today)
+        assert language in fixture_by_language, (
+            f"language {language!r} ships structural queries but has no "
+            f"canonical fixture wired into this test; add one."
         )
+        source = fixture_by_language[language]
+        for query_id in files:
+            for grammar in _GRAMMARS_BY_QUERY_LANGUAGE[language]:
+                spans = match(query_id, source, grammar=grammar)
+                assert spans, (
+                    f"query {query_id!r} produced no matches against the "
+                    f"{language} canonical fixture under grammar {grammar!r} "
+                    f"(registered structural queries should fire on it)"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +110,40 @@ def test_deprecated_ledger_disjoint_from_active() -> None:
     assert active.isdisjoint(deprecated), (
         f"id collision between active and deprecated ledgers: {active & deprecated}"
     )
+
+
+def test_deprecated_ledger_compiles_under_prefix_language_grammars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deprecated id compiles under every grammar of the language named by
+    its namespace prefix — a `javascript.*` deprecation must compile under
+    the three JS-family grammars, never the python grammar (whose node
+    types differ, so a python-hardcoded compile would crash every import
+    on the first non-python deprecation)."""
+    monkeypatch.setattr(
+        registry,
+        "_DEPRECATED_QUERY_ID_TO_BODY",
+        {"javascript.legacy_probe": "(call_expression) @call"},
+    )
+    bodies, compiled = registry._load_and_compile()  # noqa: SLF001
+    assert bodies["javascript.legacy_probe"]
+    assert set(compiled["javascript.legacy_probe"]) == {"javascript", "typescript", "tsx"}
+
+
+def test_deprecated_ledger_unknown_prefix_rejects_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An id whose namespace prefix names no catalog language fails
+    registration with an actionable message at import, not a bare KeyError
+    (or a silent wrong-grammar compile — `(call)` IS a valid python node
+    type, so the pre-fix python-hardcoded compile would have accepted it)."""
+    monkeypatch.setattr(
+        registry,
+        "_DEPRECATED_QUERY_ID_TO_BODY",
+        {"go.legacy_probe": "(call) @c"},
+    )
+    with pytest.raises(ValueError, match="not a known catalog language"):
+        registry._load_and_compile()  # noqa: SLF001
 
 
 def test_file_rename_preserves_id_stability(tmp_path: Path) -> None:
