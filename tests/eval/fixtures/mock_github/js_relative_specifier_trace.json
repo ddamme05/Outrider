@@ -1,0 +1,38 @@
+{
+ "installation_id": 5302,
+ "owner": "acme",
+ "repo": "webshop",
+ "pr_number": 52,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Add user lookup routes",
+ "author": "someone",
+ "total_additions": 8,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "src/routes/user.js",
+   "status": "modified",
+   "additions": 8,
+   "deletions": 0,
+   "patch": "@@ -1 +1,9 @@\n const { runQuery } = require('./db');\n+\n+function getUser(req, res) {\n+  return runQuery(req.query.name);\n+}\n+\n+function listUsers(req, res) {\n+  return runQuery(req.query.filter);\n+}\n",
+   "content_base": "const { runQuery } = require('./db');\n",
+   "content_head": "const { runQuery } = require('./db');\n\nfunction getUser(req, res) {\n  return runQuery(req.query.name);\n}\n\nfunction listUsers(req, res) {\n  return runQuery(req.query.filter);\n}\n"
+  }
+ ],
+ "repository_contents_head": {
+  "src/routes/db.js": "const db = require('better-sqlite3')('app.db');\n\nfunction runQuery(q) {\n  return db.exec(\"SELECT * FROM users WHERE name = '\" + q + \"'\");\n}\n\nmodule.exports = { runQuery };\n"
+ },
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"src/routes/user.js\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review new user routes forwarding request input to a query helper.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": [{\"finding_type\": \"missing_input_validation\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unvalidated request input forwarded to query helper\", \"description\": \"getUser forwards req.query.name into runQuery from './db' without validation; examine the helper for unsafe query construction.\", \"evidence\": \"  return runQuery(req.query.name);\", \"line_start\": 4, \"line_end\": 4, \"trace_candidates\": [{\"import_string_raw\": \"./db\", \"reason\": \"runQuery is imported from './db'; examine its query construction.\"}]}, {\"finding_type\": \"missing_input_validation\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unvalidated filter forwarded to query helper\", \"description\": \"listUsers forwards req.query.filter into runQuery; a related helper may live outside the repo tree.\", \"evidence\": \"  return runQuery(req.query.filter);\", \"line_start\": 8, \"line_end\": 8, \"trace_candidates\": [{\"import_string_raw\": \"../../evil\", \"reason\": \"hostile-looking sibling reference that should not resolve.\"}]}]}",
+   "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"inferred\", \"query_match_id\": null, \"trace_path\": [\"runQuery\"], \"title\": \"String-concatenated SQL in traced query helper\", \"description\": \"runQuery concatenates the caller-supplied value directly into a SELECT statement; reached from getUser via the traced './db' import.\", \"evidence\": \"  return db.exec(\\\"SELECT * FROM users WHERE name = '\\\" + q + \\\"'\\\");\", \"line_start\": 4, \"line_end\": 4, \"trace_candidates\": []}, {\"finding_type\": \"sql_injection\", \"evidence_tier\": \"observed\", \"query_match_id\": \"python.call_with_fstring:deadbeef\", \"trace_path\": null, \"title\": \"Fabricated observed claim on a JS file\", \"description\": \"This proposal claims structural evidence no query produced; admission must reject it.\", \"evidence\": \"  return db.exec(...);\", \"line_start\": 4, \"line_end\": 4, \"trace_candidates\": []}]}"
+  ],
+  "synthesize": [
+   "One traced sql_injection finding in the relative-specifier-resolved query helper."
+  ]
+ }
+}
