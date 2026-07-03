@@ -1,11 +1,14 @@
 """Unit tests for `queries.registry` public surface.
 
-Pins the contract that `REGISTERED_QUERY_IDS` is the analyze node's
-OBSERVED-admission set — every claim cross-referenced against this
-frozenset at `analyze_parser.py`'s producer-admission step. A drift in
-construction (e.g., including deprecated ids, or missing a freshly-added
-query) would silently shift which `query_match_id` claims the parser
-accepts; pinning the set construction catches that.
+Pins the contract that `REGISTERED_QUERY_IDS` is the all-languages union
+of structural (model-citable) query ids, from which the analyze node's
+per-file OBSERVED-admission set is selected via
+`structural_query_ids_for(language)` — every claim cross-referenced
+against that per-language set at `analyze_parser.py`'s producer-admission
+step. A drift in construction (e.g., including deprecated ids, missing a
+freshly-added query, or a language selecting another language's ids)
+would silently shift which `query_match_id` claims the parser accepts;
+pinning the set construction catches that.
 """
 
 from __future__ import annotations
@@ -52,11 +55,23 @@ def test_registered_query_ids_excludes_deprecated() -> None:
 
 
 def test_registered_query_ids_pins_v1_python_set() -> None:
-    """V1 ships exactly four Python tree-sitter queries; pin the
-    membership so a silent removal (e.g., during a query-refactor that
-    drops `python.import_statement` and forgets to re-add it) surfaces
-    here rather than as missed OBSERVED admissions at runtime."""
+    """V1 ships exactly four Python structural queries and — deliberately —
+    ZERO javascript ones (the JS/TS catalog is OBSERVED-only, so the union
+    equals the python set); pin the membership so a silent removal (e.g.,
+    during a query-refactor that drops `python.import_statement` and
+    forgets to re-add it) surfaces here rather than as missed OBSERVED
+    admissions at runtime."""
     assert registry.REGISTERED_QUERY_IDS == _EXPECTED_PYTHON_QUERY_IDS
+
+
+def test_structural_query_ids_select_per_language() -> None:
+    """The per-file admission selector: python selects the four structural
+    ids, javascript selects the EMPTY set (no structural queries registered
+    — model OBSERVED claims on JS/TS reject by registration), and a
+    catalog-less language (None) selects empty."""
+    assert registry.structural_query_ids_for("python") == _EXPECTED_PYTHON_QUERY_IDS
+    assert registry.structural_query_ids_for("javascript") == frozenset()
+    assert registry.structural_query_ids_for(None) == frozenset()
 
 
 def test_registered_query_ids_callers_get_consistent_set() -> None:

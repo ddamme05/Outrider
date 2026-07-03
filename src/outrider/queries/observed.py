@@ -17,12 +17,21 @@ policy. `queries/` is a higher layer and may import `policy/`.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 # Runtime import (not TYPE_CHECKING): Pydantic resolves field annotations at
 # model-build time, so `FindingType` must be in the runtime namespace.
 from outrider.policy.severity import FindingType  # noqa: TC001
+
+# Catalog partition key (specs/2026-07-03-js-ts-observed-query-catalog.md):
+# which language's source a query is written against. "javascript" covers the
+# whole JS/TS family — one catalog, compiled per grammar dialect by the
+# registry (`_GRAMMARS_BY_QUERY_LANGUAGE`). Distinct from the registry's
+# grammar kind: a QueryLanguage selects the query SET for a file; the grammar
+# selects the compiled variant + parser for its bytes.
+QueryLanguage = Literal["python", "javascript"]
 
 
 class QueryClass(StrEnum):
@@ -53,13 +62,16 @@ class ObservedQuery(BaseModel):
     `_DIGEST_EXCLUDED_OBSERVED_FIELDS` per FUP-181), so a metadata edit
     invalidates stale cached analyze outcomes. `query_match_id` is the digest
     KEY (folded as the id, not as a field); `filename` is excluded — an impl
-    detail, since the `.scm` BODY is folded, not its name.
+    detail, since the `.scm` BODY is folded, not its name. `language` selects
+    which files the query runs against (and which grammars compile it); it
+    folds into the digest like the other routing fields.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     query_match_id: str
     filename: str
+    language: QueryLanguage
     finding_type: FindingType
     query_class: QueryClass = QueryClass.SIGNAL_ONLY
     title: str

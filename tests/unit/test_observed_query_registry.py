@@ -24,11 +24,17 @@ from outrider.queries.observed import QueryClass
 
 
 def test_observed_query_count() -> None:
-    """The OBSERVED seed library has eleven queries (8 from the v1 library +
-    weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193 step 1; +
-    weak_asymmetric_key_size, FUP-193 the value-predicate slice)."""
-    assert len(registry.OBSERVED_QUERY_IDS) == 11
+    """The OBSERVED library has eighteen queries: eleven Python (8 from the
+    v1 library + weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193
+    step 1; + weak_asymmetric_key_size, the value-predicate slice) + seven
+    JS/TS (the four-family catalog,
+    specs/2026-07-03-js-ts-observed-query-catalog.md)."""
+    assert len(registry.OBSERVED_QUERY_IDS) == 18
     assert set(registry.OBSERVED_QUERIES) == set(registry.OBSERVED_QUERY_IDS)
+    by_language = {"python": 0, "javascript": 0}
+    for oq in registry.OBSERVED_QUERIES.values():
+        by_language[oq.language] += 1
+    assert by_language == {"python": 11, "javascript": 7}
 
 
 def test_observed_queries_default_deny_all_signal_only() -> None:
@@ -65,10 +71,13 @@ def test_observed_ids_resolve_via_get_query_source() -> None:
 
 
 def test_observed_filename_matches_id_resolution() -> None:
-    """match() resolves every OBSERVED id (loaded + compiled)."""
-    for qid in registry.OBSERVED_QUERY_IDS:
-        # Empty source: registered query, zero matches — must NOT raise.
-        assert registry.match(qid, b"") == ()
+    """match() resolves every OBSERVED id (loaded + compiled) under EVERY
+    grammar its language compiles for — a JS/TS catalog query must resolve
+    under javascript, typescript, AND tsx."""
+    for oq in registry.OBSERVED_QUERIES.values():
+        for grammar in registry._GRAMMARS_BY_QUERY_LANGUAGE[oq.language]:
+            # Empty source: registered query, zero matches — must NOT raise.
+            assert registry.match(oq.query_match_id, b"", grammar=grammar) == ()
 
 
 def test_observed_is_separate_from_structural_registered_set() -> None:
@@ -160,6 +169,7 @@ def test_digest_folds_every_non_excluded_field() -> None:
     mutations = {
         "finding_type": other_ft,
         "query_class": QueryClass.SKIP_SAFE,
+        "language": "javascript" if orig.language == "python" else "python",
         "title": orig.title + " (edited)",
         "description": orig.description + " edited",
     }
@@ -174,20 +184,37 @@ def test_digest_folds_every_non_excluded_field() -> None:
 
 
 def test_observed_sweep_parses_source_once() -> None:
-    """FUP-182: a clean file is parsed ONCE across the OBSERVED sweep, not once per
-    query. match() memoizes the parse, so firing every OBSERVED query against
-    byte-identical source is a single tree-sitter parse (one cache miss) and the
-    rest cache hits; a different source is a fresh parse (the memo is per-source,
-    not a global parse-once)."""
+    """FUP-182: a clean file is parsed ONCE across its language's OBSERVED
+    sweep, not once per query. match() memoizes the parse keyed by
+    (source, grammar), so firing every same-language OBSERVED query against
+    byte-identical source is a single tree-sitter parse (one cache miss) and
+    the rest cache hits; a different source OR a different grammar is a fresh
+    parse (the memo is per-(source, grammar), not a global parse-once)."""
     registry._parse_cached.cache_clear()
+    python_ids = sorted(
+        oq.query_match_id for oq in registry.OBSERVED_QUERIES.values() if oq.language == "python"
+    )
     src = b"RSA.generate(1024)\nDES.new(key)\nyaml.load(data)\n"
-    for qid in registry.OBSERVED_QUERY_IDS:
+    for qid in python_ids:
         registry.match(qid, src)
     info = registry._parse_cached.cache_info()
     assert info.misses == 1, f"OBSERVED sweep parsed {info.misses} times, want 1"
-    assert info.hits == len(registry.OBSERVED_QUERY_IDS) - 1
+    assert info.hits == len(python_ids) - 1
 
     # A distinct source is a distinct parse — the memo is keyed by source bytes.
-    registry.match(next(iter(registry.OBSERVED_QUERY_IDS)), b"DES.new(other)\n")
+    registry.match(python_ids[0], b"DES.new(other)\n")
     assert registry._parse_cached.cache_info().misses == 2
+
+    # A distinct GRAMMAR over byte-identical source is also a distinct parse:
+    # the same bytes under two grammars are two different trees.
+    js_ids = sorted(
+        oq.query_match_id
+        for oq in registry.OBSERVED_QUERIES.values()
+        if oq.language == "javascript"
+    )
+    for qid in js_ids:
+        registry.match(qid, src, grammar="javascript")
+    info = registry._parse_cached.cache_info()
+    assert info.misses == 3, "same bytes under a second grammar must be a fresh parse"
+    assert info.hits == (len(python_ids) - 1) + (len(js_ids) - 1)
     registry._parse_cached.cache_clear()

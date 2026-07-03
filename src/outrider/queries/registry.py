@@ -5,13 +5,33 @@
 Owns:
   * The `query_match_id` → query-body mapping (file-stem decoupled
     per Internal contracts: renaming a `.scm` file does not churn ids).
-  * The compiled `tree_sitter.Query` cache (built at module load).
-  * Two public functions:
+  * The compiled `tree_sitter.Query` cache (built at module load),
+    language-keyed since the JS/TS OBSERVED catalog
+    (specs/2026-07-03-js-ts-observed-query-catalog.md): each query
+    compiles under every grammar of its `QueryLanguage` — python
+    queries under the python grammar; javascript-family queries under
+    javascript, typescript, AND tsx (one catalog, three dialects).
+  * The extension → (query language, grammar) selection maps, derived
+    from the `ast_facts` registry's extension groups so query
+    selection can never disagree with adapter dispatch. An extension
+    absent from the maps means "registered language with no catalog":
+    the selectors return None/empty and the OBSERVED producer stays
+    inert — fail-SAFE by construction (no query set → no OBSERVED
+    claim possible), which is why there is deliberately no totality
+    assert here, unlike analyze's fence/trace-form tables where a
+    missing entry would be a wrong-ADMISSION bug.
+  * Public functions:
       - `get_query_source(id) -> str` for documentation / audit-trail use.
-      - `match(id, source) -> tuple[QueryMatchSpan, ...]` for replay
-        and analyze-node use; returns fully domain-modeled results so
-        no `tree_sitter.Query`/`Node`/`QueryCursor` ever leaves
-        `queries/` per `docs/trust-boundaries.md` §4 (AST firewall).
+      - `match(id, source, grammar=...) -> tuple[QueryMatchSpan, ...]`
+        for replay and analyze-node use; returns fully domain-modeled
+        results so no `tree_sitter.Query`/`Node`/`QueryCursor` ever
+        leaves `queries/` per `docs/trust-boundaries.md` §4 (AST
+        firewall). The grammar picks the parser + compiled variant;
+        a grammar the query was not compiled for raises (a python
+        query can never run over JS bytes, and vice versa).
+      - `query_language_for_path` / `grammar_for_path` /
+        `observed_queries_for` / `structural_query_ids_for` — the
+        per-file selection surface the analyze node consumes.
 
 Mandatory-capture rejection runs at module-load time per Internal
 contracts: a registered pattern with zero `@` captures, or with all
@@ -32,17 +52,24 @@ from __future__ import annotations
 import hashlib
 import json
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
+import tree_sitter_javascript
 import tree_sitter_python
+import tree_sitter_typescript
 from tree_sitter import Language, Parser, Query, QueryCursor, Tree
 
 from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.ast_facts.models import QueryCaptureSpan, QueryMatchSpan
+from outrider.ast_facts.registry import (
+    JAVASCRIPT_EXTENSIONS,
+    PYTHON_EXTENSIONS,
+    TYPESCRIPT_DIALECT_BY_EXTENSION,
+)
 from outrider.policy.severity import FindingType
-from outrider.queries.observed import ObservedQuery, QueryClass
+from outrider.queries.observed import ObservedQuery, QueryClass, QueryLanguage
 from outrider.queries.value_predicates import VALUE_PREDICATES
 
 if TYPE_CHECKING:
@@ -51,46 +78,114 @@ if TYPE_CHECKING:
     from outrider.queries.value_predicates import ValuePredicate
 
 # ---------------------------------------------------------------------------
-# Compiled language and parser (module-level singletons)
+# Compiled languages and parsers (module-level singletons, one per grammar).
+# All grammars load eagerly at module import — deliberately NOT the ast_facts
+# lazy-per-language discipline: the registry's Internal-contracts guarantee is
+# that every registered query compiles + passes mandatory-capture validation
+# at IMPORT, not at first runtime use, and per-language laziness would move
+# that failure to mid-review. The grammar wheels are non-optional deps of the
+# analyze path that imports this module, so there is no isolation to buy.
 # ---------------------------------------------------------------------------
 
-_PY_LANGUAGE: Final = Language(tree_sitter_python.language())
-_PARSER: Final = Parser(_PY_LANGUAGE)
+# The grammar that parses a file's bytes and keys a query's compiled variant.
+# Finer than `QueryLanguage`: the "javascript" CATALOG runs under three
+# grammars (javascript / typescript / tsx), one per dialect family.
+GrammarKind = Literal["python", "javascript", "typescript", "tsx"]
+
+_LANGUAGES: Final[dict[GrammarKind, Language]] = {
+    "python": Language(tree_sitter_python.language()),
+    "javascript": Language(tree_sitter_javascript.language()),
+    "typescript": Language(tree_sitter_typescript.language_typescript()),
+    "tsx": Language(tree_sitter_typescript.language_tsx()),
+}
+_PARSERS: Final[dict[GrammarKind, Parser]] = {
+    grammar: Parser(language) for grammar, language in _LANGUAGES.items()
+}
+
+# Which grammars compile each catalog language's queries. The JS/TS family is
+# ONE catalog (`queries/javascript/`) compiled per dialect grammar — the
+# probe-validated node shapes are identical across the three for every
+# construct the catalog anchors on, and a future dialect-specific divergence
+# surfaces as a compile failure at import, not a silent mismatch.
+_GRAMMARS_BY_QUERY_LANGUAGE: Final[dict[QueryLanguage, tuple[GrammarKind, ...]]] = {
+    "python": ("python",),
+    "javascript": ("javascript", "typescript", "tsx"),
+}
+
+# Extension → catalog-language / grammar selection, derived from the
+# ast_facts registry's extension groups (single source of truth for what
+# each extension IS). Absence = registered-or-unknown language with NO
+# catalog → selectors return None/empty → OBSERVED producer inert
+# (fail-safe; see module docstring for why there is no totality assert).
+_QUERY_LANGUAGE_BY_EXTENSION: Final[dict[str, QueryLanguage]] = {
+    **dict.fromkeys(PYTHON_EXTENSIONS, "python"),
+    **dict.fromkeys(JAVASCRIPT_EXTENSIONS, "javascript"),
+    **dict.fromkeys(TYPESCRIPT_DIALECT_BY_EXTENSION, "javascript"),
+}
+_GRAMMAR_BY_EXTENSION: Final[dict[str, GrammarKind]] = {
+    **dict.fromkeys(PYTHON_EXTENSIONS, "python"),
+    **dict.fromkeys(JAVASCRIPT_EXTENSIONS, "javascript"),
+    **TYPESCRIPT_DIALECT_BY_EXTENSION,
+}
 
 # Parse memo (FUP-182). `match()` -- and every OBSERVED / structural / trivial-scope
 # sweep that calls it -- re-parsed byte-identical source per query: up to ~12
 # full-file parses of one file per review. Memoize the parse so a clean file is
 # parsed ONCE across all sweeps (the firewall keeps the parse inside `queries/`,
 # so this registry-internal cache is the only place cross-sweep sharing can live).
-# Bounded LRU so trees don't accumulate; sized for moderate concurrency (V1.5
-# parallel-analyze may tune it to its file fan-out). A tree-sitter `Tree` is
-# immutable after parse, so reuse across QueryCursor runs -- including concurrent
-# reads -- is safe; `lru_cache`'s own lock makes the memo itself thread-safe.
+# Keyed by (source, grammar) since the JS/TS catalog: the same bytes parsed
+# under two grammars are two distinct trees. Bounded LRU so trees don't
+# accumulate; sized for moderate concurrency (V1.5 parallel-analyze may tune it
+# to its file fan-out). A tree-sitter `Tree` is immutable after parse, so reuse
+# across QueryCursor runs -- including concurrent reads -- is safe;
+# `lru_cache`'s own lock makes the memo itself thread-safe.
 _PARSE_CACHE_SIZE: Final = 16
 
 
 @lru_cache(maxsize=_PARSE_CACHE_SIZE)
-def _parse_cached(source: bytes) -> Tree:
-    return _PARSER.parse(source)
+def _parse_cached(source: bytes, grammar: GrammarKind) -> Tree:
+    return _PARSERS[grammar].parse(source)
 
 
 # ---------------------------------------------------------------------------
 # Id → .scm filename mapping (file-stem decoupled per Internal contracts:
 # the id is the authoritative name; filenames are implementation detail).
+# One .scm tree per catalog language.
 # ---------------------------------------------------------------------------
 
-_QUERIES_DIR: Final = Path(__file__).parent / "python"
+_QUERIES_DIR_BY_LANGUAGE: Final[dict[QueryLanguage, Path]] = {
+    "python": Path(__file__).parent / "python",
+    "javascript": Path(__file__).parent / "javascript",
+}
 
 # `capture_quantifier(p, c)` returns the quantifier as a string:
 # `''` = mandatory (one), `'+'` = one-or-more (also mandatory),
 # `'?'` = zero-or-one, `'*'` = zero-or-more.
 _MANDATORY_QUANTIFIERS: Final[frozenset[str]] = frozenset({"", "+"})
 
+# Structural queries (scope/import extraction citations), per catalog
+# language. The javascript entry is deliberately EMPTY in this arc: the JS/TS
+# catalog ships OBSERVED security queries only, so the structural
+# LLM-citation admission set for a JS/TS file is the empty set — model
+# OBSERVED claims on those files keep rejecting at admission exactly as the
+# dispatch spec pinned, now by per-language registration instead of a
+# hardcoded Python gate.
+_STRUCTURAL_QUERY_FILES_BY_LANGUAGE: Final[dict[QueryLanguage, dict[str, str]]] = {
+    "python": {
+        "python.function_definition": "function_definition.scm",
+        "python.class_definition": "class_definition.scm",
+        "python.import_statement": "import_statement.scm",
+        "python.import_from_statement": "import_from_statement.scm",
+    },
+    "javascript": {},
+}
+
+# Flat view (id → filename) retained for load/compile and the public
+# REGISTERED_QUERY_IDS union surface.
 _QUERY_ID_TO_FILENAME: Final[dict[str, str]] = {
-    "python.function_definition": "function_definition.scm",
-    "python.class_definition": "class_definition.scm",
-    "python.import_statement": "import_statement.scm",
-    "python.import_from_statement": "import_from_statement.scm",
+    query_id: filename
+    for files in _STRUCTURAL_QUERY_FILES_BY_LANGUAGE.values()
+    for query_id, filename in files.items()
 }
 
 # V1: empty. Populated when a query's semantics change and a new id
@@ -116,6 +211,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.command_injection_subprocess_shell",
             filename="command_injection_subprocess_shell.scm",
             finding_type=FindingType.COMMAND_INJECTION,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="subprocess invoked with shell=True",
             description=(
@@ -128,6 +224,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.command_injection_os_system",
             filename="command_injection_os_system.scm",
             finding_type=FindingType.COMMAND_INJECTION,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="os.system / os.popen command execution",
             description=(
@@ -140,6 +237,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.command_injection_eval_exec",
             filename="command_injection_eval_exec.scm",
             finding_type=FindingType.COMMAND_INJECTION,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="eval / exec on a dynamic expression",
             description=(
@@ -152,6 +250,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.unsafe_deserialization_pickle",
             filename="unsafe_deserialization_pickle.scm",
             finding_type=FindingType.UNSAFE_DESERIALIZATION,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="pickle deserialization of untrusted data",
             description=(
@@ -164,6 +263,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.unsafe_deserialization_yaml",
             filename="unsafe_deserialization_yaml.scm",
             finding_type=FindingType.UNSAFE_DESERIALIZATION,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="yaml.load without a safe Loader",
             description=(
@@ -176,6 +276,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.sql_injection_string_concat",
             filename="sql_injection_string_concat.scm",
             finding_type=FindingType.SQL_INJECTION,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="SQL built by string formatting / concatenation",
             description=(
@@ -188,6 +289,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.tls_verify_disabled",
             filename="tls_verify_disabled.scm",
             finding_type=FindingType.TLS_VERIFY_DISABLED,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="TLS certificate verification disabled (verify=False)",
             description=(
@@ -200,6 +302,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.blocking_call_in_async",
             filename="blocking_call_in_async.scm",
             finding_type=FindingType.BLOCKING_CALL_IN_ASYNC,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="Blocking call inside an async function",
             description=(
@@ -212,6 +315,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.weak_crypto_broken_cipher",
             filename="weak_crypto_broken_cipher.scm",
             finding_type=FindingType.WEAK_CRYPTO,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="Broken or legacy cipher construction",
             description=(
@@ -224,6 +328,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.weak_crypto_ecb_mode",
             filename="weak_crypto_ecb_mode.scm",
             finding_type=FindingType.WEAK_CRYPTO,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="Cipher constructed in ECB mode",
             description=(
@@ -236,6 +341,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_match_id="python.weak_asymmetric_key_size",
             filename="weak_asymmetric_key_size.scm",
             finding_type=FindingType.WEAK_CRYPTO,
+            language="python",
             query_class=QueryClass.SIGNAL_ONLY,
             title="Weak asymmetric key size (RSA/DSA < 2048 bits)",
             description=(
@@ -243,6 +349,105 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "is below current guidance and factorable by well-resourced "
                 "attackers. Use at least 2048 bits (3072+ for long-term keys), or "
                 "an elliptic-curve key."
+            ),
+        ),
+        # JS/TS catalog (specs/2026-07-03-js-ts-observed-query-catalog.md):
+        # four families, existing FindingTypes reused (the vulnerability class
+        # is language-independent — no SEVERITY_POLICY change), all
+        # SIGNAL_ONLY per the same default-deny rule as the Python entries.
+        ObservedQuery(
+            query_match_id="javascript.weak_crypto_hash",
+            filename="weak_crypto_hash.scm",
+            finding_type=FindingType.WEAK_CRYPTO,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Weak hash algorithm (MD5/SHA-1) construction",
+            description=(
+                "crypto.createHash with md5 or sha1 constructs a hash that is "
+                "unsafe for signatures, certificates, or integrity protection. "
+                "Use SHA-256 or stronger."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.weak_crypto_broken_cipher",
+            filename="weak_crypto_broken_cipher.scm",
+            finding_type=FindingType.WEAK_CRYPTO,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Broken or legacy cipher construction",
+            description=(
+                "A cipher is constructed with a broken or legacy algorithm "
+                "(DES, 3DES, RC2, RC4, Blowfish), which is cryptographically "
+                "weak. Use a modern authenticated cipher such as AES-GCM."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.weak_crypto_ecb_mode",
+            filename="weak_crypto_ecb_mode.scm",
+            finding_type=FindingType.WEAK_CRYPTO,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Cipher constructed in ECB mode",
+            description=(
+                "ECB mode encrypts identical plaintext blocks to identical "
+                "ciphertext, leaking structure. Use an authenticated mode such "
+                "as GCM, or CBC with a random IV and a MAC."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.command_injection_child_process",
+            filename="command_injection_child_process.scm",
+            finding_type=FindingType.COMMAND_INJECTION,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Shell command built from dynamic strings",
+            description=(
+                "child_process.exec/execSync is invoked with a concatenated or "
+                "template-interpolated command string; untrusted input enables "
+                "shell command injection. Use execFile with an argument list, "
+                "or validate the input against a strict allowlist."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.command_injection_eval",
+            filename="command_injection_eval.scm",
+            finding_type=FindingType.COMMAND_INJECTION,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="eval / new Function on a dynamic expression",
+            description=(
+                "eval or new Function runs a non-literal expression as code; "
+                "untrusted input enables arbitrary code execution. Avoid "
+                "dynamic code construction or constrain the input to a vetted "
+                "set."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.sql_injection_string_concat",
+            filename="sql_injection_string_concat.scm",
+            finding_type=FindingType.SQL_INJECTION,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="SQL built by string concatenation / template interpolation",
+            description=(
+                "A SQL statement passed to query/execute is assembled with "
+                "string concatenation or template-literal interpolation; "
+                "untrusted input enables SQL injection. Use parameterized "
+                "queries."
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.tls_verify_disabled",
+            filename="tls_verify_disabled.scm",
+            finding_type=FindingType.TLS_VERIFY_DISABLED,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="TLS certificate verification disabled",
+            description=(
+                "rejectUnauthorized: false (or NODE_TLS_REJECT_UNAUTHORIZED="
+                '"0") disables certificate validation, exposing connections '
+                "to man-in-the-middle attacks. Keep verification enabled "
+                "against a proper CA."
             ),
         ),
     )
@@ -256,28 +461,52 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_and_compile() -> tuple[dict[str, str], dict[str, Query]]:
+def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Query]]]:
     bodies: dict[str, str] = {}
-    compiled: dict[str, Query] = {}
-    for query_id, filename in _QUERY_ID_TO_FILENAME.items():
-        body = (_QUERIES_DIR / filename).read_text(encoding="utf-8")
+    compiled: dict[str, dict[GrammarKind, Query]] = {}
+
+    def _register(query_id: str, language: QueryLanguage, filename: str) -> None:
+        # Id-namespace guard: the language IS the id's namespace prefix
+        # ("python.", "javascript."), so a metadata/language mismatch —
+        # which would compile a query under the wrong grammars and select
+        # it for the wrong files — fails loud at import.
+        if not query_id.startswith(f"{language}."):
+            raise ValueError(
+                f"query id {query_id!r} is registered with language "
+                f"{language!r} but its namespace prefix disagrees; the id "
+                f"prefix and the registered language must match."
+            )
+        body = (_QUERIES_DIR_BY_LANGUAGE[language] / filename).read_text(encoding="utf-8")
         bodies[query_id] = body
-        compiled[query_id] = _compile_and_validate(query_id, body, filename)
+        compiled[query_id] = {
+            grammar: _compile_and_validate(query_id, body, filename, grammar=grammar)
+            for grammar in _GRAMMARS_BY_QUERY_LANGUAGE[language]
+        }
+
+    for language, files in _STRUCTURAL_QUERY_FILES_BY_LANGUAGE.items():
+        for query_id, filename in files.items():
+            _register(query_id, language, filename)
     # OBSERVED-tier security queries: same load + compile + mandatory-capture
     # validation. Their .scm bodies join _QUERY_BODIES/_COMPILED_QUERIES so
     # match()/get_query_source() resolve them like any other registered id.
     for query_id, observed in _OBSERVED_QUERIES.items():
-        body = (_QUERIES_DIR / observed.filename).read_text(encoding="utf-8")
-        bodies[query_id] = body
-        compiled[query_id] = _compile_and_validate(query_id, body, observed.filename)
-    # Deprecated bodies also compile and validate.
+        _register(query_id, observed.language, observed.filename)
+    # Deprecated bodies also compile and validate. The ledger is python-era;
+    # a future non-python deprecation extends the ledger shape to carry its
+    # language alongside the body.
     for query_id, body in _DEPRECATED_QUERY_ID_TO_BODY.items():
         bodies[query_id] = body
-        compiled[query_id] = _compile_and_validate(query_id, body, source="deprecated_ledger")
+        compiled[query_id] = {
+            "python": _compile_and_validate(
+                query_id, body, source="deprecated_ledger", grammar="python"
+            )
+        }
     return bodies, compiled
 
 
-def _compile_and_validate(query_id: str, body: str, source: str | None = None) -> Query:
+def _compile_and_validate(
+    query_id: str, body: str, source: str | None = None, *, grammar: GrammarKind = "python"
+) -> Query:
     """Compile a query body and reject any pattern lacking a mandatory capture.
 
     Per Internal contracts: every registered pattern MUST produce at
@@ -293,7 +522,7 @@ def _compile_and_validate(query_id: str, body: str, source: str | None = None) -
     per-file. Single-pattern is the V1 convention but not enforced.
     """
     where = f" (loaded from {source})" if source else ""
-    query = Query(_PY_LANGUAGE, body)
+    query = Query(_LANGUAGES[grammar], body)
     # tree-sitter's type stubs declare these as `Callable[[], int]` but
     # at runtime they're int attributes — cast for mypy.
     pattern_count = cast("int", query.pattern_count)
@@ -454,13 +683,19 @@ def _all_known_ids() -> set[str]:
 
 
 # Public surface: the set of `query_match_id` strings the analyze node
-# fires for OBSERVED-tier admission. Deprecated ids are intentionally
-# excluded — they exist for replay of historical reviews, NOT for live
-# OBSERVED claims. Adding a new query to `_QUERY_ID_TO_FILENAME` extends
-# this set automatically; deprecating an id moves it to
-# `_DEPRECATED_QUERY_ID_TO_BODY` and removes it from this surface in the
-# same commit, mirroring the registry's Internal-contracts split.
+# fires for OBSERVED-tier admission — the ALL-LANGUAGES union; per-file
+# selection goes through `structural_query_ids_for`. Deprecated ids are
+# intentionally excluded — they exist for replay of historical reviews, NOT
+# for live OBSERVED claims. Adding a new query to
+# `_STRUCTURAL_QUERY_FILES_BY_LANGUAGE` extends this set automatically;
+# deprecating an id moves it to `_DEPRECATED_QUERY_ID_TO_BODY` and removes
+# it from this surface in the same commit, mirroring the registry's
+# Internal-contracts split.
 REGISTERED_QUERY_IDS: Final[frozenset[str]] = frozenset(_QUERY_ID_TO_FILENAME)
+
+_STRUCTURAL_QUERY_IDS_BY_LANGUAGE: Final[dict[QueryLanguage, frozenset[str]]] = {
+    language: frozenset(files) for language, files in _STRUCTURAL_QUERY_FILES_BY_LANGUAGE.items()
+}
 
 
 # Public surface: the OBSERVED-tier security queries + their routing/output
@@ -469,9 +704,59 @@ REGISTERED_QUERY_IDS: Final[frozenset[str]] = frozenset(_QUERY_ID_TO_FILENAME)
 # admission set per analyze `_build_query_match_id_set`) — the two query KINDS
 # stay distinct. `match()`/`get_query_source()` still resolve OBSERVED ids
 # (their bodies are in `_QUERY_BODIES`). `MappingProxyType` blocks runtime
-# mutation, the same defense-in-depth as `SEVERITY_POLICY`.
+# mutation, the same defense-in-depth as `SEVERITY_POLICY`. All-languages
+# union — the producer selects per file via `observed_queries_for`.
 OBSERVED_QUERIES: Final[Mapping[str, ObservedQuery]] = MappingProxyType(dict(_OBSERVED_QUERIES))
 OBSERVED_QUERY_IDS: Final[frozenset[str]] = frozenset(_OBSERVED_QUERIES)
+
+_EMPTY_OBSERVED: Final[Mapping[str, ObservedQuery]] = MappingProxyType({})
+
+
+# ---------------------------------------------------------------------------
+# Per-file selection surface (JS/TS OBSERVED catalog spec). All four helpers
+# treat an unmapped extension as "no catalog": None / empty — the fail-safe
+# direction (no query set → no OBSERVED claim possible for that file).
+# ---------------------------------------------------------------------------
+
+
+def query_language_for_path(path: str) -> QueryLanguage | None:
+    """Catalog language for `path`'s extension, or None when no catalog
+    covers it (unregistered or catalog-less language). Case-insensitive,
+    matching the ast_facts registry's extension normalization."""
+    return _QUERY_LANGUAGE_BY_EXTENSION.get(PurePosixPath(path).suffix.lower())
+
+
+def grammar_for_path(path: str) -> GrammarKind | None:
+    """Grammar that parses `path`'s bytes for query execution, or None when
+    no catalog covers the extension. Finer than the catalog language: `.ts`
+    selects the javascript CATALOG but the typescript GRAMMAR."""
+    return _GRAMMAR_BY_EXTENSION.get(PurePosixPath(path).suffix.lower())
+
+
+def observed_queries_for(language: QueryLanguage | None) -> Mapping[str, ObservedQuery]:
+    """OBSERVED queries registered for `language`; empty mapping for None.
+
+    Derived from the module's `OBSERVED_QUERIES` attribute AT CALL TIME, not
+    an import-time snapshot: `OBSERVED_QUERIES` is the single authoritative
+    observed surface, and the observed_skip_safe scenario's documented
+    test-local promotion seam (monkeypatching that attribute) must reach the
+    producer's per-language view too. 18 entries — the per-call filter is
+    negligible next to the parse it precedes.
+    """
+    if language is None:
+        return _EMPTY_OBSERVED
+    return {qid: oq for qid, oq in OBSERVED_QUERIES.items() if oq.language == language}
+
+
+def structural_query_ids_for(language: QueryLanguage | None) -> frozenset[str]:
+    """Structural (LLM-citation admission) query ids for `language`; empty
+    for None. Empty is a meaningful state — a language whose catalog ships
+    no structural queries (javascript today) admits no model OBSERVED
+    claim, preserving the dispatch-era rejection behavior by registration
+    rather than by hardcoded gate."""
+    if language is None:
+        return frozenset()
+    return _STRUCTURAL_QUERY_IDS_BY_LANGUAGE[language]
 
 
 # ---------------------------------------------------------------------------
@@ -492,19 +777,37 @@ def get_query_source(query_match_id: str) -> str:
     return _QUERY_BODIES[query_match_id]
 
 
-def match(query_match_id: str, source: bytes) -> tuple[QueryMatchSpan, ...]:
-    """Run the named query against `source`; return domain-modeled spans.
+def match(
+    query_match_id: str, source: bytes, *, grammar: GrammarKind = "python"
+) -> tuple[QueryMatchSpan, ...]:
+    """Run the named query against `source` parsed under `grammar`; return
+    domain-modeled spans.
 
-    Empty tuple = registered query, zero matches against this source.
-    Raises `UnknownQueryMatchId` if `query_match_id` is unknown.
+    `grammar` selects the parser AND the query's compiled variant (default
+    "python" — the sole grammar before the JS/TS catalog; callers for JS/TS
+    files pass `grammar_for_path(path)`). Empty tuple = registered query,
+    zero matches against this source. Raises `UnknownQueryMatchId` if
+    `query_match_id` is unknown, and `ValueError` if the query's language
+    was not compiled for `grammar` — a python query can never run over
+    JS/TS bytes (or vice versa); a mismatch is a caller gate bug, never a
+    silent empty result.
     """
     if query_match_id not in _COMPILED_QUERIES:
         raise UnknownQueryMatchId(
             f"query_match_id {query_match_id!r} is not in the registry "
             f"(known ids: {sorted(_all_known_ids())})"
         )
-    query = _COMPILED_QUERIES[query_match_id]
-    tree = _parse_cached(source)
+    variants = _COMPILED_QUERIES[query_match_id]
+    if grammar not in variants:
+        raise ValueError(
+            f"query {query_match_id!r} has no compiled variant for grammar "
+            f"{grammar!r} (compiled for: {sorted(variants)}). Running a "
+            f"query over bytes of another language would produce "
+            f"error-recovery garbage matches; the caller's language "
+            f"selection is wrong."
+        )
+    query = variants[grammar]
+    tree = _parse_cached(source, grammar)
 
     raw_matches: list[QueryMatchSpan] = []
     for _pattern_index, captures in QueryCursor(query).matches(tree.root_node):

@@ -296,14 +296,16 @@ def _language_supported(path: str) -> bool:
 
 def _is_python_file(path: str) -> bool:
     """True iff `path` is Python source — the STAGE predicate, narrower
-    than `_language_supported`: the OBSERVED producer (Python-grammar
-    queries), the parameterized-call veto scan, and the trivial-scope
-    classifier are Python-only surfaces
-    and stay gated on this even after registry dispatch admits JS/TS
-    files to the review flow. (Trace-candidate collection is per-language
-    since the resolver spec — its admitted syntax comes from
-    `_TRACE_CANDIDATE_FORM_BY_EXTENSION`, not this gate.) Derived from
-    the registry's extension
+    than `_language_supported`: the parameterized-call veto scan and the
+    trivial-scope classifier are Python-only surfaces and stay gated on
+    this even after registry dispatch admits JS/TS files to the review
+    flow. (Trace-candidate collection is per-language since the resolver
+    spec — its admitted syntax comes from
+    `_TRACE_CANDIDATE_FORM_BY_EXTENSION`, not this gate. The OBSERVED
+    producer and the structural query-id set are per-language since the
+    JS/TS OBSERVED catalog spec — their selection lives in
+    `queries.registry`'s language-aware surface, not this gate.) Derived
+    from the registry's extension
     group with the same case normalization as the registry gate — a
     case-sensitive copy here let `UTILS.PY` pass the gate but run with
     every Python-only stage silently disabled.
@@ -1389,21 +1391,29 @@ async def _serve_cache_hit(
     )
 
 
-def _build_query_match_id_set(file_content_bytes: bytes) -> frozenset[str]:
-    """Fire every registered query against `file_content_bytes`; return
-    the set of ids that produced at least one match.
+def _build_query_match_id_set(file_content_bytes: bytes, *, file_path: str) -> frozenset[str]:
+    """Fire every structural query registered for `file_path`'s catalog
+    language against `file_content_bytes`; return the set of ids that
+    produced at least one match.
 
-    Iterates `queries.registry.REGISTERED_QUERY_IDS` (current
-    non-deprecated ids only). Per spec §7 step 3b, this set is passed
-    to the parser's OBSERVED admission — a model claim whose
-    `query_match_id` isn't in this set rejects with
-    `query_match_id_not_in_registry`. Empty set means no registry
-    query fired against this file → every OBSERVED claim rejects;
-    only JUDGED proposals can land.
+    Iterates `queries.registry.structural_query_ids_for(language)` (current
+    non-deprecated ids of the file's language only — the registry-language-
+    aware selector per the JS/TS OBSERVED catalog spec). Per spec §7 step
+    3b, this set is passed to the parser's OBSERVED admission — a model
+    claim whose `query_match_id` isn't in this set rejects with
+    `query_match_id_not_in_registry`. Empty set means no structural query
+    is registered for (or fired against) this file → every model OBSERVED
+    claim rejects; only JUDGED proposals can land. JS/TS files register no
+    structural queries in V1, so their set is empty by registration — the
+    dispatch-era rejection behavior, now data-driven.
     """
+    language = query_registry.query_language_for_path(file_path)
+    grammar = query_registry.grammar_for_path(file_path)
+    if language is None or grammar is None:
+        return frozenset()
     fired: set[str] = set()
-    for query_id in query_registry.REGISTERED_QUERY_IDS:
-        if query_registry.match(query_id, file_content_bytes):
+    for query_id in query_registry.structural_query_ids_for(language):
+        if query_registry.match(query_id, file_content_bytes, grammar=grammar):
             fired.add(query_id)
     return frozenset(fired)
 
@@ -1412,9 +1422,14 @@ def _filter_query_ids_to_scopes(
     query_ids: frozenset[str],
     file_content_bytes: bytes,
     scope_units: tuple[ScopeUnit, ...],
+    *,
+    file_path: str,
 ) -> frozenset[str]:
     """Keep a fired query ID iff at least one of its match envelopes
-    intersects an INCLUDED scope unit's byte range.
+    intersects an INCLUDED scope unit's byte range. `file_path` selects the
+    grammar the re-match runs under — the same selection that fired the ids
+    in `_build_query_match_id_set` (unreachable in practice for a file with
+    no catalog: its fired set is already empty).
 
     Used only when the trivial-scope filter excluded scopes from the
     prompt (specs/2026-06-10-trivial-scope-filter.md): IDs whose matches
@@ -1423,10 +1438,13 @@ def _filter_query_ids_to_scopes(
     finding cannot cite structural proof from code the model never saw.
     Half-open intersection over `QueryMatchSpan` envelopes.
     """
+    grammar = query_registry.grammar_for_path(file_path)
+    if grammar is None:
+        return frozenset()
     ranges = tuple((su.byte_start, su.byte_end) for su in scope_units)
     kept: set[str] = set()
     for query_id in query_ids:
-        for match_span in query_registry.match(query_id, file_content_bytes):
+        for match_span in query_registry.match(query_id, file_content_bytes, grammar=grammar):
             if any(s < match_span.byte_end and match_span.byte_start < e for s, e in ranges):
                 kept.add(query_id)
                 break
@@ -1802,16 +1820,20 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     included_clipped_hunks: tuple[tuple[str, ...], ...] = decision.included_clipped_hunks
     degraded_mode = decision.mode == "degraded"
 
-    # Step 3b: registry-query firing (skip for degraded mode; skip for
-    # non-Python — the registry holds Python-grammar queries, and firing
-    # them over JS/TS bytes yields error-recovery garbage matches whose
-    # ids would be advertised in the prompt AND accepted by the parser's
-    # membership-only OBSERVED admission. An empty set keeps the prompt
-    # honest ("do not claim observed") and makes any observed claim on a
-    # non-Python file reject at admission.
+    # Step 3b: registry-query firing (skip for degraded mode). The builder
+    # is registry-language-aware (JS/TS OBSERVED catalog spec): it selects
+    # the structural queries registered for THIS file's language and runs
+    # them under the file's grammar, so a query never fires over bytes of
+    # another language (no error-recovery garbage matches). A language with
+    # no structural queries (JS/TS in V1) or no catalog at all yields the
+    # empty set — the prompt stays honest ("do not claim observed") and any
+    # model observed claim on such a file rejects at admission, exactly the
+    # dispatch-era behavior, now by registration instead of a Python gate.
     is_python = _is_python_file(changed_file.path)
     query_match_id_set: frozenset[str] = (
-        frozenset() if degraded_mode or not is_python else _build_query_match_id_set(content_bytes)
+        frozenset()
+        if degraded_mode
+        else _build_query_match_id_set(content_bytes, file_path=changed_file.path)
     )
 
     # The from-import refs the trace-candidate machinery may consume.
@@ -1969,7 +1991,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # cite a query ID whose match lives in an excluded scope (an
             # OBSERVED proof pointing at never-shown code).
             query_match_id_set = _filter_query_ids_to_scopes(
-                query_match_id_set, content_bytes, included_scope_units
+                query_match_id_set, content_bytes, included_scope_units, file_path=changed_file.path
             )
             # Re-render over the kept scopes; this filtered prompt is what
             # is actually sent (and what context_summary describes).
@@ -2118,11 +2140,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # an enforced skip. Same clean-parse + head-content gate as the post-LLM block.
     observed_matches: tuple[ObservedMatch, ...] = ()
     observed_skip_event: ObservedSkipShadowEvent | None = None
-    # `is_python` gate: the OBSERVED producer executes Python-grammar
-    # queries; running them over non-Python bytes would parse garbage
-    # trees (proof-boundary gate, dispatch spec). Non-Python files stay
-    # JUDGED-only until a language gains its own query registry.
-    if is_python and not degraded_mode and changed_file.content_head is not None:
+    # Language selection lives INSIDE `run_observed_matches` (JS/TS OBSERVED
+    # catalog spec): the producer runs the queries registered for this
+    # file's language under this file's grammar — Python files run the
+    # Python catalog, JS/TS files the javascript catalog, and a language
+    # with no catalog selects zero queries (inert producer, the
+    # dispatch-era safety preserved by registration). No queries ever
+    # execute over bytes of another language's grammar.
+    if not degraded_mode and changed_file.content_head is not None:
         observed_matches = run_observed_matches(
             file_path=changed_file.path,
             head_content=content,
@@ -2709,14 +2734,16 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # the proof boundary the has_error filter exists to defend. Mirrors
     # the pass-0 `degraded_mode → frozenset()` pattern in
     # `_process_one_file`.
-    # Non-Python gate mirrors pass-0: Python-grammar queries never fire
-    # over non-Python bytes, so no id can authorize an OBSERVED claim
-    # (the scan three steps down is gated for the same reason).
+    # Language-awareness mirrors pass-0: the builder selects this file's
+    # own structural queries under its own grammar (empty for a language
+    # with none registered — JS/TS in V1 — so no id can authorize an
+    # OBSERVED claim there; the veto scan further down stays Python-gated
+    # for its own reason).
     is_python = _is_python_file(fetched_file.path)
     query_match_id_set: frozenset[str] = (
         frozenset()
-        if not is_python or len(included_scope_units) != len(parse_result.scope_units)
-        else _build_query_match_id_set(content_bytes)
+        if len(included_scope_units) != len(parse_result.scope_units)
+        else _build_query_match_id_set(content_bytes, file_path=fetched_file.path)
     )
     parts = analyze_prompt.render_post_trace(
         file_path=fetched_file.path,

@@ -4,10 +4,13 @@
 `ReviewFinding`s with NO model text.
 
 `run_observed_matches` is the single deterministic query pass for a file: it
-runs every registered OBSERVED query (via `queries.registry.match`, which owns
-the tree-sitter execution), applies the admission rules (test-file suppression,
-scope containment, zero-width skip, byte->line mapping), and returns plain
-`ObservedMatch` domain records — `query_class` included. Every consumer reads
+runs every OBSERVED query registered for the file's catalog language (via
+`queries.registry.match` under the file's grammar — the registry owns both
+the tree-sitter execution and the per-language selection; a catalog-less
+language yields zero queries and the producer stays inert), applies the
+admission rules (test-file suppression, scope containment, zero-width skip,
+byte->line mapping), and returns plain `ObservedMatch` domain records —
+`query_class` included. Every consumer reads
 the SAME records, so there is one definition of "the OBSERVED query facts for
 this file": `produce_observed_findings` builds findings from them, and the skip
 routing (the routing increment) computes coverage from the `skip_safe` subset.
@@ -65,15 +68,19 @@ if TYPE_CHECKING:
 
 # Version of the OBSERVED producer's ADMISSION logic — the rules in
 # `run_observed_matches` that decide which matches are admitted: the
-# scope-CONTAINMENT predicate, test-file suppression (`_is_test_file`), the
-# zero-width-span skip, and the byte->line mapping. Folded into the analyze cache
-# key (`cache.key.compute_analyze_cache_key`) so a change to these rules
+# per-language query-set selection, the scope-CONTAINMENT predicate, test-file
+# suppression (`_is_test_file`), the zero-width-span skip, and the byte->line
+# mapping. Folded into the analyze cache key
+# (`cache.key.compute_analyze_cache_key`) so a change to these rules
 # invalidates cached analyze outcomes written under the old rules — the same
 # staleness guard `ANALYZE_PARSER_VERSION` gives the LLM parser. The query `.scm`
 # bodies + their registry metadata are pinned SEPARATELY by
 # `QUERY_REGISTRY_DIGEST`; this constant covers only the producer's admission
 # logic. BUMP on any rule change.
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v1"
+# v2 (JS/TS OBSERVED catalog): the query set became per-language-selected and
+# `_is_test_file` learned the JS/TS test conventions (`__tests__/`,
+# `*.test.*`, `*.spec.*`).
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v2"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
 # `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
@@ -109,7 +116,9 @@ class ObservedMatch:
 
 def _is_test_file(file_path: str) -> bool:
     """A repo-relative path is test code if any directory component is `tests`/
-    `test`, or the filename is `conftest.py` / `test_*.py` / `*_test.py`.
+    `test`/`__tests__`, or the filename is `conftest.py` / `test_*.py` /
+    `*_test.py` (Python conventions) or `*.test.*` / `*.spec.*` (JS/TS
+    conventions — `auth.test.ts`, `login.spec.js`).
 
     Per `docs/spec.md` §11.2: a security pattern in test code (e.g. `eval()` in a
     test fixture) is NOT a production finding. The deterministic producer can't
@@ -117,10 +126,15 @@ def _is_test_file(file_path: str) -> bool:
     findings in test files structurally.
     """
     path = PurePosixPath(file_path)
-    if any(part in ("tests", "test") for part in path.parts[:-1]):
+    if any(part in ("tests", "test", "__tests__") for part in path.parts[:-1]):
         return True
     name = path.name
-    return name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py")
+    if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
+        return True
+    # JS/TS convention: the tier marker is an inner dotted segment
+    # (`name.test.ts`, `name.spec.tsx`), not a prefix/suffix of the stem.
+    inner_segments = name.split(".")[1:-1]
+    return any(seg in ("test", "spec") for seg in inner_segments)
 
 
 def run_observed_matches(
@@ -129,9 +143,12 @@ def run_observed_matches(
     head_content: str,
     included_scope_units: tuple[ScopeUnit, ...],
 ) -> tuple[ObservedMatch, ...]:
-    """Run every registered OBSERVED query over `head_content` and return the
-    admitted matches as `ObservedMatch` records — the single deterministic query
-    pass every downstream consumer reads.
+    """Run every OBSERVED query registered for `file_path`'s catalog language
+    over `head_content` and return the admitted matches as `ObservedMatch`
+    records — the single deterministic query pass every downstream consumer
+    reads. A file whose language has no catalog (or no registered adapter)
+    selects zero queries and returns empty — the producer is inert by
+    registration, so no OBSERVED finding is constructible for it.
 
     A match is admitted only when it is CONTAINED in an included scope unit (the
     same scope discipline the LLM-citation admission uses) — a deterministic
@@ -145,12 +162,19 @@ def run_observed_matches(
     # Test code is not a production security finding (spec §11.2).
     if _is_test_file(file_path):
         return ()
+    # Per-language selection: the registry pairs the query set with the
+    # grammar that parses this file's bytes. Both None/empty for a
+    # catalog-less language — the loop below then never runs.
+    language = query_registry.query_language_for_path(file_path)
+    grammar = query_registry.grammar_for_path(file_path)
+    if language is None or grammar is None:
+        return ()
     content_bytes = head_content.encode("utf-8")
     scope_ranges = tuple((su.byte_start, su.byte_end) for su in included_scope_units)
     matches: list[ObservedMatch] = []
 
-    for query_id, observed in query_registry.OBSERVED_QUERIES.items():
-        for span in query_registry.match(query_id, content_bytes):
+    for query_id, observed in query_registry.observed_queries_for(language).items():
+        for span in query_registry.match(query_id, content_bytes, grammar=grammar):
             # A degenerate (zero-width) envelope has no reviewable line range;
             # skip rather than feed query_span_to_source_lines a span it rejects.
             if span.byte_end <= span.byte_start:

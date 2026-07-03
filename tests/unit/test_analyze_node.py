@@ -1276,8 +1276,9 @@ async def test_javascript_file_flows_through_analyze_judged_only(
 ) -> None:
     """Multi-language dispatch: a `.js` file classified DEEP parses via
     the registry and reaches the LLM with a javascript-fenced scope
-    context — and the Python-only proof surfaces stay provably inert
-    (zero OBSERVED matches; the fence lang proves the JS render path).
+    context — and with content matching no JS catalog query, the
+    OBSERVED producer stays silent (the fence lang proves the JS render
+    path; the catalog-match positive is the sibling test below).
     """
     js_file = _build_changed_file(
         path="src/example.js",
@@ -1308,20 +1309,26 @@ async def test_javascript_file_flows_through_analyze_judged_only(
     # A clean (non-skip) FileExaminationEvent for the JS file.
     clean_events = [e for e in deps["file_examination_sink"].events if e.parse_status == "clean"]
     assert [e.file_path for e in clean_events] == ["src/example.js"]
-    # Zero-OBSERVED proof: no OBSERVED finding events for a JS file
-    # (queries/ is Python-only; the producer is gated).
+    # No OBSERVED finding events for THIS JS file: its content fires no
+    # JS catalog query (producer silent) and the model claimed nothing —
+    # the per-language-conditional contract since the JS/TS OBSERVED
+    # catalog (a catalog-matching JS file DOES produce OBSERVED; see
+    # test_js_file_with_catalog_match_produces_observed_finding).
     assert all(f.evidence_tier != "observed" for f in deps["analyze_event_sink"].findings)
 
 
 async def test_observed_claim_on_js_file_is_rejected_at_admission(
     deps: dict[str, Any],
 ) -> None:
-    """The REAL zero-OBSERVED pin (revert-the-fold honest): the scripted
-    response CLAIMS observed with a Python query id on a .js file whose
-    ESM import would — ungated — fire `python.import_statement` via the
-    Python grammar's error recovery. With the query set language-gated
-    to frozenset(), the claim must reject at admission
-    (`query_match_id_not_in_registry`), not be admitted as OBSERVED."""
+    """The REAL model-claim rejection pin (revert-the-fold honest): the
+    scripted response CLAIMS observed with a Python query id on a .js file
+    whose ESM import would — under the pre-dispatch ungated builder — have
+    fired `python.import_statement` via the Python grammar's error
+    recovery. The builder is registry-language-aware now: it selects the
+    JS/TS STRUCTURAL query set, which is empty by registration, so the
+    claim must reject at admission (`query_match_id_not_in_registry`), not
+    be admitted as OBSERVED. This holds independent of the JS/TS OBSERVED
+    catalog — producer queries are never model-citable."""
     js_file = _build_changed_file(
         path="src/example.js",
         content=b"import db from './db';\n\n\nexport function hello() {\n  return db.get(42);\n}\n",
@@ -1370,6 +1377,62 @@ async def test_observed_claim_on_js_file_is_rejected_at_admission(
     # And the prompt advertised NO ids to cite (empty-set rendering).
     [request] = deps["provider"].calls
     assert "no registry query matches fired" in request.user_prompt
+
+
+async def test_js_file_with_catalog_match_produces_observed_finding(
+    deps: dict[str, Any],
+) -> None:
+    """The positive side of the per-language-conditional contract (JS/TS
+    OBSERVED catalog spec): a `.js` file whose changed scope contains a
+    catalog-matching construct (`crypto.createHash("md5")`) yields a
+    deterministic producer OBSERVED finding — real `javascript.*`
+    query_match_id, policy severity, registry static text — with the
+    model contributing nothing (scripted zero-findings response). The
+    tier the dispatch arc made unreachable for JS/TS is now reachable
+    exactly and only through a registry match."""
+    js_file = _build_changed_file(
+        path="src/token.js",
+        content=(
+            b"export function getToken(secret) {\n"
+            b'  const h = crypto.createHash("md5");\n'
+            b'  return h.update(secret).digest("hex");\n'
+            b"}\n"
+        ),
+        patch=(
+            "--- a/src/token.js\n+++ b/src/token.js\n@@ -1,3 +1,4 @@\n"
+            " export function getToken(secret) {\n"
+            '-  return "";\n'
+            '+  const h = crypto.createHash("md5");\n'
+            '+  return h.update(secret).digest("hex");\n'
+            " }\n"
+        ),
+        content_base='export function getToken(secret) {\n  return "";\n}\n',
+    )
+    deps["provider"] = _StubLLMProvider(json.dumps({"findings": []}))
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(js_file,)),
+        triage_result=TriageResult(
+            file_tiers={"src/token.js": ReviewTier.DEEP},
+            overall_risk=RiskLevel.HIGH,
+            relevant_dimensions=(ReviewDimension.SECURITY,),
+            reasoning="js file whose changed scope matches the weak-hash catalog query",
+        ),
+    )
+
+    await analyze(state, **deps)
+
+    # The LLM ran (signal_only: OBSERVED augments, never skips) and
+    # proposed nothing; the producer finding is the only emission.
+    assert len(deps["provider"].calls) == 1
+    from outrider.policy.severity import FindingType, lookup_severity
+
+    findings = deps["analyze_event_sink"].findings
+    assert [f.evidence_tier for f in findings] == ["observed"]
+    observed = findings[0]
+    assert observed.query_match_id == "javascript.weak_crypto_hash"
+    assert observed.finding_type == "weak_crypto"
+    assert observed.severity == lookup_severity(FindingType.WEAK_CRYPTO)
+    assert observed.line_start == observed.line_end == 2
 
 
 async def test_system_prompt_is_byte_identical_across_languages(
