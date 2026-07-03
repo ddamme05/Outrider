@@ -466,14 +466,17 @@ def is_valid_trace_import_string(value: str) -> str:
 # a deterministic pinned order, per `DECISIONS.md#024` (Amended
 # 2026-07-03): four file suffixes on the target stem plus two
 # directory-index names — preceded by the LITERAL joined target when
-# the specifier's final segment already carries one of these suffixes
-# (the same amendment's extension-bearing addendum; 7-path worst case).
+# the specifier's final segment already carries a REGISTERED JS/TS
+# extension (`_LITERAL_TARGET_SUFFIXES` below, per the amendment's
+# extension-bearing addendum; 7-path worst case).
 # The order fixes probe/budget sequencing ONLY —
 # no consumer applies Node-style extension priority: two or more real
 # paths resolve as `ambiguous` under the M8 single-target contract
 # (both in trace probes and the adapter's filesystem twin). `.mjs` /
-# `.cjs` are deliberately excluded (rare as import targets); extend on
-# eval evidence, not speculation.
+# `.cjs` are deliberately excluded from the FAN-OUT set only (rare as
+# import targets for extensionless specifiers; widen on eval evidence,
+# not speculation — FUP-212). They DO trigger the literal-target probe
+# when named explicitly, like every registered extension.
 _RELATIVE_SPECIFIER_SUFFIXES: Final = (".js", ".jsx", ".ts", ".tsx")
 _RELATIVE_SPECIFIER_INDEX_NAMES: Final = ("index.js", "index.ts")
 
