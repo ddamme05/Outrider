@@ -297,10 +297,13 @@ def _language_supported(path: str) -> bool:
 def _is_python_file(path: str) -> bool:
     """True iff `path` is Python source — the STAGE predicate, narrower
     than `_language_supported`: the OBSERVED producer (Python-grammar
-    queries), the parameterized-call veto scan, the trivial-scope
-    classifier, and trace-candidate collection are Python-only surfaces
+    queries), the parameterized-call veto scan, and the trivial-scope
+    classifier are Python-only surfaces
     and stay gated on this even after registry dispatch admits JS/TS
-    files to the review flow. Derived from the registry's extension
+    files to the review flow. (Trace-candidate collection is per-language
+    since the resolver spec — its admitted syntax comes from
+    `_TRACE_CANDIDATE_FORM_BY_EXTENSION`, not this gate.) Derived from
+    the registry's extension
     group with the same case normalization as the registry gate — a
     case-sensitive copy here let `UTILS.PY` pass the gate but run with
     every Python-only stage silently disabled.
@@ -325,6 +328,36 @@ if set(_FENCE_LANG_BY_EXTENSION) != set(supported_extensions()):
         f"{sorted(supported_extensions())} but fences cover "
         f"{sorted(_FENCE_LANG_BY_EXTENSION)}."
     )
+
+
+# Per-language trace-candidate syntax (DECISIONS.md#024 Amended
+# 2026-07-03), derived from the registry's extension groups exactly like
+# the fence table above: a newly registered language must choose its
+# candidate form here or fail loud at import time. "Not Python" does NOT
+# imply "relative specifier" — a future Go/Rust adapter has neither form
+# until it registers one, and defaulting it to specifier would silently
+# swallow all its candidates into the malformed counter.
+_TRACE_CANDIDATE_FORM_BY_EXTENSION: Final[dict[str, Literal["module", "specifier"]]] = {
+    **dict.fromkeys(PYTHON_EXTENSIONS, "module"),
+    **dict.fromkeys(JAVASCRIPT_EXTENSIONS, "specifier"),
+    **dict.fromkeys(TYPESCRIPT_DIALECT_BY_EXTENSION, "specifier"),
+}
+
+if set(_TRACE_CANDIDATE_FORM_BY_EXTENSION) != set(supported_extensions()):
+    raise AssertionError(
+        f"trace-candidate-form table diverged from the registry: registry "
+        f"supports {sorted(supported_extensions())} but forms cover "
+        f"{sorted(_TRACE_CANDIDATE_FORM_BY_EXTENSION)}."
+    )
+
+
+def _trace_candidate_form_for(path: str) -> Literal["module", "specifier"]:
+    """Admitted trace-candidate syntax for `path`'s language. KeyError on
+    an unregistered extension is deliberate fail-loud — unreachable for
+    gate-admitted files (totality assert above), and a silent default
+    would be a wrong-form admission bug for a future language.
+    """
+    return _TRACE_CANDIDATE_FORM_BY_EXTENSION[PurePosixPath(path).suffix.lower()]
 
 
 def _fence_lang_for(path: str) -> str:
@@ -1784,9 +1817,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # The from-import refs the trace-candidate machinery may consume.
     # Feeds BOTH the cache key digest and the parser call below from one
     # binding (FUP-171 anti-fork). Unconditional since the resolver spec:
-    # every registry language collects candidates; the module-form
-    # correction map simply validates empty for languages whose refs
-    # carry non-dotted modules.
+    # every registry language collects candidates. NOTE the correction
+    # map is NOT necessarily empty for JS/TS (a bare specifier like
+    # 'express' is a valid identifier and enters the map); what keeps
+    # corrections off JS/TS is the parser's module-form-only correction
+    # gate — the map's only effect for specifier-form files is keying
+    # the cache digest.
     trace_import_refs = parse_result.imports
 
     # Step 3c: assemble the (system, user) prompt pair.
@@ -2246,8 +2282,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # 2026-07-03, ANALYZE_PARSER_VERSION v7): Python admits dotted
         # module strings, JS/TS admit leading-dot relative specifiers —
         # the parser drops the wrong form and enforces repo-escape
-        # containment at admission for specifiers.
-        trace_candidate_form="module" if is_python else "specifier",
+        # containment at admission for specifiers. Registry-derived
+        # (totality-asserted), not an is_python ternary — the form is a
+        # per-language registration, not a Python/other binary.
+        trace_candidate_form=_trace_candidate_form_for(changed_file.path),
     )
     if parser_result.counters.n_trace_candidates_module_corrected:
         logger.info(
@@ -2799,10 +2837,10 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         # units filtered out, not a whole-file degraded mode; the scan
         # itself returns empty for any error-bearing tree, so a partially
         # erroring file disables the veto rather than trusting recovery.
-        # Python-grammar surface: non-Python fetched files (unreachable
-        # while their candidates are suppressed, gated anyway so the
-        # future resolver spec can't re-expose Python-grammar scanning
-        # of non-Python bytes) get the inert empty scan.
+        # Python-grammar surface: non-Python fetched files — reached on
+        # every resolved JS/TS trace since the resolver spec — get the
+        # inert empty scan; the gate keeps Python-grammar scanning off
+        # non-Python bytes.
         parameterized_call_scan=scan_parameterized_calls(content_bytes)
         if is_python
         else ParameterizedCallScan(),

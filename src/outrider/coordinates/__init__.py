@@ -81,6 +81,9 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
   form, otherwise module form. The single dispatch point the schema and
   audit shape-validation sites call so state ↔ audit canonical-bytes
   lockstep holds for both forms.
+- `is_relative_specifier_form(...)` — the bare syntactic discriminator
+  the dispatcher and the trace node's probe construction share, so the
+  two-form partition rule is defined exactly once.
 - `span_within_file(...)` — byte file-bounds check the analyze parser's
   degraded path composes (§4).
 - `span_within_degraded_context(...)` — byte-space intersection check: a
@@ -134,6 +137,7 @@ from outrider.coordinates.diff_parser import (
     COORDINATES_IMPORT_PATH_RESOLVER,
     diff_line_to_scope,
     file_in_patch,
+    is_relative_specifier_form,
     is_valid_import_string,
     is_valid_relative_specifier,
     is_valid_trace_import_string,
@@ -183,6 +187,7 @@ __all__ = [
     "diff_line_to_scope",
     "extract_scope_unit_body",
     "file_in_patch",
+    "is_relative_specifier_form",
     "is_valid_import_string",
     "is_valid_relative_specifier",
     "is_valid_trace_import_string",
