@@ -2942,11 +2942,14 @@ export interface components {
          *     (c) ambiguous → len(resolved_candidate_paths) > 1 AND target_file is None
          *
          *     Two parallel tuples:
-         *     - `proposed_import_strings`: the ADMITTED dotted Python import strings
-         *       (any cardinality) — canonicalized, plus corrected module-form
+         *     - `proposed_import_strings`: the ADMITTED import strings (any
+         *       cardinality; two syntactic forms per #024 Amended 2026-07-03 —
+         *       dotted module strings or JS/TS relative specifiers) —
+         *       canonicalized, plus corrected module-form
          *       siblings emitted when the analyzed file's from-imports contradict a
-         *       candidate's module prefix (#024 from-import correction amendment;
-         *       the model's original always survives alongside). Raw model strings
+         *       module-form candidate's prefix (#024 from-import correction
+         *       amendment; the model's original always survives alongside). Raw
+         *       model strings
          *       live in the stored LLM exchange, recoverable within the content
          *       retention window (`DECISIONS.md#012`/`#014`) — after the purge only
          *       the admitted forms persist. Per DECISIONS.md#024 trace candidates

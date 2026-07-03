@@ -237,8 +237,9 @@ class TraceDecisionEventFactory:
             "target_file": "src/bar.py",
             "reason": "called from src/foo.py:10 via direct import",
             "resolution_status": "resolved",
-            # Per DECISIONS.md#024 (Accepted 2026-05-24): trace candidates are
-            # dotted Python import strings; resolver outputs are file paths.
+            # Per DECISIONS.md#024 (Accepted 2026-05-24, two-form since the
+            # 2026-07-03 amendment): candidates are import strings (dotted
+            # module or relative specifier); resolver outputs are file paths.
             # Parallel tuples carry the admitted-candidate + resolver-output halves.
             "proposed_import_strings": ("bar", "baz"),
             "resolved_candidate_paths": ("src/bar.py",),

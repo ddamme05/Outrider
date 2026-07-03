@@ -94,8 +94,8 @@ def _round(pass_index: int = 0, *, distinct: str = "") -> AnalysisRound:
 def _candidate(seed: str = "a") -> TraceCandidate:
     """Construct a TraceCandidate with a canonical candidate_id derived
     from its own payload (required by `_enforce_candidate_id_matches_payload`).
-    Per DECISIONS.md#024, trace candidates are dotted Python import
-    strings — the seed is sanitized (hyphens → underscores) and folded
+    Per DECISIONS.md#024, module-form trace candidates are dotted Python
+    import strings — the seed is sanitized (hyphens → underscores) and folded
     into a single-part identifier so test-author-friendly seeds like
     'auth-mw' don't trip the identifier-validity check."""
     source_proposal_hash = compute_identity_hash({"prop": seed})

@@ -3,8 +3,9 @@
 Backs DECISIONS.md#017 (Amended 2026-04-29 same-day + 2026-05-24 by #024).
 Per the #024 amendment, field shape:
 - `candidates_considered` → renamed to `proposed_import_strings` (admitted
-  dotted Python import strings — canonicalized model candidates plus
-  corrected from-import siblings per the #024 from-import amendment).
+  import strings, two forms per #024 Amended 2026-07-03 — canonicalized
+  model candidates plus corrected from-import siblings per the #024
+  from-import amendment).
 - New `resolved_candidate_paths` carries resolver outputs (file paths).
 - Cross-field validator rules rewritten to consult `resolved_candidate_paths`
   cardinality (not `proposed_import_strings` membership):
