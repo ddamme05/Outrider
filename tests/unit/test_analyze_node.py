@@ -1372,6 +1372,65 @@ async def test_observed_claim_on_js_file_is_rejected_at_admission(
     assert "no registry query matches fired" in request.user_prompt
 
 
+async def test_system_prompt_is_byte_identical_across_languages(
+    deps: dict[str, Any],
+) -> None:
+    """Cache-packing contract (DECISIONS.md#042): language variation
+    lives ONLY in the user prompt's per-scope inner fences — the system
+    prompt must be byte-identical for a .py and a .js file, or the
+    Anthropic prompt-cache prefix forks per language. (The outer
+    ````text wrapper around the whole scope-context blob is the
+    pre-existing injection defense and is language-independent; the
+    per-language hint is the inner fence on each scope body.)"""
+    py_file = _build_changed_file(
+        path="src/example.py",
+        content=b"def hello():\n    return 42\n",
+        patch=(
+            "--- a/src/example.py\n+++ b/src/example.py\n@@ -1,1 +1,2 @@\n"
+            " def hello():\n+    return 42\n"
+        ),
+        content_base="def hello():\n    return 0\n",
+    )
+    state_py = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(py_file,)),
+        triage_result=TriageResult(
+            file_tiers={"src/example.py": ReviewTier.DEEP},
+            overall_risk=RiskLevel.MEDIUM,
+            relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
+            reasoning="python side of the cross-language prompt pin",
+        ),
+    )
+    await analyze(state_py, **deps)
+    [py_request] = deps["provider"].calls
+    assert "```python" in py_request.user_prompt
+
+    js_file = _build_changed_file(
+        path="src/example.js",
+        content=b"export function hello() {\n  return 42;\n}\n",
+        patch=(
+            "--- a/src/example.js\n+++ b/src/example.js\n@@ -1,1 +1,2 @@\n"
+            " export function hello() {\n+  return 42;\n"
+        ),
+        content_base="export function hello() {\n  return 0;\n}\n",
+    )
+    js_provider = _StubLLMProvider(_build_finding_proposal_json())
+    deps["provider"] = js_provider
+    state_js = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(js_file,)),
+        triage_result=TriageResult(
+            file_tiers={"src/example.js": ReviewTier.DEEP},
+            overall_risk=RiskLevel.MEDIUM,
+            relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
+            reasoning="js side of the cross-language prompt pin",
+        ),
+    )
+    await analyze(state_js, **deps)
+    [js_request] = js_provider.calls
+    assert "```javascript" in js_request.user_prompt
+    # The load-bearing assertion: one shared, byte-identical system prefix.
+    assert js_request.system_prompt == py_request.system_prompt
+
+
 def test_is_python_file_matches_registry_case_insensitivity() -> None:
     """The stage predicate must cover exactly the registry's Python
     group with the registry gate's case normalization — a case-sensitive
