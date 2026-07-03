@@ -5,10 +5,10 @@
 Two Protocols, both consumed by graph nodes via closure injection from
 `build_graph(...)` per `nodes-receive-deps-via-closure`:
 
-  - `LanguageAdapter` — implemented by per-language adapters (V1: only
-    `PythonAdapter`). Six methods covering scope, import, call-site,
-    assignment extraction; simple-direct-import resolution; and
-    parse-outcome computation.
+  - `LanguageAdapter` — implemented by per-language adapters
+    (`PythonAdapter`, `JavaScriptAdapter`, `TypeScriptAdapter`). Six
+    methods covering scope, import, call-site, assignment extraction;
+    simple-direct-import resolution; and parse-outcome computation.
 
   - `ImportPathResolver` — the path-validation contract that
     `resolve_simple_direct_import` calls into. Implementation is owned

@@ -1,22 +1,26 @@
 # AST-facts public surface per specs/2026-04-30-ast-facts-module.md.
-"""AST-facts module — Python adapter and shared domain models.
+"""AST-facts module — language adapters and shared domain models.
 
 **Light types eager-import** at module load (Pydantic models, Protocols,
 errors, literal types, the SkipReason enum). These have no `tree_sitter`
 dependency and are safe for `outrider.audit.events` and other consumers
 to import without paying tree-sitter init cost.
 
-**`parse_python` lazy-imports** via module-level `__getattr__` per
-`DECISIONS.md#018` point 6: accessing `outrider.ast_facts.parse_python`
-triggers loading `python_adapter.py`, which in turn loads `tree_sitter`.
-This keeps `from outrider.ast_facts.models import SkipReason` cheap for
-audit-side consumers — `python_adapter.py` is loaded only when the
-adapter is actually needed.
+**The `parse_*` entry points lazy-import** via module-level
+`__getattr__` per `DECISIONS.md#018` point 6: accessing
+`outrider.ast_facts.parse_python` / `parse_javascript` /
+`parse_typescript` triggers loading the owning adapter module, which in
+turn loads `tree_sitter` + that language's grammar. This keeps
+`from outrider.ast_facts.models import SkipReason` cheap for audit-side
+consumers. The adapter CLASSES are deliberately not exported from the
+package root — an eager class export would pull a grammar module into
+every consumer's graph; construct via `registry.get_adapter_factory`
+or import the adapter module directly.
 
 The import-light contract is enforced by a subprocess-isolated
 regression test in `tests/integration/test_ast_facts_query_registry.py`
-that asserts `tree_sitter not in sys.modules` after
-`from outrider.ast_facts.models import SkipReason`.
+that asserts `tree_sitter` (and the JS/TS grammar modules) are not in
+`sys.modules` after `from outrider.ast_facts.models import SkipReason`.
 """
 
 from outrider.ast_facts.base import ImportPathResolver, LanguageAdapter
@@ -83,7 +87,9 @@ __all__ = [
     "TrivialityVerdict",
     "build_triviality_context",
     "classify_scope_triviality",
+    "parse_javascript",
     "parse_python",
+    "parse_typescript",
 ]
 
 # Names served by the lazy __getattr__ below. `triviality.py` imports
@@ -107,9 +113,10 @@ def __getattr__(name: str) -> object:
 
     Per `DECISIONS.md#018` point 6: this `__getattr__` is the gate that
     keeps `from outrider.ast_facts.models import SkipReason` cheap for
-    audit consumers. `parse_python` (python_adapter.py) and the
-    trivial-scope classifier surface (triviality.py) both import
-    `tree_sitter`; loading either on every `from outrider.ast_facts`
+    audit consumers. The `parse_*` entry points (python_adapter.py,
+    javascript_adapter.py, typescript_adapter.py) and the trivial-scope
+    classifier surface (triviality.py) all import `tree_sitter` + a
+    grammar; loading any of them on every `from outrider.ast_facts`
     import would pull tree-sitter into every consumer's module graph.
     """
     if name == "parse_python":
@@ -119,6 +126,16 @@ def __getattr__(name: str) -> object:
         # tree_sitter is only loaded on first access, not on every access.
         globals()["parse_python"] = parse_python
         return parse_python
+    if name == "parse_javascript":
+        from outrider.ast_facts.javascript_adapter import parse_javascript
+
+        globals()["parse_javascript"] = parse_javascript
+        return parse_javascript
+    if name == "parse_typescript":
+        from outrider.ast_facts.typescript_adapter import parse_typescript
+
+        globals()["parse_typescript"] = parse_typescript
+        return parse_typescript
     if name in _TRIVIALITY_LAZY:
         from outrider.ast_facts import triviality
 

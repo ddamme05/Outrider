@@ -440,9 +440,11 @@ class ImportResolution(BaseModel):
 
 
 class ParseResult(BaseModel):
-    """The bundled return value of `parse_python(...)`. Empty-tuples shape
-    on the failed and skipped paths; full population on the clean path.
-    `skip_reason` non-None iff `parser_outcome == "skipped"`.
+    """The bundled return value of the `parse_*` entry points
+    (`parse_python`, `parse_javascript`, `parse_typescript`).
+    Empty-tuples shape on the failed and skipped paths; full population
+    on the clean path. `skip_reason` non-None iff
+    `parser_outcome == "skipped"`.
     """
 
     model_config = ConfigDict(extra="forbid")

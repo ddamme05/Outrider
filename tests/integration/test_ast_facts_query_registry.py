@@ -243,8 +243,12 @@ def test_import_light_subprocess_isolated() -> None:
         (
             "import sys; "
             "from outrider.ast_facts.models import SkipReason; "
-            "assert 'tree_sitter' not in sys.modules, "
-            "f'tree_sitter unexpectedly loaded; sys.modules has: '"
+            "loaded = [m for m in ("
+            "'tree_sitter', 'tree_sitter_python', "
+            "'tree_sitter_javascript', 'tree_sitter_typescript'"
+            ") if m in sys.modules]; "
+            "assert not loaded, "
+            "f'grammar modules unexpectedly loaded: {loaded}; sys.modules has: '"
             "f'{sorted(m for m in sys.modules if \"tree\" in m)}'"
         ),
     ]
