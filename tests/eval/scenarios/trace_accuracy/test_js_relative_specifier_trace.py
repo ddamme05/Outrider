@@ -12,9 +12,12 @@ provide. The same run scripts two negative properties as explicit attacks:
   pops from `src/routes/`) probes its fan-out, misses everything, and
   lands an `unresolved` TraceDecision — the designed degradation;
 - a pass-1 proposal CLAIMING `observed` with a fabricated Python query id
-  on the fetched JS file, which admission must reject (the dispatch
-  feature's language-gated query-id set keeps OBSERVED impossible for
-  JS/TS) — asserted as only-the-INFERRED-finding admitting in round 2.
+  on the fetched JS file, which admission must reject (JS/TS registers no
+  STRUCTURAL queries, so the model-citable admission set is empty by
+  registration — a model observed CLAIM on a JS/TS file always rejects,
+  even now that the JS/TS OBSERVED catalog lets the deterministic
+  producer emit the tier on catalog-matching pass-0 files) — asserted as
+  only-the-INFERRED-finding admitting in round 2.
 
 Two singleton candidate buckets skip the Haiku ranking call, so no trace
 LLM response is scripted.
@@ -50,9 +53,13 @@ def test_js_relative_specifier_trace_resolves_and_grounds_inferred() -> None:
     assert inferred.trace_path == ("runQuery",)
     assert inferred.finding_type == "sql_injection"
 
-    # OBSERVED stays impossible for JS/TS: the pass-1 response CLAIMED an
-    # observed finding with a fabricated Python query id — nothing
-    # observed may survive admission anywhere in the run.
+    # No observed finding may survive THIS run: the pass-1 response CLAIMED
+    # observed with a fabricated Python query id (model claims always reject
+    # on JS/TS — the structural admission set is empty by registration), and
+    # the deterministic producer is silent here by construction — the pass-0
+    # file fires no catalog query, and the producer never runs on
+    # trace-fetched files. OBSERVED on a catalog-MATCHING JS file is the
+    # structural JS catalog scenario's positive case.
     assert all(f.evidence_tier != "observed" for f in review_state.findings)
     # Exactly the two scripted pass-0 JUDGED findings + the traced
     # INFERRED one made it through.

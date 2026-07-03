@@ -74,7 +74,7 @@ def test_key_is_deterministic_64_hex() -> None:
         ("analyze_parser_version", ANALYZE_PARSER_VERSION + "-probe"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
-        ("observed_producer_version", "observed-producer-v2"),
+        ("observed_producer_version", "observed-producer-v3"),
         # A SUBSUMES relation edit changes the admitted set (DECISIONS.md#055),
         # so its digest must change the key — "f"*64 is a distinct-from-live probe.
         ("subsumes_digest", "f" * 64),

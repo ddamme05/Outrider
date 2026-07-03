@@ -304,9 +304,14 @@ def test_weak_asymmetric_key_size_value_predicate(src: str, should_match: bool) 
 
 
 def test_every_observed_query_has_a_precision_case() -> None:
-    """No OBSERVED query ships without a positive/negative precision case."""
+    """No PYTHON OBSERVED query ships without a positive/negative precision
+    case here. The javascript catalog carries its own completeness guard in
+    test_js_observed_query_catalog.py — one guard per catalog language, so
+    each scenario stays scoped to the grammar its fixtures are written in."""
+    python_ids = {
+        oq.query_match_id for oq in registry.OBSERVED_QUERIES.values() if oq.language == "python"
+    }
     covered = {c[0] for c in _CASES}
-    assert covered == set(registry.OBSERVED_QUERY_IDS), (
-        f"precision-case drift: untested={set(registry.OBSERVED_QUERY_IDS) - covered} "
-        f"stale={covered - set(registry.OBSERVED_QUERY_IDS)}"
+    assert covered == python_ids, (
+        f"precision-case drift: untested={python_ids - covered} stale={covered - python_ids}"
     )
