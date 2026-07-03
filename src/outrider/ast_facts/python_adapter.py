@@ -36,6 +36,11 @@ from outrider.ast_facts.models import (
     compute_unit_id,
 )
 from outrider.ast_facts.parser_outcome import should_skip
+from outrider.ast_facts.scope_search import (
+    error_lines_from_tree,
+    find_node_by_span,
+    innermost_scope_containing,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -543,23 +548,11 @@ class PythonAdapter:
     def _compute_error_lines_from_tree(tree: Tree) -> frozenset[int]:
         """1-indexed source lines covered by tree-sitter ERROR or MISSING nodes.
 
-        Scope-INDEPENDENT, unlike per-scope `has_error`: a syntax error that breaks a
-        scope's header yields no scope node, so it is invisible to `has_error` but IS
-        an ERROR node here. A multi-line ERROR node contributes every line in its row
-        span; a MISSING / zero-width node (`start_point == end_point`) contributes its
-        single line. Stays inside `ast_facts` — raw `tree_sitter.Node` is walked here,
-        only `frozenset[int]` leaves (AST firewall). See DECISIONS.md#033.
+        Delegates to the shared `scope_search.error_lines_from_tree`
+        (language-agnostic ERROR/MISSING walk); semantics documented
+        there. See DECISIONS.md#033.
         """
-        lines: set[int] = set()
-        stack = [tree.root_node]
-        while stack:
-            node = stack.pop()
-            if node.type == "ERROR" or node.is_missing:
-                # tree-sitter rows are 0-indexed; source lines are 1-indexed.
-                for row in range(node.start_point[0], node.end_point[0] + 1):
-                    lines.add(row + 1)
-            stack.extend(node.children)
-        return frozenset(lines)
+        return error_lines_from_tree(tree)
 
     @staticmethod
     def _inner_span(scope: ScopeUnit) -> tuple[int, int]:
@@ -608,76 +601,32 @@ class PythonAdapter:
 # ---------------------------------------------------------------------------
 
 
-def _innermost_scope_containing(
-    sorted_scopes: list[ScopeUnit], byte_start: int, byte_end: int
-) -> ScopeUnit | None:
-    """Return the smallest scope whose byte range contains the given range,
-    or None if no scope contains it (module-level).
+# Shared geometry (extracted to `scope_search.py` for the JS/TS
+# adapters); the private name is kept because tests and this module's
+# call sites address it here.
+_innermost_scope_containing = innermost_scope_containing
 
-    "Smallest" = smallest enclosing span. Single-pass over sorted scopes,
-    tracking the best so far. We compare by `(byte_end - byte_start)`
-    rather than by `byte_start` alone because two scopes can share
-    `byte_start` after `_scope_byte_range` adjusts a decorated function's
-    span to its parent's; a strict `byte_start >` tiebreaker would let
-    the outer (wider) scope win in that case, mis-attributing nested
-    call sites and assignments.
-    """
-    best: ScopeUnit | None = None
-    best_span: int | None = None
-    for scope in sorted_scopes:
-        if scope.byte_start <= byte_start and byte_end <= scope.byte_end:
-            span = scope.byte_end - scope.byte_start
-            if best_span is None or span < best_span:
-                best = scope
-                best_span = span
-    return best
-
-
-def _find_node_by_span(root: Node, byte_start: int, byte_end: int) -> Node | None:
-    """Find the OUTERMOST scope-defining node whose span lies within
-    [byte_start, byte_end]. Used by compute_parser_outcome to locate
-    the tree-sitter node for a ScopeUnit.
-
-    Target types include `decorated_definition` so that a syntax error
-    inside a decorator (e.g., `@route(/*malformed*/)\ndef foo(): ...`)
-    propagates to the ScopeUnit's `has_error`. The ScopeUnit's span
-    starts at the decorator (per Month 0 spike's decorated_definition
-    handling), and the decorator's `has_error` lives on the
-    decorated_definition wrapper, not on the inner function_definition.
-    Without `decorated_definition` in this set, the search returns the
-    inner (clean) function_definition and misclassifies the scope as
-    error-free — leaving downstream `degraded` derivation blind to
-    decorator-region parse errors.
-
-    "Outermost" = smallest start_byte; on tie, largest end_byte. Each
-    ScopeUnit corresponds to ONE scope-defining node — the outer one.
-    Picking the deepest contained match would incorrectly attribute a
-    nested scope's `has_error` to the outer scope. Nested scopes are
-    separate ScopeUnits with their own unit_ids.
-    """
-    target_types = {
+# Python's scope-defining node types for the ScopeUnit→node containment
+# lookup. `decorated_definition` is included so a syntax error inside a
+# decorator (e.g., `@route(/*malformed*/)\ndef foo(): ...`) propagates
+# to the ScopeUnit's `has_error`: the ScopeUnit's span starts at the
+# decorator (Month 0 spike), and the decorator's `has_error` lives on
+# the decorated_definition wrapper, not the inner function_definition —
+# without it the lookup returns the inner (clean) node and downstream
+# `degraded` derivation goes blind to decorator-region parse errors.
+_PY_OUTCOME_TARGET_TYPES: Final[frozenset[str]] = frozenset(
+    {
         "function_definition",
         "class_definition",
         "decorated_definition",
     }
-    best: Node | None = None
-    stack: list[Node] = [root]
-    while stack:
-        node = stack.pop()
-        contains = (
-            node.type in target_types
-            and byte_start <= node.start_byte
-            and node.end_byte <= byte_end
-        )
-        if contains and (
-            best is None
-            or node.start_byte < best.start_byte
-            or (node.start_byte == best.start_byte and node.end_byte > best.end_byte)
-        ):
-            best = node
-        for child in node.children:
-            stack.append(child)
-    return best
+)
+
+
+def _find_node_by_span(root: Node, byte_start: int, byte_end: int) -> Node | None:
+    """Python-typed wrapper over the shared containment lookup
+    (`scope_search.find_node_by_span`); semantics documented there."""
+    return find_node_by_span(root, byte_start, byte_end, _PY_OUTCOME_TARGET_TYPES)
 
 
 # ---------------------------------------------------------------------------
