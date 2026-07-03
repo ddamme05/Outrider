@@ -23,6 +23,7 @@ dispatch of that language only.
 
 from __future__ import annotations
 
+from functools import cache
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -126,6 +127,52 @@ def supported_extensions() -> tuple[str, ...]:
     return tuple(sorted(_LANGUAGE_ADAPTERS))
 
 
+# Extension → lazy parse-fn loader, derived from the SAME group constants
+# as `_LANGUAGE_ADAPTERS` and memoized (`@cache`) so a language's grammar
+# loads once, on first parse of that language, and later parses pay one
+# dict hit — not an import-machinery round trip per file.
+
+
+@cache
+def _load_parse_python() -> Callable[..., ParseResult]:
+    from outrider.ast_facts.python_adapter import parse_python
+
+    return parse_python
+
+
+@cache
+def _load_parse_javascript() -> Callable[..., ParseResult]:
+    from outrider.ast_facts.javascript_adapter import parse_javascript
+
+    return parse_javascript
+
+
+@cache
+def _load_parse_typescript() -> Callable[..., ParseResult]:
+    from outrider.ast_facts.typescript_adapter import parse_typescript
+
+    return parse_typescript
+
+
+_PARSE_FN_LOADERS: Final[dict[str, Callable[[], Callable[..., ParseResult]]]] = {
+    **dict.fromkeys(PYTHON_EXTENSIONS, _load_parse_python),
+    **dict.fromkeys(JAVASCRIPT_EXTENSIONS, _load_parse_javascript),
+    **dict.fromkeys(TYPESCRIPT_DIALECT_BY_EXTENSION, _load_parse_typescript),
+}
+
+# Import-time lockstep guard (the SkipReason stage-set precedent): a new
+# language registered in one dispatch structure but not the other would
+# let the analyze gate admit files that `parse_source` then crashes on
+# mid-review — fail loud at import instead.
+if set(_PARSE_FN_LOADERS) != set(_LANGUAGE_ADAPTERS):
+    raise AssertionError(
+        f"registry dispatch structures diverged: adapters cover "
+        f"{sorted(_LANGUAGE_ADAPTERS)} but parse loaders cover "
+        f"{sorted(_PARSE_FN_LOADERS)}. Register new languages in the "
+        f"shared extension-group constants so both derive together."
+    )
+
+
 def parse_source(source: bytes, file_path: str, resolver: ImportPathResolver) -> ParseResult:
     """Language-generic parse dispatch: route `file_path` by extension to
     the owning `parse_*` entry point (per the dispatch spec).
@@ -133,24 +180,16 @@ def parse_source(source: bytes, file_path: str, resolver: ImportPathResolver) ->
     Same lazy-import discipline as the adapter factories — the grammar
     for a language loads on first parse of that language only. Raises
     `UnsupportedExtensionError` for unregistered extensions; the analyze
-    path never sees it (the node gates on `get_adapter_factory` first
-    and routes unregistered extensions to the UNSUPPORTED_LANGUAGE
-    skip), so it fires only for direct callers that skipped the gate.
+    path never sees it (the node gates on `get_adapter_factory` first,
+    both structures derive from the same group constants, and the
+    import-time lockstep assert above keeps them equal), so it fires
+    only for direct callers that skipped the gate.
     """
-    suffix = PurePosixPath(file_path.lower()).suffix
-    if suffix in PYTHON_EXTENSIONS:
-        from outrider.ast_facts.python_adapter import parse_python
-
-        return parse_python(source, file_path, resolver)
-    if suffix in JAVASCRIPT_EXTENSIONS:
-        from outrider.ast_facts.javascript_adapter import parse_javascript
-
-        return parse_javascript(source, file_path, resolver)
-    if suffix in TYPESCRIPT_DIALECT_BY_EXTENSION:
-        from outrider.ast_facts.typescript_adapter import parse_typescript
-
-        return parse_typescript(source, file_path, resolver)
-    raise UnsupportedExtensionError(
-        f"no registered adapter for extension {suffix!r} (from {file_path!r}); "
-        f"supported: {', '.join(supported_extensions())}"
-    )
+    suffix = PurePosixPath(file_path).suffix.lower()
+    loader = _PARSE_FN_LOADERS.get(suffix)
+    if loader is None:
+        raise UnsupportedExtensionError(
+            f"no registered adapter for extension {suffix!r} (from {file_path!r}); "
+            f"supported: {', '.join(supported_extensions())}"
+        )
+    return loader()(source, file_path, resolver)

@@ -131,7 +131,14 @@ from outrider.ast_facts.parameterized_calls import (
     scan_digest,
     scan_parameterized_calls,
 )
-from outrider.ast_facts.registry import get_adapter_factory, parse_source
+from outrider.ast_facts.registry import (
+    JAVASCRIPT_EXTENSIONS,
+    PYTHON_EXTENSIONS,
+    TYPESCRIPT_DIALECT_BY_EXTENSION,
+    get_adapter_factory,
+    parse_source,
+    supported_extensions,
+)
 from outrider.ast_facts.triviality import (
     TRIVIAL_FILTER_VERSION,
     FileTrivialityContext,
@@ -293,23 +300,31 @@ def _is_python_file(path: str) -> bool:
     queries), the parameterized-call veto scan, the trivial-scope
     classifier, and trace-candidate collection are Python-only surfaces
     and stay gated on this even after registry dispatch admits JS/TS
-    files to the review flow.
+    files to the review flow. Derived from the registry's extension
+    group with the same case normalization as the registry gate — a
+    case-sensitive copy here let `UTILS.PY` pass the gate but run with
+    every Python-only stage silently disabled.
     """
-    return path.endswith((".py", ".pyi"))
+    return PurePosixPath(path).suffix.lower() in PYTHON_EXTENSIONS
 
 
+# Derived from the registry's extension groups so a newly registered
+# language can't silently miss this table; the one genuinely local fact
+# is `.jsx` → the finer jsx hint. The import-time totality assert below
+# fails loud if the registry ever grows an extension this table lacks.
 _FENCE_LANG_BY_EXTENSION: Final[dict[str, str]] = {
-    ".py": "python",
-    ".pyi": "python",
-    ".js": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
+    **dict.fromkeys(PYTHON_EXTENSIONS, "python"),
+    **dict.fromkeys(JAVASCRIPT_EXTENSIONS, "javascript"),
     ".jsx": "jsx",
-    ".ts": "typescript",
-    ".mts": "typescript",
-    ".cts": "typescript",
-    ".tsx": "tsx",
+    **TYPESCRIPT_DIALECT_BY_EXTENSION,
 }
+
+if set(_FENCE_LANG_BY_EXTENSION) != set(supported_extensions()):
+    raise AssertionError(
+        f"fence-lang table diverged from the registry: registry supports "
+        f"{sorted(supported_extensions())} but fences cover "
+        f"{sorted(_FENCE_LANG_BY_EXTENSION)}."
+    )
 
 
 def _fence_lang_for(path: str) -> str:
@@ -317,9 +332,11 @@ def _fence_lang_for(path: str) -> str:
     prompt. Language variation lives here and only here: the system
     prompt (`SYSTEM_PROMPT_STABLE_PREFIX`) stays byte-identical across
     languages per the cache-packing contract (DECISIONS.md#042); its
-    Python exemplars are explicitly reference-only.
+    Python exemplars are explicitly reference-only. The "text" fallback
+    is unreachable for gate-admitted files (totality assert above); a
+    neutral hint beats mislabeling unknown code as python.
     """
-    return _FENCE_LANG_BY_EXTENSION.get(PurePosixPath(path).suffix.lower(), "python")
+    return _FENCE_LANG_BY_EXTENSION.get(PurePosixPath(path).suffix.lower(), "text")
 
 
 def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
@@ -1752,10 +1769,22 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     included_clipped_hunks: tuple[tuple[str, ...], ...] = decision.included_clipped_hunks
     degraded_mode = decision.mode == "degraded"
 
-    # Step 3b: registry-query firing (skip for degraded mode).
+    # Step 3b: registry-query firing (skip for degraded mode; skip for
+    # non-Python — the registry holds Python-grammar queries, and firing
+    # them over JS/TS bytes yields error-recovery garbage matches whose
+    # ids would be advertised in the prompt AND accepted by the parser's
+    # membership-only OBSERVED admission. An empty set keeps the prompt
+    # honest ("do not claim observed") and makes any observed claim on a
+    # non-Python file reject at admission.
+    is_python = _is_python_file(changed_file.path)
     query_match_id_set: frozenset[str] = (
-        frozenset() if degraded_mode else _build_query_match_id_set(content_bytes)
+        frozenset() if degraded_mode or not is_python else _build_query_match_id_set(content_bytes)
     )
+
+    # The from-import refs the trace-candidate machinery may consume —
+    # empty for languages with no import resolver. Feeds BOTH the cache
+    # key digest and the parser call below from one binding.
+    trace_import_refs = parse_result.imports if is_python else ()
 
     # Step 3c: assemble the (system, user) prompt pair.
     if degraded_mode:
@@ -1823,7 +1852,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # FileExaminationEvent emission point holds.
     # FUP-170: one post-cost-gate head parse feeds BOTH the trivial-scope
     # classification (below) and the FUP-162 parameterized-call scan.
-    # `parse_python` stays a separate PRE-gate parse (it fed degradation + the
+    # The pre-gate `parse_source` parse stays separate (it fed degradation + the
     # token estimate); this runs strictly AFTER the cost gate, so a cost-skipped
     # file never reaches it (COST_BUDGET_EXHAUSTED-before-classification holds).
     # The scan rides every clean file (None in degraded mode — also exactly when
@@ -1833,7 +1862,6 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # admitted inputs can never fork (FUP-171 anti-fork). `compute_triviality`
     # mirrors the classification gate so triviality (+ its base parse) builds
     # only when there's a patch and included scopes.
-    is_python = _is_python_file(changed_file.path)
     want_triviality = (
         is_python and not degraded_mode and patched_file is not None and bool(included_scope_units)
     )
@@ -1954,9 +1982,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # Candidate correction's per-file input (#024 from-import
             # amendment): corrected siblings depend on imports the
             # rendered prompt doesn't carry.
-            from_import_map_digest=from_import_map_digest(
-                parse_result.imports if is_python else ()
-            ),
+            from_import_map_digest=from_import_map_digest(trace_import_refs),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,
@@ -2209,8 +2235,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # deterministic ground truth for a symbol's module; a candidate
         # whose module prefix they contradict gains a corrected
         # module-form sibling at admission (emitted alongside the
-        # original, never instead).
-        import_refs=parse_result.imports,
+        # original, never instead). `trace_import_refs` is the SAME
+        # object the cache key digested (FUP-171 anti-fork: keyed input
+        # and consumed input cannot diverge).
+        import_refs=trace_import_refs,
         # Trace candidates need an import resolver; non-Python languages
         # have none until the resolver spec, so collection is suppressed
         # (dispatch spec open question 1, ANALYZE_PARSER_VERSION v6).
@@ -2638,9 +2666,13 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # the proof boundary the has_error filter exists to defend. Mirrors
     # the pass-0 `degraded_mode → frozenset()` pattern in
     # `_process_one_file`.
+    # Non-Python gate mirrors pass-0: Python-grammar queries never fire
+    # over non-Python bytes, so no id can authorize an OBSERVED claim
+    # (the scan three steps down is gated for the same reason).
+    is_python = _is_python_file(fetched_file.path)
     query_match_id_set: frozenset[str] = (
         frozenset()
-        if len(included_scope_units) != len(parse_result.scope_units)
+        if not is_python or len(included_scope_units) != len(parse_result.scope_units)
         else _build_query_match_id_set(content_bytes)
     )
     parts = analyze_prompt.render_post_trace(
@@ -2767,7 +2799,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         # future resolver spec can't re-expose Python-grammar scanning
         # of non-Python bytes) get the inert empty scan.
         parameterized_call_scan=scan_parameterized_calls(content_bytes)
-        if _is_python_file(fetched_file.path)
+        if is_python
         else ParameterizedCallScan(),
         # Correction is a no-op here (candidate collection is pass-0-only)
         # but threading the imports keeps both call sites uniform.
