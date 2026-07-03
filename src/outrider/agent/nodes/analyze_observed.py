@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
     from outrider.ast_facts.models import ScopeUnit
     from outrider.policy.severity import FindingType
+    from outrider.queries.observed import QueryLanguage
 
 
 # Version of the OBSERVED producer's ADMISSION logic — the rules in
@@ -80,7 +81,10 @@ if TYPE_CHECKING:
 # v2 (JS/TS OBSERVED catalog): the query set became per-language-selected and
 # `_is_test_file` learned the JS/TS test conventions (`__tests__/`,
 # `*.test.*`, `*.spec.*`).
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v2"
+# v3: the JS/TS test-name conventions became language-scoped — under v2 they
+# applied to every language, silently suppressing OBSERVED findings on
+# dotted-name Python production files (`report.spec.py`, `pkg/__tests__/util.py`).
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v3"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
 # `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
@@ -114,11 +118,14 @@ class ObservedMatch:
     line_end: int
 
 
-def _is_test_file(file_path: str) -> bool:
+def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
     """A repo-relative path is test code if any directory component is `tests`/
-    `test`/`__tests__`, or the filename is `conftest.py` / `test_*.py` /
-    `*_test.py` (Python conventions) or `*.test.*` / `*.spec.*` (JS/TS
-    conventions — `auth.test.ts`, `login.spec.js`).
+    `test`, or the filename is `conftest.py` / `test_*` / `*_test.py`. For
+    JS/TS files (`language == "javascript"`) two ecosystem conventions apply
+    on top: a `__tests__` directory component and the tier marker as an inner
+    dotted segment (`auth.test.ts`, `login.spec.js`). Those two are
+    language-scoped because dotted segments are ordinary naming elsewhere —
+    `report.spec.py` is a production Python file, not a test.
 
     Per `docs/spec.md` §11.2: a security pattern in test code (e.g. `eval()` in a
     test fixture) is NOT a production finding. The deterministic producer can't
@@ -126,13 +133,15 @@ def _is_test_file(file_path: str) -> bool:
     findings in test files structurally.
     """
     path = PurePosixPath(file_path)
-    if any(part in ("tests", "test", "__tests__") for part in path.parts[:-1]):
+    if any(part in ("tests", "test") for part in path.parts[:-1]):
         return True
     name = path.name
     if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
         return True
-    # JS/TS convention: the tier marker is an inner dotted segment
-    # (`name.test.ts`, `name.spec.tsx`), not a prefix/suffix of the stem.
+    if language != "javascript":
+        return False
+    if "__tests__" in path.parts[:-1]:
+        return True
     inner_segments = name.split(".")[1:-1]
     return any(seg in ("test", "spec") for seg in inner_segments)
 
@@ -159,15 +168,16 @@ def run_observed_matches(
     tuple (by query id, then the registry's match sort) so any content-derived id
     downstream stays stable across replays.
     """
-    # Test code is not a production security finding (spec §11.2).
-    if _is_test_file(file_path):
-        return ()
     # Per-language selection: the registry pairs the query set with the
     # grammar that parses this file's bytes. Both None/empty for a
     # catalog-less language — the loop below then never runs.
     language = query_registry.query_language_for_path(file_path)
     grammar = query_registry.grammar_for_path(file_path)
     if language is None or grammar is None:
+        return ()
+    # Test code is not a production security finding (spec §11.2). The
+    # language scopes the JS/TS-only name conventions.
+    if _is_test_file(file_path, language):
         return ()
     content_bytes = head_content.encode("utf-8")
     scope_ranges = tuple((su.byte_start, su.byte_end) for su in included_scope_units)

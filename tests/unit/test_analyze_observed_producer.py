@@ -247,6 +247,23 @@ def test_js_test_file_conventions_are_suppressed() -> None:
     assert len(_produce_at(_JS_WEAK_HASH_SOURCE, "src/token.js")) == 1
 
 
+def test_js_test_conventions_do_not_suppress_other_languages() -> None:
+    """`__tests__/` and the inner `.test.`/`.spec.` markers are JS/TS
+    ecosystem conventions, language-scoped in `_is_test_file` — a dotted-name
+    Python PRODUCTION file keeps producing OBSERVED findings. Under
+    observed-producer-v2 these paths were silently suppressed for every
+    language (no finding, no skip event, no audit trace)."""
+    source = "import pickle\n\n\ndef load(b):\n    return pickle.loads(b)\n"
+    for prod_path in (
+        "src/report.spec.py",
+        "src/settings.test.py",
+        "pkg/__tests__/util.py",
+    ):
+        findings = _produce(source, file_path=prod_path)
+        assert len(findings) == 1, f"{prod_path} is production Python, not a test file"
+        assert findings[0].query_match_id == "python.unsafe_deserialization_pickle"
+
+
 def test_unregistered_extension_is_inert() -> None:
     """A language with no catalog selects zero queries — the producer
     returns empty rather than raising or running another language's set."""
