@@ -74,7 +74,9 @@ def test_key_is_deterministic_64_hex() -> None:
         ("analyze_parser_version", ANALYZE_PARSER_VERSION + "-probe"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
-        ("observed_producer_version", "observed-producer-v3"),
+        # Derived probe (same rationale as analyze_parser_version): an
+        # OBSERVED_PRODUCER_VERSION bump can never collide with this row.
+        ("observed_producer_version", OBSERVED_PRODUCER_VERSION + "-probe"),
         # A SUBSUMES relation edit changes the admitted set (DECISIONS.md#055),
         # so its digest must change the key — "f"*64 is a distinct-from-live probe.
         ("subsumes_digest", "f" * 64),
