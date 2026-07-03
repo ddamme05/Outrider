@@ -20,6 +20,8 @@ from unidiff.errors import UnidiffParseError
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from unidiff import PatchedFile
 
     from outrider.ast_facts.models import ScopeUnit
@@ -260,6 +262,25 @@ def resolve_candidate_paths(
     module_relative = Path(base.with_suffix(".py"))
     package_relative = Path(base / "__init__.py")
 
+    return _filesystem_safe_candidates((module_relative, package_relative), import_root)
+
+
+def _filesystem_safe_candidates(
+    candidates: Iterable[Path],
+    import_root: Path,
+) -> list[Path]:
+    """Root-aware safety walk shared by the two filesystem resolution surfaces.
+
+    `resolve_candidate_paths` (module form) and
+    `resolve_specifier_candidate_paths` (relative-specifier form) both run
+    their already-constructed repo-relative candidates through this single
+    core, so the trust-boundary #5 sub-rule 3b contract — `.resolve()` +
+    prefix-validation against `import_root`, no symlink component anywhere
+    including `import_root` itself — lives in exactly one place.
+
+    Candidates that fail any check (or hit any filesystem error) are
+    omitted; a symlinked `import_root` empties the result outright.
+    """
     try:
         if import_root.is_symlink():
             return []
@@ -268,7 +289,7 @@ def resolve_candidate_paths(
         return []
 
     safe_candidates: list[Path] = []
-    for candidate in (module_relative, package_relative):
+    for candidate in candidates:
         # Defensive — construction guarantees these, but check anyway.
         if candidate.is_absolute() or ".." in candidate.parts:
             continue
@@ -316,6 +337,211 @@ def _has_symlink_component(absolute: Path, root: Path) -> bool:
             return True
         current = current.parent
     return False
+
+
+def is_valid_relative_specifier(value: str) -> str:
+    """Validate and NFC-normalize a JS/TS relative import specifier.
+
+    The relative-specifier form of the two-form `TraceCandidate.import_string`
+    contract per `DECISIONS.md#024` (Amended 2026-07-03). SHAPE-ONLY and
+    context-free: repo-escape containment is deliberately NOT this validator's
+    contract — it requires the importing file's directory, which the schema
+    and audit call sites don't have. Containment is enforced where that
+    context exists: at parser admission and again inside
+    `relative_specifier_candidate_paths` (defense in depth).
+
+    Raises ValueError on invalid input; returns the NFC-normalized value on
+    valid input — same raise/return shape as `is_valid_import_string`, its
+    module-form sibling, so the two-form dispatcher
+    (`is_valid_trace_import_string`) composes them uniformly.
+
+    Accepted shape: exactly `.` or `..`, or a POSIX path beginning with `./`
+    or with a leading chain of `../` segments. After the leading dot run,
+    segments must be non-empty and must not be `.` or `..` — interior `..`
+    (e.g. `./a/../b`) is rejected outright rather than normalized; leading
+    `../` chains are the only parent traversal admitted, bounded downstream
+    by containment against the importing file's depth.
+
+    Rejection cases (each raises ValueError with a discriminating message):
+
+    - empty input
+    - any backslash (POSIX separators only)
+    - any shell metacharacter from the shared `_SHELL_METACHARS_RE` set
+      (includes NUL, newline, glob characters)
+    - bidi-override / invisible-format characters per the shared
+      `_TROJAN_SOURCE_CHARS_RE` battery (CVE-2021-42574 Trojan Source —
+      same admit/reject trade-offs as `is_valid_import_string`, including
+      the deliberate ZWJ/ZWNJ admission documented on the regex)
+    - not starting with `./` or `../` (and not exactly `.` / `..`) — bare
+      specifiers (`express`) and absolute paths are out of scope by shape
+    - empty path segment (`.//x`, `./x//y`, trailing `/`)
+    - interior `.` or `..` segment after the leading dot run
+    """
+    if not value:
+        raise ValueError("relative specifier must not be empty")
+    normalized = unicodedata.normalize("NFC", value)
+    if "\\" in normalized:
+        raise ValueError("relative specifier must not contain backslashes (POSIX separators only)")
+    if _SHELL_METACHARS_RE.search(normalized):
+        raise ValueError("relative specifier contains shell metacharacters")
+    if _TROJAN_SOURCE_CHARS_RE.search(normalized):
+        raise ValueError(
+            "relative specifier contains bidi-override or invisible-format "
+            "characters (CVE-2021-42574 Trojan Source defense)"
+        )
+    if normalized not in (".", "..") and not normalized.startswith(("./", "../")):
+        raise ValueError(
+            "relative specifier must begin with './' or '../' (or be exactly '.' or '..')"
+        )
+    segments = normalized.split("/")
+    # Leading dot run: a single `.` (`./x`) or a contiguous chain of `..`
+    # (`../../x`). Everything after it must be plain, non-empty segments.
+    tail_start = 1
+    if segments[0] == "..":
+        while tail_start < len(segments) and segments[tail_start] == "..":
+            tail_start += 1
+    for segment in segments[tail_start:]:
+        if not segment:
+            raise ValueError(
+                "relative specifier has an empty path segment (e.g., './/x' or a trailing '/')"
+            )
+        if segment == ".":
+            raise ValueError("relative specifier has an interior '.' segment")
+        if segment == "..":
+            raise ValueError(
+                "relative specifier has an interior '..' segment "
+                "(only a leading '../' chain is admitted)"
+            )
+    return normalized
+
+
+def is_valid_trace_import_string(value: str) -> str:
+    """Shared two-form validator for `TraceCandidate.import_string`.
+
+    THE single dispatch point for the two-form contract per `DECISIONS.md#024`
+    (Amended 2026-07-03): a leading `.` selects the relative-specifier form
+    (`is_valid_relative_specifier`); anything else is the module form
+    (`is_valid_import_string`). The two validators partition the value
+    space — a dotted Python import string can never begin with `.` (the
+    module form rejects leading dots) and a relative specifier always
+    does — so no value is accepted by both forms and no fallback branch
+    exists.
+
+    The three shape-validation sites — `TraceCandidate.import_string`,
+    `TraceDecision._enforce_canonical_proposed_import_strings`, and
+    `TraceDecisionEvent`'s audit-shadow validator — all dispatch through
+    this helper so the state ↔ audit canonical-bytes lockstep holds for
+    both forms. Raises ValueError on invalid input; returns the
+    NFC-normalized canonical value otherwise.
+    """
+    if value.startswith("."):
+        return is_valid_relative_specifier(value)
+    return is_valid_import_string(value)
+
+
+# Pragmatic-six extension fan-out for relative-specifier resolution, in
+# resolution-priority order, per `DECISIONS.md#024` (Amended 2026-07-03):
+# four file suffixes on the target stem plus two directory-index names.
+# `.mjs` / `.cjs` are deliberately excluded (rare as import targets);
+# extend on eval evidence, not speculation.
+_RELATIVE_SPECIFIER_SUFFIXES: Final = (".js", ".jsx", ".ts", ".tsx")
+_RELATIVE_SPECIFIER_INDEX_NAMES: Final = ("index.js", "index.ts")
+
+
+def relative_specifier_candidate_paths(
+    specifier: str,
+    importing_file_path: str,
+) -> tuple[str, ...]:
+    """Construct GitHub-probe candidate paths for a JS/TS relative specifier.
+
+    The string-level construction surface for relative-specifier trace
+    candidates per `DECISIONS.md#024` (Amended 2026-07-03): `'../db'`
+    imported from `src/routes/user.js` fans out to `('src/db.js',
+    'src/db.jsx', 'src/db.ts', 'src/db.tsx', 'src/db/index.js',
+    'src/db/index.ts')` — the pragmatic-six set in resolution-priority
+    order. Does NOT consult the filesystem or the GitHub API; existence
+    testing is the caller's probe step (verified-real + budget-bounded in
+    `agent/nodes/trace.py`, per `trace-fetches-only-resolved-files`).
+
+    Containment (defense in depth — the second enforcement site after
+    parser admission): the leading `../` chain is applied against the
+    importing file's directory depth; a specifier that would escape the
+    repo root returns () — no candidate is constructed, so nothing can be
+    probed. A target resolving to the repo root itself (e.g. `.` from a
+    root-level file) fans out to the index forms only (an extension cannot
+    attach to an empty stem).
+
+    Returns () for invalid specifiers (per `is_valid_relative_specifier`),
+    invalid importing paths (per `validate_diff_path`), and root escapes —
+    mirroring `resolve_candidate_paths`' empty-return "treats as
+    does-not-exist" contract. Every returned path has passed
+    `validate_diff_path`, the string-level surface for paths heading to
+    the GitHub contents API.
+    """
+    try:
+        normalized = is_valid_relative_specifier(specifier)
+    except ValueError:
+        return ()
+    try:
+        importing = validate_diff_path(importing_file_path)
+    except CoordinateError:
+        return ()
+
+    target_parts = list(PurePosixPath(importing).parts[:-1])
+    for segment in normalized.split("/"):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if not target_parts:
+                # Repo-root escape — reject the entire candidate set.
+                return ()
+            target_parts.pop()
+        else:
+            target_parts.append(segment)
+
+    target = "/".join(target_parts)
+    if target:
+        raw_candidates = [f"{target}{suffix}" for suffix in _RELATIVE_SPECIFIER_SUFFIXES]
+        raw_candidates += [f"{target}/{name}" for name in _RELATIVE_SPECIFIER_INDEX_NAMES]
+    else:
+        raw_candidates = list(_RELATIVE_SPECIFIER_INDEX_NAMES)
+
+    validated: list[str] = []
+    for candidate in raw_candidates:
+        try:
+            validated.append(validate_diff_path(candidate))
+        except CoordinateError:
+            continue
+    return tuple(validated)
+
+
+def resolve_specifier_candidate_paths(
+    specifier: str,
+    importing_file_path: str,
+    import_root: Path,
+) -> list[Path]:
+    """Filesystem twin of `relative_specifier_candidate_paths` — root-aware.
+
+    The relative-specifier sibling of `resolve_candidate_paths` (module
+    form): the **root-aware** surface of the two-surface path-validation
+    rule for JS/TS adapter use (`resolve_simple_direct_import`), per
+    `docs/trust-boundaries.md` §5 sub-rule 3b. Candidate construction
+    delegates to `relative_specifier_candidate_paths` (string-level
+    validation + containment); each candidate then passes the same
+    symlink-safe walk `resolve_candidate_paths` runs — `.resolve()` +
+    prefix-validation against `import_root`, rejection of symlink
+    components anywhere in the path including `import_root` itself.
+
+    Returns repo-relative `Path` objects; candidates that cannot be
+    guaranteed symlink-free, fail prefix-validation, or hit any filesystem
+    error are omitted — `ast_facts/` treats omitted paths as "did not
+    exist." Returns [] for invalid input, same contract as the module-form
+    sibling.
+    """
+    candidates = relative_specifier_candidate_paths(specifier, importing_file_path)
+    return _filesystem_safe_candidates(
+        [Path(PurePosixPath(candidate)) for candidate in candidates], import_root
+    )
 
 
 def validate_diff_path(file_path: str) -> str:
