@@ -16,6 +16,13 @@ class AstFactsError(Exception):
     """Base for all ast_facts/ typed exceptions."""
 
 
+class UnsupportedExtensionError(AstFactsError):
+    """`parse_source` was handed a file whose extension has no registered
+    adapter. Callers on the analyze path gate on the registry first
+    (routing unregistered extensions to the UNSUPPORTED_LANGUAGE skip),
+    so this fires only for direct callers that skipped the gate."""
+
+
 class ParseError(AstFactsError):
     """Raised when the parser cannot recover from malformed source.
 
