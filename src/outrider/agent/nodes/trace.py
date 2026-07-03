@@ -59,12 +59,12 @@ logger = logging.getLogger(__name__)
 
 # Cap on candidates probed per source-finding bucket per trace invocation.
 # Without a cap, a hostile (or buggy) analyze pass can emit N candidates
-# per finding × M findings × up to 6 paths-per-candidate GitHub fetches
+# per finding × M findings × up to 7 paths-per-candidate GitHub fetches
 # in Phase 1 (module form — the suffix-strip ladder: 2 module-form
-# probes + 2 per strip level × `MAX_SUFFIX_STRIP_LEVELS`, FUP-209;
-# specifier form — the pragmatic-six fan-out at level 0 only, same
-# 6-path worst case per DECISIONS.md#024 Amended 2026-07-03, so the
-# bound is unchanged). The cap is applied
+# probes + 2 per strip level × `MAX_SUFFIX_STRIP_LEVELS` = 6, FUP-209;
+# specifier form — the pragmatic-six fan-out at level 0 only, plus the
+# literal target for extension-bearing specifiers = 7-path worst case
+# per DECISIONS.md#024 Amended 2026-07-03 + addendum). The cap is applied
 # to insertion order (the order analyze emitted candidates into
 # `state.trace_candidates`, reducer-controlled) BEFORE the Haiku
 # ranking call, so membership in the probed set is

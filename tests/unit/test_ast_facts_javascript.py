@@ -552,3 +552,15 @@ def test_invalid_utf8_fails() -> None:
     result = _parse(b"\xff\xfefunction f() {}")
     assert result.parser_outcome == "failed"
     assert result.scope_units == ()
+
+
+def test_extension_bearing_relative_import_resolves_literal(tmp_path: Path) -> None:
+    """#024 addendum through the adapter surface: `import './rel.js'`
+    resolves the literal file."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "rel.js").write_text("export {};\n")
+    ref = _import(_parse(b"import { a } from './rel.js';\n"), "./rel.js")
+    assert ref.is_simple_direct is True
+    resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "resolved"
+    assert resolution.target_path == "src/rel.js"

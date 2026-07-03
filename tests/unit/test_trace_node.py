@@ -873,3 +873,21 @@ async def test_specifier_with_empty_source_file_is_unresolved(
     )
     assert outcome.resolution_status == "unresolved"
     assert probed == []
+
+
+@pytest.mark.asyncio
+async def test_extension_bearing_specifier_resolves_literal_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#024 addendum: `'./db.js'` (mandatory Node ESM form) probes the
+    literal joined target first and resolves it when real."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("./db.js",),
+        real_files={"src/routes/db.js": b"module.exports = {};\n"},
+        source_finding_file="src/routes/user.js",
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "src/routes/db.js"
+    assert probed[0] == "src/routes/db.js"
+    assert len(probed) == 7
