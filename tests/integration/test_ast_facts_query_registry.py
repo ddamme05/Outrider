@@ -25,6 +25,7 @@ from outrider.queries.registry import (
     _GRAMMARS_BY_QUERY_LANGUAGE,
     _QUERY_ID_TO_FILENAME,
     _STRUCTURAL_QUERY_FILES_BY_LANGUAGE,
+    OBSERVED_QUERY_IDS,
     _compile_and_validate,
     get_query_source,
     match,
@@ -104,8 +105,12 @@ def test_every_query_id_matches_format() -> None:
 
 
 def test_deprecated_ledger_disjoint_from_active() -> None:
-    """Deprecated ids must not collide with currently-active ids."""
-    active = set(_QUERY_ID_TO_FILENAME)
+    """Deprecated ids must not collide with currently-active ids —
+    structural AND observed. The ledger loop registers LAST in
+    `_load_and_compile`, so a collision would silently replace a live
+    compiled query with the deprecated body; this disjointness check is
+    the guard, and it must cover both live id kinds."""
+    active = set(_QUERY_ID_TO_FILENAME) | set(OBSERVED_QUERY_IDS)
     deprecated = set(_DEPRECATED_QUERY_ID_TO_BODY)
     assert active.isdisjoint(deprecated), (
         f"id collision between active and deprecated ledgers: {active & deprecated}"
@@ -130,6 +135,23 @@ def test_deprecated_ledger_compiles_under_prefix_language_grammars(
     assert set(compiled["javascript.legacy_probe"]) == {"javascript", "typescript", "tsx"}
 
 
+def test_deprecated_ledger_python_id_compiles_python_grammar_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The python arm of the prefix→grammar dispatch: a `python.*`
+    deprecated body compiles under exactly the python grammar, never the
+    JS family — the per-variant counterpart of the javascript-arm test
+    above (a python body compiled under JS grammars fails on unknown node
+    types, exactly on the historical-replay path the ledger protects)."""
+    monkeypatch.setattr(
+        registry,
+        "_DEPRECATED_QUERY_ID_TO_BODY",
+        {"python.legacy_probe": "(call) @c"},
+    )
+    _bodies, compiled = registry._load_and_compile()  # noqa: SLF001
+    assert set(compiled["python.legacy_probe"]) == {"python"}
+
+
 def test_deprecated_ledger_unknown_prefix_rejects_loud(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -142,7 +164,23 @@ def test_deprecated_ledger_unknown_prefix_rejects_loud(
         "_DEPRECATED_QUERY_ID_TO_BODY",
         {"go.legacy_probe": "(call) @c"},
     )
-    with pytest.raises(ValueError, match="not a known catalog language"):
+    with pytest.raises(ValueError, match="known catalog language"):
+        registry._load_and_compile()  # noqa: SLF001
+
+
+def test_deprecated_ledger_dotless_id_rejects_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dot-less id that exactly equals a language name must fail the
+    `<language>.<purpose>` shape — the split-prefix derivation this
+    replaced accepted `"python"` silently, registering a degenerate id
+    that `get_query_source` and replay verification would then resolve."""
+    monkeypatch.setattr(
+        registry,
+        "_DEPRECATED_QUERY_ID_TO_BODY",
+        {"python": "(call) @c"},
+    )
+    with pytest.raises(ValueError, match="known catalog language"):
         registry._load_and_compile()  # noqa: SLF001
 
 

@@ -462,16 +462,35 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
 # ---------------------------------------------------------------------------
 
 
+def _language_for_query_id(query_id: str) -> QueryLanguage:
+    """Catalog language named by `query_id`'s namespace prefix. The
+    `<language>.<purpose>` id shape per Internal contracts makes the prefix
+    the language; an id without a dot, without a purpose segment, or whose
+    prefix names no known catalog language raises at import. This is the
+    single decoding site for the id scheme — live registration compares
+    against it, the deprecated ledger derives from it, so the two can
+    never drift."""
+    prefix, dot, purpose = query_id.partition(".")
+    if not dot or not purpose or prefix not in _GRAMMARS_BY_QUERY_LANGUAGE:
+        raise ValueError(
+            f"query id {query_id!r} does not match '<language>.<purpose>' "
+            f"with a known catalog language prefix "
+            f"({sorted(_GRAMMARS_BY_QUERY_LANGUAGE)})."
+        )
+    return prefix
+
+
 def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Query]]]:
     bodies: dict[str, str] = {}
     compiled: dict[str, dict[GrammarKind, Query]] = {}
 
     def _register(query_id: str, language: QueryLanguage, filename: str) -> None:
         # Id-namespace guard: the language IS the id's namespace prefix
-        # ("python.", "javascript."), so a metadata/language mismatch —
-        # which would compile a query under the wrong grammars and select
-        # it for the wrong files — fails loud at import.
-        if not query_id.startswith(f"{language}."):
+        # ("python.", "javascript."), decoded by `_language_for_query_id` —
+        # a metadata/language mismatch, which would compile a query under
+        # the wrong grammars and select it for the wrong files, fails loud
+        # at import.
+        if _language_for_query_id(query_id) != language:
             raise ValueError(
                 f"query id {query_id!r} is registered with language "
                 f"{language!r} but its namespace prefix disagrees; the id "
@@ -492,25 +511,19 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Que
     # match()/get_query_source() resolve them like any other registered id.
     for query_id, observed in _OBSERVED_QUERIES.items():
         _register(query_id, observed.language, observed.filename)
-    # Deprecated bodies also compile and validate, under the grammars of the
-    # language named by the id's namespace prefix (`python.*`,
-    # `javascript.*`) — the same prefix/language agreement `_register`
-    # enforces for live ids, so the ledger needs no separate language field.
+    # Deprecated bodies also compile and validate, under the grammars of
+    # the language named by the id's namespace prefix — the same
+    # `_language_for_query_id` decode live registration uses, so the
+    # ledger needs no separate language field and a malformed id (dot-less,
+    # empty purpose, unknown prefix) fails as loud as a live one.
     for query_id, body in _DEPRECATED_QUERY_ID_TO_BODY.items():
-        prefix = query_id.split(".", 1)[0]
-        if prefix not in _GRAMMARS_BY_QUERY_LANGUAGE:
-            raise ValueError(
-                f"deprecated query id {query_id!r} has namespace prefix "
-                f"{prefix!r}, which is not a known catalog language "
-                f"({sorted(_GRAMMARS_BY_QUERY_LANGUAGE)}); the prefix must "
-                f"name the language whose grammars compile the body."
-            )
+        language = _language_for_query_id(query_id)
         bodies[query_id] = body
         compiled[query_id] = {
             grammar: _compile_and_validate(
                 query_id, body, source="deprecated_ledger", grammar=grammar
             )
-            for grammar in _GRAMMARS_BY_QUERY_LANGUAGE[prefix]
+            for grammar in _GRAMMARS_BY_QUERY_LANGUAGE[language]
         }
     return bodies, compiled
 
