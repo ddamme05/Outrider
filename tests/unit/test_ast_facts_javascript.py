@@ -387,6 +387,16 @@ def test_flow_types_in_js_degrade_per_scope() -> None:
     assert 1 in result.error_lines
 
 
+def test_missing_closing_token_at_scope_end_reaches_has_error() -> None:
+    """A missing closing token is a zero-width MISSING node inserted at
+    exactly the recovered scope's byte_end — the point check must be
+    end-inclusive or the structurally broken scope reads clean."""
+    result = _parse(b"class A { m() { return 1; }\n")  # class brace unclosed
+    assert result.has_error[_scope(result, "A").unit_id] is True
+    assert result.has_error[_scope(result, "A.m").unit_id] is True
+    assert result.error_lines
+
+
 def test_compute_parser_outcome_always_returns_clean() -> None:
     """V1 policy pin, same as Python: tree-sitter degrades via ERROR
     nodes, so the file-level outcome is always "clean" — per-scope

@@ -758,15 +758,21 @@ class JavaScriptAdapter:
         # or lands on a decorator-argument node and reads the wrong
         # `has_error`. A scope has an error iff any ERROR/MISSING span
         # intersects its (widened) byte range; zero-width MISSING nodes
-        # count as points. Slightly conservative vs Python (an ERROR
-        # region enclosing a recovered scope flags it), which is the
-        # safe direction under `parse-errors-degrade-to-judged`.
+        # count as points with an INCLUSIVE end bound — tree-sitter
+        # inserts a missing closing token at exactly the recovered
+        # scope's byte_end (`class A { m() { return 1; }` with the class
+        # brace unclosed puts MISSING at A's and A.m's shared end), so a
+        # half-open point check would read the broken scope as clean.
+        # Slightly conservative vs Python (an ERROR region enclosing a
+        # recovered scope flags it; a boundary MISSING flags the scope
+        # it abuts), which is the safe direction under
+        # `parse-errors-degrade-to-judged`.
         error_spans = error_byte_spans_from_tree(tree)
         has_error: dict[str, bool] = {}
         for scope in scope_units:
             has_error[scope.unit_id] = any(
                 (start < scope.byte_end and end > scope.byte_start)
-                or (start == end and scope.byte_start <= start < scope.byte_end)
+                or (start == end and scope.byte_start <= start <= scope.byte_end)
                 for start, end in error_spans
             )
         return "clean", has_error
