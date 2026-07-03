@@ -45,10 +45,11 @@ backstops drift; producer-side correctness is the contract.
   intersects the changed regions, OR clean parse with no patch.
 - `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
   call.
-- `skipped+UNSUPPORTED_LANGUAGE` — non-Python file path; the V1
-  analyze adapter only handles `.py` / `.pyi`. Capability-scoped per
-  `DECISIONS.md#018` Amended 2026-05-21 — the value names "today's
-  analyze cannot review this," not "Outrider forever cannot."
+- `skipped+UNSUPPORTED_LANGUAGE` — no registered ast_facts adapter
+  for the file's extension (`.go`, `.rs`, `.vue`, …; the registry
+  covers Python + JS/TS/TSX). Capability-scoped per `DECISIONS.md#018`
+  Amended 2026-05-21 — the value names "today's analyze cannot review
+  this," not "Outrider forever cannot."
 - `skipped+ALL_SCOPES_TRIVIAL` — enforcing-mode trivial-scope filter:
   every admitted scope classified ordinary-comment-only, so the LLM
   call is skipped (the shadow default never produces this). Fires
@@ -56,8 +57,8 @@ backstops drift; producer-side correctness is the contract.
 
 **V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
 outcome; the analyze code path is wired to handle it, but in V1 the
-trigger cannot fire. `parse_python` only produces `parser_outcome=
-"failed"` on a UTF-8 strict-decode failure ([ast_facts/python_adapter.py]
+trigger cannot fire. The `parse_*` entry points only produce
+`parser_outcome="failed"` on a UTF-8 strict-decode failure ([ast_facts/python_adapter.py]
 step 2). Two upstream gates make that branch dead in V1: (a) intake's
 `_classify_or_reserve_decode` rejects invalid-UTF-8 bytes with
 `SkipReason.OVERSIZED` BEFORE analyze sees the file; (b) analyze
@@ -96,6 +97,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -124,8 +126,12 @@ from outrider.agent.nodes.finding_cap import cap_findings_by_severity
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import SkipReason, TrivialityReason
-from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
-from outrider.ast_facts.python_adapter import parse_python
+from outrider.ast_facts.parameterized_calls import (
+    ParameterizedCallScan,
+    scan_digest,
+    scan_parameterized_calls,
+)
+from outrider.ast_facts.registry import get_adapter_factory, parse_source
 from outrider.ast_facts.triviality import (
     TRIVIAL_FILTER_VERSION,
     FileTrivialityContext,
@@ -272,18 +278,48 @@ def _estimate_tokens(text: str) -> int:
     return (byte_len + _BYTES_PER_TOKEN - 1) // _BYTES_PER_TOKEN
 
 
-def _is_python_file(path: str) -> bool:
-    """True iff `path` is a Python source file analyze can process.
+def _language_supported(path: str) -> bool:
+    """True iff the ast_facts registry has an adapter for `path`'s
+    extension — the analyze language gate (dispatch spec). Path-based
+    because intake does not populate `ChangedFile.language`;
+    `get_adapter_factory` normalizes case internally.
+    """
+    return get_adapter_factory(PurePosixPath(path).suffix) is not None
 
-    V1 ships only the Python adapter (`ast_facts/python_adapter.py`,
-    `queries/python/*.scm`). `.py` and `.pyi` are the two file
-    extensions tree-sitter Python parses meaningfully; everything else
-    routes to a skip outcome. The check is path-based because intake
-    does not populate `ChangedFile.language`. Future V1.5 multi-language
-    adapters move this gate to a registry lookup; the same path check
-    stays as the cheap pre-filter.
+
+def _is_python_file(path: str) -> bool:
+    """True iff `path` is Python source — the STAGE predicate, narrower
+    than `_language_supported`: the OBSERVED producer (Python-grammar
+    queries), the parameterized-call veto scan, the trivial-scope
+    classifier, and trace-candidate collection are Python-only surfaces
+    and stay gated on this even after registry dispatch admits JS/TS
+    files to the review flow.
     """
     return path.endswith((".py", ".pyi"))
+
+
+_FENCE_LANG_BY_EXTENSION: Final[dict[str, str]] = {
+    ".py": "python",
+    ".pyi": "python",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".jsx": "jsx",
+    ".ts": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
+    ".tsx": "tsx",
+}
+
+
+def _fence_lang_for(path: str) -> str:
+    """Markdown fence hint for the scope-context blocks in the USER
+    prompt. Language variation lives here and only here: the system
+    prompt (`SYSTEM_PROMPT_STABLE_PREFIX`) stays byte-identical across
+    languages per the cache-packing contract (DECISIONS.md#042); its
+    Python exemplars are explicitly reference-only.
+    """
+    return _FENCE_LANG_BY_EXTENSION.get(PurePosixPath(path).suffix.lower(), "python")
 
 
 def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
@@ -1404,6 +1440,7 @@ def _assemble_scope_unit_context(
     *,
     included_scope_units: tuple[ScopeUnit, ...],
     source_bytes: bytes,
+    fence_lang: str = "python",
 ) -> str:
     """Render the included scope units as the prompt's `scope_unit_context` block.
 
@@ -1425,7 +1462,7 @@ def _assemble_scope_unit_context(
         name = su.qualified_name or su.name
         blocks.append(
             f"### {su.kind} `{name}` (lines {su.line_start}-{su.line_end})\n"
-            f"{safe_code_fence(body, lang='python')}"
+            f"{safe_code_fence(body, lang=fence_lang)}"
         )
     return "\n\n".join(blocks)
 
@@ -1613,19 +1650,18 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       degraded LLM call.
     - `clean+full_llm` — clean parse, scope units intersect changed
       regions, no `has_error` in those units.
-    - Parser-stage skip — `parse_python` returned `parser_outcome=
+    - Parser-stage skip — `parse_source` returned `parser_outcome=
       "skipped"` (`OVERSIZED`, `VENDORED`, etc.); the parser's
       `skip_reason` is the audit value.
     """
-    # Language gate: V1 only handles Python. Triage doesn't filter by
-    # language and `ChangedFile.language` is currently unpopulated, so a
-    # `.js`/`.go`/`.ts`/`.rs` file classified DEEP/STANDARD would
-    # otherwise reach `parse_python` (tree-sitter Python parser) and the
-    # `queries/python/` registry. Routes through `SkipReason.UNSUPPORTED_LANGUAGE`
-    # per `DECISIONS.md#018` Amended 2026-05-21 — capability-scoped to
-    # the current analyze implementation, not a forever-claim about
-    # Outrider's language support.
-    if not _is_python_file(changed_file.path):
+    # Language gate: registry dispatch (dispatch spec). Triage doesn't
+    # filter by language and `ChangedFile.language` is unpopulated, so a
+    # file with no registered adapter (`.go`, `.rs`, …) classified
+    # DEEP/STANDARD would otherwise reach a parser that can't handle it.
+    # Routes through `SkipReason.UNSUPPORTED_LANGUAGE` per
+    # `DECISIONS.md#018` Amended 2026-05-21 — capability-scoped to the
+    # current registry, not a forever-claim about language support.
+    if not _language_supported(changed_file.path):
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
@@ -1657,10 +1693,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     content_bytes = content.encode("utf-8")
     file_byte_length = len(content_bytes)
 
-    parse_result: ParseResult = parse_python(
-        source=content_bytes,
-        file_path=changed_file.path,
-        resolver=import_path_resolver,
+    parse_result: ParseResult = parse_source(
+        content_bytes,
+        changed_file.path,
+        import_path_resolver,
     )
 
     # Parser-stage skip (VENDORED, OVERSIZED, GENERATED_FILENAME, MINIFIED,
@@ -1745,7 +1781,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         parts = analyze_prompt.render(
             file_path=changed_file.path,
             scope_unit_context=_assemble_scope_unit_context(
-                included_scope_units=included_scope_units, source_bytes=content_bytes
+                included_scope_units=included_scope_units,
+                source_bytes=content_bytes,
+                fence_lang=_fence_lang_for(changed_file.path),
             ),
             query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
             diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
@@ -1795,15 +1833,29 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # admitted inputs can never fork (FUP-171 anti-fork). `compute_triviality`
     # mirrors the classification gate so triviality (+ its base parse) builds
     # only when there's a patch and included scopes.
-    want_triviality = not degraded_mode and patched_file is not None and bool(included_scope_units)
-    triviality_context, parameterized_call_scan = extract_triviality_and_scan(
-        content_bytes,
-        changed_file.content_base.encode("utf-8")
-        if (want_triviality and changed_file.content_base is not None)
-        else None,
-        compute_triviality=want_triviality,
-        degraded=degraded_mode,
+    is_python = _is_python_file(changed_file.path)
+    want_triviality = (
+        is_python and not degraded_mode and patched_file is not None and bool(included_scope_units)
     )
+    if is_python:
+        triviality_context, parameterized_call_scan = extract_triviality_and_scan(
+            content_bytes,
+            changed_file.content_base.encode("utf-8")
+            if (want_triviality and changed_file.content_base is not None)
+            else None,
+            compute_triviality=want_triviality,
+            degraded=degraded_mode,
+        )
+    else:
+        # Non-Python: the trivial-scope classifier and the FUP-162 scan
+        # are Python-grammar surfaces (dispatch spec). Clean files carry
+        # an EMPTY scan, NOT None — None means degraded/not-cacheable
+        # (the clean-mode cache gate below keys on `is not None`), while
+        # an empty scan keeps the sql_injection veto naturally inert
+        # (no execute-like calls to match) and `scan_digest(empty)` keys
+        # the cache stably.
+        triviality_context = None
+        parameterized_call_scan = None if degraded_mode else ParameterizedCallScan()
 
     # triviality_context is non-None iff want_triviality (which already implies a
     # patch + non-empty scopes); the patched_file re-check narrows the type.
@@ -1857,7 +1909,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             parts = analyze_prompt.render(
                 file_path=changed_file.path,
                 scope_unit_context=_assemble_scope_unit_context(
-                    included_scope_units=included_scope_units, source_bytes=content_bytes
+                    included_scope_units=included_scope_units,
+                    source_bytes=content_bytes,
+                    fence_lang=_fence_lang_for(changed_file.path),
                 ),
                 query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
                 diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
@@ -1900,7 +1954,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # Candidate correction's per-file input (#024 from-import
             # amendment): corrected siblings depend on imports the
             # rendered prompt doesn't carry.
-            from_import_map_digest=from_import_map_digest(parse_result.imports),
+            from_import_map_digest=from_import_map_digest(
+                parse_result.imports if is_python else ()
+            ),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,
@@ -1997,7 +2053,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # an enforced skip. Same clean-parse + head-content gate as the post-LLM block.
     observed_matches: tuple[ObservedMatch, ...] = ()
     observed_skip_event: ObservedSkipShadowEvent | None = None
-    if not degraded_mode and changed_file.content_head is not None:
+    # `is_python` gate: the OBSERVED producer executes Python-grammar
+    # queries; running them over non-Python bytes would parse garbage
+    # trees (proof-boundary gate, dispatch spec). Non-Python files stay
+    # JUDGED-only until a language gains its own query registry.
+    if is_python and not degraded_mode and changed_file.content_head is not None:
         observed_matches = run_observed_matches(
             file_path=changed_file.path,
             head_content=content,
@@ -2151,6 +2211,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # module-form sibling at admission (emitted alongside the
         # original, never instead).
         import_refs=parse_result.imports,
+        # Trace candidates need an import resolver; non-Python languages
+        # have none until the resolver spec, so collection is suppressed
+        # (dispatch spec open question 1, ANALYZE_PARSER_VERSION v6).
+        collect_trace_candidates=is_python,
     )
     if parser_result.counters.n_trace_candidates_module_corrected:
         logger.info(
@@ -2462,8 +2526,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     is relevant to a source finding.
 
     Outcomes (subset of `_process_one_file`'s):
-      - `skipped+UNSUPPORTED_LANGUAGE` — non-Python file.
-      - Parser-stage skip — `parse_python` returned skipped (vendored,
+      - `skipped+UNSUPPORTED_LANGUAGE` — no registered adapter for
+        the extension.
+      - Parser-stage skip — `parse_source` returned skipped (vendored,
         oversized, etc.).
       - `skipped+COST_BUDGET_EXHAUSTED` — cost gate failed.
       - `clean+full_llm` — clean parse, LLM call admitted, parser ran.
@@ -2480,7 +2545,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     downgrade case doesn't fire here at the parser layer — every file
     iterated in pass 1 is by construction resolved.
     """
-    if not _is_python_file(fetched_file.path):
+    if not _language_supported(fetched_file.path):
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
@@ -2493,10 +2558,10 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     content_bytes = content.encode("utf-8")
     file_byte_length = len(content_bytes)
 
-    parse_result: ParseResult = parse_python(
-        source=content_bytes,
-        file_path=fetched_file.path,
-        resolver=import_path_resolver,
+    parse_result: ParseResult = parse_source(
+        content_bytes,
+        fetched_file.path,
+        import_path_resolver,
     )
 
     if parse_result.parser_outcome == "skipped":
@@ -2581,7 +2646,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     parts = analyze_prompt.render_post_trace(
         file_path=fetched_file.path,
         scope_unit_context=_assemble_scope_unit_context(
-            included_scope_units=included_scope_units, source_bytes=content_bytes
+            included_scope_units=included_scope_units,
+            source_bytes=content_bytes,
+            fence_lang=_fence_lang_for(fetched_file.path),
         ),
         query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
         # Pass the ACTIVE source finding's id (matches the
@@ -2695,7 +2762,13 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         # units filtered out, not a whole-file degraded mode; the scan
         # itself returns empty for any error-bearing tree, so a partially
         # erroring file disables the veto rather than trusting recovery.
-        parameterized_call_scan=scan_parameterized_calls(content_bytes),
+        # Python-grammar surface: non-Python fetched files (unreachable
+        # while their candidates are suppressed, gated anyway so the
+        # future resolver spec can't re-expose Python-grammar scanning
+        # of non-Python bytes) get the inert empty scan.
+        parameterized_call_scan=scan_parameterized_calls(content_bytes)
+        if _is_python_file(fetched_file.path)
+        else ParameterizedCallScan(),
         # Correction is a no-op here (candidate collection is pass-0-only)
         # but threading the imports keeps both call sites uniform.
         import_refs=parse_result.imports,

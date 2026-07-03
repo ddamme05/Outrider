@@ -2639,8 +2639,9 @@ export interface components {
          *       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
          *       `ALL_SCOPES_TRIVIAL`. Set by the
          *       analyze node body when it skips a file mid-pass.
-         *       `UNSUPPORTED_LANGUAGE` is capability-scoped: the V1 analyze
-         *       adapter only handles Python; the value names "today's analyze
+         *       `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for
+         *       extensions with no registered ast_facts adapter (the registry
+         *       covers Python + JS/TS/TSX); the value names "today's analyze
          *       implementation cannot review this," not "Outrider forever
          *       cannot."
          *

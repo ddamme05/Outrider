@@ -314,6 +314,10 @@ def test_parse_analyze_response_signature() -> None:
         # to the importing module at admission. Defaults to `()`
         # (correction disabled — the degraded/failed-parse value).
         "import_refs",
+        # Dispatch spec: suppresses trace-candidate collection for files
+        # whose language has no import resolver (JS/TS until the
+        # resolver spec). Defaults True; the node passes is_python.
+        "collect_trace_candidates",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (

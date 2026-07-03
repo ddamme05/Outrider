@@ -1230,14 +1230,54 @@ def test_str_to_utf8_roundtrip_cannot_produce_invalid_utf8() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_python_file_routed_to_skip_without_calling_provider(
+async def test_unregistered_language_routed_to_skip_without_calling_provider(
     deps: dict[str, Any],
 ) -> None:
-    """V1 language gate: a non-`.py` file classified DEEP/STANDARD by
-    triage must NOT reach `parse_python` or the Python query registry.
-    Routes through `SkipReason.UNSUPPORTED_LANGUAGE` per
-    `DECISIONS.md#018` Amended 2026-05-21. Pin: no LLM call, no
-    FindingEvent, and a single skip-shaped FileExaminationEvent.
+    """Language gate: a file whose extension has NO registry adapter
+    (`.go` until V2) must not reach any parser or the LLM. Routes
+    through `SkipReason.UNSUPPORTED_LANGUAGE` per `DECISIONS.md#018`
+    Amended 2026-05-21. Pin: no LLM call, no FindingEvent, and a single
+    skip-shaped FileExaminationEvent.
+    """
+    go_file = _build_changed_file(
+        path="src/example.go",
+        content=b"func hello() int {\n\treturn 42\n}\n",
+        patch=(
+            "--- a/src/example.go\n+++ b/src/example.go\n@@ -1,1 +1,2 @@\n"
+            " func hello() int {\n+\treturn 42\n"
+        ),
+        content_base="func hello() int {\n\treturn 0\n}\n",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(go_file,)),
+        triage_result=TriageResult(
+            file_tiers={"src/example.go": ReviewTier.DEEP},
+            overall_risk=RiskLevel.MEDIUM,
+            relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
+            reasoning="go file forced through analyze for the language-gate test",
+        ),
+    )
+
+    await analyze(state, **deps)
+
+    # No LLM call: the gate fires before content selection / parse.
+    assert deps["provider"].calls == []
+    # No findings (the file never reached the parser).
+    assert deps["analyze_event_sink"].findings == []
+    # One skip-shaped FileExaminationEvent for the unregistered extension.
+    skip_events = [e for e in deps["file_examination_sink"].events if e.parse_status == "skipped"]
+    assert len(skip_events) == 1
+    assert skip_events[0].file_path == "src/example.go"
+    assert skip_events[0].skip_reason == SkipReason.UNSUPPORTED_LANGUAGE
+
+
+async def test_javascript_file_flows_through_analyze_judged_only(
+    deps: dict[str, Any],
+) -> None:
+    """Multi-language dispatch: a `.js` file classified DEEP parses via
+    the registry and reaches the LLM with a javascript-fenced scope
+    context — and the Python-only proof surfaces stay provably inert
+    (zero OBSERVED matches; the fence lang proves the JS render path).
     """
     js_file = _build_changed_file(
         path="src/example.js",
@@ -1254,21 +1294,23 @@ async def test_non_python_file_routed_to_skip_without_calling_provider(
             file_tiers={"src/example.js": ReviewTier.DEEP},
             overall_risk=RiskLevel.MEDIUM,
             relevant_dimensions=(ReviewDimension.CODE_QUALITY,),
-            reasoning="js file forced through analyze for the language-gate test",
+            reasoning="js file drives the dispatch path",
         ),
     )
 
     await analyze(state, **deps)
 
-    # No LLM call: the gate fires before content selection / parse.
-    assert deps["provider"].calls == []
-    # No findings (the file never reached the parser).
-    assert deps["analyze_event_sink"].findings == []
-    # One skip-shaped FileExaminationEvent for the non-Python file.
-    skip_events = [e for e in deps["file_examination_sink"].events if e.parse_status == "skipped"]
-    assert len(skip_events) == 1
-    assert skip_events[0].file_path == "src/example.js"
-    assert skip_events[0].skip_reason == SkipReason.UNSUPPORTED_LANGUAGE
+    # The LLM ran, with the scope context fenced as javascript (the
+    # user-prompt language surface) and NO python fence.
+    assert len(deps["provider"].calls) == 1
+    user_prompt = deps["provider"].calls[0].user_prompt
+    assert "```javascript" in user_prompt
+    # A clean (non-skip) FileExaminationEvent for the JS file.
+    clean_events = [e for e in deps["file_examination_sink"].events if e.parse_status == "clean"]
+    assert [e.file_path for e in clean_events] == ["src/example.js"]
+    # Zero-OBSERVED proof: no OBSERVED finding events for a JS file
+    # (queries/ is Python-only; the producer is gated).
+    assert all(f.evidence_tier != "observed" for f in deps["analyze_event_sink"].findings)
 
 
 @pytest.mark.asyncio

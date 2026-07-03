@@ -29,7 +29,11 @@ from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.analyze_observed import OBSERVED_PRODUCER_VERSION
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION, from_import_map_digest
 from outrider.agent.nodes.cache_config import CacheMode
-from outrider.ast_facts.parameterized_calls import scan_digest, scan_parameterized_calls
+from outrider.ast_facts.parameterized_calls import (
+    ParameterizedCallScan,
+    scan_digest,
+    scan_parameterized_calls,
+)
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
 from outrider.audit.events import compute_finding_content_hash
 from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
@@ -265,11 +269,12 @@ async def _run(
     finish_reason: str = "end_turn",
     state_is_eval: bool = False,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    state: ReviewState | None = None,
 ) -> tuple[_StubLLMProvider, _RecordingAnalyzeEventSink]:
     provider = _StubLLMProvider(response_text, finish_reason=finish_reason)
     sink = _RecordingAnalyzeEventSink()
     await analyze(
-        _state(is_eval=state_is_eval),
+        state if state is not None else _state(is_eval=state_is_eval),
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6",
         standard_analyze_model="claude-sonnet-4-6",
@@ -793,3 +798,100 @@ async def test_serve_reconstruction_failure_degrades_to_llm(bad_payload: dict[st
     assert sink.cache_serves == []  # no serve event (raise landed pre-emit)
     assert sink.cache_lookups == []  # no fabricated miss/would_hit for a found-but-unservable row
     assert store.write_calls == []  # cache_key cleared on degrade → step-3g write skipped
+
+
+# ---------------------------------------------------------------------------
+# Multi-language dispatch: non-Python clean files must stay cache-keyed
+# ---------------------------------------------------------------------------
+
+_JS_HEAD = """\
+function alpha() {
+  const y = 1;
+  return y;
+}
+"""
+
+_JS_BASE = """\
+function alpha() {
+  return 1;
+}
+"""
+
+_JS_PATCH = (
+    "--- a/src/cached.js\n+++ b/src/cached.js\n"
+    "@@ -1,3 +1,4 @@\n"
+    " function alpha() {\n"
+    "-  return 1;\n"
+    "+  const y = 1;\n"
+    "+  return y;\n"
+    " }\n"
+)
+
+
+def _js_state() -> ReviewState:
+    changed = ChangedFile(
+        path="src/cached.js",
+        status="modified",
+        additions=2,
+        deletions=1,
+        patch=_JS_PATCH,
+        content_base=_JS_BASE,
+        content_head=_JS_HEAD,
+        previous_path=None,
+        language="javascript",
+    )
+    base = _state()
+    pr_context = base.pr_context.model_copy(update={"changed_files": (changed,)})
+    triage = base.triage_result
+    assert triage is not None
+    return base.model_copy(
+        update={
+            "pr_context": pr_context,
+            "triage_result": triage.model_copy(
+                update={"file_tiers": {"src/cached.js": ReviewTier.DEEP}}
+            ),
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_javascript_clean_file_is_cache_keyed() -> None:
+    """Dispatch-spec audit blocker: a clean JS file must NOT bypass the
+    analyze cache. The clean-mode cache gate keys on
+    `parameterized_call_scan is not None`, and non-Python clean files
+    carry the inert EMPTY scan — so the lookup + write both run, keyed
+    with `scan_digest(ParameterizedCallScan())` and the empty
+    from-import map digest."""
+    store = _FakeCacheStore(scope=_SCOPE, entry=None)
+    provider, sink = await _run(store, state=_js_state())
+
+    [event] = sink.cache_lookups
+    assert event.outcome == "miss"
+    assert len(provider.calls) == 1
+    [request] = provider.calls
+    [write] = store.write_calls
+    expected_key = compute_analyze_cache_key(
+        system_prompt=request.system_prompt,
+        user_prompt=request.user_prompt,
+        installation_id=_SCOPE.installation_id,
+        repo_id=_SCOPE.repo_id,
+        model="claude-sonnet-4-6",
+        prompt_template_version=analyze_prompt.VERSION,
+        trivial_filter_version=TRIVIAL_FILTER_VERSION,
+        query_registry_digest=QUERY_REGISTRY_DIGEST,
+        active_policy_version=ACTIVE_POLICY_VERSION,
+        analyze_parser_version=ANALYZE_PARSER_VERSION,
+        response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
+        # Non-Python: the Python-grammar scan never runs; the key carries
+        # the inert empty-scan digest (dispatch spec).
+        parameterized_call_scan_digest=scan_digest(ParameterizedCallScan()),
+        observed_producer_version=OBSERVED_PRODUCER_VERSION,
+        subsumes_digest=SUBSUMES_DIGEST,
+        from_import_map_digest=from_import_map_digest(()),
+        profile_id=None,
+        reasoning_enabled=None,
+        profile_contract_digest=None,
+    )
+    assert write["cache_key"] == expected_key == event.cache_key
+    # The scope context rendered with the javascript fence (JS path proof).
+    assert "```javascript" in request.user_prompt

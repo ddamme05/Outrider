@@ -1,0 +1,36 @@
+{
+  "installation_id": 5102,
+  "owner": "acme",
+  "repo": "webshop",
+  "pr_number": 12,
+  "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "pr_title": "Add user search endpoint",
+  "pr_body": "Adds a searchUsers handler that looks up users by name.",
+  "author": "contributor",
+  "total_additions": 6,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "src/search.js",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -1 +1,7 @@\n const db = require('./db');\n+\n+\n+function searchUsers(req, res) {\n+  const query = \"SELECT * FROM users WHERE name = '\" + req.query.q + \"'\";\n+  return db.raw(query);\n+}\n",
+      "previous_path": "",
+      "content_base": "const db = require('./db');\n",
+      "content_head": "const db = require('./db');\n\n\nfunction searchUsers(req, res) {\n  const query = \"SELECT * FROM users WHERE name = '\" + req.query.q + \"'\";\n  return db.raw(query);\n}\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"src/search.js\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the JS search handler introducing a concatenated SQL query.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SQL injection via string-concatenated query in searchUsers\", \"description\": \"searchUsers() builds a SQL query by concatenating the untrusted req.query.q value straight into the WHERE clause, then executes it. An attacker controls the query. Use a parameterized query instead.\", \"evidence\": \"  const query = \\\"SELECT * FROM users WHERE name = '\\\" + req.query.q + \\\"'\\\";\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "JS dispatch true-positive: one CRITICAL SQL-injection finding -- searchUsers() concatenates untrusted request input directly into a SQL query."
+    ]
+  }
+}
