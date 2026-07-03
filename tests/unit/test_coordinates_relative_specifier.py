@@ -346,3 +346,33 @@ class TestValidateDiffPathLengthCap:
         assert validate_diff_path(importing) == importing
         specifier = "./" + "s" * 300
         assert relative_specifier_candidate_paths(specifier, importing) == ()
+
+
+class TestExtensionBearingSpecifier:
+    """#024 addendum: an extension-bearing specifier names its file
+    directly — the literal joined target leads the candidate tuple."""
+
+    def test_literal_target_probes_first(self) -> None:
+        result = relative_specifier_candidate_paths("./db.js", "src/routes/user.js")
+        assert result[0] == "src/routes/db.js"
+        assert len(result) == 7  # literal + pragmatic six
+        assert result[1] == "src/routes/db.js.js"  # fan-out follows unchanged
+
+    @pytest.mark.parametrize("suffix", [".js", ".jsx", ".ts", ".tsx"])
+    def test_every_fanout_suffix_triggers_the_literal(self, suffix: str) -> None:
+        result = relative_specifier_candidate_paths(f"../rel{suffix}", "src/routes/user.js")
+        assert result[0] == f"src/rel{suffix}"
+
+    def test_extensionless_specifier_gets_no_literal(self) -> None:
+        """The pragmatic-six-only shape is unchanged for extensionless
+        stems — no bare-stem literal probe."""
+        result = relative_specifier_candidate_paths("./db", "src/a.js")
+        assert len(result) == 6
+        assert "src/db" not in result
+
+    def test_unknown_extension_gets_no_literal(self) -> None:
+        """Only the fan-out suffixes trigger the literal probe: '.json',
+        '.css', '.mjs' etc. stay fan-out-only (FUP-212 territory)."""
+        result = relative_specifier_candidate_paths("./config.json", "src/a.js")
+        assert result[0] == "src/config.json.js"
+        assert "src/config.json" not in result

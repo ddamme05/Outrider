@@ -465,7 +465,10 @@ def is_valid_trace_import_string(value: str) -> str:
 # Pragmatic-six extension fan-out for relative-specifier resolution, in
 # a deterministic pinned order, per `DECISIONS.md#024` (Amended
 # 2026-07-03): four file suffixes on the target stem plus two
-# directory-index names. The order fixes probe/budget sequencing ONLY —
+# directory-index names — preceded by the LITERAL joined target when
+# the specifier's final segment already carries one of these suffixes
+# (the same amendment's extension-bearing addendum; 7-path worst case).
+# The order fixes probe/budget sequencing ONLY —
 # no consumer applies Node-style extension priority: two or more real
 # paths resolve as `ambiguous` under the M8 single-target contract
 # (both in trace probes and the adapter's filesystem twin). `.mjs` /
@@ -488,7 +491,11 @@ def relative_specifier_candidate_paths(
     'src/db/index.ts')` — the pragmatic-six set in its pinned
     deterministic order (probe sequencing only; consumers apply the M8
     single-target contract, so 2+ real paths are `ambiguous` with no
-    priority pick). Does NOT consult the filesystem or the GitHub API; existence
+    priority pick). An extension-bearing specifier (`'./db.js'`) names
+    its file directly, so the literal joined target leads the tuple
+    ahead of the six (#024 addendum; `'./db.js'` from
+    `src/routes/user.js` → `'src/routes/db.js'` first).
+    Does NOT consult the filesystem or the GitHub API; existence
     testing is the caller's probe step (verified-real + budget-bounded in
     `agent/nodes/trace.py`, per `trace-fetches-only-resolved-files`).
 
@@ -530,7 +537,15 @@ def relative_specifier_candidate_paths(
 
     target = "/".join(target_parts)
     if target:
-        raw_candidates = [f"{target}{suffix}" for suffix in _RELATIVE_SPECIFIER_SUFFIXES]
+        raw_candidates = []
+        if target_parts[-1].endswith(_RELATIVE_SPECIFIER_SUFFIXES):
+            # Extension-bearing specifier (#024 addendum 2026-07-03):
+            # `'./db.js'` names its file directly — mandatory form in
+            # Node ESM relative imports — so the literal joined target
+            # is probed FIRST, ahead of the pragmatic-six. The ext-swap
+            # mapping (`./db.js` → `db.ts`) stays deferred (FUP-212).
+            raw_candidates.append(target)
+        raw_candidates += [f"{target}{suffix}" for suffix in _RELATIVE_SPECIFIER_SUFFIXES]
         raw_candidates += [f"{target}/{name}" for name in _RELATIVE_SPECIFIER_INDEX_NAMES]
     else:
         raw_candidates = list(_RELATIVE_SPECIFIER_INDEX_NAMES)
