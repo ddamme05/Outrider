@@ -895,3 +895,41 @@ async def test_javascript_clean_file_is_cache_keyed() -> None:
     assert write["cache_key"] == expected_key == event.cache_key
     # The scope context rendered with the javascript fence (JS path proof).
     assert "```javascript" in request.user_prompt
+
+
+class TestServedTraceCandidateRefImportStringValidator:
+    """Audit-shadow mirror pin: the served candidate's only audit trace
+    reruns the shared two-form validator (DECISIONS.md#024, Amended
+    2026-07-03), same discipline as every sibling import-bearing field."""
+
+    @staticmethod
+    def _ref_kwargs(import_string: str) -> dict[str, str]:
+        return {
+            "candidate_id": "a" * 64,
+            "source_proposal_hash": "b" * 64,
+            "import_string": import_string,
+        }
+
+    @pytest.mark.parametrize("import_string", ["svc.db", "../db", "./middleware/validate"])
+    def test_both_canonical_forms_admit(self, import_string: str) -> None:
+        from outrider.audit.events import ServedTraceCandidateRef
+
+        ref = ServedTraceCandidateRef(**self._ref_kwargs(import_string))
+        assert ref.import_string == import_string
+
+    @pytest.mark.parametrize(
+        "import_string",
+        [
+            "src/db",  # dotless with separator — invalid under both forms
+            "./a/../b",  # interior `..` on the specifier branch
+            "foo.class",  # keyword part on the module branch
+            "",  # empty
+        ],
+    )
+    def test_malformed_rejected_at_the_audit_shadow(self, import_string: str) -> None:
+        from pydantic import ValidationError
+
+        from outrider.audit.events import ServedTraceCandidateRef
+
+        with pytest.raises(ValidationError):
+            ServedTraceCandidateRef(**self._ref_kwargs(import_string))
