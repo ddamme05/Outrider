@@ -29,6 +29,7 @@ from outrider.ast_facts.errors import (
     ParseError,
     TraceResolutionError,
     UnknownQueryMatchId,
+    UnsupportedExtensionError,
 )
 from outrider.ast_facts.models import (
     AssignmentSite,
@@ -79,6 +80,7 @@ __all__ = [
     "ParseError",
     "TraceResolutionError",
     "UnknownQueryMatchId",
+    "UnsupportedExtensionError",
     # Helpers
     "compute_unit_id",
     # Lazy-loaded entry points (load tree_sitter on first access)
@@ -89,6 +91,7 @@ __all__ = [
     "classify_scope_triviality",
     "parse_javascript",
     "parse_python",
+    "parse_source",
     "parse_typescript",
 ]
 
@@ -136,6 +139,15 @@ def __getattr__(name: str) -> object:
 
         globals()["parse_typescript"] = parse_typescript
         return parse_typescript
+    if name == "parse_source":
+        # The registry module itself is import-light (factories and this
+        # dispatcher lazy-import per language), but the lazy gate here
+        # keeps the package root's contract uniform: every parse entry
+        # point loads on first access.
+        from outrider.ast_facts.registry import parse_source
+
+        globals()["parse_source"] = parse_source
+        return parse_source
     if name in _TRIVIALITY_LAZY:
         from outrider.ast_facts import triviality
 

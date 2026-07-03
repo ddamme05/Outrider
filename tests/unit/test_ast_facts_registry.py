@@ -25,7 +25,10 @@ class _NullResolver:
         return []
 
 
-_ALL_EXTENSIONS = (".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".py", ".ts", ".tsx")
+# `.pyi` routes to PythonAdapter so stub files keep their established
+# `skipped+GENERATED_FILENAME` audit record under the registry gate
+# (dispatch spec, open question 3).
+_ALL_EXTENSIONS = (".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".py", ".pyi", ".ts", ".tsx")
 
 
 def test_supported_extensions_lists_the_full_set() -> None:
