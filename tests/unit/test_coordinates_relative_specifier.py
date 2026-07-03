@@ -376,3 +376,38 @@ class TestExtensionBearingSpecifier:
         result = relative_specifier_candidate_paths("./config.json", "src/a.js")
         assert result[0] == "src/config.json.js"
         assert "src/config.json" not in result
+
+
+class TestLiteralTargetRegisteredExtensions:
+    """#024 addendum (literal-trigger widened to the registered set):
+    every registry-analyzed JS/TS extension triggers the literal-first
+    probe, not just the fan-out four."""
+
+    @pytest.mark.parametrize("suffix", [".mjs", ".cjs", ".mts", ".cts"])
+    def test_registered_non_fanout_extensions_probe_literal_first(self, suffix: str) -> None:
+        result = relative_specifier_candidate_paths(f"./auth{suffix}", "src/app/page.ts")
+        assert result[0] == f"src/app/auth{suffix}"
+        assert len(result) == 7  # literal + pragmatic six (fan-out unchanged)
+
+    def test_literal_trigger_set_matches_the_registry(self) -> None:
+        """Cross-module drift lock: the coordinates literal-trigger tuple
+        must equal the registry's JS/TS extension groups. A registry
+        change (new dialect extension) fails HERE instead of silently
+        leaving the new extension's literal imports unresolvable."""
+        from outrider.ast_facts.registry import (
+            JAVASCRIPT_EXTENSIONS,
+            TYPESCRIPT_DIALECT_BY_EXTENSION,
+        )
+        from outrider.coordinates.diff_parser import _LITERAL_TARGET_SUFFIXES
+
+        assert set(_LITERAL_TARGET_SUFFIXES) == set(JAVASCRIPT_EXTENSIONS) | set(
+            TYPESCRIPT_DIALECT_BY_EXTENSION
+        )
+
+    def test_fanout_set_unchanged_by_the_widening(self) -> None:
+        """The widening touches the literal TRIGGER only — extensionless
+        specifiers still fan out to exactly the pragmatic six (no .mjs/
+        .cjs/.mts/.cts speculative probes; that widening stays FUP-212)."""
+        result = relative_specifier_candidate_paths("./db", "src/a.js")
+        assert len(result) == 6
+        assert not any(c.endswith((".mjs", ".cjs", ".mts", ".cts")) for c in result)

@@ -477,6 +477,27 @@ def is_valid_trace_import_string(value: str) -> str:
 _RELATIVE_SPECIFIER_SUFFIXES: Final = (".js", ".jsx", ".ts", ".tsx")
 _RELATIVE_SPECIFIER_INDEX_NAMES: Final = ("index.js", "index.ts")
 
+# Literal-target trigger set (#024 addendum, widened same day): every
+# REGISTERED JS/TS extension, not just the fan-out four — Outrider
+# analyzes `.mjs`/`.cjs`/`.mts`/`.cts` files, so a specifier naming one
+# literally must be able to resolve it ("registered" is the principled
+# line: trace fetches feed pass-1 analysis, which needs a registered
+# adapter). Used ONLY for the literal-first probe; the fan-out set
+# above is unchanged. Kept as a local tuple (coordinates does not
+# import ast_facts at runtime); a cross-module test pins it equal to
+# the registry's JS/TS extension groups so registry growth fails loud
+# here instead of drifting.
+_LITERAL_TARGET_SUFFIXES: Final = (
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".mts",
+    ".cts",
+    ".tsx",
+)
+
 
 def relative_specifier_candidate_paths(
     specifier: str,
@@ -538,11 +559,12 @@ def relative_specifier_candidate_paths(
     target = "/".join(target_parts)
     if target:
         raw_candidates = []
-        if target_parts[-1].endswith(_RELATIVE_SPECIFIER_SUFFIXES):
+        if target_parts[-1].endswith(_LITERAL_TARGET_SUFFIXES):
             # Extension-bearing specifier (#024 addendum 2026-07-03):
             # `'./db.js'` names its file directly — mandatory form in
             # Node ESM relative imports — so the literal joined target
-            # is probed FIRST, ahead of the pragmatic-six. The ext-swap
+            # is probed FIRST, ahead of the pragmatic-six. Any
+            # registered JS/TS extension triggers this; the ext-swap
             # mapping (`./db.js` → `db.ts`) stays deferred (FUP-212).
             raw_candidates.append(target)
         raw_candidates += [f"{target}{suffix}" for suffix in _RELATIVE_SPECIFIER_SUFFIXES]
