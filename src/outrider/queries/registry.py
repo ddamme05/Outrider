@@ -180,8 +180,9 @@ _STRUCTURAL_QUERY_FILES_BY_LANGUAGE: Final[dict[QueryLanguage, dict[str, str]]] 
     "javascript": {},
 }
 
-# Flat view (id → filename) retained for load/compile and the public
-# REGISTERED_QUERY_IDS union surface.
+# Flat view (id → filename) retained for the public REGISTERED_QUERY_IDS
+# union surface and the unknown-id error listing (`_all_known_ids`);
+# load/compile iterates the per-language table directly.
 _QUERY_ID_TO_FILENAME: Final[dict[str, str]] = {
     query_id: filename
     for files in _STRUCTURAL_QUERY_FILES_BY_LANGUAGE.values()
@@ -621,8 +622,8 @@ def _registry_digest(
 
     The analyze-cache key component that pins query SEMANTICS AND emitted
     output. A pattern edit that keeps its id changes this digest — AND so
-    does a change to ANY OBSERVED output/routing field (today class /
-    finding_type / title / description, but derived from the model minus
+    does a change to ANY OBSERVED output/routing field (today language /
+    class / finding_type / title / description, but derived from the model minus
     `_DIGEST_EXCLUDED_OBSERVED_FIELDS` so a future field auto-folds, FUP-181),
     each of which alters routing or the emitted finding (and the cached
     payload) while living OUTSIDE the `.scm` body. Folding them
@@ -750,8 +751,9 @@ def observed_queries_for(language: QueryLanguage | None) -> Mapping[str, Observe
     an import-time snapshot: `OBSERVED_QUERIES` is the single authoritative
     observed surface, and the observed_skip_safe scenario's documented
     test-local promotion seam (monkeypatching that attribute) must reach the
-    producer's per-language view too. 18 entries — the per-call filter is
-    negligible next to the parse it precedes.
+    producer's per-language view too. The registry stays small (tens of
+    entries) — the per-call filter is negligible next to the parse it
+    precedes.
     """
     if language is None:
         return _EMPTY_OBSERVED
