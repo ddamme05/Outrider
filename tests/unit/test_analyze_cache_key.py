@@ -282,6 +282,20 @@ def test_analyze_cache_key_version_pinned() -> None:
     assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v3"
 
 
+def test_observed_producer_version_pinned() -> None:
+    """The OBSERVED producer's admission-logic version (Cost Lever 3),
+    distinct from QUERY_REGISTRY_DIGEST (query bodies + metadata): bump on
+    any admission-rule change. v2: per-language query-set selection + the
+    JS/TS test-file conventions. v3: those conventions became
+    language-scoped (under v2 they suppressed OBSERVED findings on Python
+    production files like `report.spec.py`). The literal pin is the revert
+    tripwire: every other suite reference derives from the constant, so
+    without this pin a silent revert to v2 would stay green while current
+    reviews re-key onto stale v2 cache rows — serving the suppressed-empty
+    payloads the v3 fix exists to invalidate."""
+    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v3"
+
+
 def test_query_registry_digest_is_stable_64_hex() -> None:
     assert re.fullmatch(r"[0-9a-f]{64}", QUERY_REGISTRY_DIGEST)
     # Module-load pinned: recomputing over the same bodies + OBSERVED
