@@ -55,9 +55,11 @@ def find_node_by_span(
     target_types: frozenset[str],
 ) -> Node | None:
     """Find the OUTERMOST node of a scope-defining type whose span lies
-    within [byte_start, byte_end]. Used by each adapter's
+    within [byte_start, byte_end]. Used by the Python adapter's
     `compute_parser_outcome` to locate the tree-sitter node for a
-    `ScopeUnit`.
+    `ScopeUnit` (the JS/TS adapters use `error_byte_spans_from_tree`
+    intersection instead — their decorator span-widening has no wrapper
+    node for a containment lookup to land on).
 
     `target_types` is the per-language set of scope-defining node types
     — including any wrapper types whose `has_error` must propagate to
@@ -89,6 +91,25 @@ def find_node_by_span(
         for child in node.children:
             stack.append(child)
     return best
+
+
+def error_byte_spans_from_tree(tree: Tree) -> tuple[tuple[int, int], ...]:
+    """Byte spans `[start, end)` of every ERROR or MISSING node.
+
+    The per-scope `has_error` primitive for adapters whose ScopeUnit
+    spans don't correspond to a single tree node (JS/TS decorator
+    span-widening): a scope has an error iff any error span intersects
+    its byte range. Zero-width MISSING nodes yield `start == end`;
+    callers treat them as points.
+    """
+    spans: list[tuple[int, int]] = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "ERROR" or node.is_missing:
+            spans.append((node.start_byte, node.end_byte))
+        stack.extend(node.children)
+    return tuple(spans)
 
 
 def error_lines_from_tree(tree: Tree) -> frozenset[int]:

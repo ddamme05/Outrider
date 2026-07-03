@@ -76,7 +76,9 @@ class LanguageAdapter(Protocol):
         """Returns `(ComputedParserOutcome, has_error_map)`.
         `ComputedParserOutcome = Literal["clean", "failed"]` — the
         narrow type makes "never returns skipped" type-checkable
-        (skip-classification is `parse_python`'s job, not this method's)."""
+        (skip-classification is the `parse_*` entry points' job —
+        `parse_python`, `parse_javascript`, `parse_typescript` — not
+        this method's)."""
 
 
 @runtime_checkable

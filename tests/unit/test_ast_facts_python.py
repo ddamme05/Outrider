@@ -972,7 +972,9 @@ def test_get_adapter_factory_canonical_lowercase_extension() -> None:
 
     factory = get_adapter_factory(".py")
     assert factory is not None
-    assert factory is PythonAdapter
+    # Factories are lazy wrappers (registry stays import-light), so the
+    # contract is "constructs a PythonAdapter", not class identity.
+    assert isinstance(factory(MagicMock()), PythonAdapter)
 
 
 def test_get_adapter_factory_uppercase_extension_resolves_to_same_adapter() -> None:
