@@ -491,15 +491,25 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Que
     # match()/get_query_source() resolve them like any other registered id.
     for query_id, observed in _OBSERVED_QUERIES.items():
         _register(query_id, observed.language, observed.filename)
-    # Deprecated bodies also compile and validate. The ledger is python-era;
-    # a future non-python deprecation extends the ledger shape to carry its
-    # language alongside the body.
+    # Deprecated bodies also compile and validate, under the grammars of the
+    # language named by the id's namespace prefix (`python.*`,
+    # `javascript.*`) — the same prefix/language agreement `_register`
+    # enforces for live ids, so the ledger needs no separate language field.
     for query_id, body in _DEPRECATED_QUERY_ID_TO_BODY.items():
+        prefix = query_id.split(".", 1)[0]
+        if prefix not in _GRAMMARS_BY_QUERY_LANGUAGE:
+            raise ValueError(
+                f"deprecated query id {query_id!r} has namespace prefix "
+                f"{prefix!r}, which is not a known catalog language "
+                f"({sorted(_GRAMMARS_BY_QUERY_LANGUAGE)}); the prefix must "
+                f"name the language whose grammars compile the body."
+            )
         bodies[query_id] = body
         compiled[query_id] = {
-            "python": _compile_and_validate(
-                query_id, body, source="deprecated_ledger", grammar="python"
+            grammar: _compile_and_validate(
+                query_id, body, source="deprecated_ledger", grammar=grammar
             )
+            for grammar in _GRAMMARS_BY_QUERY_LANGUAGE[prefix]
         }
     return bodies, compiled
 
@@ -753,10 +763,13 @@ def structural_query_ids_for(language: QueryLanguage | None) -> frozenset[str]:
     for None. Empty is a meaningful state — a language whose catalog ships
     no structural queries (javascript today) admits no model OBSERVED
     claim, preserving the dispatch-era rejection behavior by registration
-    rather than by hardcoded gate."""
+    rather than by hardcoded gate. A language missing from the structural
+    table entirely (a future catalog language whose entry hasn't landed)
+    also selects empty — the same fail-safe direction as the extension
+    maps (no query set → no OBSERVED claim), never a mid-review KeyError."""
     if language is None:
         return frozenset()
-    return _STRUCTURAL_QUERY_IDS_BY_LANGUAGE[language]
+    return _STRUCTURAL_QUERY_IDS_BY_LANGUAGE.get(language, frozenset())
 
 
 # ---------------------------------------------------------------------------

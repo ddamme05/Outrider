@@ -13,7 +13,12 @@ pinning the set construction catches that.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 from outrider.queries import registry
+
+if TYPE_CHECKING:
+    from outrider.queries.observed import QueryLanguage
 
 _EXPECTED_PYTHON_QUERY_IDS = frozenset(
     {
@@ -67,11 +72,16 @@ def test_registered_query_ids_pins_v1_python_set() -> None:
 def test_structural_query_ids_select_per_language() -> None:
     """The per-file admission selector: python selects the four structural
     ids, javascript selects the EMPTY set (no structural queries registered
-    — model OBSERVED claims on JS/TS reject by registration), and a
-    catalog-less language (None) selects empty."""
+    — model OBSERVED claims on JS/TS reject by registration), a
+    catalog-less language (None) selects empty, and a language missing from
+    the structural table entirely (a future catalog language whose entry
+    hasn't landed) selects empty rather than raising mid-review — the
+    fail-safe direction the registry module docstring pins."""
     assert registry.structural_query_ids_for("python") == _EXPECTED_PYTHON_QUERY_IDS
     assert registry.structural_query_ids_for("javascript") == frozenset()
     assert registry.structural_query_ids_for(None) == frozenset()
+    future_language = cast("QueryLanguage", "go")
+    assert registry.structural_query_ids_for(future_language) == frozenset()
 
 
 def test_registered_query_ids_callers_get_consistent_set() -> None:
