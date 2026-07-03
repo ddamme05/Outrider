@@ -79,6 +79,29 @@ _check(
     "AST firewall",
 )
 _check(
+    "tree_sitter_javascript outside ast_facts/queries -> flagged",
+    {"src/outrider/agent/nodes/x.py": "import tree_sitter_javascript\n"},
+    1,
+    "AST firewall",
+)
+_check(
+    "tree_sitter_typescript outside ast_facts -> flagged (from-import)",
+    {"src/outrider/llm/x.py": "from tree_sitter_typescript import language_tsx\n"},
+    1,
+    "AST firewall",
+)
+_check(
+    "tree_sitter_javascript in ast_facts/ -> allowed",
+    {"src/outrider/ast_facts/javascript_adapter.py": "import tree_sitter_javascript\n"},
+    0,
+)
+_check(
+    "tree_sitter_typescript in a non-allowed test -> flagged",
+    {"tests/unit/test_other.py": "import tree_sitter_typescript\n"},
+    1,
+    "AST firewall",
+)
+_check(
     "tree_sitter under TYPE_CHECKING outside ast_facts -> flagged (type-surface)",
     {
         "src/outrider/agent/x.py": (
