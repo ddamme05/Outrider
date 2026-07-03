@@ -297,3 +297,52 @@ class TestResolveSpecifierCandidatePaths:
 
     def test_invalid_specifier_returns_empty(self, tmp_path: Path) -> None:
         assert resolve_specifier_candidate_paths("express", "src/a.js", tmp_path) == []
+
+
+class TestIsRelativeSpecifierForm:
+    """The exported two-form discriminator — one partition rule."""
+
+    def test_leading_dot_forms_are_specifier(self) -> None:
+        from outrider.coordinates import is_relative_specifier_form
+
+        for value in (".", "..", "./db", "../db", ".foo"):
+            assert is_relative_specifier_form(value) is True
+
+    def test_dotless_forms_are_module(self) -> None:
+        from outrider.coordinates import is_relative_specifier_form
+
+        for value in ("svc.db", "express", "src/db", ""):
+            assert is_relative_specifier_form(value) is False
+
+
+class TestValidateDiffPathLengthCap:
+    """Attack: a constructed probe path compounding two near-cap fields
+    (importing path + specifier) must reject at string validation — the
+    schema/audit path fields cap at 1024, and an over-long path that
+    probe-resolved would otherwise abort the trace pass at event
+    construction instead of degrading to unresolved."""
+
+    def test_path_at_cap_admits(self) -> None:
+        path = "a/" * 511 + "bb"  # 1024 chars exactly
+        assert len(path) == 1024
+        assert validate_diff_path(path) == path
+
+    def test_path_over_cap_rejected(self) -> None:
+        import pytest as _pytest
+
+        from outrider.coordinates import CoordinateError
+
+        path = "a/" * 512 + "b"  # 1025 chars
+        assert len(path) == 1025
+        with _pytest.raises(CoordinateError, match="exceeds 1024"):
+            validate_diff_path(path)
+
+    def test_compounded_specifier_candidates_over_cap_drop(self) -> None:
+        """Near-cap importing path + long specifier: every constructed
+        candidate exceeds the cap and drops inside the construction
+        surface — the attack yields zero probe paths, not an event-time
+        ValidationError."""
+        importing = "d/" * 505 + "x.js"  # 1014 chars, valid
+        assert validate_diff_path(importing) == importing
+        specifier = "./" + "s" * 300
+        assert relative_specifier_candidate_paths(specifier, importing) == ()

@@ -74,6 +74,18 @@ _GIT_INTERNAL_FIRST_COMPONENT: Final = ".git"
 # so absolute Windows paths can't reach the GitHub comment API surface.
 _WINDOWS_DRIVE_PREFIX_RE: Final = re.compile(r"^[A-Za-z]:")
 
+# Hard ceiling on validated diff paths, matching the `max_length=1024`
+# every path-bearing schema/audit field enforces (`TraceDecision` /
+# `TraceDecisionEvent` path tuples, `ReviewFinding.file_path`,
+# `AnalysisRound.files_examined`, ...). Without this cap a CONSTRUCTED
+# path — a probe candidate joining a near-cap importing path with a
+# near-cap specifier, or a near-cap module string plus `/__init__.py` —
+# passes string validation, probe-resolves against a hostile repo, and
+# then aborts the whole trace pass with a Pydantic ValidationError at
+# event construction. Rejecting here degrades the candidate to a probe
+# negative (`unresolved`) instead.
+_MAX_DIFF_PATH_LENGTH: Final = 1024
+
 
 def diff_line_to_scope(
     file_path: str,
@@ -415,6 +427,17 @@ def is_valid_relative_specifier(value: str) -> str:
     return normalized
 
 
+def is_relative_specifier_form(value: str) -> bool:
+    """THE two-form syntactic discriminator per `DECISIONS.md#024`
+    (Amended 2026-07-03): a leading `.` selects the relative-specifier
+    form; anything else is the module form. Exported so every dispatch
+    site — the `is_valid_trace_import_string` validator and the trace
+    node's probe-path construction — shares one partition rule; a future
+    third form changes it here or nowhere.
+    """
+    return value.startswith(".")
+
+
 def is_valid_trace_import_string(value: str) -> str:
     """Shared two-form validator for `TraceCandidate.import_string`.
 
@@ -434,16 +457,20 @@ def is_valid_trace_import_string(value: str) -> str:
     both forms. Raises ValueError on invalid input; returns the
     NFC-normalized canonical value otherwise.
     """
-    if value.startswith("."):
+    if is_relative_specifier_form(value):
         return is_valid_relative_specifier(value)
     return is_valid_import_string(value)
 
 
 # Pragmatic-six extension fan-out for relative-specifier resolution, in
-# resolution-priority order, per `DECISIONS.md#024` (Amended 2026-07-03):
-# four file suffixes on the target stem plus two directory-index names.
-# `.mjs` / `.cjs` are deliberately excluded (rare as import targets);
-# extend on eval evidence, not speculation.
+# a deterministic pinned order, per `DECISIONS.md#024` (Amended
+# 2026-07-03): four file suffixes on the target stem plus two
+# directory-index names. The order fixes probe/budget sequencing ONLY —
+# no consumer applies Node-style extension priority: two or more real
+# paths resolve as `ambiguous` under the M8 single-target contract
+# (both in trace probes and the adapter's filesystem twin). `.mjs` /
+# `.cjs` are deliberately excluded (rare as import targets); extend on
+# eval evidence, not speculation.
 _RELATIVE_SPECIFIER_SUFFIXES: Final = (".js", ".jsx", ".ts", ".tsx")
 _RELATIVE_SPECIFIER_INDEX_NAMES: Final = ("index.js", "index.ts")
 
@@ -458,8 +485,10 @@ def relative_specifier_candidate_paths(
     candidates per `DECISIONS.md#024` (Amended 2026-07-03): `'../db'`
     imported from `src/routes/user.js` fans out to `('src/db.js',
     'src/db.jsx', 'src/db.ts', 'src/db.tsx', 'src/db/index.js',
-    'src/db/index.ts')` — the pragmatic-six set in resolution-priority
-    order. Does NOT consult the filesystem or the GitHub API; existence
+    'src/db/index.ts')` — the pragmatic-six set in its pinned
+    deterministic order (probe sequencing only; consumers apply the M8
+    single-target contract, so 2+ real paths are `ambiguous` with no
+    priority pick). Does NOT consult the filesystem or the GitHub API; existence
     testing is the caller's probe step (verified-real + budget-bounded in
     `agent/nodes/trace.py`, per `trace-fetches-only-resolved-files`).
 
@@ -589,6 +618,12 @@ def validate_diff_path(file_path: str) -> str:
     # affects only multibyte paths — which is exactly the surface where
     # the hash drift would manifest.
     file_path = unicodedata.normalize("NFC", file_path)
+    if len(file_path) > _MAX_DIFF_PATH_LENGTH:
+        raise CoordinateError(
+            f"file_path exceeds {_MAX_DIFF_PATH_LENGTH} characters "
+            f"({len(file_path)}); no schema or audit field admits it",
+            kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
+        )
     if "\\" in file_path:
         raise CoordinateError(
             f"file_path {file_path!r} contains a backslash (POSIX separators only)",

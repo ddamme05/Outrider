@@ -2685,13 +2685,15 @@ class AnalyzeCompletedEvent(AuditEventBase):
     disentangling matters."""
     n_trace_candidates_dropped_malformed: int = Field(ge=0, default=0)
     """Count of raw `trace_candidates` entries the parser DROPPED because
-    shape validation rejected the `import_string_raw`
+    the per-language form validation rejected the `import_string_raw` —
+    or, for specifier form, admission-time repo-escape containment did
     (sharp-edges F1 audit-fold per `specs/2026-05-23-trace-node.md` arc).
     Per `DECISIONS.md#024` (Amended 2026-07-03) trace candidates carry
     one of two syntactic forms — dotted Python import string or JS/TS
-    relative specifier — validated by the shared
-    `coordinates.is_valid_trace_import_string` dispatcher; the parser
-    silently drops malformed candidates (rather than
+    relative specifier; the parser applies the analyzed file's single
+    admitted form (the same per-form validators the shared
+    `coordinates.is_valid_trace_import_string` dispatcher composes) and
+    silently drops failing candidates (rather than
     crashing the whole pass) to preserve the n_proposals_seen accounting
     equation, but the count surfaces here so operators can distinguish
     "model proposed no trace candidates" from "every proposal was

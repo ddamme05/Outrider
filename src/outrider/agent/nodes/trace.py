@@ -31,7 +31,11 @@ from outrider.audit.events import (
     ReviewPhaseEvent,
     TraceDecisionEvent,
 )
-from outrider.coordinates import relative_specifier_candidate_paths, validate_diff_path
+from outrider.coordinates import (
+    is_relative_specifier_form,
+    relative_specifier_candidate_paths,
+    validate_diff_path,
+)
 from outrider.coordinates.errors import CoordinateError
 from outrider.github.fetch import fetch_file_content_at
 from outrider.llm.base import LLMRequest
@@ -401,13 +405,24 @@ async def trace(
             persisted_event = existing_event
         else:
             # Phase 1: probe fetches across this finding's ranked candidates.
+            source_finding_file = finding_file_paths.get(finding_id)
+            if source_finding_file is None:
+                # Unreachable while the join builds from the same rounds;
+                # WARN loudly rather than degrade silently if a future
+                # change ever forks the two walks. "" is an invalid
+                # importing path, so specifier candidates construct zero
+                # probe paths and land `unresolved` (module-form probes
+                # ignore the anchor).
+                logger.warning(
+                    "trace: finding %s has no file_path in analysis rounds "
+                    "(join/rounds divergence?); specifier-form candidates in "
+                    "this bucket will land unresolved",
+                    finding_id,
+                )
+                source_finding_file = ""
             probe_outcome = await _resolve_via_probes(
                 candidates=bucket,
-                # Missing map entry (unreachable while the join builds
-                # from the same rounds) degrades safely: "" is an
-                # invalid importing path, so specifier candidates
-                # construct zero probe paths and land `unresolved`.
-                source_finding_file=finding_file_paths.get(finding_id, ""),
+                source_finding_file=source_finding_file,
                 gh_client=gh_client,
                 owner=state.pr_context.owner,
                 repo=state.pr_context.repo,
@@ -1022,7 +1037,8 @@ def _probe_paths_for(
 ) -> tuple[str, ...]:
     """Form-dispatched probe paths per `DECISIONS.md#024` (Amended 2026-07-03).
 
-    Leading-dot import strings are relative specifiers: level 0 fans out
+    Form discrimination delegates to `coordinates.is_relative_specifier_form`
+    (the single partition rule). Relative specifiers: level 0 fans out
     via `coordinates.relative_specifier_candidate_paths` against the
     proposing finding's file (importing-file-relative resolution,
     containment + `validate_diff_path` inside `coordinates/`); levels
@@ -1030,7 +1046,7 @@ def _probe_paths_for(
     ladder exists for them. Everything else is module form and delegates
     to `_tier_paths_for` (the FUP-209 ladder).
     """
-    if import_string.startswith("."):
+    if is_relative_specifier_form(import_string):
         if strip_level > 0:
             return ()
         return relative_specifier_candidate_paths(import_string, source_finding_file)
