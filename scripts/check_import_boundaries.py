@@ -4,7 +4,8 @@
 Enforces the HARD-STOP vendor-SDK + shell-exec boundaries from
 `docs/trust-boundaries.md` (allowlists mirror the `check-trust-boundaries` skill):
 
-  - `tree_sitter` / `tree_sitter_python` — only in `ast_facts/` + `queries/`
+  - `tree_sitter` / `tree_sitter_python` / `tree_sitter_javascript` /
+    `tree_sitter_typescript` — only in `ast_facts/` + `queries/`
     (+ the two ast_facts test files). AST firewall (§4).
   - `anthropic` / `openai` — only in `llm/`; `langsmith` — forbidden in all project code
     (its tracing importer was removed, DECISIONS.md#058; stays transitive). Boundary §8.
@@ -61,7 +62,12 @@ VENDOR_RULES: tuple[_VendorRule, ...] = (
     _VendorRule(
         name="AST firewall",
         doc_ref="docs/trust-boundaries.md §4",
-        modules=("tree_sitter", "tree_sitter_python"),
+        modules=(
+            "tree_sitter",
+            "tree_sitter_python",
+            "tree_sitter_javascript",
+            "tree_sitter_typescript",
+        ),
         scan_globs=("src/outrider/**/*.py", "tests/**/*.py"),
         allowed_prefixes=(
             "src/outrider/ast_facts/",
