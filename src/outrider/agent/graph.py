@@ -117,8 +117,9 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `publisher: GitHubPublisher` — required for publish's GitHub
     `create_review` call (single-review-per-PR contract).
   - `import_path_resolver: ImportPathResolver` — required for analyze's
-    `parse_python(...)` call (passed through to `ast_facts/`); resolves
-    same-file import paths for the registry walk.
+    `parse_source(...)` dispatch (threaded to whichever `ast_facts/`
+    language adapter the registry selects); resolves same-file import
+    paths for the registry walk.
   - `db_factory: async_sessionmaker[AsyncSession]` — required for intake's
     `reviews.status='skipped'` / `'failed'` writes. Per `docs/spec.md
     §9.3`, `db_factory` is the canonical first parameter.

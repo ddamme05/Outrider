@@ -1193,11 +1193,11 @@ def test_no_review_id_kwarg_in_signature() -> None:
 
 # NO_REVIEWABLE_CONTEXT in V1 is unreachable from a valid `ChangedFile`:
 # the schema's `enforce_status_invariants` validator rejects every status
-# with missing content, and `parse_python` only returns
+# with missing content, and the `parse_*` entry points only return
 # `parser_outcome="failed"` on UTF-8 decode failure — which cannot fire
 # from `str.encode("utf-8")`. The analyze branch is retained as
 # defensive code for spec compliance + future schema relaxation; a unit
-# test would require mocking `parse_python` (brittle) or a custom
+# test would require mocking `parse_source` (brittle) or a custom
 # `ChangedFile` validator bypass (worse). Integration coverage lands
 # alongside binary-file handling whenever it migrates into analyze.
 # FUP-053 tracks the raw-bytes intake path that would make
@@ -1311,6 +1311,80 @@ async def test_javascript_file_flows_through_analyze_judged_only(
     # Zero-OBSERVED proof: no OBSERVED finding events for a JS file
     # (queries/ is Python-only; the producer is gated).
     assert all(f.evidence_tier != "observed" for f in deps["analyze_event_sink"].findings)
+
+
+async def test_observed_claim_on_js_file_is_rejected_at_admission(
+    deps: dict[str, Any],
+) -> None:
+    """The REAL zero-OBSERVED pin (revert-the-fold honest): the scripted
+    response CLAIMS observed with a Python query id on a .js file whose
+    ESM import would — ungated — fire `python.import_statement` via the
+    Python grammar's error recovery. With the query set language-gated
+    to frozenset(), the claim must reject at admission
+    (`query_match_id_not_in_registry`), not be admitted as OBSERVED."""
+    js_file = _build_changed_file(
+        path="src/example.js",
+        content=b"import db from './db';\n\n\nexport function hello() {\n  return db.get(42);\n}\n",
+        patch=(
+            "--- a/src/example.js\n+++ b/src/example.js\n@@ -1,1 +1,6 @@\n"
+            " import db from './db';\n+\n+\n+export function hello() {\n"
+            "+  return db.get(42);\n+}\n"
+        ),
+        content_base="import db from './db';\n",
+    )
+    observed_claim = json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "sql_injection",
+                    "evidence_tier": "observed",
+                    "query_match_id": "python.import_statement",
+                    "trace_path": None,
+                    "title": "Fabricated observed claim on a JS file",
+                    "description": "Claims Python-grammar structural proof over JS bytes.",
+                    "evidence": "  return db.get(42);",
+                    "line_start": 5,
+                    "line_end": 5,
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+    deps["provider"] = _StubLLMProvider(observed_claim)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(js_file,)),
+        triage_result=TriageResult(
+            file_tiers={"src/example.js": ReviewTier.DEEP},
+            overall_risk=RiskLevel.HIGH,
+            relevant_dimensions=(ReviewDimension.SECURITY,),
+            reasoning="js file carrying a fabricated observed claim",
+        ),
+    )
+
+    await analyze(state, **deps)
+
+    # Nothing admitted — the observed claim cannot cite a fired query.
+    assert deps["analyze_event_sink"].findings == []
+    rejections = deps["analyze_event_sink"].proposal_rejections
+    assert [r.rejection_reason for r in rejections] == ["query_match_id_not_in_registry"]
+    # And the prompt advertised NO ids to cite (empty-set rendering).
+    [request] = deps["provider"].calls
+    assert "no registry query matches fired" in request.user_prompt
+
+
+def test_is_python_file_matches_registry_case_insensitivity() -> None:
+    """The stage predicate must cover exactly the registry's Python
+    group with the registry gate's case normalization — a case-sensitive
+    copy let UTILS.PY pass the gate but run with every Python-only stage
+    (veto scan, OBSERVED producer, triviality, candidate collection)
+    silently disabled."""
+    from outrider.agent.nodes.analyze import _is_python_file, _language_supported
+
+    for path in ("src/utils.py", "src/UTILS.PY", "stubs/x.pyi", "stubs/X.PYI"):
+        assert _language_supported(path), path
+        assert _is_python_file(path), path
+    for path in ("src/app.js", "src/App.TSX", "src/main.go"):
+        assert not _is_python_file(path), path
 
 
 @pytest.mark.asyncio

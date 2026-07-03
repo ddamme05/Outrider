@@ -361,7 +361,7 @@ class _RecordingAnalyzeEventSink:
 class _StubImportPathResolver:
     """No-op `ImportPathResolver` for tests where analyze iterates zero
     files. The stub satisfies the structural Protocol check; the body
-    is never invoked because parse_python isn't called when no file
+    is never invoked because `parse_source` isn't called when no file
     reaches analyze."""
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:

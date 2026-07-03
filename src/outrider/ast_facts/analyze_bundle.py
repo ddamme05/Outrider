@@ -7,7 +7,7 @@ that's two redundant head parses (FUP-170). This post-cost-gate bundle parses th
 head ONCE and feeds that single tree to both extractors' tree-accepting cores.
 The base side (a different file) is parsed separately by the triviality side.
 
-`parse_python` deliberately stays a SEPARATE pre-cost-gate parse: it feeds
+The pre-cost-gate parse (`parse_source` dispatch) deliberately stays SEPARATE: it feeds
 `decide_degradation` + the token estimate, both of which run BEFORE the cost gate,
 and the trivial-scope spec pins COST_BUDGET_EXHAUSTED-before-classification — so
 carrying that tree across the gate is out of scope (see
