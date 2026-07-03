@@ -170,6 +170,14 @@ def _binding_admits(
     default-deny, the proof-boundary direction. `module_presence`: the file
     must import at least one of the rule's modules. `binding=None` admits on
     structure alone (globals / self-proving patterns).
+
+    Known precision residuals (signal_only-acceptable; FUP-214): the join is
+    file-level, not lexically scoped — a local declaration SHADOWING an
+    imported name still admits — and `ImportRef` does not distinguish
+    `import type` / `export … from` re-exports / side-effect imports from
+    value imports, so those also satisfy the rule. Closing either needs
+    adapter-layer work (scope analysis; a type-only/re-export marker), not a
+    producer edit.
     """
     if binding is None:
         return True
