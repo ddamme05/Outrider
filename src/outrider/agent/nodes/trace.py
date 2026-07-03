@@ -31,7 +31,7 @@ from outrider.audit.events import (
     ReviewPhaseEvent,
     TraceDecisionEvent,
 )
-from outrider.coordinates import validate_diff_path
+from outrider.coordinates import relative_specifier_candidate_paths, validate_diff_path
 from outrider.coordinates.errors import CoordinateError
 from outrider.github.fetch import fetch_file_content_at
 from outrider.llm.base import LLMRequest
@@ -56,8 +56,11 @@ logger = logging.getLogger(__name__)
 # Cap on candidates probed per source-finding bucket per trace invocation.
 # Without a cap, a hostile (or buggy) analyze pass can emit N candidates
 # per finding × M findings × up to 6 paths-per-candidate GitHub fetches
-# in Phase 1 (the suffix-strip ladder: 2 module-form probes + 2 per
-# strip level × `MAX_SUFFIX_STRIP_LEVELS`, FUP-209). The cap is applied
+# in Phase 1 (module form — the suffix-strip ladder: 2 module-form
+# probes + 2 per strip level × `MAX_SUFFIX_STRIP_LEVELS`, FUP-209;
+# specifier form — the pragmatic-six fan-out at level 0 only, same
+# 6-path worst case per DECISIONS.md#024 Amended 2026-07-03, so the
+# bound is unchanged). The cap is applied
 # to insertion order (the order analyze emitted candidates into
 # `state.trace_candidates`, reducer-controlled) BEFORE the Haiku
 # ranking call, so membership in the probed set is
@@ -194,6 +197,10 @@ async def trace(
 
     # Step 2: build join lookup. Raises TraceJoinIntegrityError on collision.
     join_lookup = _build_proposal_hash_join(state)
+    # The importing-file anchor per finding — relative-specifier probe
+    # construction is importing-file-relative (DECISIONS.md#024 Amended
+    # 2026-07-03); module-form probes ignore it.
+    finding_file_paths = _build_finding_file_paths(state)
 
     # Step 3: already-traced set for within-graph idempotency.
     already_traced: set[UUID] = {d.source_finding_id for d in state.trace_decisions}
@@ -396,6 +403,11 @@ async def trace(
             # Phase 1: probe fetches across this finding's ranked candidates.
             probe_outcome = await _resolve_via_probes(
                 candidates=bucket,
+                # Missing map entry (unreachable while the join builds
+                # from the same rounds) degrades safely: "" is an
+                # invalid importing path, so specifier candidates
+                # construct zero probe paths and land `unresolved`.
+                source_finding_file=finding_file_paths.get(finding_id, ""),
                 gh_client=gh_client,
                 owner=state.pr_context.owner,
                 repo=state.pr_context.repo,
@@ -531,6 +543,21 @@ def _build_proposal_hash_join(state: ReviewState) -> dict[str, UUID]:
                 )
             join[finding.proposal_hash] = finding.finding_id
     return join
+
+
+def _build_finding_file_paths(state: ReviewState) -> dict[UUID, str]:
+    """`{finding_id → file_path}` across all rounds — the importing-file
+    anchor for relative-specifier probe construction (resolution is
+    importing-file-relative per `DECISIONS.md#024` Amended 2026-07-03).
+    `finding_id` is unique across rounds (content-derived provenance,
+    same property the proposal-hash join relies on), so last-write-wins
+    here cannot mix files.
+    """
+    return {
+        finding.finding_id: finding.file_path
+        for analysis_round in state.analysis_rounds
+        for finding in analysis_round.findings
+    }
 
 
 def _bucket_candidates_by_finding(
@@ -702,6 +729,7 @@ class _ProbeBudget:
 async def _resolve_via_probes(
     *,
     candidates: Sequence[TraceCandidate],
+    source_finding_file: str,
     gh_client: InstallationGitHubClient,
     owner: str,
     repo: str,
@@ -711,13 +739,26 @@ async def _resolve_via_probes(
 ) -> _ProbeOutcome:
     """Phase 1 per M8 — resolve the bucket via a suffix-strip probe ladder.
 
-    Level 0 reads each candidate's whole import_string as a module
-    (`foo.bar` → `foo/bar.py` + `foo/bar/__init__.py`). Level k
-    (1..`MAX_SUFFIX_STRIP_LEVELS`) strips the trailing k components and
-    probes the remaining prefix as a module — the symbol-form fallback
-    (FUP-209): real models emit `svc.queries.run_query` (function in
-    module) and `app.views.UserView.get` (method on class) despite the
-    prompt's module-form instruction.
+    Probe-path construction branches on candidate form per
+    `DECISIONS.md#024` (Amended 2026-07-03), dispatched by the leading-dot
+    syntax via `_probe_paths_for`:
+
+    - **Module form** (dotted Python import string): level 0 reads each
+      candidate's whole import_string as a module (`foo.bar` →
+      `foo/bar.py` + `foo/bar/__init__.py`). Level k
+      (1..`MAX_SUFFIX_STRIP_LEVELS`) strips the trailing k components and
+      probes the remaining prefix as a module — the symbol-form fallback
+      (FUP-209): real models emit `svc.queries.run_query` (function in
+      module) and `app.views.UserView.get` (method on class) despite the
+      prompt's module-form instruction.
+    - **Relative-specifier form** (leading-dot JS/TS path): level 0 fans
+      out via `coordinates.relative_specifier_candidate_paths` against
+      `source_finding_file` (the proposing finding's file — resolution is
+      importing-file-relative), pre-contained and `validate_diff_path`-
+      gated inside `coordinates/`. NO suffix-strip levels — specifiers
+      are already paths, there is no dotted suffix to strip — so a
+      specifier candidate contributes zero paths at level >= 1 and never
+      enters symbol verification.
 
     Levels are bucket-level barriers: the ladder stops at the SHALLOWEST
     level where any candidate has a verified real path, so a deeper
@@ -754,7 +795,9 @@ async def _resolve_via_probes(
         candidate_paths: list[tuple[TraceCandidate, tuple[str, ...]]] = []
         for candidate in candidates:
             validated_paths: list[str] = []
-            for candidate_path in _tier_paths_for(candidate.import_string, strip_level):
+            for candidate_path in _probe_paths_for(
+                candidate.import_string, strip_level, source_finding_file
+            ):
                 try:
                     validated_paths.append(validate_diff_path(candidate_path))
                 except CoordinateError:
@@ -972,6 +1015,26 @@ def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
     parts = import_string.split(".")
     base = "/".join(parts)
     return (f"{base}.py", f"{base}/__init__.py")
+
+
+def _probe_paths_for(
+    import_string: str, strip_level: int, source_finding_file: str
+) -> tuple[str, ...]:
+    """Form-dispatched probe paths per `DECISIONS.md#024` (Amended 2026-07-03).
+
+    Leading-dot import strings are relative specifiers: level 0 fans out
+    via `coordinates.relative_specifier_candidate_paths` against the
+    proposing finding's file (importing-file-relative resolution,
+    containment + `validate_diff_path` inside `coordinates/`); levels
+    >= 1 return () — specifiers are already paths, so no suffix-strip
+    ladder exists for them. Everything else is module form and delegates
+    to `_tier_paths_for` (the FUP-209 ladder).
+    """
+    if import_string.startswith("."):
+        if strip_level > 0:
+            return ()
+        return relative_specifier_candidate_paths(import_string, source_finding_file)
+    return _tier_paths_for(import_string, strip_level)
 
 
 def _tier_paths_for(import_string: str, strip_level: int) -> tuple[str, ...]:
