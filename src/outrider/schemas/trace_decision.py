@@ -54,7 +54,7 @@ from uuid import UUID  # noqa: TC003 — Pydantic field type, needs runtime impo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from outrider.coordinates import is_valid_import_string, validate_diff_path
+from outrider.coordinates import is_valid_trace_import_string, validate_diff_path
 
 
 class TraceDecision(BaseModel):
@@ -117,8 +117,9 @@ class TraceDecision(BaseModel):
     @field_validator("proposed_import_strings")
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        """Per-element `is_valid_import_string` + deterministic sort so
-        the schema layer enforces the same canonical form
+        """Per-element `is_valid_trace_import_string` + deterministic sort
+        so the schema layer enforces the same two-form canonical shape
+        (`DECISIONS.md#024`, Amended 2026-07-03) that
         `TraceCandidate.import_string` guarantees at the singleton
         boundary. Defense in depth against a direct state-layer
         construction (replay path, test fixture) bypassing the
@@ -128,7 +129,7 @@ class TraceDecision(BaseModel):
         is non-deterministic; sorting canonicalizes both layers).
         Returns the sorted tuple of NFC-normalized canonical forms.
         """
-        return tuple(sorted(is_valid_import_string(value) for value in values))
+        return tuple(sorted(is_valid_trace_import_string(value) for value in values))
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:

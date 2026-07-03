@@ -520,19 +520,23 @@ def test_analysis_round_rejects_traversal_in_files_examined() -> None:
 
 def test_trace_candidate_rejects_invalid_import_string() -> None:
     """Same shape on the candidate-side schema: the `import_string`
-    field validator rejects path-shaped / shell-metacharacter /
-    keyword-bearing inputs at the schema floor. Post-DECISIONS.md#024:
-    the validator is `is_valid_import_string` (identifier-shape) not
-    `validate_diff_path` (path-shape); the rejected example is
-    correspondingly an import-string-malformed value, not a path-
-    traversal value.
+    field validator rejects malformed inputs at the schema floor.
+    Post-DECISIONS.md#024 (Amended 2026-07-03): the validator is the
+    two-form `is_valid_trace_import_string` dispatcher — a dotless
+    slash-bearing value is invalid under BOTH forms (module form
+    rejects separators; specifier form requires the leading dot), so
+    it rejects regardless of which branch handles it. (`../escape.py`
+    is no longer the fixture here: it is a shape-VALID relative
+    specifier since the amendment; escape containment is enforced at
+    parser admission + candidate construction, not at the context-free
+    shape layer.)
 
     `candidate_id` is derived from the same payload as the rest of the
     object so a passing test can only come from import-string rejection,
     not from canonical-ID-mismatch on a different validator.
     """
     prop = compute_identity_hash({"b": 1})
-    bad_value = "../escape.py"  # path-shaped — rejected by is_valid_import_string
+    bad_value = "src/escape.py"  # invalid under both forms — rejected
     reason = "r"
     with pytest.raises(ValidationError):
         TraceCandidate(
@@ -955,15 +959,18 @@ def test_trace_candidate_proposal_admitted_layer_enforces_import_string_validati
     The raw layer (TraceCandidateProposalRaw) stays loose by design —
     it admits the model's unvalidated string long enough for the parser
     to emit a rejection event. The admitted layer is where the
-    'already passed is_valid_import_string' invariant becomes structural.
-    Per DECISIONS.md#024 the validator is `is_valid_import_string`
-    (raises ValueError, wrapped into ValidationError by Pydantic).
+    'already passed is_valid_trace_import_string' invariant becomes
+    structural. Per DECISIONS.md#024 (Amended 2026-07-03) the validator
+    is the two-form dispatcher (raises ValueError, wrapped into
+    ValidationError by Pydantic); the fixture is invalid under BOTH
+    forms (dotless value with a separator).
     """
     from outrider.schemas.llm import TraceCandidateProposal
 
     with pytest.raises(ValidationError):
-        # Path-shaped — rejected by is_valid_import_string
-        TraceCandidateProposal(import_string="../escape.py", reason="r")
+        # Invalid under both forms — module form rejects separators,
+        # specifier form requires the leading dot.
+        TraceCandidateProposal(import_string="src/escape.py", reason="r")
 
 
 def test_skip_reason_stage_totality_at_import() -> None:

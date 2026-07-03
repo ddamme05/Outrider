@@ -230,8 +230,8 @@ def test_resolved_candidate_paths_audit_shadow_per_element() -> None:
         )
 
 
-def test_proposed_import_strings_per_element_is_valid_import_string() -> None:
-    """Per-element `is_valid_import_string` runs on every entry. A
+def test_proposed_import_strings_per_element_shape_validation() -> None:
+    """Per-element `is_valid_trace_import_string` runs on every entry. A
     path-shaped element (forward slash) bypasses the
     upstream `TraceCandidate.import_string` validator only when a
     direct emitter constructs `TraceDecision` without flowing through
@@ -261,3 +261,18 @@ def test_rejects_extra_fields() -> None:
 def test_reason_max_length_500() -> None:
     with pytest.raises(ValidationError):
         _build(reason="x" * 501)
+
+
+def test_proposed_import_strings_admits_relative_specifier_form() -> None:
+    """Two-form contract per DECISIONS.md#024 (Amended 2026-07-03): the
+    state-layer mirror admits specifier-form entries alongside module
+    form, sorted canonical like every other entry."""
+    d = _build(proposed_import_strings=("foo.bar", "../db"))
+    assert d.proposed_import_strings == ("../db", "foo.bar")
+
+
+def test_proposed_import_strings_rejects_malformed_specifier() -> None:
+    """Interior `..` rejects on the specifier branch of the shared
+    dispatcher — the mirror enforces the same rule as the singleton."""
+    with pytest.raises(ValidationError):
+        _build(proposed_import_strings=("./a/../b",))

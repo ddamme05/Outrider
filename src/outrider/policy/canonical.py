@@ -391,9 +391,10 @@ def compute_round_id(
     `files_examined`/`files_skipped` MUST be the canonical
     `validate_diff_path` output per `AnalysisRound._enforce_canonical_paths`.
     For `TraceCandidate.import_string`, the canonical form comes from
-    `coordinates.is_valid_import_string` per `TraceCandidate._enforce_canonical_import_string`
-    (different validator, different shape — dotted Python identifier vs.
-    repo-relative POSIX path).
+    `coordinates.is_valid_trace_import_string` per
+    `TraceCandidate._enforce_canonical_import_string` (different
+    validator, different shape — two-form dotted-module / relative-
+    specifier string vs. repo-relative POSIX path).
     """
     return compute_identity_hash(
         {
@@ -417,14 +418,17 @@ def compute_candidate_id(
     re-emission of the same logical candidate produces the same id and
     collapses on the dedup-by-candidate_id reducer.
 
-    `import_string` MUST be the canonical `coordinates.is_valid_import_string`
+    `import_string` MUST be the canonical `coordinates.is_valid_trace_import_string`
     output per `TraceCandidate._enforce_canonical_import_string`.
     `source_proposal_hash` matches `FindingProposalRejectedEvent.proposal_hash`
     for the audit join — caller passes the same string that landed on
     the rejection event (or would land, if the proposal were rejected).
 
-    Per `DECISIONS.md#024` (Accepted 2026-05-24), trace candidates are
-    dotted Python import strings (not file paths). The recipe input
+    Per `DECISIONS.md#024` (Accepted 2026-05-24, Amended 2026-07-03),
+    trace candidates carry one of two syntactically-partitioned forms —
+    dotted Python import string or JS/TS relative specifier; the id
+    stays content-derived over the form-tagged-by-syntax string, so no
+    recipe change accompanied the two-form amendment. The recipe input
     was renamed from `candidate_path` to `import_string` in the same
     DECISIONS-aligned commit; the canonical-encoding shape uses the
     new key name. Callers that previously passed `candidate_path=...`

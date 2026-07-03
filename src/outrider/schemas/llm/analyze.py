@@ -31,11 +31,14 @@ pin the line-preservation invariant.
 
 `import_string` is the other cross-layer field and it IS deliberately
 normalized (raw `import_string_raw` → admitted `import_string` post-
-`coordinates.is_valid_import_string`): line numbers are identity-preserved
-because the hash folds them; `import_string` is normalized because
-downstream consumers (trace node resolving the import) need the validated
-canonical form. Per `DECISIONS.md#024` trace candidates are dotted Python
-import strings; the prior `candidate_path` framing was renamed in lockstep.
+`coordinates.is_valid_trace_import_string`): line numbers are
+identity-preserved because the hash folds them; `import_string` is
+normalized because downstream consumers (trace node resolving the import)
+need the validated canonical form. Per `DECISIONS.md#024` (Amended
+2026-07-03) trace candidates carry one of two syntactic forms — dotted
+Python import string or JS/TS relative specifier — validated by the
+shared two-form dispatcher; the prior `candidate_path` framing was
+renamed in lockstep.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ from typing import Annotated, Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from outrider.coordinates import is_valid_import_string
+from outrider.coordinates import is_valid_trace_import_string
 from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
     FindingType,
@@ -66,12 +69,11 @@ class TraceCandidateProposalRaw(BaseModel):
     default markers), so a downstream variable typed as the raw layer
     cannot be silently passed where the admitted layer is expected.
     The distinction is in the import field: raw layer carries
-    `import_string_raw` (the model's claimed dotted import string,
-    unvalidated bounded string); admitted layer carries `import_string`
-    (already passed through `coordinates.is_valid_import_string` —
-    NFC-normalized, identifier-validity-checked, no path separators,
-    no shell metacharacters, no Python keywords). Per `DECISIONS.md#024`
-    trace candidates are dotted Python import strings, not file paths.
+    `import_string_raw` (the model's claimed import string, unvalidated
+    bounded string); admitted layer carries `import_string`
+    (already passed through `coordinates.is_valid_trace_import_string` —
+    NFC-normalized, per-form shape-checked: dotted module form or JS/TS
+    relative-specifier form per `DECISIONS.md#024`, Amended 2026-07-03).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -145,8 +147,9 @@ class TraceCandidateProposal(BaseModel):
     """Admitted trace candidate.
 
     Constructed by the sister analyze-implementation spec's parser only
-    AFTER `coordinates.is_valid_import_string(raw.import_string_raw)`
-    succeeds.
+    AFTER `coordinates.is_valid_trace_import_string(raw.import_string_raw)`
+    succeeds (the two-form dispatcher per `DECISIONS.md#024`, Amended
+    2026-07-03).
 
     Distinct field name (`import_string` vs raw's `import_string_raw`)
     means a `TraceCandidateProposal(**raw.model_dump())` swap fails
@@ -157,9 +160,9 @@ class TraceCandidateProposal(BaseModel):
     shape is the load-bearing prevention.
 
     The `import_string` field validator below enforces the documented
-    "already passed is_valid_import_string" invariant at the schema
-    layer — without it, the admitted-vs-raw distinction rested on
-    parser flow alone; with it, the schema is the durable floor and
+    "already passed is_valid_trace_import_string" invariant at the
+    schema layer — without it, the admitted-vs-raw distinction rested
+    on parser flow alone; with it, the schema is the durable floor and
     any future producer / replay reconstruction validates against the
     same rule.
     """
@@ -172,13 +175,14 @@ class TraceCandidateProposal(BaseModel):
     @field_validator("import_string")
     @classmethod
     def _enforce_canonical_import_string(cls, value: str) -> str:
-        """Re-run `is_valid_import_string` so the admitted layer enforces
-        the canonical-import-string invariant the layer's name promises.
+        """Re-run `is_valid_trace_import_string` so the admitted layer
+        enforces the two-form canonical invariant the layer's name
+        promises (`DECISIONS.md#024`, Amended 2026-07-03).
         The raw layer (`TraceCandidateProposalRaw.import_string_raw`)
         stays loose — its whole purpose is to admit unvalidated model
         output long enough for the parser to emit a rejection event.
         """
-        return is_valid_import_string(value)
+        return is_valid_trace_import_string(value)
 
 
 class AnalyzeFindingProposal(BaseModel):

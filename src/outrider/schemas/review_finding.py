@@ -125,9 +125,10 @@ class ReviewFinding(BaseModel):
     evidence_tier: EvidenceTier
     # Repo-relative POSIX, post-`validate_diff_path` normalized — same
     # contract `AnalysisRound.files_examined` enforces at the schema
-    # layer. (TraceCandidate uses `is_valid_import_string` on its
-    # `import_string` field instead — different validator for dotted-
-    # Python-import-string shape per DECISIONS.md#024.) Without this,
+    # layer. (TraceCandidate uses `is_valid_trace_import_string` on its
+    # `import_string` field instead — the two-form dispatcher for
+    # dotted-module / relative-specifier shape per DECISIONS.md#024,
+    # Amended 2026-07-03.) Without this,
     # a path that fails `validate_diff_path` could ride on the finding
     # through replay and be rejected at the publisher boundary only —
     # too late. `max_length=1024` matches sibling path-bearing fields

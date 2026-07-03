@@ -71,7 +71,9 @@ by `HITLDecisionEvent.decisions`):
         `target_file is None`;
     (c) ambiguous ↔ `len(resolved_candidate_paths) > 1` AND
         `target_file is None`.
-    Plus per-element `is_valid_import_string` on `proposed_import_strings`
+    Plus per-element `is_valid_trace_import_string` (the two-form
+    dispatcher per `DECISIONS.md#024`, Amended 2026-07-03) on
+    `proposed_import_strings`
     and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
   - `AnalyzeCompletedEvent` enforces two accounting equations per
     foundation §5: `n_proposals_seen == (n_findings_emitted -
@@ -116,7 +118,7 @@ from pydantic import (
 )
 
 from outrider.ast_facts.models import SkipReason, TrivialityReason
-from outrider.coordinates import is_valid_import_string, validate_diff_path
+from outrider.coordinates import is_valid_trace_import_string, validate_diff_path
 from outrider.llm.pricing import PRICING_VERSION_PATTERN
 from outrider.policy import (
     EvidenceTier,
@@ -1337,9 +1339,10 @@ class TraceDecisionEvent(AuditEventBase):
     @field_validator("proposed_import_strings")
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        """Per-element audit-shadow `is_valid_import_string` on every
-        admitted import string + deterministic sort. Defense in depth
-        against a direct emitter (replay path, test fixture, future
+        """Per-element audit-shadow `is_valid_trace_import_string` (the
+        two-form dispatcher per `DECISIONS.md#024`, Amended 2026-07-03)
+        on every admitted import string + deterministic sort. Defense in
+        depth against a direct emitter (replay path, test fixture, future
         callsite) bypassing `TraceCandidate.import_string`'s field
         validator. The upstream singleton field validates one import
         string at construction; this tuple gathers many, and the audit
@@ -1350,7 +1353,7 @@ class TraceDecisionEvent(AuditEventBase):
         canonical bytes on disk + identity-stable across proposal
         ordering noise.
         """
-        return tuple(sorted(is_valid_import_string(value) for value in values))
+        return tuple(sorted(is_valid_trace_import_string(value) for value in values))
 
     @model_validator(mode="after")
     def _enforce_resolution_invariants(self) -> Self:
@@ -2679,10 +2682,13 @@ class AnalyzeCompletedEvent(AuditEventBase):
     disentangling matters."""
     n_trace_candidates_dropped_malformed: int = Field(ge=0, default=0)
     """Count of raw `trace_candidates` entries the parser DROPPED because
-    `coordinates.is_valid_import_string` rejected the `import_string_raw`
+    shape validation rejected the `import_string_raw`
     (sharp-edges F1 audit-fold per `specs/2026-05-23-trace-node.md` arc).
-    Per `DECISIONS.md#024` trace candidates are dotted Python import
-    strings; the parser silently drops malformed candidates (rather than
+    Per `DECISIONS.md#024` (Amended 2026-07-03) trace candidates carry
+    one of two syntactic forms — dotted Python import string or JS/TS
+    relative specifier — validated by the shared
+    `coordinates.is_valid_trace_import_string` dispatcher; the parser
+    silently drops malformed candidates (rather than
     crashing the whole pass) to preserve the n_proposals_seen accounting
     equation, but the count surfaces here so operators can distinguish
     "model proposed no trace candidates" from "every proposal was
