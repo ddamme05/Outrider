@@ -20,7 +20,12 @@ if TYPE_CHECKING:
 
 class _NullResolver:
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
-        raise AssertionError("resolver must not be consulted for JS/TS imports")
+        raise AssertionError("module-form resolution must not be consulted for JS/TS imports")
+
+    def resolve_specifier_candidate_paths(
+        self, specifier: str, importing_file_path: str, import_root: Path
+    ) -> list[Path]:
+        raise AssertionError("extraction paths must not consult the resolver")
 
 
 def _parse(source: bytes, file_path: str = "src/svc.ts") -> ParseResult:
@@ -243,3 +248,30 @@ def test_declaration_files_are_skipped_as_generated(path: str) -> None:
 def test_source_must_be_bytes() -> None:
     with pytest.raises(TypeError, match="parse_typescript: source must be bytes"):
         parse_typescript("not bytes", "src/x.ts", _NullResolver())  # type: ignore[arg-type]
+
+
+def test_legacy_import_require_relative_is_simple_direct() -> None:
+    """TS `import x = require('./legacy')` with a relative source is a
+    relative static import: kind "relative", `is_simple_direct=True` per
+    DECISIONS.md#024 (Amended 2026-07-03)."""
+    result = _parse(b"import x = require('./legacy');\n")
+    assert len(result.imports) == 1
+    ref = result.imports[0]
+    assert ref.import_kind == "relative"
+    assert ref.is_simple_direct is True
+
+
+def test_relative_import_resolves_through_dialect_adapter(tmp_path: Path) -> None:
+    """The TS dialect adapter inherits the JS resolution path: a relative
+    import from a .ts file resolves against the fan-out (ts target)."""
+    from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "dep.ts").write_text("export {};\n")
+    result = _parse(b"import { d } from './dep';\n")
+    ref = next(i for i in result.imports if i.module == "./dep")
+    assert ref.is_simple_direct is True
+    adapter = TypeScriptAdapter(resolver=COORDINATES_IMPORT_PATH_RESOLVER)
+    resolution = adapter.resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "resolved"
+    assert resolution.target_path == "src/dep.ts"
