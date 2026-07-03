@@ -3,11 +3,13 @@
 
 Pins the §1 schema discipline: frozen + `extra="forbid"`, SHA-256 hex
 `candidate_id` and `source_proposal_hash`, bounded string lengths on
-`reason` and `import_string`. Per `DECISIONS.md#024` (Accepted 2026-05-24),
-trace candidates are dotted Python import strings (V1; no file-path
-fallback) — `import_string` replaced `candidate_path` in lockstep with
-the rename of `compute_candidate_id`'s kwarg and the
-`coordinates.is_valid_import_string` field validator.
+`reason` and `import_string`. Per `DECISIONS.md#024` (Accepted
+2026-05-24, Amended 2026-07-03), trace candidates carry one of two
+syntactic forms — dotted Python import string or JS/TS relative
+specifier — validated by the shared
+`coordinates.is_valid_trace_import_string` dispatcher; `import_string`
+replaced `candidate_path` in lockstep with the rename of
+`compute_candidate_id`'s kwarg.
 """
 
 from __future__ import annotations
@@ -91,7 +93,8 @@ def test_trace_candidate_import_string_rejects_path_shape() -> None:
 
 
 def test_trace_candidate_import_string_rejects_python_keyword_part() -> None:
-    """`class` is a Python keyword — rejected by `is_valid_import_string`."""
+    """`class` is a Python keyword — rejected on the module-form branch
+    of `is_valid_trace_import_string`."""
     with pytest.raises(ValidationError):
         TraceCandidate(**_kwargs(import_string="foo.class"))  # type: ignore[arg-type]
 
@@ -172,3 +175,19 @@ def test_trace_candidate_source_proposal_hash_distinct_from_candidate_id() -> No
     assert c.candidate_id == cand
     assert c.source_proposal_hash == prop
     assert c.candidate_id != c.source_proposal_hash
+
+
+def test_trace_candidate_admits_relative_specifier_form() -> None:
+    """Two-form contract per DECISIONS.md#024 (Amended 2026-07-03): a
+    leading-dot JS/TS relative specifier admits alongside the module
+    form via the shared `is_valid_trace_import_string` dispatcher, and
+    `candidate_id` stays content-derived over the specifier string."""
+    c = TraceCandidate(**_kwargs(import_string="../db"))  # type: ignore[arg-type]
+    assert c.import_string == "../db"
+
+
+def test_trace_candidate_rejects_interior_dotdot_specifier() -> None:
+    """Specifier-form rules apply on the leading-dot branch: interior
+    `..` rejects outright (never normalized away)."""
+    with pytest.raises(ValidationError):
+        TraceCandidate(**_kwargs(import_string="./a/../b"))  # type: ignore[arg-type]

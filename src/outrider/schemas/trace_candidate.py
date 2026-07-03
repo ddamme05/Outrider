@@ -23,15 +23,16 @@ is PR/file-scoped, so two analyze passes over different source files
 emitting logically-identical proposals produce DISTINCT
 `source_proposal_hash` values — preserving the per-source-file causal
 edge on the candidate provenance trail. Per `DECISIONS.md#024`
-(Accepted 2026-05-24, Amended 2026-05-24 for M8) trace candidates are
-dotted Python import strings (V1; no file-path fallback); the trace
-node's V1 resolver per M8 + FUP-209 uses a suffix-strip probe ladder
-(`agent/nodes/trace.py`: module-form paths first, then symbol-form
-fallback levels gated by symbol verification; every path through
-`coordinates.validate_diff_path`, fetch-probed via
-`github.fetch.fetch_file_content_at`; the filesystem-aware
-`coordinates.resolve_candidate_paths` is the V1.5+ future shape and
-does NOT yet carry the symbol-form fallback). Dedup of actual file
+(Accepted 2026-05-24, Amended 2026-05-24 for M8, Amended 2026-07-03
+for JS/TS) trace candidates carry one of two syntactically-partitioned
+forms: the module form (dotted Python import string, resolved by the
+suffix-strip probe ladder in `agent/nodes/trace.py` per M8 + FUP-209 —
+module-form paths first, then symbol-form fallback levels gated by
+symbol verification) and the relative-specifier form (leading-dot JS/TS
+path, resolved level-0 via
+`coordinates.relative_specifier_candidate_paths`); every probe path
+goes through `coordinates.validate_diff_path` and is fetch-probed via
+`github.fetch.fetch_file_content_at`. Dedup of actual file
 fetches is handled by the `state.trace_fetched_files` reducer's
 `append_with_dedup_by(path)`.
 """
@@ -42,21 +43,23 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from outrider.coordinates import is_valid_import_string
+from outrider.coordinates import is_valid_trace_import_string
 from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_candidate_id
 
 
 class TraceCandidate(BaseModel):
     """One trace-candidate request from analyze to trace.
 
-    `import_string` is a dotted Python import string (e.g. `foo.bar`)
-    per `DECISIONS.md#024`. The schema-side field validator runs
-    `coordinates.is_valid_import_string` — NFC normalization +
-    identifier-validity + part-validation + shell-metachar / separator
-    rejection — so the value reaching the trace node is canonical.
-    The raw model-proposed form lives on `TraceCandidateProposalRaw`
-    (sister analyze-impl spec §7); this admitted form is what reaches
-    the trace node.
+    `import_string` carries one of two syntactic forms per
+    `DECISIONS.md#024` (Amended 2026-07-03): a dotted Python import
+    string (e.g. `foo.bar`, module form) or a JS/TS relative specifier
+    (e.g. `../db`, leading-dot form). The schema-side field validator
+    runs `coordinates.is_valid_trace_import_string` — the shared
+    two-form dispatcher (NFC normalization + per-form shape rules +
+    shell-metachar / Trojan-Source rejection) — so the value reaching
+    the trace node is canonical for its form. The raw model-proposed
+    form lives on `TraceCandidateProposalRaw` (sister analyze-impl
+    spec §7); this admitted form is what reaches the trace node.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -69,17 +72,19 @@ class TraceCandidate(BaseModel):
     @field_validator("import_string")
     @classmethod
     def _enforce_canonical_import_string(cls, value: str) -> str:
-        """Reject values that aren't `coordinates.is_valid_import_string` output.
+        """Reject values that aren't `coordinates.is_valid_trace_import_string` output.
 
         `candidate_id` is content-derived from the candidate's payload.
         Non-canonical import strings produce non-deterministic IDs
         across producers, defeating replay idempotency of the dedup-by-
         `candidate_id` reducer. Pushing the rule down to the schema
         floor catches drift at every construction site; the shared
-        predicate guarantees the schema validator and
-        `resolve_candidate_paths` agree on the admit set.
+        two-form dispatcher guarantees the schema validator and the
+        resolution surfaces (`resolve_candidate_paths` module-form,
+        `relative_specifier_candidate_paths` specifier-form) agree on
+        the admit set for both forms.
         """
-        return is_valid_import_string(value)
+        return is_valid_trace_import_string(value)
 
     @model_validator(mode="after")
     def _enforce_candidate_id_matches_payload(self) -> Self:
@@ -97,7 +102,7 @@ class TraceCandidate(BaseModel):
         rather than reinventing the recipe — single chokepoint property
         per `outrider.policy.canonical`. Field-validator already
         normalized `import_string`, so the value passed here is the
-        post-`is_valid_import_string` form.
+        post-`is_valid_trace_import_string` form.
         """
         expected = compute_candidate_id(
             source_proposal_hash=self.source_proposal_hash,

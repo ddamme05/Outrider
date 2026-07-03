@@ -322,8 +322,8 @@ def test_target_file_audit_shadow_validate_diff_path() -> None:
         pytest.fail("expected target_file validation to fail")
 
 
-def test_proposed_import_strings_per_element_is_valid_import_string() -> None:
-    """Per-element `is_valid_import_string` runs on every entry at the
+def test_proposed_import_strings_per_element_shape_validation() -> None:
+    """Per-element `is_valid_trace_import_string` runs on every entry at the
     audit-event boundary. Defense in depth against a direct emitter
     (replay path, test fixture) that bypasses
     `TraceCandidate.import_string`'s field validator: a path-shaped
@@ -349,3 +349,19 @@ def test_resolved_candidate_paths_audit_shadow_per_element() -> None:
             target_file=None,
             resolved_candidate_paths=("src/bar.py", "../../etc/passwd"),
         )
+
+
+def test_proposed_import_strings_admits_relative_specifier_form() -> None:
+    """Two-form contract per DECISIONS.md#024 (Amended 2026-07-03): the
+    audit-shadow validator admits specifier-form entries alongside
+    module form, sorted canonical — state <-> audit lockstep for both
+    forms."""
+    e = _build_event(proposed_import_strings=("foo.bar", "../db"))
+    assert e.proposed_import_strings == ("../db", "foo.bar")
+
+
+def test_proposed_import_strings_rejects_malformed_specifier() -> None:
+    """Interior `..` rejects on the specifier branch at the audit
+    boundary too — no malformed specifier persists into audit_events."""
+    with pytest.raises(ValidationError):
+        _build_event(proposed_import_strings=("./a/../b",))

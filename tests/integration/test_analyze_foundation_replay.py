@@ -100,8 +100,9 @@ def _round(pass_index: int = 0, proposal_hash: str | None = None) -> AnalysisRou
 
 
 def _candidate(seed: str, source_proposal_hash: str | None = None) -> TraceCandidate:
-    """Construct a TraceCandidate fixture. Per DECISIONS.md#024 trace
-    candidates are dotted Python import strings — the seed is sanitized
+    """Construct a TraceCandidate fixture. Per DECISIONS.md#024
+    module-form trace candidates are dotted Python import strings — the
+    seed is sanitized
     (hyphens → underscores) and folded into a single-part identifier so
     test-author-friendly seeds like 'auth-mw' don't trip the
     identifier-validity check (added in Group 1's

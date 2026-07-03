@@ -226,7 +226,7 @@ def test_trace_candidate_raw_uses_import_string_raw() -> None:
 
 
 def test_trace_candidate_admitted_uses_import_string() -> None:
-    """Admitted layer uses `import_string` (post-is_valid_import_string per
+    """Admitted layer uses `import_string` (post-is_valid_trace_import_string per
     DECISIONS.md#024)."""
     admitted = TraceCandidateProposal(import_string="middleware.auth", reason="x")
     assert admitted.import_string == "middleware.auth"
@@ -246,13 +246,14 @@ def test_trace_candidate_admitted_uses_import_string() -> None:
 )
 def test_trace_candidate_admitted_rejects_invalid_import_string(bad_value: str) -> None:
     """The admitted-layer `import_string` validator re-runs
-    `is_valid_import_string` so malformed dotted imports are refused
-    at the schema boundary, NOT just at the raw→admitted translator.
+    `is_valid_trace_import_string` so malformed values of either form
+    are refused at the schema boundary, NOT just at the raw→admitted
+    translator.
     Pins the schema-layer guarantee against silent construction of an
     admitted proposal with an import string the resolver would reject.
 
     Pydantic V2's `field_validator` re-raises non-`ValueError` /
-    non-`AssertionError` exceptions directly. `is_valid_import_string`
+    non-`AssertionError` exceptions directly. `is_valid_trace_import_string`
     raises `ValueError`, which Pydantic wraps into a `ValidationError`.
     """
     with pytest.raises(ValidationError):
@@ -311,3 +312,19 @@ def test_response_raw_frozen() -> None:
 def test_response_raw_extra_forbid() -> None:
     with pytest.raises(ValidationError):
         AnalyzeResponseRaw(findings=(), unexpected="bad")  # type: ignore[call-arg]
+
+
+def test_trace_candidate_admitted_admits_relative_specifier_form() -> None:
+    """Two-form contract per DECISIONS.md#024 (Amended 2026-07-03): the
+    admitted-proposal layer (the fourth shape-validation site) admits
+    specifier form via the shared dispatcher."""
+    admitted = TraceCandidateProposal(import_string="../db", reason="x")
+    assert admitted.import_string == "../db"
+
+
+@pytest.mark.parametrize("bad_specifier", ["./a/../b", "./x//y"])
+def test_trace_candidate_admitted_rejects_malformed_specifier(bad_specifier: str) -> None:
+    """Specifier-branch rules (interior `..`, empty segment) enforce at
+    the admitted layer too."""
+    with pytest.raises(ValidationError):
+        TraceCandidateProposal(import_string=bad_specifier, reason="x")
