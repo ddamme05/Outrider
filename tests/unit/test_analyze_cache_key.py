@@ -260,8 +260,11 @@ def test_analyze_parser_version_pinned() -> None:
     importing module — changing the trace_candidates a cache row stores.
     v6: multi-language dispatch — `collect_trace_candidates=False`
     suppresses collection for files whose language has no import
-    resolver, changing what lands in `trace_candidates` for them."""
-    assert ANALYZE_PARSER_VERSION == "analyze-parser-v6"
+    resolver, changing what lands in `trace_candidates` for them.
+    v7: relative-specifier admission — JS/TS files collect leading-dot
+    specifier-form candidates (contained at admission), changing
+    `trace_candidates` for them from always-empty to populated."""
+    assert ANALYZE_PARSER_VERSION == "analyze-parser-v7"
 
 
 def test_analyze_cache_key_version_pinned() -> None:

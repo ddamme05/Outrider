@@ -314,10 +314,15 @@ def test_parse_analyze_response_signature() -> None:
         # to the importing module at admission. Defaults to `()`
         # (correction disabled — the degraded/failed-parse value).
         "import_refs",
-        # Dispatch spec: suppresses trace-candidate collection for files
-        # whose language has no import resolver (JS/TS until the
-        # resolver spec). Defaults True; the node passes is_python.
+        # Dispatch spec: opt-out for a future language without an
+        # import resolver. Defaults True; every registry language
+        # collects since the resolver spec.
         "collect_trace_candidates",
+        # Resolver spec (DECISIONS.md#024 Amended 2026-07-03): the
+        # per-language admitted candidate syntax — "module" (Python,
+        # the default) or "specifier" (JS/TS leading-dot relative
+        # specifiers, containment-checked at admission).
+        "trace_candidate_form",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -2072,3 +2077,134 @@ def test_veto_requires_judged_tier_observed_sqli_admits() -> None:
     result = _call_parser(response, **kwargs)
     [finding] = result.admitted_findings
     assert finding.evidence_tier == EvidenceTier.OBSERVED
+
+
+# ---------------------------------------------------------------------------
+# Specifier-form admission (resolver spec, DECISIONS.md#024 Amended
+# 2026-07-03, ANALYZE_PARSER_VERSION v7): `trace_candidate_form="specifier"`
+# admits leading-dot relative specifiers with repo-escape containment at
+# admission; each language admits exactly one form, so the wrong form drops
+# into the malformed counter.
+# ---------------------------------------------------------------------------
+
+
+def test_specifier_form_admits_relative_candidate() -> None:
+    """A leading-dot specifier from a JS file admits, canonical and
+    containment-checked against the analyzed file's directory."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"import_string_raw": "./db", "reason": "sanitizer lives there"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        file_path="src/routes/user.js",
+        trace_candidate_form="specifier",
+    )
+    assert len(result.trace_candidates) == 1
+    assert result.trace_candidates[0].import_string == "./db"
+    assert result.counters.n_trace_candidates_dropped_malformed == 0
+
+
+def test_specifier_form_drops_repo_escape_at_admission() -> None:
+    """Containment fires at admission (the first of the two enforcement
+    sites): a shape-valid specifier whose `../` chain escapes the repo
+    root constructs zero candidates and is DROPPED with the forensic
+    counter incremented — it never reaches state or audit rows."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"import_string_raw": "../../evil", "reason": "hostile"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        file_path="src/a.js",
+        trace_candidate_form="specifier",
+    )
+    assert result.trace_candidates == ()
+    assert result.counters.n_trace_candidates_dropped_malformed == 1
+
+
+def test_specifier_form_drops_interior_dotdot() -> None:
+    """Interior `..` rejects on the specifier branch — never normalized."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"import_string_raw": "./a/../b", "reason": "sneaky"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        file_path="src/a.js",
+        trace_candidate_form="specifier",
+    )
+    assert result.trace_candidates == ()
+    assert result.counters.n_trace_candidates_dropped_malformed == 1
+
+
+def test_specifier_form_drops_dotted_module_candidate() -> None:
+    """Per-language single-form partition: a dotted module string from a
+    JS file has no V1 resolution path (the dotted-JS fallback is explicit
+    future work) — it drops rather than entering the Python probe ladder."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"import_string_raw": "svc.db", "reason": "dotted on a JS file"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        file_path="src/a.js",
+        trace_candidate_form="specifier",
+    )
+    assert result.trace_candidates == ()
+    assert result.counters.n_trace_candidates_dropped_malformed == 1
+
+
+def test_module_form_drops_relative_specifier_candidate() -> None:
+    """The inverse partition: a leading-dot specifier from a Python file
+    is inadmissible (the amendment's language gate) and drops."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"import_string_raw": "./db", "reason": "specifier on a Python file"},
+            ],
+        )
+    )
+    result = _call_parser(response)  # module form is the default
+    assert result.trace_candidates == ()
+    assert result.counters.n_trace_candidates_dropped_malformed == 1
+
+
+def test_specifier_form_never_enters_from_import_correction() -> None:
+    """The from-import correction is module-form-only: a specifier
+    candidate whose trailing name coincides with a from-imported symbol
+    emits NO corrected sibling and does not bump the corrected counter."""
+    response = _build_response_json(
+        _minimal_proposal(
+            evidence_tier="judged",
+            trace_candidates=[
+                {"import_string_raw": "./db", "reason": "sanitizer lives there"},
+            ],
+        )
+    )
+    result = _call_parser(
+        response,
+        file_path="src/routes/user.js",
+        trace_candidate_form="specifier",
+        import_refs=(_from_import_ref("svc.db", ("db",)),),
+    )
+    assert len(result.trace_candidates) == 1
+    assert result.trace_candidates[0].import_string == "./db"
+    assert result.counters.n_trace_candidates_module_corrected == 0
