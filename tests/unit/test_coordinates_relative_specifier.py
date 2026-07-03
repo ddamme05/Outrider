@@ -371,8 +371,11 @@ class TestExtensionBearingSpecifier:
         assert "src/db" not in result
 
     def test_unknown_extension_gets_no_literal(self) -> None:
-        """Only the fan-out suffixes trigger the literal probe: '.json',
-        '.css', '.mjs' etc. stay fan-out-only (FUP-212 territory)."""
+        """Only REGISTERED JS/TS extensions trigger the literal probe:
+        '.json', '.css' etc. get no literal candidate — nothing could
+        analyze the fetch downstream (pass-1 needs a registered
+        adapter). Registered non-fan-out extensions (`.mjs` etc.) DO
+        trigger it — pinned in TestLiteralTargetRegisteredExtensions."""
         result = relative_specifier_candidate_paths("./config.json", "src/a.js")
         assert result[0] == "src/config.json.js"
         assert "src/config.json" not in result
