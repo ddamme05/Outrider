@@ -90,7 +90,9 @@ def test_javascript_scopes_and_imports_extract_structurally() -> None:
     # separately so the double extraction stays visible.
     assert got_imports == EXPECTED_JS_IMPORTS
     assert len(result.imports) == 5
-    assert all(i.is_simple_direct is False for i in result.imports)
+    # Per-kind flag partition (DECISIONS.md#024 Amended 2026-07-03):
+    # relative static imports are simple-direct; bare specifiers are not.
+    assert all(i.is_simple_direct is (i.import_kind == "relative") for i in result.imports)
     # Calls and assignments attribute to real extracted scopes.
     scope_ids = {s.unit_id for s in result.scope_units}
     assert result.call_sites, "fixture has calls inside scopes"

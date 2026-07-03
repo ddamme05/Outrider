@@ -97,10 +97,22 @@ class ImportPathResolver(Protocol):
     implementation lives elsewhere (eventually `coordinates/`) and is
     out of scope for this module.
 
+    Two construction members, one per candidate form per
+    `DECISIONS.md#024` (Amended 2026-07-03): `resolve_candidate_paths`
+    (module form — dotted Python import string) and
+    `resolve_specifier_candidate_paths` (relative-specifier form —
+    leading-dot JS/TS path, resolved relative to `importing_file_path`,
+    the ref's own file). Both return the same validated repo-relative
+    shape.
+
     `@runtime_checkable` matches the audit-sink Protocols' precedent so
     `build_graph` can `isinstance`-reject implementations lacking the
-    `resolve_candidate_paths` member at construction time. PEP 544 caveat
+    members at construction time. PEP 544 caveat
     per `docs/trust-boundaries.md`: member-presence only, not signature.
     """
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]: ...
+
+    def resolve_specifier_candidate_paths(
+        self, specifier: str, importing_file_path: str, import_root: Path
+    ) -> list[Path]: ...

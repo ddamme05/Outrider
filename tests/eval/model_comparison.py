@@ -101,6 +101,11 @@ class _NoOpImportPathResolver:
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:  # noqa: ARG002
         return []
 
+    def resolve_specifier_candidate_paths(
+        self, specifier: str, importing_file_path: str, import_root: Path
+    ) -> list[Path]:  # noqa: ARG002
+        return []
+
 
 def _triage_dims_and_risk(
     fixture: EvalFixture,

@@ -123,6 +123,11 @@ class _StubImportPathResolver:
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
         return []
 
+    def resolve_specifier_candidate_paths(
+        self, specifier: str, importing_file_path: str, import_root: Path
+    ) -> list[Path]:
+        return []
+
 
 class _StubPublishEventSink:
     """Satisfies PublishEventSink Protocol structurally (4 emit_* + 1 query method)."""

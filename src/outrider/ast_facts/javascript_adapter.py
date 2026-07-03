@@ -28,10 +28,13 @@ Import-kind fold per the spec: relative specifiers (`./`, `../`) →
 (`import * as ns`), side-effect, bare `require`, and TS
 `import x = require(...)` → ``"direct"``; `export * from` → ``"star"``.
 Dynamic `import()` is an expression, not a static import — not
-extracted. Every JS/TS `ImportRef` carries ``is_simple_direct=False``:
-trace resolution for relative specifiers is the analyze-dispatch
-follow-up's scope, so `resolve_simple_direct_import` is
-Protocol-conformant but always returns ``unresolved``.
+extracted. Relative static imports (``import_kind="relative"`` — any
+extracted form whose source is `./`-, `../`-, `.`- or `..`-shaped)
+carry ``is_simple_direct=True`` and resolve through
+`resolve_simple_direct_import` via the injected resolver's
+relative-specifier surface (`DECISIONS.md#024`, Amended 2026-07-03);
+bare and namespace-package specifiers stay ``False`` (`node_modules`
+resolution is out of scope).
 """
 
 from __future__ import annotations
@@ -465,7 +468,7 @@ class JavaScriptAdapter:
                 import_kind=kind,
                 module=module,
                 names=names,
-                is_simple_direct=False,
+                is_simple_direct=kind == "relative",
             )
         module = self._string_text(node.child_by_field_name("source"))
         clause = next((c for c in node.named_children if c.type == "import_clause"), None)
@@ -503,7 +506,7 @@ class JavaScriptAdapter:
             import_kind=kind,
             module=module,
             names=names,
-            is_simple_direct=False,
+            is_simple_direct=kind == "relative",
         )
 
     def _build_reexport(self, node: Node, file_path: str) -> ImportRef:
@@ -539,7 +542,7 @@ class JavaScriptAdapter:
             import_kind=kind,
             module=module,
             names=names,
-            is_simple_direct=False,
+            is_simple_direct=kind == "relative",
         )
 
     def _maybe_require(self, node: Node, file_path: str) -> ImportRef | None:
@@ -589,7 +592,7 @@ class JavaScriptAdapter:
             import_kind=kind,
             module=module,
             names=names,
-            is_simple_direct=False,
+            is_simple_direct=kind == "relative",
         )
 
     # ------------------------------------------------------------------
@@ -712,14 +715,33 @@ class JavaScriptAdapter:
     def resolve_simple_direct_import(
         self, import_ref: ImportRef, import_root: Path
     ) -> ImportResolution:
-        """Always `unresolved` in this feature: every JS/TS `ImportRef`
-        ships `is_simple_direct=False` (spec non-goal — the JS-aware
-        relative-specifier resolver lands with the analyze-dispatch
-        follow-up), so there is nothing to resolve yet. The guard keeps
-        the method total if a future producer flips the flag before the
-        resolver exists.
+        """Resolve a relative static import via the injected resolver's
+        relative-specifier surface (`DECISIONS.md#024`, Amended
+        2026-07-03). Mirrors `PythonAdapter.resolve_simple_direct_import`:
+        candidates come pre-validated (containment + symlink-safe walk in
+        the resolver implementation); existence checks use the
+        symlink-safe primitive (allowlist: only
+        `.is_file(follow_symlinks=False)`). Resolution is
+        importing-file-relative — the ref's own `file_path` anchors the
+        specifier. Non-relative refs (`is_simple_direct=False`: bare and
+        namespace-package specifiers) stay `unresolved` — `node_modules`
+        resolution is out of scope.
         """
-        del import_ref, import_root
+        if not import_ref.is_simple_direct:
+            return ImportResolution(status="unresolved", target_path=None)
+        candidates = self._resolver.resolve_specifier_candidate_paths(
+            import_ref.module, import_ref.file_path, import_root
+        )
+        existing: list[Path] = [
+            c for c in candidates if (import_root / c).is_file(follow_symlinks=False)
+        ]
+        if len(existing) == 1:
+            return ImportResolution(
+                status="resolved",
+                target_path=existing[0].as_posix(),
+            )
+        if len(existing) >= 2:
+            return ImportResolution(status="ambiguous", target_path=None)
         return ImportResolution(status="unresolved", target_path=None)
 
     # ------------------------------------------------------------------

@@ -8,20 +8,29 @@ its two existing files (per specs/2026-07-02-js-ts-tree-sitter-adapters.md).
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from outrider.ast_facts.javascript_adapter import JavaScriptAdapter, parse_javascript
 from outrider.ast_facts.models import ImportRef, ParseResult, ScopeUnit, SkipReason
 
 
 class _NullResolver:
-    """ImportPathResolver stub; never consulted (JS refs are never
-    `is_simple_direct`)."""
+    """ImportPathResolver stub for extraction tests — extraction never
+    consults the resolver; resolution tests inject the real
+    `COORDINATES_IMPORT_PATH_RESOLVER` instead."""
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
-        raise AssertionError("resolver must not be consulted for JS/TS imports")
+        raise AssertionError("module-form resolution must not be consulted for JS/TS imports")
+
+    def resolve_specifier_candidate_paths(
+        self, specifier: str, importing_file_path: str, import_root: Path
+    ) -> list[Path]:
+        raise AssertionError("extraction paths must not consult the resolver")
 
 
 def _parse(source: bytes, file_path: str = "src/app.js") -> ParseResult:
@@ -288,19 +297,116 @@ def test_require_with_non_literal_specifier_is_not_extracted() -> None:
     assert result.imports == ()
 
 
-def test_all_imports_are_never_simple_direct_and_never_resolve() -> None:
-    src = b"""import { a } from './rel';
-import def from 'mod';
-const cj = require('commonjs');
-"""
-    result = _parse(src)
-    assert result.imports, "fixture must produce imports"
+@pytest.mark.parametrize(
+    ("src", "module"),
+    [
+        (b"import { a } from './rel';\n", "./rel"),  # ESM named
+        (b"import def from '../up';\n", "../up"),  # ESM default
+        (b"import * as ns from './ns';\n", "./ns"),  # ESM namespace
+        (b"import './side';\n", "./side"),  # side-effect
+        (b"export { x } from './re';\n", "./re"),  # re-export named
+        (b"export * from './star';\n", "./star"),  # re-export star
+        (b"const cj = require('./cjs');\n", "./cjs"),  # CommonJS
+        (b"import x from '.';\n", "."),  # directory index
+    ],
+)
+def test_relative_static_import_is_simple_direct(src: bytes, module: str) -> None:
+    """Each relative static form pinned individually (revert-the-fold
+    per variant): `import_kind="relative"` implies `is_simple_direct=True`
+    per DECISIONS.md#024 (Amended 2026-07-03)."""
+    ref = _import(_parse(src), module)
+    assert ref.import_kind == "relative"
+    assert ref.is_simple_direct is True
+
+
+@pytest.mark.parametrize(
+    ("src", "module"),
+    [
+        (b"import def from 'mod';\n", "mod"),  # bare ESM
+        (b"import * as ns from 'pkg';\n", "pkg"),  # bare namespace
+        (b"const cj = require('commonjs');\n", "commonjs"),  # bare CommonJS
+        (b"import { a } from '@app/utils';\n", "@app/utils"),  # scoped package
+    ],
+)
+def test_bare_specifier_stays_not_simple_direct(src: bytes, module: str) -> None:
+    """Bare / scoped-package specifiers stay `is_simple_direct=False` —
+    `node_modules` resolution is out of scope."""
+    ref = _import(_parse(src), module)
+    assert ref.is_simple_direct is False
+
+
+def test_bare_specifier_never_resolves(tmp_path: Path) -> None:
+    """A non-simple-direct ref returns `unresolved` without consulting
+    the resolver (the _NullResolver would raise if consulted)."""
+    ref = _import(_parse(b"import def from 'mod';\n"), "mod")
     adapter = JavaScriptAdapter(resolver=_NullResolver())
-    for ref in result.imports:
-        assert ref.is_simple_direct is False
-        resolution = adapter.resolve_simple_direct_import(ref, Path("."))
-        assert resolution.status == "unresolved"
-        assert resolution.target_path is None
+    resolution = adapter.resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "unresolved"
+    assert resolution.target_path is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_simple_direct_import — filesystem resolution via the real
+# coordinates resolver (root-aware twin, symlink-safe)
+# ---------------------------------------------------------------------------
+
+
+def _resolving_adapter() -> JavaScriptAdapter:
+    from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
+
+    return JavaScriptAdapter(resolver=COORDINATES_IMPORT_PATH_RESOLVER)
+
+
+def test_relative_import_resolves_single_target(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "rel.js").write_text("export {};\n")
+    ref = _import(_parse(b"import { a } from './rel';\n"), "./rel")
+    resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "resolved"
+    assert resolution.target_path == "src/rel.js"
+
+
+def test_relative_import_two_extensions_is_ambiguous(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "rel.js").write_text("export {};\n")
+    (tmp_path / "src" / "rel.ts").write_text("export {};\n")
+    ref = _import(_parse(b"import { a } from './rel';\n"), "./rel")
+    resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "ambiguous"
+    assert resolution.target_path is None
+
+
+def test_relative_import_missing_target_is_unresolved(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    ref = _import(_parse(b"import { a } from './rel';\n"), "./rel")
+    resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "unresolved"
+    assert resolution.target_path is None
+
+
+def test_relative_import_symlink_target_rejected(tmp_path: Path) -> None:
+    """A symlinked candidate is omitted by the root-aware walk AND fails
+    the `is_file(follow_symlinks=False)` stat — the attack asserts the
+    explicit `unresolved` outcome."""
+    (tmp_path / "src").mkdir()
+    outside = tmp_path.parent / "outside.js"
+    outside.write_text("export {};\n")
+    (tmp_path / "src" / "rel.js").symlink_to(outside)
+    ref = _import(_parse(b"import { a } from './rel';\n"), "./rel")
+    resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "unresolved"
+    assert resolution.target_path is None
+
+
+def test_relative_import_escaping_root_is_unresolved(tmp_path: Path) -> None:
+    """`'../../evil'` from a depth-1 file escapes the repo root: the
+    construction surface returns zero candidates, so resolution is
+    `unresolved` — nothing outside the root is ever statted."""
+    (tmp_path / "src").mkdir()
+    ref = _import(_parse(b"import { a } from '../../evil';\n"), "../../evil")
+    resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
+    assert resolution.status == "unresolved"
+    assert resolution.target_path is None
 
 
 # ---------------------------------------------------------------------------

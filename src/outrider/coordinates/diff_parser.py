@@ -777,6 +777,11 @@ class _CoordinatesImportPathResolver:
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
         return resolve_candidate_paths(import_string, import_root)
 
+    def resolve_specifier_candidate_paths(
+        self, specifier: str, importing_file_path: str, import_root: Path
+    ) -> list[Path]:
+        return resolve_specifier_candidate_paths(specifier, importing_file_path, import_root)
+
 
 COORDINATES_IMPORT_PATH_RESOLVER: Final = _CoordinatesImportPathResolver()
 """Process-wide singleton `ImportPathResolver` instance. Used by
