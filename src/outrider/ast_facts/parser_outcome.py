@@ -121,7 +121,12 @@ def should_skip(file_path: str, source: bytes) -> SkipReason | None:
             return rule.reason
         if rule.kind == "path_prefix" and file_path.startswith(cast("str", rule.pattern)):
             return rule.reason
-        if rule.kind == "filename_suffix" and name.endswith(cast("str", rule.pattern)):
+        # Case-insensitive: registry dispatch deliberately lowercases
+        # extensions (`Foo.PY`, `JQUERY.MIN.JS` are legal on
+        # case-insensitive filesystems), so the suffix skips must match
+        # the same set of files the adapters would otherwise parse.
+        # Patterns in EXCLUSION_RULES are lowercase by construction.
+        if rule.kind == "filename_suffix" and name.lower().endswith(cast("str", rule.pattern)):
             return rule.reason
         # Case-insensitive raw-byte check per Internal contracts.
         # `bytes.upper()` works on ASCII subsequences without UTF-8

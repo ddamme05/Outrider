@@ -358,9 +358,10 @@ def added_line_numbers(patched_file: PatchedFile) -> frozenset[int]:
 def extract_scope_unit_body(scope_unit: ScopeUnit, source_bytes: bytes) -> str:
     """Decode the UTF-8 bytes of `scope_unit`'s byte range from `source_bytes`.
 
-    `parse_python` guarantees `ScopeUnit.byte_start` / `byte_end` land on
-    UTF-8 char boundaries (tree-sitter byte offsets respect the source
-    encoding). `errors="replace"` is defense-in-depth: under the producer
+    The `parse_*` entry points (`parse_python`, `parse_javascript`,
+    `parse_typescript`) guarantee `ScopeUnit.byte_start` / `byte_end`
+    land on UTF-8 char boundaries (tree-sitter byte offsets respect the
+    source encoding). `errors="replace"` is defense-in-depth: under the producer
     contract the decoded text is round-trip valid; if a future producer
     bug emits a non-boundary offset, the prompt sees U+FFFD rather than
     crashing the analyze pass mid-render.

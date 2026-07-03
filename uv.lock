@@ -1278,9 +1278,9 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" },
     { name = "structlog", specifier = "==25.5.0" },
     { name = "tree-sitter", specifier = "==0.25.2" },
-    { name = "tree-sitter-javascript", specifier = ">=0.25.0" },
+    { name = "tree-sitter-javascript", specifier = "==0.25.0" },
     { name = "tree-sitter-python", specifier = "==0.25.0" },
-    { name = "tree-sitter-typescript", specifier = ">=0.23.2" },
+    { name = "tree-sitter-typescript", specifier = "==0.23.2" },
     { name = "unidiff", specifier = "==0.7.5" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.47.0" },
 ]

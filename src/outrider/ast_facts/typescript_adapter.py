@@ -29,6 +29,7 @@ inside the same node shapes). TS-only additions:
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 import tree_sitter_typescript
@@ -71,10 +72,6 @@ class TypeScriptAdapter(JavaScriptAdapter):
     _FIELD_DEF_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"field_definition", "public_field_definition"}
     )
-    _OUTCOME_TARGET_TYPES: ClassVar[frozenset[str]] = (
-        JavaScriptAdapter._OUTCOME_TARGET_TYPES
-        | frozenset({"abstract_class_declaration", "public_field_definition"})
-    )
 
     def __init__(
         self, resolver: ImportPathResolver, dialect: TypeScriptDialect = "typescript"
@@ -96,11 +93,15 @@ class TypeScriptAdapter(JavaScriptAdapter):
 def parse_typescript(source: bytes, file_path: str, resolver: ImportPathResolver) -> ParseResult:
     """Canonical TS/TSX entry point, mirroring `parse_python`'s contract.
 
-    Dialect follows the extension (`.tsx` → tsx grammar; everything else
-    → typescript), matching the registry's per-extension factories so
-    direct callers and registry consumers parse identically.
+    Dialect comes from the registry's `TYPESCRIPT_DIALECT_BY_EXTENSION`
+    — the single extension→dialect mapping — so direct callers and
+    registry consumers provably parse a given extension with the same
+    grammar. Unknown extensions default to the typescript dialect.
     """
-    dialect: TypeScriptDialect = "tsx" if file_path.lower().endswith(".tsx") else "typescript"
+    from outrider.ast_facts.registry import TYPESCRIPT_DIALECT_BY_EXTENSION
+
+    suffix = PurePosixPath(file_path.lower()).suffix
+    dialect: TypeScriptDialect = TYPESCRIPT_DIALECT_BY_EXTENSION.get(suffix, "typescript")
     return _run_parse_pipeline(
         TypeScriptAdapter(resolver=resolver, dialect=dialect),
         source,

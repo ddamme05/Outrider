@@ -243,6 +243,7 @@ def test_import_light_subprocess_isolated() -> None:
         (
             "import sys; "
             "from outrider.ast_facts.models import SkipReason; "
+            "import outrider.ast_facts.registry; "  # lazy factories: no grammar load
             "loaded = [m for m in ("
             "'tree_sitter', 'tree_sitter_python', "
             "'tree_sitter_javascript', 'tree_sitter_typescript'"

@@ -124,6 +124,30 @@ def test_function_inside_namespace_is_extracted_without_namespace_segment() -> N
     assert scope.parent_scope_id is None
 
 
+def test_decorator_arguments_do_not_produce_phantom_scopes() -> None:
+    """Object-literal pairs inside decorator ARGUMENTS are metadata, not
+    code scopes — the walker must not descend decorator subtrees."""
+    result = _parse(b"class Svc {\n  @dec({m: () => 1})\n  run() { return 2; }\n}\n")
+    assert {s.qualified_name for s in result.scope_units} == {"Svc", "Svc.run"}
+
+
+def test_syntax_error_in_decorated_method_body_reaches_has_error() -> None:
+    """The decorator-widened span must not blind per-scope has_error: an
+    error in the method BODY flags the method even when a clean
+    decorator-argument node starts earlier in the widened span."""
+    result = _parse(b"class Svc {\n  @dec({m: () => 1})\n  run() { return (1 +; }\n}\n")
+    assert result.has_error[_scope(result, "Svc.run").unit_id] is True
+    assert result.error_lines
+
+
+def test_broken_decorator_on_exported_toplevel_class_reaches_has_error() -> None:
+    """Python parity: a decorator-region parse error must reach the
+    decorated scope's has_error even with no enclosing scope to absorb
+    it (the exported top-level class case)."""
+    result = _parse(b"@Injectable(1 +)\nexport class Svc {\n  run() { return 1; }\n}\n")
+    assert result.has_error[_scope(result, "Svc").unit_id] is True
+
+
 # ---------------------------------------------------------------------------
 # TS import shapes
 # ---------------------------------------------------------------------------

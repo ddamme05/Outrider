@@ -141,9 +141,17 @@ setTimeout(() => {}, 100);
     assert result.scope_units == ()
 
 
-def test_computed_member_names_are_not_scopes() -> None:
-    result = _parse(b'class A { ["computed"]() {} }\n')
-    assert [s.qualified_name for s in result.scope_units] == ["A"]
+def test_computed_member_names_are_not_scopes_but_their_bodies_descend() -> None:
+    """A computed-name method gets no ScopeUnit (no stable name), but the
+    walker still descends its body: named scopes inside are extracted and
+    call sites attribute to them, not to the enclosing class."""
+    result = _parse(b'class A { ["computed"]() { function inner() { helper(); } } }\n')
+    assert {s.qualified_name for s in result.scope_units} == {"A", "A.inner"}
+    inner = _scope(result, "A.inner")
+    assert inner.kind == "function"
+    assert [(c.callee_name, c.enclosing_scope_id) for c in result.call_sites] == [
+        ("helper", inner.unit_id)
+    ]
 
 
 def test_exported_declarations_are_extracted() -> None:
@@ -253,6 +261,23 @@ export { x } from './re';
         assert _import(result, module).import_kind == "relative"
 
 
+def test_bare_dot_and_dotdot_specifiers_are_relative() -> None:
+    """Node resolves `.` and `..` (directory-index imports) against the
+    importing file, same as `./`-prefixed specifiers."""
+    result = _parse(b"import a from '.';\nconst c = require('..');\n")
+    assert _import(result, ".").import_kind == "relative"
+    assert _import(result, "..").import_kind == "relative"
+
+
+def test_escape_sequences_in_specifiers_are_preserved_verbatim() -> None:
+    """Escape sequences must not be silently deleted from the specifier;
+    they are preserved as raw source text (decoding is a resolver
+    concern)."""
+    result = _parse(rb"import x from './mod\u002Ddata';" + b"\n")
+    assert len(result.imports) == 1
+    assert result.imports[0].module == "./mod\\u002Ddata"
+
+
 def test_dynamic_import_is_not_extracted() -> None:
     result = _parse(b"const dyn = import('dynamic');\n")
     assert result.imports == ()
@@ -294,6 +319,13 @@ topLevel();
     unit_id = _scope(result, "f").unit_id
     callees = {(c.callee_name, c.enclosing_scope_id) for c in result.call_sites}
     assert callees == {("compute", unit_id), ("obj.method", unit_id)}
+
+
+def test_constructor_invocation_is_a_call_site() -> None:
+    """`new Pool(cfg)` parity with Python, where `Pool(cfg)` is a `call`
+    node: constructor usage must be visible to same-file tracing."""
+    result = _parse(b"function f() { const p = new Pool(cfg); attach(p); }\n")
+    assert {c.callee_name for c in result.call_sites} == {"Pool", "attach"}
 
 
 def test_module_level_calls_are_not_extracted() -> None:
@@ -378,6 +410,15 @@ def test_minified_js_family_is_skipped(path: str) -> None:
     assert result.parser_outcome == "skipped"
     assert result.skip_reason is SkipReason.MINIFIED
     assert result.scope_units == ()
+
+
+def test_minified_skip_is_case_insensitive() -> None:
+    """Registry dispatch lowercases extensions, so the suffix skips must
+    cover the same case-variant filenames (JQUERY.MIN.JS is legal on
+    case-insensitive filesystems)."""
+    result = _parse(b"var x=1;", "dist/JQUERY.MIN.JS")
+    assert result.parser_outcome == "skipped"
+    assert result.skip_reason is SkipReason.MINIFIED
 
 
 def test_node_modules_is_skipped_as_vendored() -> None:

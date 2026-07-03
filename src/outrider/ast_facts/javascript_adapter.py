@@ -54,8 +54,8 @@ from outrider.ast_facts.models import (
 )
 from outrider.ast_facts.parser_outcome import should_skip
 from outrider.ast_facts.scope_search import (
+    error_byte_spans_from_tree,
     error_lines_from_tree,
-    find_node_by_span,
     innermost_scope_containing,
 )
 
@@ -103,20 +103,6 @@ class JavaScriptAdapter:
     _MEMBER_NAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"property_identifier", "private_property_identifier"}
     )
-    # Scope-defining node types for `compute_parser_outcome`'s
-    # ScopeUnit→node containment lookup. Every emitted ScopeUnit's span
-    # node type must be listed, or its has_error silently reads False.
-    _OUTCOME_TARGET_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {
-            "function_declaration",
-            "generator_function_declaration",
-            "class_declaration",
-            "method_definition",
-            "field_definition",
-            "pair",
-            "variable_declarator",
-        }
-    )
 
     def __init__(self, resolver: ImportPathResolver) -> None:
         self._resolver = resolver
@@ -137,14 +123,17 @@ class JavaScriptAdapter:
 
     @staticmethod
     def _string_text(string_node: Node | None) -> str:
-        """Unquoted specifier text of a `string` node (its
-        `string_fragment` children, concatenated; `''` has none)."""
+        """Unquoted specifier text of a `string` node: `string_fragment`
+        and `escape_sequence` children concatenated in order (`''` has
+        none). Escape sequences are preserved as raw source text
+        (`\\u002D` stays `\\u002D`, not decoded to `-`) — dropping them
+        would corrupt the specifier; decoding is a resolver concern."""
         if string_node is None:
             return ""
         return "".join(
             JavaScriptAdapter._node_text(c)
             for c in string_node.named_children
-            if c.type == "string_fragment"
+            if c.type in ("string_fragment", "escape_sequence")
         )
 
     @staticmethod
@@ -193,6 +182,27 @@ class JavaScriptAdapter:
 
     def extract_scopes(self, source: bytes, file_path: str) -> tuple[ScopeUnit, ...]:
         return self._extract_scopes_from_tree(self._parse(source), file_path)
+
+    @staticmethod
+    def _push_scope_children(
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]],
+        node: Node,
+        qual_path: tuple[str, ...],
+        in_class: bool,
+        parent_unit_id: str | None,
+    ) -> None:
+        """Generic descent for the scope walk: push all children with the
+        inherited frame, reversed so leftmost pops first (pre-order).
+
+        `decorator` subtrees are NOT descended: their contents (config
+        object literals, inline arrows) are metadata captured as
+        decorator text, not code scopes — descending emitted phantom
+        method ScopeUnits from decorator-argument object pairs.
+        """
+        for child in reversed(node.children):
+            if child.type == "decorator":
+                continue
+            stack.append((child, qual_path, in_class, parent_unit_id))
 
     def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
         scopes: list[ScopeUnit] = []
@@ -248,6 +258,11 @@ class JavaScriptAdapter:
             if node_type == "method_definition":
                 name_node = node.child_by_field_name("name")
                 if name_node is None or name_node.type not in self._MEMBER_NAME_TYPES:
+                    # Computed/string-keyed member: no stable name for a
+                    # ScopeUnit, but the BODY may hold named scopes —
+                    # descend generically (dropping the subtree lost
+                    # nested functions and mis-attributed their calls).
+                    self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                     continue
                 name = self._node_text(name_node)
                 unit_id = self._emit(
@@ -289,8 +304,7 @@ class JavaScriptAdapter:
                     if body is not None:
                         stack.append((body, (*qual_path, name), False, unit_id))
                     continue
-                for child in reversed(node.children):
-                    stack.append((child, qual_path, in_class, parent_unit_id))
+                self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                 continue
 
             if node_type == "pair":
@@ -318,8 +332,7 @@ class JavaScriptAdapter:
                         # for the object itself.
                         stack.append((value, (*qual_path, name), False, parent_unit_id))
                         continue
-                for child in reversed(node.children):
-                    stack.append((child, qual_path, in_class, parent_unit_id))
+                self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                 continue
 
             if node_type == "variable_declarator":
@@ -358,12 +371,10 @@ class JavaScriptAdapter:
                     if value.type == "object":
                         stack.append((value, (*qual_path, name), False, parent_unit_id))
                         continue
-                for child in reversed(node.children):
-                    stack.append((child, qual_path, in_class, parent_unit_id))
+                self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                 continue
 
-            for child in reversed(node.children):
-                stack.append((child, qual_path, in_class, parent_unit_id))
+            self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
         return tuple(scopes)
 
     def _emit(
@@ -432,8 +443,10 @@ class JavaScriptAdapter:
     @classmethod
     def _kind_for(cls, module: str, default_kind: str) -> str:
         """Relative specifiers win over the syntactic form, mirroring
-        Python where `relative` is its own kind."""
-        if module.startswith(_RELATIVE_SPECIFIER_PREFIXES):
+        Python where `relative` is its own kind. Bare `.` and `..`
+        (directory-index imports) are relative too — Node resolves them
+        against the importing file, same as `./`-prefixed forms."""
+        if module in (".", "..") or module.startswith(_RELATIVE_SPECIFIER_PREFIXES):
             return "relative"
         return default_kind
 
@@ -602,12 +615,18 @@ class JavaScriptAdapter:
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
         calls: list[CallSite] = []
         for node in self._walk(tree.root_node):
-            if node.type != "call_expression":
+            # `new Pool(cfg)` is a `new_expression` (callee under the
+            # `constructor` field), not a `call_expression` — Python
+            # parity requires it: `Pool(cfg)` is a `call` node there.
+            if node.type == "call_expression":
+                function_node = node.child_by_field_name("function")
+            elif node.type == "new_expression":
+                function_node = node.child_by_field_name("constructor")
+            else:
                 continue
             enclosing = innermost_scope_containing(sorted_scopes, node.start_byte, node.end_byte)
             if enclosing is None:
                 continue
-            function_node = node.child_by_field_name("function")
             if function_node is None:
                 continue
             # `callee_name` is RAW SOURCE TEXT per canonical §5.4 ("raw
@@ -731,20 +750,25 @@ class JavaScriptAdapter:
         tree: Tree,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        # ScopeUnit spans may start at a preceding decorator sibling
-        # (see `_emit`); containment lookup still finds the member node
-        # inside the widened span. A syntax error INSIDE a preceding
-        # decorator therefore does not reach the member's has_error —
-        # it surfaces via the enclosing class scope and `error_lines`.
+        # Error-span intersection instead of Python's ScopeUnit→node
+        # containment lookup: JS/TS ScopeUnit spans may start at a
+        # preceding decorator sibling (see `_emit`), so no single tree
+        # node corresponds to the span — a node lookup either misses the
+        # decorator region entirely (top-level exported decorated class)
+        # or lands on a decorator-argument node and reads the wrong
+        # `has_error`. A scope has an error iff any ERROR/MISSING span
+        # intersects its (widened) byte range; zero-width MISSING nodes
+        # count as points. Slightly conservative vs Python (an ERROR
+        # region enclosing a recovered scope flags it), which is the
+        # safe direction under `parse-errors-degrade-to-judged`.
+        error_spans = error_byte_spans_from_tree(tree)
         has_error: dict[str, bool] = {}
         for scope in scope_units:
-            node = find_node_by_span(
-                tree.root_node,
-                scope.byte_start,
-                scope.byte_end,
-                self._OUTCOME_TARGET_TYPES,
+            has_error[scope.unit_id] = any(
+                (start < scope.byte_end and end > scope.byte_start)
+                or (start == end and scope.byte_start <= start < scope.byte_end)
+                for start, end in error_spans
             )
-            has_error[scope.unit_id] = bool(node and node.has_error)
         return "clean", has_error
 
 
