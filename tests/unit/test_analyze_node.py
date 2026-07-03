@@ -19,8 +19,10 @@ registry-query firing:
    file with two functions, patch only touches one → only that
    scope unit reaches the prompt + parser admission.
 9. **Registry-query firing** — `query_match_id_set` constructed from
-   `queries.registry.REGISTERED_QUERY_IDS` against the file content;
-   non-empty for a typical Python file.
+   the file's per-language structural set
+   (`queries.registry.structural_query_ids_for`) against the file
+   content; non-empty for a typical Python file, empty by registration
+   for JS/TS.
 
 Test infrastructure: inline recorder sinks + mock LLM provider + mock
 ImportPathResolver. Per the user direction: "without special mocks

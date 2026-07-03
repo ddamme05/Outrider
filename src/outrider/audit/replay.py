@@ -13,8 +13,9 @@ Two design commitments:
   - **Verify-only.** Replay re-verifies the proof boundary, recomputes
     content hashes, and reconstructs severity under the historical policy
     version — it does NOT re-run the graph, call the LLM, or re-run a
-    tree-sitter query against source bytes (a full `match(id, source)`
-    re-run needs a durable source store, routed to future scope).
+    tree-sitter query against source bytes (a full
+    `match(id, source, grammar)` re-run needs a durable source store plus
+    the file's per-language grammar selection, routed to future scope).
   - **Mode by content-row presence.** `reconstruct` selects full vs
     metadata-only vs mixed by whether the content row physically exists,
     NOT by a `retention_expires_at` comparison and NOT by a NULL column.

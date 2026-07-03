@@ -79,10 +79,13 @@ intersections don't include the unit. Deletion-only edits inside an
 otherwise-unchanged function currently route to
 `NO_CHANGED_SCOPE_UNITS` — V1 limitation tracked as FUP-050.
 
-**Registry-query firing.** For clean+full_llm, every id in
-`queries.registry.REGISTERED_QUERY_IDS` is fired against the file
-content; the matching subset becomes `query_match_id_set` passed to
-the parser. OBSERVED claims with an id outside the set reject.
+**Registry-query firing.** For clean+full_llm, every structural query
+id registered for the file's catalog language
+(`queries.registry.structural_query_ids_for(language)`) is fired
+against the file content; the matching subset becomes
+`query_match_id_set` passed to the parser. OBSERVED claims with an id
+outside the set reject. A language registering no structural queries
+(JS/TS today) gets the empty set — every model OBSERVED claim rejects.
 
 **Token estimation.** `_estimate_tokens` counts UTF-8 bytes with
 ceiling division (`_BYTES_PER_TOKEN = 3`). Conservative-up for code-
