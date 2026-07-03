@@ -288,12 +288,14 @@ def test_observed_producer_version_pinned() -> None:
     any admission-rule change. v2: per-language query-set selection + the
     JS/TS test-file conventions. v3: those conventions became
     language-scoped (under v2 they suppressed OBSERVED findings on Python
-    production files like `report.spec.py`). The literal pin is the revert
-    tripwire: every other suite reference derives from the constant, so
-    without this pin a silent revert to v2 would stay green while current
-    reviews re-key onto stale v2 cache rows — serving the suppressed-empty
-    payloads the v3 fix exists to invalidate."""
-    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v3"
+    production files like `report.spec.py`). v4: import-binding admission —
+    a name-anchored match must prove its anchor binds to the dangerous API
+    via the file's imports (under v3 any callee/receiver NAME matched). The
+    literal pin is the revert tripwire: every other suite reference derives
+    from the constant, so without this pin a silent revert would stay green
+    while current reviews re-key onto stale cache rows written under the
+    older admission rules."""
+    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v4"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:

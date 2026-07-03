@@ -169,9 +169,13 @@ def test_v1_real_registry_matches_are_signal_only_so_not_eligible() -> None:
     """End-to-end with the REAL registry: run_observed_matches surfaces the eval()
     match (signal_only in V1), so the file is not_eligible — the V1 contract that
     no file is skip-eligible until a query is promoted to skip_safe."""
-    scopes = parse_python(_HEAD.encode(), "src/foo.py", MagicMock()).scope_units
+    parsed = parse_python(_HEAD.encode(), "src/foo.py", MagicMock())
+    scopes = parsed.scope_units
     matches = run_observed_matches(
-        file_path="src/foo.py", head_content=_HEAD, included_scope_units=scopes
+        file_path="src/foo.py",
+        head_content=_HEAD,
+        included_scope_units=scopes,
+        import_refs=parsed.imports,
     )
     assert matches
     assert all(m.query_class == QueryClass.SIGNAL_ONLY for m in matches)

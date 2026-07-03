@@ -19,7 +19,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # Runtime import (not TYPE_CHECKING): Pydantic resolves field annotations at
 # model-build time, so `FindingType` must be in the runtime namespace.
@@ -50,6 +50,40 @@ class QueryClass(StrEnum):
     SKIP_SAFE = "skip_safe"
 
 
+class BindingRule(BaseModel):
+    """Deterministic import-binding admission for a name-anchored OBSERVED
+    query — the producer-side proof that a matched NAME actually binds to
+    the dangerous API, joined against the file's `ast_facts` imports
+    (`ImportRef.names` carries LOCAL binding names for every JS/TS form:
+    ESM named/default/namespace and CJS `require`, whole-module and
+    destructured).
+
+    `anchor_import`: the match's anchor identifier — the `@_recv` receiver
+    capture when present, else the `@_fn` callee capture — must be bound by
+    an import whose `module` is in `modules`. `module_presence`: the FILE
+    must import at least one of `modules` (for sinks whose receiver is a
+    derived variable — a DB pool — where per-receiver proof needs
+    assignment-flow, not an import join).
+
+    `modules` is a sorted tuple, not a set: the rule rides into
+    `_registry_digest` via `model_dump()`, and set iteration order is
+    hash-randomized across processes — a set field would make the digest
+    (an analyze cache-key input) nondeterministic.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["anchor_import", "module_presence"]
+    modules: tuple[str, ...]
+
+    @field_validator("modules")
+    @classmethod
+    def _sorted_nonempty(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("BindingRule.modules must be non-empty")
+        return tuple(sorted(set(v)))
+
+
 class ObservedQuery(BaseModel):
     """Registry-side metadata for one OBSERVED-tier security query.
 
@@ -64,7 +98,15 @@ class ObservedQuery(BaseModel):
     KEY (folded as the id, not as a field); `filename` is excluded — an impl
     detail, since the `.scm` BODY is folded, not its name. `language` selects
     which files the query runs against (and which grammars compile it); it
-    folds into the digest like the other routing fields.
+    folds into the digest like the other routing fields, as does `binding`
+    (an admission-affecting rule — a binding edit changes which matches are
+    admitted, so it must invalidate cached outcomes).
+
+    `binding=None` means the match is admitted on structure alone — correct
+    for globals (`eval`, `Function`) and for queries whose pattern is
+    already self-proving (`process.env` receiver). Every python-catalog
+    entry is `None`: the binding step is a JS/TS admission rule; Python
+    OBSERVED behavior is byte-stable (its sibling gap is FUP-184 scope).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -76,3 +118,4 @@ class ObservedQuery(BaseModel):
     query_class: QueryClass = QueryClass.SIGNAL_ONLY
     title: str
     description: str
+    binding: BindingRule | None = None

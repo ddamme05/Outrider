@@ -4,10 +4,17 @@
 ; end-of-string boundary, so `des-ede3-cbc` fires while `desx-cbc` does not;
 ; case-insensitive to mirror OpenSSL's name lookup. Non-literal algorithm
 ; names are a deliberate recall gap (JUDGED covers them).
+;
+; Anchor-capture protocol (BindingRule mode="anchor_import"): the member arm
+; captures its receiver as @_recv; the producer admits a match only when
+; @_recv (else the bare @_fn) is bound by an import from the query's module
+; set. Nested receivers (`a.b.createCipheriv`) have no provable binding and
+; do not match (JUDGED covers them).
 (call_expression
   function: [
     (identifier) @_fn
     (member_expression
+      object: (identifier) @_recv
       property: (property_identifier) @_fn)
   ]
   arguments: (arguments
