@@ -705,6 +705,16 @@ class ServedTraceCandidateRef(BaseModel):
     source_proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     import_string: str = Field(max_length=1024)
 
+    @field_validator("import_string")
+    @classmethod
+    def _enforce_canonical_import_string(cls, value: str) -> str:
+        """Audit-shadow of `TraceCandidate.import_string` — reruns the
+        shared two-form validator (`DECISIONS.md#024`, Amended
+        2026-07-03) so the served candidate's only audit trace carries
+        the same canonical bytes the state layer enforces, matching
+        every sibling path/import-bearing audit field."""
+        return is_valid_trace_import_string(value)
+
 
 class CacheServeEvent(AuditEventBase):
     """Per-file analyze-cache SERVE record — the serve-flip counterpart to
