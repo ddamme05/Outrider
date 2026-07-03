@@ -9,8 +9,10 @@ specs/2026-06-14-observed-query-library-v1.md added:
 - V1 is default-deny: every query is SIGNAL_ONLY (zero SKIP_SAFE seeds).
 - OBSERVED ids resolve via get_query_source/match but are a SEPARATE
   surface from REGISTERED_QUERY_IDS (the structural LLM-citation set).
-- `_registry_digest` folds class/finding_type/title/description, so a
-  metadata edit (not just a .scm body edit) invalidates the analyze cache.
+- `_registry_digest` folds every non-excluded ObservedQuery field (today
+  language/class/finding_type/title/description/binding, derived from the
+  model per FUP-181), so a metadata edit — not just a .scm body edit —
+  invalidates the analyze cache.
 """
 
 from __future__ import annotations
@@ -20,21 +22,23 @@ import pytest
 from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.policy.severity import SEVERITY_POLICY, FindingType
 from outrider.queries import registry
-from outrider.queries.observed import QueryClass
+from outrider.queries.observed import BindingRule, QueryClass
 
 
 def test_observed_query_count() -> None:
-    """The OBSERVED library has eighteen queries: eleven Python (8 from the
+    """The OBSERVED library has nineteen queries: eleven Python (8 from the
     v1 library + weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193
-    step 1; + weak_asymmetric_key_size, the value-predicate slice) + seven
+    step 1; + weak_asymmetric_key_size, the value-predicate slice) + eight
     JS/TS (the four-family catalog,
-    specs/2026-07-03-js-ts-observed-query-catalog.md)."""
-    assert len(registry.OBSERVED_QUERY_IDS) == 18
+    specs/2026-07-03-js-ts-observed-query-catalog.md, plus the process-env
+    TLS kill switch split into its own self-proving query in the
+    import-binding fold)."""
+    assert len(registry.OBSERVED_QUERY_IDS) == 19
     assert set(registry.OBSERVED_QUERIES) == set(registry.OBSERVED_QUERY_IDS)
     by_language = {"python": 0, "javascript": 0}
     for oq in registry.OBSERVED_QUERIES.values():
         by_language[oq.language] += 1
-    assert by_language == {"python": 11, "javascript": 7}
+    assert by_language == {"python": 11, "javascript": 8}
 
 
 def test_observed_queries_default_deny_all_signal_only() -> None:
@@ -172,6 +176,9 @@ def test_digest_folds_every_non_excluded_field() -> None:
         "language": "javascript" if orig.language == "python" else "python",
         "title": orig.title + " (edited)",
         "description": orig.description + " edited",
+        # An admission-affecting rule change MUST re-key the cache: a match
+        # admitted under one binding rule may be dropped under another.
+        "binding": BindingRule(mode="module_presence", modules=("digest-probe",)),
     }
     assert folded_fields <= set(mutations), (
         f"new folded field(s) {folded_fields - set(mutations)} need a mutation case here"

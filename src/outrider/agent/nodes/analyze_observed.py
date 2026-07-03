@@ -62,15 +62,16 @@ if TYPE_CHECKING:
 
     from unidiff import PatchedFile
 
-    from outrider.ast_facts.models import ScopeUnit
+    from outrider.ast_facts.models import ImportRef, QueryCaptureSpan, ScopeUnit
     from outrider.policy.severity import FindingType
-    from outrider.queries.observed import QueryLanguage
+    from outrider.queries.observed import BindingRule, QueryLanguage
 
 
 # Version of the OBSERVED producer's ADMISSION logic — the rules in
 # `run_observed_matches` that decide which matches are admitted: the
 # per-language query-set selection, the scope-CONTAINMENT predicate, test-file
-# suppression (`_is_test_file`), the zero-width-span skip, and the byte->line
+# suppression (`_is_test_file`), the import-binding step
+# (`_binding_admits`), the zero-width-span skip, and the byte->line
 # mapping. Folded into the analyze cache key
 # (`cache.key.compute_analyze_cache_key`) so a change to these rules
 # invalidates cached analyze outcomes written under the old rules — the same
@@ -86,7 +87,12 @@ if TYPE_CHECKING:
 # applied to every language, silently suppressing OBSERVED findings on
 # Python production files: `report.spec.py` (name marker),
 # `pkg/__tests__/util.py` (directory marker).
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v3"
+# v4: import-binding admission (`_binding_admits`) — a name-anchored match
+# is admitted only when its anchor identifier is bound by an import from the
+# query's `BindingRule.modules` (or, mode="module_presence", when the file
+# imports one of them). Under v3 any callee/receiver NAME matched — an
+# `exec` helper imported from `./jobs` produced a CRITICAL OBSERVED finding.
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v4"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
 # `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
@@ -148,11 +154,48 @@ def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
     return any(seg in ("test", "spec") for seg in inner_segments)
 
 
+def _binding_admits(
+    binding: BindingRule | None,
+    captures: tuple[QueryCaptureSpan, ...],
+    content_bytes: bytes,
+    import_refs: tuple[ImportRef, ...],
+) -> bool:
+    """Deterministic import-binding admission for a name-anchored match.
+
+    `anchor_import`: the anchor identifier — the `@_recv` receiver capture
+    when present, else the `@_fn` callee capture — must be a LOCAL name
+    bound by an import whose `module` is in the rule's set (`ImportRef.names`
+    carries local binding names for ESM named/default/namespace and CJS
+    `require` forms alike). A match with neither capture is NOT admitted —
+    default-deny, the proof-boundary direction. `module_presence`: the file
+    must import at least one of the rule's modules. `binding=None` admits on
+    structure alone (globals / self-proving patterns).
+    """
+    if binding is None:
+        return True
+    if binding.mode == "module_presence":
+        wanted = set(binding.modules)
+        return any(ref.module in wanted for ref in import_refs)
+    anchor: str | None = None
+    for wanted_name in ("_recv", "_fn"):
+        for c in captures:
+            if c.name == wanted_name:
+                anchor = content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace")
+                break
+        if anchor is not None:
+            break
+    if anchor is None:
+        return False
+    module_set = set(binding.modules)
+    return any(ref.module in module_set and anchor in ref.names for ref in import_refs)
+
+
 def run_observed_matches(
     *,
     file_path: str,
     head_content: str,
     included_scope_units: tuple[ScopeUnit, ...],
+    import_refs: tuple[ImportRef, ...],
 ) -> tuple[ObservedMatch, ...]:
     """Run every OBSERVED query registered for `file_path`'s catalog language
     over `head_content` and return the admitted matches as `ObservedMatch`
@@ -164,11 +207,14 @@ def run_observed_matches(
     A match is admitted only when it is CONTAINED in an included scope unit (the
     same scope discipline the LLM-citation admission uses) — a deterministic
     OBSERVED match must anchor fully inside code the review is examining, never
-    straddling a scope boundary or landing in unchanged code outside the diff.
-    Test files admit nothing (spec §11.2). Zero-width envelopes and spans that
-    fail the byte->line mapping are dropped. Returns a deterministically ordered
-    tuple (by query id, then the registry's match sort) so any content-derived id
-    downstream stays stable across replays.
+    straddling a scope boundary or landing in unchanged code outside the diff —
+    AND when its query's `BindingRule` is satisfied against `import_refs`
+    (`_binding_admits`): a name-anchored match must prove its anchor binds to
+    the dangerous API, so an `exec` helper imported from `./jobs` is not a
+    `child_process` sink. Test files admit nothing (spec §11.2). Zero-width
+    envelopes and spans that fail the byte->line mapping are dropped. Returns a
+    deterministically ordered tuple (by query id, then the registry's match
+    sort) so any content-derived id downstream stays stable across replays.
     """
     # Per-language selection: the registry pairs the query set with the
     # grammar that parses this file's bytes. Both None/empty for a
@@ -194,6 +240,10 @@ def run_observed_matches(
             # Containment: the match must fall fully inside an included scope's
             # byte range (a call always nests within its enclosing scope).
             if not any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges):
+                continue
+            # Import-binding: a name-anchored match must prove its anchor
+            # binds to the dangerous API (observed-producer-v4).
+            if not _binding_admits(observed.binding, span.captures, content_bytes, import_refs):
                 continue
             try:
                 line_start, line_end = query_span_to_source_lines(

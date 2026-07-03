@@ -69,7 +69,7 @@ from outrider.ast_facts.registry import (
     TYPESCRIPT_DIALECT_BY_EXTENSION,
 )
 from outrider.policy.severity import FindingType
-from outrider.queries.observed import ObservedQuery, QueryClass, QueryLanguage
+from outrider.queries.observed import BindingRule, ObservedQuery, QueryClass, QueryLanguage
 from outrider.queries.value_predicates import VALUE_PREDICATES
 
 if TYPE_CHECKING:
@@ -356,6 +356,11 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
         # four families, existing FindingTypes reused (the vulnerability class
         # is language-independent — no SEVERITY_POLICY change), all
         # SIGNAL_ONLY per the same default-deny rule as the Python entries.
+        # Name-anchored queries carry a BindingRule: the producer admits a
+        # match only when the anchor identifier provably binds to the
+        # dangerous API via the file's extracted imports (`_recv`/`_fn`
+        # anchor-capture protocol) or, for derived-receiver sinks, when the
+        # file imports a module from the documented set.
         ObservedQuery(
             query_match_id="javascript.weak_crypto_hash",
             filename="weak_crypto_hash.scm",
@@ -368,6 +373,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "unsafe for signatures, certificates, or integrity protection. "
                 "Use SHA-256 or stronger."
             ),
+            binding=BindingRule(mode="anchor_import", modules=("crypto", "node:crypto")),
         ),
         ObservedQuery(
             query_match_id="javascript.weak_crypto_broken_cipher",
@@ -381,6 +387,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "(DES, 3DES, RC2, RC4, Blowfish), which is cryptographically "
                 "weak. Use a modern authenticated cipher such as AES-GCM."
             ),
+            binding=BindingRule(mode="anchor_import", modules=("crypto", "node:crypto")),
         ),
         ObservedQuery(
             query_match_id="javascript.weak_crypto_ecb_mode",
@@ -394,6 +401,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "ciphertext, leaking structure. Use an authenticated mode such "
                 "as GCM, or CBC with a random IV and a MAC."
             ),
+            binding=BindingRule(mode="anchor_import", modules=("crypto", "node:crypto")),
         ),
         ObservedQuery(
             query_match_id="javascript.command_injection_child_process",
@@ -407,6 +415,9 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "template-interpolated command string; untrusted input enables "
                 "shell command injection. Use execFile with an argument list, "
                 "or validate the input against a strict allowlist."
+            ),
+            binding=BindingRule(
+                mode="anchor_import", modules=("child_process", "node:child_process")
             ),
         ),
         ObservedQuery(
@@ -436,6 +447,26 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "untrusted input enables SQL injection. Use parameterized "
                 "queries."
             ),
+            # The receiver is a derived variable (a pool/connection), not the
+            # import name — per-receiver proof needs assignment-flow. File-level
+            # driver presence is the deterministic V1 gate.
+            binding=BindingRule(
+                mode="module_presence",
+                modules=(
+                    "better-sqlite3",
+                    "knex",
+                    "mariadb",
+                    "mssql",
+                    "mysql",
+                    "mysql2",
+                    "oracledb",
+                    "pg",
+                    "pg-promise",
+                    "sequelize",
+                    "sqlite3",
+                    "typeorm",
+                ),
+            ),
         ),
         ObservedQuery(
             query_match_id="javascript.tls_verify_disabled",
@@ -445,11 +476,47 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             query_class=QueryClass.SIGNAL_ONLY,
             title="TLS certificate verification disabled",
             description=(
-                "rejectUnauthorized: false (or NODE_TLS_REJECT_UNAUTHORIZED="
-                '"0") disables certificate validation, exposing connections '
-                "to man-in-the-middle attacks. Keep verification enabled "
-                "against a proper CA."
+                "rejectUnauthorized: false disables certificate validation, "
+                "exposing connections to man-in-the-middle attacks. Keep "
+                "verification enabled against a proper CA."
             ),
+            # The option object is usually built separately from the sink call;
+            # file-level presence of a module that honors the option is the
+            # deterministic V1 gate.
+            binding=BindingRule(
+                mode="module_presence",
+                modules=(
+                    "axios",
+                    "got",
+                    "http2",
+                    "https",
+                    "node-fetch",
+                    "node:http2",
+                    "node:https",
+                    "node:tls",
+                    "request",
+                    "tls",
+                    "undici",
+                    "ws",
+                ),
+            ),
+        ),
+        ObservedQuery(
+            query_match_id="javascript.tls_env_verify_disabled",
+            filename="tls_env_verify_disabled.scm",
+            finding_type=FindingType.TLS_VERIFY_DISABLED,
+            language="javascript",
+            query_class=QueryClass.SIGNAL_ONLY,
+            title="Process-wide TLS verification disabled via environment",
+            description=(
+                'NODE_TLS_REJECT_UNAUTHORIZED="0" on process.env disables '
+                "certificate validation for the entire process, exposing every "
+                "connection to man-in-the-middle attacks. Remove the override "
+                "and trust a proper CA."
+            ),
+            # No binding: the pattern is self-proving — the query itself
+            # constrains the receiver to the `process.env` global, which
+            # needs no import.
         ),
     )
 }

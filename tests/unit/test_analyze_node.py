@@ -1395,13 +1395,15 @@ async def test_js_file_with_catalog_match_produces_observed_finding(
     js_file = _build_changed_file(
         path="src/token.js",
         content=(
+            b'import crypto from "node:crypto";\n'
             b"export function getToken(secret) {\n"
             b'  const h = crypto.createHash("md5");\n'
             b'  return h.update(secret).digest("hex");\n'
             b"}\n"
         ),
         patch=(
-            "--- a/src/token.js\n+++ b/src/token.js\n@@ -1,3 +1,4 @@\n"
+            "--- a/src/token.js\n+++ b/src/token.js\n@@ -1,3 +1,5 @@\n"
+            '+import crypto from "node:crypto";\n'
             " export function getToken(secret) {\n"
             '-  return "";\n'
             '+  const h = crypto.createHash("md5");\n'
@@ -1434,7 +1436,7 @@ async def test_js_file_with_catalog_match_produces_observed_finding(
     assert observed.query_match_id == "javascript.weak_crypto_hash"
     assert observed.finding_type == "weak_crypto"
     assert observed.severity == lookup_severity(FindingType.WEAK_CRYPTO)
-    assert observed.line_start == observed.line_end == 2
+    assert observed.line_start == observed.line_end == 3
 
 
 async def test_system_prompt_is_byte_identical_across_languages(

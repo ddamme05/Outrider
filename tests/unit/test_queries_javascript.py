@@ -110,16 +110,22 @@ _CASES: tuple[tuple[str, bool, str, str], ...] = (
     ("command_injection_child_process", False, "constant-command", 'exec("ls -la");'),
     ("command_injection_child_process", False, "template-no-substitution", "exec(`ls -la`);"),
     ("command_injection_child_process", False, "identifier-arg", "exec(cmd);"),
+    # Member receivers match at the QUERY level as plain identifiers; the
+    # producer's import-binding step (observed-producer-v4) is what proves
+    # or drops them: `cp` admits iff bound to a child_process import (the
+    # former aliased-namespace recall gap, now provable), while a regex
+    # receiver like `pattern` can never bind and is dropped there. The
+    # binding pins live in test_analyze_observed_producer.py.
     (
         "command_injection_child_process",
-        False,
-        "aliased-namespace-recall-gap",
+        True,
+        "aliased-namespace-member",
         'cp.exec("ls " + x);',
     ),
     (
         "command_injection_child_process",
-        False,
-        "regex-exec-member",
+        True,
+        "regex-exec-member-query-level",
         "pattern.exec(text + suffix);",
     ),
     (
@@ -199,18 +205,6 @@ _CASES: tuple[tuple[str, bool, str, str], ...] = (
         "pair-string-key",
         'const opts = { "rejectUnauthorized": false };',
     ),
-    (
-        "tls_verify_disabled",
-        True,
-        "env-dot-assignment",
-        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
-    ),
-    (
-        "tls_verify_disabled",
-        True,
-        "env-bracket-assignment",
-        'process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";',
-    ),
     # --- tls_verify_disabled: precision negatives ---
     (
         "tls_verify_disabled",
@@ -225,13 +219,41 @@ _CASES: tuple[tuple[str, bool, str, str], ...] = (
         "https.request({ rejectUnauthorized: flag });",
     ),
     ("tls_verify_disabled", False, "other-key-false", "const o = { secure: false };"),
+    # --- tls_env_verify_disabled: positives, one per admitted form (the
+    # process-wide kill switch split into its own self-proving query — the
+    # receiver is constrained to `process.env` in the pattern itself) ---
     (
-        "tls_verify_disabled",
+        "tls_env_verify_disabled",
+        True,
+        "env-dot-assignment",
+        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
+    ),
+    (
+        "tls_env_verify_disabled",
+        True,
+        "env-bracket-assignment",
+        'process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";',
+    ),
+    # --- tls_env_verify_disabled: precision negatives ---
+    (
+        "tls_env_verify_disabled",
         False,
         "env-assigned-1",
         'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "1";',
     ),
-    ("tls_verify_disabled", False, "other-env-var", 'process.env.NODE_ENV = "0";'),
+    ("tls_env_verify_disabled", False, "other-env-var", 'process.env.NODE_ENV = "0";'),
+    (
+        "tls_env_verify_disabled",
+        False,
+        "mock-env-bracket-receiver",
+        'mockEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";',
+    ),
+    (
+        "tls_env_verify_disabled",
+        False,
+        "settings-dot-receiver",
+        'settings.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
+    ),
 )
 
 

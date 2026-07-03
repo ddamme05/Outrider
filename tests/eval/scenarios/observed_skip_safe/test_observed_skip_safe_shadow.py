@@ -126,9 +126,13 @@ async def _count_events(
 def _observed_content_hashes(head: str) -> set[str]:
     """The content_hashes the deterministic OBSERVED producer emits for the fixture
     head — the set a skip must not lose anything outside of."""
-    scopes = parse_python(head.encode(), _FILE_PATH, MagicMock()).scope_units
+    parsed = parse_python(head.encode(), _FILE_PATH, MagicMock())
+    scopes = parsed.scope_units
     matches = run_observed_matches(
-        file_path=_FILE_PATH, head_content=head, included_scope_units=scopes
+        file_path=_FILE_PATH,
+        head_content=head,
+        included_scope_units=scopes,
+        import_refs=parsed.imports,
     )
     findings = produce_observed_findings(
         matches,

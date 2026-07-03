@@ -24,16 +24,24 @@ from outrider.queries.observed import QueryClass
 from outrider.schemas import ReviewDimension
 
 
+def _parsed(source: str):
+    """Real ParseResult for a python fixture (scopes + imports from ONE parse
+    — the same pairing the analyze node threads into the producer)."""
+    return parse_python(source.encode(), "src/x.py", MagicMock())
+
+
 def _scopes(source: str):
     """Real ScopeUnits for `source` (the producer's scope-gate input)."""
-    return parse_python(source.encode(), "src/x.py", MagicMock()).scope_units
+    return _parsed(source).scope_units
 
 
 def _produce(source: str, scopes=None, file_path: str = "src/x.py"):
+    parsed = _parsed(source)
     matches = run_observed_matches(
         file_path=file_path,
         head_content=source,
-        included_scope_units=scopes if scopes is not None else _scopes(source),
+        included_scope_units=scopes if scopes is not None else parsed.scope_units,
+        import_refs=parsed.imports,
     )
     return produce_observed_findings(
         matches,
@@ -136,8 +144,12 @@ def test_run_observed_matches_surfaces_query_class_and_record_fields() -> None:
     finding-construction fields — one definition of the OBSERVED query facts for
     the file. Every V1 query is `signal_only` (default-deny)."""
     source = "import subprocess\n\n\ndef run_it(cmd):\n    subprocess.run(cmd, shell=True)\n"
+    parsed = _parsed(source)
     matches = run_observed_matches(
-        file_path="src/x.py", head_content=source, included_scope_units=_scopes(source)
+        file_path="src/x.py",
+        head_content=source,
+        included_scope_units=parsed.scope_units,
+        import_refs=parsed.imports,
     )
     assert len(matches) == 1
     m = matches[0]
@@ -169,6 +181,7 @@ def test_long_match_evidence_truncated_not_crash() -> None:
 # ---------------------------------------------------------------------------
 
 _JS_WEAK_HASH_SOURCE = (
+    'const crypto = require("node:crypto");\n'
     "function getToken(secret) {\n"
     '  const h = crypto.createHash("md5");\n'
     '  return h.update(secret).digest("hex");\n'
@@ -176,18 +189,26 @@ _JS_WEAK_HASH_SOURCE = (
 )
 
 
-def _scopes_for(source: str, file_path: str):
-    """Real ScopeUnits via the language-generic parse dispatch."""
+def _parsed_at(source: str, file_path: str):
+    """Real ParseResult via the language-generic parse dispatch (scopes +
+    imports from one parse — what the analyze node threads in)."""
     from outrider.ast_facts.registry import parse_source
 
-    return parse_source(source.encode(), file_path, MagicMock()).scope_units
+    return parse_source(source.encode(), file_path, MagicMock())
+
+
+def _scopes_for(source: str, file_path: str):
+    """Real ScopeUnits via the language-generic parse dispatch."""
+    return _parsed_at(source, file_path).scope_units
 
 
 def _produce_at(source: str, file_path: str):
+    parsed = _parsed_at(source, file_path)
     matches = run_observed_matches(
         file_path=file_path,
         head_content=source,
-        included_scope_units=_scopes_for(source, file_path),
+        included_scope_units=parsed.scope_units,
+        import_refs=parsed.imports,
     )
     return produce_observed_findings(
         matches,
@@ -209,7 +230,7 @@ def test_js_weak_hash_produces_observed_finding() -> None:
     assert f.dimension == ReviewDimension.SECURITY
     assert 'crypto.createHash("md5")' in f.evidence
     assert f.title and f.description  # registry static text, no model output
-    assert f.line_start == f.line_end == 2
+    assert f.line_start == f.line_end == 3
 
 
 def test_ts_file_selects_typescript_grammar_same_catalog() -> None:
@@ -222,10 +243,12 @@ def test_ts_file_selects_typescript_grammar_same_catalog() -> None:
 def test_js_file_never_runs_python_queries() -> None:
     """Language partition: a .js file's matches all carry javascript ids —
     python queries never execute over JS bytes (and vice versa)."""
+    parsed = _parsed_at(_JS_WEAK_HASH_SOURCE, "src/token.js")
     matches = run_observed_matches(
         file_path="src/token.js",
         head_content=_JS_WEAK_HASH_SOURCE,
-        included_scope_units=_scopes_for(_JS_WEAK_HASH_SOURCE, "src/token.js"),
+        included_scope_units=parsed.scope_units,
+        import_refs=parsed.imports,
     )
     assert matches, "fixture must fire the catalog"
     assert all(m.query_match_id.startswith("javascript.") for m in matches)
@@ -271,5 +294,164 @@ def test_unregistered_extension_is_inert() -> None:
         file_path="src/main.go",
         head_content="eval(payload)\n",
         included_scope_units=(),
+        # No registered adapter for .go — no imports are extractable either.
+        import_refs=(),
     )
     assert matches == ()
+
+
+# ---------------------------------------------------------------------------
+# Import-binding admission (observed-producer-v4): a name-anchored match is
+# admitted only when its anchor identifier provably binds to the dangerous
+# API via the file's imports. Negative fixtures are the Greptile PR-round
+# repros (2026-07-03), pinned per-variant.
+# ---------------------------------------------------------------------------
+
+
+def test_unbound_createhash_is_not_admitted() -> None:
+    """A `createHash` imported from a non-crypto module, defined locally, or
+    called on an arbitrary object produces NO OBSERVED finding — the name
+    alone is not proof of a crypto construction (Greptile P1 repro)."""
+    source = (
+        'import { createHash } from "./cache";\n'
+        "const cacheApi = { createHash(name) { return name; } };\n"
+        "export function demo() {\n"
+        '  const a = createHash("md5");\n'
+        '  const b = cacheApi.createHash("sha1");\n'
+        "  return [a, b];\n"
+        "}\n"
+    )
+    assert _produce_at(source, "src/example.js") == ()
+
+
+def test_esm_destructured_createhash_is_admitted() -> None:
+    """The bare form bound by a destructured ESM import from node:crypto —
+    the dominant modern idiom the binding step must NOT lose."""
+    source = (
+        'import { createHash } from "node:crypto";\n'
+        "export function token(secret) {\n"
+        '  return createHash("md5").update(secret).digest("hex");\n'
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/token.mjs")
+    assert f.query_match_id == "javascript.weak_crypto_hash"
+    assert f.line_start == 3
+
+
+def test_cjs_whole_module_receiver_is_admitted() -> None:
+    """The member form bound by a CJS whole-module require (the
+    _JS_WEAK_HASH_SOURCE fixture) — covered by the language tests above;
+    here the bare-require ALIAS receiver proves too."""
+    source = (
+        'const c = require("crypto");\n'
+        "function digest(s) {\n"
+        '  return c.createHash("sha1").update(s).digest("hex");\n'
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/digest.js")
+    assert f.query_match_id == "javascript.weak_crypto_hash"
+
+
+def test_unbound_exec_helper_is_not_admitted() -> None:
+    """`import { exec } from './jobs'` — an unrelated exec helper must not
+    produce a CRITICAL OBSERVED command-injection finding (the sharpest
+    Greptile repro)."""
+    source = (
+        'import { exec } from "./jobs";\n'
+        "export function runJob(id) {\n"
+        "  return exec('job-' + id);\n"
+        "}\n"
+    )
+    assert _produce_at(source, "src/jobs_runner.js") == ()
+
+
+def test_child_process_destructured_exec_is_admitted() -> None:
+    source = (
+        'const { exec } = require("child_process");\n'
+        "function run(cmd) {\n"
+        "  exec('ls ' + cmd);\n"
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/run.js")
+    assert f.query_match_id == "javascript.command_injection_child_process"
+
+
+def test_aliased_namespace_exec_is_now_admitted() -> None:
+    """`const cp = require('child_process'); cp.exec(...)` — previously a
+    documented recall gap (the member arm demanded the literal
+    `child_process` receiver name); the import join proves the alias."""
+    source = (
+        'const cp = require("node:child_process");\n'
+        "function run(cmd) {\n"
+        "  cp.execSync(`run ${cmd}`);\n"
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/run.js")
+    assert f.query_match_id == "javascript.command_injection_child_process"
+
+
+def test_query_concat_without_db_driver_is_not_admitted() -> None:
+    """`.query(concat)` on a non-database API — no DB driver imported in the
+    file — is not SQL injection (Greptile P1 repro)."""
+    source = (
+        'import { search } from "./search";\n'
+        "export function lookup(searchClient, tag) {\n"
+        "  return searchClient.query('tag:' + tag);\n"
+        "}\n"
+    )
+    assert _produce_at(source, "src/lookup.js") == ()
+
+
+def test_query_concat_with_db_driver_present_is_admitted() -> None:
+    source = (
+        'const { Pool } = require("pg");\n'
+        "function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/find.js")
+    assert f.query_match_id == "javascript.sql_injection_string_concat"
+
+
+def test_reject_unauthorized_without_tls_consumer_is_not_admitted() -> None:
+    """A standalone options literal with no TLS-capable module in the file is
+    not a TLS-disabled finding (Greptile P1 repro)."""
+    source = "function policy() {\n  return { rejectUnauthorized: false };\n}\n"
+    assert _produce_at(source, "src/benign_config.js") == ()
+
+
+def test_reject_unauthorized_with_https_import_is_admitted() -> None:
+    source = (
+        'const https = require("https");\n'
+        "function agent() {\n"
+        "  return new https.Agent({ rejectUnauthorized: false });\n"
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/agent.js")
+    assert f.query_match_id == "javascript.tls_verify_disabled"
+
+
+def test_process_env_kill_switch_needs_no_import() -> None:
+    """The process-wide kill switch is self-proving (`process.env` receiver
+    constrained in the query) — it fires with ZERO imports, in both the dot
+    and bracket forms, under its own query id."""
+    for line in (
+        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
+        'process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";',
+    ):
+        source = f"function disable() {{\n  {line}\n}}\n"
+        (f,) = _produce_at(source, "src/danger.js")
+        assert f.query_match_id == "javascript.tls_env_verify_disabled"
+
+
+def test_non_process_env_receiver_is_not_matched() -> None:
+    """`mockEnv[...] = "0"` / `settings.NODE_TLS_... = "0"` mutate a local
+    object, not the process TLS switch (Greptile P1 repro) — the receiver
+    constraint lives in the query itself."""
+    source = (
+        "function setup(mockEnv, settings) {\n"
+        '  mockEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";\n'
+        '  settings.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n"
+    )
+    assert _produce_at(source, "src/mock_env.js") == ()

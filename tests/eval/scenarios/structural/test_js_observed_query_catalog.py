@@ -71,10 +71,16 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "javascript.tls_verify_disabled",
-        "https.request({ rejectUnauthorized: false });\n"
-        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n',
+        "https.request({ rejectUnauthorized: false });\n",
         "https.request({ rejectUnauthorized: true });\n"
-        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "1";\n',
+        "https.request({ rejectUnauthorized: flag });\n",
+    ),
+    (
+        "javascript.tls_env_verify_disabled",
+        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        'process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";\n',
+        'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "1";\n'
+        'mockEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";\n',
     ),
 )
 
@@ -108,15 +114,19 @@ def test_js_broken_cipher_produces_deterministic_observed_finding() -> None:
     OBSERVED ReviewFinding through the deterministic producer — LLM-free,
     policy-set severity, replay-resolvable query id."""
     source = (
+        'const crypto = require("node:crypto");\n'
         "function encryptLegacy(key, iv, plaintext) {\n"
         '  const cipher = crypto.createCipheriv("des-ede3-cbc", key, iv);\n'
         '  return cipher.update(plaintext, "utf8", "hex") + cipher.final("hex");\n'
         "}\n"
     )
     file_path = "src/legacy/crypto.js"
-    scope_units = parse_source(source.encode(), file_path, MagicMock()).scope_units
+    parsed = parse_source(source.encode(), file_path, MagicMock())
     matches = run_observed_matches(
-        file_path=file_path, head_content=source, included_scope_units=scope_units
+        file_path=file_path,
+        head_content=source,
+        included_scope_units=parsed.scope_units,
+        import_refs=parsed.imports,
     )
     (finding,) = produce_observed_findings(
         matches,
@@ -130,6 +140,6 @@ def test_js_broken_cipher_produces_deterministic_observed_finding() -> None:
     assert finding.finding_type == FindingType.WEAK_CRYPTO
     assert finding.severity == lookup_severity(FindingType.WEAK_CRYPTO)
     assert 'createCipheriv("des-ede3-cbc"' in finding.evidence
-    assert finding.line_start == finding.line_end == 2
+    assert finding.line_start == finding.line_end == 3
     # Replay's registry-membership check resolves the id (proof boundary).
     assert registry.get_query_source(finding.query_match_id).strip()
