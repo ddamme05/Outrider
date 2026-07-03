@@ -70,7 +70,7 @@ def test_key_is_deterministic_64_hex() -> None:
         ("active_policy_version", "policy-v2"),
         # "...-v6" is only a distinct-from-live probe (live ANALYZE_PARSER_VERSION
         # is v5) — the key must differ when ANY component changes; not a real version.
-        ("analyze_parser_version", "analyze-parser-v6"),
+        ("analyze_parser_version", "analyze-parser-v7"),
         ("response_format_digest", "c" * 64),
         ("parameterized_call_scan_digest", "e" * 64),
         ("observed_producer_version", "observed-producer-v2"),
@@ -256,8 +256,11 @@ def test_analyze_parser_version_pinned() -> None:
     same-span JUDGED subsumer — again changing what a cache row may
     serve. v5: from-import candidate correction rewrites a hallucinated
     module prefix on a trace candidate to the analyzed file's actual
-    importing module — changing the trace_candidates a cache row stores."""
-    assert ANALYZE_PARSER_VERSION == "analyze-parser-v5"
+    importing module — changing the trace_candidates a cache row stores.
+    v6: multi-language dispatch — `collect_trace_candidates=False`
+    suppresses collection for files whose language has no import
+    resolver, changing what lands in `trace_candidates` for them."""
+    assert ANALYZE_PARSER_VERSION == "analyze-parser-v6"
 
 
 def test_analyze_cache_key_version_pinned() -> None:

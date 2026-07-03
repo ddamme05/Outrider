@@ -89,9 +89,15 @@ if TYPE_CHECKING:
 # in cache rows. The map itself is a cache-key input
 # (`from_import_map_digest`) because corrected siblings depend on imports
 # the rendered prompt doesn't carry.
+# v6: multi-language dispatch — `collect_trace_candidates=False`
+# suppresses candidate collection for files whose language has no import
+# resolver (JS/TS until the resolver spec), changing what lands in
+# `trace_candidates` for those files. Python semantics are unchanged,
+# but the bump rule is ANY trace-candidate semantics change — the rule
+# stays unnarrowed rather than exploiting "JS/TS had no prior rows".
 # Code-pinned adjacent to what it versions, never injectable (the
 # TRIVIAL_FILTER_VERSION precedent).
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v5"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v6"
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend
@@ -249,6 +255,7 @@ def parse_analyze_response(
     finish_reason: str = "unknown",
     parameterized_call_scan: ParameterizedCallScan | None = None,
     import_refs: tuple[ImportRef, ...] = (),
+    collect_trace_candidates: bool = True,
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -387,10 +394,14 @@ def parse_analyze_response(
     n_trace_candidates_dropped_malformed = 0
     n_trace_candidates_module_corrected = 0
     # Built once per response (pass 0 only — candidate collection is
-    # pass-0-gated below): the analyzed file's from-import name→module
+    # pass-0-gated below; `collect_trace_candidates=False` suppresses it
+    # for files whose language has no import resolver, per the dispatch
+    # spec: unresolvable candidates would burn a trace ranking call and
+    # probe to no-ops): the analyzed file's from-import name→module
     # map, the deterministic ground truth candidate admission emits
     # corrected siblings against.
-    from_import_modules = _build_from_import_map(import_refs) if pass_index == 0 else {}
+    _collecting = pass_index == 0 and collect_trace_candidates
+    from_import_modules = _build_from_import_map(import_refs) if _collecting else {}
     for raw_proposal in raw.findings:
         n_proposals_seen += 1
 
@@ -428,7 +439,7 @@ def parse_analyze_response(
         # `n_trace_candidates_emitted` for work the graph cannot
         # execute. Gate at the parser boundary instead.
         proposal_trace_candidates: list[TraceCandidate] = []
-        if pass_index == 0:
+        if _collecting:
             proposal_trace_candidates, n_dropped, n_corrected = _collect_trace_candidates_for(
                 raw_proposal,
                 proposal_hash=proposal_hash,

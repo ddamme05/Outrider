@@ -157,7 +157,8 @@ def state_from_eval_fixture(
             content_base=f.content_base,
             content_head=f.content_head,
             # Left None to match intake EXACTLY (intake.py never sets `language`;
-            # analyze infers Python from the path via `_is_python_file`, and no
+            # analyze infers the language from the path (registry gate via
+            # `_language_supported`; Python-only stages via `_is_python_file`), and no
             # production code reads this field). The harness builds the state intake
             # would build, so the real run is faithful.
             language=None,
