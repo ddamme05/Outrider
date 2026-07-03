@@ -2,37 +2,57 @@
 # specs/2026-04-30-ast-facts-module.md.
 """Per-language adapter registry keyed by file extension.
 
-V1: single entry `.py` → `PythonAdapter`. The seam V1.5 will extend
-when JS/TS support arrives.
+Entries: `.py` → `PythonAdapter`; `.js`/`.jsx`/`.mjs`/`.cjs` →
+`JavaScriptAdapter`; `.ts`/`.mts`/`.cts` → typescript-dialect
+`TypeScriptAdapter`; `.tsx` → tsx-dialect `TypeScriptAdapter` (per
+specs/2026-07-02-js-ts-tree-sitter-adapters.md — the registry is the
+single grammar-dispatch point; `typescript` and `tsx` are distinct
+grammars, so each extension group registers its own factory).
 
 `get_adapter_factory(extension)` returns an adapter factory — typed as
 `Callable[[ImportPathResolver], LanguageAdapter]` — not an adapter
 instance. The caller constructs the adapter with their own
-`ImportPathResolver` per `nodes-receive-deps-via-closure`. For V1 the
-factory is the `PythonAdapter` class itself (a class is callable);
-V1.5's JS/TS adapter classes register the same way as long as they
-accept an `ImportPathResolver` in the constructor.
+`ImportPathResolver` per `nodes-receive-deps-via-closure`. A factory is
+any callable accepting an `ImportPathResolver`: the `PythonAdapter` /
+`JavaScriptAdapter` classes themselves, or the dialect-binding
+functions for TypeScript.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from outrider.ast_facts.javascript_adapter import JavaScriptAdapter
 from outrider.ast_facts.python_adapter import PythonAdapter
+from outrider.ast_facts.typescript_adapter import TypeScriptAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from outrider.ast_facts.base import ImportPathResolver, LanguageAdapter
 
-# Maps file extension (with leading dot) → adapter factory.
-# An "adapter factory" is any callable taking an `ImportPathResolver`
-# and returning a `LanguageAdapter`-shaped instance — typed against the
-# Protocol (not the concrete `PythonAdapter`) so V1.5 can register
-# `.js` / `.ts` adapters here without rewriting this type or the
-# `get_adapter_factory` signature.
+
+def _typescript_factory(resolver: ImportPathResolver) -> LanguageAdapter:
+    return TypeScriptAdapter(resolver=resolver, dialect="typescript")
+
+
+def _tsx_factory(resolver: ImportPathResolver) -> LanguageAdapter:
+    return TypeScriptAdapter(resolver=resolver, dialect="tsx")
+
+
+# Maps file extension (with leading dot) → adapter factory. Typed
+# against the Protocol (not concrete classes) so new languages register
+# without rewriting this type or the `get_adapter_factory` signature.
 _LANGUAGE_ADAPTERS: Final[dict[str, Callable[[ImportPathResolver], LanguageAdapter]]] = {
     ".py": PythonAdapter,
+    ".js": JavaScriptAdapter,
+    ".jsx": JavaScriptAdapter,
+    ".mjs": JavaScriptAdapter,
+    ".cjs": JavaScriptAdapter,
+    ".ts": _typescript_factory,
+    ".mts": _typescript_factory,
+    ".cts": _typescript_factory,
+    ".tsx": _tsx_factory,
 }
 
 

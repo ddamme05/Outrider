@@ -585,9 +585,12 @@ def scope_b():
 
 
 def test_exclusion_rules_exact_shape() -> None:
-    """Pin the full 11-rule tuple in declared precedence order."""
+    """Pin the full 17-rule tuple in declared precedence order (the
+    JS/TS suffixes joined per specs/2026-07-02-js-ts-tree-sitter-adapters.md)."""
     from outrider.ast_facts.models import ExclusionRule
 
+    _gen = SkipReason.GENERATED_FILENAME
+    _min = SkipReason.MINIFIED
     expected: tuple[ExclusionRule, ...] = (
         ExclusionRule(reason=SkipReason.OVERSIZED, kind="size", pattern=MAX_PARSE_BYTES),
         ExclusionRule(reason=SkipReason.VENDORED, kind="path_prefix", pattern="vendor/"),
@@ -595,26 +598,16 @@ def test_exclusion_rules_exact_shape() -> None:
         ExclusionRule(reason=SkipReason.VENDORED, kind="path_prefix", pattern="third_party/"),
         ExclusionRule(reason=SkipReason.VENDORED, kind="path_prefix", pattern=".venv/"),
         ExclusionRule(reason=SkipReason.VENDORED, kind="path_prefix", pattern="venv/"),
-        ExclusionRule(
-            reason=SkipReason.GENERATED_FILENAME,
-            kind="filename_suffix",
-            pattern="_pb2.py",
-        ),
-        ExclusionRule(
-            reason=SkipReason.GENERATED_FILENAME,
-            kind="filename_suffix",
-            pattern="_pb2_grpc.py",
-        ),
-        ExclusionRule(
-            reason=SkipReason.GENERATED_FILENAME,
-            kind="filename_suffix",
-            pattern=".pyi",
-        ),
-        ExclusionRule(
-            reason=SkipReason.MINIFIED,
-            kind="filename_suffix",
-            pattern=".min.py",
-        ),
+        ExclusionRule(reason=_gen, kind="filename_suffix", pattern="_pb2.py"),
+        ExclusionRule(reason=_gen, kind="filename_suffix", pattern="_pb2_grpc.py"),
+        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".pyi"),
+        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".d.ts"),
+        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".d.mts"),
+        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".d.cts"),
+        ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.py"),
+        ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.js"),
+        ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.mjs"),
+        ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.cjs"),
         ExclusionRule(
             reason=SkipReason.GENERATED_BANNER,
             kind="banner",
@@ -1000,7 +993,7 @@ def test_get_adapter_factory_unregistered_returns_none() -> None:
     from outrider.ast_facts.registry import get_adapter_factory
 
     assert get_adapter_factory(".rs") is None
-    assert get_adapter_factory(".js") is None  # V1.5 surface, not yet registered
+    assert get_adapter_factory(".go") is None  # not yet registered (V2 surface)
 
 
 def test_get_adapter_factory_empty_extension_returns_none() -> None:

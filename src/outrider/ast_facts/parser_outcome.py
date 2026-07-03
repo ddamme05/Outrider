@@ -9,13 +9,14 @@ Module-level exports:
     BEFORE UTF-8 decode and any other per-file work.
 
   * `EXCLUSION_RULES: tuple[ExclusionRule, ...]` — the ordered
-    11-rule tuple. `should_skip` iterates in declared order and
+    17-rule tuple. `should_skip` iterates in declared order and
     returns the first match's `reason`; the order IS the precedence
     order per Internal contracts.
 
   * `should_skip(file_path, source) -> SkipReason | None` — the
-    classification function called by `parse_python` before any
-    parser/decode work.
+    classification function called by every `parse_*` entry point
+    (`parse_python`, `parse_javascript`, `parse_typescript`) before
+    any parser/decode work.
 
 Imports `SkipReason` and `ExclusionRule` from `models.py` (the single
 source of truth for typed shapes per project convention).
@@ -52,7 +53,15 @@ EXCLUSION_RULES: Final[tuple[ExclusionRule, ...]] = (
     ExclusionRule(reason=_GEN_FN, kind=_SFX, pattern="_pb2.py"),
     ExclusionRule(reason=_GEN_FN, kind=_SFX, pattern="_pb2_grpc.py"),
     ExclusionRule(reason=_GEN_FN, kind=_SFX, pattern=".pyi"),
+    # TypeScript declaration files — the `.pyi` analog (all three
+    # emit variants), per specs/2026-07-02-js-ts-tree-sitter-adapters.md.
+    ExclusionRule(reason=_GEN_FN, kind=_SFX, pattern=".d.ts"),
+    ExclusionRule(reason=_GEN_FN, kind=_SFX, pattern=".d.mts"),
+    ExclusionRule(reason=_GEN_FN, kind=_SFX, pattern=".d.cts"),
     ExclusionRule(reason=SkipReason.MINIFIED, kind=_SFX, pattern=".min.py"),
+    ExclusionRule(reason=SkipReason.MINIFIED, kind=_SFX, pattern=".min.js"),
+    ExclusionRule(reason=SkipReason.MINIFIED, kind=_SFX, pattern=".min.mjs"),
+    ExclusionRule(reason=SkipReason.MINIFIED, kind=_SFX, pattern=".min.cjs"),
     ExclusionRule(reason=SkipReason.GENERATED_BANNER, kind="banner", pattern=b"DO NOT EDIT"),
 )
 

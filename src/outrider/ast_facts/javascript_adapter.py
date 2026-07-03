@@ -1,0 +1,809 @@
+# JavaScript adapter implementing LanguageAdapter Protocol per
+# specs/2026-07-02-js-ts-tree-sitter-adapters.md.
+"""JavaScript/JSX adapter for tree-sitter-javascript 0.25.0.
+
+Ports `PythonAdapter` method-for-method against the JS grammar (JSX is
+native to tree-sitter-javascript, so `.jsx` and JSX-in-`.js` parse
+cleanly; Flow-typed `.js` degrades to per-scope `has_error`). Structural
+extraction is a tree walk — no `.scm` queries are involved, mirroring
+the Python adapter.
+
+Scope-kind fold per the spec (canonical §5.4 enums unchanged):
+  * `function_declaration` / `generator_function_declaration`, and
+    `arrow_function` / `function_expression` / `generator_function`
+    bound to a `variable_declarator` identifier → ``kind="function"``
+    (named by the binding).
+  * `method_definition` (class body OR object literal), and class-field
+    arrows (`field_definition` with a function value) → ``kind="method"``.
+  * `class_declaration` and `class` expressions bound to a declarator
+    identifier → ``kind="class"``.
+  * Anonymous arrows / IIFEs / callbacks and computed-name members are
+    not extracted (no stable `qualified_name` — mirrors Python lambdas).
+  * Object-literal values nest into `qualified_name` (``obj.method``),
+    so same-named members of sibling literals keep distinct unit_ids.
+
+Import-kind fold per the spec: relative specifiers (`./`, `../`) →
+``"relative"`` regardless of form; default/named imports, destructured
+`require`, and `export … from` re-exports → ``"from"``; namespace
+(`import * as ns`), side-effect, bare `require`, and TS
+`import x = require(...)` → ``"direct"``; `export * from` → ``"star"``.
+Dynamic `import()` is an expression, not a static import — not
+extracted. Every JS/TS `ImportRef` carries ``is_simple_direct=False``:
+trace resolution for relative specifiers is the analyze-dispatch
+follow-up's scope, so `resolve_simple_direct_import` is
+Protocol-conformant but always returns ``unresolved``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, ClassVar, Final
+
+import tree_sitter_javascript
+from tree_sitter import Language, Node, Parser, Tree
+
+from outrider.ast_facts.models import (
+    AssignmentSite,
+    CallSite,
+    ComputedParserOutcome,
+    ImportRef,
+    ImportResolution,
+    ParseResult,
+    ScopeUnit,
+    SkipReason,
+    compute_unit_id,
+)
+from outrider.ast_facts.parser_outcome import should_skip
+from outrider.ast_facts.scope_search import (
+    error_lines_from_tree,
+    find_node_by_span,
+    innermost_scope_containing,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
+    from outrider.ast_facts.base import ImportPathResolver
+
+# ---------------------------------------------------------------------------
+# Module-level singletons
+# ---------------------------------------------------------------------------
+
+_JS_LANGUAGE: Final = Language(tree_sitter_javascript.language())
+_JS_PARSER: Final = Parser(_JS_LANGUAGE)
+
+_RELATIVE_SPECIFIER_PREFIXES: Final = ("./", "../")
+
+
+# ---------------------------------------------------------------------------
+# JavaScriptAdapter
+# ---------------------------------------------------------------------------
+
+
+class JavaScriptAdapter:
+    """Implements `LanguageAdapter` for JavaScript/JSX via tree-sitter-javascript.
+
+    The node-type tables are ClassVars so `TypeScriptAdapter` extends them
+    (TS adds `abstract_class_declaration`, `public_field_definition`)
+    without duplicating the walk.
+    """
+
+    _FUNCTION_DECL_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"function_declaration", "generator_function_declaration"}
+    )
+    _CLASS_DECL_TYPES: ClassVar[frozenset[str]] = frozenset({"class_declaration"})
+    _FIELD_DEF_TYPES: ClassVar[frozenset[str]] = frozenset({"field_definition"})
+    # Function-valued expressions that make a named binding a scope.
+    _FUNCTION_VALUE_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"arrow_function", "function_expression", "generator_function"}
+    )
+    _CLASS_VALUE_TYPES: ClassVar[frozenset[str]] = frozenset({"class"})
+    # Method/field name node types with a stable identifier (computed
+    # names and string/number keys are skipped — no stable qualified_name).
+    _MEMBER_NAME_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"property_identifier", "private_property_identifier"}
+    )
+    # Scope-defining node types for `compute_parser_outcome`'s
+    # ScopeUnit→node containment lookup. Every emitted ScopeUnit's span
+    # node type must be listed, or its has_error silently reads False.
+    _OUTCOME_TARGET_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "function_declaration",
+            "generator_function_declaration",
+            "class_declaration",
+            "method_definition",
+            "field_definition",
+            "pair",
+            "variable_declarator",
+        }
+    )
+
+    def __init__(self, resolver: ImportPathResolver) -> None:
+        self._resolver = resolver
+        self._parser: Parser = _JS_PARSER
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _parse(self, source: bytes) -> Tree:
+        return self._parser.parse(source)
+
+    @staticmethod
+    def _node_text(node: Node) -> str:
+        # Node.text returns bytes; decode UTF-8. Source has already
+        # passed UTF-8 validation per the parse pipeline.
+        return node.text.decode("utf-8") if node.text else ""
+
+    @staticmethod
+    def _string_text(string_node: Node | None) -> str:
+        """Unquoted specifier text of a `string` node (its
+        `string_fragment` children, concatenated; `''` has none)."""
+        if string_node is None:
+            return ""
+        return "".join(
+            JavaScriptAdapter._node_text(c)
+            for c in string_node.named_children
+            if c.type == "string_fragment"
+        )
+
+    @staticmethod
+    def _decorators_for(node: Node) -> tuple[tuple[str, ...], Node | None]:
+        """Decorator text for a scope node, `@` stripped (Python-adapter
+        convention), plus the earliest decorator node that lies OUTSIDE
+        the scope node's own span (for span widening).
+
+        Two attachment sites, verified against the grammars:
+          * decorator children INSIDE the node (TS non-exported decorated
+            class) — already inside the span, no widening;
+          * immediately preceding named siblings (TS method decorators in
+            a class_body; exported-class decorators hang on the
+            export_statement as siblings of the declaration).
+        """
+        inside = [c for c in node.named_children if c.type == "decorator"]
+        outside: list[Node] = []
+        sib = node.prev_named_sibling
+        while sib is not None and sib.type == "decorator":
+            outside.append(sib)
+            sib = sib.prev_named_sibling
+        all_decs = sorted(inside + outside, key=lambda n: n.start_byte)
+        texts: list[str] = []
+        for dec in all_decs:
+            text = JavaScriptAdapter._node_text(dec)
+            texts.append(text[1:] if text.startswith("@") else text)
+        first_outside = min(outside, key=lambda n: n.start_byte) if outside else None
+        return tuple(texts), first_outside
+
+    @staticmethod
+    def _walk(node: Node) -> Iterator[Node]:
+        """Pre-order traversal of `node` and all descendants (unnamed
+        nodes included; callers filter by `node.type`). Iterative so
+        adversarially deep parse trees can't exhaust the recursion
+        limit — same rationale as `PythonAdapter._walk`.
+        """
+        stack: list[Node] = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            stack.extend(reversed(current.children))
+
+    # ------------------------------------------------------------------
+    # extract_scopes
+    # ------------------------------------------------------------------
+
+    def extract_scopes(self, source: bytes, file_path: str) -> tuple[ScopeUnit, ...]:
+        return self._extract_scopes_from_tree(self._parse(source), file_path)
+
+    def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
+        scopes: list[ScopeUnit] = []
+        # Frame: (node, qual_path, in_class, parent_unit_id) — the same
+        # state the Python walker carries. `in_class` is tracked for
+        # shape parity though JS methods are recognized by node type
+        # (method_definition), not by position.
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [
+            (tree.root_node, (), False, None)
+        ]
+        while stack:
+            node, qual_path, in_class, parent_unit_id = stack.pop()
+            node_type = node.type
+
+            if node_type in self._FUNCTION_DECL_TYPES:
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = self._node_text(name_node)
+                unit_id = self._emit(
+                    scopes,
+                    span_node=node,
+                    kind="function",
+                    name=name,
+                    qual_path=qual_path,
+                    file_path=file_path,
+                    parent_unit_id=parent_unit_id,
+                )
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, (*qual_path, name), False, unit_id))
+                continue
+
+            if node_type in self._CLASS_DECL_TYPES:
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = self._node_text(name_node)
+                unit_id = self._emit(
+                    scopes,
+                    span_node=node,
+                    kind="class",
+                    name=name,
+                    qual_path=qual_path,
+                    file_path=file_path,
+                    parent_unit_id=parent_unit_id,
+                )
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, (*qual_path, name), True, unit_id))
+                continue
+
+            if node_type == "method_definition":
+                name_node = node.child_by_field_name("name")
+                if name_node is None or name_node.type not in self._MEMBER_NAME_TYPES:
+                    continue
+                name = self._node_text(name_node)
+                unit_id = self._emit(
+                    scopes,
+                    span_node=node,
+                    kind="method",
+                    name=name,
+                    qual_path=qual_path,
+                    file_path=file_path,
+                    parent_unit_id=parent_unit_id,
+                )
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, (*qual_path, name), False, unit_id))
+                continue
+
+            if node_type in self._FIELD_DEF_TYPES:
+                # `field_definition` names via `property`; TS
+                # `public_field_definition` names via `name`.
+                prop = node.child_by_field_name("property") or node.child_by_field_name("name")
+                value = node.child_by_field_name("value")
+                if (
+                    prop is not None
+                    and prop.type in self._MEMBER_NAME_TYPES
+                    and value is not None
+                    and value.type in self._FUNCTION_VALUE_TYPES
+                ):
+                    name = self._node_text(prop)
+                    unit_id = self._emit(
+                        scopes,
+                        span_node=node,
+                        kind="method",
+                        name=name,
+                        qual_path=qual_path,
+                        file_path=file_path,
+                        parent_unit_id=parent_unit_id,
+                    )
+                    body = value.child_by_field_name("body")
+                    if body is not None:
+                        stack.append((body, (*qual_path, name), False, unit_id))
+                    continue
+                for child in reversed(node.children):
+                    stack.append((child, qual_path, in_class, parent_unit_id))
+                continue
+
+            if node_type == "pair":
+                key = node.child_by_field_name("key")
+                value = node.child_by_field_name("value")
+                if key is not None and key.type == "property_identifier" and value is not None:
+                    name = self._node_text(key)
+                    if value.type in self._FUNCTION_VALUE_TYPES:
+                        unit_id = self._emit(
+                            scopes,
+                            span_node=node,
+                            kind="method",
+                            name=name,
+                            qual_path=qual_path,
+                            file_path=file_path,
+                            parent_unit_id=parent_unit_id,
+                        )
+                        body = value.child_by_field_name("body")
+                        if body is not None:
+                            stack.append((body, (*qual_path, name), False, unit_id))
+                        continue
+                    if value.type == "object":
+                        # Nested literal: extend the qualified path so
+                        # members keep distinct unit_ids; no scope emitted
+                        # for the object itself.
+                        stack.append((value, (*qual_path, name), False, parent_unit_id))
+                        continue
+                for child in reversed(node.children):
+                    stack.append((child, qual_path, in_class, parent_unit_id))
+                continue
+
+            if node_type == "variable_declarator":
+                name_node = node.child_by_field_name("name")
+                value = node.child_by_field_name("value")
+                if name_node is not None and name_node.type == "identifier" and value is not None:
+                    name = self._node_text(name_node)
+                    if value.type in self._FUNCTION_VALUE_TYPES:
+                        unit_id = self._emit(
+                            scopes,
+                            span_node=node,
+                            kind="function",
+                            name=name,
+                            qual_path=qual_path,
+                            file_path=file_path,
+                            parent_unit_id=parent_unit_id,
+                        )
+                        body = value.child_by_field_name("body")
+                        if body is not None:
+                            stack.append((body, (*qual_path, name), False, unit_id))
+                        continue
+                    if value.type in self._CLASS_VALUE_TYPES:
+                        unit_id = self._emit(
+                            scopes,
+                            span_node=node,
+                            kind="class",
+                            name=name,
+                            qual_path=qual_path,
+                            file_path=file_path,
+                            parent_unit_id=parent_unit_id,
+                        )
+                        body = value.child_by_field_name("body")
+                        if body is not None:
+                            stack.append((body, (*qual_path, name), True, unit_id))
+                        continue
+                    if value.type == "object":
+                        stack.append((value, (*qual_path, name), False, parent_unit_id))
+                        continue
+                for child in reversed(node.children):
+                    stack.append((child, qual_path, in_class, parent_unit_id))
+                continue
+
+            for child in reversed(node.children):
+                stack.append((child, qual_path, in_class, parent_unit_id))
+        return tuple(scopes)
+
+    def _emit(
+        self,
+        out: list[ScopeUnit],
+        *,
+        span_node: Node,
+        kind: str,
+        name: str,
+        qual_path: tuple[str, ...],
+        file_path: str,
+        parent_unit_id: str | None,
+    ) -> str:
+        """Construct + append a ScopeUnit; returns its unit_id.
+
+        Span = the span node, widened to include any decorator nodes
+        that precede it as siblings (TS method decorators live in the
+        class_body; exported-class decorators on the export_statement).
+        """
+        decorators, first_outside_dec = self._decorators_for(span_node)
+        byte_start, byte_end = span_node.start_byte, span_node.end_byte
+        line_start = span_node.start_point[0] + 1
+        line_end = span_node.end_point[0] + 1
+        if first_outside_dec is not None:
+            byte_start = min(byte_start, first_outside_dec.start_byte)
+            line_start = min(line_start, first_outside_dec.start_point[0] + 1)
+        qualified_name = ".".join((*qual_path, name))
+        unit_id = compute_unit_id(file_path, kind=kind, qualified_name=qualified_name)
+        out.append(
+            ScopeUnit(
+                unit_id=unit_id,
+                kind=kind,
+                name=name,
+                qualified_name=qualified_name,
+                file_path=file_path,
+                line_start=line_start,
+                line_end=line_end,
+                byte_start=byte_start,
+                byte_end=byte_end,
+                decorators=decorators,
+                parent_scope_id=parent_unit_id,
+            )
+        )
+        return unit_id
+
+    # ------------------------------------------------------------------
+    # extract_imports
+    # ------------------------------------------------------------------
+
+    def extract_imports(self, source: bytes, file_path: str) -> tuple[ImportRef, ...]:
+        return self._extract_imports_from_tree(self._parse(source), file_path)
+
+    def _extract_imports_from_tree(self, tree: Tree, file_path: str) -> tuple[ImportRef, ...]:
+        imports: list[ImportRef] = []
+        for node in self._walk(tree.root_node):
+            if node.type == "import_statement":
+                imports.append(self._build_import_statement(node, file_path))
+            elif node.type == "export_statement" and node.child_by_field_name("source"):
+                imports.append(self._build_reexport(node, file_path))
+            elif node.type == "variable_declarator":
+                ref = self._maybe_require(node, file_path)
+                if ref is not None:
+                    imports.append(ref)
+        return tuple(imports)
+
+    @classmethod
+    def _kind_for(cls, module: str, default_kind: str) -> str:
+        """Relative specifiers win over the syntactic form, mirroring
+        Python where `relative` is its own kind."""
+        if module.startswith(_RELATIVE_SPECIFIER_PREFIXES):
+            return "relative"
+        return default_kind
+
+    def _build_import_statement(self, node: Node, file_path: str) -> ImportRef:
+        line = node.start_point[0] + 1
+        # TS legacy `import x = require('m')`.
+        req = next((c for c in node.named_children if c.type == "import_require_clause"), None)
+        if req is not None:
+            ident = next((c for c in req.named_children if c.type == "identifier"), None)
+            module = self._string_text(req.child_by_field_name("source"))
+            names: tuple[str, ...] = (self._node_text(ident),) if ident is not None else ()
+            kind = self._kind_for(module, "direct")
+            return ImportRef(
+                file_path=file_path,
+                line=line,
+                import_kind=kind,
+                module=module,
+                names=names,
+                is_simple_direct=False,
+            )
+        module = self._string_text(node.child_by_field_name("source"))
+        clause = next((c for c in node.named_children if c.type == "import_clause"), None)
+        defaults: list[str] = []
+        namespaces: list[str] = []
+        named: list[str] = []
+        has_named_imports = False
+        if clause is not None:
+            for child in clause.named_children:
+                if child.type == "identifier":
+                    defaults.append(self._node_text(child))
+                elif child.type == "namespace_import":
+                    namespaces.extend(
+                        self._node_text(i) for i in child.named_children if i.type == "identifier"
+                    )
+                elif child.type == "named_imports":
+                    has_named_imports = True
+                    for spec in child.named_children:
+                        if spec.type != "import_specifier":
+                            continue
+                        alias = spec.child_by_field_name("alias")
+                        name_field = spec.child_by_field_name("name")
+                        target = alias if alias is not None else name_field
+                        if target is not None:
+                            named.append(self._node_text(target))
+        names = tuple(n for n in (*defaults, *namespaces, *named) if n)
+        # Namespace-only and side-effect imports bind at most one
+        # namespace name — the `import m as ns` analog → "direct";
+        # any default/named binding → "from".
+        default_kind = "from" if (defaults or has_named_imports) else "direct"
+        kind = self._kind_for(module, default_kind)
+        return ImportRef(
+            file_path=file_path,
+            line=line,
+            import_kind=kind,
+            module=module,
+            names=names,
+            is_simple_direct=False,
+        )
+
+    def _build_reexport(self, node: Node, file_path: str) -> ImportRef:
+        line = node.start_point[0] + 1
+        module = self._string_text(node.child_by_field_name("source"))
+        clause = next((c for c in node.named_children if c.type == "export_clause"), None)
+        ns_export = next((c for c in node.named_children if c.type == "namespace_export"), None)
+        if clause is not None:
+            names_list: list[str] = []
+            for spec in clause.named_children:
+                if spec.type != "export_specifier":
+                    continue
+                alias = spec.child_by_field_name("alias")
+                name_field = spec.child_by_field_name("name")
+                target = alias if alias is not None else name_field
+                if target is not None:
+                    names_list.append(self._node_text(target))
+            kind = self._kind_for(module, "from")
+            names = tuple(names_list)
+        elif ns_export is not None:
+            # `export * as ns from 'm'` — still the namespace-polluting
+            # wildcard on the source side → "star", with the bound name.
+            kind = self._kind_for(module, "star")
+            names = tuple(
+                self._node_text(i) for i in ns_export.named_children if i.type == "identifier"
+            )
+        else:
+            kind = self._kind_for(module, "star")
+            names = ()
+        return ImportRef(
+            file_path=file_path,
+            line=line,
+            import_kind=kind,
+            module=module,
+            names=names,
+            is_simple_direct=False,
+        )
+
+    def _maybe_require(self, node: Node, file_path: str) -> ImportRef | None:
+        """CommonJS `const x = require('m')` / `const {a, b: c} = require('m')`.
+
+        Only single-string-literal `require` calls bound directly to an
+        identifier or object pattern are extracted; anything else
+        (member chains, computed specifiers, array patterns) is not an
+        import statement shape we can attribute.
+        """
+        value = node.child_by_field_name("value")
+        if value is None or value.type != "call_expression":
+            return None
+        fn = value.child_by_field_name("function")
+        if fn is None or fn.type != "identifier" or self._node_text(fn) != "require":
+            return None
+        args = value.child_by_field_name("arguments")
+        if args is None:
+            return None
+        arg_nodes = args.named_children
+        if len(arg_nodes) != 1 or arg_nodes[0].type != "string":
+            return None
+        module = self._string_text(arg_nodes[0])
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return None
+        line = node.start_point[0] + 1
+        if name_node.type == "identifier":
+            kind = self._kind_for(module, "direct")
+            names: tuple[str, ...] = (self._node_text(name_node),)
+        elif name_node.type == "object_pattern":
+            kind = self._kind_for(module, "from")
+            collected: list[str] = []
+            for child in name_node.named_children:
+                if child.type == "shorthand_property_identifier_pattern":
+                    collected.append(self._node_text(child))
+                elif child.type == "pair_pattern":
+                    bound = child.child_by_field_name("value")
+                    if bound is not None and bound.type == "identifier":
+                        collected.append(self._node_text(bound))
+            names = tuple(collected)
+        else:
+            return None
+        return ImportRef(
+            file_path=file_path,
+            line=line,
+            import_kind=kind,
+            module=module,
+            names=names,
+            is_simple_direct=False,
+        )
+
+    # ------------------------------------------------------------------
+    # extract_call_sites
+    # ------------------------------------------------------------------
+
+    def extract_call_sites(
+        self,
+        source: bytes,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[CallSite, ...]:
+        """Calls inside extracted ScopeUnits. Module-level calls are
+        skipped per the §5.4 non-goal (same as Python)."""
+        return self._extract_call_sites_from_tree(self._parse(source), file_path, scope_units)
+
+    def _extract_call_sites_from_tree(
+        self,
+        tree: Tree,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[CallSite, ...]:
+        sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
+        calls: list[CallSite] = []
+        for node in self._walk(tree.root_node):
+            if node.type != "call_expression":
+                continue
+            enclosing = innermost_scope_containing(sorted_scopes, node.start_byte, node.end_byte)
+            if enclosing is None:
+                continue
+            function_node = node.child_by_field_name("function")
+            if function_node is None:
+                continue
+            # `callee_name` is RAW SOURCE TEXT per canonical §5.4 ("raw
+            # text; resolution is a separate concern") — same contract
+            # as the Python adapter.
+            calls.append(
+                CallSite(
+                    file_path=file_path,
+                    line=node.start_point[0] + 1,
+                    callee_name=self._node_text(function_node),
+                    enclosing_scope_id=enclosing.unit_id,
+                )
+            )
+        return tuple(calls)
+
+    # ------------------------------------------------------------------
+    # extract_assignments
+    # ------------------------------------------------------------------
+
+    def extract_assignments(
+        self,
+        source: bytes,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[AssignmentSite, ...]:
+        return self._extract_assignments_from_tree(self._parse(source), file_path, scope_units)
+
+    def _extract_assignments_from_tree(
+        self,
+        tree: Tree,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[AssignmentSite, ...]:
+        """Single-identifier targets only, mirroring the Python V1 rule:
+        `assignment_expression` with an identifier left side, plus
+        value-bearing `variable_declarator`s (JS declarations are the
+        assignment form Python doesn't have). Declarators whose value is
+        a function/class are already represented as ScopeUnits and are
+        not double-counted as assignments; destructuring, member, and
+        subscript targets return nothing (name-keyed backward tracing).
+        """
+        sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
+        scope_value_types = self._FUNCTION_VALUE_TYPES | self._CLASS_VALUE_TYPES
+        sites: list[AssignmentSite] = []
+        for node in self._walk(tree.root_node):
+            if node.type == "assignment_expression":
+                left = node.child_by_field_name("left")
+                if left is None or left.type != "identifier":
+                    continue
+                target_name = self._node_text(left)
+            elif node.type == "variable_declarator":
+                name_node = node.child_by_field_name("name")
+                value = node.child_by_field_name("value")
+                if (
+                    name_node is None
+                    or name_node.type != "identifier"
+                    or value is None
+                    or value.type in scope_value_types
+                ):
+                    continue
+                target_name = self._node_text(name_node)
+            else:
+                continue
+            if not target_name:
+                continue
+            enclosing = innermost_scope_containing(sorted_scopes, node.start_byte, node.end_byte)
+            if enclosing is None:
+                continue
+            sites.append(
+                AssignmentSite(
+                    file_path=file_path,
+                    line=node.start_point[0] + 1,
+                    target_name=target_name,
+                    enclosing_scope_id=enclosing.unit_id,
+                )
+            )
+        return tuple(sites)
+
+    # ------------------------------------------------------------------
+    # resolve_simple_direct_import
+    # ------------------------------------------------------------------
+
+    def resolve_simple_direct_import(
+        self, import_ref: ImportRef, import_root: Path
+    ) -> ImportResolution:
+        """Always `unresolved` in this feature: every JS/TS `ImportRef`
+        ships `is_simple_direct=False` (spec non-goal — the JS-aware
+        relative-specifier resolver lands with the analyze-dispatch
+        follow-up), so there is nothing to resolve yet. The guard keeps
+        the method total if a future producer flips the flag before the
+        resolver exists.
+        """
+        del import_ref, import_root
+        return ImportResolution(status="unresolved", target_path=None)
+
+    # ------------------------------------------------------------------
+    # compute_parser_outcome
+    # ------------------------------------------------------------------
+
+    def compute_parser_outcome(
+        self,
+        source: bytes,
+        file_path: str,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
+        """Per-scope `has_error` map keyed by `unit_id`.
+
+        **V1 policy: always returns `("clean", has_error)`** — identical
+        to the Python adapter: tree-sitter degrades to ERROR/MISSING
+        nodes rather than failing outright (verified for Flow-typed
+        `.js`, which localizes ERROR nodes to the affected scope), so
+        the "failed" outcome remains the defensive forward-compat shape.
+        Pinned by `tests/unit/test_ast_facts_javascript.py`; changing
+        the policy is a `DECISIONS.md` matter, as for Python.
+        """
+        del file_path
+        return self._compute_parser_outcome_from_tree(self._parse(source), scope_units)
+
+    def _compute_parser_outcome_from_tree(
+        self,
+        tree: Tree,
+        scope_units: tuple[ScopeUnit, ...],
+    ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
+        # ScopeUnit spans may start at a preceding decorator sibling
+        # (see `_emit`); containment lookup still finds the member node
+        # inside the widened span. A syntax error INSIDE a preceding
+        # decorator therefore does not reach the member's has_error —
+        # it surfaces via the enclosing class scope and `error_lines`.
+        has_error: dict[str, bool] = {}
+        for scope in scope_units:
+            node = find_node_by_span(
+                tree.root_node,
+                scope.byte_start,
+                scope.byte_end,
+                self._OUTCOME_TARGET_TYPES,
+            )
+            has_error[scope.unit_id] = bool(node and node.has_error)
+        return "clean", has_error
+
+
+# ---------------------------------------------------------------------------
+# Shared parse pipeline + canonical entry point
+# ---------------------------------------------------------------------------
+
+
+def _run_parse_pipeline(
+    adapter: JavaScriptAdapter, source: bytes, file_path: str, *, entry_point: str
+) -> ParseResult:
+    """size→pattern→decode→parse pipeline shared by `parse_javascript`
+    and `parse_typescript` — the same ordering `parse_python` runs, with
+    one parse shared across the extraction passes. `entry_point` names
+    the caller in the bytes-guard message.
+    """
+    if not isinstance(source, bytes):
+        raise TypeError(
+            f"{entry_point}: source must be bytes, got {type(source).__name__}; "
+            f"the consuming node decodes the file once via fetch and passes "
+            f"raw bytes through. Decoding to str at this layer would defeat "
+            f"the size→pattern→decode→parse DoS pipeline ordering."
+        )
+    skip_reason: SkipReason | None = should_skip(file_path, source)
+    if skip_reason is not None:
+        return ParseResult(parser_outcome="skipped", skip_reason=skip_reason)
+    try:
+        source.decode("utf-8")
+    except UnicodeDecodeError:
+        return ParseResult(parser_outcome="failed")
+    tree = adapter._parse(source)
+    scope_units = adapter._extract_scopes_from_tree(tree, file_path)
+    imports = adapter._extract_imports_from_tree(tree, file_path)
+    call_sites = adapter._extract_call_sites_from_tree(tree, file_path, scope_units)
+    assignment_sites = adapter._extract_assignments_from_tree(tree, file_path, scope_units)
+    outcome, has_error = adapter._compute_parser_outcome_from_tree(tree, scope_units)
+    if outcome == "failed":
+        # Discard extracted tuples: the failed-path ParseResult carries
+        # the empty-tuples shape (enforced by the ParseResult validator).
+        return ParseResult(parser_outcome="failed")
+    return ParseResult(
+        parser_outcome="clean",
+        scope_units=scope_units,
+        imports=imports,
+        call_sites=call_sites,
+        assignment_sites=assignment_sites,
+        has_error=has_error,
+        error_lines=error_lines_from_tree(tree),
+    )
+
+
+def parse_javascript(source: bytes, file_path: str, resolver: ImportPathResolver) -> ParseResult:
+    """Canonical JS/JSX entry point, mirroring `parse_python`'s contract:
+    `skipped` on exclusion-rule match, `failed` on invalid UTF-8, else
+    the fully-populated clean `ParseResult`.
+    """
+    return _run_parse_pipeline(
+        JavaScriptAdapter(resolver=resolver),
+        source,
+        file_path,
+        entry_point="parse_javascript",
+    )
