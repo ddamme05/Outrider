@@ -81,9 +81,11 @@ if TYPE_CHECKING:
 # v2 (JS/TS OBSERVED catalog): the query set became per-language-selected and
 # `_is_test_file` learned the JS/TS test conventions (`__tests__/`,
 # `*.test.*`, `*.spec.*`).
-# v3: the JS/TS test-name conventions became language-scoped — under v2 they
+# v3: the JS/TS conventions — the inner `.test.`/`.spec.` NAME markers and
+# the `__tests__/` DIRECTORY marker — became language-scoped. Under v2 they
 # applied to every language, silently suppressing OBSERVED findings on
-# dotted-name Python production files (`report.spec.py`, `pkg/__tests__/util.py`).
+# Python production files: `report.spec.py` (name marker),
+# `pkg/__tests__/util.py` (directory marker).
 OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v3"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
