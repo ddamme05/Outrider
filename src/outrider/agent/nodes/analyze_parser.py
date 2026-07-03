@@ -39,7 +39,11 @@ from typing import TYPE_CHECKING, Final, Literal
 from pydantic import ValidationError
 
 from outrider.audit.events import compute_finding_content_hash
-from outrider.coordinates import is_valid_import_string
+from outrider.coordinates import (
+    is_valid_import_string,
+    is_valid_relative_specifier,
+    relative_specifier_candidate_paths,
+)
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     line_range_to_span,
@@ -95,9 +99,16 @@ if TYPE_CHECKING:
 # `trace_candidates` for those files. Python semantics are unchanged,
 # but the bump rule is ANY trace-candidate semantics change — the rule
 # stays unnarrowed rather than exploiting "JS/TS had no prior rows".
+# v7: relative-specifier admission (DECISIONS.md#024 Amended 2026-07-03)
+# — `trace_candidate_form` partitions admission per language: Python
+# stays module-form, JS/TS admit leading-dot relative specifiers
+# (validated + repo-escape-contained against the analyzed file's
+# directory at admission), changing the `trace_candidates` stored for
+# JS/TS files from always-empty to populated. The from-import
+# correction remains module-form-only.
 # Code-pinned adjacent to what it versions, never injectable (the
 # TRIVIAL_FILTER_VERSION precedent).
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v6"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v7"
 
 # Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
 # `audit/events.py`. Duplicated here so this module doesn't depend
@@ -180,11 +191,13 @@ class ParserCounters:
     n_responses_rejected: int
     n_trace_candidates_emitted: int
     n_trace_candidates_dropped_malformed: int = 0
-    """Count of raw trace_candidates entries DROPPED because
-    `is_valid_import_string` rejected the import_string_raw (sharp-edges
-    F1 audit-fold; sister field on AnalyzeCompletedEvent has the full
-    rationale). Default=0 so existing fixture-driven constructions
-    don't break; the parser sets it explicitly when emitting."""
+    """Count of raw trace_candidates entries DROPPED because the
+    per-language form validation rejected the import_string_raw — or,
+    for specifier form, admission-time repo-escape containment did
+    (sharp-edges F1 audit-fold; sister field on AnalyzeCompletedEvent
+    has the full rationale). Default=0 so existing fixture-driven
+    constructions don't break; the parser sets it explicitly when
+    emitting."""
     n_trace_candidates_module_corrected: int = 0
     """Count of corrected module-form SIBLING candidates emitted
     alongside originals whose module prefix the analyzed file's
@@ -256,6 +269,7 @@ def parse_analyze_response(
     parameterized_call_scan: ParameterizedCallScan | None = None,
     import_refs: tuple[ImportRef, ...] = (),
     collect_trace_candidates: bool = True,
+    trace_candidate_form: Literal["module", "specifier"] = "module",
 ) -> ParserResult:
     """Apply the spec §6 10-step admission flow to a raw analyze response.
 
@@ -394,12 +408,12 @@ def parse_analyze_response(
     n_trace_candidates_dropped_malformed = 0
     n_trace_candidates_module_corrected = 0
     # Built once per response (pass 0 only — candidate collection is
-    # pass-0-gated below; `collect_trace_candidates=False` suppresses it
-    # for files whose language has no import resolver, per the dispatch
-    # spec: unresolvable candidates would burn a trace ranking call and
-    # probe to no-ops): the analyzed file's from-import name→module
-    # map, the deterministic ground truth candidate admission emits
-    # corrected siblings against.
+    # pass-0-gated below; `collect_trace_candidates=False` remains the
+    # opt-out for a future language without a resolver, and
+    # `trace_candidate_form` selects the admitted syntax per language
+    # since the resolver spec): the analyzed file's from-import
+    # name→module map, the deterministic ground truth candidate
+    # admission emits corrected siblings against (module form only).
     _collecting = pass_index == 0 and collect_trace_candidates
     from_import_modules = _build_from_import_map(import_refs) if _collecting else {}
     for raw_proposal in raw.findings:
@@ -444,6 +458,8 @@ def parse_analyze_response(
                 raw_proposal,
                 proposal_hash=proposal_hash,
                 from_import_modules=from_import_modules,
+                candidate_form=trace_candidate_form,
+                source_file_path=file_path,
             )
             n_trace_candidates_dropped_malformed += n_dropped
             n_trace_candidates_module_corrected += n_corrected
@@ -979,6 +995,8 @@ def _collect_trace_candidates_for(
     *,
     proposal_hash: str,
     from_import_modules: Mapping[str, str],
+    candidate_form: Literal["module", "specifier"] = "module",
+    source_file_path: str = "",
 ) -> tuple[list[TraceCandidate], int, int]:
     """Build the `TraceCandidate` list from a raw proposal's
     `trace_candidates`. Each candidate's `candidate_id` is content-
@@ -987,10 +1005,29 @@ def _collect_trace_candidates_for(
     or proposal-level-rejected — the audit-trail join is preserved
     across both outcomes per spec §6 step 10).
 
-    After canonicalization, each candidate whose module prefix the
+    `candidate_form` selects the single admitted syntactic form for the
+    analyzed file's language per `DECISIONS.md#024` (Amended 2026-07-03):
+    `"module"` (Python — dotted import strings) or `"specifier"` (JS/TS —
+    leading-dot relative specifiers). The wrong-form candidate drops
+    into the malformed counter: a dotted candidate from a JS file has
+    no V1 resolution path (the "dotted-JS forms" fallback is explicit
+    future work in the resolver spec), and a leading-dot candidate from
+    a Python file is inadmissible by the amendment's language gate.
+
+    Specifier-form admission additionally enforces repo-escape
+    CONTAINMENT here — the first of the two enforcement sites (the
+    second is `relative_specifier_candidate_paths` at probe
+    construction, defense in depth): a specifier whose leading `../`
+    chain escapes the repo root relative to `source_file_path` drops
+    into the same forensic counter, so nothing uncontained ever reaches
+    state or audit rows.
+
+    On the module branch, each candidate whose module prefix the
     file's from-imports contradict gains a corrected module-form
     SIBLING (`_correct_against_from_imports` — emitted alongside, never
-    instead); the third return element counts emitted siblings.
+    instead); the third return element counts emitted siblings. The
+    correction is module-form-only — specifier candidates never enter
+    it.
 
     Returns a list (caller extends its accumulator). Response-level
     rejections never reach this helper because no proposals exist at
@@ -1012,27 +1049,37 @@ def _collect_trace_candidates_for(
     # Without the up-front canonicalize + try/except, a single bad
     # candidate crashes the whole pass and breaks the
     # `n_proposals_seen == admitted + rejected` accounting equation.
-    # Per DECISIONS.md#024 trace candidates are dotted Python import
-    # strings (V1; no file-path fallback) — this helper switched from
-    # `validate_diff_path` (path-shaped) to `is_valid_import_string`
-    # (identifier-shaped) in the same DECISIONS-aligned commit.
     out: list[TraceCandidate] = []
     n_dropped_malformed = 0
     n_module_corrected = 0
     for raw_cand in raw.trace_candidates:
         try:
-            canonical_import = is_valid_import_string(raw_cand.import_string_raw)
+            if candidate_form == "module":
+                canonical_import = is_valid_import_string(raw_cand.import_string_raw)
+            else:
+                canonical_import = is_valid_relative_specifier(raw_cand.import_string_raw)
         except ValueError:
-            # Malformed import string — drop silently AND increment the
-            # forensic counter (sharp-edges F1 audit-fold). Per spec §6
-            # step 10 trace candidates are advisory; dropping one bad
-            # candidate is preferable to crashing the whole parser pass.
-            # The dropped candidate's parent proposal still produces its
-            # own rejection/admission outcome independently. The counter
-            # surfaces aggregate drift so operators can distinguish
-            # "model proposed nothing" from "every proposal was
-            # malformed" without sanitizing raw model output into an
+            # Malformed / wrong-form import string — drop silently AND
+            # increment the forensic counter (sharp-edges F1 audit-fold).
+            # Per spec §6 step 10 trace candidates are advisory; dropping
+            # one bad candidate is preferable to crashing the whole
+            # parser pass. The dropped candidate's parent proposal still
+            # produces its own rejection/admission outcome independently.
+            # The counter surfaces aggregate drift so operators can
+            # distinguish "model proposed nothing" from "every proposal
+            # was malformed" without sanitizing raw model output into an
             # audit row.
+            n_dropped_malformed += 1
+            continue
+        if candidate_form == "specifier" and not relative_specifier_candidate_paths(
+            canonical_import, source_file_path
+        ):
+            # Repo-escape containment at admission — the first of the
+            # two enforcement sites (`DECISIONS.md#024` Amended
+            # 2026-07-03). Shape-valid specifiers whose `../` chain
+            # escapes the repo root (or whose importing path is itself
+            # invalid) construct zero candidate paths; drop into the
+            # same forensic bucket so nothing uncontained persists.
             n_dropped_malformed += 1
             continue
         try:
@@ -1060,7 +1107,11 @@ def _collect_trace_candidates_for(
         # corrected module-form SIBLING alongside the original (never
         # instead of it — the trailing-name match is a heuristic and a
         # coincidental collision must not clobber a valid candidate;
-        # the probe ladder resolves whichever path exists).
+        # the probe ladder resolves whichever path exists). Module-form
+        # only — a relative specifier has no dotted module prefix to
+        # correct (DECISIONS.md#024 Amended 2026-07-03).
+        if candidate_form != "module":
+            continue
         suggested_module = _correct_against_from_imports(canonical_import, from_import_modules)
         if suggested_module is not None:
             try:

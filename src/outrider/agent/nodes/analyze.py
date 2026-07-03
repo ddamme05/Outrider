@@ -1781,10 +1781,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         frozenset() if degraded_mode or not is_python else _build_query_match_id_set(content_bytes)
     )
 
-    # The from-import refs the trace-candidate machinery may consume —
-    # empty for languages with no import resolver. Feeds BOTH the cache
-    # key digest and the parser call below from one binding.
-    trace_import_refs = parse_result.imports if is_python else ()
+    # The from-import refs the trace-candidate machinery may consume.
+    # Feeds BOTH the cache key digest and the parser call below from one
+    # binding (FUP-171 anti-fork). Unconditional since the resolver spec:
+    # every registry language collects candidates; the module-form
+    # correction map simply validates empty for languages whose refs
+    # carry non-dotted modules.
+    trace_import_refs = parse_result.imports
 
     # Step 3c: assemble the (system, user) prompt pair.
     if degraded_mode:
@@ -2239,10 +2242,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # object the cache key digested (FUP-171 anti-fork: keyed input
         # and consumed input cannot diverge).
         import_refs=trace_import_refs,
-        # Trace candidates need an import resolver; non-Python languages
-        # have none until the resolver spec, so collection is suppressed
-        # (dispatch spec open question 1, ANALYZE_PARSER_VERSION v6).
-        collect_trace_candidates=is_python,
+        # Per-language candidate form (DECISIONS.md#024 Amended
+        # 2026-07-03, ANALYZE_PARSER_VERSION v7): Python admits dotted
+        # module strings, JS/TS admit leading-dot relative specifiers —
+        # the parser drops the wrong form and enforces repo-escape
+        # containment at admission for specifiers.
+        trace_candidate_form="module" if is_python else "specifier",
     )
     if parser_result.counters.n_trace_candidates_module_corrected:
         logger.info(
