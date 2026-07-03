@@ -9,7 +9,7 @@
 # =============================================================================
 """Coordinates module — translation surface per docs/spec.md §5.6.
 
-V1 §5.6 public surface — five translation functions + three supporting
+V1 §5.6 public surface — five translation functions + five supporting
 surfaces, all inside `coordinates/` per `coordinates-module-is-sole-translator`:
 
 Five translation functions:
@@ -35,14 +35,25 @@ Five translation functions:
   sees exactly the removed lines the prompt's clipped hunks show.
   See DECISIONS.md#044.
 
-Three supporting surfaces:
+Five supporting surfaces:
 
 - `validate_diff_path(...)` — diff-side path validator (publisher-facing,
   string-level surface for paths heading to the GitHub comment API per
   docs/spec.md §10.1 / trust-boundary §5 sub-rule 3a).
 - `resolve_candidate_paths(...)` — ImportPathResolver Protocol implementation
   per `src/outrider/ast_facts/base.py`; root-aware surface for paths heading
-  to filesystem stats per trust-boundary §5 sub-rule 3b.
+  to filesystem stats per trust-boundary §5 sub-rule 3b. Module-form
+  (dotted Python import string) only.
+- `relative_specifier_candidate_paths(...)` — string-level construction
+  surface for JS/TS relative-specifier trace candidates per
+  `DECISIONS.md#024` (Amended 2026-07-03): specifier + importing file path
+  → contained, `validate_diff_path`-gated pragmatic-six probe fan-out.
+  Repo-root escapes return () before anything can be probed.
+- `resolve_specifier_candidate_paths(...)` — the relative-specifier
+  filesystem twin (root-aware sibling of `resolve_candidate_paths`,
+  trust-boundary §5 sub-rule 3b): same construction, then the shared
+  symlink-safe walk against `import_root`. The JS/TS adapters'
+  `resolve_simple_direct_import` surface.
 - `file_in_patch(...)` — coordinates-owned patch-membership helper. **NOT
   called by V1 publish** (publish uses the in-memory `ChangedFile` registry
   short-circuit per the publish-node spec's FUP-057 resolution); remains
@@ -60,7 +71,16 @@ V1 supporting helpers (analyze-foundation §4 + analyze-node spec §7):
   `resolve_candidate_paths` calls it (catches + returns []). Single source of
   truth ensures producer-side schema validation and resolver-side input
   validation accept the same set of strings. (A helper, not one of the
-  three canonical §5.6 supporting surfaces.)
+  five canonical §5.6 supporting surfaces.)
+- `is_valid_relative_specifier(...)` — validate + NFC-normalize a JS/TS
+  relative import specifier (shape-only, context-free; containment is
+  the construction surfaces' job). The relative-specifier sibling of
+  `is_valid_import_string` per `DECISIONS.md#024` (Amended 2026-07-03).
+- `is_valid_trace_import_string(...)` — the shared two-form dispatcher
+  for `TraceCandidate.import_string`: leading `.` → relative-specifier
+  form, otherwise module form. The single dispatch point the schema and
+  audit shape-validation sites call so state ↔ audit canonical-bytes
+  lockstep holds for both forms.
 - `span_within_file(...)` — byte file-bounds check the analyze parser's
   degraded path composes (§4).
 - `span_within_degraded_context(...)` — byte-space intersection check: a
@@ -115,8 +135,12 @@ from outrider.coordinates.diff_parser import (
     diff_line_to_scope,
     file_in_patch,
     is_valid_import_string,
+    is_valid_relative_specifier,
+    is_valid_trace_import_string,
     lookup_patched_file,
+    relative_specifier_candidate_paths,
     resolve_candidate_paths,
+    resolve_specifier_candidate_paths,
     validate_diff_path,
 )
 from outrider.coordinates.errors import CoordinateError
@@ -160,6 +184,8 @@ __all__ = [
     "extract_scope_unit_body",
     "file_in_patch",
     "is_valid_import_string",
+    "is_valid_relative_specifier",
+    "is_valid_trace_import_string",
     "line_range_to_span",
     "line_range_vetoed_by_parameterized_call",
     "line_range_within_scope_unit",
@@ -167,7 +193,9 @@ __all__ = [
     "patched_file_has_added_lines",
     "patched_file_has_removed_lines",
     "query_span_to_source_lines",
+    "relative_specifier_candidate_paths",
     "resolve_candidate_paths",
+    "resolve_specifier_candidate_paths",
     "scope_unit_diff_hunks",
     "scope_unit_has_added_lines",
     "source_line_to_github",
