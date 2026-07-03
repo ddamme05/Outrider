@@ -325,9 +325,12 @@ async def _probe_outcome_for(
     real_files: dict[str, bytes],
     probe_memo: dict[str, bytes | None] | None = None,
     budget: int = MAX_PROBE_FETCHES_PER_PASS,
+    source_finding_file: str = "src/x.py",
 ) -> tuple[_ProbeOutcome, list[str]]:
     """Run `_resolve_via_probes` for one bucket against a fake repo
-    snapshot; return (outcome, probed-paths log)."""
+    snapshot; return (outcome, probed-paths log). `source_finding_file`
+    anchors relative-specifier candidates (importing-file-relative
+    resolution); module-form candidates ignore it."""
     fake_fetch, probed = _fake_fetch_for(real_files)
     monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
     candidates = tuple(
@@ -336,6 +339,7 @@ async def _probe_outcome_for(
     )
     outcome = await _resolve_via_probes(
         candidates=candidates,
+        source_finding_file=source_finding_file,
         gh_client=object(),  # type: ignore[arg-type]  # opaque pass-through to the fake
         owner="o",
         repo="r",
@@ -741,3 +745,131 @@ def test_aggregate_candidate_reasons_truncates_to_500_chars() -> None:
     # baseline to prove truncation HAPPENED.
     assert len(aggregated) <= 500
     assert aggregated != _aggregate_candidate_reasons(candidates[:1])
+
+
+# ---------------------------------------------------------------------------
+# Relative-specifier probe construction (resolver spec, DECISIONS.md#024
+# Amended 2026-07-03): leading-dot candidates fan out level-0 only via
+# coordinates.relative_specifier_candidate_paths against the proposing
+# finding's file; no suffix-strip ladder, no symbol verification.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_specifier_candidate_resolves_single_real_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`'../db'` from `src/routes/user.js` probes the pragmatic-six
+    fan-out in resolution-priority order and resolves on the single
+    real path."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("../db",),
+        real_files={"src/db.ts": b"export const db = 1;\n"},
+        source_finding_file="src/routes/user.js",
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "src/db.ts"
+    assert outcome.resolved_candidate_paths == ("src/db.ts",)
+    assert probed == [
+        "src/db.js",
+        "src/db.jsx",
+        "src/db.ts",
+        "src/db.tsx",
+        "src/db/index.js",
+        "src/db/index.ts",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_specifier_two_real_extensions_is_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two real paths in the fan-out (file form + directory index) →
+    ambiguous per M8's single-target contract; no target_file."""
+    outcome, _ = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("./db",),
+        real_files={
+            "src/db.js": b"module.exports = {};\n",
+            "src/db/index.ts": b"export {};\n",
+        },
+        source_finding_file="src/user.js",
+    )
+    assert outcome.resolution_status == "ambiguous"
+    assert outcome.target_file is None
+    assert set(outcome.resolved_candidate_paths) == {"src/db.js", "src/db/index.ts"}
+
+
+@pytest.mark.asyncio
+async def test_specifier_no_real_target_is_unresolved_without_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A specifier that misses every fan-out path lands `unresolved` and
+    NEVER enters the suffix-strip ladder: exactly the six level-0 probes
+    fire, no `.py` module paths, no parent-package fallback."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("./ghost",),
+        real_files={"src/__init__.py": b""},
+        source_finding_file="src/user.js",
+    )
+    assert outcome.resolution_status == "unresolved"
+    assert outcome.resolved_candidate_paths == ()
+    assert len(probed) == 6
+    assert all(not p.endswith(".py") for p in probed)
+
+
+@pytest.mark.asyncio
+async def test_specifier_seeded_memo_path_resolves_without_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fan-out path pre-seeded in the pass memo (in-PR head content)
+    resolves with zero GitHub probe fetches for that path."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("./db",),
+        real_files={},
+        probe_memo={
+            "src/db.js": b"module.exports = {};\n",
+            # The remaining five fan-out paths still probe (and miss).
+        },
+        source_finding_file="src/user.js",
+    )
+    assert outcome.resolution_status == "resolved"
+    assert outcome.target_file == "src/db.js"
+    assert "src/db.js" not in probed
+
+
+@pytest.mark.asyncio
+async def test_specifier_budget_exhaustion_is_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero remaining budget: unfunded fan-out paths read as not-real —
+    the candidate lands `unresolved` (the designed degradation)."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("./db",),
+        real_files={"src/db.js": b"module.exports = {};\n"},
+        budget=0,
+        source_finding_file="src/user.js",
+    )
+    assert outcome.resolution_status == "unresolved"
+    assert probed == []
+
+
+@pytest.mark.asyncio
+async def test_specifier_with_empty_source_file_is_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The call-site degrade path: an empty importing-file anchor
+    constructs zero probe paths, so the specifier candidate lands
+    `unresolved` instead of probing anything."""
+    outcome, probed = await _probe_outcome_for(
+        monkeypatch,
+        import_strings=("./db",),
+        real_files={"src/db.js": b"module.exports = {};\n"},
+        source_finding_file="",
+    )
+    assert outcome.resolution_status == "unresolved"
+    assert probed == []
