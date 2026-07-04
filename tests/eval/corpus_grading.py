@@ -10,11 +10,17 @@ reached, so a real vulnerability the catalog drops is separable into
 module_presence residual) vs "a finding was emitted".
 
 Ground truth (`corpus/juice_shop/ground_truth.json`) is a discriminated row
-union: `expected_finding` rows assert a real vulnerability the catalog should
-reach (carrying the outcome it reaches TODAY plus, when that is not `emitted`,
-the `residual_tag` naming the deferred mechanism); `expected_clean` rows assert
-the catalog emits nothing for a file (optionally scoped to one query id). The
-grader compares the empirically-observed stage against each row's documented
+union: `expected_finding` rows assert a located (query, line) expectation — a
+real vulnerability the catalog should reach, or, with
+`real_vulnerability=false`, a documented non-vulnerability whose emission is a
+tolerated false positive (carrying the outcome the catalog reaches TODAY plus,
+for a non-emitted real vulnerability, the `residual_tag` naming the deferred
+mechanism); `expected_clean` rows assert the catalog emits nothing for a file
+(optionally scoped to one query id). `grade()` fail-louds before observing:
+every vendored corpus file must carry at least one row (a row-less file would
+never be parsed, so a catalog FP on it could ship unmeasured) and each row's
+`query_match_id`/`finding_type` must resolve in the live registry. The grader
+then compares the empirically-observed stage against each row's documented
 current outcome and produces a deterministic `Scorecard` — the checked-in
 `scorecard_juice_shop.json` pins current behavior, and the structural scenario
 fails on any drift (a true positive regressing, a residual silently closing, or
@@ -27,7 +33,7 @@ output and the producer's domain records only (AST firewall).
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, get_args
 from unittest.mock import MagicMock
 from uuid import UUID
 
@@ -37,8 +43,9 @@ from outrider.agent.nodes.analyze_observed import (
     produce_observed_findings,
     run_observed_matches,
 )
+from outrider.ast_facts.errors import UnsupportedExtensionError
 from outrider.ast_facts.registry import parse_source
-from outrider.coordinates import query_span_to_source_lines
+from outrider.coordinates import CoordinateError, query_span_to_source_lines
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.queries import registry
 
@@ -46,12 +53,18 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
+    from outrider.ast_facts.models import QueryMatchSpan
+
 # A fixed review id so the harness is deterministic (findings' content hashes
 # depend only on content, not this id, but keeping it constant makes any
 # accidental id-dependence loud).
 _GRADING_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000c0d05")
 _GRADING_INSTALLATION_ID = 1
 
+# `denied_at_production` is structurally unreachable today — the producer emits
+# every admitted match — and is retained only so stage attribution stays total
+# if production ever grows a post-admission filter. No ground-truth row should
+# pin it as a `current_outcome`.
 CorpusOutcome = Literal["emitted", "denied_at_production", "denied_at_admission", "no_raw_match"]
 Grade = Literal[
     "true_positive",
@@ -63,25 +76,22 @@ Grade = Literal[
     "unexpected_emission",
     "not_graded",
 ]
-_GRADE_FIELDS: tuple[str, ...] = (
-    "true_positive",
-    "accepted_miss",
-    "true_negative",
-    "false_positive",
-    "regression",
-    "improvement",
-    "unexpected_emission",
-    "not_graded",
-)
+# QueryAggregate's counter fields mirror this vocabulary; derive, don't copy.
+_GRADE_FIELDS: tuple[str, ...] = get_args(Grade)
 
 
 # ---------------------------------------------------------------------------
 # Ground-truth row model (discriminated union on `kind`).
 # ---------------------------------------------------------------------------
 class ExpectedFindingRow(BaseModel):
-    """A real vulnerability the catalog should reach. `current_outcome` is what
-    the catalog does today; when it is not `emitted`, `residual_tag` names the
-    deferred mechanism (a declared non-goal) that explains the gap."""
+    """A located (query, line) expectation. With `real_vulnerability=True`, a
+    real vulnerability the catalog should reach; with `real_vulnerability=False`,
+    a documented non-vulnerability pinning a tolerated false positive (an
+    emission grades `false_positive`, never `true_positive`). `current_outcome`
+    is what the catalog does today; when a real vulnerability's outcome is not
+    `emitted`, `residual_tag` names the deferred mechanism (a declared
+    non-goal) that explains the gap. `query_match_id`/`finding_type` are
+    cross-checked against the live registry at grade time."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -167,11 +177,43 @@ class Scorecard(BaseModel):
 class _FileObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    parsed_clean: bool
+    gradeable: bool
+    # Why not, when gradeable is False (unreadable file, unsupported
+    # extension, degraded parse) — surfaces in the not_graded rows' detail.
+    ungraded_reason: str = ""
     # (query_match_id, line) tuples for each layer.
     raw: frozenset[tuple[str, int]]
     admitted: frozenset[tuple[str, int]]
     emitted: frozenset[tuple[str, int]]
+
+
+def _ungradeable(reason: str) -> _FileObservation:
+    return _FileObservation(
+        gradeable=False,
+        ungraded_reason=reason,
+        raw=frozenset(),
+        admitted=frozenset(),
+        emitted=frozenset(),
+    )
+
+
+def _span_line(span: QueryMatchSpan, head_content: str) -> int | None:
+    """Start line for a raw match span, under the producer's own guards: a
+    zero-width envelope has no line range, and an unlocatable span cannot
+    anchor a match. `run_observed_matches` SKIPS both (analyze_observed.py),
+    so the raw layer must not crash where admission would skip — otherwise a
+    degenerate span takes down the whole `grade()` aggregate."""
+    if span.byte_end <= span.byte_start:
+        return None
+    try:
+        line_start, _ = query_span_to_source_lines(
+            byte_start=span.byte_start,
+            byte_end=span.byte_end,
+            head_content=head_content,
+        )
+    except CoordinateError:
+        return None
+    return line_start
 
 
 def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
@@ -181,31 +223,44 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
     is `included` — the producer's scope-containment gate then sees the whole
     file as in-scope. Raw lines come from the canonical byte->line bridge;
     admitted/emitted lines from the producer's own records.
+
+    Read/parse failures return an ungradeable observation (rows grade
+    `not_graded`, never a crash and never a silent miss).
     """
     path = corpus_root / rel_file
-    src = path.read_bytes()
-    parsed = parse_source(src, rel_file, MagicMock())
-    if parsed.parser_outcome != "clean":
-        # A degraded parse cannot be graded (findings never reach the producer);
-        # mark it not-clean so the caller grades its rows `not_graded`, never a
-        # silent miss.
-        return _FileObservation(
-            parsed_clean=False, raw=frozenset(), admitted=frozenset(), emitted=frozenset()
-        )
-
+    try:
+        src = path.read_bytes()
+    except OSError as exc:
+        return _ungradeable(f"unreadable ({exc.__class__.__name__})")
+    # Mirror production's byte frame: analyze parses and matches the
+    # re-encoded DECODED content (intake hands the node a str), never the raw
+    # on-disk bytes. On a non-UTF-8 file the U+FFFD re-encode shifts byte
+    # offsets, so feeding every layer the same re-encoded bytes keeps the
+    # (query, line) keys aligned across raw/admitted/emitted.
     head_content = src.decode("utf-8", errors="replace")
+    data = head_content.encode("utf-8")
+    try:
+        parsed = parse_source(data, rel_file, MagicMock())
+    except UnsupportedExtensionError:
+        return _ungradeable("unsupported extension (no registered adapter)")
+    if parsed.parser_outcome != "clean" or any(parsed.has_error.values()) or parsed.error_lines:
+        # A degraded parse cannot be graded: production's `decide_degradation`
+        # routes the file to a JUDGED-only degraded review, so OBSERVED
+        # findings never reach the producer. JS/TS adapters report syntax
+        # errors via `has_error`/`error_lines` while `parser_outcome` stays
+        # "clean" (V1 pins it), so checking the outcome alone would grade a
+        # broken file as if production reviewed it structurally.
+        return _ungradeable("parse degraded (syntax errors)")
+
     language = registry.query_language_for_path(rel_file)
     grammar = registry.grammar_for_path(rel_file)
     raw: set[tuple[str, int]] = set()
     if language is not None and grammar is not None:
         for query_id in registry.observed_queries_for(language):
-            for span in registry.match(query_id, src, grammar=grammar):
-                line_start, _ = query_span_to_source_lines(
-                    byte_start=span.byte_start,
-                    byte_end=span.byte_end,
-                    head_content=head_content,
-                )
-                raw.add((query_id, line_start))
+            for span in registry.match(query_id, data, grammar=grammar):
+                line_start = _span_line(span, head_content)
+                if line_start is not None:
+                    raw.add((query_id, line_start))
 
     admitted_matches = run_observed_matches(
         file_path=rel_file,
@@ -226,7 +281,7 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
     emitted = {(f.query_match_id, f.line_start) for f in findings}
 
     return _FileObservation(
-        parsed_clean=True,
+        gradeable=True,
         raw=frozenset(raw),
         admitted=frozenset(admitted),
         emitted=frozenset(emitted),
@@ -251,9 +306,69 @@ def load_ground_truth(path: Path) -> GroundTruth:
     return GroundTruth.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+# Corpus-root artifacts that document the corpus rather than belong to it —
+# excluded from the totality check (everything else must carry a row).
+_CORPUS_METADATA_FILES = frozenset({"LICENSE", "MANIFEST.md", "ground_truth.json"})
+
+
+def _corpus_source_files(corpus_root: Path) -> frozenset[str]:
+    return frozenset(
+        rel
+        for p in corpus_root.rglob("*")
+        if p.is_file()
+        and (rel := p.relative_to(corpus_root).as_posix()) not in _CORPUS_METADATA_FILES
+    )
+
+
+def _validate_corpus_totality(corpus_root: Path, ground_truth: GroundTruth) -> None:
+    """Every vendored corpus file must carry at least one ground-truth row —
+    `grade()` observes only files rows name, so a row-less file is never
+    parsed and a catalog FP on it ships with a byte-identical scorecard. The
+    reverse direction (a row naming a missing file, e.g. after a re-vendor
+    rename) fails here with the pairing named instead of a FileNotFoundError
+    mid-observation."""
+    corpus_files = _corpus_source_files(corpus_root)
+    row_files = {row.file for row in ground_truth.rows}
+    problems: list[str] = []
+    if uncovered := sorted(corpus_files - row_files):
+        problems.append(f"corpus files with no ground-truth row: {uncovered}")
+    if missing := sorted(row_files - corpus_files):
+        problems.append(f"ground-truth rows naming missing files: {missing}")
+    if problems:
+        raise ValueError("corpus/ground-truth totality violated — " + "; ".join(problems))
+
+
+def _validate_rows_against_registry(ground_truth: GroundTruth) -> None:
+    """Fail loud on ground-truth/registry drift: a row naming an unknown query
+    id would silently grade `no_raw_match`, and a stale `finding_type` would
+    survive a registry FindingType remap with a byte-identical scorecard —
+    both are authoring/drift bugs to surface, not outcomes to grade."""
+    problems: list[str] = []
+    for row in ground_truth.rows:
+        if isinstance(row, ExpectedFindingRow):
+            observed_query = registry.OBSERVED_QUERIES.get(row.query_match_id)
+            if observed_query is None:
+                problems.append(f"{row.file}: unknown OBSERVED query id {row.query_match_id!r}")
+            elif row.finding_type != observed_query.finding_type.value:
+                problems.append(
+                    f"{row.file}: finding_type {row.finding_type!r} does not match the "
+                    f"registry's {observed_query.finding_type.value!r} for {row.query_match_id}"
+                )
+        elif (
+            row.query_match_id is not None and row.query_match_id not in registry.OBSERVED_QUERY_IDS
+        ):
+            problems.append(f"{row.file}: unknown OBSERVED query id {row.query_match_id!r}")
+    if problems:
+        raise ValueError(
+            "ground truth out of sync with the query registry — " + "; ".join(problems)
+        )
+
+
 def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
     """Grade the catalog against ground truth, producing a deterministic scorecard."""
     corpus_root = repo_root / ground_truth.corpus_root
+    _validate_rows_against_registry(ground_truth)
+    _validate_corpus_totality(corpus_root, ground_truth)
     # Observe each referenced file once.
     files = sorted({row.file for row in ground_truth.rows})
     observations = {f: _observe_file(corpus_root, f) for f in files}
@@ -268,7 +383,7 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
         if isinstance(row, ExpectedFindingRow):
             obs = observations[row.file]
             claimed.add((row.file, row.query_match_id, row.line))
-            if not obs.parsed_clean:
+            if not obs.gradeable:
                 row_scores.append(
                     RowScore(
                         file=row.file,
@@ -278,7 +393,7 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
                         observed_outcome=None,
                         current_outcome=row.current_outcome,
                         residual_tag=row.residual_tag,
-                        detail="parse degraded — not graded (never a silent miss)",
+                        detail=f"{obs.ungraded_reason} — not graded (never a silent miss)",
                     )
                 )
                 continue
@@ -298,7 +413,7 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
             )
         else:
             obs = observations[row.file]
-            if not obs.parsed_clean:
+            if not obs.gradeable:
                 row_scores.append(
                     RowScore(
                         file=row.file,
@@ -308,7 +423,7 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
                         observed_outcome=None,
                         current_outcome=None,
                         residual_tag=None,
-                        detail="parse degraded — not graded",
+                        detail=f"{obs.ungraded_reason} — not graded",
                     )
                 )
                 continue
@@ -353,6 +468,8 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
 
 
 def _grade_expected_finding(row: ExpectedFindingRow, observed: CorpusOutcome) -> tuple[Grade, str]:
+    if not row.real_vulnerability:
+        return _grade_documented_non_vulnerability(row, observed)
     if observed == row.current_outcome:
         if observed == "emitted":
             return "true_positive", "emitted as expected"
@@ -375,6 +492,40 @@ def _grade_expected_finding(row: ExpectedFindingRow, observed: CorpusOutcome) ->
     return (
         "regression",
         f"expected '{row.current_outcome}', observed '{observed}' — stage drift",
+    )
+
+
+def _grade_documented_non_vulnerability(
+    row: ExpectedFindingRow, observed: CorpusOutcome
+) -> tuple[Grade, str]:
+    """A row pinning catalog behavior on code that is NOT a real vulnerability.
+
+    An emission here is a false positive — tolerated when documented
+    (`current_outcome="emitted"`), new when not — and is never counted as a
+    true positive, so the scorecard's TP/FP ledger stays honest. Non-emission
+    on a non-vulnerability is the correct behavior regardless of the stage it
+    stops at."""
+    if observed == "emitted":
+        if row.current_outcome == "emitted":
+            return (
+                "false_positive",
+                "documented false positive (tolerated) — non-vulnerability emitted as pinned",
+            )
+        return (
+            "false_positive",
+            f"non-vulnerability now emitted (was '{row.current_outcome}') — new false positive",
+        )
+    if row.current_outcome == "emitted":
+        return (
+            "improvement",
+            f"documented false positive no longer emitted (now '{observed}') — update ground truth",
+        )
+    if observed == row.current_outcome:
+        return "true_negative", f"non-vulnerability correctly stopped at '{observed}'"
+    return (
+        "true_negative",
+        f"non-vulnerability still not emitted; stage drifted "
+        f"'{row.current_outcome}' -> '{observed}' — update ground truth",
     )
 
 
