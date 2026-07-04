@@ -482,20 +482,38 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             ),
             # The option object is usually built separately from the sink call;
             # file-level presence of a module that honors the option is the
-            # deterministic V1 gate.
+            # deterministic V1 gate. Two families: HTTP/TLS clients, and the
+            # DB/queue/mail clients that honor `rejectUnauthorized` inside
+            # their `ssl:`/`tls:` connection options (`new Pool({ ssl: {
+            # rejectUnauthorized: false } })` is the canonical managed-PG
+            # MITM idiom).
             binding=BindingRule(
                 mode="module_presence",
                 modules=(
+                    "amqplib",
                     "axios",
                     "got",
                     "http2",
                     "https",
+                    "ioredis",
+                    "knex",
+                    "mariadb",
+                    "mongodb",
+                    "mssql",
+                    "mysql",
+                    "mysql2",
                     "node-fetch",
                     "node:http2",
                     "node:https",
                     "node:tls",
+                    "nodemailer",
+                    "pg",
+                    "pg-promise",
+                    "redis",
                     "request",
+                    "sequelize",
                     "tls",
+                    "typeorm",
                     "undici",
                     "ws",
                 ),
