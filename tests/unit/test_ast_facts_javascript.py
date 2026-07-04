@@ -701,3 +701,17 @@ def test_binding_less_require_is_non_value() -> None:
     by_names = {i.names: i.is_value_import for i in result.imports}
     assert by_names[()] is False
     assert by_names[("Pool",)] is True
+
+
+def test_let_in_switch_case_is_block_scoped_to_switch_body() -> None:
+    """A `let`/`const` in a switch case is visible only within the switch
+    body, not the enclosing function (/code-review find) — otherwise a
+    shadow inside a `case` would wrongly suppress a real global use after
+    the switch."""
+    source = (
+        b"function f(x) {\n  switch (x) {\n    case 1: { let e = 1; break; }\n  }\n  after();\n}\n"
+    )
+    b = _binding(source, "e")
+    assert b.kind == "let"
+    # The span ends at the switch body's close brace — BEFORE `after()`.
+    assert b.visibility_byte_end < source.index(b"after")

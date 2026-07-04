@@ -42,6 +42,18 @@ QueryLanguage = Literal["python", "javascript"]
 # drift silently into 100% default-deny.
 ANCHOR_CAPTURE_PREFERENCE: Final[tuple[str, ...]] = ("_recv", "_fn")
 
+# Capture names that hold a GUARDED-GLOBAL identifier — the callee/receiver
+# position whose text `#eq?`-pins the global (`@_fn`=eval, `@_ctor`=Function,
+# `@_proc`=process; `@_recv` for symmetry with the anchor family). A name in
+# a query's `shadow_guard` participates in a match ONLY through these
+# captures, never through argument/value captures (`@_arg`, `@_val`,
+# `@_env*`) — else `eval(Function)` with a shadowed `Function` argument would
+# wrongly drop a real `eval` match. The registry validates at load that every
+# `shadow_guard` query captures at least one of these (mirroring
+# `_validate_anchor_captures`), so a global pinned under a NEW capture name
+# is a loud import-time error, not a silently-inert guard.
+GUARD_POSITION_CAPTURES: Final[frozenset[str]] = frozenset({"_recv", "_fn", "_ctor", "_proc"})
+
 
 class QueryClass(StrEnum):
     """Routing class for an OBSERVED query.
