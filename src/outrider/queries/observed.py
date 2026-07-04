@@ -135,3 +135,17 @@ class ObservedQuery(BaseModel):
     title: str
     description: str
     binding: BindingRule | None = None
+    # Globals that must be UNSHADOWED at the match site even when
+    # `binding=None` (the query's receiver constraint is a TEXT match, not
+    # lexical proof — `tls_env_verify_disabled` guards "process" so a local
+    # `process` binding stops admitting). Checked for every query,
+    # independent of binding mode; digest auto-folds it (FUP-181).
+    shadow_guard: tuple[str, ...] = ()
+
+    @field_validator("shadow_guard")
+    @classmethod
+    def _shadow_guard_sorted(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        # Sorted + deduped for the same reason BindingRule.modules is: the
+        # field rides into `_registry_digest` via model_dump(), and an
+        # order-varying tuple would make the digest author-order-sensitive.
+        return tuple(sorted(set(v)))

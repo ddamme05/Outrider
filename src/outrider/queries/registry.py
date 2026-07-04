@@ -543,10 +543,11 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "and trust a proper CA."
             ),
             # No binding: the query itself constrains the receiver to the
-            # `process.env` identifier chain, which needs no import. That is
-            # a TEXT constraint, not scope resolution — a local `process`
-            # binding shadowing the global still matches (the shared
-            # no-lexical-scoping residual, FUP-214).
+            # `process.env` identifier chain, which needs no import. The
+            # TEXT constraint is completed by the shadow guard: a local
+            # `process` binding whose visibility span contains the match
+            # is a mock/parameter, not the global — the producer denies it.
+            shadow_guard=("process",),
         ),
     )
 }

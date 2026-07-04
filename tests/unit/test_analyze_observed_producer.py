@@ -44,6 +44,7 @@ def _produce(source: str, scopes=None, file_path: str = "src/x.py"):
         head_content=source,
         included_scope_units=scopes if scopes is not None else parsed.scope_units,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     return produce_observed_findings(
         matches,
@@ -152,6 +153,7 @@ def test_run_observed_matches_surfaces_query_class_and_record_fields() -> None:
         head_content=source,
         included_scope_units=parsed.scope_units,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     assert len(matches) == 1
     m = matches[0]
@@ -211,6 +213,7 @@ def _produce_at(source: str, file_path: str):
         head_content=source,
         included_scope_units=parsed.scope_units,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     return produce_observed_findings(
         matches,
@@ -251,6 +254,7 @@ def test_js_file_never_runs_python_queries() -> None:
         head_content=_JS_WEAK_HASH_SOURCE,
         included_scope_units=parsed.scope_units,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     assert matches, "fixture must fire the catalog"
     assert all(m.query_match_id.startswith("javascript.") for m in matches)
@@ -298,6 +302,7 @@ def test_unregistered_extension_is_inert() -> None:
         included_scope_units=(),
         # No registered adapter for .go — no imports are extractable either.
         import_refs=(),
+        lexical_bindings=(),
     )
     assert matches == ()
 
@@ -316,6 +321,105 @@ def test_unregistered_extension_is_inert() -> None:
 # extra assertions (line anchors, multi-form loops) stay as standalone tests
 # below the table.
 _BINDING_ADMISSION_CASES = (
+    # --- lexical shadowing guard (specs/2026-07-04-lexical-shadowing-guard.md) ---
+    pytest.param(
+        # Codex round-4 repro: the param shadows the import — the call
+        # resolves to the local, the import proves nothing.
+        'import { createHash } from "node:crypto";\n'
+        "export function f(createHash) {\n"
+        '  return createHash("md5");\n'
+        "}\n",
+        "src/shadowed_import.mjs",
+        None,
+        id="shadowed-import-param-denied",
+    ),
+    pytest.param(
+        # Greptile PR-round-2 repro: a local `process` parameter is a
+        # mock, not the global — the shadow_guard denies the kill switch.
+        'function apply(process) {\n  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n}\n',
+        "src/apply_env.js",
+        None,
+        id="shadowed-process-param-denied",
+    ),
+    pytest.param(
+        # Guarded-global module-scope shadow, `const` variant (Codex spec
+        # finding 1): legal JS, shadows every function below.
+        "const process = mock;\n"
+        "function f() {\n"
+        '  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/module_const_process.js",
+        None,
+        id="module-scope-const-process-denied",
+    ),
+    pytest.param(
+        # Same, hoisted `var` variant — pinned separately so a
+        # hoisting-path regression can't hide behind the const case.
+        "var process = mock;\n"
+        "function f() {\n"
+        '  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/module_var_process.js",
+        None,
+        id="module-scope-var-process-denied",
+    ),
+    pytest.param(
+        # RANGE positive: the catch param shadows only the catch clause —
+        # the kill switch AFTER the block is the real global. Proves the
+        # guard is span-contained, not scope-unit-coarse.
+        "function f() {\n"
+        "  try { g(); } catch (process) { log(process); }\n"
+        '  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/catch_then_real.js",
+        "javascript.tls_env_verify_disabled",
+        id="shadow-in-catch-call-outside-admitted",
+    ),
+    pytest.param(
+        # RANGE positive: a shadow in one function does not suppress the
+        # bound call in a SIBLING function.
+        'import { createHash } from "node:crypto";\n'
+        "export function fake(createHash) { return createHash; }\n"
+        "export function real(secret) {\n"
+        '  return createHash("md5").update(secret).digest("hex");\n'
+        "}\n",
+        "src/sibling_shadow.mjs",
+        "javascript.weak_crypto_hash",
+        id="shadow-in-sibling-function-admitted",
+    ),
+    pytest.param(
+        # Type-only import proves nothing at runtime (Codex round-4
+        # residual, now closed): module_presence needs a VALUE import.
+        'import type { Pool } from "pg";\n'
+        "export function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/typed_only.ts",
+        None,
+        id="type-only-import-module-presence-denied",
+    ),
+    pytest.param(
+        # Side-effect import binds no name a runtime call resolves through.
+        'import "mysql2";\n'
+        "export function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/side_effect.mjs",
+        None,
+        id="side-effect-import-module-presence-denied",
+    ),
+    pytest.param(
+        # Re-export binds no local name — the digest-collision twin of a
+        # value import (`import { Q } from "mysql"`), denied here.
+        'export { Q } from "mysql";\n'
+        "export function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/reexport_only.mjs",
+        None,
+        id="reexport-module-presence-denied",
+    ),
+    # --- import-binding admission (pre-guard rounds) ---
     pytest.param(
         # Greptile P1 repro: a `createHash` imported from a non-crypto module,
         # defined locally, or called on an arbitrary object — the NAME alone
