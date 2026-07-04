@@ -118,9 +118,9 @@ class ObservedQuery(BaseModel):
 
     `binding=None` means the match is admitted on structure alone — correct
     for globals (`eval`, `Function`) and for queries whose pattern already
-    text-constrains its receiver (`process.env` chain — no import needed,
-    though a text constraint is not lexical proof: a shadowing local
-    binding still matches, the FUP-214 residual). Every python-catalog
+    text-constrains its receiver (`process.env` chain — no import needed;
+    pair the entry with `shadow_guard` so a shadowing local binding of the
+    guarded global is denied at the match site). Every python-catalog
     entry is `None`: the binding step is a JS/TS admission rule; Python
     OBSERVED behavior is byte-stable (its sibling gap is FUP-184 scope).
     """

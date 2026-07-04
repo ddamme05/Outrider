@@ -617,8 +617,8 @@ def test_member_exec_with_bound_bare_sibling_is_not_admitted() -> None:
 def test_process_env_kill_switch_needs_no_import() -> None:
     """The process-wide kill switch's receiver is text-constrained in the
     query itself — it fires with ZERO imports, in both the dot and bracket
-    forms, under its own query id. (Text constraint, not lexical proof:
-    the shadowed-`process` residual is FUP-214 scope.)"""
+    forms, under its own query id. (The shadowed-`process` FP class is
+    closed by the shadow_guard — the table above pins those negatives.)"""
     for line in (
         'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
         'process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";',
