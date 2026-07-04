@@ -12,6 +12,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+import pytest
+
 from outrider.agent.nodes.analyze_observed import produce_observed_findings, run_observed_matches
 from outrider.ast_facts import parse_python
 from outrider.policy.findings import EvidenceTier
@@ -308,20 +310,170 @@ def test_unregistered_extension_is_inert() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_unbound_createhash_is_not_admitted() -> None:
-    """A `createHash` imported from a non-crypto module, defined locally, or
-    called on an arbitrary object produces NO OBSERVED finding — the name
-    alone is not proof of a crypto construction (Greptile P1 repro)."""
-    source = (
+# One row per admission variant: (source, path, expected query id or None
+# for "no OBSERVED finding"). Each row keeps its own id so a single-variant
+# regression names itself; rationale rides as a per-row comment. Cases with
+# extra assertions (line anchors, multi-form loops) stay as standalone tests
+# below the table.
+_BINDING_ADMISSION_CASES = (
+    pytest.param(
+        # Greptile P1 repro: a `createHash` imported from a non-crypto module,
+        # defined locally, or called on an arbitrary object — the NAME alone
+        # is not proof of a crypto construction.
         'import { createHash } from "./cache";\n'
         "const cacheApi = { createHash(name) { return name; } };\n"
         "export function demo() {\n"
         '  const a = createHash("md5");\n'
         '  const b = cacheApi.createHash("sha1");\n'
         "  return [a, b];\n"
-        "}\n"
-    )
-    assert _produce_at(source, "src/example.js") == ()
+        "}\n",
+        "src/example.js",
+        None,
+        id="unbound-createhash-denied",
+    ),
+    pytest.param(
+        # CJS whole-module require: the bare-require ALIAS receiver proves.
+        'const c = require("crypto");\n'
+        "function digest(s) {\n"
+        '  return c.createHash("sha1").update(s).digest("hex");\n'
+        "}\n",
+        "src/digest.js",
+        "javascript.weak_crypto_hash",
+        id="cjs-whole-module-receiver-admitted",
+    ),
+    pytest.param(
+        # Greptile P1 repro (the sharpest): an unrelated exec helper must not
+        # produce a CRITICAL OBSERVED command-injection finding.
+        'import { exec } from "./jobs";\n'
+        "export function runJob(id) {\n"
+        "  return exec('job-' + id);\n"
+        "}\n",
+        "src/jobs_runner.js",
+        None,
+        id="unbound-exec-helper-denied",
+    ),
+    pytest.param(
+        'const { exec } = require("child_process");\n'
+        "function run(cmd) {\n"
+        "  exec('ls ' + cmd);\n"
+        "}\n",
+        "src/run.js",
+        "javascript.command_injection_child_process",
+        id="child-process-destructured-exec-admitted",
+    ),
+    pytest.param(
+        # Previously a documented recall gap (the member arm demanded the
+        # literal `child_process` receiver name); the import join proves the
+        # aliased namespace.
+        'const cp = require("node:child_process");\n'
+        "function run(cmd) {\n"
+        "  cp.execSync(`run ${cmd}`);\n"
+        "}\n",
+        "src/run.js",
+        "javascript.command_injection_child_process",
+        id="aliased-namespace-exec-admitted",
+    ),
+    pytest.param(
+        # Greptile P1 repro: `.query(concat)` on a non-database API — no DB
+        # driver imported in the file — is not SQL injection.
+        'import { search } from "./search";\n'
+        "export function lookup(searchClient, tag) {\n"
+        "  return searchClient.query('tag:' + tag);\n"
+        "}\n",
+        "src/lookup.js",
+        None,
+        id="query-concat-without-db-driver-denied",
+    ),
+    pytest.param(
+        'const { Pool } = require("pg");\n'
+        "function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/find.js",
+        "javascript.sql_injection_string_concat",
+        id="query-concat-with-db-driver-admitted",
+    ),
+    pytest.param(
+        # `require("mysql2/promise")` — the dominant modern mysql2 idiom —
+        # proves package presence for a rule naming the package root; under
+        # exact-string matching this real SQL injection dropped to JUDGED.
+        'const mysql = require("mysql2/promise");\n'
+        "async function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/find.js",
+        "javascript.sql_injection_string_concat",
+        id="subpath-specifier-admitted",
+    ),
+    pytest.param(
+        # Package-root matching is `/`-delimited: `mysql2-mock` shares the
+        # `mysql2` byte prefix but is a different package.
+        'const mock = require("mysql2-mock");\n'
+        "function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/find.js",
+        None,
+        id="lookalike-package-root-denied",
+    ),
+    pytest.param(
+        # Greptile P1 repro: a standalone options literal with no TLS-capable
+        # module in the file is not a TLS-disabled finding.
+        "function policy() {\n  return { rejectUnauthorized: false };\n}\n",
+        "src/benign_config.js",
+        None,
+        id="reject-unauthorized-without-consumer-denied",
+    ),
+    pytest.param(
+        'const https = require("https");\n'
+        "function agent() {\n"
+        "  return new https.Agent({ rejectUnauthorized: false });\n"
+        "}\n",
+        "src/agent.js",
+        "javascript.tls_verify_disabled",
+        id="reject-unauthorized-with-https-admitted",
+    ),
+    pytest.param(
+        # The canonical managed-Postgres MITM idiom: `rejectUnauthorized:
+        # false` inside a pg `ssl:` option with only the DB driver imported —
+        # the option-honoring client families are in the TLS set, not just
+        # HTTP/TLS clients.
+        'const { Pool } = require("pg");\n'
+        "function connect(url) {\n"
+        "  return new Pool({ connectionString: url, ssl: { rejectUnauthorized: false } });\n"
+        "}\n",
+        "src/db.js",
+        "javascript.tls_verify_disabled",
+        id="reject-unauthorized-with-ssl-option-client-admitted",
+    ),
+    pytest.param(
+        # Greptile P1 repro: `mockEnv[...]` / `settings....` mutate a local
+        # object, not the process TLS switch — the receiver constraint lives
+        # in the query itself.
+        "function setup(mockEnv, settings) {\n"
+        '  mockEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";\n'
+        '  settings.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/mock_env.js",
+        None,
+        id="non-process-env-receiver-denied",
+    ),
+)
+
+
+@pytest.mark.parametrize(("source", "file_path", "expected_query_id"), _BINDING_ADMISSION_CASES)
+def test_binding_admission_per_variant(
+    source: str, file_path: str, expected_query_id: str | None
+) -> None:
+    """Per-variant import-binding admission pins: `None` rows must produce
+    ZERO OBSERVED findings (the unbound/lookalike/absent-module negatives),
+    admitted rows exactly one finding under the expected query id."""
+    findings = _produce_at(source, file_path)
+    if expected_query_id is None:
+        assert findings == ()
+    else:
+        (f,) = findings
+        assert f.query_match_id == expected_query_id
 
 
 def test_esm_destructured_createhash_is_admitted() -> None:
@@ -336,44 +488,6 @@ def test_esm_destructured_createhash_is_admitted() -> None:
     (f,) = _produce_at(source, "src/token.mjs")
     assert f.query_match_id == "javascript.weak_crypto_hash"
     assert f.line_start == 3
-
-
-def test_cjs_whole_module_receiver_is_admitted() -> None:
-    """The member form bound by a CJS whole-module require (the
-    _JS_WEAK_HASH_SOURCE fixture) — covered by the language tests above;
-    here the bare-require ALIAS receiver proves too."""
-    source = (
-        'const c = require("crypto");\n'
-        "function digest(s) {\n"
-        '  return c.createHash("sha1").update(s).digest("hex");\n'
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/digest.js")
-    assert f.query_match_id == "javascript.weak_crypto_hash"
-
-
-def test_unbound_exec_helper_is_not_admitted() -> None:
-    """`import { exec } from './jobs'` — an unrelated exec helper must not
-    produce a CRITICAL OBSERVED command-injection finding (the sharpest
-    Greptile repro)."""
-    source = (
-        'import { exec } from "./jobs";\n'
-        "export function runJob(id) {\n"
-        "  return exec('job-' + id);\n"
-        "}\n"
-    )
-    assert _produce_at(source, "src/jobs_runner.js") == ()
-
-
-def test_child_process_destructured_exec_is_admitted() -> None:
-    source = (
-        'const { exec } = require("child_process");\n'
-        "function run(cmd) {\n"
-        "  exec('ls ' + cmd);\n"
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/run.js")
-    assert f.query_match_id == "javascript.command_injection_child_process"
 
 
 def test_member_exec_with_bound_bare_sibling_is_not_admitted() -> None:
@@ -394,103 +508,6 @@ def test_member_exec_with_bound_bare_sibling_is_not_admitted() -> None:
     (f,) = _produce_at(source, "src/run.js")
     assert f.query_match_id == "javascript.command_injection_child_process"
     assert f.line_start == 4  # the bare bound call — NOT the regex receiver on line 3
-
-
-def test_aliased_namespace_exec_is_now_admitted() -> None:
-    """`const cp = require('child_process'); cp.exec(...)` — previously a
-    documented recall gap (the member arm demanded the literal
-    `child_process` receiver name); the import join proves the alias."""
-    source = (
-        'const cp = require("node:child_process");\n'
-        "function run(cmd) {\n"
-        "  cp.execSync(`run ${cmd}`);\n"
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/run.js")
-    assert f.query_match_id == "javascript.command_injection_child_process"
-
-
-def test_query_concat_without_db_driver_is_not_admitted() -> None:
-    """`.query(concat)` on a non-database API — no DB driver imported in the
-    file — is not SQL injection (Greptile P1 repro)."""
-    source = (
-        'import { search } from "./search";\n'
-        "export function lookup(searchClient, tag) {\n"
-        "  return searchClient.query('tag:' + tag);\n"
-        "}\n"
-    )
-    assert _produce_at(source, "src/lookup.js") == ()
-
-
-def test_query_concat_with_db_driver_present_is_admitted() -> None:
-    source = (
-        'const { Pool } = require("pg");\n'
-        "function find(pool, name) {\n"
-        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/find.js")
-    assert f.query_match_id == "javascript.sql_injection_string_concat"
-
-
-def test_subpath_specifier_satisfies_module_presence() -> None:
-    """`require("mysql2/promise")` — the dominant modern mysql2 idiom —
-    proves package presence for a rule naming the package root
-    (package-root-aware matching). Under exact-string matching this real
-    SQL injection was silently dropped to JUDGED."""
-    source = (
-        'const mysql = require("mysql2/promise");\n'
-        "async function find(pool, name) {\n"
-        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/find.js")
-    assert f.query_match_id == "javascript.sql_injection_string_concat"
-
-
-def test_lookalike_package_root_is_not_a_match() -> None:
-    """Package-root matching is `/`-delimited: `mysql2-mock` shares the
-    `mysql2` byte prefix but is a different package, so it proves nothing."""
-    source = (
-        'const mock = require("mysql2-mock");\n'
-        "function find(pool, name) {\n"
-        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
-        "}\n"
-    )
-    assert _produce_at(source, "src/find.js") == ()
-
-
-def test_reject_unauthorized_without_tls_consumer_is_not_admitted() -> None:
-    """A standalone options literal with no TLS-capable module in the file is
-    not a TLS-disabled finding (Greptile P1 repro)."""
-    source = "function policy() {\n  return { rejectUnauthorized: false };\n}\n"
-    assert _produce_at(source, "src/benign_config.js") == ()
-
-
-def test_reject_unauthorized_with_https_import_is_admitted() -> None:
-    source = (
-        'const https = require("https");\n'
-        "function agent() {\n"
-        "  return new https.Agent({ rejectUnauthorized: false });\n"
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/agent.js")
-    assert f.query_match_id == "javascript.tls_verify_disabled"
-
-
-def test_reject_unauthorized_with_ssl_option_client_is_admitted() -> None:
-    """The canonical managed-Postgres MITM idiom: `rejectUnauthorized: false`
-    inside a pg `ssl:` option, with only the DB driver imported — the
-    option-honoring client families are in the TLS module_presence set,
-    not just HTTP/TLS clients."""
-    source = (
-        'const { Pool } = require("pg");\n'
-        "function connect(url) {\n"
-        "  return new Pool({ connectionString: url, ssl: { rejectUnauthorized: false } });\n"
-        "}\n"
-    )
-    (f,) = _produce_at(source, "src/db.js")
-    assert f.query_match_id == "javascript.tls_verify_disabled"
 
 
 def test_process_env_kill_switch_needs_no_import() -> None:
@@ -518,19 +535,6 @@ def test_module_top_level_kill_switch_is_a_documented_residual() -> None:
     are the positive control."""
     source = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nconst x = 1;\n'
     assert _produce_at(source, "src/index.js") == ()
-
-
-def test_non_process_env_receiver_is_not_matched() -> None:
-    """`mockEnv[...] = "0"` / `settings.NODE_TLS_... = "0"` mutate a local
-    object, not the process TLS switch (Greptile P1 repro) — the receiver
-    constraint lives in the query itself."""
-    source = (
-        "function setup(mockEnv, settings) {\n"
-        '  mockEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";\n'
-        '  settings.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
-        "}\n"
-    )
-    assert _produce_at(source, "src/mock_env.js") == ()
 
 
 # ---------------------------------------------------------------------------
