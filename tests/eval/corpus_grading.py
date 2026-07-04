@@ -19,7 +19,10 @@ mechanism); `expected_clean` rows assert the catalog emits nothing for a file
 (optionally scoped to one query id). `grade()` fail-louds before observing:
 every vendored corpus file must carry at least one row (a row-less file would
 never be parsed, so a catalog FP on it could ship unmeasured) and each row's
-`query_match_id`/`finding_type` must resolve in the live registry. The grader
+`query_match_id`/`finding_type` must resolve in the live registry AND be a
+query production actually runs for the file's language. Observations key on
+(query, line) with same-line multiplicity counts — line is the ground-truth
+resolution, counts keep a 1 -> 2 emission drift visible. The grader
 then compares the empirically-observed stage against each row's documented
 current outcome and produces a deterministic `Scorecard` — the checked-in
 `scorecard_juice_shop.json` pins current behavior, and the structural scenario
@@ -33,6 +36,7 @@ output and the producer's domain records only (AST firewall).
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Annotated, Literal, get_args
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -181,19 +185,22 @@ class _FileObservation(BaseModel):
     # Why not, when gradeable is False (unreadable file, unsupported
     # extension, degraded parse) — surfaces in the not_graded rows' detail.
     ungraded_reason: str = ""
-    # (query_match_id, line) tuples for each layer.
-    raw: frozenset[tuple[str, int]]
-    admitted: frozenset[tuple[str, int]]
-    emitted: frozenset[tuple[str, int]]
+    # (query_match_id, line) -> occurrence count per layer. Line is the
+    # ground-truth resolution (rows carry no span), but counts preserve
+    # same-line multiplicity: two same-query emissions on one line must not
+    # collapse, or a 1 -> 2 emission drift ships a byte-identical scorecard.
+    raw: dict[tuple[str, int], int]
+    admitted: dict[tuple[str, int], int]
+    emitted: dict[tuple[str, int], int]
 
 
 def _ungradeable(reason: str) -> _FileObservation:
     return _FileObservation(
         gradeable=False,
         ungraded_reason=reason,
-        raw=frozenset(),
-        admitted=frozenset(),
-        emitted=frozenset(),
+        raw={},
+        admitted={},
+        emitted={},
     )
 
 
@@ -254,13 +261,13 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
 
     language = registry.query_language_for_path(rel_file)
     grammar = registry.grammar_for_path(rel_file)
-    raw: set[tuple[str, int]] = set()
+    raw: Counter[tuple[str, int]] = Counter()
     if language is not None and grammar is not None:
         for query_id in registry.observed_queries_for(language):
             for span in registry.match(query_id, data, grammar=grammar):
                 line_start = _span_line(span, head_content)
                 if line_start is not None:
-                    raw.add((query_id, line_start))
+                    raw[(query_id, line_start)] += 1
 
     admitted_matches = run_observed_matches(
         file_path=rel_file,
@@ -269,7 +276,7 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
     )
-    admitted = {(m.query_match_id, m.line_start) for m in admitted_matches}
+    admitted = Counter((m.query_match_id, m.line_start) for m in admitted_matches)
 
     findings = produce_observed_findings(
         admitted_matches,
@@ -278,18 +285,19 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
         installation_id=_GRADING_INSTALLATION_ID,
         active_policy_version=ACTIVE_POLICY_VERSION,
     )
-    emitted = {(f.query_match_id, f.line_start) for f in findings}
+    emitted = Counter((f.query_match_id, f.line_start) for f in findings)
 
     return _FileObservation(
         gradeable=True,
-        raw=frozenset(raw),
-        admitted=frozenset(admitted),
-        emitted=frozenset(emitted),
+        raw=dict(raw),
+        admitted=dict(admitted),
+        emitted=dict(emitted),
     )
 
 
 def _outcome_for(obs: _FileObservation, query_id: str, line: int) -> CorpusOutcome:
-    """Attribute a (query, line) expectation to the deepest stage it reached."""
+    """Attribute a (query, line) expectation to the deepest stage it reached
+    (dict membership — counts don't change the stage, only the detail)."""
     if (query_id, line) in obs.emitted:
         return "emitted"
     if (query_id, line) in obs.admitted:
@@ -312,12 +320,14 @@ _CORPUS_METADATA_FILES = frozenset({"LICENSE", "MANIFEST.md", "ground_truth.json
 
 
 def _corpus_source_files(corpus_root: Path) -> frozenset[str]:
-    return frozenset(
-        rel
-        for p in corpus_root.rglob("*")
-        if p.is_file()
-        and (rel := p.relative_to(corpus_root).as_posix()) not in _CORPUS_METADATA_FILES
-    )
+    files: set[str] = set()
+    for p in corpus_root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(corpus_root).as_posix()
+        if rel not in _CORPUS_METADATA_FILES:
+            files.add(rel)
+    return frozenset(files)
 
 
 def _validate_corpus_totality(corpus_root: Path, ground_truth: GroundTruth) -> None:
@@ -329,10 +339,12 @@ def _validate_corpus_totality(corpus_root: Path, ground_truth: GroundTruth) -> N
     mid-observation."""
     corpus_files = _corpus_source_files(corpus_root)
     row_files = {row.file for row in ground_truth.rows}
+    uncovered = sorted(corpus_files - row_files)
+    missing = sorted(row_files - corpus_files)
     problems: list[str] = []
-    if uncovered := sorted(corpus_files - row_files):
+    if uncovered:
         problems.append(f"corpus files with no ground-truth row: {uncovered}")
-    if missing := sorted(row_files - corpus_files):
+    if missing:
         problems.append(f"ground-truth rows naming missing files: {missing}")
     if problems:
         raise ValueError("corpus/ground-truth totality violated — " + "; ".join(problems))
@@ -340,24 +352,35 @@ def _validate_corpus_totality(corpus_root: Path, ground_truth: GroundTruth) -> N
 
 def _validate_rows_against_registry(ground_truth: GroundTruth) -> None:
     """Fail loud on ground-truth/registry drift: a row naming an unknown query
-    id would silently grade `no_raw_match`, and a stale `finding_type` would
-    survive a registry FindingType remap with a byte-identical scorecard —
-    both are authoring/drift bugs to surface, not outcomes to grade."""
+    id would silently grade `no_raw_match`, a stale `finding_type` would
+    survive a registry FindingType remap with a byte-identical scorecard, and
+    a query production never runs for the file's language (a `.ts` row naming
+    a `python.*` id) would grade as a plausible miss for a claim production
+    cannot produce — all authoring/drift bugs to surface, not outcomes to
+    grade."""
     problems: list[str] = []
     for row in ground_truth.rows:
-        if isinstance(row, ExpectedFindingRow):
-            observed_query = registry.OBSERVED_QUERIES.get(row.query_match_id)
-            if observed_query is None:
-                problems.append(f"{row.file}: unknown OBSERVED query id {row.query_match_id!r}")
-            elif row.finding_type != observed_query.finding_type.value:
-                problems.append(
-                    f"{row.file}: finding_type {row.finding_type!r} does not match the "
-                    f"registry's {observed_query.finding_type.value!r} for {row.query_match_id}"
-                )
-        elif (
-            row.query_match_id is not None and row.query_match_id not in registry.OBSERVED_QUERY_IDS
+        query_id = row.query_match_id
+        if query_id is None:
+            continue  # whole-catalog expected_clean rows carry no query scope
+        observed_query = registry.OBSERVED_QUERIES.get(query_id)
+        if observed_query is None:
+            problems.append(f"{row.file}: unknown OBSERVED query id {query_id!r}")
+            continue
+        if (
+            isinstance(row, ExpectedFindingRow)
+            and row.finding_type != observed_query.finding_type.value
         ):
-            problems.append(f"{row.file}: unknown OBSERVED query id {row.query_match_id!r}")
+            problems.append(
+                f"{row.file}: finding_type {row.finding_type!r} does not match the "
+                f"registry's {observed_query.finding_type.value!r} for {query_id}"
+            )
+        file_language = registry.query_language_for_path(row.file)
+        if query_id not in registry.observed_queries_for(file_language):
+            problems.append(
+                f"{row.file}: {query_id!r} is not a query production runs for this "
+                f"file (query language {file_language!r})"
+            )
     if problems:
         raise ValueError(
             "ground truth out of sync with the query registry — " + "; ".join(problems)
@@ -399,6 +422,12 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
                 continue
             observed = _outcome_for(obs, row.query_match_id, row.line)
             grade_val, detail = _grade_expected_finding(row, observed)
+            # Line is the ground-truth resolution, so all same-line emissions
+            # of the row's query are claimed by this row — surface the count
+            # so a 1 -> 2 multiplicity drift still moves the scorecard.
+            emitted_count = obs.emitted.get((row.query_match_id, row.line), 0)
+            if emitted_count > 1:
+                detail += f" [{emitted_count} same-line emissions claimed by this row]"
             row_scores.append(
                 RowScore(
                     file=row.file,
@@ -435,6 +464,9 @@ def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
             if in_scope:
                 grade_val = "false_positive"
                 detail = f"emitted {in_scope} but file is expected clean"
+                multiple = [(k, obs.emitted[k]) for k in in_scope if obs.emitted[k] > 1]
+                if multiple:
+                    detail += f" [same-line multiplicities: {multiple}]"
             else:
                 grade_val = "true_negative"
                 detail = "no findings emitted (correct)"
@@ -536,6 +568,8 @@ def _unclaimed_emissions(
     for file, obs in observations.items():
         for qid, line in sorted(obs.emitted):
             if (file, qid, line) not in claimed:
+                count = obs.emitted[(qid, line)]
+                multiplicity = f" [{count} emissions]" if count > 1 else ""
                 out.append(
                     RowScore(
                         file=file,
@@ -545,7 +579,10 @@ def _unclaimed_emissions(
                         observed_outcome="emitted",
                         current_outcome=None,
                         residual_tag=None,
-                        detail=f"emitted at line {line} with no ground-truth row (unlabeled)",
+                        detail=(
+                            f"emitted at line {line} with no ground-truth row "
+                            f"(unlabeled){multiplicity}"
+                        ),
                     )
                 )
     return out
