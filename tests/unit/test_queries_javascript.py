@@ -111,7 +111,7 @@ _CASES: tuple[tuple[str, bool, str, str], ...] = (
     ("command_injection_child_process", False, "template-no-substitution", "exec(`ls -la`);"),
     ("command_injection_child_process", False, "identifier-arg", "exec(cmd);"),
     # Member receivers match at the QUERY level as plain identifiers; the
-    # producer's import-binding step (observed-producer-v4) is what proves
+    # producer's import-binding step is what proves
     # or drops them: `cp` admits iff bound to a child_process import (the
     # former aliased-namespace recall gap, now provable), while a regex
     # receiver like `pattern` can never bind and is dropped there. The

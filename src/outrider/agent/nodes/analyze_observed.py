@@ -37,7 +37,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, assert_never
 
 from outrider.audit.events import (
     ObservedSkipChangedRegion,
@@ -93,7 +93,11 @@ if TYPE_CHECKING:
 # query's `BindingRule.modules` (or, mode="module_presence", when the file
 # imports one of them). Under v3 any callee/receiver NAME matched — an
 # `exec` helper imported from `./jobs` produced a CRITICAL OBSERVED finding.
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v4"
+# v5: binding-module matching is package-root aware — a subpath specifier
+# (`require("mysql2/promise")`) satisfies a rule naming its package root.
+# Under v4 the join was exact-string, silently dropping matches whose file
+# imported the driver through the dominant subpath idiom.
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v5"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
 # `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
@@ -155,6 +159,16 @@ def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
     return any(seg in ("test", "spec") for seg in inner_segments)
 
 
+def _module_matches(specifier: str, modules: tuple[str, ...]) -> bool:
+    """True when an import specifier resolves into one of the rule's
+    packages: an exact match, or a subpath of one (`mysql2/promise`,
+    `pg/lib/...`) — Node resolves `pkg/subpath` inside `pkg`, so the
+    subpath import proves the same package presence. The prefix is
+    `/`-delimited, so a lookalike package (`mysql2-mock`) never matches.
+    """
+    return any(specifier == m or specifier.startswith(m + "/") for m in modules)
+
+
 def _binding_admits(
     binding: BindingRule | None,
     captures: tuple[QueryCaptureSpan, ...],
@@ -165,12 +179,13 @@ def _binding_admits(
 
     `anchor_import`: the anchor identifier — the `@_recv` receiver capture
     when present, else the `@_fn` callee capture — must be a LOCAL name
-    bound by an import whose `module` is in the rule's set (`ImportRef.names`
+    bound by an import whose `module` matches the rule's set (`ImportRef.names`
     carries local binding names for ESM named/default/namespace and CJS
     `require` forms alike). A match with neither capture is NOT admitted —
     default-deny, the proof-boundary direction. `module_presence`: the file
-    must import at least one of the rule's modules. `binding=None` admits on
-    structure alone (globals / self-proving patterns).
+    must import at least one of the rule's modules. Module matching is
+    package-root aware in both modes (`_module_matches`). `binding=None`
+    admits on structure alone (globals / self-proving patterns).
 
     Known precision residuals (signal_only-acceptable; FUP-214): the join is
     file-level, not lexically scoped — a local declaration SHADOWING an
@@ -183,20 +198,25 @@ def _binding_admits(
     if binding is None:
         return True
     if binding.mode == "module_presence":
-        wanted = set(binding.modules)
-        return any(ref.module in wanted for ref in import_refs)
-    anchor: str | None = None
-    for wanted_name in ("_recv", "_fn"):
-        for c in captures:
-            if c.name == wanted_name:
-                anchor = content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace")
+        return any(_module_matches(ref.module, binding.modules) for ref in import_refs)
+    if binding.mode == "anchor_import":
+        anchor: str | None = None
+        for wanted_name in ("_recv", "_fn"):
+            for c in captures:
+                if c.name == wanted_name:
+                    anchor = content_bytes[c.byte_start : c.byte_end].decode(
+                        "utf-8", errors="replace"
+                    )
+                    break
+            if anchor is not None:
                 break
-        if anchor is not None:
-            break
-    if anchor is None:
-        return False
-    module_set = set(binding.modules)
-    return any(ref.module in module_set and anchor in ref.names for ref in import_refs)
+        if anchor is None:
+            return False
+        return any(
+            _module_matches(ref.module, binding.modules) and anchor in ref.names
+            for ref in import_refs
+        )
+    assert_never(binding.mode)
 
 
 def import_bindings_digest(import_refs: tuple[ImportRef, ...]) -> str:
@@ -289,7 +309,7 @@ def run_observed_matches(
             if not any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges):
                 continue
             # Import-binding: a name-anchored match must prove its anchor
-            # binds to the dangerous API (observed-producer-v4).
+            # binds to the dangerous API (the import-binding admission step).
             if not _binding_admits(observed.binding, span.captures, content_bytes, import_refs):
                 continue
             try:

@@ -2161,9 +2161,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             file_path=changed_file.path,
             head_content=content,
             included_scope_units=included_scope_units,
-            # Import-binding admission (observed-producer-v4): the producer
-            # proves a name-anchored match binds to its dangerous API via
-            # the file's extracted imports.
+            # Import-binding admission: the producer proves a name-anchored
+            # match binds to its dangerous API via the file's extracted
+            # imports.
             import_refs=parse_result.imports,
         )
         if patched_file is not None:

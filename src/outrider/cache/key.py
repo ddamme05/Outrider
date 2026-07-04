@@ -38,7 +38,7 @@ from outrider.llm.base import _canonical_prompt_hash
 # from-import amendment) makes cached trace_candidates depend on module-level
 # imports the rendered prompt doesn't carry; v4 folds
 # `import_bindings_digest` — import-binding OBSERVED admission
-# (observed-producer-v4) consumes ALL of the file's imports (module + local
+# consumes ALL of the file's imports (module + local
 # names), which the from-import map deliberately excludes (Python-shaped
 # validation over `from`-kind refs only). The recipe change self-invalidates
 # old rows on its own, but the explicit version is the legible, replay-durable
@@ -81,7 +81,7 @@ def compute_analyze_cache_key(
     admit different trace_candidates and must never share an entry.
     `import_bindings_digest` pins the import-binding admission step's
     per-file input — the `(module, names)` view of ALL the file's imports,
-    which `_binding_admits` (observed-producer-v4) joins name-anchored
+    which `_binding_admits` joins name-anchored
     OBSERVED matches against; the from-import map excludes most JS/TS forms
     (`node:`-prefixed / hyphenated specifiers, "direct"-kind whole-module /
     namespace / side-effect imports), so without this component two reviews
