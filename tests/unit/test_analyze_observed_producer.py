@@ -511,9 +511,10 @@ def test_member_exec_with_bound_bare_sibling_is_not_admitted() -> None:
 
 
 def test_process_env_kill_switch_needs_no_import() -> None:
-    """The process-wide kill switch is self-proving (`process.env` receiver
-    constrained in the query) — it fires with ZERO imports, in both the dot
-    and bracket forms, under its own query id."""
+    """The process-wide kill switch's receiver is text-constrained in the
+    query itself — it fires with ZERO imports, in both the dot and bracket
+    forms, under its own query id. (Text constraint, not lexical proof:
+    the shadowed-`process` residual is FUP-214 scope.)"""
     for line in (
         'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
         'process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";',
@@ -530,7 +531,7 @@ def test_module_top_level_kill_switch_is_a_documented_residual() -> None:
     gate drops it and the producer emits nothing. This pin records that
     veto as a deliberate, visible residual (FUP-214) rather than an
     accident masked by function-wrapped fixtures; the fix shape is a
-    changed-region admission arm for self-proving module-level queries.
+    changed-region admission arm for import-free module-level queries.
     The function-wrapped forms in `test_process_env_kill_switch_needs_no_import`
     are the positive control."""
     source = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nconst x = 1;\n'

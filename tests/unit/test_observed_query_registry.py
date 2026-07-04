@@ -31,7 +31,7 @@ def test_observed_query_count() -> None:
     step 1; + weak_asymmetric_key_size, the value-predicate slice) + eight
     JS/TS (the four-family catalog,
     specs/2026-07-03-js-ts-observed-query-catalog.md, plus the process-env
-    TLS kill switch split into its own self-proving query in the
+    TLS kill switch split into its own import-free query in the
     import-binding fold)."""
     assert len(registry.OBSERVED_QUERY_IDS) == 19
     assert set(registry.OBSERVED_QUERIES) == set(registry.OBSERVED_QUERY_IDS)

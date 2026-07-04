@@ -19,7 +19,7 @@
 ; the CANONICAL real-world form of this kill switch is a module-top-level
 ; statement — which has no enclosing scope unit and is dropped there. The
 ; producer test suite pins that veto explicitly; the fix shape is a
-; changed-region admission arm for self-proving module-level queries.
+; changed-region admission arm for import-free module-level queries.
 (assignment_expression
   left: (member_expression
     object: (member_expression

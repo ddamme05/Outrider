@@ -220,8 +220,8 @@ _CASES: tuple[tuple[str, bool, str, str], ...] = (
     ),
     ("tls_verify_disabled", False, "other-key-false", "const o = { secure: false };"),
     # --- tls_env_verify_disabled: positives, one per admitted form (the
-    # process-wide kill switch split into its own self-proving query — the
-    # receiver is constrained to `process.env` in the pattern itself) ---
+    # process-wide kill switch split into its own import-free query — the
+    # receiver is text-constrained to `process.env` in the pattern itself) ---
     (
         "tls_env_verify_disabled",
         True,

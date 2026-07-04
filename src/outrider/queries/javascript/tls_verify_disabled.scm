@@ -3,7 +3,8 @@
 ; spellings). Only the literal `false` fires — a variable value is a JUDGED
 ; contextual call. The process-wide NODE_TLS_REJECT_UNAUTHORIZED kill switch
 ; lives in its own query (`javascript.tls_env_verify_disabled`): its
-; `process.env` receiver is self-proving and needs no import, while this
+; `process.env` receiver is text-constrained in the query and needs no
+; import (not lexical proof — see that query's header), while this
 ; pair pattern is gated by the producer on file-level presence of a module
 ; that honors the option (BindingRule mode="module_presence") — an option
 ; object with no TLS-capable consumer in the file is a JUDGED call.
