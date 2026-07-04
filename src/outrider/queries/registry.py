@@ -630,6 +630,13 @@ def _validate_anchor_captures(query_id: str, query: Query, *, grammar: GrammarKi
     `capture_quantifier` (raises for a capture absent from the pattern —
     the mandatory-capture validator's idiom; OPTIONAL participation counts,
     since alternation arms quantify `?`).
+
+    Known limitation: the guarantee is per-PATTERN, not per-alternation-ARM
+    — the query API doesn't expose arms. A pattern mixing anchored arms
+    with an anchorless one passes here, while matches via the anchorless
+    arm carry no anchor capture and are default-denied at admission
+    (empirically confirmed). When adding an arm to an anchor_import query,
+    ensure the arm itself captures `_fn` or `_recv`.
     """
     capture_count = cast("int", query.capture_count)
     anchor_indexes = tuple(
