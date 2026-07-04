@@ -257,8 +257,9 @@ class LexicalBinding(BaseModel):
     shadows would be invisible (and calls outside a shadow range wrongly
     suppressed) if names were attached to scope units. The visibility
     span is computed per kind by the adapter — params/`var` hoist to the
-    enclosing function's span, `let`/`const`/`class` get the enclosing
-    block's span, catch params the catch clause, module-level
+    enclosing function's span, `let`/`const` get the enclosing block's
+    span, `function`/`class` declarations the nearest enclosing
+    block/function span, catch params the catch clause, module-level
     declarations the whole module. Over-approximation only ever WIDENS a
     span (over-denial degrades an OBSERVED claim to JUDGED — the safe
     direction). CJS `require` declarators and import/export statements
