@@ -144,3 +144,41 @@ def test_js_broken_cipher_produces_deterministic_observed_finding() -> None:
     assert finding.line_start == finding.line_end == 3
     # Replay's registry-membership check resolves the id (proof boundary).
     assert registry.get_query_source(finding.query_match_id).strip()
+
+
+def test_shadowed_variant_produces_nothing_through_the_driver_path() -> None:
+    """The shadowing guard on the structural (LLM-free) driver path
+    (specs/2026-07-04-lexical-shadowing-guard.md): the SAME dangerous call
+    admits when the import binds it and produces NOTHING when a parameter
+    shadows the import — proving the guard holds through parse_source →
+    run_observed_matches, not just the unit path."""
+    shadowed = (
+        'import { createCipheriv } from "node:crypto";\n'
+        "export function encryptLegacy(createCipheriv, key, iv, plaintext) {\n"
+        '  return createCipheriv("des-ede3-cbc", key, iv).update(plaintext);\n'
+        "}\n"
+    )
+    file_path = "src/legacy/crypto.mjs"
+    parsed = parse_source(shadowed.encode(), file_path, MagicMock())
+    assert parsed.parser_outcome == "clean"
+    assert (
+        run_observed_matches(
+            file_path=file_path,
+            head_content=shadowed,
+            included_scope_units=parsed.scope_units,
+            import_refs=parsed.imports,
+            lexical_bindings=parsed.lexical_bindings,
+        )
+        == ()
+    )
+    # Positive control: drop the shadowing parameter and the finding is back.
+    value = shadowed.replace("encryptLegacy(createCipheriv, key", "encryptLegacy(key")
+    parsed_value = parse_source(value.encode(), file_path, MagicMock())
+    matches = run_observed_matches(
+        file_path=file_path,
+        head_content=value,
+        included_scope_units=parsed_value.scope_units,
+        import_refs=parsed_value.imports,
+        lexical_bindings=parsed_value.lexical_bindings,
+    )
+    assert [m.query_match_id for m in matches] == ["javascript.weak_crypto_broken_cipher"]
