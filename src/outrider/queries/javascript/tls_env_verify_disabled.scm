@@ -4,10 +4,11 @@
 ; in the query itself, so the pattern carries no BindingRule — the kill
 ; switch needs no import (split out of `tls_verify_disabled` so that
 ; query's module_presence gate cannot wrongly suppress this one). The
-; constraint is a TEXT match, not scope resolution: a local `process`
-; binding shadowing the global (`function apply(process) { ... }`, a mock)
-; still matches — the same no-lexical-scoping residual as the import join
-; (signal_only-acceptable; FUP-214).
+; text constraint is completed by the registry entry's
+; `shadow_guard=("process",)`: the producer denies a match whose site is
+; inside a local `process` binding's visibility span (a parameter or
+; module-scope mock), so the shadowing FP class is closed
+; (specs/2026-07-04-lexical-shadowing-guard.md).
 ; Only the literal `"0"` fires — a variable value is a JUDGED contextual
 ; call. Deliberate recall gaps (JUDGED covers each): mixed forms
 ; (`process["env"].NODE_TLS_...`), aliased receivers (`const env =
