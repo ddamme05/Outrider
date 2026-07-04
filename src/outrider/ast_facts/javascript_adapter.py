@@ -107,12 +107,13 @@ class JavaScriptAdapter:
     _MEMBER_NAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"property_identifier", "private_property_identifier"}
     )
-    # Lexical-binding visibility frames (shadowing-guard spec). Function
-    # frames bound params + hoisted `var`/`function` declarations; block
-    # frames bound `let`/`const`/`class`. A function body IS a
-    # `statement_block`, so the block set alone resolves block-scoped
-    # kinds inside functions; expression-bodied arrows cannot contain
-    # declarations.
+    # Lexical-binding visibility frames (DECISIONS.md#060). Function
+    # frames bound params + hoisted `var`; `let`/`const` bind at the
+    # nearest block frame; `function`/`class` declarations at the
+    # nearest frame of EITHER set (the combined `decl_frames` search).
+    # A function body IS a `statement_block`, so the block set alone
+    # resolves block-scoped kinds inside functions; expression-bodied
+    # arrows cannot contain declarations.
     _FUNCTION_FRAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {
             "function_declaration",
