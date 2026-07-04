@@ -307,6 +307,13 @@ def run_observed_matches(
                 continue
             # Containment: the match must fall fully inside an included scope's
             # byte range (a call always nests within its enclosing scope).
+            # Known residual (FUP-214): module-top-level matches have no
+            # enclosing ScopeUnit and are dropped here — including
+            # tls_env_verify_disabled's canonical kill-switch form
+            # (producer-pinned). Do NOT fix by loosening this gate broadly
+            # (it excludes straddling/unchanged-code matches by design);
+            # the fix shape is a changed-region admission arm for
+            # self-proving module-level queries.
             if not any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges):
                 continue
             # Import-binding: a name-anchored match must prove its anchor
