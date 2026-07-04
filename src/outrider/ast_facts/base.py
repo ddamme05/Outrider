@@ -6,9 +6,10 @@ Two Protocols, both consumed by graph nodes via closure injection from
 `build_graph(...)` per `nodes-receive-deps-via-closure`:
 
   - `LanguageAdapter` — implemented by per-language adapters
-    (`PythonAdapter`, `JavaScriptAdapter`, `TypeScriptAdapter`). Six
-    methods covering scope, import, call-site, assignment extraction;
-    simple-direct-import resolution; and parse-outcome computation.
+    (`PythonAdapter`, `JavaScriptAdapter`, `TypeScriptAdapter`). The
+    methods cover scope, import, call-site, assignment, and
+    lexical-binding extraction; simple-direct-import resolution; and
+    parse-outcome computation.
 
   - `ImportPathResolver` — the path-validation contract that
     `resolve_simple_direct_import` calls into. Implementation is owned
@@ -29,6 +30,7 @@ from outrider.ast_facts.models import (
     ComputedParserOutcome,
     ImportRef,
     ImportResolution,
+    LexicalBinding,
     ScopeUnit,
 )
 
@@ -59,6 +61,12 @@ class LanguageAdapter(Protocol):
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[AssignmentSite, ...]: ...
+
+    def extract_lexical_bindings(self, source: bytes, file_path: str) -> tuple[LexicalBinding, ...]:
+        """Local name declarations with their lexical visibility byte
+        spans — the OBSERVED shadowing guard's input
+        (specs/2026-07-04-lexical-shadowing-guard.md). Languages whose
+        catalog has no binding rules return `()` (Python today)."""
 
     def resolve_simple_direct_import(
         self, import_ref: ImportRef, import_root: Path

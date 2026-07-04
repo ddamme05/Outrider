@@ -30,6 +30,7 @@ from outrider.ast_facts.models import (
     ComputedParserOutcome,
     ImportRef,
     ImportResolution,
+    LexicalBinding,
     ParseResult,
     ScopeUnit,
     SkipReason,
@@ -464,6 +465,22 @@ class PythonAdapter:
             return None
         text = PythonAdapter._node_text(left)
         return text or None
+
+    # ------------------------------------------------------------------
+    # extract_lexical_bindings
+    # ------------------------------------------------------------------
+
+    def extract_lexical_bindings(
+        self,
+        source: bytes,  # noqa: ARG002 — Protocol signature
+        file_path: str,  # noqa: ARG002 — Protocol signature
+    ) -> tuple[LexicalBinding, ...]:
+        """Protocol conformance stub: the Python catalog carries no
+        binding rules (`binding=None` everywhere), so the shadowing
+        guard has no Python consumer — extraction is the
+        shadowing-guard spec's explicit non-goal (FUP-184 owns the
+        Python sibling gap)."""
+        return ()
 
     # ------------------------------------------------------------------
     # resolve_simple_direct_import

@@ -247,8 +247,44 @@ class ScopeUnit(BaseModel):
         return Span(byte_start=self.byte_start, byte_end=self.byte_end)
 
 
+class LexicalBinding(BaseModel):
+    """A local name declaration and the lexical byte range in which it
+    shadows — the OBSERVED shadowing guard's domain fact
+    (specs/2026-07-04-lexical-shadowing-guard.md).
+
+    Shadowing is a SPAN question, not a scope-unit-membership question:
+    `ScopeUnit` is function/method/class range data only, so block/catch
+    shadows would be invisible (and calls outside a shadow range wrongly
+    suppressed) if names were attached to scope units. The visibility
+    span is computed per kind by the adapter — params/`var` hoist to the
+    enclosing function's span, `let`/`const`/`class` get the enclosing
+    block's span, catch params the catch clause, module-level
+    declarations the whole module. Over-approximation only ever WIDENS a
+    span (over-denial degrades an OBSERVED claim to JUDGED — the safe
+    direction). CJS `require` declarators and import/export statements
+    emit no record: an import binding must not shadow itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str
+    name: str
+    kind: Literal["param", "var", "let", "const", "function", "class", "catch"]
+    line: int
+    visibility_byte_start: int
+    visibility_byte_end: int
+
+
 class ImportRef(BaseModel):
-    """A single import statement, parsed into its parts."""
+    """A single import statement, parsed into its parts.
+
+    `is_value_import` distinguishes imports that bind (or load) runtime
+    values from forms that cannot back a runtime call: `import type`
+    statements, `export … from` re-exports (no local binding at all),
+    and side-effect imports. Python imports are always value imports
+    (the default). Type-only SPECIFIERS (`import { type Pool, Client }`)
+    are additionally excluded from `names` at extraction.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -258,6 +294,7 @@ class ImportRef(BaseModel):
     module: str
     names: tuple[str, ...] = ()
     is_simple_direct: bool
+    is_value_import: bool = True
 
 
 class CallSite(BaseModel):
@@ -456,6 +493,9 @@ class ParseResult(BaseModel):
     imports: tuple[ImportRef, ...] = ()
     call_sites: tuple[CallSite, ...] = ()
     assignment_sites: tuple[AssignmentSite, ...] = ()
+    # OBSERVED shadowing guard's per-file input (JS/TS adapters extract;
+    # Python returns empty per the shadowing-guard spec's non-goal).
+    lexical_bindings: tuple[LexicalBinding, ...] = ()
     has_error: dict[str, bool] = Field(default_factory=dict)
     # 1-indexed source lines covered by tree-sitter ERROR/MISSING nodes,
     # scope-INDEPENDENT (unlike `has_error`, keyed by recovered scope unit_id). A
@@ -504,6 +544,8 @@ class ParseResult(BaseModel):
             non_empty.append(f"call_sites (len={len(self.call_sites)})")
         if self.assignment_sites:
             non_empty.append(f"assignment_sites (len={len(self.assignment_sites)})")
+        if self.lexical_bindings:
+            non_empty.append(f"lexical_bindings (len={len(self.lexical_bindings)})")
         if self.has_error:
             non_empty.append(f"has_error (keys={sorted(self.has_error)})")
         if self.error_lines:
