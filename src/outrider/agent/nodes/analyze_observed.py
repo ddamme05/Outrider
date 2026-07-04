@@ -56,7 +56,11 @@ from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import lookup_severity
 from outrider.queries import registry as query_registry
-from outrider.queries.observed import ANCHOR_CAPTURE_PREFERENCE, QueryClass
+from outrider.queries.observed import (
+    ANCHOR_CAPTURE_PREFERENCE,
+    GUARD_POSITION_CAPTURES,
+    QueryClass,
+)
 from outrider.schemas import ReviewFinding
 
 if TYPE_CHECKING:
@@ -105,9 +109,10 @@ if TYPE_CHECKING:
 # imported the driver through the dominant subpath idiom.
 # v6: lexical shadowing guard + value-import requirement
 # (specs/2026-07-04-lexical-shadowing-guard.md). A match is denied when its
-# anchor (or a MATCH-PARTICIPATING `shadow_guard` global — one of the
-# match's captured identifier texts) is shadowed by a `LexicalBinding`
-# whose visibility span contains the match, and binding rules only count
+# anchor (or a `shadow_guard` global captured at a guard POSITION —
+# `GUARD_POSITION_CAPTURES`) is locally rebound: a `LexicalBinding` whose
+# visibility span contains the match, or (for a guarded global) an
+# import/require of that name. Binding rules only count
 # VALUE imports (`ImportRef.is_value_import` — False when no value binding
 # survives: type-only forms, re-exports, side-effect imports, and
 # binding-less requires like `const {} = require("pg")`). Under v5 the
@@ -125,18 +130,6 @@ OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v6"
 # >2000-char matches (which previously crashed, so never reached the cache), so it
 # needs no OBSERVED_PRODUCER_VERSION bump.
 _EVIDENCE_MAX_CHARS: Final[int] = 2000
-
-# Capture names that hold a GUARDED-GLOBAL identifier — the callee/receiver
-# position whose text `#eq?`-pins the global (`@_fn`=eval, `@_ctor`=Function,
-# `@_proc`=process; `@_recv` for symmetry with the anchor family). A guarded
-# name in `shadow_guard` participates in a match ONLY through these captures,
-# never through argument/value captures (`@_arg`, `@_val`, `@_env*`) — else
-# `eval(Function)` with a shadowed `Function` argument would wrongly drop a
-# real `eval` match (Codex implementation-audit find). A new binding=None
-# query that text-constrains a global under a new capture name extends this
-# set (and the catalog pin in test_observed_query_registry checks every such
-# query declares a shadow_guard).
-_GUARD_POSITION_CAPTURES: Final[frozenset[str]] = frozenset({"_recv", "_fn", "_ctor", "_proc"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,26 +229,40 @@ def _guarded_global_shadowed(
     match_byte_start: int,
     match_byte_end: int,
     lexical_bindings: tuple[LexicalBinding, ...],
+    import_refs: tuple[ImportRef, ...],
 ) -> bool:
-    """True when a guarded global PARTICIPATES in this match and is
-    shadowed at the match site. Participation is decided per match, not
-    per query, and ONLY through guard-POSITION captures
-    (`_GUARD_POSITION_CAPTURES` — the callee/receiver identifier, not the
-    argument): a guarded name counts only when its text appears in one of
-    those captures. So `eval(Function)` with a shadowed `Function`
-    argument keeps admitting (only `@_fn`="eval" is a guard position, and
-    `eval` is unshadowed), while a multi-global query never drops a real
-    `eval(x)` match over an unrelated shadowed `Function` (Codex
-    implementation-audit find)."""
+    """True when a guarded global PARTICIPATES in this match and is locally
+    rebound, so the name resolves to the local, not the global.
+    Participation is decided per match, not per query, and ONLY through
+    guard-POSITION captures (`GUARD_POSITION_CAPTURES` — the callee/receiver
+    identifier, not the argument): a guarded name counts only when its text
+    appears in one of those captures. So `eval(Function)` with a shadowed
+    `Function` argument keeps admitting (only `@_fn`="eval" is a guard
+    position, and `eval` is unshadowed).
+
+    Rebinding is either a lexical declaration whose visibility span
+    contains the match (`_shadowed`) OR an import/require binding of the
+    name — a global like `process`/`eval`/`Function` is never legitimately
+    imported, so `const process = require("./mock")` is a definitional
+    shadow that no `LexicalBinding` records (require declarators are
+    excluded to avoid anchor-import self-shadow). The import check is
+    file-level: a module-scope rebind shadows the whole file (the common
+    case); a function-scope require-rebind of a global over-denies a
+    sibling use (degrades to JUDGED — the safe direction; documented
+    residual, FUP-214)."""
     if not shadow_guard:
         return False
     capture_texts = {
         content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace")
         for c in captures
-        if c.name in _GUARD_POSITION_CAPTURES
+        if c.name in GUARD_POSITION_CAPTURES
     }
+    imported_names = {name for ref in import_refs for name in ref.names}
     return any(
-        g in capture_texts and _shadowed(g, match_byte_start, match_byte_end, lexical_bindings)
+        g in capture_texts
+        and (
+            _shadowed(g, match_byte_start, match_byte_end, lexical_bindings) or g in imported_names
+        )
         for g in shadow_guard
     )
 
@@ -485,6 +492,7 @@ def run_observed_matches(
                 span.byte_start,
                 span.byte_end,
                 lexical_bindings,
+                import_refs,
             ):
                 continue
             # Import-binding: a name-anchored match must prove its anchor

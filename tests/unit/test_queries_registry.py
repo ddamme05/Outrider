@@ -141,3 +141,30 @@ def test_live_anchor_import_queries_satisfy_the_protocol() -> None:
             registry._validate_anchor_captures(query_id, query, grammar=grammar)  # noqa: SLF001
             checked += 1
     assert checked, "the live catalog must register at least one anchor_import query"
+
+
+def test_shadow_guard_requires_a_guard_position_capture() -> None:
+    """A shadow_guard query must capture its global at a guard-POSITION
+    (`GUARD_POSITION_CAPTURES`); the producer only tests guarded names
+    there, so a query pinning its global under another capture name would
+    have a silently-inert guard (/code-review find). The registry rejects
+    it at load, mirroring `_validate_anchor_captures`."""
+    import pytest
+
+    from outrider.queries.observed import GUARD_POSITION_CAPTURES
+
+    body = '(call_expression function: (identifier) @_target (#eq? @_target "x")) @m'
+    query = registry._compile_and_validate("javascript.probe", body, grammar="javascript")  # noqa: SLF001
+    with pytest.raises(ValueError, match="no guard-position identifier"):
+        registry._validate_guard_position_captures("javascript.probe", query, grammar="javascript")  # noqa: SLF001
+    # Every live shadow_guard query passes under each of its grammars.
+    checked = 0
+    for query_id, observed in registry._OBSERVED_QUERIES.items():  # noqa: SLF001
+        if not observed.shadow_guard:
+            continue
+        assert set(observed.shadow_guard)  # sanity
+        for grammar, query in registry._COMPILED_QUERIES[query_id].items():  # noqa: SLF001
+            registry._validate_guard_position_captures(query_id, query, grammar=grammar)  # noqa: SLF001
+            checked += 1
+    assert checked, "expected at least one live shadow_guard query"
+    assert GUARD_POSITION_CAPTURES  # imported symbol used

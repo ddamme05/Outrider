@@ -71,6 +71,7 @@ from outrider.ast_facts.registry import (
 from outrider.policy.severity import FindingType
 from outrider.queries.observed import (
     ANCHOR_CAPTURE_PREFERENCE,
+    GUARD_POSITION_CAPTURES,
     BindingRule,
     ObservedQuery,
     QueryClass,
@@ -620,6 +621,14 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Que
         if observed.binding is not None and observed.binding.mode == "anchor_import":
             for grammar, query in compiled[query_id].items():
                 _validate_anchor_captures(query_id, query, grammar=grammar)
+        # A `shadow_guard` global is only checked at guard-POSITION captures;
+        # if the query pins the global under some other capture the guard is
+        # silently inert, so require at least one guard-position capture at
+        # load (mirrors _validate_anchor_captures — the producer's guard
+        # depends on it).
+        if observed.shadow_guard:
+            for grammar, query in compiled[query_id].items():
+                _validate_guard_position_captures(query_id, query, grammar=grammar)
     # Deprecated bodies also compile and validate, under the grammars of
     # the language named by the id's namespace prefix — the same
     # `_language_for_query_id` decode live registration uses, so the
@@ -683,6 +692,36 @@ def _validate_anchor_captures(query_id: str, query: Query, *, grammar: GrammarKi
                 f"producer would default-deny every match of that pattern "
                 f"silently. Fix the .scm capture names or the BindingRule mode."
             )
+
+
+def _validate_guard_position_captures(query_id: str, query: Query, *, grammar: GrammarKind) -> None:
+    """Enforce that a `shadow_guard` query captures a global at a
+    guard-POSITION (`GUARD_POSITION_CAPTURES` — callee/receiver identifier).
+    The producer's `_guarded_global_shadowed` only tests a guarded name
+    against those captures, so a query that `#eq?`-pins its global under a
+    different capture name (`@_target`) would have a silently-inert guard —
+    the shadowing FP the guard exists to close reopens with no failing
+    test. Require at least one guard-position capture; participation probed
+    per-query via `_capture_quantifier_or_none` (presence across any
+    pattern is enough — the guard reads whichever the match carries).
+    """
+    capture_count = cast("int", query.capture_count)
+    guard_indexes = tuple(
+        c for c in range(capture_count) if query.capture_name(c) in GUARD_POSITION_CAPTURES
+    )
+    pattern_count = cast("int", query.pattern_count)
+    has_guard_capture = any(
+        _capture_quantifier_or_none(query, p, c) is not None
+        for p in range(pattern_count)
+        for c in guard_indexes
+    )
+    if not has_guard_capture:
+        raise ValueError(
+            f"Query {query_id!r} ({grammar}) declares a shadow_guard but captures "
+            f"no guard-position identifier ({sorted(GUARD_POSITION_CAPTURES)}); the "
+            f"producer's shadow guard would be silently inert. Capture the guarded "
+            f"global under one of those names, or drop the shadow_guard."
+        )
 
 
 def _compile_and_validate(

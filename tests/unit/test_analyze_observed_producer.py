@@ -450,6 +450,33 @@ _BINDING_ADMISSION_CASES = (
         id="guarded-name-in-ctor-argument-still-admits",
     ),
     pytest.param(
+        # /code-review find: a `let` in a switch case is block-scoped to the
+        # switch body — the post-switch `eval` is the real global and must
+        # fire (the visibility span must be the switch_body, not the whole
+        # function).
+        "export function f(x) {\n"
+        "  switch (x) {\n"
+        "    case 1: { let eval = mock; break; }\n"
+        "  }\n"
+        "  return eval(userInput);\n"
+        "}\n",
+        "src/switch_scoped.mjs",
+        "javascript.command_injection_eval",
+        id="switch-scoped-shadow-does-not-reach-post-switch-global",
+    ),
+    pytest.param(
+        # /code-review find: a module-scope import/require rebind of a
+        # guarded global shadows the whole file — `const process =
+        # require("./mock")` is not the global.
+        'const process = require("./mock");\n'
+        "export function f() {\n"
+        '  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/require_rebound_process.js",
+        None,
+        id="module-scope-require-rebind-of-global-denied",
+    ),
+    pytest.param(
         # CJS twin of the all-type-specifier case (Codex implementation-
         # audit find): a require that binds NO surviving local name loads
         # the module but proves no runtime callability.

@@ -124,7 +124,7 @@ class JavaScriptAdapter:
         }
     )
     _BLOCK_FRAME_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {"statement_block", "for_statement", "for_in_statement"}
+        {"statement_block", "for_statement", "for_in_statement", "switch_body"}
     )
     # Binding-position pattern nodes the identifier collector recurses
     # into. Unknown node types are NOT recursed (under-collection means

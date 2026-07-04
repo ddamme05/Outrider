@@ -5,10 +5,13 @@
 ; switch needs no import (split out of `tls_verify_disabled` so that
 ; query's module_presence gate cannot wrongly suppress this one). The
 ; text constraint is completed by the registry entry's
-; `shadow_guard=("process",)`: the producer denies a match whose site is
-; inside a local `process` binding's visibility span (a parameter or
-; module-scope mock), so the shadowing FP class is closed
-; (specs/2026-07-04-lexical-shadowing-guard.md).
+; `shadow_guard=("process",)`: the producer denies a match whose `process`
+; is locally rebound — a parameter or module-scope declaration whose
+; visibility span contains the match, OR a module-scope
+; import/require rebind (`const process = require("./mock")`). Residual
+; (safe-direction, FUP-214): a FUNCTION-scope require-rebind of `process`
+; over-denies a sibling use (file-level import check), degrading to JUDGED.
+; See specs/2026-07-04-lexical-shadowing-guard.md.
 ; Only the literal `"0"` fires — a variable value is a JUDGED contextual
 ; call. Deliberate recall gaps (JUDGED covers each): mixed forms
 ; (`process["env"].NODE_TLS_...`), aliased receivers (`const env =
