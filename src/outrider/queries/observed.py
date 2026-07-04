@@ -17,7 +17,7 @@ policy. `queries/` is a higher layer and may import `policy/`.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -32,6 +32,15 @@ from outrider.policy.severity import FindingType  # noqa: TC001
 # grammar kind: a QueryLanguage selects the query SET for a file; the grammar
 # selects the compiled variant + parser for its bytes.
 QueryLanguage = Literal["python", "javascript"]
+
+# Anchor-capture protocol names, in PREFERENCE order: the producer anchors an
+# `anchor_import` match on the first participating capture (`_recv` receiver
+# wins over `_fn` bare callee), and the registry's import-time validator
+# requires every pattern of an anchor_import query to reference at least one
+# of these names. One constant, two consumers (`_binding_admits`,
+# `_validate_anchor_captures`) — renaming a capture in only one place cannot
+# drift silently into 100% default-deny.
+ANCHOR_CAPTURE_PREFERENCE: Final[tuple[str, ...]] = ("_recv", "_fn")
 
 
 class QueryClass(StrEnum):

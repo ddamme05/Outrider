@@ -69,7 +69,13 @@ from outrider.ast_facts.registry import (
     TYPESCRIPT_DIALECT_BY_EXTENSION,
 )
 from outrider.policy.severity import FindingType
-from outrider.queries.observed import BindingRule, ObservedQuery, QueryClass, QueryLanguage
+from outrider.queries.observed import (
+    ANCHOR_CAPTURE_PREFERENCE,
+    BindingRule,
+    ObservedQuery,
+    QueryClass,
+    QueryLanguage,
+)
 from outrider.queries.value_predicates import VALUE_PREDICATES
 
 if TYPE_CHECKING:
@@ -205,6 +211,62 @@ _DEPRECATED_QUERY_ID_TO_BODY: Final[dict[str, str]] = {}
 # get_query_source() resolve them; their metadata folds into the cache-key
 # digest (DECISIONS.md#048 for the FindingTypes).
 # ---------------------------------------------------------------------------
+
+# Named binding-module families (the JS/TS catalog's BindingRule inputs).
+# `_module_matches` is package-root aware, so subpath specifiers
+# (`mysql2/promise`) satisfy their root entry; Node core modules must list
+# BOTH spellings (`crypto` + `node:crypto`) — no scheme equivalence is
+# computed (FUP-215(f)).
+_NODE_CRYPTO_MODULES: Final[tuple[str, ...]] = ("crypto", "node:crypto")
+_CHILD_PROCESS_MODULES: Final[tuple[str, ...]] = ("child_process", "node:child_process")
+# Drivers whose query/execute surface is the SQL-injection sink family.
+_SQL_DRIVER_MODULES: Final[tuple[str, ...]] = (
+    "better-sqlite3",
+    "knex",
+    "mariadb",
+    "mssql",
+    "mysql",
+    "mysql2",
+    "oracledb",
+    "pg",
+    "pg-promise",
+    "sequelize",
+    "sqlite3",
+    "typeorm",
+)
+# Two families that honor `rejectUnauthorized`: HTTP/TLS clients, and the
+# DB/queue/mail clients that accept it inside `ssl:`/`tls:` connection
+# options (`new Pool({ ssl: { rejectUnauthorized: false } })` is the
+# canonical managed-PG MITM idiom).
+_TLS_OPTION_CONSUMER_MODULES: Final[tuple[str, ...]] = (
+    "amqplib",
+    "axios",
+    "got",
+    "http2",
+    "https",
+    "ioredis",
+    "knex",
+    "mariadb",
+    "mongodb",
+    "mssql",
+    "mysql",
+    "mysql2",
+    "node-fetch",
+    "node:http2",
+    "node:https",
+    "node:tls",
+    "nodemailer",
+    "pg",
+    "pg-promise",
+    "redis",
+    "request",
+    "sequelize",
+    "tls",
+    "typeorm",
+    "undici",
+    "ws",
+)
+
 _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
     oq.query_match_id: oq
     for oq in (
@@ -373,7 +435,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "unsafe for signatures, certificates, or integrity protection. "
                 "Use SHA-256 or stronger."
             ),
-            binding=BindingRule(mode="anchor_import", modules=("crypto", "node:crypto")),
+            binding=BindingRule(mode="anchor_import", modules=_NODE_CRYPTO_MODULES),
         ),
         ObservedQuery(
             query_match_id="javascript.weak_crypto_broken_cipher",
@@ -387,7 +449,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "(DES, 3DES, RC2, RC4, Blowfish), which is cryptographically "
                 "weak. Use a modern authenticated cipher such as AES-GCM."
             ),
-            binding=BindingRule(mode="anchor_import", modules=("crypto", "node:crypto")),
+            binding=BindingRule(mode="anchor_import", modules=_NODE_CRYPTO_MODULES),
         ),
         ObservedQuery(
             query_match_id="javascript.weak_crypto_ecb_mode",
@@ -401,7 +463,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "ciphertext, leaking structure. Use an authenticated mode such "
                 "as GCM, or CBC with a random IV and a MAC."
             ),
-            binding=BindingRule(mode="anchor_import", modules=("crypto", "node:crypto")),
+            binding=BindingRule(mode="anchor_import", modules=_NODE_CRYPTO_MODULES),
         ),
         ObservedQuery(
             query_match_id="javascript.command_injection_child_process",
@@ -416,9 +478,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "shell command injection. Use execFile with an argument list, "
                 "or validate the input against a strict allowlist."
             ),
-            binding=BindingRule(
-                mode="anchor_import", modules=("child_process", "node:child_process")
-            ),
+            binding=BindingRule(mode="anchor_import", modules=_CHILD_PROCESS_MODULES),
         ),
         ObservedQuery(
             query_match_id="javascript.command_injection_eval",
@@ -450,23 +510,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             # The receiver is a derived variable (a pool/connection), not the
             # import name — per-receiver proof needs assignment-flow. File-level
             # driver presence is the deterministic V1 gate.
-            binding=BindingRule(
-                mode="module_presence",
-                modules=(
-                    "better-sqlite3",
-                    "knex",
-                    "mariadb",
-                    "mssql",
-                    "mysql",
-                    "mysql2",
-                    "oracledb",
-                    "pg",
-                    "pg-promise",
-                    "sequelize",
-                    "sqlite3",
-                    "typeorm",
-                ),
-            ),
+            binding=BindingRule(mode="module_presence", modules=_SQL_DRIVER_MODULES),
         ),
         ObservedQuery(
             query_match_id="javascript.tls_verify_disabled",
@@ -482,42 +526,8 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             ),
             # The option object is usually built separately from the sink call;
             # file-level presence of a module that honors the option is the
-            # deterministic V1 gate. Two families: HTTP/TLS clients, and the
-            # DB/queue/mail clients that honor `rejectUnauthorized` inside
-            # their `ssl:`/`tls:` connection options (`new Pool({ ssl: {
-            # rejectUnauthorized: false } })` is the canonical managed-PG
-            # MITM idiom).
-            binding=BindingRule(
-                mode="module_presence",
-                modules=(
-                    "amqplib",
-                    "axios",
-                    "got",
-                    "http2",
-                    "https",
-                    "ioredis",
-                    "knex",
-                    "mariadb",
-                    "mongodb",
-                    "mssql",
-                    "mysql",
-                    "mysql2",
-                    "node-fetch",
-                    "node:http2",
-                    "node:https",
-                    "node:tls",
-                    "nodemailer",
-                    "pg",
-                    "pg-promise",
-                    "redis",
-                    "request",
-                    "sequelize",
-                    "tls",
-                    "typeorm",
-                    "undici",
-                    "ws",
-                ),
-            ),
+            # deterministic V1 gate (families documented on the constant).
+            binding=BindingRule(mode="module_presence", modules=_TLS_OPTION_CONSUMER_MODULES),
         ),
         ObservedQuery(
             query_match_id="javascript.tls_env_verify_disabled",
@@ -619,17 +629,32 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Que
     return bodies, compiled
 
 
+def _capture_quantifier_or_none(query: Query, pattern_index: int, capture_index: int) -> str | None:
+    """`capture_quantifier`, with the by-design negative collapsed to None:
+    tree-sitter's binding raises one of `(IndexError, ValueError,
+    SystemError)` when the capture isn't part of the pattern — the single
+    place that exception set is encoded (both registry validators consume
+    this), so a future binding-version surprise is a one-site fix. Anything
+    outside that set propagates: legitimate registry bugs (memory errors)
+    must not be swallowed.
+    """
+    try:
+        return query.capture_quantifier(pattern_index, capture_index)
+    except (IndexError, ValueError, SystemError):
+        return None
+
+
 def _validate_anchor_captures(query_id: str, query: Query, *, grammar: GrammarKind) -> None:
     """Enforce the anchor-capture protocol for `anchor_import` queries at
-    import time. The producer anchors a match on `@_recv` (member receiver)
-    else `@_fn` (bare callee) and DEFAULT-DENIES a match with neither, so a
-    `.scm` that typos the capture name (`@_fun`) — or a pattern shape that
-    captures neither — would silently suppress 100% of that pattern's
-    matches: no error, no telemetry, no failing test. Every pattern must
-    reference `_fn` or `_recv`; participation is probed per-pattern via
-    `capture_quantifier` (raises for a capture absent from the pattern —
-    the mandatory-capture validator's idiom; OPTIONAL participation counts,
-    since alternation arms quantify `?`).
+    import time. The producer anchors a match on a capture named in
+    `ANCHOR_CAPTURE_PREFERENCE` (`@_recv` member receiver, else `@_fn` bare
+    callee) and DEFAULT-DENIES a match with neither, so a `.scm` that typos
+    the capture name (`@_fun`) — or a pattern shape that captures neither —
+    would silently suppress 100% of that pattern's matches: no error, no
+    telemetry, no failing test. Every pattern must reference an anchor
+    capture; participation is probed per-pattern via
+    `_capture_quantifier_or_none` (OPTIONAL participation counts, since
+    alternation arms quantify `?`).
 
     Known limitation: the guarantee is per-PATTERN, not per-alternation-ARM
     — the query API doesn't expose arms. A pattern mixing anchored arms
@@ -640,18 +665,10 @@ def _validate_anchor_captures(query_id: str, query: Query, *, grammar: GrammarKi
     """
     capture_count = cast("int", query.capture_count)
     anchor_indexes = tuple(
-        c for c in range(capture_count) if query.capture_name(c) in ("_fn", "_recv")
+        c for c in range(capture_count) if query.capture_name(c) in ANCHOR_CAPTURE_PREFERENCE
     )
     for p in range(cast("int", query.pattern_count)):
-        for c in anchor_indexes:
-            try:
-                query.capture_quantifier(p, c)
-            except (IndexError, ValueError, SystemError):
-                # Narrow by-design negative set: the capture isn't part of
-                # this pattern (the _compile_and_validate precedent).
-                continue
-            break
-        else:
+        if not any(_capture_quantifier_or_none(query, p, c) is not None for c in anchor_indexes):
             raise ValueError(
                 f"Query {query_id!r} ({grammar}) has binding mode 'anchor_import' "
                 f"but pattern {p} captures neither '_fn' nor '_recv'; the "
@@ -695,25 +712,14 @@ def _compile_and_validate(
     # Per Internal contracts' optional-captures residual edge: V1's
     # non-empty-match guarantee depends on mandatory captures. A pattern
     # whose captures are ALL optional fails registration here rather
-    # than crashing at first match. `capture_quantifier(p, c)` raises
-    # one of `(IndexError, ValueError, SystemError)` when capture c
-    # isn't part of pattern p — the by-design negative case the narrow
-    # `except` below handles. Anything outside that set propagates so
-    # legitimate registry bugs (memory errors, future binding-version
-    # surprises) aren't swallowed.
+    # than crashing at first match. Absent-from-pattern captures probe
+    # None via `_capture_quantifier_or_none` (the shared by-design
+    # negative; see its docstring for the exception-set rationale).
     for p in range(pattern_count):
         pattern_mandatory_count = 0
         for c in range(capture_count):
-            try:
-                quantifier = query.capture_quantifier(p, c)
-            except (IndexError, ValueError, SystemError):
-                # Narrow set: tree-sitter's binding raises one of these
-                # when capture `c` isn't part of pattern `p` — the
-                # by-design negative case, not an error to log.
-                # Catching `Exception` would swallow legitimate registry
-                # bugs (memory errors, future binding-version surprises).
-                continue
-            if quantifier in _MANDATORY_QUANTIFIERS:
+            quantifier = _capture_quantifier_or_none(query, p, c)
+            if quantifier is not None and quantifier in _MANDATORY_QUANTIFIERS:
                 pattern_mandatory_count += 1
         if pattern_mandatory_count < 1:
             raise ValueError(

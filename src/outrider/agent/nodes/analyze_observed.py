@@ -56,7 +56,7 @@ from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import lookup_severity
 from outrider.queries import registry as query_registry
-from outrider.queries.observed import QueryClass
+from outrider.queries.observed import ANCHOR_CAPTURE_PREFERENCE, QueryClass
 from outrider.schemas import ReviewFinding
 
 if TYPE_CHECKING:
@@ -201,18 +201,18 @@ def _binding_admits(
     if binding.mode == "module_presence":
         return any(_module_matches(ref.module, binding.modules) for ref in import_refs)
     if binding.mode == "anchor_import":
-        anchor: str | None = None
-        for wanted_name in ("_recv", "_fn"):
-            for c in captures:
-                if c.name == wanted_name:
-                    anchor = content_bytes[c.byte_start : c.byte_end].decode(
-                        "utf-8", errors="replace"
-                    )
-                    break
-            if anchor is not None:
-                break
-        if anchor is None:
+        # First participating protocol capture wins — all `_recv` before any
+        # `_fn` (the receiver-over-callee preference the bound-sibling test
+        # pins).
+        anchor_span = next(
+            (c for name in ANCHOR_CAPTURE_PREFERENCE for c in captures if c.name == name),
+            None,
+        )
+        if anchor_span is None:
             return False
+        anchor = content_bytes[anchor_span.byte_start : anchor_span.byte_end].decode(
+            "utf-8", errors="replace"
+        )
         return any(
             _module_matches(ref.module, binding.modules) and anchor in ref.names
             for ref in import_refs
@@ -242,6 +242,13 @@ def import_bindings_digest(import_refs: tuple[ImportRef, ...]) -> str:
     excluded because admission ignores them. Count headers + length
     prefixes make boundaries unambiguous (the cache-key framing rule);
     the empty tuple digests distinctly from any populated set.
+
+    Deliberately MORE sensitive than admission itself: names are hashed
+    even when only `module_presence` rules apply, and the exact specifier
+    spelling is hashed though `_module_matches` collapses subpaths. That
+    over-invalidation costs cache hits (never staleness — the safe
+    direction) and keeps the digest independent of the registry's current
+    rule set, which is pinned separately by `QUERY_REGISTRY_DIGEST`.
     """
     entries = sorted({(ref.module, tuple(sorted(ref.names))) for ref in import_refs})
     h = hashlib.sha256()
@@ -300,6 +307,19 @@ def run_observed_matches(
     matches: list[ObservedMatch] = []
 
     for query_id, observed in query_registry.observed_queries_for(language).items():
+        # module_presence is span-independent — decide it once per query and
+        # skip the tree-sitter run entirely when the file imports none of the
+        # rule's modules (the common case). The per-span `_binding_admits`
+        # below stays the single admission chokepoint; this is a pre-gate,
+        # not a second decision site.
+        if (
+            observed.binding is not None
+            and observed.binding.mode == "module_presence"
+            and not any(
+                _module_matches(ref.module, observed.binding.modules) for ref in import_refs
+            )
+        ):
+            continue
         for span in query_registry.match(query_id, content_bytes, grammar=grammar):
             # A degenerate (zero-width) envelope has no reviewable line range;
             # skip rather than feed query_span_to_source_lines a span it rejects.
