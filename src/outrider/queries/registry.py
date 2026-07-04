@@ -1,5 +1,8 @@
 # Tree-sitter query registry per
-# specs/2026-04-30-ast-facts-module.md Internal contracts.
+# specs/2026-04-30-ast-facts-module.md Internal contracts, as amended by
+# DECISIONS.md#061 (the spec's "semantic change requires a new id" ledger
+# trigger is superseded: ids name claims; the ledger fires on claim
+# retirement, not on every semantic body edit).
 """Query-id registry and execution surface.
 
 Owns:
@@ -200,11 +203,13 @@ _QUERY_ID_TO_FILENAME: Final[dict[str, str]] = {
 # not a byte-exact pattern. Claim-preserving precision edits evolve the
 # `.scm` body IN PLACE under the stable id (`QUERY_REGISTRY_DIGEST` pins
 # the body epoch; git history of the tracked `.scm` files is the body
-# archive). This ledger is populated only on CLAIM change — id retirement
-# or a split (the tls_env precedent) — so historical reviews' ids keep
-# resolving for membership replay. Future source-rematch replay (#031)
-# needs a body-versioning surface before it can re-run old reviews under
-# old bodies.
+# archive). This ledger is populated only on CLAIM RETIREMENT — an id
+# whose claim stops being produced — so historical reviews' ids keep
+# resolving for membership replay. A claim SPLIT mints a new id for the
+# split-out claim and needs no ledger while the old id's narrowed claim
+# is still produced (the tls_env precedent: both ids live, ledger empty).
+# Future source-rematch replay (#031) needs a body-versioning surface
+# before it can re-run old reviews under old bodies.
 _DEPRECATED_QUERY_ID_TO_BODY: Final[dict[str, str]] = {}
 
 
