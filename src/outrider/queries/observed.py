@@ -138,8 +138,12 @@ class ObservedQuery(BaseModel):
     # Globals that must be UNSHADOWED at the match site even when
     # `binding=None` (the query's receiver constraint is a TEXT match, not
     # lexical proof — `tls_env_verify_disabled` guards "process" so a local
-    # `process` binding stops admitting). Checked for every query,
-    # independent of binding mode; digest auto-folds it (FUP-181).
+    # `process` binding stops admitting). MATCH-PARTICIPATING: a guarded
+    # name counts only when the match's captured identifier texts include
+    # it, so a multi-global query (eval/Function) never drops a real
+    # `eval(x)` match over an unrelated shadowed `Function`. Checked for
+    # every query, independent of binding mode; digest auto-folds it
+    # (FUP-181).
     shadow_guard: tuple[str, ...] = ()
 
     @field_validator("shadow_guard")

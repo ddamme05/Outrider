@@ -105,12 +105,16 @@ if TYPE_CHECKING:
 # imported the driver through the dominant subpath idiom.
 # v6: lexical shadowing guard + value-import requirement
 # (specs/2026-07-04-lexical-shadowing-guard.md). A match is denied when its
-# anchor (or a `shadow_guard` global) is shadowed by a `LexicalBinding`
+# anchor (or a MATCH-PARTICIPATING `shadow_guard` global — one of the
+# match's captured identifier texts) is shadowed by a `LexicalBinding`
 # whose visibility span contains the match, and binding rules only count
-# VALUE imports (`ImportRef.is_value_import`). Under v5 the join was
-# file-level: `function f(createHash) {...}` still admitted after a real
-# crypto import, `function apply(process) {...}` fired the TLS kill-switch
-# query, and `import type { Pool } from "pg"` proved DB presence.
+# VALUE imports (`ImportRef.is_value_import` — False when no value binding
+# survives: type-only forms, re-exports, side-effect imports, and
+# binding-less requires like `const {} = require("pg")`). Under v5 the
+# join was file-level: `function f(createHash) {...}` still admitted after
+# a real crypto import, `function apply(process) {...}` fired the TLS
+# kill-switch query, and `import type { Pool } from "pg"` proved DB
+# presence.
 OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v6"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
@@ -210,6 +214,32 @@ def _shadowed(
         and b.visibility_byte_start <= match_byte_start
         and match_byte_end <= b.visibility_byte_end
         for b in lexical_bindings
+    )
+
+
+def _guarded_global_shadowed(
+    shadow_guard: tuple[str, ...],
+    captures: tuple[QueryCaptureSpan, ...],
+    content_bytes: bytes,
+    match_byte_start: int,
+    match_byte_end: int,
+    lexical_bindings: tuple[LexicalBinding, ...],
+) -> bool:
+    """True when a guarded global PARTICIPATES in this match and is
+    shadowed at the match site. Participation is decided per match, not
+    per query: a guarded name counts only when one of the match's captured
+    identifier texts equals it (`@_fn` == "eval", `@_proc` == "process") —
+    a multi-global query like command_injection_eval must not drop a real
+    `eval(x)` match just because an unrelated `Function` parameter shadows
+    the OTHER guarded global (Codex implementation-audit find)."""
+    if not shadow_guard:
+        return False
+    capture_texts = {
+        content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace") for c in captures
+    }
+    return any(
+        g in capture_texts and _shadowed(g, match_byte_start, match_byte_end, lexical_bindings)
+        for g in shadow_guard
     )
 
 
@@ -426,12 +456,18 @@ def run_observed_matches(
             # import-free module-level queries.
             if not any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges):
                 continue
-            # Shadow guard: a text-constrained global (tls_env's `process`)
-            # must not be locally bound at the match site — a shadowing
-            # binding means the receiver is a mock/parameter, not the global.
-            if any(
-                _shadowed(g, span.byte_start, span.byte_end, lexical_bindings)
-                for g in observed.shadow_guard
+            # Shadow guard: a text-constrained global (tls_env's `process`,
+            # eval/Function) must not be locally bound at the match site — a
+            # shadowing binding means the name resolves to a mock/parameter,
+            # not the global. Match-participating: only the guarded names
+            # this match actually captured count.
+            if _guarded_global_shadowed(
+                observed.shadow_guard,
+                span.captures,
+                content_bytes,
+                span.byte_start,
+                span.byte_end,
+                lexical_bindings,
             ):
                 continue
             # Import-binding: a name-anchored match must prove its anchor

@@ -415,6 +415,35 @@ _BINDING_ADMISSION_CASES = (
         id="unshadowed-eval-admitted",
     ),
     pytest.param(
+        # The guard is MATCH-participating (Codex implementation-audit
+        # find): shadowing the OTHER guarded global must not deny a real
+        # `eval` match — `Function` does not participate in this match.
+        "export function run(Function, x) {\n  return eval(x);\n}\n",
+        "src/unrelated_guard_shadow.mjs",
+        "javascript.command_injection_eval",
+        id="unrelated-guarded-global-shadow-still-admits-eval",
+    ),
+    pytest.param(
+        # The inverse pairing: a shadowed `eval` must not deny a real
+        # `new Function(...)` match.
+        "export function build(eval, body) {\n  return new Function(body);\n}\n",
+        "src/unrelated_guard_shadow_fn.mjs",
+        "javascript.command_injection_eval",
+        id="unrelated-eval-shadow-still-admits-function",
+    ),
+    pytest.param(
+        # CJS twin of the all-type-specifier case (Codex implementation-
+        # audit find): a require that binds NO surviving local name loads
+        # the module but proves no runtime callability.
+        'const {} = require("pg");\n'
+        "export function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/empty_require.js",
+        None,
+        id="binding-less-require-module-presence-denied",
+    ),
+    pytest.param(
         # Type-only import proves nothing at runtime (Codex round-4
         # residual, now closed): module_presence needs a VALUE import.
         'import type { Pool } from "pg";\n'
