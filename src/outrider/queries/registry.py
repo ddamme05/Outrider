@@ -701,27 +701,30 @@ def _validate_guard_position_captures(query_id: str, query: Query, *, grammar: G
     against those captures, so a query that `#eq?`-pins its global under a
     different capture name (`@_target`) would have a silently-inert guard —
     the shadowing FP the guard exists to close reopens with no failing
-    test. Require at least one guard-position capture; participation probed
-    per-query via `_capture_quantifier_or_none` (presence across any
-    pattern is enough — the guard reads whichever the match carries).
+    test. Every pattern must reference a guard-position capture;
+    participation is probed per-pattern via `_capture_quantifier_or_none`,
+    mirroring `_validate_anchor_captures` — a query-wide presence check
+    would let one well-captured pattern mask a mis-captured sibling whose
+    matches carry no guard-position capture (silent-partial failure).
+
+    Known limitation: the guarantee is per-PATTERN, not per-alternation-ARM
+    — the query API doesn't expose arms. When adding an arm to a
+    shadow_guard query, ensure the arm itself captures a guard-position
+    name.
     """
     capture_count = cast("int", query.capture_count)
     guard_indexes = tuple(
         c for c in range(capture_count) if query.capture_name(c) in GUARD_POSITION_CAPTURES
     )
-    pattern_count = cast("int", query.pattern_count)
-    has_guard_capture = any(
-        _capture_quantifier_or_none(query, p, c) is not None
-        for p in range(pattern_count)
-        for c in guard_indexes
-    )
-    if not has_guard_capture:
-        raise ValueError(
-            f"Query {query_id!r} ({grammar}) declares a shadow_guard but captures "
-            f"no guard-position identifier ({sorted(GUARD_POSITION_CAPTURES)}); the "
-            f"producer's shadow guard would be silently inert. Capture the guarded "
-            f"global under one of those names, or drop the shadow_guard."
-        )
+    for p in range(cast("int", query.pattern_count)):
+        if not any(_capture_quantifier_or_none(query, p, c) is not None for c in guard_indexes):
+            raise ValueError(
+                f"Query {query_id!r} ({grammar}) declares a shadow_guard but pattern "
+                f"{p} captures no guard-position identifier "
+                f"({sorted(GUARD_POSITION_CAPTURES)}); the producer's shadow guard "
+                f"would be silently inert for that pattern's matches. Capture the "
+                f"guarded global under one of those names, or drop the shadow_guard."
+            )
 
 
 def _compile_and_validate(
