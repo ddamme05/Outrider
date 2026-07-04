@@ -49,8 +49,9 @@ def test_registered_query_ids_matches_current_query_id_map() -> None:
 
 def test_registered_query_ids_excludes_deprecated() -> None:
     """Deprecated query ids exist for REPLAY of historical reviews; they
-    MUST NOT fire against current OBSERVED admission (a deprecated query's
-    semantics by definition no longer hold against current source). The
+    MUST NOT fire against current OBSERVED admission (a ledger id's claim
+    was RETIRED per DECISIONS.md#061 — it is no longer produced against
+    current source; claim-preserving edits never enter the ledger). The
     construction `frozenset(_QUERY_ID_TO_FILENAME)` excludes the
     `_DEPRECATED_QUERY_ID_TO_BODY` mapping by design — pin that
     invariant so a future refactor that unions them is rejected loud."""
