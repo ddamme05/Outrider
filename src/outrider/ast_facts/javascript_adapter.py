@@ -498,6 +498,7 @@ class JavaScriptAdapter:
                 module=module,
                 names=names,
                 is_simple_direct=kind == "relative",
+                is_value_import=bool(names),
             )
         module = self._string_text(node.child_by_field_name("source"))
         # TS statement-level type-only import (`import type { X } from 'm'`):
@@ -635,6 +636,11 @@ class JavaScriptAdapter:
             names = tuple(collected)
         else:
             return None
+        # Same value rule as the ESM builder: a require that binds no
+        # surviving local name (`const {} = require("pg")`) loads the
+        # module but nothing a runtime call can resolve through — it must
+        # not prove module_presence (Codex implementation-audit find, the
+        # CJS twin of the all-type-specifier ESM case).
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -642,6 +648,7 @@ class JavaScriptAdapter:
             module=module,
             names=names,
             is_simple_direct=kind == "relative",
+            is_value_import=bool(names),
         )
 
     # ------------------------------------------------------------------

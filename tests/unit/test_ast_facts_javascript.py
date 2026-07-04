@@ -690,3 +690,14 @@ def test_reexport_and_side_effect_imports_are_non_value() -> None:
     result = _parse(source, "src/app.mjs")
     assert len(result.imports) == 3
     assert all(not i.is_value_import for i in result.imports)
+
+
+def test_binding_less_require_is_non_value() -> None:
+    """The CJS twin of the all-type-specifier ESM case: `const {} =
+    require("pg")` loads the module but binds no surviving local name —
+    non-value, like a side-effect import (Codex implementation-audit
+    find). A require that binds names stays a value import."""
+    result = _parse(b'const {} = require("pg");\nconst { Pool } = require("pg");\n')
+    by_names = {i.names: i.is_value_import for i in result.imports}
+    assert by_names[()] is False
+    assert by_names[("Pool",)] is True
