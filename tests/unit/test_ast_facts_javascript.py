@@ -564,3 +564,129 @@ def test_extension_bearing_relative_import_resolves_literal(tmp_path: Path) -> N
     resolution = _resolving_adapter().resolve_simple_direct_import(ref, tmp_path)
     assert resolution.status == "resolved"
     assert resolution.target_path == "src/rel.js"
+
+
+# ---------------------------------------------------------------------------
+# Lexical bindings (shadowing-guard spec) — per-kind visibility spans.
+# ---------------------------------------------------------------------------
+
+
+def _bindings(source: bytes, file_path: str = "src/app.js"):
+    return _parse(source, file_path).lexical_bindings
+
+
+def _binding(source: bytes, name: str):
+    matches = [b for b in _bindings(source) if b.name == name]
+    assert len(matches) == 1, f"expected one binding for {name!r}, got {matches}"
+    return matches[0]
+
+
+def test_param_bindings_span_the_enclosing_function() -> None:
+    source = b"const pre = 1;\nfunction f(a, { b, c: d }, e = 1, ...rest) { return a; }\n"
+    names = {b.name for b in _bindings(source) if b.kind == "param"}
+    assert names == {"a", "b", "d", "e", "rest"}
+    fn_start = source.index(b"function")
+    for b in _bindings(source):
+        if b.kind == "param":
+            assert b.visibility_byte_start == fn_start
+            # Params are visible through the whole function, nothing more.
+            assert b.visibility_byte_end <= len(source)
+            assert b.visibility_byte_start > 0  # NOT module-wide
+
+
+def test_let_const_are_block_scoped_not_function_scoped() -> None:
+    source = b"function f() {\n  if (x) { const inner = 1; }\n  after();\n}\n"
+    b = _binding(source, "inner")
+    assert b.kind == "const"
+    # Visibility is the inner block — it must END before `after()` runs.
+    assert b.visibility_byte_end < source.index(b"after")
+
+
+def test_var_hoists_to_the_enclosing_function() -> None:
+    source = b"function f() {\n  if (x) { var hoisted = 1; }\n  after();\n}\n"
+    b = _binding(source, "hoisted")
+    assert b.kind == "var"
+    # Function-scoped: the span covers `after()` despite block nesting.
+    assert b.visibility_byte_end > source.index(b"after")
+    assert b.visibility_byte_start == 0  # the function starts at byte 0
+
+
+def test_module_level_const_and_var_are_module_wide() -> None:
+    """The guarded-global shadows (Codex spec finding 1): module-scope
+    NON-import declarations emit records with module-wide visibility —
+    `const process = mock;` and hoisted `var process = mock;` both
+    legally shadow a global for every function below."""
+    for decl in (b"const process = mock;", b"var process = mock;"):
+        source = decl + b'\nfunction f() { process.env.X = "0"; }\n'
+        b = _binding(source, "process")
+        assert (b.visibility_byte_start, b.visibility_byte_end) == (0, len(source))
+
+
+def test_function_and_class_declaration_names_bind() -> None:
+    source = b"function helper() {}\nclass Widget {}\n"
+    assert _binding(source, "helper").kind == "function"
+    assert _binding(source, "Widget").kind == "class"
+    assert _binding(source, "helper").visibility_byte_end == len(source)
+
+
+def test_catch_param_spans_only_the_catch_clause() -> None:
+    source = b"function f() {\n  try { g(); } catch (err) { log(err); }\n  after(err);\n}\n"
+    b = _binding(source, "err")
+    assert b.kind == "catch"
+    assert b.visibility_byte_start >= source.index(b"catch")
+    assert b.visibility_byte_end < source.index(b"after")
+
+
+def test_for_in_and_for_of_declarations_bind() -> None:
+    source = b"for (const k in obj) { use(k); }\nfor (let v of arr) { use(v); }\n"
+    k = _binding(source, "k")
+    assert k.kind == "const"
+    assert k.visibility_byte_end <= source.index(b"for (let")
+    assert _binding(source, "v").kind == "let"
+
+
+def test_require_declarators_do_not_self_shadow() -> None:
+    """A CJS import binding is an ImportRef, never a LexicalBinding —
+    otherwise every `const crypto = require("crypto")` would shadow
+    itself and suppress the very findings the import proves."""
+    source = b'const crypto = require("crypto");\nconst other = makeThing();\n'
+    names = {b.name for b in _bindings(source)}
+    assert "crypto" not in names
+    assert "other" in names
+
+
+def test_import_statements_emit_no_binding_records() -> None:
+    source = b'import { createHash } from "node:crypto";\nexport { x } from "./y";\n'
+    assert _bindings(source, "src/app.mjs") == ()
+
+
+def test_arrow_single_param_binds_to_the_arrow_span() -> None:
+    source = b"const g = x => x + 1;\n"
+    b = _binding(source, "x")
+    assert b.kind == "param"
+    assert b.visibility_byte_start == source.index(b"x =>")
+
+
+# ---------------------------------------------------------------------------
+# Import value-marker (shadowing-guard spec).
+# ---------------------------------------------------------------------------
+
+
+def test_value_import_forms_are_marked_value() -> None:
+    source = (
+        b'import def from "a";\nimport * as ns from "b";\nimport { n } from "c";\n'
+        b'const whole = require("d");\nconst { part } = require("e");\n'
+    )
+    result = _parse(source, "src/app.mjs")
+    assert result.imports, "fixture must extract imports"
+    assert all(i.is_value_import for i in result.imports)
+
+
+def test_reexport_and_side_effect_imports_are_non_value() -> None:
+    """Neither form binds a local name a runtime call can resolve
+    through — `export { Q } from "mysql"` and `import "mysql2"` must not
+    satisfy module_presence once admission reads the marker."""
+    source = b'export { Q } from "mysql";\nexport * from "pg";\nimport "mysql2";\n'
+    result = _parse(source, "src/app.mjs")
+    assert len(result.imports) == 3
+    assert all(not i.is_value_import for i in result.imports)

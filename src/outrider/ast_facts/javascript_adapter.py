@@ -50,6 +50,7 @@ from outrider.ast_facts.models import (
     ComputedParserOutcome,
     ImportRef,
     ImportResolution,
+    LexicalBinding,
     ParseResult,
     ScopeUnit,
     SkipReason,
@@ -105,6 +106,34 @@ class JavaScriptAdapter:
     # names and string/number keys are skipped — no stable qualified_name).
     _MEMBER_NAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"property_identifier", "private_property_identifier"}
+    )
+    # Lexical-binding visibility frames (shadowing-guard spec). Function
+    # frames bound params + hoisted `var`/`function` declarations; block
+    # frames bound `let`/`const`/`class`. A function body IS a
+    # `statement_block`, so the block set alone resolves block-scoped
+    # kinds inside functions; expression-bodied arrows cannot contain
+    # declarations.
+    _FUNCTION_FRAME_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "function_declaration",
+            "generator_function_declaration",
+            "function_expression",
+            "generator_function",
+            "arrow_function",
+            "method_definition",
+        }
+    )
+    _BLOCK_FRAME_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"statement_block", "for_statement", "for_in_statement"}
+    )
+    # Binding-position pattern nodes the identifier collector recurses
+    # into. Unknown node types are NOT recursed (under-collection means
+    # the shadow guard misses an exotic pattern — the FP persists and
+    # JUDGED covers; over-collection would wrongly deny). TS parameter
+    # wrappers (`required_parameter`/`optional_parameter`) are handled
+    # by field, so `type_annotation` subtrees are never walked.
+    _PATTERN_RECURSE_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"object_pattern", "array_pattern", "rest_pattern"}
     )
 
     def __init__(self, resolver: ImportPathResolver) -> None:
@@ -471,6 +500,10 @@ class JavaScriptAdapter:
                 is_simple_direct=kind == "relative",
             )
         module = self._string_text(node.child_by_field_name("source"))
+        # TS statement-level type-only import (`import type { X } from 'm'`):
+        # a bare `type` keyword token rides between `import` and the clause.
+        # Type-space bindings cannot back a runtime call — non-value.
+        statement_type_only = any(c.type == "type" for c in node.children)
         clause = next((c for c in node.named_children if c.type == "import_clause"), None)
         defaults: list[str] = []
         namespaces: list[str] = []
@@ -489,6 +522,11 @@ class JavaScriptAdapter:
                     for spec in child.named_children:
                         if spec.type != "import_specifier":
                             continue
+                        # TS per-specifier type-only (`import { type Pool,
+                        # Client }`): the type-space name is not a value
+                        # binding — excluded from `names`.
+                        if any(c.type == "type" for c in spec.children):
+                            continue
                         alias = spec.child_by_field_name("alias")
                         name_field = spec.child_by_field_name("name")
                         target = alias if alias is not None else name_field
@@ -500,6 +538,9 @@ class JavaScriptAdapter:
         # any default/named binding → "from".
         default_kind = "from" if (defaults or has_named_imports) else "direct"
         kind = self._kind_for(module, default_kind)
+        # Value iff the statement is not type-only AND it binds something
+        # (a side-effect `import "m"` loads the module but binds no name a
+        # runtime call can resolve through).
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -507,6 +548,7 @@ class JavaScriptAdapter:
             module=module,
             names=names,
             is_simple_direct=kind == "relative",
+            is_value_import=not statement_type_only and clause is not None,
         )
 
     def _build_reexport(self, node: Node, file_path: str) -> ImportRef:
@@ -536,6 +578,8 @@ class JavaScriptAdapter:
         else:
             kind = self._kind_for(module, "star")
             names = ()
+        # Re-exports bind NO local name — nothing in this file can call
+        # through them, so they are never value imports.
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -543,6 +587,7 @@ class JavaScriptAdapter:
             module=module,
             names=names,
             is_simple_direct=kind == "relative",
+            is_value_import=False,
         )
 
     def _maybe_require(self, node: Node, file_path: str) -> ImportRef | None:
@@ -594,6 +639,154 @@ class JavaScriptAdapter:
             names=names,
             is_simple_direct=kind == "relative",
         )
+
+    # ------------------------------------------------------------------
+    # extract_lexical_bindings (shadowing-guard spec)
+    # ------------------------------------------------------------------
+
+    def extract_lexical_bindings(self, source: bytes, file_path: str) -> tuple[LexicalBinding, ...]:
+        return self._extract_lexical_bindings_from_tree(self._parse(source), file_path)
+
+    def _pattern_identifiers(self, node: Node) -> Iterator[Node]:
+        """Binding-POSITION identifiers of a declaration pattern: plain
+        identifiers, destructuring shorthands, `{key: local}` values,
+        defaults' LEFT sides, rest elements, and TS parameter wrappers
+        (by field, so `type_annotation` subtrees are never walked —
+        identifiers inside types or default-value EXPRESSIONS are uses,
+        not bindings, and must not widen the shadow set)."""
+        if node.type in ("identifier", "shorthand_property_identifier_pattern"):
+            yield node
+        elif node.type == "pair_pattern":
+            value = node.child_by_field_name("value")
+            if value is not None:
+                yield from self._pattern_identifiers(value)
+        elif node.type in ("assignment_pattern", "object_assignment_pattern"):
+            left = node.child_by_field_name("left")
+            if left is not None:
+                yield from self._pattern_identifiers(left)
+        elif node.type in ("required_parameter", "optional_parameter"):
+            pattern = node.child_by_field_name("pattern")
+            if pattern is not None:
+                yield from self._pattern_identifiers(pattern)
+        elif node.type in self._PATTERN_RECURSE_TYPES:
+            for child in node.named_children:
+                yield from self._pattern_identifiers(child)
+
+    def _enclosing_frame_span(
+        self, node: Node, frame_types: frozenset[str]
+    ) -> tuple[int, int] | None:
+        cur = node.parent
+        while cur is not None:
+            if cur.type in frame_types:
+                return (cur.start_byte, cur.end_byte)
+            cur = cur.parent
+        return None
+
+    def _extract_lexical_bindings_from_tree(
+        self, tree: Tree, file_path: str
+    ) -> tuple[LexicalBinding, ...]:
+        """Per-kind visibility spans per the shadowing-guard spec:
+        params → the enclosing function node; `var` → nearest enclosing
+        function frame, else the whole module (hoisting); `let`/`const`
+        → nearest block frame, else module; `function`/`class`
+        declarations → nearest block/function frame, else module; catch
+        params → the catch clause. Module-scope non-import declarations
+        DO emit records (a global like `process` is legally shadowable
+        at module scope); CJS `require` declarators and import/export
+        statements emit none — an import binding must not self-shadow.
+        """
+        bindings: list[LexicalBinding] = []
+        root = tree.root_node
+        module_span = (root.start_byte, root.end_byte)
+        decl_frames = self._BLOCK_FRAME_TYPES | self._FUNCTION_FRAME_TYPES
+
+        def _add(name_node: Node, kind: str, span: tuple[int, int]) -> None:
+            bindings.append(
+                LexicalBinding(
+                    file_path=file_path,
+                    name=self._node_text(name_node),
+                    kind=kind,
+                    line=name_node.start_point[0] + 1,
+                    visibility_byte_start=span[0],
+                    visibility_byte_end=span[1],
+                )
+            )
+
+        for node in self._walk(root):
+            if node.type in self._FUNCTION_FRAME_TYPES:
+                own_span = (node.start_byte, node.end_byte)
+                params = node.child_by_field_name("parameters")
+                if params is not None:
+                    for child in params.named_children:
+                        for ident in self._pattern_identifiers(child):
+                            _add(ident, "param", own_span)
+                else:
+                    # Arrow single-param shorthand: `x => ...`.
+                    single = node.child_by_field_name("parameter")
+                    if single is not None:
+                        for ident in self._pattern_identifiers(single):
+                            _add(ident, "param", own_span)
+                if node.type in self._FUNCTION_DECL_TYPES:
+                    name = node.child_by_field_name("name")
+                    if name is not None:
+                        _add(
+                            name,
+                            "function",
+                            self._enclosing_frame_span(node, decl_frames) or module_span,
+                        )
+            elif node.type in ("variable_declaration", "lexical_declaration"):
+                if node.type == "variable_declaration":
+                    kind = "var"
+                    span = (
+                        self._enclosing_frame_span(node, self._FUNCTION_FRAME_TYPES) or module_span
+                    )
+                else:
+                    kind = "const" if node.children and node.children[0].type == "const" else "let"
+                    span = self._enclosing_frame_span(node, self._BLOCK_FRAME_TYPES) or module_span
+                for declarator in node.named_children:
+                    if declarator.type != "variable_declarator":
+                        continue
+                    if self._maybe_require(declarator, file_path) is not None:
+                        # A CJS import binding must not shadow itself.
+                        continue
+                    name_node = declarator.child_by_field_name("name")
+                    if name_node is None:
+                        continue
+                    for ident in self._pattern_identifiers(name_node):
+                        _add(ident, kind, span)
+            elif node.type == "for_in_statement":
+                # `for (const k in obj)` / `for (const v of arr)`: the
+                # declaration rides ON the statement (kind + left fields),
+                # not as a nested lexical_declaration node.
+                kind_node = node.child_by_field_name("kind")
+                left = node.child_by_field_name("left")
+                if kind_node is not None and left is not None:
+                    kind_text = self._node_text(kind_node)
+                    if kind_text == "var":
+                        span = (
+                            self._enclosing_frame_span(node, self._FUNCTION_FRAME_TYPES)
+                            or module_span
+                        )
+                    else:
+                        span = (node.start_byte, node.end_byte)
+                    kind = kind_text if kind_text in ("var", "let", "const") else "let"
+                    for ident in self._pattern_identifiers(left):
+                        _add(ident, kind, span)
+            elif node.type in self._CLASS_DECL_TYPES:
+                name = node.child_by_field_name("name")
+                if name is not None:
+                    _add(
+                        name,
+                        "class",
+                        self._enclosing_frame_span(node, decl_frames) or module_span,
+                    )
+            elif node.type == "catch_clause":
+                param = node.child_by_field_name("parameter")
+                if param is not None:
+                    catch_span = (node.start_byte, node.end_byte)
+                    for ident in self._pattern_identifiers(param):
+                        _add(ident, "catch", catch_span)
+        return tuple(bindings)
 
     # ------------------------------------------------------------------
     # extract_call_sites
@@ -832,6 +1025,7 @@ def _run_parse_pipeline(
     imports = adapter._extract_imports_from_tree(tree, file_path)
     call_sites = adapter._extract_call_sites_from_tree(tree, file_path, scope_units)
     assignment_sites = adapter._extract_assignments_from_tree(tree, file_path, scope_units)
+    lexical_bindings = adapter._extract_lexical_bindings_from_tree(tree, file_path)
     outcome, has_error = adapter._compute_parser_outcome_from_tree(tree, scope_units)
     if outcome == "failed":
         # Discard extracted tuples: the failed-path ParseResult carries
@@ -843,6 +1037,7 @@ def _run_parse_pipeline(
         imports=imports,
         call_sites=call_sites,
         assignment_sites=assignment_sites,
+        lexical_bindings=lexical_bindings,
         has_error=has_error,
         error_lines=error_lines_from_tree(tree),
     )

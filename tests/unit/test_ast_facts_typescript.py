@@ -158,14 +158,20 @@ def test_broken_decorator_on_exported_toplevel_class_reaches_has_error() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_import_type_is_ordinary_from_import() -> None:
+def test_type_only_imports_are_marked_non_value() -> None:
+    """Shadowing-guard spec: type-space names cannot back a runtime call.
+    A statement-level `import type` is marked non-value (its names ride
+    but admission ignores non-value refs); a per-specifier `type U` is
+    excluded from `names` while the value sibling keeps the ref a value
+    import. Kind classification is unchanged from the adapters arc."""
     result = _parse(b"import type { T } from 'mod';\nimport { type U, val } from './rel';\n")
     type_only = next(i for i in result.imports if i.module == "mod")
     assert type_only.import_kind == "from"
-    assert type_only.names == ("T",)
+    assert type_only.is_value_import is False
     mixed = next(i for i in result.imports if i.module == "./rel")
     assert mixed.import_kind == "relative"
-    assert mixed.names == ("U", "val")
+    assert mixed.names == ("val",)  # `type U` is type-space — excluded
+    assert mixed.is_value_import is True
 
 
 def test_legacy_import_require_is_direct() -> None:
