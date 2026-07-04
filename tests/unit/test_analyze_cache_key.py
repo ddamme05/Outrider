@@ -41,6 +41,7 @@ _BASE_KWARGS = {
     "subsumes_digest": SUBSUMES_DIGEST,
     "from_import_map_digest": "9" * 64,
     "import_bindings_digest": "7" * 64,
+    "lexical_bindings_digest": "5" * 64,
     # Host-identity triad (DECISIONS.md#056): the base case is QUALIFIED
     # (a Baseten-host, reasoning-off run) so the golden recipe exercises the
     # real fold; the unqualified all-None path has its own pin below.
@@ -89,6 +90,10 @@ def test_key_is_deterministic_64_hex() -> None:
         # admits without touching the rendered prompt, so the bindings
         # digest must change the key — "6"*64 is a probe.
         ("import_bindings_digest", "6" * 64),
+        # A local-binding change alters what the shadowing guard denies
+        # without touching the rendered prompt (an enclosing-scope shadow
+        # is outside the shown bytes) — "4"*64 is a probe.
+        ("lexical_bindings_digest", "4" * 64),
         # Host-identity triad (DECISIONS.md#056): a different host, a flipped
         # reasoning state, or a different profile contract is a different output
         # population for identical prompt bytes, so each must change the key.
@@ -98,7 +103,7 @@ def test_key_is_deterministic_64_hex() -> None:
     ],
 )
 def test_every_component_changes_the_key(field: str, changed: object) -> None:
-    """Each of the nineteen inputs is load-bearing: changing any one of
+    """Each of the twenty inputs is load-bearing: changing any one of
     them alone produces a different key (the correct-by-construction
     invalidation property the spec pins). `observed_producer_version`
     (Cost Lever 3) pins the deterministic OBSERVED producer's admission
@@ -129,15 +134,15 @@ def test_adjacent_scalar_boundary_shift_does_not_collide() -> None:
     assert a != b
 
 
-def test_golden_recipe_nineteen_framed_fields() -> None:
+def test_golden_recipe_twenty_framed_fields() -> None:
     """Golden pin of the FULL recipe, recomputed independently in the
-    test: nineteen length-prefixed fields — `ANALYZE_CACHE_KEY_VERSION`
+    test: twenty length-prefixed fields — `ANALYZE_CACHE_KEY_VERSION`
     (the recipe-structure version, DECISIONS.md#056) first, then
     `_canonical_prompt_hash` output (one recipe, two consumers; never forks
-    from `LLMCallEvent.prompt_hash`), then the seventeen explicit
+    from `LLMCallEvent.prompt_hash`), then the eighteen explicit
     scope/version/identity components in declaration order, each framed
     `{len(bytes)}:` on UTF-8 bytes. The host-identity triad
-    (DECISIONS.md#056) is the last three of those seventeen: `profile_id`, then
+    (DECISIONS.md#056) is the last three of those eighteen: `profile_id`, then
     `reasoning_enabled` rendered `true`/`false`, then `profile_contract_digest`.
     Any change to the framing, the component order, or the prompt component's
     recipe fails this test — deliberately: that change is a cache-wide
@@ -165,6 +170,7 @@ def test_golden_recipe_nineteen_framed_fields() -> None:
         _BASE_KWARGS["subsumes_digest"],
         _BASE_KWARGS["from_import_map_digest"],
         _BASE_KWARGS["import_bindings_digest"],
+        _BASE_KWARGS["lexical_bindings_digest"],
         _BASE_KWARGS["profile_id"],
         "true" if _BASE_KWARGS["reasoning_enabled"] else "false",
         _BASE_KWARGS["profile_contract_digest"],
@@ -296,6 +302,34 @@ def test_import_bindings_digest_closes_the_binding_cache_gap() -> None:
     assert key_dangerous != key_benign
 
 
+def test_import_bindings_digest_carries_the_value_marker() -> None:
+    """The shadowing-guard spec's digest-collision pin (Codex spec review,
+    finding 2): `import { Q } from "mysql"` (value) and `export { Q } from
+    "mysql"` (re-export, non-value) share `(module, names)` but admit
+    differently once `module_presence` requires a VALUE import — the
+    digests, and therefore the keys, must differ."""
+    from outrider.agent.nodes.analyze_observed import import_bindings_digest
+    from outrider.ast_facts.models import ImportRef
+
+    def _mysql_ref(*, is_value_import: bool) -> ImportRef:
+        return ImportRef(
+            file_path="src/db.mjs",
+            line=1,
+            import_kind="from",
+            module="mysql",
+            names=("Q",),
+            is_simple_direct=False,
+            is_value_import=is_value_import,
+        )
+
+    value = import_bindings_digest((_mysql_ref(is_value_import=True),))
+    reexport = import_bindings_digest((_mysql_ref(is_value_import=False),))
+    assert value != reexport
+    key_value = compute_analyze_cache_key(**{**_BASE_KWARGS, "import_bindings_digest": value})
+    key_reexport = compute_analyze_cache_key(**{**_BASE_KWARGS, "import_bindings_digest": reexport})
+    assert key_value != key_reexport
+
+
 # ---------------------------------------------------------------------------
 # The two new version constants
 # ---------------------------------------------------------------------------
@@ -330,10 +364,13 @@ def test_analyze_cache_key_version_pinned() -> None:
     corrected trace-candidate siblings depend on module-level imports the
     rendered prompt doesn't carry); v4 folds `import_bindings_digest` —
     import-binding OBSERVED admission consumes ALL of the file's imports,
-    which the from-import map deliberately excludes. It folds FIRST in
+    which the from-import map deliberately excludes; v5 folds
+    `lexical_bindings_digest` — the shadowing guard reads local-binding
+    visibility spans that can live in enclosing-but-not-included scopes
+    the prompt never shows. It folds FIRST in
     `compute_analyze_cache_key`, so a bump re-keys the whole cache — the
     explicit, replay-durable marker #056 mandates."""
-    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v4"
+    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v5"
 
 
 def test_observed_producer_version_pinned() -> None:

@@ -284,11 +284,15 @@ def import_bindings_digest(import_refs: tuple[ImportRef, ...]) -> str:
     "direct").
 
     Hashes what admission consumes and nothing else: the set of
-    `(module, names)` pairs — order- and duplicate-insensitive (admission
-    is `any(...)` over refs), with `import_kind` / `line` / `file_path`
-    excluded because admission ignores them. Count headers + length
-    prefixes make boundaries unambiguous (the cache-key framing rule);
-    the empty tuple digests distinctly from any populated set.
+    `(module, is_value_import, names)` triples — order- and
+    duplicate-insensitive (admission is `any(...)` over refs), with
+    `import_kind` / `line` / `file_path` excluded because admission
+    ignores them. The value marker is in the triple because admission
+    reads it (shadowing-guard spec): `import { Q } from "mysql"` and
+    `export { Q } from "mysql"` admit differently and must never share
+    a key. Count headers + length prefixes make boundaries unambiguous
+    (the cache-key framing rule); the empty tuple digests distinctly
+    from any populated set.
 
     Deliberately MORE sensitive than admission itself: names are hashed
     even when only `module_presence` rules apply, and the exact specifier
@@ -297,18 +301,47 @@ def import_bindings_digest(import_refs: tuple[ImportRef, ...]) -> str:
     direction) and keeps the digest independent of the registry's current
     rule set, which is pinned separately by `QUERY_REGISTRY_DIGEST`.
     """
-    entries = sorted({(ref.module, tuple(sorted(ref.names))) for ref in import_refs})
+    entries = sorted(
+        {(ref.module, ref.is_value_import, tuple(sorted(ref.names))) for ref in import_refs}
+    )
     h = hashlib.sha256()
     h.update(f"{len(entries)}:".encode())
-    for module, names in entries:
+    for module, is_value_import, names in entries:
         module_bytes = module.encode("utf-8")
         h.update(f"{len(module_bytes)}:".encode())
         h.update(module_bytes)
+        h.update(b"1:" if is_value_import else b"0:")
         h.update(f"{len(names)}:".encode())
         for name in names:
             name_bytes = name.encode("utf-8")
             h.update(f"{len(name_bytes)}:".encode())
             h.update(name_bytes)
+    return h.hexdigest()
+
+
+def lexical_bindings_digest(lexical_bindings: tuple[LexicalBinding, ...]) -> str:
+    """SHA-256 over the shadow guard's per-file input — the
+    `import_bindings_digest` sibling for the OTHER admission input the
+    rendered prompt may not carry: a shadowing binding can live in an
+    enclosing-but-not-included scope, so byte-identical prompts with
+    different bindings admit different finding sets.
+
+    Hashes what `_shadowed` consumes and nothing else: the set of
+    `(name, visibility span)` records — order/duplicate-insensitive,
+    `kind` / `line` / `file_path` excluded. Known hit-rate cost: the
+    spans are byte offsets, so ANY earlier-byte edit shifts them and
+    over-invalidates (never staleness — the safe direction).
+    """
+    entries = sorted(
+        {(b.name, b.visibility_byte_start, b.visibility_byte_end) for b in lexical_bindings}
+    )
+    h = hashlib.sha256()
+    h.update(f"{len(entries)}:".encode())
+    for name, start, end in entries:
+        name_bytes = name.encode("utf-8")
+        h.update(f"{len(name_bytes)}:".encode())
+        h.update(name_bytes)
+        h.update(f"{start}:{end}:".encode())
     return h.hexdigest()
 
 

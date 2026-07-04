@@ -29,6 +29,7 @@ from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
 from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     import_bindings_digest,
+    lexical_bindings_digest,
 )
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION, from_import_map_digest
 from outrider.agent.nodes.cache_config import CacheMode
@@ -38,6 +39,7 @@ from outrider.ast_facts.parameterized_calls import (
     scan_digest,
     scan_parameterized_calls,
 )
+from outrider.ast_facts.registry import parse_source
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
 from outrider.audit.events import compute_finding_content_hash
 from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
@@ -350,6 +352,9 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         import_bindings_digest=import_bindings_digest(
             parse_python(_HEAD.encode("utf-8"), "src/cached.py", MagicMock()).imports
         ),
+        # Python adapter stubs lexical bindings to () (shadowing-guard spec
+        # non-goal) — the node digests the same empty tuple.
+        lexical_bindings_digest=lexical_bindings_digest(()),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,
@@ -899,6 +904,11 @@ async def test_javascript_clean_file_is_cache_keyed() -> None:
         from_import_map_digest=from_import_map_digest(()),
         # _JS_HEAD has no imports at all — the empty bindings digest.
         import_bindings_digest=import_bindings_digest(()),
+        # ...but it DOES have local bindings (alpha + const y) — mirror the
+        # node by digesting the same parse the JS pipeline produces.
+        lexical_bindings_digest=lexical_bindings_digest(
+            parse_source(_JS_HEAD.encode("utf-8"), "src/cached.js", MagicMock()).lexical_bindings
+        ),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,
