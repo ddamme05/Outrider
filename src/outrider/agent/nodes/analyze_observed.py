@@ -64,7 +64,12 @@ if TYPE_CHECKING:
 
     from unidiff import PatchedFile
 
-    from outrider.ast_facts.models import ImportRef, QueryCaptureSpan, ScopeUnit
+    from outrider.ast_facts.models import (
+        ImportRef,
+        LexicalBinding,
+        QueryCaptureSpan,
+        ScopeUnit,
+    )
     from outrider.policy.severity import FindingType
     from outrider.queries.observed import BindingRule, QueryLanguage
 
@@ -98,7 +103,15 @@ if TYPE_CHECKING:
 # (`require("mysql2/promise")`) satisfies a rule naming its package root.
 # Under v4 the join was exact-string, silently dropping matches whose file
 # imported the driver through the dominant subpath idiom.
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v5"
+# v6: lexical shadowing guard + value-import requirement
+# (specs/2026-07-04-lexical-shadowing-guard.md). A match is denied when its
+# anchor (or a `shadow_guard` global) is shadowed by a `LexicalBinding`
+# whose visibility span contains the match, and binding rules only count
+# VALUE imports (`ImportRef.is_value_import`). Under v5 the join was
+# file-level: `function f(createHash) {...}` still admitted after a real
+# crypto import, `function apply(process) {...}` fired the TLS kill-switch
+# query, and `import type { Pool } from "pg"` proved DB presence.
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v6"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
 # `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
@@ -170,37 +183,64 @@ def _module_matches(specifier: str, modules: tuple[str, ...]) -> bool:
     return any(specifier == m or specifier.startswith(m + "/") for m in modules)
 
 
+def _shadowed(
+    name: str,
+    match_byte_start: int,
+    match_byte_end: int,
+    lexical_bindings: tuple[LexicalBinding, ...],
+) -> bool:
+    """True when a local binding of `name` is visible at the match site —
+    its visibility span CONTAINS the match span. Span containment is the
+    whole design (shadowing-guard spec): a `catch (crypto)` binding does
+    not shadow a call after the catch block, and a shadow in one function
+    does not shadow a sibling function."""
+    return any(
+        b.name == name
+        and b.visibility_byte_start <= match_byte_start
+        and match_byte_end <= b.visibility_byte_end
+        for b in lexical_bindings
+    )
+
+
 def _binding_admits(
     binding: BindingRule | None,
     captures: tuple[QueryCaptureSpan, ...],
     content_bytes: bytes,
     import_refs: tuple[ImportRef, ...],
+    *,
+    lexical_bindings: tuple[LexicalBinding, ...],
+    match_byte_start: int,
+    match_byte_end: int,
 ) -> bool:
     """Deterministic import-binding admission for a name-anchored match.
 
     `anchor_import`: the anchor identifier — the `@_recv` receiver capture
-    when present, else the `@_fn` callee capture — must be a LOCAL name
-    bound by an import whose `module` matches the rule's set (`ImportRef.names`
-    carries local binding names for ESM named/default/namespace and CJS
-    `require` forms alike). A match with neither capture is NOT admitted —
-    default-deny, the proof-boundary direction. `module_presence`: the file
-    must import at least one of the rule's modules. Module matching is
+    when present, else the `@_fn` callee capture — must be UNSHADOWED at
+    the match site (`_shadowed`: no local binding's visibility span
+    contains the match) and bound by a VALUE import whose `module` matches
+    the rule's set (`ImportRef.names` carries local binding names for ESM
+    named/default/namespace and CJS `require` forms alike; type-only /
+    re-export / side-effect refs are `is_value_import=False` and never
+    count). A match with neither capture is NOT admitted — default-deny,
+    the proof-boundary direction. `module_presence`: the file must VALUE-
+    import at least one of the rule's modules. Module matching is
     package-root aware in both modes (`_module_matches`). `binding=None`
     admits on structure alone (globals / import-free text-constrained
-    patterns).
+    patterns — their globals are guarded separately via
+    `ObservedQuery.shadow_guard`).
 
-    Known precision residuals (signal_only-acceptable; FUP-214): the join is
-    file-level, not lexically scoped — a local declaration SHADOWING an
-    imported name still admits — and `ImportRef` does not distinguish
-    `import type` / `export … from` re-exports / side-effect imports from
-    value imports, so those also satisfy the rule. Closing either needs
-    adapter-layer work (scope analysis; a type-only/re-export marker), not a
-    producer edit.
+    Known precision residual (signal_only-acceptable; FUP-214):
+    `module_presence` stays file-level — a DB-driver file with an
+    unrelated `.query(concat)` still fires; per-receiver proof needs
+    assignment-flow, which is corpus-arc scope.
     """
     if binding is None:
         return True
     if binding.mode == "module_presence":
-        return any(_module_matches(ref.module, binding.modules) for ref in import_refs)
+        return any(
+            ref.is_value_import and _module_matches(ref.module, binding.modules)
+            for ref in import_refs
+        )
     if binding.mode == "anchor_import":
         # First participating protocol capture wins — all `_recv` before any
         # `_fn` (the receiver-over-callee preference the bound-sibling test
@@ -214,8 +254,14 @@ def _binding_admits(
         anchor = content_bytes[anchor_span.byte_start : anchor_span.byte_end].decode(
             "utf-8", errors="replace"
         )
+        if _shadowed(anchor, match_byte_start, match_byte_end, lexical_bindings):
+            # A local declaration owns the name at this site — the call
+            # cannot resolve to the import, so the import proves nothing.
+            return False
         return any(
-            _module_matches(ref.module, binding.modules) and anchor in ref.names
+            ref.is_value_import
+            and _module_matches(ref.module, binding.modules)
+            and anchor in ref.names
             for ref in import_refs
         )
     assert_never(binding.mode)
@@ -272,6 +318,7 @@ def run_observed_matches(
     head_content: str,
     included_scope_units: tuple[ScopeUnit, ...],
     import_refs: tuple[ImportRef, ...],
+    lexical_bindings: tuple[LexicalBinding, ...],
 ) -> tuple[ObservedMatch, ...]:
     """Run every OBSERVED query registered for `file_path`'s catalog language
     over `head_content` and return the admitted matches as `ObservedMatch`
@@ -284,10 +331,13 @@ def run_observed_matches(
     same scope discipline the LLM-citation admission uses) — a deterministic
     OBSERVED match must anchor fully inside code the review is examining, never
     straddling a scope boundary or landing in unchanged code outside the diff —
-    AND when its query's `BindingRule` is satisfied against `import_refs`
-    (`_binding_admits`): a name-anchored match must prove its anchor binds to
-    the dangerous API, so an `exec` helper imported from `./jobs` is not a
-    `child_process` sink. Test files admit nothing (spec §11.2). Zero-width
+    AND when its query's `BindingRule` is satisfied against `import_refs` +
+    `lexical_bindings` (`_binding_admits`): a name-anchored match must prove
+    its anchor binds to the dangerous API — an `exec` helper imported from
+    `./jobs` is not a `child_process` sink, and a shadowed anchor or
+    `shadow_guard` global (a local `process` parameter/mock) resolves to the
+    local binding, not the import/global. Test files admit nothing
+    (spec §11.2). Zero-width
     envelopes and spans that fail the byte->line mapping are dropped. Returns a
     deterministically ordered tuple (by query id, then the registry's match
     sort) so any content-derived id downstream stays stable across replays.
@@ -317,7 +367,8 @@ def run_observed_matches(
             observed.binding is not None
             and observed.binding.mode == "module_presence"
             and not any(
-                _module_matches(ref.module, observed.binding.modules) for ref in import_refs
+                ref.is_value_import and _module_matches(ref.module, observed.binding.modules)
+                for ref in import_refs
             )
         ):
             continue
@@ -337,9 +388,25 @@ def run_observed_matches(
             # import-free module-level queries.
             if not any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges):
                 continue
+            # Shadow guard: a text-constrained global (tls_env's `process`)
+            # must not be locally bound at the match site — a shadowing
+            # binding means the receiver is a mock/parameter, not the global.
+            if any(
+                _shadowed(g, span.byte_start, span.byte_end, lexical_bindings)
+                for g in observed.shadow_guard
+            ):
+                continue
             # Import-binding: a name-anchored match must prove its anchor
             # binds to the dangerous API (the import-binding admission step).
-            if not _binding_admits(observed.binding, span.captures, content_bytes, import_refs):
+            if not _binding_admits(
+                observed.binding,
+                span.captures,
+                content_bytes,
+                import_refs,
+                lexical_bindings=lexical_bindings,
+                match_byte_start=span.byte_start,
+                match_byte_end=span.byte_end,
+            ):
                 continue
             try:
                 line_start, line_end = query_span_to_source_lines(

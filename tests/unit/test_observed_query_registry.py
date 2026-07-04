@@ -179,6 +179,9 @@ def test_digest_folds_every_non_excluded_field() -> None:
         # An admission-affecting rule change MUST re-key the cache: a match
         # admitted under one binding rule may be dropped under another.
         "binding": BindingRule(mode="module_presence", modules=("digest-probe",)),
+        # Same admission-affecting property: adding/removing a guarded
+        # global changes which matches the shadow guard denies.
+        "shadow_guard": ("digest_probe_global",),
     }
     assert folded_fields <= set(mutations), (
         f"new folded field(s) {folded_fields - set(mutations)} need a mutation case here"

@@ -2163,8 +2163,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             included_scope_units=included_scope_units,
             # Import-binding admission: the producer proves a name-anchored
             # match binds to its dangerous API via the file's extracted
-            # imports.
+            # imports — and rejects it when a local binding shadows the
+            # anchor (or a guarded global) at the match site.
             import_refs=parse_result.imports,
+            lexical_bindings=parse_result.lexical_bindings,
         )
         if patched_file is not None:
             observed_skip_event = compute_observed_skip_shadow(

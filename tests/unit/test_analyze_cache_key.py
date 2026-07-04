@@ -347,12 +347,16 @@ def test_observed_producer_version_pinned() -> None:
     via the file's imports (under v3 any callee/receiver NAME matched).
     v5: binding-module matching became package-root aware — a subpath
     specifier (`mysql2/promise`) satisfies a rule naming its package root
-    (under v4 the join was exact-string). The
+    (under v4 the join was exact-string). v6: the lexical shadowing guard
+    + value-import requirement — a shadowed anchor or `shadow_guard`
+    global is denied, and only VALUE imports satisfy binding rules (under
+    v5 the join was file-level and type-only/re-export/side-effect refs
+    counted as proof). The
     literal pin is the revert tripwire: every other suite reference derives
     from the constant, so without this pin a silent revert would stay green
     while current reviews re-key onto stale cache rows written under the
     older admission rules."""
-    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v5"
+    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v6"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:

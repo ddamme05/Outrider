@@ -133,6 +133,7 @@ def _observed_content_hashes(head: str) -> set[str]:
         head_content=head,
         included_scope_units=scopes,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     findings = produce_observed_findings(
         matches,

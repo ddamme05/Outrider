@@ -176,6 +176,7 @@ def test_v1_real_registry_matches_are_signal_only_so_not_eligible() -> None:
         head_content=_HEAD,
         included_scope_units=scopes,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     assert matches
     assert all(m.query_class == QueryClass.SIGNAL_ONLY for m in matches)

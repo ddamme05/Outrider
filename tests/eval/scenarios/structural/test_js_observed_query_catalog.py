@@ -127,6 +127,7 @@ def test_js_broken_cipher_produces_deterministic_observed_finding() -> None:
         head_content=source,
         included_scope_units=parsed.scope_units,
         import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
     )
     (finding,) = produce_observed_findings(
         matches,
