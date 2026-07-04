@@ -11,8 +11,13 @@
 ; @_recv (else the bare @_fn) is bound by an import from the query's module
 ; set. The import join replaces the previous literal `child_process`
 ; receiver check, so aliased namespaces (`const cp = require('child_process');
-; cp.exec(...)`) are now provable instead of a recall gap. Nested receivers
-; have no provable binding and do not match (JUDGED covers them).
+; cp.exec(...)`) are now provable instead of a recall gap. Forms with no
+; provable binding do not match (JUDGED covers each; FUP-214): nested /
+; inline-require / parenthesized / `this.`-qualified / TS non-null
+; receivers, member-chain require (`const exec =
+; require('child_process').exec`) and dynamic `await import()` (neither
+; yields an ImportRef), and aliased NAMED imports
+; (`import { exec as run }` — the literal name anchor never sees `run`).
 (call_expression
   function: (identifier) @_fn
   arguments: (arguments

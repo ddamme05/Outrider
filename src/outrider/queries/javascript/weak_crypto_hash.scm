@@ -9,9 +9,14 @@
 ; Anchor-capture protocol (BindingRule mode="anchor_import"): the member arm
 ; captures its receiver as @_recv; the producer admits a match only when
 ; @_recv (else the bare @_fn) is bound by an import from the query's module
-; set. The receiver is constrained to a simple identifier — a nested
-; receiver (`a.b.createHash`) has no provable binding, so it does not match
-; (JUDGED covers it).
+; set. The receiver is constrained to a simple identifier — receivers with
+; no provable binding do not match (JUDGED covers each): nested
+; (`a.b.createHash`), inline require (`require("crypto").createHash`),
+; parenthesized (`(crypto).createHash`), `this.`-qualified, TS non-null
+; (`crypto!.createHash`). Aliased NAMED imports
+; (`import { createHash as h }`) bind only the alias, which the literal
+; name anchor never matches — binding proves receiver/namespace aliases,
+; not API-name aliases (FUP-214).
 (call_expression
   function: [
     (identifier) @_fn

@@ -54,9 +54,14 @@ class BindingRule(BaseModel):
     """Deterministic import-binding admission for a name-anchored OBSERVED
     query — the producer-side proof that a matched NAME actually binds to
     the dangerous API, joined against the file's `ast_facts` imports
-    (`ImportRef.names` carries LOCAL binding names for every JS/TS form:
-    ESM named/default/namespace and CJS `require`, whole-module and
-    destructured).
+    (`ImportRef.names` carries LOCAL binding names for the static
+    declaration forms: ESM named/default/namespace and CJS `require`,
+    whole-module and destructured). NOT closed by the join (documented
+    recall gaps, JUDGED covers; FUP-214): member-chain require
+    (`require('m').exec`) and dynamic `await import()` yield no ImportRef,
+    and an aliased NAMED import (`import { exec as run }`) binds only the
+    alias, which a query's literal name anchor never matches — the join
+    proves receiver/namespace aliases, not API-name aliases.
 
     `anchor_import`: the match's anchor identifier — the `@_recv` receiver
     capture when present, else the `@_fn` callee capture — must be bound by
