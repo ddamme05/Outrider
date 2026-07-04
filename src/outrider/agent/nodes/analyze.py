@@ -108,6 +108,7 @@ from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     ObservedMatch,
     compute_observed_skip_shadow,
+    import_bindings_digest,
     produce_observed_findings,
     run_observed_matches,
 )
@@ -2047,6 +2048,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # amendment): corrected siblings depend on imports the
             # rendered prompt doesn't carry.
             from_import_map_digest=from_import_map_digest(trace_import_refs),
+            # Import-binding admission's per-file input: `_binding_admits`
+            # joins OBSERVED matches against ALL imports (module + names),
+            # most of which the from-import map excludes — same refs the
+            # producer consumes (`trace_import_refs IS parse_result.imports`).
+            import_bindings_digest=import_bindings_digest(trace_import_refs),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,

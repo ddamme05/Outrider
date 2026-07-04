@@ -34,6 +34,7 @@ skip that consumes it is wired in `analyze._process_one_file` behind that flag
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
@@ -196,6 +197,44 @@ def _binding_admits(
         return False
     module_set = set(binding.modules)
     return any(ref.module in module_set and anchor in ref.names for ref in import_refs)
+
+
+def import_bindings_digest(import_refs: tuple[ImportRef, ...]) -> str:
+    """SHA-256 over the binding-relevant view of the file's imports — the
+    analyze-cache-key component pinning `_binding_admits`'s per-file input
+    (the `from_import_map_digest` / FUP-171 precedent).
+
+    Import-binding admission decides which OBSERVED matches survive from
+    module-level imports the rendered prompt does NOT carry (scope-unit
+    bodies + hunks only), so two reviews with byte-identical prompts but
+    different imports admit different finding sets and must never share a
+    cache entry. `from_import_map_digest` cannot cover this: it folds only
+    `from`-kind refs whose module survives the Python-shaped
+    `is_valid_import_string` gate, which excludes exactly the JS/TS binding
+    inputs (`node:`-prefixed and hyphenated specifiers; whole-module
+    `require` / namespace / default / side-effect imports are kind
+    "direct").
+
+    Hashes what admission consumes and nothing else: the set of
+    `(module, names)` pairs — order- and duplicate-insensitive (admission
+    is `any(...)` over refs), with `import_kind` / `line` / `file_path`
+    excluded because admission ignores them. Count headers + length
+    prefixes make boundaries unambiguous (the cache-key framing rule);
+    the empty tuple digests distinctly from any populated set.
+    """
+    entries = sorted({(ref.module, tuple(sorted(ref.names))) for ref in import_refs})
+    h = hashlib.sha256()
+    h.update(f"{len(entries)}:".encode())
+    for module, names in entries:
+        module_bytes = module.encode("utf-8")
+        h.update(f"{len(module_bytes)}:".encode())
+        h.update(module_bytes)
+        h.update(f"{len(names)}:".encode())
+        for name in names:
+            name_bytes = name.encode("utf-8")
+            h.update(f"{len(name_bytes)}:".encode())
+            h.update(name_bytes)
+    return h.hexdigest()
 
 
 def run_observed_matches(

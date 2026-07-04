@@ -3,8 +3,9 @@
 
 V1 surface: `compute_analyze_cache_key` (the key recipe — the recipe
 version `ANALYZE_CACHE_KEY_VERSION`, the canonical prompt digest, and
-fifteen explicit scope/version/identity components, the last three the
-host-identity triad per DECISIONS.md#056), the
+the explicit scope/version/identity components, the last three the
+host-identity triad per DECISIONS.md#056; that function is the single
+authority on the component set), the
 DB-backed `AnalyzeCacheStore` with its `CacheScope` / `CacheEntry`
 shapes, the contained `CacheStoreError`, and the `CACHE_TTL_DAYS`
 bound. The analyze node consumes the store in shadow mode (lookup +
