@@ -301,7 +301,7 @@ def test_unregistered_extension_is_inert() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Import-binding admission (observed-producer-v4): a name-anchored match is
+# Import-binding admission: a name-anchored match is
 # admitted only when its anchor identifier provably binds to the dangerous
 # API via the file's imports. Negative fixtures are the Greptile PR-round
 # repros (2026-07-03), pinned per-variant.
@@ -411,6 +411,33 @@ def test_query_concat_with_db_driver_present_is_admitted() -> None:
     )
     (f,) = _produce_at(source, "src/find.js")
     assert f.query_match_id == "javascript.sql_injection_string_concat"
+
+
+def test_subpath_specifier_satisfies_module_presence() -> None:
+    """`require("mysql2/promise")` — the dominant modern mysql2 idiom —
+    proves package presence for a rule naming the package root
+    (package-root-aware matching). Under exact-string matching this real
+    SQL injection was silently dropped to JUDGED."""
+    source = (
+        'const mysql = require("mysql2/promise");\n'
+        "async function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/find.js")
+    assert f.query_match_id == "javascript.sql_injection_string_concat"
+
+
+def test_lookalike_package_root_is_not_a_match() -> None:
+    """Package-root matching is `/`-delimited: `mysql2-mock` shares the
+    `mysql2` byte prefix but is a different package, so it proves nothing."""
+    source = (
+        'const mock = require("mysql2-mock");\n'
+        "function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n"
+    )
+    assert _produce_at(source, "src/find.js") == ()
 
 
 def test_reject_unauthorized_without_tls_consumer_is_not_admitted() -> None:

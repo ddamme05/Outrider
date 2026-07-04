@@ -86,8 +86,8 @@ def test_key_is_deterministic_64_hex() -> None:
         # so the map digest must change the key — "8"*64 is a probe.
         ("from_import_map_digest", "8" * 64),
         # An import change alters which OBSERVED matches the binding step
-        # admits (observed-producer-v4) without touching the rendered prompt,
-        # so the bindings digest must change the key — "6"*64 is a probe.
+        # admits without touching the rendered prompt, so the bindings
+        # digest must change the key — "6"*64 is a probe.
         ("import_bindings_digest", "6" * 64),
         # Host-identity triad (DECISIONS.md#056): a different host, a flipped
         # reasoning state, or a different profile contract is a different output
@@ -344,12 +344,15 @@ def test_observed_producer_version_pinned() -> None:
     language-scoped (under v2 they suppressed OBSERVED findings on Python
     production files like `report.spec.py`). v4: import-binding admission —
     a name-anchored match must prove its anchor binds to the dangerous API
-    via the file's imports (under v3 any callee/receiver NAME matched). The
+    via the file's imports (under v3 any callee/receiver NAME matched).
+    v5: binding-module matching became package-root aware — a subpath
+    specifier (`mysql2/promise`) satisfies a rule naming its package root
+    (under v4 the join was exact-string). The
     literal pin is the revert tripwire: every other suite reference derives
     from the constant, so without this pin a silent revert would stay green
     while current reviews re-key onto stale cache rows written under the
     older admission rules."""
-    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v4"
+    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v5"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:
