@@ -249,8 +249,8 @@ class ScopeUnit(BaseModel):
 
 class LexicalBinding(BaseModel):
     """A local name declaration and the lexical byte range in which it
-    shadows — the OBSERVED shadowing guard's domain fact
-    (specs/2026-07-04-lexical-shadowing-guard.md).
+    shadows — the OBSERVED shadowing guard's domain fact. §5.4 amendment
+    per `DECISIONS.md#060`.
 
     Shadowing is a SPAN question, not a scope-unit-membership question:
     `ScopeUnit` is function/method/class range data only, so block/catch
@@ -278,7 +278,8 @@ class LexicalBinding(BaseModel):
 class ImportRef(BaseModel):
     """A single import statement, parsed into its parts.
 
-    `is_value_import` distinguishes imports that bind (or load) runtime
+    `is_value_import` (§5.4 amendment per `DECISIONS.md#060`)
+    distinguishes imports that bind (or load) runtime
     values from forms that cannot back a runtime call: `import type`
     statements, `export … from` re-exports (no local binding at all),
     and side-effect imports. Python imports are always value imports

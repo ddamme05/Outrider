@@ -156,7 +156,7 @@ class ObservedQuery(BaseModel):
     # multi-global query (eval/Function) never drops a real `eval(x)` match
     # over a shadowed `Function` — even when `Function` is `eval`'s
     # argument. Checked for every query, independent of binding mode;
-    # digest auto-folds it (FUP-181).
+    # digest auto-folds it (FUP-181). See DECISIONS.md#060.
     shadow_guard: tuple[str, ...] = ()
 
     @field_validator("shadow_guard")

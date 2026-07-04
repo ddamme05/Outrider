@@ -108,7 +108,7 @@ if TYPE_CHECKING:
 # Under v4 the join was exact-string, silently dropping matches whose file
 # imported the driver through the dominant subpath idiom.
 # v6: lexical shadowing guard + value-import requirement
-# (specs/2026-07-04-lexical-shadowing-guard.md). A match is denied when its
+# (`DECISIONS.md#060`). A match is denied when its
 # anchor (or a `shadow_guard` global captured at a guard POSITION —
 # `GUARD_POSITION_CAPTURES`) is locally rebound: a `LexicalBinding` whose
 # visibility span contains the match, or (for a guarded global) an

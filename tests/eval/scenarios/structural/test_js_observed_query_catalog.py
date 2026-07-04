@@ -148,7 +148,7 @@ def test_js_broken_cipher_produces_deterministic_observed_finding() -> None:
 
 def test_shadowed_variant_produces_nothing_through_the_driver_path() -> None:
     """The shadowing guard on the structural (LLM-free) driver path
-    (specs/2026-07-04-lexical-shadowing-guard.md): the SAME dangerous call
+    (DECISIONS.md#060): the SAME dangerous call
     admits when the import binds it and produces NOTHING when a parameter
     shadows the import — proving the guard holds through parse_source →
     run_observed_matches, not just the unit path."""

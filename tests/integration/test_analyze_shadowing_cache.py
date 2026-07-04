@@ -1,4 +1,4 @@
-# Per specs/2026-07-04-lexical-shadowing-guard.md — the cross-subsystem gate.
+# The shadowing guard's cross-subsystem gate (DECISIONS.md#060).
 """Shadowing guard end-to-end against real Postgres: ast_facts extraction →
 OBSERVED producer/registry admission → cache-key composition → the real
 `AnalyzeCacheStore`.
