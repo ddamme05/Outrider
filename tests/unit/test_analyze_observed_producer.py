@@ -506,6 +506,20 @@ def test_process_env_kill_switch_needs_no_import() -> None:
         assert f.query_match_id == "javascript.tls_env_verify_disabled"
 
 
+def test_module_top_level_kill_switch_is_a_documented_residual() -> None:
+    """The kill switch's CANONICAL real-world form — the assignment at module
+    top level, before any TLS connection — has no enclosing ScopeUnit
+    (function/method/class are the only kinds), so the scope-containment
+    gate drops it and the producer emits nothing. This pin records that
+    veto as a deliberate, visible residual (FUP-214) rather than an
+    accident masked by function-wrapped fixtures; the fix shape is a
+    changed-region admission arm for self-proving module-level queries.
+    The function-wrapped forms in `test_process_env_kill_switch_needs_no_import`
+    are the positive control."""
+    source = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nconst x = 1;\n'
+    assert _produce_at(source, "src/index.js") == ()
+
+
 def test_non_process_env_receiver_is_not_matched() -> None:
     """`mockEnv[...] = "0"` / `settings.NODE_TLS_... = "0"` mutate a local
     object, not the process TLS switch (Greptile P1 repro) — the receiver

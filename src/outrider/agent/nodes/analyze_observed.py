@@ -8,7 +8,8 @@ runs every OBSERVED query registered for the file's catalog language (via
 `queries.registry.match` under the file's grammar — the registry owns both
 the tree-sitter execution and the per-language selection; a catalog-less
 language yields zero queries and the producer stays inert), applies the
-admission rules (test-file suppression, scope containment, zero-width skip,
+admission rules (test-file suppression, scope containment, import-binding
+admission, zero-width skip,
 byte->line mapping), and returns plain `ObservedMatch` domain records —
 `query_class` included. Every consumer reads
 the SAME records, so there is one definition of "the OBSERVED query facts for
