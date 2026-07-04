@@ -40,12 +40,16 @@ from outrider.llm.base import _canonical_prompt_hash
 # `import_bindings_digest` — import-binding OBSERVED admission
 # consumes ALL of the file's imports (module + local
 # names), which the from-import map deliberately excludes (Python-shaped
-# validation over `from`-kind refs only). The recipe change self-invalidates
+# validation over `from`-kind refs only); v5 folds
+# `lexical_bindings_digest` — the shadowing guard reads local-binding
+# visibility spans that can live in enclosing-but-not-included scopes the
+# prompt never shows (the import digest also widened to carry the
+# value-import marker in the same arc). The recipe change self-invalidates
 # old rows on its own, but the explicit version is the legible, replay-durable
 # marker #056 mandates ("the analyze cache-keyed version bumps") and gives
 # future non-parser recipe changes a home without overloading
 # ANALYZE_PARSER_VERSION's admission-only scope.
-ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v4"
+ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v5"
 
 
 def compute_analyze_cache_key(
@@ -66,13 +70,14 @@ def compute_analyze_cache_key(
     subsumes_digest: str,
     from_import_map_digest: str,
     import_bindings_digest: str,
+    lexical_bindings_digest: str,
     profile_id: str | None,
     reasoning_enabled: bool | None,
     profile_contract_digest: str | None,
 ) -> str:
-    """The analyze-cache key: nineteen length-prefixed fields — the recipe
+    """The analyze-cache key: twenty length-prefixed fields — the recipe
     version (`ANALYZE_CACHE_KEY_VERSION`) first, then the canonical prompt
-    digest, then the seventeen explicit scope/version/identity components — as
+    digest, then the eighteen explicit scope/version/identity components — as
     one SHA-256 hex digest. `from_import_map_digest`
     (#024 from-import correction) pins the analyzed file's from-import
     name→module map: corrected sibling candidates depend on module-level
@@ -80,13 +85,18 @@ def compute_analyze_cache_key(
     so two reviews with byte-identical prompts but different from-imports
     admit different trace_candidates and must never share an entry.
     `import_bindings_digest` pins the import-binding admission step's
-    per-file input — the `(module, names)` view of ALL the file's imports,
-    which `_binding_admits` joins name-anchored
+    per-file input — the `(module, is_value_import, names)` view of ALL
+    the file's imports, which `_binding_admits` joins name-anchored
     OBSERVED matches against; the from-import map excludes most JS/TS forms
     (`node:`-prefixed / hyphenated specifiers, "direct"-kind whole-module /
     namespace / side-effect imports), so without this component two reviews
     with byte-identical prompts but different imports would share an entry
     and serve a stale admitted-finding set.
+    `lexical_bindings_digest` pins the shadowing guard's per-file input —
+    the `(name, visibility span)` view of the file's local bindings, which
+    can live in enclosing-but-not-included scopes the prompt never shows;
+    without it a shadowing edit outside the shown scopes would serve the
+    pre-edit admitted-finding set.
     `subsumes_digest` (DECISIONS.md#055) pins the
     `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
     admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
@@ -166,6 +176,7 @@ def compute_analyze_cache_key(
         subsumes_digest,
         from_import_map_digest,
         import_bindings_digest,
+        lexical_bindings_digest,
         profile_id if profile_id is not None else "",
         reasoning_component,
         profile_contract_digest if profile_contract_digest is not None else "",

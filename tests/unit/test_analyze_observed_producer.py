@@ -655,6 +655,7 @@ def _ref(
     kind: str = "direct",
     line: int = 1,
     file_path: str = "src/x.js",
+    value: bool = True,
 ):
     from outrider.ast_facts.models import ImportRef
 
@@ -665,6 +666,7 @@ def _ref(
         module=module,
         names=names,
         is_simple_direct=kind == "relative",
+        is_value_import=value,
     )
 
 
@@ -693,6 +695,11 @@ def test_import_bindings_digest_is_canonical_over_admission_input() -> None:
     assert base != import_bindings_digest((_ref("crypto", ("createHash", "createCipheriv")), b))
     assert base != import_bindings_digest((_ref("node:crypto", ("createHash",)), b))
     assert base != import_bindings_digest((a,))
+    # The value marker is admission input (shadowing-guard spec): flipping
+    # it alone must move the digest.
+    assert base != import_bindings_digest(
+        (_ref("node:crypto", ("createHash", "createCipheriv"), value=False), b)
+    )
     assert import_bindings_digest(()) != import_bindings_digest((a,))
     assert import_bindings_digest(()) == import_bindings_digest(())
 
@@ -707,4 +714,43 @@ def test_import_bindings_digest_boundaries_unambiguous() -> None:
     )
     assert import_bindings_digest((_ref("ab", ("c",)),)) != import_bindings_digest(
         (_ref("a", ("bc",)),)
+    )
+
+
+def _lex(name: str, start: int, end: int, *, kind: str = "param", line: int = 1):
+    from outrider.ast_facts.models import LexicalBinding
+
+    return LexicalBinding(
+        file_path="src/x.js",
+        name=name,
+        kind=kind,  # type: ignore[arg-type]
+        line=line,
+        visibility_byte_start=start,
+        visibility_byte_end=end,
+    )
+
+
+def test_lexical_bindings_digest_is_canonical_over_guard_input() -> None:
+    """The `import_bindings_digest` sibling for the shadow guard's input:
+    deterministic; insensitive to what `_shadowed` ignores (record order,
+    duplicates, kind/line); sensitive to what it consumes (name +
+    visibility span); the empty tuple digests distinctly."""
+    from outrider.agent.nodes.analyze_observed import lexical_bindings_digest
+
+    a = _lex("process", 0, 90)
+    b = _lex("crypto", 40, 80)
+    base = lexical_bindings_digest((a, b))
+    assert base == lexical_bindings_digest((b, a))  # order-insensitive
+    assert base == lexical_bindings_digest((a, b, a))  # duplicate-insensitive
+    assert base == lexical_bindings_digest(  # guard ignores kind/line
+        (_lex("process", 0, 90, kind="var", line=7), b)
+    )
+    assert base != lexical_bindings_digest((_lex("process2", 0, 90), b))  # name
+    assert base != lexical_bindings_digest((_lex("process", 0, 91), b))  # span
+    assert base != lexical_bindings_digest((a,))
+    assert lexical_bindings_digest(()) != lexical_bindings_digest((a,))
+    assert lexical_bindings_digest(()) == lexical_bindings_digest(())
+    # Framing: name/span boundary can't collide by shifting digits.
+    assert lexical_bindings_digest((_lex("x1", 2, 3),)) != lexical_bindings_digest(
+        (_lex("x", 12, 3),)
     )
