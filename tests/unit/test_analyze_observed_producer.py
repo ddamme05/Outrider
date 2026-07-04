@@ -376,6 +376,26 @@ def test_child_process_destructured_exec_is_admitted() -> None:
     assert f.query_match_id == "javascript.command_injection_child_process"
 
 
+def test_member_exec_with_bound_bare_sibling_is_not_admitted() -> None:
+    """`pattern.exec(text + suffix)` in a file that ALSO destructures `exec`
+    from child_process: the member match must anchor on its RECEIVER
+    (`pattern`, unbound → dropped), never fall back to the bare-callee name
+    (`exec`, which IS bound here). A refactor swapping the `_recv`-over-`_fn`
+    anchor preference would ship a false CRITICAL on this file while every
+    import-free negative stays green; the bare call in the same file is the
+    positive control proving the import itself admits."""
+    source = (
+        'const { exec } = require("child_process");\n'
+        "function run(pattern, text, suffix, cmd) {\n"
+        "  pattern.exec(text + suffix);\n"
+        "  exec('ls ' + cmd);\n"
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/run.js")
+    assert f.query_match_id == "javascript.command_injection_child_process"
+    assert f.line_start == 4  # the bare bound call — NOT the regex receiver on line 3
+
+
 def test_aliased_namespace_exec_is_now_admitted() -> None:
     """`const cp = require('child_process'); cp.exec(...)` — previously a
     documented recall gap (the member arm demanded the literal

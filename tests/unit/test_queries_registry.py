@@ -92,3 +92,52 @@ def test_registered_query_ids_callers_get_consistent_set() -> None:
     first = registry.REGISTERED_QUERY_IDS
     second = registry.REGISTERED_QUERY_IDS
     assert first is second
+
+
+# ---------------------------------------------------------------------------
+# Anchor-capture protocol enforcement (`_validate_anchor_captures`): an
+# `anchor_import` query whose `.scm` captures neither `_fn` nor `_recv`
+# would be 100% default-denied by the producer, silently — the registry
+# rejects it at import instead.
+# ---------------------------------------------------------------------------
+
+
+def test_anchor_capture_typo_rejected_at_import() -> None:
+    """A typo'd anchor capture (`@_fun`) leaves the pattern with no anchor;
+    `_validate_anchor_captures` raises instead of letting `_binding_admits`
+    silently suppress every match of the query."""
+    import pytest
+
+    body = '(call_expression function: (identifier) @_fun (#eq? @_fun "exec")) @x'
+    query = registry._compile_and_validate("javascript.probe", body, grammar="javascript")  # noqa: SLF001
+    with pytest.raises(ValueError, match="anchor_import.*neither '_fn' nor '_recv'"):
+        registry._validate_anchor_captures("javascript.probe", query, grammar="javascript")  # noqa: SLF001
+
+
+def test_anchor_capture_check_is_per_pattern() -> None:
+    """A multi-pattern file where ONE pattern lacks the anchor still fails —
+    file-level capture presence is not enough (that pattern's matches would
+    be default-denied while its siblings work, the silent-partial failure)."""
+    import pytest
+
+    body = (
+        "(call_expression function: (identifier) @_fn) @x\n"
+        "(call_expression function: (member_expression object: (identifier) @_obj)) @x\n"
+    )
+    query = registry._compile_and_validate("javascript.probe", body, grammar="javascript")  # noqa: SLF001
+    with pytest.raises(ValueError, match="pattern 1"):
+        registry._validate_anchor_captures("javascript.probe", query, grammar="javascript")  # noqa: SLF001
+
+
+def test_live_anchor_import_queries_satisfy_the_protocol() -> None:
+    """Every registered anchor_import query passes the validator under every
+    grammar it compiles for — the import-time wiring's positive control (and
+    the proof the live catalog's capture names are protocol-conformant)."""
+    checked = 0
+    for query_id, observed in registry._OBSERVED_QUERIES.items():  # noqa: SLF001
+        if observed.binding is None or observed.binding.mode != "anchor_import":
+            continue
+        for grammar, query in registry._COMPILED_QUERIES[query_id].items():  # noqa: SLF001
+            registry._validate_anchor_captures(query_id, query, grammar=grammar)  # noqa: SLF001
+            checked += 1
+    assert checked, "the live catalog must register at least one anchor_import query"

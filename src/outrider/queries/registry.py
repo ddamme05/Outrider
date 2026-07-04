@@ -594,8 +594,14 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Que
     # OBSERVED-tier security queries: same load + compile + mandatory-capture
     # validation. Their .scm bodies join _QUERY_BODIES/_COMPILED_QUERIES so
     # match()/get_query_source() resolve them like any other registered id.
+    # anchor_import queries additionally validate the anchor-capture
+    # protocol — the producer's admission depends on it (see
+    # _validate_anchor_captures).
     for query_id, observed in _OBSERVED_QUERIES.items():
         _register(query_id, observed.language, observed.filename)
+        if observed.binding is not None and observed.binding.mode == "anchor_import":
+            for grammar, query in compiled[query_id].items():
+                _validate_anchor_captures(query_id, query, grammar=grammar)
     # Deprecated bodies also compile and validate, under the grammars of
     # the language named by the id's namespace prefix — the same
     # `_language_for_query_id` decode live registration uses, so the
@@ -611,6 +617,40 @@ def _load_and_compile() -> tuple[dict[str, str], dict[str, dict[GrammarKind, Que
             for grammar in _GRAMMARS_BY_QUERY_LANGUAGE[language]
         }
     return bodies, compiled
+
+
+def _validate_anchor_captures(query_id: str, query: Query, *, grammar: GrammarKind) -> None:
+    """Enforce the anchor-capture protocol for `anchor_import` queries at
+    import time. The producer anchors a match on `@_recv` (member receiver)
+    else `@_fn` (bare callee) and DEFAULT-DENIES a match with neither, so a
+    `.scm` that typos the capture name (`@_fun`) — or a pattern shape that
+    captures neither — would silently suppress 100% of that pattern's
+    matches: no error, no telemetry, no failing test. Every pattern must
+    reference `_fn` or `_recv`; participation is probed per-pattern via
+    `capture_quantifier` (raises for a capture absent from the pattern —
+    the mandatory-capture validator's idiom; OPTIONAL participation counts,
+    since alternation arms quantify `?`).
+    """
+    capture_count = cast("int", query.capture_count)
+    anchor_indexes = tuple(
+        c for c in range(capture_count) if query.capture_name(c) in ("_fn", "_recv")
+    )
+    for p in range(cast("int", query.pattern_count)):
+        for c in anchor_indexes:
+            try:
+                query.capture_quantifier(p, c)
+            except (IndexError, ValueError, SystemError):
+                # Narrow by-design negative set: the capture isn't part of
+                # this pattern (the _compile_and_validate precedent).
+                continue
+            break
+        else:
+            raise ValueError(
+                f"Query {query_id!r} ({grammar}) has binding mode 'anchor_import' "
+                f"but pattern {p} captures neither '_fn' nor '_recv'; the "
+                f"producer would default-deny every match of that pattern "
+                f"silently. Fix the .scm capture names or the BindingRule mode."
+            )
 
 
 def _compile_and_validate(
