@@ -458,6 +458,21 @@ def test_reject_unauthorized_with_https_import_is_admitted() -> None:
     assert f.query_match_id == "javascript.tls_verify_disabled"
 
 
+def test_reject_unauthorized_with_ssl_option_client_is_admitted() -> None:
+    """The canonical managed-Postgres MITM idiom: `rejectUnauthorized: false`
+    inside a pg `ssl:` option, with only the DB driver imported — the
+    option-honoring client families are in the TLS module_presence set,
+    not just HTTP/TLS clients."""
+    source = (
+        'const { Pool } = require("pg");\n'
+        "function connect(url) {\n"
+        "  return new Pool({ connectionString: url, ssl: { rejectUnauthorized: false } });\n"
+        "}\n"
+    )
+    (f,) = _produce_at(source, "src/db.js")
+    assert f.query_match_id == "javascript.tls_verify_disabled"
+
+
 def test_process_env_kill_switch_needs_no_import() -> None:
     """The process-wide kill switch is self-proving (`process.env` receiver
     constrained in the query) — it fires with ZERO imports, in both the dot
