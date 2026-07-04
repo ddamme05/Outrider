@@ -168,3 +168,21 @@ def test_shadow_guard_requires_a_guard_position_capture() -> None:
             checked += 1
     assert checked, "expected at least one live shadow_guard query"
     assert GUARD_POSITION_CAPTURES  # imported symbol used
+
+
+def test_guard_position_capture_check_is_per_pattern() -> None:
+    """A multi-pattern file where ONE pattern lacks a guard-position capture
+    still fails — query-wide capture presence is not enough (the mis-captured
+    sibling's matches would carry no guard-position capture, leaving
+    `_guarded_global_shadowed` silently inert for exactly that pattern while
+    the well-captured sibling masks the hole). Mirrors
+    `test_anchor_capture_check_is_per_pattern`."""
+    import pytest
+
+    body = (
+        '(call_expression function: (identifier) @_fn (#eq? @_fn "eval")) @m\n'
+        '(new_expression constructor: (identifier) @_target (#eq? @_target "Function")) @m\n'
+    )
+    query = registry._compile_and_validate("javascript.probe", body, grammar="javascript")  # noqa: SLF001
+    with pytest.raises(ValueError, match="pattern 1"):
+        registry._validate_guard_position_captures("javascript.probe", query, grammar="javascript")  # noqa: SLF001
