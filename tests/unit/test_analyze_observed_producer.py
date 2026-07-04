@@ -321,7 +321,7 @@ def test_unregistered_extension_is_inert() -> None:
 # extra assertions (line anchors, multi-form loops) stay as standalone tests
 # below the table.
 _BINDING_ADMISSION_CASES = (
-    # --- lexical shadowing guard (specs/2026-07-04-lexical-shadowing-guard.md) ---
+    # --- lexical shadowing guard (DECISIONS.md#060) ---
     pytest.param(
         # Codex round-4 repro: the param shadows the import — the call
         # resolves to the local, the import proves nothing.

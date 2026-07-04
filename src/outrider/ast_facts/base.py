@@ -64,9 +64,9 @@ class LanguageAdapter(Protocol):
 
     def extract_lexical_bindings(self, source: bytes, file_path: str) -> tuple[LexicalBinding, ...]:
         """Local name declarations with their lexical visibility byte
-        spans — the OBSERVED shadowing guard's input
-        (specs/2026-07-04-lexical-shadowing-guard.md). Languages whose
-        catalog has no binding rules return `()` (Python today)."""
+        spans — the OBSERVED shadowing guard's input (`DECISIONS.md#060`).
+        Languages whose catalog has no binding rules return `()`
+        (Python today)."""
 
     def resolve_simple_direct_import(
         self, import_ref: ImportRef, import_root: Path
