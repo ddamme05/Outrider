@@ -183,6 +183,17 @@ def _module_matches(specifier: str, modules: tuple[str, ...]) -> bool:
     return any(specifier == m or specifier.startswith(m + "/") for m in modules)
 
 
+def _module_presence_satisfied(
+    modules: tuple[str, ...], import_refs: tuple[ImportRef, ...]
+) -> bool:
+    """The single module_presence predicate — a VALUE import of one of the
+    rule's packages exists in the file. Consumed by BOTH the per-query
+    pre-gate in `run_observed_matches` (skip the tree-sitter run) and the
+    per-span admission in `_binding_admits`; one helper so the two sites
+    cannot drift apart."""
+    return any(ref.is_value_import and _module_matches(ref.module, modules) for ref in import_refs)
+
+
 def _shadowed(
     name: str,
     match_byte_start: int,
@@ -237,10 +248,7 @@ def _binding_admits(
     if binding is None:
         return True
     if binding.mode == "module_presence":
-        return any(
-            ref.is_value_import and _module_matches(ref.module, binding.modules)
-            for ref in import_refs
-        )
+        return _module_presence_satisfied(binding.modules, import_refs)
     if binding.mode == "anchor_import":
         # First participating protocol capture wins — all `_recv` before any
         # `_fn` (the receiver-over-callee preference the bound-sibling test
@@ -399,10 +407,7 @@ def run_observed_matches(
         if (
             observed.binding is not None
             and observed.binding.mode == "module_presence"
-            and not any(
-                ref.is_value_import and _module_matches(ref.module, observed.binding.modules)
-                for ref in import_refs
-            )
+            and not _module_presence_satisfied(observed.binding.modules, import_refs)
         ):
             continue
         for span in query_registry.match(query_id, content_bytes, grammar=grammar):

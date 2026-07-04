@@ -168,10 +168,30 @@ def test_type_only_imports_are_marked_non_value() -> None:
     type_only = next(i for i in result.imports if i.module == "mod")
     assert type_only.import_kind == "from"
     assert type_only.is_value_import is False
+    # Statement-level type-only imports KEEP their names (only per-specifier
+    # `type U` strips) — the names ride the import_bindings_digest beside the
+    # value marker, so their content is contract, not incidental.
+    assert type_only.names == ("T",)
     mixed = next(i for i in result.imports if i.module == "./rel")
     assert mixed.import_kind == "relative"
     assert mixed.names == ("val",)  # `type U` is type-space — excluded
     assert mixed.is_value_import is True
+
+
+def test_all_type_specifier_import_is_non_value() -> None:
+    """The specifier SPELLING of a pure type import — `import { type Pool }
+    from "pg"` — strips every name and must be non-value, same as the
+    statement spelling (/code-review angle-A find: the clause-presence
+    check alone let this form prove module_presence). A default import
+    literally NAMED `type` stays a value import (the grammar binds it as
+    an identifier, probe-verified)."""
+    result = _parse(b'import { type Pool } from "pg";\nimport type from "./mod";\n')
+    all_type = next(i for i in result.imports if i.module == "pg")
+    assert all_type.names == ()
+    assert all_type.is_value_import is False
+    default_named_type = next(i for i in result.imports if i.module == "./mod")
+    assert default_named_type.names == ("type",)
+    assert default_named_type.is_value_import is True
 
 
 def test_legacy_import_require_is_direct() -> None:

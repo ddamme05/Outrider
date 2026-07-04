@@ -228,3 +228,24 @@ def test_observed_sweep_parses_source_once() -> None:
     assert info.misses == 3, "same bytes under a second grammar must be a fresh parse"
     assert info.hits == (len(python_ids) - 1) + (len(js_ids) - 1)
     registry._parse_cached.cache_clear()
+
+
+def test_binding_none_javascript_queries_declare_a_shadow_guard() -> None:
+    """Catalog-of-today contract (/code-review convergent find, angles B +
+    altitude): a `binding=None` javascript query's ONLY lexical proof is its
+    shadow guard — the anchor-shadow check inside `_binding_admits` never
+    runs for it. Every current such entry text-constrains a global
+    (`process.env`, `eval`/`Function`), so every one must declare the
+    guarded names. A future binding=None query that genuinely needs no
+    guard (pure-syntax pattern, no identifier constraint) updates this pin
+    deliberately rather than skipping the guard by accident."""
+    unguarded = sorted(
+        oq.query_match_id
+        for oq in registry.OBSERVED_QUERIES.values()
+        if oq.language == "javascript" and oq.binding is None and not oq.shadow_guard
+    )
+    assert unguarded == [], (
+        f"binding=None javascript queries without a shadow_guard: {unguarded} — "
+        f"either guard their text-constrained globals or update this pin with "
+        f"the rationale."
+    )
