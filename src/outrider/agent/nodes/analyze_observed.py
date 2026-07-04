@@ -126,6 +126,18 @@ OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v6"
 # needs no OBSERVED_PRODUCER_VERSION bump.
 _EVIDENCE_MAX_CHARS: Final[int] = 2000
 
+# Capture names that hold a GUARDED-GLOBAL identifier — the callee/receiver
+# position whose text `#eq?`-pins the global (`@_fn`=eval, `@_ctor`=Function,
+# `@_proc`=process; `@_recv` for symmetry with the anchor family). A guarded
+# name in `shadow_guard` participates in a match ONLY through these captures,
+# never through argument/value captures (`@_arg`, `@_val`, `@_env*`) — else
+# `eval(Function)` with a shadowed `Function` argument would wrongly drop a
+# real `eval` match (Codex implementation-audit find). A new binding=None
+# query that text-constrains a global under a new capture name extends this
+# set (and the catalog pin in test_observed_query_registry checks every such
+# query declares a shadow_guard).
+_GUARD_POSITION_CAPTURES: Final[frozenset[str]] = frozenset({"_recv", "_fn", "_ctor", "_proc"})
+
 
 @dataclass(frozen=True, slots=True)
 class ObservedMatch:
@@ -227,15 +239,20 @@ def _guarded_global_shadowed(
 ) -> bool:
     """True when a guarded global PARTICIPATES in this match and is
     shadowed at the match site. Participation is decided per match, not
-    per query: a guarded name counts only when one of the match's captured
-    identifier texts equals it (`@_fn` == "eval", `@_proc` == "process") —
-    a multi-global query like command_injection_eval must not drop a real
-    `eval(x)` match just because an unrelated `Function` parameter shadows
-    the OTHER guarded global (Codex implementation-audit find)."""
+    per query, and ONLY through guard-POSITION captures
+    (`_GUARD_POSITION_CAPTURES` — the callee/receiver identifier, not the
+    argument): a guarded name counts only when its text appears in one of
+    those captures. So `eval(Function)` with a shadowed `Function`
+    argument keeps admitting (only `@_fn`="eval" is a guard position, and
+    `eval` is unshadowed), while a multi-global query never drops a real
+    `eval(x)` match over an unrelated shadowed `Function` (Codex
+    implementation-audit find)."""
     if not shadow_guard:
         return False
     capture_texts = {
-        content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace") for c in captures
+        content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace")
+        for c in captures
+        if c.name in _GUARD_POSITION_CAPTURES
     }
     return any(
         g in capture_texts and _shadowed(g, match_byte_start, match_byte_end, lexical_bindings)
