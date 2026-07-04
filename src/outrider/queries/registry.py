@@ -493,6 +493,11 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
                 "dynamic code construction or constrain the input to a vetted "
                 "set."
             ),
+            # No binding (`eval`/`Function` are globals — no import exists to
+            # bind), so the shadow guard carries the whole lexical proof: a
+            # local `eval` parameter or `Function` mock resolves to the local
+            # binding, not the global.
+            shadow_guard=("Function", "eval"),
         ),
         ObservedQuery(
             query_match_id="javascript.sql_injection_string_concat",

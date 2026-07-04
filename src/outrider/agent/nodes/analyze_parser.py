@@ -921,6 +921,12 @@ def _build_from_import_map(import_refs: tuple[ImportRef, ...]) -> dict[str, str]
     `is_valid_import_string` AFTER shadowing resolves (last write wins,
     THEN invalid modules drop) so a later producer-bug-shaped ref can't
     resurrect an earlier shadowed module.
+
+    Deliberately does NOT filter on `ImportRef.is_value_import`: trace
+    correction asks WHERE a name's module lives, not whether runtime can
+    call through it — a type-only import is still evidence of the
+    defining module, so non-value refs stay in the map (unlike OBSERVED
+    binding admission, which requires value imports).
     """
     mapping: dict[str, str] = {}
     for ref in import_refs:

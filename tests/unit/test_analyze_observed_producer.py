@@ -388,6 +388,33 @@ _BINDING_ADMISSION_CASES = (
         id="shadow-in-sibling-function-admitted",
     ),
     pytest.param(
+        # /code-review convergent find (angles B + altitude): eval/Function
+        # are binding=None globals, so their lexical proof IS the shadow
+        # guard — a local `eval` parameter resolves to the local, not the
+        # global.
+        "export function run(eval, x) {\n  return eval(x + suffix);\n}\n",
+        "src/sandboxed_eval.mjs",
+        None,
+        id="shadowed-eval-param-denied",
+    ),
+    pytest.param(
+        # Same guard, `Function` global, module-scope mock variant.
+        "const Function = mock.Function;\n"
+        "export function build(body) {\n"
+        "  return new Function(body);\n"
+        "}\n",
+        "src/mock_function.mjs",
+        None,
+        id="shadowed-function-mock-denied",
+    ),
+    pytest.param(
+        # Positive control for the guard: the UNSHADOWED global still fires.
+        "export function run(x, suffix) {\n  return eval(x + suffix);\n}\n",
+        "src/real_eval.mjs",
+        "javascript.command_injection_eval",
+        id="unshadowed-eval-admitted",
+    ),
+    pytest.param(
         # Type-only import proves nothing at runtime (Codex round-4
         # residual, now closed): module_presence needs a VALUE import.
         'import type { Pool } from "pg";\n'
@@ -397,6 +424,17 @@ _BINDING_ADMISSION_CASES = (
         "src/typed_only.ts",
         None,
         id="type-only-import-module-presence-denied",
+    ),
+    pytest.param(
+        # The SPECIFIER spelling of a pure type import must deny like the
+        # statement spelling (/code-review angle-A find).
+        'import { type Pool } from "pg";\n'
+        "export function find(pool, name) {\n"
+        '  return pool.query("SELECT * FROM users WHERE name = \'" + name + "\'");\n'
+        "}\n",
+        "src/typed_specifiers.ts",
+        None,
+        id="all-type-specifier-import-module-presence-denied",
     ),
     pytest.param(
         # Side-effect import binds no name a runtime call resolves through.

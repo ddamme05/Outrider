@@ -538,9 +538,13 @@ class JavaScriptAdapter:
         # any default/named binding → "from".
         default_kind = "from" if (defaults or has_named_imports) else "direct"
         kind = self._kind_for(module, default_kind)
-        # Value iff the statement is not type-only AND it binds something
-        # (a side-effect `import "m"` loads the module but binds no name a
-        # runtime call can resolve through).
+        # Value iff the statement is not type-only AND at least one VALUE
+        # binding survived specifier stripping: a side-effect `import "m"`
+        # binds nothing, and `import { type Pool } from "pg"` (every
+        # specifier type-only) strips to names=() — both load the module
+        # but bind no name a runtime call can resolve through
+        # (/code-review angle-A find: the clause-presence check alone let
+        # the all-type-specifier spelling prove module_presence).
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -548,7 +552,7 @@ class JavaScriptAdapter:
             module=module,
             names=names,
             is_simple_direct=kind == "relative",
-            is_value_import=not statement_type_only and clause is not None,
+            is_value_import=not statement_type_only and bool(names),
         )
 
     def _build_reexport(self, node: Node, file_path: str) -> ImportRef:
