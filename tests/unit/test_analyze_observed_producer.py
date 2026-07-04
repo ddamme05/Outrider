@@ -432,6 +432,24 @@ _BINDING_ADMISSION_CASES = (
         id="unrelated-eval-shadow-still-admits-function",
     ),
     pytest.param(
+        # Guard participation is guard-POSITION-only (Codex 2nd-round find):
+        # here `Function` is shadowed AND appears — but only as the ARGUMENT
+        # to a real global `eval`, not at the callee position. The `eval`
+        # match must still admit.
+        "export function run(Function, x) {\n  return eval(Function);\n}\n",
+        "src/guard_name_in_arg.mjs",
+        "javascript.command_injection_eval",
+        id="guarded-name-in-argument-position-still-admits",
+    ),
+    pytest.param(
+        # Inverse: `eval` shadowed and passed as the `new Function` ARGUMENT
+        # — the Function constructor match still admits.
+        "export function build(eval) {\n  return new Function(eval);\n}\n",
+        "src/guard_name_in_ctor_arg.mjs",
+        "javascript.command_injection_eval",
+        id="guarded-name-in-ctor-argument-still-admits",
+    ),
+    pytest.param(
         # CJS twin of the all-type-specifier case (Codex implementation-
         # audit find): a require that binds NO surviving local name loads
         # the module but proves no runtime callability.
