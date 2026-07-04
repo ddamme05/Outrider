@@ -7,8 +7,10 @@
 ; text constraint is completed by the registry entry's
 ; `shadow_guard=("process",)`: the producer denies a match whose `process`
 ; is locally rebound — a parameter or module-scope declaration whose
-; visibility span contains the match, OR a module-scope
-; import/require rebind (`const process = require("./mock")`). Residual
+; visibility span contains the match, OR a module-scope VALUE
+; import/require rebind (`const process = require("./mock")`) — a
+; re-export or `import type` of the name creates no runtime binding
+; and does not deny. Residual
 ; (safe-direction, FUP-214): a FUNCTION-scope require-rebind of `process`
 ; over-denies a sibling use (file-level import check), degrading to JUDGED.
 ; See DECISIONS.md#060.

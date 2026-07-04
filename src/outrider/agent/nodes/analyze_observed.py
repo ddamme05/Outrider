@@ -111,7 +111,7 @@ if TYPE_CHECKING:
 # (`DECISIONS.md#060`). A match is denied when its
 # anchor (or a `shadow_guard` global captured at a guard POSITION —
 # `GUARD_POSITION_CAPTURES`) is locally rebound: a `LexicalBinding` whose
-# visibility span contains the match, or (for a guarded global) an
+# visibility span contains the match, or (for a guarded global) a VALUE
 # import/require of that name. Binding rules only count
 # VALUE imports (`ImportRef.is_value_import` — False when no value binding
 # survives: type-only forms, re-exports, side-effect imports, and
@@ -241,15 +241,18 @@ def _guarded_global_shadowed(
     position, and `eval` is unshadowed).
 
     Rebinding is either a lexical declaration whose visibility span
-    contains the match (`_shadowed`) OR an import/require binding of the
-    name — a global like `process`/`eval`/`Function` is never legitimately
-    imported, so `const process = require("./mock")` is a definitional
-    shadow that no `LexicalBinding` records (require declarators are
-    excluded to avoid anchor-import self-shadow). The import check is
-    file-level: a module-scope rebind shadows the whole file (the common
-    case); a function-scope require-rebind of a global over-denies a
-    sibling use (degrades to JUDGED — the safe direction; documented
-    residual, FUP-214)."""
+    contains the match (`_shadowed`) OR a VALUE import/require binding of
+    the name — a global like `process`/`eval`/`Function` is never
+    legitimately imported, so `const process = require("./mock")` is a
+    definitional shadow that no `LexicalBinding` records (require
+    declarators are excluded to avoid anchor-import self-shadow).
+    Non-value refs never count: `export { process } from "./shim"` and
+    `import type` forms create NO runtime binding, so the global they
+    name is still the global — denying on them would drop a real match.
+    The import check is file-level: a module-scope rebind shadows the
+    whole file (the common case); a function-scope require-rebind of a
+    global over-denies a sibling use (degrades to JUDGED — the safe
+    direction; documented residual, FUP-214)."""
     if not shadow_guard:
         return False
     capture_texts = {
@@ -257,7 +260,7 @@ def _guarded_global_shadowed(
         for c in captures
         if c.name in GUARD_POSITION_CAPTURES
     }
-    imported_names = {name for ref in import_refs for name in ref.names}
+    imported_names = {name for ref in import_refs if ref.is_value_import for name in ref.names}
     return any(
         g in capture_texts
         and (
