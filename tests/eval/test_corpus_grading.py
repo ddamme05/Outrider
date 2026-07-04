@@ -90,9 +90,9 @@ def _obs(*, raw=(), admitted=(), emitted=(), gradeable=True) -> cg._FileObservat
     return cg._FileObservation(  # noqa: SLF001
         gradeable=gradeable,
         ungraded_reason="" if gradeable else "parse degraded (stub)",
-        raw=frozenset(raw),
-        admitted=frozenset(admitted),
-        emitted=frozenset(emitted),
+        raw={k: 1 for k in raw},
+        admitted={k: 1 for k in admitted},
+        emitted={k: 1 for k in emitted},
     )
 
 
@@ -282,6 +282,35 @@ def test_grade_not_graded_end_to_end_on_broken_file(tmp_path) -> None:
     assert "parse degraded" in row.detail
 
 
+def test_same_line_multiplicity_is_surfaced(tmp_path) -> None:
+    """Two same-query emissions on one line must not collapse: the claiming
+    row's detail carries the count, so a 1 -> 2 emission drift moves the
+    scorecard (revert-the-fold: set-keyed observations grade this identically
+    to a single emission). The eval strings are inert parse fixtures."""
+    _write(tmp_path, "double.js", "export function h(a, b) {\n  eval(a); eval(b)\n}\n")
+    gt = cg.GroundTruth.model_validate(
+        {
+            "corpus_root": ".",
+            "rows": [
+                {
+                    "kind": "expected_finding",
+                    "file": "double.js",
+                    "query_match_id": "javascript.command_injection_eval",
+                    "finding_type": "command_injection",
+                    "line": 2,
+                    "real_vulnerability": True,
+                    "current_outcome": "emitted",
+                    "rationale": "two sinks, one line",
+                }
+            ],
+        }
+    )
+    sc = cg.grade(gt, repo_root=tmp_path)
+    assert sc.totals.true_positive == 1
+    (row,) = [r for r in sc.row_scores if r.grade == "true_positive"]
+    assert "2 same-line emissions" in row.detail
+
+
 # ---------------------------------------------------------------------------
 # Ground-truth integrity gates (fail loud, not a grade).
 # ---------------------------------------------------------------------------
@@ -338,6 +367,54 @@ def test_grade_rejects_unknown_query_id(tmp_path) -> None:
         }
     )
     with pytest.raises(ValueError, match="unknown OBSERVED query id"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
+def test_grade_rejects_cross_language_query_id(tmp_path) -> None:
+    """A `.js` row naming a `python.*` id passes the id-exists and
+    finding_type checks yet names a query production NEVER runs for the file
+    — it would grade as a plausible miss for a claim that cannot exist."""
+    _write(tmp_path, "evil.js", _EVAL_SRC)
+    gt = cg.GroundTruth.model_validate(
+        {
+            "corpus_root": ".",
+            "rows": [
+                {
+                    "kind": "expected_finding",
+                    "file": "evil.js",
+                    "query_match_id": "python.command_injection_eval_exec",
+                    "finding_type": "command_injection",
+                    "line": 2,
+                    "real_vulnerability": True,
+                    "current_outcome": "no_raw_match",
+                    "residual_tag": "wrong-language",
+                    "rationale": "cross-language id",
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="not a query production runs"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
+def test_grade_rejects_cross_language_scope_on_clean_row(tmp_path) -> None:
+    """The scoped expected_clean variant gets the same language check — a
+    Python-scoped clean assertion on a JS file is vacuously true forever."""
+    _write(tmp_path, "clean.js", _CLEAN_SRC)
+    gt = cg.GroundTruth.model_validate(
+        {
+            "corpus_root": ".",
+            "rows": [
+                {
+                    "kind": "expected_clean",
+                    "file": "clean.js",
+                    "query_match_id": "python.tls_verify_disabled",
+                    "rationale": "vacuous scope",
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="not a query production runs"):
         cg.grade(gt, repo_root=tmp_path)
 
 
