@@ -477,6 +477,50 @@ _BINDING_ADMISSION_CASES = (
         id="module-scope-require-rebind-of-global-denied",
     ),
     pytest.param(
+        # A re-export creates NO runtime binding — `process` inside this
+        # file is still the global, so the kill switch must fire (only
+        # VALUE imports rebind a guarded global).
+        'export { process } from "./shim";\n'
+        "export function enable() {\n"
+        '  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/reexported_process.js",
+        "javascript.tls_env_verify_disabled",
+        id="re-export-of-guarded-global-still-admits",
+    ),
+    pytest.param(
+        # `import type` creates no runtime binding either — same rule,
+        # statement-level type-only spelling.
+        'import type { process } from "./shim";\n'
+        "export function enable() {\n"
+        '  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "}\n",
+        "src/type_imported_process.ts",
+        "javascript.tls_env_verify_disabled",
+        id="type-only-import-of-guarded-global-still-admits",
+    ),
+    pytest.param(
+        # A for-of loop-head `const eval` is scoped to the LOOP statement
+        # (for-of parses as `for_in_statement` in all three grammars) —
+        # the post-loop `eval` is the real global and must fire.
+        "export function run(xs, userInput) {\n"
+        "  for (const eval of xs) {\n"
+        "    log(eval);\n"
+        "  }\n"
+        "  return eval(userInput);\n"
+        "}\n",
+        "src/for_of_scoped.mjs",
+        "javascript.command_injection_eval",
+        id="for-of-head-shadow-does-not-reach-post-loop-global",
+    ),
+    pytest.param(
+        # Inside the loop body the head binding IS in scope — denied.
+        "export function run(xs) {\n  for (const eval of xs) {\n    eval(userInput);\n  }\n}\n",
+        "src/for_of_shadowed_body.mjs",
+        None,
+        id="for-of-head-shadow-denies-inside-loop-body",
+    ),
+    pytest.param(
         # CJS twin of the all-type-specifier case (Codex implementation-
         # audit find): a require that binds NO surviving local name loads
         # the module but proves no runtime callability.
