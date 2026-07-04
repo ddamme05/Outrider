@@ -26,9 +26,13 @@ from uuid import UUID, uuid4
 import pytest
 
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
-from outrider.agent.nodes.analyze_observed import OBSERVED_PRODUCER_VERSION
+from outrider.agent.nodes.analyze_observed import (
+    OBSERVED_PRODUCER_VERSION,
+    import_bindings_digest,
+)
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION, from_import_map_digest
 from outrider.agent.nodes.cache_config import CacheMode
+from outrider.ast_facts import parse_python
 from outrider.ast_facts.parameterized_calls import (
     ParameterizedCallScan,
     scan_digest,
@@ -314,7 +318,7 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     assert len(provider.calls) == 1  # shadow: model always called
     [write] = store.write_calls
     # The written key is exactly the recomputed full key (recipe version +
-    # prompt digest + fifteen explicit components) over the request actually
+    # prompt digest + the explicit components) over the request actually
     # sent. `ANALYZE_CACHE_KEY_VERSION` folds internally, so the recompute below
     # need not pass it. This path drives analyze() without the host-identity
     # triad (#056), so the triad folds UNQUALIFIED (all None) on both the node
@@ -341,6 +345,11 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         # _HEAD carries only a direct `import os` — no from-imports — so the
         # node's digest over the parsed imports equals the empty-map digest.
         from_import_map_digest=from_import_map_digest(()),
+        # The bindings digest DOES see the direct import — mirror the node
+        # by digesting the same parse the analyze bundle produces.
+        import_bindings_digest=import_bindings_digest(
+            parse_python(_HEAD.encode("utf-8"), "src/cached.py", MagicMock()).imports
+        ),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,
@@ -888,6 +897,8 @@ async def test_javascript_clean_file_is_cache_keyed() -> None:
         observed_producer_version=OBSERVED_PRODUCER_VERSION,
         subsumes_digest=SUBSUMES_DIGEST,
         from_import_map_digest=from_import_map_digest(()),
+        # _JS_HEAD has no imports at all — the empty bindings digest.
+        import_bindings_digest=import_bindings_digest(()),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,

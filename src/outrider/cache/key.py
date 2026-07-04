@@ -36,12 +36,16 @@ from outrider.llm.base import _canonical_prompt_hash
 # constant existed); v2 is the host-identity re-key (#056 folded the triad into
 # the key); v3 folds `from_import_map_digest` — candidate correction (#024
 # from-import amendment) makes cached trace_candidates depend on module-level
-# imports the rendered prompt doesn't carry. The recipe change self-invalidates
+# imports the rendered prompt doesn't carry; v4 folds
+# `import_bindings_digest` — import-binding OBSERVED admission
+# (observed-producer-v4) consumes ALL of the file's imports (module + local
+# names), which the from-import map deliberately excludes (Python-shaped
+# validation over `from`-kind refs only). The recipe change self-invalidates
 # old rows on its own, but the explicit version is the legible, replay-durable
 # marker #056 mandates ("the analyze cache-keyed version bumps") and gives
 # future non-parser recipe changes a home without overloading
 # ANALYZE_PARSER_VERSION's admission-only scope.
-ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v3"
+ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v4"
 
 
 def compute_analyze_cache_key(
@@ -61,27 +65,37 @@ def compute_analyze_cache_key(
     observed_producer_version: str,
     subsumes_digest: str,
     from_import_map_digest: str,
+    import_bindings_digest: str,
     profile_id: str | None,
     reasoning_enabled: bool | None,
     profile_contract_digest: str | None,
 ) -> str:
-    """The analyze-cache key: eighteen length-prefixed fields — the recipe
+    """The analyze-cache key: nineteen length-prefixed fields — the recipe
     version (`ANALYZE_CACHE_KEY_VERSION`) first, then the canonical prompt
-    digest, then the sixteen explicit scope/version/identity components — as
+    digest, then the seventeen explicit scope/version/identity components — as
     one SHA-256 hex digest. `from_import_map_digest`
     (#024 from-import correction) pins the analyzed file's from-import
     name→module map: corrected sibling candidates depend on module-level
     imports the rendered prompt doesn't carry (scope bodies + hunks only),
     so two reviews with byte-identical prompts but different from-imports
     admit different trace_candidates and must never share an entry.
+    `import_bindings_digest` pins the import-binding admission step's
+    per-file input — the `(module, names)` view of ALL the file's imports,
+    which `_binding_admits` (observed-producer-v4) joins name-anchored
+    OBSERVED matches against; the from-import map excludes most JS/TS forms
+    (`node:`-prefixed / hyphenated specifiers, "direct"-kind whole-module /
+    namespace / side-effect imports), so without this component two reviews
+    with byte-identical prompts but different imports would share an entry
+    and serve a stale admitted-finding set.
     `subsumes_digest` (DECISIONS.md#055) pins the
     `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
     admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
     edge edit changes the admitted finding set without touching the prompt,
     registry digest, or parser version — it must invalidate entries.
     `observed_producer_version` (Cost Lever 3) pins the
-    deterministic OBSERVED producer's ADMISSION logic (scope-containment,
-    test-file suppression, zero-width skip, byte→line mapping) — a change there
+    deterministic OBSERVED producer's ADMISSION logic (per-language query-set
+    selection, scope-containment, test-file suppression, import-binding
+    admission, zero-width skip, byte→line mapping) — a change there
     alters the cached finding set without touching the prompt, the registry
     digest, or the parser version, so it must invalidate entries.
     `response_format_digest` (FUP-096) pins the
@@ -151,6 +165,7 @@ def compute_analyze_cache_key(
         observed_producer_version,
         subsumes_digest,
         from_import_map_digest,
+        import_bindings_digest,
         profile_id if profile_id is not None else "",
         reasoning_component,
         profile_contract_digest if profile_contract_digest is not None else "",

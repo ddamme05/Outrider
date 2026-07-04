@@ -455,3 +455,71 @@ def test_non_process_env_receiver_is_not_matched() -> None:
         "}\n"
     )
     assert _produce_at(source, "src/mock_env.js") == ()
+
+
+# ---------------------------------------------------------------------------
+# import_bindings_digest — the analyze-cache-key component pinning the
+# binding step's per-file input (the from_import_map_digest sibling).
+# ---------------------------------------------------------------------------
+
+
+def _ref(
+    module: str,
+    names: tuple[str, ...],
+    *,
+    kind: str = "direct",
+    line: int = 1,
+    file_path: str = "src/x.js",
+):
+    from outrider.ast_facts.models import ImportRef
+
+    return ImportRef(
+        file_path=file_path,
+        line=line,
+        import_kind=kind,  # type: ignore[arg-type]
+        module=module,
+        names=names,
+        is_simple_direct=kind == "relative",
+    )
+
+
+def test_import_bindings_digest_is_canonical_over_admission_input() -> None:
+    """Deterministic, and insensitive to exactly what `_binding_admits`
+    ignores: ref order, duplicates, name order within a ref, and the
+    kind/line/file_path fields. Sensitive to what it consumes: the module
+    and the bound-name set."""
+    from outrider.agent.nodes.analyze_observed import import_bindings_digest
+
+    a = _ref("node:crypto", ("createHash", "createCipheriv"))
+    b = _ref("pg", ("Pool",))
+    base = import_bindings_digest((a, b))
+    assert base == import_bindings_digest((a, b))
+    assert base == import_bindings_digest((b, a))  # order-insensitive
+    assert base == import_bindings_digest((a, b, a))  # duplicate-insensitive
+    assert base == import_bindings_digest(  # name order within a ref
+        (_ref("node:crypto", ("createCipheriv", "createHash")), b)
+    )
+    assert base == import_bindings_digest(  # admission ignores kind/line/path
+        (
+            _ref("node:crypto", ("createHash", "createCipheriv"), kind="from", line=9),
+            _ref("pg", ("Pool",), file_path="src/other.js"),
+        )
+    )
+    assert base != import_bindings_digest((_ref("crypto", ("createHash", "createCipheriv")), b))
+    assert base != import_bindings_digest((_ref("node:crypto", ("createHash",)), b))
+    assert base != import_bindings_digest((a,))
+    assert import_bindings_digest(()) != import_bindings_digest((a,))
+    assert import_bindings_digest(()) == import_bindings_digest(())
+
+
+def test_import_bindings_digest_boundaries_unambiguous() -> None:
+    """Length-prefix framing: adjacent components can't collide by shifting
+    bytes across a boundary — across names, and across the module/names line."""
+    from outrider.agent.nodes.analyze_observed import import_bindings_digest
+
+    assert import_bindings_digest((_ref("m", ("ab", "c")),)) != import_bindings_digest(
+        (_ref("m", ("a", "bc")),)
+    )
+    assert import_bindings_digest((_ref("ab", ("c",)),)) != import_bindings_digest(
+        (_ref("a", ("bc",)),)
+    )
