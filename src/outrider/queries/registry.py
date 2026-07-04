@@ -196,9 +196,15 @@ _QUERY_ID_TO_FILENAME: Final[dict[str, str]] = {
     for query_id, filename in files.items()
 }
 
-# V1: empty. Populated when a query's semantics change and a new id
-# alongside the old one is needed for replay of historical reviews
-# per Internal contracts.
+# Deprecated-id ledger (see DECISIONS.md#061): a query id names a CLAIM,
+# not a byte-exact pattern. Claim-preserving precision edits evolve the
+# `.scm` body IN PLACE under the stable id (`QUERY_REGISTRY_DIGEST` pins
+# the body epoch; git history of the tracked `.scm` files is the body
+# archive). This ledger is populated only on CLAIM change — id retirement
+# or a split (the tls_env precedent) — so historical reviews' ids keep
+# resolving for membership replay. Future source-rematch replay (#031)
+# needs a body-versioning surface before it can re-run old reviews under
+# old bodies.
 _DEPRECATED_QUERY_ID_TO_BODY: Final[dict[str, str]] = {}
 
 
