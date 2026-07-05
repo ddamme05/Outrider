@@ -86,8 +86,17 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from outrider.agent.reducers import append_with_dedup_by
+from outrider.agent.reducers import (
+    append_with_dedup_by,
+    append_with_slot_guard,
+    semantic_digest,
+)
 from outrider.schemas.analysis_round import AnalysisRound
+from outrider.schemas.analyze_worker import (
+    WORKER_OUTCOME_EXCLUDE_PATHS,
+    AnalyzeWorkerOutcome,
+    worker_outcome_slot,
+)
 from outrider.schemas.hitl import HITLDecision, HITLRequest
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.publish import PublishResult
@@ -141,6 +150,21 @@ class ReviewState(BaseModel):
     analysis_rounds: Annotated[
         list[AnalysisRound],
         append_with_dedup_by(lambda r: r.round_id),
+    ] = Field(default_factory=list)
+
+    # Per-(file, pass) worker outcomes from the parallel-analyze fan-out
+    # (specs/2026-07-05-parallel-analyze.md; dormant until the graph split
+    # wires the Send workers). Slot key is POSITIONAL, so the merge is the
+    # #063 slot guard, not first-wins dedup: identical-digest retries are
+    # replay no-ops, divergent same-slot content raises (state must not
+    # fork from audit). The digest excludes only the nested findings'
+    # generated finding_ids (positional path list, pinned).
+    analyze_worker_outcomes: Annotated[
+        list[AnalyzeWorkerOutcome],
+        append_with_slot_guard(
+            worker_outcome_slot,
+            lambda o: semantic_digest(o, exclude_paths=WORKER_OUTCOME_EXCLUDE_PATHS),
+        ),
     ] = Field(default_factory=list)
 
     # Analyze's deterministic request channel for the trace node. Same
