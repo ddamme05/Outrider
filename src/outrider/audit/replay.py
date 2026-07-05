@@ -502,7 +502,9 @@ def _required_phase_node(event: AuditEvent) -> str | None:
     analyze/synthesize aggregates); falls back to the node-less owner map
     (FindingEvent → analyze, etc.). Returns None for phase-unbounded events
     (`AgentTransitionEvent`, `ReplayVerdictEvent`, `SlackNotificationEvent`) — they
-    are bounded by nothing.
+    are bounded by nothing. Owners are the seven LOGICAL nodes only (see
+    DECISIONS.md#064): V1.5's parallel-analyze grouping composes this owner
+    with `phase_key` under the strict hybrid the parallel-analyze spec pins.
     """
     own = getattr(event, "node_id", None)
     if own is not None:
