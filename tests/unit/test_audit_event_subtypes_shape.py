@@ -680,24 +680,27 @@ def test_llm_call_event_rejects_duplicate_context_summary_entries() -> None:
 
 def test_phase_key_present_on_exactly_the_analyze_emitted_carriers() -> None:
     """The ten analyze-emitted event types carry nullable `phase_key`
-    (default None — sequential-era rows), and non-carriers do NOT gain it:
-    the field is per-carrier phase attribution, not an AuditEventBase-wide
-    column. Both directions pinned so a future type joins (or leaves) the
-    carrier set deliberately."""
+    (default None — sequential-era rows), and EVERY other member of the
+    `AuditEvent` union does NOT: the field is per-carrier phase attribution,
+    not an AuditEventBase-wide column. Enumerating the full union (not a
+    sample of non-carriers) means an accidental addition to any event type
+    fails here — the carrier set changes deliberately or not at all.
+    `ReviewPhaseEvent` is the one non-carrier exception: it has carried
+    `phase_key` as the phase-marker key since the V1.5 forward-compat field."""
+    from typing import get_args
+
     from outrider.audit.events import (
         AnalyzeCompletedEvent,
         AnalyzeResponseRejectedEvent,
+        AuditEvent,
         CacheLookupEvent,
         CacheServeEvent,
         FindingProposalRejectedEvent,
-        HITLRequestEvent,
         ObservedSkipShadowEvent,
-        PublishEvent,
         ScopeExclusionEvent,
-        TraceDecisionEvent,
     )
 
-    carriers = (
+    carriers = {
         LLMCallEvent,
         FileExaminationEvent,
         FindingEvent,
@@ -708,14 +711,18 @@ def test_phase_key_present_on_exactly_the_analyze_emitted_carriers() -> None:
         FindingProposalRejectedEvent,
         AnalyzeResponseRejectedEvent,
         AnalyzeCompletedEvent,
-    )
-    for cls in carriers:
-        assert "phase_key" in cls.model_fields, cls.__name__
-        assert cls.model_fields["phase_key"].default is None, cls.__name__
-    for cls in (TraceDecisionEvent, HITLRequestEvent, PublishEvent, ReviewPhaseEvent):
-        if cls is ReviewPhaseEvent:
-            continue  # ReviewPhaseEvent has carried phase_key since #018-era forward-compat.
-        assert "phase_key" not in cls.model_fields, cls.__name__
+    }
+    union_members = set(get_args(get_args(AuditEvent)[0]))
+    assert carriers < union_members  # carriers are real union members
+    assert len(union_members) > len(carriers)  # and the union is bigger
+    for cls in union_members:
+        if cls in carriers:
+            assert "phase_key" in cls.model_fields, cls.__name__
+            assert cls.model_fields["phase_key"].default is None, cls.__name__
+        elif cls is ReviewPhaseEvent:
+            assert "phase_key" in cls.model_fields  # phase-marker key, pre-existing
+        else:
+            assert "phase_key" not in cls.model_fields, cls.__name__
 
 
 def test_phase_key_accepts_a_worker_key_and_survives_round_trip() -> None:
@@ -730,3 +737,28 @@ def test_phase_key_accepts_a_worker_key_and_survives_round_trip() -> None:
     )
     assert event.phase_key == "file:src/foo.py#0"
     assert type(event).model_validate_json(event.model_dump_json()).phase_key == event.phase_key
+
+
+def test_llm_call_event_phase_key_rejected_outside_analyze() -> None:
+    """Rule (c), mirroring `LLMRequest` rule 3: a non-analyze `LLMCallEvent`
+    with a worker key would replay-group under a phase that cannot exist."""
+    with pytest.raises(ValidationError, match="phase_key is only valid"):
+        LLMCallEvent(
+            review_id=uuid4(),
+            model="claude-haiku-4-5",
+            finish_reason="end_turn",
+            node_id="triage",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            cost_usd=0.01,
+            pricing_version="v2",
+            latency_ms=100,
+            prompt_hash="a" * 64,
+            cache_hit=False,
+            context_summary=(),
+            prompt_template_version="triage:1",
+            system_prompt_hash="b" * 64,
+            degraded_mode=False,
+            phase_key="file:src/app.py#0",
+        )

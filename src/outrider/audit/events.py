@@ -547,6 +547,14 @@ class LLMCallEvent(AuditEventBase):
                 "LLMCallEvent.degradation_reason requires degraded_mode=True; "
                 "reason without mode is inconsistent (wrapper drift?)"
             )
+        # Rule (c): phase attribution is analyze-fan-out-only, mirroring
+        # LLMRequest rule 3 (DECISIONS.md#064). A non-analyze event with a
+        # worker key would replay-group under a phase that cannot exist.
+        if self.phase_key is not None and self.node_id != "analyze":
+            raise ValueError(
+                f"LLMCallEvent.phase_key is only valid for node_id='analyze' "
+                f"(parallel-analyze fan-out phases); got node_id={self.node_id!r}."
+            )
         return self
 
     @model_validator(mode="after")

@@ -612,6 +612,15 @@ class LLMRequest(BaseModel):
                 "degradation_reason requires degraded_mode=True; "
                 "reason without mode is inconsistent"
             )
+        # Rule 3: phase attribution is analyze-fan-out-only (DECISIONS.md#064).
+        # A triage/trace/synthesize request carrying a worker key would create
+        # phase ownership for a phase that cannot exist — the same
+        # analyze-scoping contract as degraded_mode, mirrored on LLMCallEvent.
+        if self.phase_key is not None and self.node_id != "analyze":
+            raise ValueError(
+                f"phase_key is only valid for node_id='analyze' (parallel-analyze "
+                f"fan-out phases); got node_id={self.node_id!r}."
+            )
         return self
 
     @model_validator(mode="after")
