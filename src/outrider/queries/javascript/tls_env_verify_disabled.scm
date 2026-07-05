@@ -25,7 +25,8 @@
 ; statement in index.js/config — is admitted by the producer's module-scope
 ; arm (this query is `module_scope_eligible`): a match disjoint from every
 ; parsed scope and fully inside a head-side added-line range produces the
-; OBSERVED finding; a module-only diff routes to the degraded review
+; OBSERVED finding; a diff whose added lines are all module-level routes
+; to the degraded review
 ; instead of skipping. Matches on UNCHANGED module-level lines stay
 ; excluded — the diff anchors the proof.
 (assignment_expression

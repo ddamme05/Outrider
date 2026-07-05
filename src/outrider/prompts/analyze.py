@@ -64,7 +64,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v9"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v10"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — the output-token cap, distinct from the schema's
   50-finding runaway ceiling (`AnalyzeResponseRaw.findings` max_length). At the
@@ -96,6 +96,13 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
+# Bumped 2026-07-04 (was "analyze-v9"): the module-route provenance sentence
+# claimed "the diff changes only module-level lines" — false when the diff also
+# carries pure in-function DELETIONS (removed-only changes never make a scope
+# included per FUP-050, so the route still fires), and the bounded hunks DO show
+# those deletions: a self-contradicting prompt. Now "the diff's added lines are
+# all module-level", with the removals explicitly acknowledged. Degraded user
+# template only; system prefix untouched (same no-re-probe rationale as v9).
 # Bumped 2026-07-04 (was "analyze-v8") to make the DEGRADED user template's
 # provenance sentence reason-aware: `module_level_observed_match` (the module-scope
 # routing degradation, DECISIONS.md#062) is a CLEAN
@@ -143,7 +150,7 @@ if TYPE_CHECKING:
 # `render_post_trace`, and the pass-1 output-schema override. Each bump keeps
 # replay attribution exact — a prompt row replays against the contract it was
 # emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v9"
+VERSION: Final[str] = "analyze-v10"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -811,9 +818,10 @@ _DEGRADATION_CONTEXT: Final[dict[str, str]] = {
     "tree_has_error_in_changed_regions": _DEGRADATION_CONTEXT_PARSE_DEFECT,
     "tree_has_error_no_scope": _DEGRADATION_CONTEXT_PARSE_DEFECT,
     "module_level_observed_match": (
-        "This file parsed cleanly, but the diff changes only module-level\n"
-        "lines outside any function or class, so no scope-unit context exists\n"
-        "for this call."
+        "This file parsed cleanly, but the diff's added lines are all\n"
+        "module-level, outside any function or class, so no scope-unit\n"
+        "context exists for this call. (The diff may also remove lines\n"
+        "inside functions; those removals appear in the hunks below.)"
     ),
 }
 

@@ -33,8 +33,8 @@ backstops drift; producer-side correctness is the contract.
   "tree_has_error_in_changed_regions"`) OR a changed addable line
   intersects a tree error with no recovered scope
   (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033) OR — the
-  one non-parse-defect cause — a module-only diff carries an eligible
-  module-level OBSERVED match (`degradation_reason=
+  one non-parse-defect cause — a diff whose ADDED lines all sit outside
+  any scope unit carries an eligible module-level OBSERVED match (`degradation_reason=
   "module_level_observed_match"`, the module-scope admission arm: the
   producer RUNS on this route and its OBSERVED findings merge with the
   degraded pass; `parse_status` stays "clean"). Parser
@@ -1779,7 +1779,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       (`degradation_reason="tree_has_error_in_changed_regions"`), OR a
       changed addable line intersects a tree error with no recovered scope
       (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033), OR
-      a module-only diff carries an eligible module-level OBSERVED match
+      a diff whose added lines all sit outside any scope unit carries an
+      eligible module-level OBSERVED match
       (`degradation_reason="module_level_observed_match"` — clean parse,
       `parse_status="clean"`; the producer runs and its OBSERVED findings
       merge with the degraded pass);
