@@ -1814,6 +1814,49 @@ async def test_module_scope_route_cross_event_pairing_and_observed_emission(
 
 
 @pytest.mark.asyncio
+async def test_syntax_error_beats_module_candidate_and_emits_zero_observed(
+    deps: dict[str, Any],
+) -> None:
+    """Parse-error precedence END-TO-END through the node: a module-only JS
+    diff adding BOTH the kill switch (inert fixture) and a syntax-error line
+    degrades as `tree_has_error_no_scope` — not the module route — and the
+    round carries ZERO OBSERVED findings (the producer never ran; the module
+    candidate is gated off by the error-bearing parse). Revert-the-precedence:
+    evaluating the module branch first, or dropping the node's error-free
+    candidate gate, fails this pin."""
+    content = b'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nfunction f( {\n'
+    patch = (
+        "--- a/src/index.js\n"
+        "+++ b/src/index.js\n"
+        "@@ -0,0 +1,2 @@\n"
+        '+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        "+function f( {\n"
+    )
+    cf = _build_changed_file(
+        path="src/index.js",
+        content=content,
+        patch=patch,
+        content_base="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    request = deps["provider"].calls[0]
+    assert request.degraded_mode is True
+    assert request.degradation_reason == "tree_has_error_no_scope"
+    fe_events = deps["file_examination_sink"].events
+    assert fe_events[0].parse_status == "degraded"
+    observed = [
+        f for f in result["analysis_rounds"][0].findings if f.evidence_tier is EvidenceTier.OBSERVED
+    ]
+    assert observed == []
+
+
+@pytest.mark.asyncio
 async def test_module_only_diff_without_eligible_match_still_skips(
     deps: dict[str, Any],
 ) -> None:

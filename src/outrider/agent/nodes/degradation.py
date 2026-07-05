@@ -200,9 +200,11 @@ def decide_degradation(
             # module-level OBSERVED emission instead of a silent skip. The
             # parse IS clean — parse_status stays truthful; the reason rides
             # LLMCallEvent. Ordered AFTER the error-lines check (parse-error
-            # precedence: the producer never runs on an error-recovered tree;
-            # the node additionally gates the candidate on an error-free
-            # parse, so this branch is unreachable for error-bearing files).
+            # precedence for the MODULE arm: it never anchors proof on a tree
+            # carrying error nodes — the node gates the candidate on a fully
+            # error-free parse, so this branch is unreachable for
+            # error-bearing files; normal scope-contained production has its
+            # own, per-included-scope error discipline).
             return DegradationDecision(
                 mode="degraded",
                 parse_status="clean",
