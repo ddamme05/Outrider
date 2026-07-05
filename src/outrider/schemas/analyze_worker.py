@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from outrider.ast_facts.models import SkipReason
 from outrider.coordinates import validate_diff_path
+from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.triage_result import ReviewTier
@@ -99,6 +100,15 @@ class AnalyzeWorkerOutcome(BaseModel):
     # event — the sequential loop's FP-drift discipline, preserved.
     cost: Decimal = Field(default=Decimal("0"), ge=0)
     estimated_tokens: int = Field(default=0, ge=0)
+    # Cross-type subsumption proof-retention records (DECISIONS.md#055) —
+    # the aggregate forwards them onto AnalyzeCompletedEvent; dropping
+    # them here would vanish the dropped-OBSERVED structural proof.
+    subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
+    # Content hashes of CACHE-SERVED findings (identity, not just count):
+    # the post-cap accounting recomputes how many KEPT findings were
+    # served vs proposal-born AFTER aggregate dedup and capping — a count
+    # alone cannot survive that recomputation.
+    served_content_hashes: tuple[str, ...] = ()
 
     @field_validator("path")
     @classmethod
@@ -123,6 +133,24 @@ class AnalyzeWorkerOutcome(BaseModel):
             )
         if skipped and self.llm_called:
             raise ValueError("AnalyzeWorkerOutcome: a skipped file never makes an LLM call")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_no_llm_means_no_spend(self) -> Self:
+        """`llm_called=False` (skips, cache serves, ride-outs) constructs with
+        zero provider tokens and zero cost everywhere in the node — nonzero
+        spend without a call would let the aggregate's accounting contradict
+        the LLMCallEvent stream."""
+        if not self.llm_called and (
+            self.input_tokens
+            or self.output_tokens
+            or self.cache_read_tokens
+            or self.cache_write_tokens
+            or self.cost
+        ):
+            raise ValueError(
+                "AnalyzeWorkerOutcome: llm_called=False requires zero provider tokens and zero cost"
+            )
         return self
 
 
